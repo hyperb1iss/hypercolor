@@ -1,7 +1,8 @@
 use hypercolor_core::input::media::{
     ArtCache, ArtworkBlockingBackend, ArtworkError, ArtworkFetcher, ArtworkPolicy, ArtworkRequest,
-    ArtworkSource, MediaMetadataProvider, MediaProviderError, MediaProviderFailure,
-    MediaProviderSession, MediaSource, PlaybackStatus, PlayerSnapshot, collect_player_snapshots,
+    ArtworkSource, MAX_CONCURRENT_MEDIA_PLAYER_POLLS, MEDIA_PLAYER_CACHE_TTL,
+    MediaMetadataProvider, MediaProviderError, MediaProviderFailure, MediaProviderSession,
+    MediaSource, PlaybackStatus, PlayerSnapshot, PlayerSnapshotScanner, collect_player_snapshots,
     media_state_from_player, pick_active_player, run_artwork_loop,
 };
 use hypercolor_core::input::{InputData, InputSource};
@@ -9,12 +10,12 @@ use hypercolor_core::input::{SourceFreshness, SourceState};
 use image::ImageEncoder as _;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{Cursor, Read as _, Write as _};
 use std::net::TcpListener;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -183,6 +184,14 @@ fn custom_artwork_policy_cannot_expand_the_hard_safety_envelope() {
     ));
 }
 
+#[test]
+fn configured_artwork_fetchers_share_the_process_blocking_gate() {
+    let first = ArtworkFetcher::new(artwork_policy(64)).expect("first fetcher builds");
+    let second = ArtworkFetcher::new(artwork_policy(128)).expect("second fetcher builds");
+
+    assert!(first.shares_process_gate_for_test(&second));
+}
+
 fn png_with_icc_profile(profile_bytes: usize) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
@@ -314,6 +323,245 @@ async fn unhealthy_native_players_do_not_starve_healthy_siblings() {
     );
 }
 
+struct ActivePlayerPoll {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ActivePlayerPoll {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+async fn tracked_player_poll(
+    id: usize,
+    active: Arc<AtomicUsize>,
+    max_active: Arc<AtomicUsize>,
+    visited: Arc<Mutex<HashSet<usize>>>,
+) -> std::result::Result<PlayerSnapshot, MediaProviderError> {
+    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+    max_active.fetch_max(current, Ordering::SeqCst);
+    let _active = ActivePlayerPoll { active };
+    tokio::task::yield_now().await;
+    visited
+        .lock()
+        .expect("visited-player lock is not poisoned")
+        .insert(id);
+    Ok(player(
+        &format!("player-{id}"),
+        PlaybackStatus::Paused,
+        &format!("track-{id}"),
+    ))
+}
+
+#[tokio::test]
+async fn persistent_player_scan_bounds_fanout_and_visits_every_identity() {
+    const PLAYER_COUNT: usize = 2_048;
+    let discovered = (0..PLAYER_COUNT)
+        .map(|id| (format!("player-{id}"), id))
+        .collect::<Vec<_>>();
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_active = Arc::new(AtomicUsize::new(0));
+    let visited = Arc::new(Mutex::new(HashSet::new()));
+    let mut scanner = PlayerSnapshotScanner::default();
+    let mut snapshots = Vec::new();
+
+    for _ in 0..PLAYER_COUNT {
+        let active = Arc::clone(&active);
+        let max_active = Arc::clone(&max_active);
+        let poll_visited = Arc::clone(&visited);
+        snapshots = scanner
+            .poll(discovered.iter().cloned(), move |id| {
+                tracked_player_poll(
+                    id,
+                    Arc::clone(&active),
+                    Arc::clone(&max_active),
+                    Arc::clone(&poll_visited),
+                )
+            })
+            .await;
+        tokio::task::yield_now().await;
+        if visited
+            .lock()
+            .expect("visited-player lock is not poisoned")
+            .len()
+            == PLAYER_COUNT
+            && snapshots.len() == PLAYER_COUNT
+        {
+            break;
+        }
+    }
+
+    assert_eq!(
+        visited
+            .lock()
+            .expect("visited-player lock is not poisoned")
+            .len(),
+        PLAYER_COUNT
+    );
+    assert_eq!(snapshots.len(), PLAYER_COUNT);
+    assert!(max_active.load(Ordering::SeqCst) <= MAX_CONCURRENT_MEDIA_PLAYER_POLLS);
+    assert_eq!(
+        max_active.load(Ordering::SeqCst),
+        MAX_CONCURRENT_MEDIA_PLAYER_POLLS
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn healthy_player_behind_a_full_hung_window_is_eventually_published() {
+    let healthy = MAX_CONCURRENT_MEDIA_PLAYER_POLLS;
+    let discovered = (0..=healthy)
+        .map(|id| (format!("player-{id}"), id))
+        .collect::<Vec<_>>();
+    let mut scanner = PlayerSnapshotScanner::default();
+    let poll = |id| async move {
+        if id < healthy {
+            return std::future::pending().await;
+        }
+        Ok(player("healthy", PlaybackStatus::Playing, "survivor"))
+    };
+
+    assert!(
+        scanner
+            .poll(discovered.iter().cloned(), poll)
+            .await
+            .is_empty()
+    );
+    tokio::time::advance(Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+    let mut snapshots = Vec::new();
+    for _ in 0..4 {
+        snapshots = scanner.poll(discovered.iter().cloned(), poll).await;
+        if !snapshots.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].track, "survivor");
+}
+
+#[tokio::test]
+async fn scanner_preserves_discovery_order_and_player_selection_semantics() {
+    let discovered = [
+        (
+            "paused".to_owned(),
+            (player("paused", PlaybackStatus::Paused, "paused"), 3),
+        ),
+        (
+            "playing-a".to_owned(),
+            (player("playing-a", PlaybackStatus::Playing, "playing-a"), 2),
+        ),
+        (
+            "playing-b".to_owned(),
+            (player("playing-b", PlaybackStatus::Playing, "playing-b"), 0),
+        ),
+    ];
+    let mut scanner = PlayerSnapshotScanner::default();
+    let mut snapshots = Vec::new();
+    for _ in 0..8 {
+        snapshots = scanner
+            .poll(discovered.iter().cloned(), |(snapshot, delay)| async move {
+                for _ in 0..delay {
+                    tokio::task::yield_now().await;
+                }
+                Ok(snapshot)
+            })
+            .await;
+        tokio::task::yield_now().await;
+        if snapshots.len() == discovered.len() {
+            break;
+        }
+    }
+
+    assert_eq!(
+        snapshots
+            .iter()
+            .map(|snapshot| snapshot.bus_name.as_str())
+            .collect::<Vec<_>>(),
+        ["paused", "playing-a", "playing-b"]
+    );
+    assert_eq!(
+        pick_active_player(&snapshots, Some("playing-b"))
+            .expect("playing player is selected")
+            .bus_name,
+        "playing-b"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn scanner_evicts_absent_replaced_and_stale_players() {
+    let mut scanner = PlayerSnapshotScanner::default();
+    let old = scanner
+        .poll(
+            [("same".to_owned(), "old".to_owned())],
+            |track| async move { Ok(player("same", PlaybackStatus::Playing, &track)) },
+        )
+        .await;
+    assert_eq!(old[0].track, "old");
+
+    let absent = scanner
+        .poll(std::iter::empty::<(String, String)>(), |_| async {
+            unreachable!("absent players cannot be scanned")
+        })
+        .await;
+    assert!(absent.is_empty());
+
+    let replacement = scanner
+        .poll(
+            [("same".to_owned(), "new".to_owned())],
+            |track| async move { Ok(player("same", PlaybackStatus::Playing, &track)) },
+        )
+        .await;
+    assert_eq!(replacement[0].track, "new");
+
+    let retained = scanner
+        .poll([("same".to_owned(), "new".to_owned())], |_| async {
+            std::future::pending().await
+        })
+        .await;
+    assert_eq!(retained[0].track, "new");
+    tokio::time::advance(MEDIA_PLAYER_CACHE_TTL + Duration::from_secs(1)).await;
+    let stale = scanner
+        .poll([("same".to_owned(), "new".to_owned())], |_| async {
+            std::future::pending().await
+        })
+        .await;
+    assert!(stale.is_empty());
+}
+
+struct PlayerPollDropProbe(Arc<AtomicUsize>);
+
+impl Drop for PlayerPollDropProbe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn clearing_scanner_cancels_retained_native_operations() {
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut scanner = PlayerSnapshotScanner::default();
+    let signal = Arc::clone(&dropped);
+    let snapshots = scanner
+        .poll([("hung".to_owned(), ())], move |()| {
+            let signal = Arc::clone(&signal);
+            async move {
+                let _drop_probe = PlayerPollDropProbe(signal);
+                std::future::pending().await
+            }
+        })
+        .await;
+    assert!(snapshots.is_empty());
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+    scanner.clear();
+    tokio::task::yield_now().await;
+
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlockingStage {
     Read,
@@ -386,8 +634,9 @@ async fn blocking_artwork_timeout_reaps_read_and_decode_jobs() {
         let backend = Arc::new(CancelAwareBlockingBackend::new(stage));
         let mut policy = artwork_policy(64);
         policy.fetch_timeout = Duration::from_millis(20);
-        let fetcher = ArtworkFetcher::with_blocking_backend(policy, backend.clone())
-            .expect("test backend builds");
+        let fetcher =
+            ArtworkFetcher::with_isolated_blocking_backend_for_test(policy, backend.clone())
+                .expect("test backend builds");
         let source = ArtworkSource::Url("file:///C:/hypercolor-artwork-test".to_owned());
 
         assert_eq!(
@@ -403,8 +652,11 @@ async fn blocking_artwork_timeout_reaps_read_and_decode_jobs() {
 #[tokio::test]
 async fn explicit_artwork_cancellation_reaps_the_blocking_job() {
     let backend = Arc::new(CancelAwareBlockingBackend::new(BlockingStage::Encode));
-    let fetcher = ArtworkFetcher::with_blocking_backend(artwork_policy(64), backend.clone())
-        .expect("test backend builds");
+    let fetcher = ArtworkFetcher::with_isolated_blocking_backend_for_test(
+        artwork_policy(64),
+        backend.clone(),
+    )
+    .expect("test backend builds");
     let source = ArtworkSource::Url("file:///C:/hypercolor-artwork-test".to_owned());
     let cancel = CancellationToken::new();
     let cancel_after_start = async {
@@ -463,7 +715,7 @@ async fn uncooperative_artwork_job_is_quarantined_without_overlap() {
     });
     let mut policy = artwork_policy(64);
     policy.fetch_timeout = Duration::from_millis(20);
-    let fetcher = ArtworkFetcher::with_blocking_backend(policy, backend.clone())
+    let fetcher = ArtworkFetcher::with_isolated_blocking_backend_for_test(policy, backend.clone())
         .expect("test backend builds");
     let source = ArtworkSource::Url("file:///C:/hypercolor-artwork-test".to_owned());
 
@@ -585,7 +837,7 @@ async fn replacement_retry_and_stop_keep_blocking_artwork_single_flight() {
     let backend = Arc::new(ReplacementBlockingBackend::new());
     let mut policy = artwork_policy(128);
     policy.fetch_timeout = Duration::from_secs(5);
-    let fetcher = ArtworkFetcher::with_blocking_backend(policy, backend.clone())
+    let fetcher = ArtworkFetcher::with_isolated_blocking_backend_for_test(policy, backend.clone())
         .expect("test backend builds");
     let source = MediaSource::new();
     let (art_tx, art_rx) = tokio::sync::watch::channel(None);
@@ -1135,7 +1387,7 @@ async fn old_media_generation_cannot_enrich_the_same_track_after_restart() {
     });
     let mut policy = artwork_policy(64);
     policy.fetch_timeout = Duration::from_secs(5);
-    let fetcher = ArtworkFetcher::with_blocking_backend(policy, backend.clone())
+    let fetcher = ArtworkFetcher::with_isolated_blocking_backend_for_test(policy, backend.clone())
         .expect("test backend builds");
     let (art_tx, art_rx) = tokio::sync::watch::channel(Some(Arc::new(ArtworkRequest {
         key,
