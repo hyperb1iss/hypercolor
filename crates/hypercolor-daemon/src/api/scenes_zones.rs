@@ -600,7 +600,7 @@ async fn finalize_zone_mutation(
     persist_runtime_session(state).await;
     publish_render_group_changed(state.as_ref(), scene_id, group, kind);
 
-    crate::api::spawn_connectivity_sync(state.as_ref());
+    crate::api::sync_connectivity(state.as_ref()).await;
     Ok(())
 }
 

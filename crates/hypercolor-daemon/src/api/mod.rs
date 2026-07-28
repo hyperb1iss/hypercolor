@@ -948,17 +948,17 @@ pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::Discovery
 /// scene targets, so a device placed in a zone connects now instead of
 /// whenever the next discovery sweep happens to run.
 ///
-/// Spawned rather than awaited: reconciliation walks every tracked device
-/// and executes lifecycle actions inline, and a single connect can sit on a
-/// multi-second transport timeout. That has no business blocking the
-/// response to a rename or a placement nudge. Reconciliation reads live
-/// state when it runs and the lifecycle manager already guards against
-/// overlapping connects, so overlapping calls settle on the same result.
-pub(crate) fn spawn_connectivity_sync(state: &AppState) {
+/// Awaited rather than detached, matching `apply_layout` and the logical
+/// device endpoints. Reconciliation only performs I/O for devices whose
+/// eligibility actually changed — a device already Connected and still
+/// wanted, or still Known and still unwanted, yields no lifecycle actions
+/// at all — so an edit that moves no device costs one in-memory walk.
+/// Detaching it would buy nothing and cost ordering: concurrent runs could
+/// apply stale eligibility out of order, and an in-flight connect could
+/// outlive shutdown's disconnect sweep.
+pub(crate) async fn sync_connectivity(state: &AppState) {
     let runtime = discovery_runtime(state);
-    tokio::spawn(async move {
-        crate::discovery::sync_active_layout_connectivity(&runtime, None).await;
-    });
+    crate::discovery::sync_active_layout_connectivity(&runtime, None).await;
 }
 
 // ── Router ───────────────────────────────────────────────────────────────
