@@ -748,6 +748,13 @@ Implementation:
 - Run interactive lanes on a preview executor outside the authoritative render
   thread and hardware frame deadline. Each lane has its own monotonic clock and
   sequential state ownership, while independent lanes execute concurrently.
+- The preview executor owns shared worker and device pools; opening a preview does
+  not create one OS thread or one logical GPU device per lane. Account admitted
+  surface, renderer, encoder, and transport bytes explicitly against configurable
+  pool capacity. Capacity errors reject only the new open with exact diagnostics;
+  they never lower requested FPS or resolution, serialize healthy lanes, or evict
+  existing work. Closing a lane joins or returns every task and device allocation
+  before its publication lifetime is retired.
 - Give preview rendering an independent `wgpu::Device`/`Queue` from the same
   adapter when GPU composition is available; otherwise use the full-resolution CPU
   compositor on the preview executor. A preview may never submit to or call
@@ -776,6 +783,23 @@ Implementation:
   Client ids are opaque within one connection and cannot address another session.
   Disconnect, explicit close, authorization loss, or future cancellation drops a
   guard that releases the route, lease, and render lane exactly once.
+- Interactive preview transport is latest-value by preview publication, not a
+  count-bounded queue of fully encoded images. Replace a stale unsent frame before
+  encoding where possible and before enqueue otherwise; retain at most one current
+  encoded publication per preview plus the frame actively writing. Enforce both a
+  per-publication and per-connection encoded-byte budget, with visible replacement,
+  rejection, and send-latency counters.
+- Frames larger than the one-message WebSocket ceiling use an additive chunk
+  envelope carrying preview id, publication identity, frame number, total encoded
+  bytes, chunk offset/index/count, and format metadata. Reassembly is bounded by
+  the advertised frame limit and discards incomplete or superseded generations.
+  Raw 4096-square RGB/RGBA and worst-case valid JPEG requests remain representable;
+  the implementation may not hide the mismatch by lowering dimensions, FPS, or
+  supported formats.
+- Clients activate a publication only after its addressed open acknowledgment.
+  Ordered open/close/error acknowledgments fence rapid close/reopen sequences, and
+  reconnect clears pending, opened, reassembly, and rendered state. A binary frame
+  from an unconfirmed or superseded publication is dropped before presentation.
 - Default browser preview to its connection-scoped source and daemon effects to
   host input; never merge them implicitly.
 - Preserve a configurable legacy `merge` route for one minor version and document
@@ -892,6 +916,11 @@ Verify:
   Instrumentation proves previews never submit or wait on the authoritative wgpu
   device. Producer counters prove one media, screen, static, or non-interaction
   render is fanned out rather than duplicated per preview.
+- Slow-client tests prove encoded memory remains inside the byte budget at 640x480
+  and 4096x4096, stale frames are replaced rather than queued, chunks reassemble
+  exactly once, superseded partial frames are reclaimed, and one preview cannot
+  starve another. Shutdown tests prove all preview workers are joined and Servo
+  teardown completes before executor ownership is released.
 - Sampling-pump tests prove host events and held snapshots stay live during
   authoritative reuse, idle, output sleep, and preview-only operation, without a
   delayed event burst when hardware rendering resumes. Demand tests cover audio,
@@ -928,6 +957,18 @@ Implementation:
   lease that declares that domain.
 - Remove the Linux-only live-apply gate for capture settings where Windows has a
   real implementation. Reopen/reconfigure backends transactionally.
+- A demanded replacement reaches `Live` or a usable `Degraded` state before config
+  persistence, graph publication, or retirement of the known-good source. A
+  bounded observation timeout is an error, not permission to commit `Starting`;
+  delayed portal consent remains an asynchronous prepared transaction.
+- Reserve a non-serialized capture-persistence epoch under the `ConfigManager`
+  writer lock for each prepared source lifetime. Restore-token/source callbacks
+  may persist only while their exact epoch, config pointer, and graph/source
+  identity remain current; rollback restores the prior authority before any staged
+  source becomes externally visible.
+- Every config writer, including reload, uses the same writer lock. Unchanged
+  capture values compare lifecycle and an applied-config fingerprint, repairing
+  missing, stopped, failed, or divergent sources and removing disabled extras.
 - Replace the silent global `1..=240` FPS clamp with validated platform limits
   based on real backend capability and an explicit error for unsupported values.
 - Invalidate cached demand on source-graph and capability generation changes.
@@ -1135,6 +1176,19 @@ Implementation:
 - Honor SPA chunk offset/size, signed stride, video crop, buffer bounds, and
   negotiated format. Report the stream transform in the envelope without applying
   it in the backend.
+- Add a narrow `hypercolor-pipewire-interop` crate as the only audited unsafe SPA
+  buffer boundary. It uses generated `pipewire::sys`/`spa::sys` ABI types, owns raw
+  dequeue behind a non-`Send` exact-once RAII requeue guard, validates all pointers,
+  meta sizes, and mapped bounds, and lends bytes to a higher-ranked visitor that
+  cannot retain the PipeWire buffer.
+- Explicitly negotiate `SPA_PARAM_Meta` for `SPA_META_VideoCrop` and
+  `SPA_META_VideoTransform`. Copy metadata immediately in the callback; absent
+  crop means full frame and absent transform means identity, while present but
+  malformed metadata drops the frame with a typed counter.
+- Replace the four-state capture rotation contract with the complete eight-state
+  SPA D4 transform vocabulary, including all reflected variants. Crop in raw-plane
+  coordinates, then apply the transform exactly once in canonical processing;
+  cursor geometry follows the same exhaustive mapping.
 - Keep the PipeWire callback exact and minimal: validate metadata, perform one
   bounded memcpy into a preallocated double buffer, requeue the SPA buffer before
   returning, and wake analysis. Never retain an SPA buffer past the callback.
@@ -1147,11 +1201,17 @@ Implementation:
 - Detect stream error/termination, expire the latest snapshot, publish degraded or
   failed status, and reconnect while demand remains active.
 - Make all waits stop-aware and clear session data on teardown.
+- Negotiated native extent or transform changes advance topology even when the
+  portal stream identity is stable. Source scale compares logical dimensions with
+  the post-transform extent, swapping axes for quarter turns.
 
 Verify:
 
 - Fixtures cover truncated chunks, non-zero offsets, negative stride, crop,
   transform, row padding, format changes, malformed metadata, and worker exit.
+- ABI fixtures assert metadata constants/layouts on x86_64 and aarch64 Linux,
+  exact-once requeue on success/error/panic, and all eight transforms over a
+  unique-corner image. Same-portal extent/transform changes rebuild topology.
 - The extracted synchronous `decode_chunk` seam asserts zero allocations, zero
   downscale/letterbox/smoothing work, and no lock held across the copy. Live
   PipeWire tests assert counters and drop metrics only. Copy time and bytes scale
@@ -1458,6 +1518,12 @@ Implementation:
   render sampling, allocation, memory bandwidth, and deadline telemetry.
 - Add regression thresholds that detect architectural cliffs without lowering
   supported FPS, resolution, or device rates.
+- Adjudicate T16's retained 4K synthetic baseline explicitly: the readback ring
+  stayed bounded (`ring_busy=0`, all 60 reductions drained, 3,686,400 readback
+  bytes versus 33,177,600 source bytes), but analysis reported 29/60 deadline
+  misses and 17.0536 ms p99 against a 16.67 ms 60 Hz budget. T26 must profile and
+  recover headroom or establish a separately justified hardware-class contract;
+  bounded backlog alone is not a fully green performance verdict.
 - Run an independent Claude correctness, concurrency, security/privacy, and
   performance review over the exact final commit range.
 - Run a separate read-only verification agent against the original ask and all
