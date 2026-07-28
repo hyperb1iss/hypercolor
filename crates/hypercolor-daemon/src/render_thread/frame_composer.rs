@@ -392,11 +392,25 @@ impl ComposeContext<'_> {
             }
             Err(error) => {
                 self.publish_layer_runtime_events();
-                self.compose.clear_inactive_groups();
-                if self.publish_effect_error(&error)
-                    || error.downcast_ref::<ZoneEffectError>().is_none()
+                let published_effect_error = self.publish_effect_error(&error);
+                if let Some(retained) = self
+                    .compose
+                    .render_group_runtime
+                    .reuse_scene(dependency_key)
                 {
-                    warn!(%error, "failed to render active scene groups; publishing black frame");
+                    warn!(%error, "failed to render active scene groups; retaining the last frame");
+                    return self.finish_render_group_frame_set(
+                        Ok(retained),
+                        producer_us,
+                        producer_done_us,
+                        true,
+                        dependency_key,
+                        stage_start,
+                    );
+                }
+                self.compose.clear_inactive_groups();
+                if published_effect_error || error.downcast_ref::<ZoneEffectError>().is_none() {
+                    warn!(%error, "failed to render active scene groups without a retained frame; publishing black frame");
                 }
                 let source_frame =
                     ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
