@@ -264,6 +264,10 @@ impl DoubleBuffer {
         self.completed.as_ref().map(|chunk| chunk.format)
     }
 
+    const fn capacity(&self) -> usize {
+        self.inner.capacity
+    }
+
     fn acquire(&self) -> Option<Vec<u8>> {
         self.inner
             .available
@@ -442,6 +446,28 @@ struct CaptureRuntimeSettings {
     demand: ScreenCaptureDemand,
 }
 
+struct PreparedWaylandSettings {
+    config: CaptureConfig,
+    demand: ScreenCaptureDemand,
+    analyzer: ScreenCaptureInput,
+    pipewire_format: Option<PreparedPipeWireFormat>,
+}
+
+struct PreparedPipeWireFormat {
+    callback_buffers: DoubleBuffer,
+    format_bytes: Vec<u8>,
+}
+
+struct PreparedAnalysisSettings {
+    config: CaptureConfig,
+    demand: ScreenCaptureDemand,
+    analyzer: ScreenCaptureInput,
+}
+
+enum SettingsDecision {
+    Commit,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WaylandTopologySignature {
     source_id: CaptureSourceId,
@@ -468,6 +494,38 @@ struct CapturedScreenSnapshot {
 }
 
 impl SharedSettings {
+    fn config_snapshot(&self) -> CaptureConfig {
+        self.config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn commit_runtime(&self, next: &PreparedAnalysisSettings) -> u64 {
+        self.commit_values(&next.config, next.demand)
+    }
+
+    fn commit_values(&self, next_config: &CaptureConfig, demand: ScreenCaptureDemand) -> u64 {
+        {
+            let mut config = self
+                .config
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let granted_token = config.restore_token.take();
+            config.clone_from(next_config);
+            if config.restore_token.is_none() {
+                config.restore_token = granted_token;
+            }
+        }
+        *self
+            .demand
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = demand;
+        self.generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
+
     fn snapshot_for_session(
         &self,
         session_generation: u64,
@@ -482,11 +540,7 @@ impl SharedSettings {
         {
             return None;
         }
-        let config = self
-            .config
-            .lock()
-            .map(|config| config.clone())
-            .unwrap_or_default();
+        let config = self.config_snapshot();
         let demand = *self
             .demand
             .lock()
@@ -796,46 +850,100 @@ impl WaylandScreenCaptureInput {
     }
 
     fn current_target_fps(&self) -> u32 {
-        self.settings
-            .config
-            .lock()
-            .map(|config| config.target_fps)
-            .unwrap_or(30)
+        self.settings.config_snapshot().target_fps
+    }
+
+    fn prepare_active_settings(
+        &self,
+        config: CaptureConfig,
+        demand: ScreenCaptureDemand,
+        format_changed: bool,
+    ) -> anyhow::Result<PreparedWaylandSettings> {
+        let requested_extent = demand
+            .requested_extent()
+            .context("active Wayland capture settings must carry an extent")?;
+        let analyzer = ScreenCaptureInput::with_requested_extent(config.clone(), requested_extent)?;
+        let pipewire_format = if format_changed {
+            let callback_capacity = NegotiatedFormat {
+                width: requested_extent.width(),
+                height: requested_extent.height(),
+                format: SpaVideoFormat::Rgba,
+            }
+            .byte_len()
+            .ok_or(CaptureFrameError::StorageSizeOverflow)?;
+            Some(PreparedPipeWireFormat {
+                callback_buffers: DoubleBuffer::try_with_capacity(callback_capacity)?,
+                format_bytes: build_format_params(config.target_fps.max(1), requested_extent)?,
+            })
+        } else {
+            None
+        };
+        Ok(PreparedWaylandSettings {
+            config,
+            demand,
+            analyzer,
+            pipewire_format,
+        })
+    }
+
+    fn adopt_worker_settings(&self, prepared: PreparedWaylandSettings) -> anyhow::Result<()> {
+        let worker = self
+            .worker
+            .as_ref()
+            .ok_or_else(|| anyhow!("Wayland capture worker is unavailable for live adoption"))?;
+        if worker.portal_pending.load(Ordering::SeqCst) {
+            anyhow::bail!("Wayland capture worker cannot adopt settings while the portal is open");
+        }
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (decision_tx, decision_rx) = mpsc::sync_channel(1);
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        worker
+            .command_tx
+            .send(WorkerCommand::AdoptSettings {
+                prepared,
+                ready: ready_tx,
+                decision: decision_rx,
+                done: done_tx,
+            })
+            .map_err(|_| anyhow!("Wayland capture worker rejected prepared settings"))?;
+        ready_rx
+            .recv_timeout(WORKER_READY_TIMEOUT)
+            .map_err(|error| anyhow!("Wayland capture worker adoption timed out: {error}"))?;
+        decision_tx
+            .send(SettingsDecision::Commit)
+            .map_err(|_| anyhow!("Wayland capture worker exited before settings commit"))?;
+        done_rx
+            .recv()
+            .map_err(|_| anyhow!("Wayland capture worker exited during settings commit"))?
+            .map_err(anyhow::Error::msg)
     }
 
     /// Apply new capture settings to the running pipeline.
     ///
-    /// Analysis settings (grid, smoothing, letterbox, tuning) reach the
-    /// worker without interruption. A target FPS change requires stream
-    /// re-negotiation, so the worker restarts; with a restore token in
-    /// place that restart is silent.
+    /// Analysis settings and PipeWire format changes are prepared together,
+    /// then adopted by both workers without interrupting the portal session.
     fn reconfigure(&mut self, config: CaptureConfig) -> anyhow::Result<()> {
-        let fps_changed = self.current_target_fps() != config.target_fps;
-
-        if let Ok(mut current) = self.settings.config.lock() {
-            // The worker may have written a freshly granted portal token
-            // since the caller snapshotted its config; never let a stale
-            // None overwrite it. Intentional clears go through
-            // `reselect_source`.
-            let granted_token = current.restore_token.take();
-            *current = config;
-            if current.restore_token.is_none() {
-                current.restore_token = granted_token;
-            }
+        let current = self.settings.config_snapshot();
+        if current == config {
+            return Ok(());
         }
-        self.settings.generation.fetch_add(1, Ordering::Release);
-
-        if fps_changed && self.worker.is_some() {
-            if self.portal_pending() {
-                warn!(
-                    "Portal source picker is open; new capture FPS applies on the next session restart"
-                );
-                return Ok(());
+        if self.capture_demand.is_active() {
+            let format_changed = current.target_fps != config.target_fps;
+            let prepared =
+                self.prepare_active_settings(config, self.capture_demand, format_changed)?;
+            if self.running {
+                self.adopt_worker_settings(prepared)?;
+            } else {
+                let next = PreparedAnalysisSettings {
+                    config: prepared.config,
+                    demand: prepared.demand,
+                    analyzer: prepared.analyzer,
+                };
+                self.settings.commit_runtime(&next);
             }
-            info!("Restarting Wayland capture worker for new target FPS");
-            self.restart_worker()?;
+            return Ok(());
         }
-
+        self.settings.commit_values(&config, self.capture_demand);
         Ok(())
     }
 
@@ -885,15 +993,27 @@ impl WaylandScreenCaptureInput {
             return Ok(());
         }
 
+        if previous.is_active() && demand.is_active() {
+            let config = self.settings.config_snapshot();
+            let prepared = self.prepare_active_settings(config, demand, true)?;
+            if self.running {
+                self.adopt_worker_settings(prepared)?;
+            } else {
+                let next = PreparedAnalysisSettings {
+                    config: prepared.config,
+                    demand: prepared.demand,
+                    analyzer: prepared.analyzer,
+                };
+                self.settings.commit_runtime(&next);
+            }
+            self.capture_demand = demand;
+            return Ok(());
+        }
+
         let _admission = demand
             .requested_extent()
             .map(|requested_extent| {
-                let config = self
-                    .settings
-                    .config
-                    .lock()
-                    .map(|config| config.clone())
-                    .unwrap_or_default();
+                let config = self.settings.config_snapshot();
                 ScreenCaptureInput::with_requested_extent(config, requested_extent)
             })
             .transpose()?;
@@ -1024,23 +1144,33 @@ impl WaylandScreenCaptureInput {
     }
 
     fn send_worker_command(&mut self, command: WorkerCommand) -> anyhow::Result<()> {
+        let WorkerCommand::SetDemand(demand) = command else {
+            anyhow::bail!("only demand commands use the restartable Wayland dispatch path");
+        };
         let Some(worker) = &self.worker else {
             return Ok(());
         };
 
-        if dispatch_worker_command(&worker.command_tx, &worker.demanded, &command) {
+        worker.demanded.store(demand.is_active(), Ordering::Release);
+        if worker
+            .command_tx
+            .send(WorkerCommand::SetDemand(demand))
+            .is_ok()
+        {
             return Ok(());
         }
 
         warn!("Wayland screen capture worker is no longer accepting commands");
         self.shutdown_worker();
 
-        if let WorkerCommand::SetDemand(demand) = command
-            && demand.is_active()
-        {
+        if demand.is_active() {
             self.spawn_worker(demand)?;
             let replacement_accepted = self.worker.as_ref().is_some_and(|worker| {
-                dispatch_worker_command(&worker.command_tx, &worker.demanded, &command)
+                worker.demanded.store(true, Ordering::Release);
+                worker
+                    .command_tx
+                    .send(WorkerCommand::SetDemand(demand))
+                    .is_ok()
             });
             if !replacement_accepted {
                 self.shutdown_worker();
@@ -1347,21 +1477,15 @@ struct WorkerFlags {
     demanded: Arc<AtomicBool>,
 }
 
-#[derive(Clone, Debug)]
 enum WorkerCommand {
     SetDemand(ScreenCaptureDemand),
+    AdoptSettings {
+        prepared: PreparedWaylandSettings,
+        ready: mpsc::SyncSender<()>,
+        decision: mpsc::Receiver<SettingsDecision>,
+        done: mpsc::SyncSender<Result<(), String>>,
+    },
     Stop,
-}
-
-fn dispatch_worker_command(
-    command_tx: &pw::channel::Sender<WorkerCommand>,
-    demanded: &AtomicBool,
-    command: &WorkerCommand,
-) -> bool {
-    if let WorkerCommand::SetDemand(demand) = command {
-        demanded.store(demand.is_active(), Ordering::Release);
-    }
-    command_tx.send(command.clone()).is_ok()
 }
 
 fn publish_unexpected_exit_status(
@@ -1437,17 +1561,23 @@ struct WaylandCaptureUserData {
     format: spa::param::video::VideoInfoRaw,
     negotiated: Option<NegotiatedFormat>,
     buffers: DoubleBuffer,
+    prepared_buffers: Arc<Mutex<Option<DoubleBuffer>>>,
     exchange: Arc<AnalysisExchange>,
     metrics: Arc<CaptureCallbackMetrics>,
 }
 
 impl WaylandCaptureUserData {
-    fn new(exchange: Arc<AnalysisExchange>, metrics: Arc<CaptureCallbackMetrics>) -> Self {
+    fn new(
+        exchange: Arc<AnalysisExchange>,
+        metrics: Arc<CaptureCallbackMetrics>,
+        prepared_buffers: Arc<Mutex<Option<DoubleBuffer>>>,
+    ) -> Self {
         Self {
             format: spa::param::video::VideoInfoRaw::default(),
             negotiated: None,
             buffers: DoubleBuffer::try_with_capacity(0)
                 .expect("empty callback planes require no pixel allocation"),
+            prepared_buffers,
             exchange,
             metrics,
         }
@@ -1455,21 +1585,17 @@ impl WaylandCaptureUserData {
 
     fn set_negotiated_format(&mut self, format: NegotiatedFormat) -> Result<(), CaptureFrameError> {
         let Some(capacity) = format.byte_len() else {
-            self.negotiated = None;
             return Err(CaptureFrameError::StorageSizeOverflow);
         };
-        if self
-            .negotiated
-            .is_none_or(|previous| previous.byte_len() != Some(capacity))
-        {
-            let prepared = match DoubleBuffer::try_with_capacity(capacity) {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    self.negotiated = None;
-                    return Err(error);
-                }
-            };
+        let prepared = self
+            .prepared_buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(prepared) = prepared.filter(|prepared| prepared.capacity() >= capacity) {
             self.buffers = prepared;
+        } else if self.buffers.capacity() < capacity {
+            self.buffers = DoubleBuffer::try_with_capacity(capacity)?;
         }
         self.negotiated = Some(format);
         Ok(())
@@ -1535,7 +1661,20 @@ impl CaptureCallbackMetrics {
 #[derive(Default)]
 struct AnalysisExchangeState {
     latest: Option<DecodedChunk>,
+    adoption: Option<AnalysisAdoption>,
     stopped: bool,
+}
+
+struct AnalysisAdoption {
+    prepared: PreparedAnalysisSettings,
+    ready: mpsc::SyncSender<()>,
+    decision: mpsc::Receiver<SettingsDecision>,
+    done: mpsc::SyncSender<()>,
+}
+
+enum AnalysisEvent {
+    Frame(DecodedChunk),
+    Adoption(AnalysisAdoption),
 }
 
 #[derive(Default)]
@@ -1561,7 +1700,24 @@ impl AnalysisExchange {
         self.wake.notify_one();
     }
 
-    fn wait_for_latest(&self, deadline: Instant, cancel: &AtomicBool) -> Option<DecodedChunk> {
+    fn prepare_adoption(&self, adoption: AnalysisAdoption) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.stopped {
+            return Err("Wayland analysis worker is stopped".to_owned());
+        }
+        if state.adoption.is_some() {
+            return Err("Wayland analysis worker already has a pending adoption".to_owned());
+        }
+        state.adoption = Some(adoption);
+        drop(state);
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    fn wait_for_event(&self, deadline: Instant, cancel: &AtomicBool) -> Option<AnalysisEvent> {
         let mut state = self
             .state
             .lock()
@@ -1570,11 +1726,14 @@ impl AnalysisExchange {
             if state.stopped || cancel.load(Ordering::Acquire) {
                 return None;
             }
+            if let Some(adoption) = state.adoption.take() {
+                return Some(AnalysisEvent::Adoption(adoption));
+            }
             let now = Instant::now();
             if now >= deadline
                 && let Some(frame) = state.latest.take()
             {
-                return Some(frame);
+                return Some(AnalysisEvent::Frame(frame));
             }
             let timeout = if now >= deadline {
                 WORKER_POLL_INTERVAL
@@ -1590,15 +1749,16 @@ impl AnalysisExchange {
     }
 
     fn stop(&self) {
-        let discarded = {
+        let (discarded_frame, discarded_adoption) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.stopped = true;
-            state.latest.take()
+            (state.latest.take(), state.adoption.take())
         };
-        drop(discarded);
+        drop(discarded_frame);
+        drop(discarded_adoption);
         self.wake.notify_all();
     }
 }
@@ -1665,6 +1825,23 @@ impl WaylandAnalysisState {
         self.applied_generation = generation;
         debug!(generation, "Applied live screen capture settings");
         true
+    }
+
+    fn adopt_settings(&mut self, adoption: AnalysisAdoption) {
+        if adoption.ready.send(()).is_err()
+            || !matches!(adoption.decision.recv(), Ok(SettingsDecision::Commit))
+        {
+            return;
+        }
+        let generation = self.settings.commit_runtime(&adoption.prepared);
+        self.analyzer = adoption.prepared.analyzer;
+        self.applied_demand = adoption.prepared.demand;
+        self.applied_generation = generation;
+        let _ = adoption.done.send(());
+        debug!(
+            generation,
+            "Adopted prepared Wayland screen analysis settings"
+        );
     }
 
     fn capture_frame(
@@ -1754,7 +1931,14 @@ fn run_analysis_worker(
             }
         };
     let mut deadline = Instant::now();
-    while let Some(decoded) = exchange.wait_for_latest(deadline, cancel) {
+    while let Some(event) = exchange.wait_for_event(deadline, cancel) {
+        let decoded = match event {
+            AnalysisEvent::Frame(decoded) => decoded,
+            AnalysisEvent::Adoption(adoption) => {
+                state.adopt_settings(adoption);
+                continue;
+            }
+        };
         if !state.sync_settings(cancel) {
             return;
         }
@@ -2098,6 +2282,7 @@ fn run_pipewire_loop(
     let source = WaylandSourceMetadata::from_stream(&portal_stream, session_generation)?;
     let exchange = Arc::new(AnalysisExchange::default());
     let callback_metrics = Arc::new(CaptureCallbackMetrics::default());
+    let prepared_callback_buffers = Arc::new(Mutex::new(None::<DoubleBuffer>));
     let loop_exit = Arc::new(Mutex::new(None::<PipeWireLoopExit>));
 
     let mainloop =
@@ -2123,6 +2308,7 @@ fn run_pipewire_loop(
         .add_local_listener_with_user_data(WaylandCaptureUserData::new(
             Arc::clone(&exchange),
             Arc::clone(&callback_metrics),
+            Arc::clone(&prepared_callback_buffers),
         ))
         .state_changed({
             let mainloop = mainloop.clone();
@@ -2324,7 +2510,10 @@ fn run_pipewire_loop(
         let mainloop = mainloop.clone();
         let stream = stream.clone();
         let loop_exit = Arc::clone(&loop_exit);
+        let command_exchange = Arc::clone(&exchange);
+        let command_callback_buffers = Arc::clone(&prepared_callback_buffers);
         let target_fps = config.target_fps.max(1);
+        let mut current_format_bytes = format_bytes.clone();
         move |command| match command {
             WorkerCommand::SetDemand(demand) => {
                 let active = demand.is_active();
@@ -2332,18 +2521,97 @@ fn run_pipewire_loop(
                     warn!(active, %error, "Failed to update PipeWire stream active state");
                 }
                 if let Some(requested_extent) = demand.requested_extent() {
-                    let update =
-                        build_format_params(target_fps, requested_extent).and_then(|bytes| {
-                            let pod = spa::pod::Pod::from_bytes(&bytes)
-                                .context("failed to deserialize PipeWire format pod")?;
-                            stream
-                                .update_params(&mut [pod])
-                                .context("failed to update PipeWire format")
-                        });
-                    if let Err(error) = update {
-                        warn!(%error, "Failed to update PipeWire capture extent");
+                    match build_format_params(target_fps, requested_extent).and_then(|bytes| {
+                        update_pipewire_format(&stream, &bytes)?;
+                        Ok(bytes)
+                    }) {
+                        Ok(bytes) => current_format_bytes = bytes,
+                        Err(error) => warn!(%error, "Failed to update PipeWire capture extent"),
                     }
                 }
+            }
+            WorkerCommand::AdoptSettings {
+                prepared,
+                ready,
+                decision,
+                done,
+            } => {
+                if ready.send(()).is_err()
+                    || !matches!(decision.recv(), Ok(SettingsDecision::Commit))
+                {
+                    return;
+                }
+                let PreparedWaylandSettings {
+                    config,
+                    demand,
+                    analyzer,
+                    pipewire_format,
+                } = prepared;
+                let (analysis_ready_tx, analysis_ready_rx) = mpsc::sync_channel(1);
+                let (analysis_decision_tx, analysis_decision_rx) = mpsc::sync_channel(1);
+                let (analysis_done_tx, analysis_done_rx) = mpsc::sync_channel(1);
+                let adoption = AnalysisAdoption {
+                    prepared: PreparedAnalysisSettings {
+                        config,
+                        demand,
+                        analyzer,
+                    },
+                    ready: analysis_ready_tx,
+                    decision: analysis_decision_rx,
+                    done: analysis_done_tx,
+                };
+                if let Err(error) = command_exchange.prepare_adoption(adoption) {
+                    let _ = done.send(Err(error));
+                    return;
+                }
+                if analysis_ready_rx.recv().is_err() {
+                    let _ = done.send(Err(
+                        "Wayland analysis worker exited before adoption".to_owned()
+                    ));
+                    return;
+                }
+                let next_format_bytes = if let Some(PreparedPipeWireFormat {
+                    callback_buffers,
+                    format_bytes,
+                }) = pipewire_format
+                {
+                    *command_callback_buffers
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(callback_buffers);
+                    if let Err(error) = update_pipewire_format(&stream, &format_bytes) {
+                        command_callback_buffers
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        let _ = done.send(Err(error.to_string()));
+                        return;
+                    }
+                    Some(format_bytes)
+                } else {
+                    None
+                };
+                if analysis_decision_tx.send(SettingsDecision::Commit).is_err()
+                    || analysis_done_rx.recv().is_err()
+                {
+                    if next_format_bytes.is_some() {
+                        command_callback_buffers
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        if let Err(error) = update_pipewire_format(&stream, &current_format_bytes) {
+                            warn!(%error, "Failed to restore prior PipeWire format after analysis adoption failure");
+                        }
+                    }
+                    let _ = done.send(Err(
+                        "Wayland analysis worker exited during adoption".to_owned()
+                    ));
+                    return;
+                }
+                if let Some(format_bytes) = next_format_bytes {
+                    current_format_bytes = format_bytes;
+                }
+                let _ = done.send(Ok(()));
             }
             WorkerCommand::Stop => {
                 *loop_exit
@@ -2380,6 +2648,17 @@ fn run_pipewire_loop(
         .unwrap_or_else(|| {
             PipeWireLoopExit::Terminal("PipeWire main loop exited unexpectedly".to_owned())
         }))
+}
+
+fn update_pipewire_format(
+    stream: &pw::stream::StreamRc,
+    format_bytes: &[u8],
+) -> anyhow::Result<()> {
+    let pod = spa::pod::Pod::from_bytes(format_bytes)
+        .context("failed to deserialize PipeWire format pod")?;
+    stream
+        .update_params(&mut [pod])
+        .context("failed to update PipeWire format")
 }
 
 fn build_format_params(target_fps: u32, requested_extent: PixelExtent) -> anyhow::Result<Vec<u8>> {
