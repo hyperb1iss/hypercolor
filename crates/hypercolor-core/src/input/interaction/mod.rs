@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use device_query::{DeviceQuery, DeviceState, Keycode};
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
 use tracing::warn;
 
-use crate::input::traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData};
+use crate::input::traits::{InputData, InputSource, InteractionData, MouseData};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
@@ -19,10 +20,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(1);
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_RECENT_KEY_LIMIT: usize = 32;
+const DEFAULT_EVENT_LIMIT: usize = crate::input::InteractionBatch::MAX_EVENTS;
+const DEVICE_QUERY_SOURCE_ID: &str = "host:device_query";
 
 #[derive(Default)]
 struct SharedInteractionState {
     interaction: InteractionData,
+    events: Vec<TimedInputEvent>,
 }
 
 /// Global host input source for `LightScript` keyboard and mouse helpers.
@@ -92,7 +96,7 @@ impl InteractionInput {
             warn!(source = %self.name, "Host input worker did not stop before the deadline");
         }
         if let Ok(mut guard) = self.shared.lock() {
-            guard.interaction = InteractionData::default();
+            *guard = SharedInteractionState::default();
         }
         self.last_held = None;
     }
@@ -146,31 +150,16 @@ impl InteractionInput {
                     let current_keys = sorted_keys(device_state.get_keys());
                     let mouse_state = device_state.get_mouse();
 
-                    let recent_keys = current_keys
-                        .iter()
-                        .filter(|key| !previous_keys.contains(key))
-                        .map(|key| canonical_key_name(*key))
-                        .collect::<Vec<String>>();
+                    publish_poll(
+                        &shared,
+                        &previous_keys,
+                        &current_keys,
+                        &mouse_state,
+                        recent_key_limit,
+                        DEFAULT_EVENT_LIMIT,
+                        crate::input::input_mono_ms(),
+                    );
                     previous_keys.clone_from(&current_keys);
-
-                    let keyboard = KeyboardData {
-                        pressed_keys: current_keys
-                            .into_iter()
-                            .map(canonical_key_name)
-                            .collect(),
-                        recent_keys,
-                    };
-                    let mouse = mouse_data_from_state(&mouse_state);
-
-                    if let Ok(mut guard) = shared.lock() {
-                        guard.interaction.keyboard.pressed_keys = keyboard.pressed_keys;
-                        extend_recent_keys(
-                            &mut guard.interaction.keyboard.recent_keys,
-                            keyboard.recent_keys,
-                            recent_key_limit,
-                        );
-                        guard.interaction.mouse = mouse;
-                    }
 
                     match stop_rx.recv_timeout(POLL_INTERVAL) {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -221,10 +210,65 @@ impl InteractionInput {
             status.failed(SourceIssue::new("host_input_worker_exited", detail, true));
         }
         if let Ok(mut guard) = self.shared.lock() {
-            guard.interaction = InteractionData::default();
+            *guard = SharedInteractionState::default();
         }
         self.last_held = None;
         true
+    }
+
+    fn build_snapshot(&mut self, guard: &mut SharedInteractionState) -> InteractionData {
+        let mut snapshot = guard.interaction.clone();
+        snapshot.keyboard.recent_keys = std::mem::take(&mut guard.interaction.keyboard.recent_keys);
+        snapshot.batch.dropped_events = std::mem::take(&mut guard.interaction.batch.dropped_events);
+
+        let held = (
+            snapshot.keyboard.pressed_keys.clone(),
+            snapshot.mouse.clone(),
+        );
+        if self.last_held.as_ref() != Some(&held) || !snapshot.keyboard.recent_keys.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            self.last_held = Some(held);
+        }
+        snapshot.generation = self.generation;
+        snapshot
+    }
+
+    fn take_snapshot_and_events(&mut self) -> Option<(InteractionData, Vec<TimedInputEvent>)> {
+        let shared = Arc::clone(&self.shared);
+        let mut guard = shared.lock().ok()?;
+        let events = std::mem::take(&mut guard.events);
+        let mut snapshot = self.build_snapshot(&mut guard);
+        project_recent_keys(&mut snapshot.keyboard.recent_keys, &events);
+        Some((snapshot, events))
+    }
+
+    /// Fold deterministic `device_query` snapshots through the production
+    /// publication path without starting an operating-system capture worker.
+    #[doc(hidden)]
+    pub fn fold_polled_key_sequence_for_testing(
+        &mut self,
+        polls: &[(Vec<Keycode>, u64)],
+        event_limit: usize,
+    ) -> (InteractionData, Vec<TimedInputEvent>) {
+        let mut previous = Vec::new();
+        let mouse = device_query::MouseState {
+            coords: (0, 0),
+            button_pressed: Vec::new(),
+        };
+        for (keys, at_ms) in polls {
+            let current = sorted_keys(keys.clone());
+            publish_poll(
+                &self.shared,
+                &previous,
+                &current,
+                &mouse,
+                DEFAULT_RECENT_KEY_LIMIT,
+                event_limit,
+                *at_ms,
+            );
+            previous = current;
+        }
+        self.take_snapshot_and_events().unwrap_or_default()
     }
 }
 
@@ -279,26 +323,38 @@ impl InputSource for InteractionInput {
             return Ok(InputData::None);
         }
 
-        let mut snapshot = if let Ok(mut guard) = self.shared.lock() {
-            let mut snapshot = guard.interaction.clone();
-            snapshot.keyboard.recent_keys =
-                std::mem::take(&mut guard.interaction.keyboard.recent_keys);
-            snapshot
-        } else {
-            InteractionData::default()
-        };
-
-        let held = (
-            snapshot.keyboard.pressed_keys.clone(),
-            snapshot.mouse.clone(),
+        let shared = Arc::clone(&self.shared);
+        let snapshot = shared.lock().map_or_else(
+            |_| InteractionData::default(),
+            |mut guard| self.build_snapshot(&mut guard),
         );
-        if self.last_held.as_ref() != Some(&held) || !snapshot.keyboard.recent_keys.is_empty() {
-            self.generation = self.generation.wrapping_add(1);
-            self.last_held = Some(held);
-        }
-        snapshot.generation = self.generation;
 
         Ok(InputData::Interaction(snapshot))
+    }
+
+    fn sample_and_drain_with_delta_secs(
+        &mut self,
+        _delta_secs: f32,
+    ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
+        self.observe_worker_exit(self.running && self.capture_active);
+        if !self.running || self.worker.is_none() {
+            return (Ok(InputData::None), Vec::new());
+        }
+
+        self.take_snapshot_and_events().map_or_else(
+            || (Ok(InputData::None), Vec::new()),
+            |(snapshot, events)| (Ok(InputData::Interaction(snapshot)), events),
+        )
+    }
+
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+        if !self.running || self.worker.is_none() {
+            return Vec::new();
+        }
+        self.shared.lock().map_or_else(
+            |_| Vec::new(),
+            |mut guard| std::mem::take(&mut guard.events),
+        )
     }
 
     fn is_running(&self) -> bool {
@@ -371,12 +427,115 @@ fn sorted_keys(mut keys: Vec<Keycode>) -> Vec<Keycode> {
     keys
 }
 
+fn publish_poll(
+    shared: &Arc<Mutex<SharedInteractionState>>,
+    previous: &[Keycode],
+    current: &[Keycode],
+    mouse_state: &device_query::MouseState,
+    recent_key_limit: usize,
+    event_limit: usize,
+    at_ms: u64,
+) {
+    let (recent_keys, events) = key_transitions(previous, current, at_ms);
+    let pressed_keys = current.iter().copied().map(canonical_key_name).collect();
+    let mouse = mouse_data_from_state(mouse_state);
+
+    if let Ok(mut guard) = shared.lock() {
+        guard.interaction.keyboard.pressed_keys = pressed_keys;
+        extend_recent_keys(
+            &mut guard.interaction.keyboard.recent_keys,
+            recent_keys,
+            recent_key_limit,
+        );
+        let dropped = extend_events(&mut guard.events, events, event_limit);
+        guard.interaction.batch.dropped_events = guard
+            .interaction
+            .batch
+            .dropped_events
+            .saturating_add(dropped);
+        guard.interaction.mouse = mouse;
+    }
+}
+
+fn key_transitions(
+    previous: &[Keycode],
+    current: &[Keycode],
+    at_ms: u64,
+) -> (Vec<String>, Vec<TimedInputEvent>) {
+    let released = previous.iter().filter(|key| !current.contains(key));
+    let pressed = current.iter().filter(|key| !previous.contains(key));
+    let mut recent_keys = Vec::new();
+    let mut events = Vec::new();
+
+    // Snapshot polling has no within-poll ordering. Release-before-press keeps
+    // replacement chords from briefly exposing both old and new held state.
+    for key in released {
+        events.push(key_event(
+            canonical_key_name(*key),
+            InputButtonState::Released,
+            at_ms,
+        ));
+    }
+    for key in pressed {
+        let key = canonical_key_name(*key);
+        recent_keys.push(key.clone());
+        events.push(key_event(key, InputButtonState::Pressed, at_ms));
+    }
+
+    (recent_keys, events)
+}
+
+fn key_event(key: String, state: InputButtonState, at_ms: u64) -> TimedInputEvent {
+    TimedInputEvent {
+        event: InputEvent::Key {
+            source_id: DEVICE_QUERY_SOURCE_ID.to_owned(),
+            key,
+            state,
+        },
+        at_ms,
+        seq: 0,
+        physical_code: None,
+        repeat_count: 1,
+    }
+}
+
 fn extend_recent_keys(target: &mut Vec<String>, mut recent: Vec<String>, limit: usize) {
     target.append(&mut recent);
     if target.len() > limit {
         let overflow = target.len() - limit;
         target.drain(..overflow);
     }
+}
+
+fn extend_events(
+    target: &mut Vec<TimedInputEvent>,
+    mut events: Vec<TimedInputEvent>,
+    limit: usize,
+) -> u32 {
+    target.append(&mut events);
+    let overflow = target.len().saturating_sub(limit);
+    if overflow > 0 {
+        target.drain(..overflow);
+    }
+    u32::try_from(overflow).unwrap_or(u32::MAX)
+}
+
+fn project_recent_keys(target: &mut Vec<String>, events: &[TimedInputEvent]) {
+    target.clear();
+    target.extend(events.iter().filter_map(|event| match &event.event {
+        InputEvent::Key {
+            key,
+            state: InputButtonState::Pressed,
+            ..
+        } => Some(key.clone()),
+        InputEvent::Key { .. }
+        | InputEvent::MouseButton { .. }
+        | InputEvent::MouseWheel { .. }
+        | InputEvent::MidiNote { .. }
+        | InputEvent::MidiControlChange { .. }
+        | InputEvent::MidiPitchBend { .. }
+        | InputEvent::MidiRealtime { .. } => None,
+    }));
 }
 
 fn mouse_data_from_state(mouse_state: &device_query::MouseState) -> MouseData {

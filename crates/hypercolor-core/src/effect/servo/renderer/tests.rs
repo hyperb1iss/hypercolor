@@ -1307,6 +1307,49 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
 }
 
 #[test]
+fn queued_device_query_transition_keeps_canonical_edges_and_latest_state() {
+    let audio = custom_audio(0.0);
+    let mut first_interaction = custom_interaction(&["legacy-a"], &["a"]);
+    first_interaction.batch.events = vec![timed_key(
+        "host:device_query",
+        "a",
+        InputButtonState::Pressed,
+        1,
+        1,
+    )];
+    let mut second_interaction = custom_interaction(&["legacy-b"], &["b"]);
+    second_interaction.batch.events = vec![
+        timed_key("host:device_query", "a", InputButtonState::Released, 2, 1),
+        timed_key("host:device_query", "b", InputButtonState::Pressed, 3, 1),
+    ];
+    let first = frame_input_with(1.0 / 60.0, 1, &audio, &first_interaction, 320, 200);
+    let second = frame_input_with(1.0 / 60.0, 2, &audio, &second_interaction, 320, 200);
+    let mut renderer = ServoRenderer::new();
+    renderer.include_audio_updates = false;
+    renderer.include_interaction_updates = true;
+
+    renderer.queue_frame(&first);
+    renderer.queue_frame(&second);
+
+    let interaction = renderer
+        .queued_frame
+        .as_ref()
+        .and_then(QueuedFrameInput::queued_interaction)
+        .expect("coalesced device_query interaction");
+    assert_eq!(interaction.keyboard.pressed_keys, ["b"]);
+    assert_eq!(interaction.keyboard.recent_keys, ["a", "b"]);
+    assert_eq!(
+        interaction
+            .batch
+            .events
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+}
+
+#[test]
 fn queued_frames_append_event_batches_from_superseded_inputs() {
     let audio = custom_audio(0.0);
     let mut first_interaction = custom_interaction(&[], &[]);
