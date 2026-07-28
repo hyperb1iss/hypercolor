@@ -1,11 +1,16 @@
 //! Live Desktop Duplication smoke tests.
 //!
-//! These drive the real API against whatever display the test host has. CI is
-//! Linux-only, and a headless or RDP session has no duplicatable output, so
-//! every test degrades to a skip rather than a failure when capture is
-//! unavailable for a known ambient reason. Once a duplicator opens, API errors
-//! are test failures. Attached outputs also have to open independently and
-//! report geometry consistent with their pending rotation.
+//! These drive the real API against whatever display the test host has. They
+//! stay outside the default suite because a hosted, headless, or RDP session
+//! has no reliable duplicatable output. Once deliberately enabled and a
+//! duplicator opens, API errors are test failures. Attached outputs also have
+//! to open independently and report geometry consistent with their pending
+//! rotation.
+//!
+//! Run with `cargo test --locked -p hypercolor-windows-capture --test
+//! duplication_tests -- --ignored --test-threads=1` from an interactive local
+//! Windows console with attached DXGI outputs, changing desktop content, and no
+//! competing Desktop Duplication client.
 
 #![cfg(target_os = "windows")]
 
@@ -81,6 +86,7 @@ const fn expected_native_extent(
 }
 
 #[test]
+#[ignore = "requires Windows with D3D11 and an attached DXGI display"]
 fn monitor_count_is_sane() {
     // Purely a smoke check that enumeration does not panic or explode; a
     // headless agent host legitimately reports zero.
@@ -89,6 +95,7 @@ fn monitor_count_is_sane() {
 }
 
 #[test]
+#[ignore = "requires Windows with D3D11 display enumeration"]
 fn opening_a_missing_monitor_reports_not_found() {
     let Err(error) = DesktopDuplicator::new(9_999, MAX_WIDTH) else {
         panic!("monitor index 9999 should not resolve to a real output");
@@ -102,6 +109,7 @@ fn opening_a_missing_monitor_reports_not_found() {
 }
 
 #[test]
+#[ignore = "requires an interactive Windows desktop with changing DXGI output"]
 fn captures_a_frame_with_consistent_geometry() {
     let _capture_guard = capture_test_lock();
     let Some(mut duplicator) = duplicator_or_skip(0) else {
@@ -135,6 +143,7 @@ fn captures_a_frame_with_consistent_geometry() {
 }
 
 #[test]
+#[ignore = "requires an interactive Windows desktop with repeated DXGI frames"]
 fn alpha_is_opaque_across_repeated_acquisitions() {
     let _capture_guard = capture_test_lock();
     let Some(mut duplicator) = duplicator_or_skip(0) else {
@@ -166,6 +175,7 @@ fn alpha_is_opaque_across_repeated_acquisitions() {
 }
 
 #[test]
+#[ignore = "requires an interactive Windows desktop with repeated DXGI frames"]
 fn repeated_frames_reuse_the_owned_plane_allocation() {
     let _capture_guard = capture_test_lock();
     let Some(mut duplicator) = duplicator_or_skip(0) else {
@@ -199,6 +209,7 @@ fn repeated_frames_reuse_the_owned_plane_allocation() {
 }
 
 #[test]
+#[ignore = "requires Windows with at least one attached DXGI display"]
 fn monitor_listing_matches_the_count_and_carries_real_geometry() {
     let monitors = list_monitors();
     assert_eq!(
@@ -239,6 +250,7 @@ fn monitor_listing_matches_the_count_and_carries_real_geometry() {
 }
 
 #[test]
+#[ignore = "requires an interactive Windows desktop with all DXGI outputs available"]
 fn every_attached_monitor_opens_with_rotation_consistent_geometry() {
     let _capture_guard = capture_test_lock();
     let monitors = list_monitors();
