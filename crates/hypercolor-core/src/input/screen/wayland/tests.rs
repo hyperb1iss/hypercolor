@@ -4,11 +4,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{
-    AnalysisExchange, CaptureCallbackMetrics, CapturedScreenSnapshot, ChunkDropReason, CopyStats,
-    DoubleBuffer, NegotiatedFormat, RestoreTokenSink, SharedSettings, SpaChunkView, SpaVideoFormat,
+    AdoptionAuthority, AdoptionWaitError, AnalysisEvent, AnalysisExchange, CaptureCallbackMetrics,
+    CapturedScreenSnapshot, ChunkDropReason, CopyStats, DoubleBuffer, NegotiatedFormat,
+    NegotiatedPipeWireFormat, PendingPipeWireAdoption, PipeWireFormatAcknowledgment,
+    PipeWireFormatRequest, PipeWireFormatState, PipeWireLoopExit, RestoreTokenSink,
+    SettingsDecision, SharedSettings, SpaChunkView, SpaVideoFormat, UnavailablePark,
     WaylandAnalysisState, WaylandCaptureUserData, WaylandSourceMetadata, WaylandTopologySignature,
-    WorkerCommand, convert_packed_to_rgba, decode_chunk, dispatch_worker_command,
-    publish_unexpected_exit_status,
+    WorkerCommand, build_format_params, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
+    fence_previous_publication, initial_worker_demand, park_unavailable_worker,
+    publish_unexpected_exit_status, request_active_worker_demand, settle_pipewire_restoration,
+    unavailable_format_outcome, wait_for_adoption_result, worker_demand_epoch, worker_demanded,
 };
 use crate::input::screen::{
     AnalyzedScreenSnapshot, CaptureConfig, CaptureRotation, CaptureSourceId, PhysicalOrigin,
@@ -39,6 +44,52 @@ fn extent(width: u32, height: u32) -> PixelExtent {
 
 fn active_demand() -> ScreenCaptureDemand {
     ScreenCaptureDemand::active(extent(640, 480))
+}
+
+fn format_request(width: u32, height: u32, target_fps: u32) -> PipeWireFormatRequest {
+    PipeWireFormatRequest::new(extent(width, height), target_fps)
+        .expect("test PipeWire format request is valid")
+}
+
+fn negotiated_format(width: u32, height: u32, target_fps: u32) -> NegotiatedPipeWireFormat {
+    NegotiatedPipeWireFormat {
+        frame: NegotiatedFormat {
+            width,
+            height,
+            format: SpaVideoFormat::Rgba,
+        },
+        framerate: pipewire::spa::utils::Fraction {
+            num: target_fps,
+            denom: 1,
+        },
+    }
+}
+
+fn pending_adoption(id: u64, request: PipeWireFormatRequest) -> PendingPipeWireAdoption {
+    pending_adoption_with_done(id, request).0
+}
+
+fn pending_adoption_with_done(
+    id: u64,
+    request: PipeWireFormatRequest,
+) -> (PendingPipeWireAdoption, mpsc::Receiver<Result<(), String>>) {
+    let (analysis_decision, _analysis_decision_rx) = mpsc::sync_channel(1);
+    let (_analysis_done_tx, analysis_done) = mpsc::sync_channel(1);
+    let (done, done_rx) = mpsc::sync_channel(1);
+    (
+        PendingPipeWireAdoption {
+            id,
+            request,
+            format_bytes: vec![u8::try_from(id).unwrap_or_default()],
+            callback_buffers: DoubleBuffer::try_with_capacity(4)
+                .expect("test callback storage allocates"),
+            analysis_decision,
+            analysis_done,
+            done,
+            authority: Arc::new(AdoptionAuthority::default()),
+        },
+        done_rx,
+    )
 }
 
 fn source(
@@ -741,7 +792,388 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
 }
 
 #[test]
-fn failed_format_negotiation_invalidates_metadata_but_retains_last_good_planes() {
+fn initial_format_rejection_becomes_typed_unavailable() {
+    let state = PipeWireFormatState {
+        current: format_request(640, 480, 30),
+        current_format_bytes: vec![1],
+        current_acknowledged: false,
+        pending: None,
+        restoring: None,
+    };
+
+    assert_eq!(
+        state.acknowledgment(negotiated_format(1280, 720, 30)),
+        PipeWireFormatAcknowledgment::Rejected
+    );
+    assert!(!state.can_begin_adoption());
+    assert!(matches!(
+        unavailable_format_outcome(false, "rejected fixture".to_owned()),
+        PipeWireLoopExit::Unavailable(reason) if reason.contains("initial exact screen format")
+    ));
+}
+
+#[test]
+fn delayed_current_ack_does_not_consume_pending_format_adoption() {
+    let current = format_request(640, 480, 30);
+    let requested = format_request(3840, 2160, 144);
+    let mut state = PipeWireFormatState {
+        current,
+        current_format_bytes: vec![1],
+        current_acknowledged: true,
+        pending: Some(pending_adoption(7, requested)),
+        restoring: None,
+    };
+
+    assert_eq!(
+        state.acknowledgment(negotiated_format(640, 480, 30)),
+        PipeWireFormatAcknowledgment::Current
+    );
+    assert_eq!(state.pending.as_ref().map(|pending| pending.id), Some(7));
+    assert_eq!(
+        state.acknowledgment(negotiated_format(3840, 2160, 144)),
+        PipeWireFormatAcknowledgment::Pending
+    );
+}
+
+#[test]
+fn rejected_adoption_settles_only_after_prior_format_ack() {
+    let current = format_request(640, 480, 30);
+    let requested = format_request(1920, 1080, 60);
+    let (pending, done_rx) = pending_adoption_with_done(11, requested);
+    let mut state = PipeWireFormatState {
+        current,
+        current_format_bytes: vec![1],
+        current_acknowledged: true,
+        pending: Some(pending),
+        restoring: None,
+    };
+
+    assert_eq!(
+        state.acknowledgment(negotiated_format(1280, 720, 60)),
+        PipeWireFormatAcknowledgment::Rejected
+    );
+    assert_eq!(
+        state.acknowledgment(negotiated_format(1920, 1080, 59)),
+        PipeWireFormatAcknowledgment::Rejected
+    );
+    assert!(state.cancel(10).is_none());
+    assert_eq!(state.pending.as_ref().map(|pending| pending.id), Some(11));
+
+    let rejected = state.cancel(11).expect("matching epoch owns adoption");
+    assert!(rejected.authority.cancel());
+    assert_eq!(
+        state.begin_restoring(rejected, "fixture rejection".to_owned()),
+        vec![1]
+    );
+    assert!(!state.can_begin_adoption());
+    assert_eq!(state.restoring_id(), Some(11));
+    assert_eq!(
+        state.acknowledgment(negotiated_format(1920, 1080, 60)),
+        PipeWireFormatAcknowledgment::Restoring
+    );
+    assert_eq!(
+        state.acknowledgment(negotiated_format(1280, 720, 60)),
+        PipeWireFormatAcknowledgment::Restoring
+    );
+    assert!(state.cancel(12).is_none());
+    assert_eq!(state.restoring_id(), Some(11));
+    assert_eq!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    assert_eq!(
+        state.acknowledgment(negotiated_format(640, 480, 30)),
+        PipeWireFormatAcknowledgment::Restored
+    );
+
+    let state = Mutex::new(state);
+    let mut callback = WaylandCaptureUserData::new(
+        Arc::new(AnalysisExchange::default()),
+        Arc::new(CaptureCallbackMetrics::default()),
+    );
+    settle_pipewire_restoration(&mut callback, &state, negotiated_format(640, 480, 30).frame)
+        .expect("authoritative prior format settles restoration");
+
+    assert_eq!(
+        done_rx
+            .recv_timeout(Duration::ZERO)
+            .expect("restoration releases the failed caller"),
+        Err("fixture rejection".to_owned())
+    );
+    assert!(
+        state
+            .lock()
+            .expect("format state mutex is healthy")
+            .can_begin_adoption()
+    );
+}
+
+#[test]
+fn timed_out_adoption_cannot_consume_its_late_exact_ack() {
+    let requested = format_request(1920, 1080, 60);
+    let pending = pending_adoption(13, requested);
+    assert!(pending.authority.cancel());
+    let state = PipeWireFormatState {
+        current: format_request(640, 480, 30),
+        current_format_bytes: vec![1],
+        current_acknowledged: true,
+        pending: Some(pending),
+        restoring: None,
+    };
+
+    assert_eq!(
+        state.acknowledgment(negotiated_format(1920, 1080, 60)),
+        PipeWireFormatAcknowledgment::Cancelled
+    );
+    assert_eq!(
+        state.acknowledgment(negotiated_format(640, 480, 30)),
+        PipeWireFormatAcknowledgment::CancelledCurrent
+    );
+}
+
+#[test]
+fn adoption_cancellation_has_a_bounded_settling_window() {
+    let (_done_tx, done_rx) = mpsc::sync_channel(1);
+    let cancelled = AtomicBool::new(false);
+    let authority = AdoptionAuthority::default();
+
+    let result =
+        wait_for_adoption_result(&done_rx, Duration::ZERO, Duration::ZERO, &authority, || {
+            cancelled.store(true, Ordering::Release)
+        });
+
+    assert!(cancelled.load(Ordering::Acquire));
+    assert_eq!(
+        result,
+        Err(AdoptionWaitError::CancellationUnsettled(
+            mpsc::RecvTimeoutError::Timeout
+        ))
+    );
+}
+
+#[test]
+fn unavailable_parking_and_rearm_are_linearized_in_both_orders() {
+    let rearm_first = Arc::new(AtomicU64::new(initial_worker_demand(true)));
+    let session_epoch = worker_demand_epoch(rearm_first.load(Ordering::Acquire));
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let worker_state = Arc::clone(&rearm_first);
+    let worker = thread::spawn(move || {
+        release_rx.recv().expect("test releases unavailable park");
+        park_unavailable_worker(&worker_state, session_epoch)
+    });
+
+    assert!(!request_active_worker_demand(&rearm_first));
+    release_tx.send(()).expect("worker may attempt to park");
+    assert_eq!(
+        worker.join().expect("worker settles rearm-first race"),
+        UnavailablePark::Rearmed
+    );
+    assert!(worker_demanded(&rearm_first));
+
+    let park_first = Arc::new(AtomicU64::new(initial_worker_demand(true)));
+    let session_epoch = worker_demand_epoch(park_first.load(Ordering::Acquire));
+    let worker_state = Arc::clone(&park_first);
+    let (parked_tx, parked_rx) = mpsc::sync_channel(0);
+    let worker = thread::spawn(move || {
+        let outcome = park_unavailable_worker(&worker_state, session_epoch);
+        parked_tx
+            .send(outcome)
+            .expect("test observes unavailable park");
+    });
+
+    assert_eq!(
+        parked_rx.recv().expect("worker parks before rearm"),
+        UnavailablePark::Parked
+    );
+    assert!(request_active_worker_demand(&park_first));
+    worker.join().expect("worker settles park-first race");
+    assert!(worker_demanded(&park_first));
+}
+
+#[test]
+fn timeout_cancels_delayed_open_adoption_before_worker_mutation() {
+    let authority = Arc::new(AdoptionAuthority::default());
+    let mutations = Arc::new(AtomicUsize::new(0));
+    let (armed_tx, armed_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    let worker_authority = Arc::clone(&authority);
+    let worker_mutations = Arc::clone(&mutations);
+    let worker = thread::spawn(move || {
+        armed_tx.send(()).expect("worker reaches commit boundary");
+        release_rx.recv().expect("timeout releases delayed worker");
+        let committed = commit_if_authorized(&worker_authority, true, || {
+            worker_mutations.store(1, Ordering::Release);
+        });
+        done_tx
+            .send(if committed {
+                Ok(())
+            } else {
+                Err("cancelled".to_owned())
+            })
+            .expect("worker settles timed out adoption");
+    });
+
+    armed_rx.recv().expect("test observes delayed open worker");
+    let result = wait_for_adoption_result(
+        &done_rx,
+        Duration::ZERO,
+        Duration::from_secs(1),
+        &authority,
+        || release_tx.send(()).expect("cancellation releases worker"),
+    );
+
+    assert_eq!(result, Ok(Err("cancelled".to_owned())));
+    worker.join().expect("cancelled worker exits");
+    assert_eq!(mutations.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn timeout_waits_for_claimed_format_transaction_before_success() {
+    let authority = Arc::new(AdoptionAuthority::default());
+    let mutations = Arc::new(AtomicUsize::new(0));
+    let cancellation_called = Arc::new(AtomicBool::new(false));
+    let (analysis_tx, analysis_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    let worker_authority = Arc::clone(&authority);
+    let worker_mutations = Arc::clone(&mutations);
+    let worker = thread::spawn(move || {
+        assert!(worker_authority.claim_commit());
+        worker_mutations.store(0b01, Ordering::Release);
+        worker_authority.complete_analysis();
+        analysis_tx
+            .send(())
+            .expect("test observes applied analysis stage");
+        release_rx.recv().expect("test releases format install");
+        worker_mutations.store(0b11, Ordering::Release);
+        worker_authority.complete_commit();
+        let _ = done_tx.send(Ok(()));
+    });
+
+    analysis_rx
+        .recv()
+        .expect("analysis stage claims commit authority");
+    let (wait_started_tx, wait_started_rx) = mpsc::sync_channel(0);
+    let (result_tx, result_rx) = mpsc::sync_channel(0);
+    let wait_authority = Arc::clone(&authority);
+    let wait_cancellation = Arc::clone(&cancellation_called);
+    let waiter = thread::spawn(move || {
+        wait_started_tx
+            .send(())
+            .expect("waiter reaches timeout path");
+        let result = wait_for_adoption_result(
+            &done_rx,
+            Duration::ZERO,
+            Duration::ZERO,
+            &wait_authority,
+            || wait_cancellation.store(true, Ordering::Release),
+        );
+        result_tx.send(result).expect("waiter reports settlement");
+    });
+
+    wait_started_rx.recv().expect("timeout waiter starts");
+    assert_eq!(result_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    assert_eq!(mutations.load(Ordering::Acquire), 0b01);
+    release_tx.send(()).expect("format install may complete");
+    assert_eq!(
+        result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter observes complete format transaction"),
+        Ok(Ok(()))
+    );
+    waiter.join().expect("timeout waiter exits");
+    worker.join().expect("format transaction exits");
+    assert!(!cancellation_called.load(Ordering::Acquire));
+    assert_eq!(mutations.load(Ordering::Acquire), 0b11);
+}
+
+#[test]
+fn cancellation_winner_blocks_every_late_adoption_mutation() {
+    let authority = Arc::new(AdoptionAuthority::default());
+    let mutations = Arc::new(AtomicUsize::new(0));
+    let (armed_tx, armed_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let worker_authority = Arc::clone(&authority);
+    let worker_mutations = Arc::clone(&mutations);
+    let worker = thread::spawn(move || {
+        armed_tx
+            .send(())
+            .expect("worker reaches the armed commit boundary");
+        release_rx.recv().expect("test releases the retired worker");
+        commit_if_authorized(&worker_authority, true, || {
+            worker_mutations.store(0b1_1111, Ordering::Release);
+        })
+    });
+
+    armed_rx
+        .recv()
+        .expect("caller observes the old worker after its final check");
+    assert!(authority.cancel());
+    release_tx
+        .send(())
+        .expect("cancelled worker resumes after retirement");
+
+    assert!(!worker.join().expect("cancelled worker exits cleanly"));
+    assert_eq!(mutations.load(Ordering::Acquire), 0);
+    assert!(!authority.committed());
+}
+
+#[test]
+fn commit_winner_completes_install_before_signalling_success() {
+    let authority = Arc::new(AdoptionAuthority::default());
+    let mutations = Arc::new(AtomicUsize::new(0));
+    let (claimed_tx, claimed_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let (done_tx, done_rx) = mpsc::sync_channel(0);
+    let worker_authority = Arc::clone(&authority);
+    let worker_mutations = Arc::clone(&mutations);
+    let worker = thread::spawn(move || {
+        assert!(worker_authority.claim_commit());
+        worker_mutations.store(0b0_0111, Ordering::Release);
+        claimed_tx
+            .send(())
+            .expect("analysis commit exposes its claimed authority");
+        release_rx
+            .recv()
+            .expect("test releases the capture install");
+        worker_mutations.store(0b1_1111, Ordering::Release);
+        worker_authority.complete_commit();
+        done_tx
+            .send(())
+            .expect("completed commit signals its caller");
+    });
+
+    claimed_rx
+        .recv()
+        .expect("caller observes commit authority ownership");
+    assert!(!authority.cancel());
+    assert_eq!(mutations.load(Ordering::Acquire), 0b0_0111);
+    assert_eq!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    release_tx.send(()).expect("capture install may complete");
+    done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("commit completion is coherently signalled");
+    worker.join().expect("commit winner exits cleanly");
+
+    assert!(authority.committed());
+    assert_eq!(mutations.load(Ordering::Acquire), 0b1_1111);
+}
+
+#[test]
+fn exact_pipewire_format_has_no_local_cadence_or_extent_range() {
+    let requested = extent(7680, 4320);
+    let bytes = build_format_params(10_000, requested)
+        .expect("representable high cadence and extent serialize");
+    let pod = pipewire::spa::pod::Pod::from_bytes(&bytes).expect("format pod deserializes");
+    let mut info = pipewire::spa::param::video::VideoInfoRaw::default();
+    info.parse(pod).expect("exact video format parses");
+
+    assert_eq!(info.size().width, requested.width());
+    assert_eq!(info.size().height, requested.height());
+    assert_eq!(info.framerate().num, 10_000);
+    assert_eq!(info.framerate().denom, 1);
+}
+
+#[test]
+fn failed_format_negotiation_retains_last_good_metadata_and_planes() {
     let exchange = Arc::new(AnalysisExchange::default());
     let metrics = Arc::new(CaptureCallbackMetrics::default());
     let mut callback = WaylandCaptureUserData::new(exchange, metrics);
@@ -776,7 +1208,14 @@ fn failed_format_negotiation_invalidates_metadata_but_retains_last_good_planes()
         }),
         Err(crate::input::screen::CaptureFrameError::StorageSizeOverflow)
     ));
-    assert_eq!(callback.negotiated, None);
+    assert_eq!(
+        callback.negotiated,
+        Some(NegotiatedFormat {
+            width: 2,
+            height: 2,
+            format: SpaVideoFormat::Rgba,
+        })
+    );
     assert_eq!(callback.buffers.inner.capacity, previous_capacity);
     assert_eq!(
         callback.buffers.latest_bytes(),
@@ -801,10 +1240,13 @@ fn stopped_analysis_wait_wakes_and_discards_queued_pixels() {
     );
     let waiter = Arc::clone(&exchange);
     let handle = thread::spawn(move || {
-        waiter.wait_for_latest(
+        match waiter.wait_for_event(
             Instant::now() + Duration::from_secs(30),
             &AtomicBool::new(false),
-        )
+        ) {
+            Some(AnalysisEvent::Frame(frame)) => Some(frame),
+            Some(AnalysisEvent::Adoption(_)) | None => None,
+        }
     });
     exchange.stop();
 
@@ -834,10 +1276,88 @@ fn analysis_exchange_keeps_the_newest_eligible_frame() {
         );
     }
 
-    let latest = exchange
-        .wait_for_latest(Instant::now(), &AtomicBool::new(false))
-        .expect("latest frame is immediately eligible");
+    let Some(AnalysisEvent::Frame(latest)) =
+        exchange.wait_for_event(Instant::now(), &AtomicBool::new(false))
+    else {
+        panic!("latest frame is immediately eligible");
+    };
     assert_eq!(latest.bytes(), &[3; 4]);
+}
+
+#[test]
+fn transitionary_format_fences_decoding_and_discards_queued_pixels() {
+    let exchange = Arc::new(AnalysisExchange::default());
+    let mut callback = WaylandCaptureUserData::new(
+        Arc::clone(&exchange),
+        Arc::new(CaptureCallbackMetrics::default()),
+    );
+    callback
+        .activate_negotiated_format(NegotiatedFormat {
+            width: 1,
+            height: 1,
+            format: SpaVideoFormat::Rgba,
+        })
+        .expect("test callback format activates");
+    let mapped = [9_u8; 4];
+    assert_eq!(
+        decode_chunk(
+            &rgba_view(&mapped, 0, mapped.len(), 4, 1, 1),
+            &mut callback.buffers,
+        )
+        .drop_reason(),
+        None
+    );
+    exchange.publish(
+        callback
+            .buffers
+            .take_completed()
+            .expect("successful decode owns one plane"),
+    );
+    assert!(
+        exchange
+            .state
+            .lock()
+            .expect("analysis exchange mutex is healthy")
+            .latest
+            .is_some()
+    );
+
+    callback.fence_decoding();
+
+    assert!(!callback.decoding_enabled.load(Ordering::Acquire));
+    assert!(callback.negotiated.is_none());
+    assert!(
+        exchange
+            .state
+            .lock()
+            .expect("analysis exchange mutex is healthy")
+            .latest
+            .is_none()
+    );
+}
+
+#[test]
+fn successful_descriptor_commit_fences_the_previous_publication() {
+    let settings = settings(20);
+    let latest = Arc::new(Mutex::new(None::<CapturedScreenSnapshot>));
+    let mut analysis = WaylandAnalysisState::new(
+        Arc::clone(&settings),
+        Arc::clone(&latest),
+        source(20, PhysicalOrigin::default(), extent(1920, 1080)),
+        CaptureConfig::default(),
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
+    let snapshot = capture_legacy(&mut analysis, 2, 1, 4);
+    assert!(settings.publish_snapshot(&latest, snapshot));
+
+    fence_previous_publication(
+        &mut latest
+            .lock()
+            .expect("snapshot mutex is healthy before commit"),
+    );
+
+    assert!(latest.lock().expect("snapshot mutex is healthy").is_none());
 }
 
 #[test]
@@ -919,20 +1439,18 @@ fn failed_command_recovery_reapplies_activation_to_replacement_worker() {
     let (failed_tx, failed_rx) = pipewire::channel::channel();
     drop(failed_rx);
     let failed_demand = AtomicBool::new(false);
-    let activate = WorkerCommand::SetDemand(active_demand());
-    assert!(!dispatch_worker_command(
-        &failed_tx,
-        &failed_demand,
-        &activate,
-    ));
+    let demand = active_demand();
+    failed_demand.store(demand.is_active(), Ordering::Release);
+    assert!(failed_tx.send(WorkerCommand::SetDemand(demand)).is_err());
 
     let (replacement_tx, _replacement_rx) = pipewire::channel::channel();
     let replacement_demand = AtomicBool::new(false);
-    assert!(dispatch_worker_command(
-        &replacement_tx,
-        &replacement_demand,
-        &activate,
-    ));
+    replacement_demand.store(demand.is_active(), Ordering::Release);
+    assert!(
+        replacement_tx
+            .send(WorkerCommand::SetDemand(demand))
+            .is_ok()
+    );
     assert!(replacement_demand.load(Ordering::Acquire));
 }
 
