@@ -10,14 +10,17 @@ use thiserror::Error;
 
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
+use super::sampling::{
+    CpuSamplingError, CpuSamplingTransform, CpuSamplingView, PreparedCpuSamplingPlan,
+};
+
 use super::{
     CaptureCursor, CaptureCursorContent, CaptureDynamicRange, CaptureFrame, CaptureFrameError,
-    CapturePixelFormat, CaptureRotation, CaptureStorage, CaptureTransferFunction,
-    CpuCaptureStorage, PixelExtent, RawCaptureSurface, ResolvedScreenColorPipeline,
-    ResolvedScreenColorTransform, ResolvedScreenSource, ScreenCapturePlan,
-    ScreenColorTransformCapabilities, ScreenCursorPolicy, ScreenPhysicalReductionDescriptor,
-    ScreenPlanGeneration, ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection,
-    ScreenSubpixelRect,
+    CapturePixelFormat, CaptureRotation, CaptureTransferFunction, CpuCaptureStorage, PixelExtent,
+    RawCaptureSurface, ResolvedScreenColorPipeline, ResolvedScreenColorTransform,
+    ResolvedScreenSource, ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenCursorPolicy,
+    ScreenPhysicalReductionDescriptor, ScreenPlanGeneration, ScreenReductionFilter,
+    ScreenSourceReflection, ScreenSubpixelRect,
 };
 
 const CHANNELS_PER_PIXEL: u64 = 4;
@@ -121,6 +124,63 @@ impl CpuReductionLayout {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CpuReductionOutputLayout {
+    extent: PixelExtent,
+    byte_len: u64,
+    row_bytes: usize,
+}
+
+impl CpuReductionOutputLayout {
+    fn new(extent: PixelExtent) -> Result<Self, CpuReductionError> {
+        let byte_len = packed_byte_len(extent, "target")?;
+        let byte_len_usize =
+            usize::try_from(byte_len).map_err(|_| CpuReductionError::ByteLengthNotAddressable {
+                resource: "target",
+                byte_len,
+            })?;
+        let row_bytes_u64 = u64::from(extent.width())
+            .checked_mul(CHANNELS_PER_PIXEL)
+            .ok_or(CpuReductionError::GeometryOverflow { resource: "target" })?;
+        let row_bytes = usize::try_from(row_bytes_u64).map_err(|_| {
+            CpuReductionError::ByteLengthNotAddressable {
+                resource: "target row",
+                byte_len: row_bytes_u64,
+            }
+        })?;
+        if row_bytes.checked_mul(usize::try_from(extent.height()).map_err(|_| {
+            CpuReductionError::ByteLengthNotAddressable {
+                resource: "target height",
+                byte_len: u64::from(extent.height()),
+            }
+        })?) != Some(byte_len_usize)
+        {
+            return Err(CpuReductionError::GeometryOverflow { resource: "target" });
+        }
+        Ok(Self {
+            extent,
+            byte_len,
+            row_bytes,
+        })
+    }
+
+    const fn extent(self) -> PixelExtent {
+        self.extent
+    }
+
+    const fn byte_len(self) -> u64 {
+        self.byte_len
+    }
+
+    fn byte_len_usize(self) -> usize {
+        usize::try_from(self.byte_len).expect("validated target byte length remains addressable")
+    }
+
+    const fn row_bytes(self) -> usize {
+        self.row_bytes
+    }
+}
+
 /// Complete immutable request for one CPU reduction.
 #[derive(Clone, Copy, Debug)]
 pub struct CpuReductionRequest<'a> {
@@ -134,19 +194,21 @@ pub struct CpuReductionRequest<'a> {
 #[derive(Clone, Debug)]
 struct PreparedCpuReduction {
     descriptor: ScreenPhysicalReductionDescriptor,
-    layout: CpuReductionLayout,
+    output: CpuReductionOutputLayout,
+    sampling: PreparedCpuSamplingPlan,
     color: ReductionColor,
 }
 
 /// Descriptor-complete CPU work prepared once for one source and plan generation.
 ///
-/// The first execution slice deliberately admits only canonical full-source CPU
-/// descriptors. Unsupported regions and transforms fail during preparation
-/// instead of being approximated at execution time.
+/// Each reduction retains constant-size exact sampling geometry. Execution
+/// applies source regions and pending transforms directly over the shared
+/// capture plane without materializing an intermediate raster.
 #[derive(Clone, Debug)]
 pub struct PreparedCpuReductionBatch {
     plan_generation: ScreenPlanGeneration,
     source: ResolvedScreenSource,
+    sampling_transform: CpuSamplingTransform,
     reductions: Arc<[PreparedCpuReduction]>,
 }
 
@@ -188,7 +250,7 @@ impl PreparedCpuReductionBatch {
     pub fn output_byte_len(&self, index: usize) -> Option<usize> {
         self.reductions
             .get(index)
-            .map(|reduction| reduction.layout.target_byte_len_usize())
+            .map(|reduction| reduction.output.byte_len_usize())
     }
 }
 
@@ -359,13 +421,14 @@ impl CpuReductionExecutor {
     /// # Errors
     ///
     /// Rejects any descriptor the current CPU implementation cannot execute
-    /// byte-exactly, including partial source regions or pending transforms.
+    /// byte-exactly or whose geometry cannot be represented with checked exact
+    /// arithmetic.
     pub fn prepare_batch(
         &self,
         source: &ResolvedScreenSource,
         plan: &ScreenCapturePlan,
     ) -> Result<PreparedCpuReductionBatch, CpuReductionError> {
-        validate_source_config(source)?;
+        let sampling_transform = CpuSamplingTransform::try_from_source(source)?;
         let source_id = source.epoch().source_id.as_str();
         let physical_reductions = plan.physical_reductions();
         let first = physical_reductions.partition_point(|reduction| {
@@ -384,11 +447,12 @@ impl CpuReductionExecutor {
             {
                 return Err(CpuReductionError::SourceConfigMismatch);
             }
-            reductions.push(prepare_physical_reduction(descriptor)?);
+            reductions.push(prepare_physical_reduction(descriptor, sampling_transform)?);
         }
         Ok(PreparedCpuReductionBatch {
             plan_generation: plan.generation(),
             source: source.clone(),
+            sampling_transform,
             reductions: Arc::from(reductions),
         })
     }
@@ -415,16 +479,14 @@ impl CpuReductionExecutor {
                 actual: jobs.len(),
             });
         }
-        validate_frame(batch, frame)?;
-        let CaptureStorage::Cpu(storage) = frame.storage() else {
-            return Err(CpuReductionError::GpuFrameStorage);
-        };
+        let view =
+            CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)?;
         let mut output_bytes = 0_u64;
         for (index, (reduction, job)) in batch.reductions.iter().zip(jobs.iter()).enumerate() {
             if job.descriptor != &reduction.descriptor {
                 return Err(CpuReductionError::BatchDescriptorMismatch { index });
             }
-            let expected = reduction.layout.target_byte_len_usize();
+            let expected = reduction.output.byte_len_usize();
             if job.output.len() != expected {
                 return Err(CpuReductionError::BatchOutputLengthMismatch {
                     index,
@@ -434,31 +496,16 @@ impl CpuReductionExecutor {
             }
             validate_cursor(reduction.descriptor.cursor(), &frame.metadata().cursor)?;
             output_bytes = output_bytes
-                .checked_add(reduction.layout.target_byte_len())
+                .checked_add(reduction.output.byte_len())
                 .ok_or(CpuReductionError::GeometryOverflow {
                     resource: "batch output",
                 })?;
-        }
-        if let Some(first) = batch.reductions.first() {
-            validate_source(storage, first.layout)?;
         }
         self.inner.pool.install(|| {
             jobs.par_iter_mut()
                 .zip(batch.reductions.par_iter())
                 .try_for_each(|(job, reduction)| {
-                    let request = CpuReductionRequest::new(
-                        storage,
-                        reduction.layout,
-                        reduction.descriptor.target_pixel_format(),
-                        reduction.descriptor.reduction_filter(),
-                        reduction.descriptor.color_pipeline(),
-                    );
-                    reduce_request_in_pool(
-                        request,
-                        reduction.color,
-                        self.inner.tile_rows,
-                        job.output,
-                    )
+                    reduce_prepared_in_pool(&view, reduction, self.inner.tile_rows, job.output)
                 })
         })?;
         Ok(CpuReductionBatchReport {
@@ -504,32 +551,10 @@ impl fmt::Debug for CpuReductionExecutor {
     }
 }
 
-fn validate_source_config(source: &ResolvedScreenSource) -> Result<(), CpuReductionError> {
-    let config = source.config();
-    if !matches!(config.resources().api(), ScreenResourceApi::Cpu) {
-        return Err(CpuReductionError::UnsupportedSourceResource);
-    }
-    let geometry = config.geometry();
-    if geometry.rotation() != CaptureRotation::Identity
-        || geometry.crop().is_some()
-        || config.reflection() != ScreenSourceReflection::None
-        || geometry.native_extent() != config.logical_extent()
-        || geometry.storage_extent() != config.logical_extent()
-    {
-        return Err(CpuReductionError::UnsupportedSourceTransform);
-    }
-    Ok(())
-}
-
 fn prepare_physical_reduction(
     descriptor: &ScreenPhysicalReductionDescriptor,
+    sampling_transform: CpuSamplingTransform,
 ) -> Result<PreparedCpuReduction, CpuReductionError> {
-    if !is_full_source_region(
-        descriptor.source_region(),
-        descriptor.source().logical_extent(),
-    ) {
-        return Err(CpuReductionError::UnsupportedSourceRegion);
-    }
     if descriptor.algorithm_revision() != CPU_REDUCTION_ALGORITHM_REVISION {
         return Err(CpuReductionError::AlgorithmRevisionMismatch {
             expected: CPU_REDUCTION_ALGORITHM_REVISION,
@@ -546,20 +571,14 @@ fn prepare_physical_reduction(
         }
         ScreenCursorPolicy::Exclude | ScreenCursorPolicy::Include => {}
     }
-    let layout = CpuReductionLayout::new(
-        descriptor.source().logical_extent(),
-        descriptor.reduction_extent(),
-    )?;
-    let color = ReductionColor::resolve_components(
-        descriptor.source().pixel_format(),
-        layout,
-        descriptor.target_pixel_format(),
-        descriptor.reduction_filter(),
-        descriptor.color_pipeline(),
-    )?;
+    let output = CpuReductionOutputLayout::new(descriptor.reduction_extent())?;
+    let sampling = sampling_transform
+        .prepare_region(descriptor.source_region(), descriptor.reduction_extent())?;
+    let color = ReductionColor::resolve_prepared(descriptor, output)?;
     Ok(PreparedCpuReduction {
         descriptor: descriptor.clone(),
-        layout,
+        output,
+        sampling,
         color,
     })
 }
@@ -573,26 +592,6 @@ fn is_full_source_region(region: ScreenSubpixelRect, extent: PixelExtent) -> boo
 
 fn rational_is_integer(value: super::ScreenRational, expected: u32) -> bool {
     u128::from(value.numerator()) == u128::from(expected) * u128::from(value.denominator().get())
-}
-
-fn validate_frame(
-    batch: &PreparedCpuReductionBatch,
-    frame: &CaptureFrame<RawCaptureSurface>,
-) -> Result<(), CpuReductionError> {
-    frame.validate_epoch(batch.source.epoch())?;
-    if frame.metadata().geometry != batch.source.config().geometry() {
-        return Err(CpuReductionError::FrameGeometryMismatch);
-    }
-    if frame.metadata().colorimetry != batch.source.config().colorimetry() {
-        return Err(CpuReductionError::FrameColorimetryMismatch);
-    }
-    let CaptureStorage::Cpu(storage) = frame.storage() else {
-        return Err(CpuReductionError::GpuFrameStorage);
-    };
-    if storage.format() != batch.source.config().pixel_format() {
-        return Err(CpuReductionError::FramePixelFormatMismatch);
-    }
-    Ok(())
 }
 
 fn validate_cursor(
@@ -644,6 +643,152 @@ fn reduce_request_in_pool(
         })
 }
 
+fn reduce_prepared_in_pool(
+    view: &CpuSamplingView<'_>,
+    reduction: &PreparedCpuReduction,
+    tile_rows: NonZeroU32,
+    output: &mut [u8],
+) -> Result<(), CpuReductionError> {
+    let configured_rows_per_tile = usize::try_from(tile_rows.get()).map_err(|_| {
+        CpuReductionError::ByteLengthNotAddressable {
+            resource: "tile rows",
+            byte_len: u64::from(tile_rows.get()),
+        }
+    })?;
+    let target_rows = usize::try_from(reduction.output.extent().height()).map_err(|_| {
+        CpuReductionError::ByteLengthNotAddressable {
+            resource: "target height",
+            byte_len: u64::from(reduction.output.extent().height()),
+        }
+    })?;
+    let rows_per_tile = configured_rows_per_tile.min(target_rows);
+    let tile_bytes = reduction
+        .output
+        .row_bytes()
+        .checked_mul(rows_per_tile)
+        .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
+    output
+        .par_chunks_mut(tile_bytes)
+        .enumerate()
+        .try_for_each(|(tile_index, tile)| {
+            reduce_prepared_tile(view, reduction, tile_index, rows_per_tile, tile)
+        })
+}
+
+fn reduce_prepared_tile(
+    view: &CpuSamplingView<'_>,
+    reduction: &PreparedCpuReduction,
+    tile_index: usize,
+    rows_per_tile: usize,
+    tile: &mut [u8],
+) -> Result<(), CpuReductionError> {
+    let row_bytes = reduction.output.row_bytes();
+    let first_row = tile_index
+        .checked_mul(rows_per_tile)
+        .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
+    for (local_row, row) in tile.chunks_exact_mut(row_bytes).enumerate() {
+        let target_y = first_row
+            .checked_add(local_row)
+            .and_then(|row| u32::try_from(row).ok())
+            .ok_or(CpuReductionError::GeometryOverflow { resource: "target" })?;
+        reduce_prepared_row(view, reduction, target_y, row)?;
+    }
+    Ok(())
+}
+
+fn reduce_prepared_row(
+    view: &CpuSamplingView<'_>,
+    reduction: &PreparedCpuReduction,
+    target_y: u32,
+    row: &mut [u8],
+) -> Result<(), CpuReductionError> {
+    for (target_x, target) in row.chunks_exact_mut(4).enumerate() {
+        let target_x = u32::try_from(target_x)
+            .map_err(|_| CpuReductionError::GeometryOverflow { resource: "target" })?;
+        let sample = match reduction.descriptor.reduction_filter() {
+            ScreenReductionFilter::Nearest => {
+                sample_prepared_nearest(view, &reduction.sampling, target_x, target_y)?
+            }
+            ScreenReductionFilter::Bilinear => sample_prepared_bilinear(
+                view,
+                &reduction.sampling,
+                reduction.color,
+                target_x,
+                target_y,
+            )?,
+            ScreenReductionFilter::Area => sample_prepared_area(
+                view,
+                &reduction.sampling,
+                reduction.color,
+                target_x,
+                target_y,
+            )?,
+        };
+        write_pixel(target, reduction.descriptor.target_pixel_format(), sample);
+    }
+    Ok(())
+}
+
+fn sample_prepared_nearest(
+    view: &CpuSamplingView<'_>,
+    sampling: &PreparedCpuSamplingPlan,
+    target_x: u32,
+    target_y: u32,
+) -> Result<[u8; 4], CpuReductionError> {
+    let (source_x, source_y) = sampling.nearest(target_x, target_y);
+    Ok(view.read_storage_pixel(source_x, source_y)?)
+}
+
+fn sample_prepared_bilinear(
+    view: &CpuSamplingView<'_>,
+    sampling: &PreparedCpuSamplingPlan,
+    color: ReductionColor,
+    target_x: u32,
+    target_y: u32,
+) -> Result<[u8; 4], CpuReductionError> {
+    let (x, y) = sampling.bilinear(target_x, target_y);
+    let top = view.storage_row(y.lower())?;
+    let bottom = view.storage_row(y.upper())?;
+    let top_left = color.decode(top.read_rgba(x.lower())?);
+    let top_right = color.decode(top.read_rgba(x.upper())?);
+    let bottom_left = color.decode(bottom.read_rgba(x.lower())?);
+    let bottom_right = color.decode(bottom.read_rgba(x.upper())?);
+    let mut output = [0.0; 4];
+    for channel in 0..4 {
+        let top = lerp(top_left[channel], top_right[channel], x.upper_weight());
+        let bottom = lerp(
+            bottom_left[channel],
+            bottom_right[channel],
+            x.upper_weight(),
+        );
+        output[channel] = lerp(top, bottom, y.upper_weight());
+    }
+    Ok(color.encode(output))
+}
+
+fn sample_prepared_area(
+    view: &CpuSamplingView<'_>,
+    sampling: &PreparedCpuSamplingPlan,
+    color: ReductionColor,
+    target_x: u32,
+    target_y: u32,
+) -> Result<[u8; 4], CpuReductionError> {
+    let (x_span, y_span) = sampling.area(target_x, target_y);
+    let mut sums = [0.0; 4];
+    for source_y in y_span.start()..y_span.end() {
+        let y_weight = y_span.normalized_weight(source_y);
+        let row = view.storage_row(source_y)?;
+        for source_x in x_span.start()..x_span.end() {
+            let weight = x_span.normalized_weight(source_x) * y_weight;
+            let sample = color.decode(row.read_rgba(source_x)?);
+            for channel in 0..4 {
+                sums[channel] += sample[channel] * weight;
+            }
+        }
+    }
+    Ok(color.encode(sums))
+}
+
 /// Validation or execution failure in the pure CPU reducer.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum CpuReductionError {
@@ -686,15 +831,6 @@ pub enum CpuReductionError {
     /// A physical key for this stable source named another epoch or source config.
     #[error("screen physical reduction source config does not match its worker source")]
     SourceConfigMismatch,
-    /// The source uses a platform GPU resource rather than CPU-addressable storage.
-    #[error("CPU reduction requires a CPU source resource")]
-    UnsupportedSourceResource,
-    /// Crop, rotation, reflection, or acquisition scaling still requires a sampling view.
-    #[error("CPU reduction source has unsupported pending geometry")]
-    UnsupportedSourceTransform,
-    /// A rational Cover/subregion descriptor is not executable by the full-source reducer.
-    #[error("CPU reduction does not yet support partial source regions")]
-    UnsupportedSourceRegion,
     /// The physical key names another revision of the CPU reduction algorithm.
     #[error("CPU reduction algorithm revision mismatch: expected {expected}, got {actual}")]
     AlgorithmRevisionMismatch {
@@ -710,18 +846,9 @@ pub enum CpuReductionError {
     /// The capture frame failed its source epoch fence.
     #[error(transparent)]
     CaptureFrame(#[from] CaptureFrameError),
-    /// Frame geometry differs from the source config used to prepare the batch.
-    #[error("capture frame geometry does not match the prepared source")]
-    FrameGeometryMismatch,
-    /// Frame color metadata differs from the source config used to prepare the batch.
-    #[error("capture frame colorimetry does not match the prepared source")]
-    FrameColorimetryMismatch,
-    /// Frame storage format differs from the source config used to prepare the batch.
-    #[error("capture frame pixel format does not match the prepared source")]
-    FramePixelFormatMismatch,
-    /// The prepared CPU path received an opaque GPU frame.
-    #[error("CPU reduction batch received GPU frame storage")]
-    GpuFrameStorage,
+    /// Source geometry or frame storage failed the shared CPU sampling contract.
+    #[error(transparent)]
+    Sampling(CpuSamplingError),
     /// Caller output count differs from the prepared unique physical-key count.
     #[error("CPU batch requires {expected} outputs, got {actual}")]
     BatchOutputCountMismatch { expected: usize, actual: usize },
@@ -737,6 +864,15 @@ pub enum CpuReductionError {
     BatchDescriptorMismatch { index: usize },
 }
 
+impl From<CpuSamplingError> for CpuReductionError {
+    fn from(error: CpuSamplingError) -> Self {
+        match error {
+            CpuSamplingError::CaptureFrame(error) => Self::CaptureFrame(error),
+            error => Self::Sampling(error),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ReductionColor {
     Encoded,
@@ -746,28 +882,20 @@ enum ReductionColor {
 
 impl ReductionColor {
     fn resolve(request: CpuReductionRequest<'_>) -> Result<Self, CpuReductionError> {
-        Self::resolve_components(
-            request.source.format(),
-            request.layout,
-            request.target_format,
-            request.filter,
-            request.color_pipeline,
-        )
+        let preserves_encoded_samples = request.layout.source_extent()
+            == request.layout.target_extent()
+            && request.source.format() == request.target_format
+            && request.filter == ScreenReductionFilter::Nearest;
+        Self::resolve_pipeline(request.color_pipeline, preserves_encoded_samples)
     }
 
-    fn resolve_components(
-        source_format: CapturePixelFormat,
-        layout: CpuReductionLayout,
-        target_format: CapturePixelFormat,
-        filter: ScreenReductionFilter,
+    fn resolve_pipeline(
         color_pipeline: ResolvedScreenColorPipeline,
+        preserves_encoded_samples: bool,
     ) -> Result<Self, CpuReductionError> {
         match color_pipeline.transform() {
             ResolvedScreenColorTransform::PreserveEncodedSamples => {
-                if layout.source_extent() != layout.target_extent()
-                    || source_format != target_format
-                    || filter != ScreenReductionFilter::Nearest
-                {
+                if !preserves_encoded_samples {
                     return Err(CpuReductionError::InexactEncodedSamplePreservation);
                 }
                 Ok(Self::Encoded)
@@ -798,6 +926,16 @@ impl ReductionColor {
                 Err(CpuReductionError::UnsupportedColorTransform(transform))
             }
         }
+    }
+
+    fn resolve_prepared(
+        descriptor: &ScreenPhysicalReductionDescriptor,
+        output: CpuReductionOutputLayout,
+    ) -> Result<Self, CpuReductionError> {
+        Self::resolve_pipeline(
+            descriptor.color_pipeline(),
+            prepared_preserves_encoded_samples(descriptor, output),
+        )
     }
 
     fn decode(self, sample: [u8; 4]) -> [f64; 4] {
@@ -839,6 +977,27 @@ impl ReductionColor {
             ],
         }
     }
+}
+
+fn prepared_preserves_encoded_samples(
+    descriptor: &ScreenPhysicalReductionDescriptor,
+    output: CpuReductionOutputLayout,
+) -> bool {
+    let source = descriptor.source();
+    let geometry = source.geometry();
+    let scale = geometry.source_scale();
+    geometry.rotation() == CaptureRotation::Identity
+        && geometry.crop().is_none()
+        && source.reflection() == ScreenSourceReflection::None
+        && scale.numerator() == scale.denominator()
+        && geometry.native_extent() == geometry.storage_extent()
+        && geometry.storage_extent() == source.logical_extent()
+        && is_full_source_region(descriptor.source_region(), source.logical_extent())
+        && output.extent() == source.logical_extent()
+        && descriptor.reduction_filter() == ScreenReductionFilter::Nearest
+        && descriptor.target_pixel_format() == source.pixel_format()
+        && descriptor.cursor() == ScreenCursorPolicy::Exclude
+        && source.cursor_capabilities().has_clean_surface()
 }
 
 fn packed_byte_len(extent: PixelExtent, resource: &'static str) -> Result<u64, CpuReductionError> {

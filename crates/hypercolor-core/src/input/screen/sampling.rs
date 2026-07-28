@@ -1,5 +1,6 @@
 //! Allocation-free logical sampling over raw CPU capture planes.
 
+use std::cmp::Ordering;
 use std::num::NonZeroU128;
 
 use thiserror::Error;
@@ -8,7 +9,7 @@ use super::{
     CaptureColorimetry, CaptureCursor, CaptureCursorContent, CaptureFrame, CaptureFrameError,
     CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureStorage, CpuCaptureStorage,
     PixelExtent, RawCaptureSurface, ResolvedScreenSource, ScreenRational, ScreenResourceApi,
-    ScreenSourceReflection,
+    ScreenSourceReflection, ScreenSubpixelRect,
 };
 
 const CHANNELS_PER_PIXEL: i128 = 4;
@@ -85,6 +86,465 @@ pub struct CpuMappedSamplingPoint {
     y_reversed: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CpuSamplingTransform {
+    geometry: CaptureGeometry,
+    logical_extent: PixelExtent,
+    reflection: ScreenSourceReflection,
+    crop_origin: (u32, u32),
+    crop_extent: PixelExtent,
+    rotated_crop_extent: PixelExtent,
+    storage_x_reversed: bool,
+    storage_y_reversed: bool,
+}
+
+impl CpuSamplingTransform {
+    pub(crate) fn try_from_source(source: &ResolvedScreenSource) -> Result<Self, CpuSamplingError> {
+        let config = source.config();
+        if !matches!(config.resources().api(), ScreenResourceApi::Cpu) {
+            return Err(CpuSamplingError::UnsupportedSourceResource);
+        }
+        let geometry = config.geometry();
+        let (crop_origin, crop_extent) = geometry
+            .crop()
+            .map_or(((0, 0), geometry.native_extent()), |crop| {
+                ((crop.x(), crop.y()), crop.extent())
+            });
+        let rotated_crop_extent = geometry.rotation().apply_to_extent(crop_extent);
+        validate_logical_scale(geometry, rotated_crop_extent, config.logical_extent())?;
+        let (storage_x_reversed, storage_y_reversed) =
+            storage_axis_directions(geometry.rotation(), config.reflection());
+        Ok(Self {
+            geometry,
+            logical_extent: config.logical_extent(),
+            reflection: config.reflection(),
+            crop_origin,
+            crop_extent,
+            rotated_crop_extent,
+            storage_x_reversed,
+            storage_y_reversed,
+        })
+    }
+
+    fn map_logical_edge(
+        self,
+        point: WideSamplingPoint,
+    ) -> Result<CpuMappedSamplingPoint, CpuSamplingError> {
+        validate_wide_logical_point(point, self.logical_extent)?;
+        let mut x = point.x;
+        let mut y = point.y;
+        if matches!(
+            self.reflection,
+            ScreenSourceReflection::Horizontal | ScreenSourceReflection::Both
+        ) {
+            x = x.checked_reflect(self.logical_extent.width())?;
+        }
+        if matches!(
+            self.reflection,
+            ScreenSourceReflection::Vertical | ScreenSourceReflection::Both
+        ) {
+            y = y.checked_reflect(self.logical_extent.height())?;
+        }
+        x = x.checked_scale(
+            u128::from(self.rotated_crop_extent.width()),
+            u128::from(self.logical_extent.width()),
+        )?;
+        y = y.checked_scale(
+            u128::from(self.rotated_crop_extent.height()),
+            u128::from(self.logical_extent.height()),
+        )?;
+
+        let (native_x, native_y) = match self.geometry.rotation() {
+            CaptureRotation::Identity => (x, y),
+            CaptureRotation::Clockwise90 => (y, x.checked_reflect(self.crop_extent.height())?),
+            CaptureRotation::Clockwise180 => (
+                x.checked_reflect(self.crop_extent.width())?,
+                y.checked_reflect(self.crop_extent.height())?,
+            ),
+            CaptureRotation::Clockwise270 => (y.checked_reflect(self.crop_extent.width())?, x),
+        };
+        let storage_x = native_x
+            .checked_add_integer(self.crop_origin.0)?
+            .checked_scale(
+                u128::from(self.geometry.storage_extent().width()),
+                u128::from(self.geometry.native_extent().width()),
+            )?;
+        let storage_y = native_y
+            .checked_add_integer(self.crop_origin.1)?
+            .checked_scale(
+                u128::from(self.geometry.storage_extent().height()),
+                u128::from(self.geometry.native_extent().height()),
+            )?;
+
+        Ok(CpuMappedSamplingPoint {
+            x: storage_x.into_storage_coordinate(),
+            y: storage_y.into_storage_coordinate(),
+            x_reversed: self.storage_x_reversed,
+            y_reversed: self.storage_y_reversed,
+        })
+    }
+
+    pub(crate) fn prepare_region(
+        self,
+        region: ScreenSubpixelRect,
+        target_extent: PixelExtent,
+    ) -> Result<PreparedCpuSamplingPlan, CpuSamplingError> {
+        let origin = WideSamplingPoint {
+            x: WideRational::from_screen(region.x()),
+            y: WideRational::from_screen(region.y()),
+        };
+        let width = WideRational::from_screen(region.width());
+        let height = WideRational::from_screen(region.height());
+        if width.is_zero() || height.is_zero() {
+            return Err(CpuSamplingError::EmptySourceRegion);
+        }
+        let end = WideSamplingPoint {
+            x: origin.x.checked_add(width)?,
+            y: origin.y.checked_add(height)?,
+        };
+        if end
+            .x
+            .cmp_exact(WideRational::from_u32(self.logical_extent.width()))
+            == Ordering::Greater
+            || end
+                .y
+                .cmp_exact(WideRational::from_u32(self.logical_extent.height()))
+                == Ordering::Greater
+        {
+            return Err(CpuSamplingError::SourceRegionOutOfBounds);
+        }
+
+        let mapped_origin = self.map_logical_edge(origin)?;
+        let mapped_x_end = self.map_logical_edge(WideSamplingPoint {
+            x: end.x,
+            y: origin.y,
+        })?;
+        let mapped_y_end = self.map_logical_edge(WideSamplingPoint {
+            x: origin.x,
+            y: end.y,
+        })?;
+        let logical_x_axis = match self.geometry.rotation() {
+            CaptureRotation::Identity | CaptureRotation::Clockwise180 => CpuStorageAxis::X,
+            CaptureRotation::Clockwise90 | CaptureRotation::Clockwise270 => CpuStorageAxis::Y,
+        };
+        let logical_y_axis = logical_x_axis.other();
+        let logical_x = ExactAxisGrid::new(
+            logical_x_axis,
+            mapped_origin.coordinate(logical_x_axis),
+            mapped_x_end.coordinate(logical_x_axis),
+            target_extent.width(),
+            self.storage_axis_extent(logical_x_axis),
+        )?;
+        let logical_y = ExactAxisGrid::new(
+            logical_y_axis,
+            mapped_origin.coordinate(logical_y_axis),
+            mapped_y_end.coordinate(logical_y_axis),
+            target_extent.height(),
+            self.storage_axis_extent(logical_y_axis),
+        )?;
+        Ok(PreparedCpuSamplingPlan {
+            logical_x,
+            logical_y,
+        })
+    }
+
+    const fn storage_axis_extent(self, axis: CpuStorageAxis) -> u32 {
+        match axis {
+            CpuStorageAxis::X => self.geometry.storage_extent().width(),
+            CpuStorageAxis::Y => self.geometry.storage_extent().height(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CpuStorageAxis {
+    X,
+    Y,
+}
+
+impl CpuStorageAxis {
+    const fn other(self) -> Self {
+        match self {
+            Self::X => Self::Y,
+            Self::Y => Self::X,
+        }
+    }
+}
+
+impl CpuMappedSamplingPoint {
+    const fn coordinate(self, axis: CpuStorageAxis) -> CpuStorageCoordinate {
+        match axis {
+            CpuStorageAxis::X => self.x,
+            CpuStorageAxis::Y => self.y,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedCpuSamplingPlan {
+    logical_x: ExactAxisGrid,
+    logical_y: ExactAxisGrid,
+}
+
+impl PreparedCpuSamplingPlan {
+    pub(crate) fn nearest(&self, target_x: u32, target_y: u32) -> (u32, u32) {
+        self.storage_pair(
+            self.logical_x.nearest(target_x),
+            self.logical_y.nearest(target_y),
+        )
+    }
+
+    pub(crate) fn bilinear(
+        &self,
+        target_x: u32,
+        target_y: u32,
+    ) -> (CpuAxisInterpolation, CpuAxisInterpolation) {
+        self.storage_pair(
+            self.logical_x.bilinear(target_x),
+            self.logical_y.bilinear(target_y),
+        )
+    }
+
+    pub(crate) fn area(&self, target_x: u32, target_y: u32) -> (CpuStorageSpan, CpuStorageSpan) {
+        self.storage_pair(
+            self.logical_x.cell_span(target_x),
+            self.logical_y.cell_span(target_y),
+        )
+    }
+
+    fn storage_pair<T>(&self, logical_x: T, logical_y: T) -> (T, T) {
+        match self.logical_x.storage_axis {
+            CpuStorageAxis::X => (logical_x, logical_y),
+            CpuStorageAxis::Y => (logical_y, logical_x),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ExactAxisGrid {
+    storage_axis: CpuStorageAxis,
+    storage_extent: u32,
+    denominator: NonZeroU128,
+    start_units: u128,
+    half_step_units: u128,
+    reversed: bool,
+}
+
+impl ExactAxisGrid {
+    fn new(
+        storage_axis: CpuStorageAxis,
+        start: CpuStorageCoordinate,
+        end: CpuStorageCoordinate,
+        target_len: u32,
+        storage_extent: u32,
+    ) -> Result<Self, CpuSamplingError> {
+        let divisor = greatest_common_divisor(start.denominator.get(), end.denominator.get());
+        let start_factor = end.denominator.get() / divisor;
+        let end_factor = start.denominator.get() / divisor;
+        let common_denominator = start
+            .denominator
+            .get()
+            .checked_mul(start_factor)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let start_common = start
+            .numerator
+            .checked_mul(start_factor)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let end_common = end
+            .numerator
+            .checked_mul(end_factor)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let doubled_target = u128::from(target_len)
+            .checked_mul(2)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let denominator = common_denominator
+            .checked_mul(doubled_target)
+            .and_then(NonZeroU128::new)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let start_units = start_common
+            .checked_mul(doubled_target)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let end_units = end_common
+            .checked_mul(doubled_target)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let reversed = start_units > end_units;
+        let half_step_units = start_common.abs_diff(end_common);
+        let complete_span = half_step_units
+            .checked_mul(doubled_target)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let resolved_end = if reversed {
+            start_units.checked_sub(complete_span)
+        } else {
+            start_units.checked_add(complete_span)
+        }
+        .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        if resolved_end != end_units {
+            return Err(CpuSamplingError::GeometryArithmeticOverflow);
+        }
+        u128::from(storage_extent)
+            .checked_mul(denominator.get())
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        Ok(Self {
+            storage_axis,
+            storage_extent,
+            denominator,
+            start_units,
+            half_step_units,
+            reversed,
+        })
+    }
+
+    fn coordinate(&self, factor: u128) -> CpuStorageCoordinate {
+        let delta = self
+            .half_step_units
+            .checked_mul(factor)
+            .expect("prepared axis factor remains inside the complete span");
+        let numerator = if self.reversed {
+            self.start_units
+                .checked_sub(delta)
+                .expect("prepared descending axis remains non-negative")
+        } else {
+            self.start_units
+                .checked_add(delta)
+                .expect("prepared ascending axis remains addressable")
+        };
+        CpuStorageCoordinate {
+            numerator,
+            denominator: self.denominator,
+        }
+    }
+
+    fn center(&self, index: u32) -> CpuStorageCoordinate {
+        self.coordinate(u128::from(index) * 2 + 1)
+    }
+
+    fn edge(&self, index: u32) -> CpuStorageCoordinate {
+        self.coordinate(u128::from(index) * 2)
+    }
+
+    fn nearest(&self, index: u32) -> u32 {
+        nearest_index(self.center(index), self.storage_extent, self.reversed)
+            .expect("prepared nearest coordinate remains inside storage")
+    }
+
+    fn bilinear(&self, index: u32) -> CpuAxisInterpolation {
+        CpuAxisInterpolation::new(self.center(index), self.storage_extent)
+    }
+
+    fn cell_span(&self, index: u32) -> CpuStorageSpan {
+        CpuStorageSpan::new(self.edge(index), self.edge(index + 1), self.storage_extent)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CpuAxisInterpolation {
+    lower: u32,
+    upper: u32,
+    upper_weight: f64,
+}
+
+impl CpuAxisInterpolation {
+    fn new(coordinate: CpuStorageCoordinate, extent: u32) -> Self {
+        let denominator = coordinate.denominator.get();
+        let integer = coordinate.numerator / denominator;
+        let remainder = coordinate.numerator % denominator;
+        let below_half = remainder < denominator - remainder;
+        if integer == 0 && remainder <= denominator - remainder {
+            return Self {
+                lower: 0,
+                upper: 0,
+                upper_weight: 0.0,
+            };
+        }
+        let last = u128::from(extent - 1);
+        if integer > last || integer == last && !below_half {
+            return Self {
+                lower: extent - 1,
+                upper: extent - 1,
+                upper_weight: 0.0,
+            };
+        }
+        let fraction = remainder as f64 / denominator as f64;
+        let (lower, upper_weight) = if below_half {
+            (integer - 1, fraction + 0.5)
+        } else {
+            (integer, fraction - 0.5)
+        };
+        let lower = u32::try_from(lower).expect("prepared interpolation remains inside storage");
+        Self {
+            lower,
+            upper: lower + 1,
+            upper_weight,
+        }
+    }
+
+    pub(crate) const fn lower(self) -> u32 {
+        self.lower
+    }
+
+    pub(crate) const fn upper(self) -> u32 {
+        self.upper
+    }
+
+    pub(crate) const fn upper_weight(self) -> f64 {
+        self.upper_weight
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CpuStorageSpan {
+    start: u32,
+    end: u32,
+    low_units: u128,
+    high_units: u128,
+    denominator: NonZeroU128,
+}
+
+impl CpuStorageSpan {
+    fn new(first: CpuStorageCoordinate, second: CpuStorageCoordinate, storage_extent: u32) -> Self {
+        debug_assert_eq!(first.denominator, second.denominator);
+        let (low_units, high_units) = if first.numerator <= second.numerator {
+            (first.numerator, second.numerator)
+        } else {
+            (second.numerator, first.numerator)
+        };
+        let start = u32::try_from(low_units / first.denominator.get())
+            .expect("prepared area start remains inside storage");
+        let end = u32::try_from(
+            high_units
+                .div_ceil(first.denominator.get())
+                .min(u128::from(storage_extent)),
+        )
+        .expect("prepared area end remains inside storage");
+        Self {
+            start,
+            end,
+            low_units,
+            high_units,
+            denominator: first.denominator,
+        }
+    }
+
+    pub(crate) const fn start(self) -> u32 {
+        self.start
+    }
+
+    pub(crate) const fn end(self) -> u32 {
+        self.end
+    }
+
+    pub(crate) fn normalized_weight(self, pixel: u32) -> f64 {
+        let pixel_left = u128::from(pixel)
+            .checked_mul(self.denominator.get())
+            .expect("prepared area pixel boundary remains addressable");
+        let pixel_right = u128::from(pixel + 1)
+            .checked_mul(self.denominator.get())
+            .expect("prepared area pixel boundary remains addressable");
+        let overlap = self.high_units.min(pixel_right) - self.low_units.max(pixel_left);
+        overlap as f64 / self.high_units.abs_diff(self.low_units) as f64
+    }
+}
+
 impl CpuMappedSamplingPoint {
     /// Horizontal storage edge coordinate.
     #[must_use]
@@ -122,11 +582,7 @@ pub struct CpuSamplingView<'frame> {
     source: &'frame ResolvedScreenSource,
     frame: &'frame CaptureFrame<RawCaptureSurface>,
     storage: &'frame CpuCaptureStorage,
-    crop_origin: (u32, u32),
-    crop_extent: PixelExtent,
-    rotated_crop_extent: PixelExtent,
-    storage_x_reversed: bool,
-    storage_y_reversed: bool,
+    transform: CpuSamplingTransform,
 }
 
 impl<'frame> CpuSamplingView<'frame> {
@@ -140,6 +596,15 @@ impl<'frame> CpuSamplingView<'frame> {
     pub fn try_new(
         frame: &'frame CaptureFrame<RawCaptureSurface>,
         source: &'frame ResolvedScreenSource,
+    ) -> Result<Self, CpuSamplingError> {
+        let transform = CpuSamplingTransform::try_from_source(source)?;
+        Self::try_new_prepared(frame, source, transform)
+    }
+
+    pub(crate) fn try_new_prepared(
+        frame: &'frame CaptureFrame<RawCaptureSurface>,
+        source: &'frame ResolvedScreenSource,
+        transform: CpuSamplingTransform,
     ) -> Result<Self, CpuSamplingError> {
         frame.validate_epoch(source.epoch())?;
         let config = source.config();
@@ -155,9 +620,6 @@ impl<'frame> CpuSamplingView<'frame> {
                 actual: frame.metadata().colorimetry,
             });
         }
-        if !matches!(config.resources().api(), ScreenResourceApi::Cpu) {
-            return Err(CpuSamplingError::UnsupportedSourceResource);
-        }
         let CaptureStorage::Cpu(storage) = frame.storage() else {
             return Err(CpuSamplingError::GpuFrameStorage);
         };
@@ -169,26 +631,11 @@ impl<'frame> CpuSamplingView<'frame> {
         }
         validate_cursor_content(&frame.metadata().cursor.content, source)?;
 
-        let geometry = config.geometry();
-        let (crop_origin, crop_extent) = geometry
-            .crop()
-            .map_or(((0, 0), geometry.native_extent()), |crop| {
-                ((crop.x(), crop.y()), crop.extent())
-            });
-        let rotated_crop_extent = geometry.rotation().apply_to_extent(crop_extent);
-        validate_logical_scale(geometry, rotated_crop_extent, config.logical_extent())?;
-        let (storage_x_reversed, storage_y_reversed) =
-            storage_axis_directions(geometry.rotation(), config.reflection());
-
         Ok(Self {
             source,
             frame,
             storage,
-            crop_origin,
-            crop_extent,
-            rotated_crop_extent,
-            storage_x_reversed,
-            storage_y_reversed,
+            transform,
         })
     }
 
@@ -230,58 +677,9 @@ impl<'frame> CpuSamplingView<'frame> {
         point: CpuSamplingPoint,
     ) -> Result<CpuMappedSamplingPoint, CpuSamplingError> {
         validate_logical_point(point, self.logical_extent())?;
-        let reflection = self.source.config().reflection();
-        let mut x = WideRational::from_screen(point.x);
-        let mut y = WideRational::from_screen(point.y);
-        if matches!(
-            reflection,
-            ScreenSourceReflection::Horizontal | ScreenSourceReflection::Both
-        ) {
-            x = x.checked_reflect(self.logical_extent().width())?;
-        }
-        if matches!(
-            reflection,
-            ScreenSourceReflection::Vertical | ScreenSourceReflection::Both
-        ) {
-            y = y.checked_reflect(self.logical_extent().height())?;
-        }
-        x = x.checked_scale(
-            self.rotated_crop_extent.width(),
-            self.logical_extent().width(),
-        )?;
-        y = y.checked_scale(
-            self.rotated_crop_extent.height(),
-            self.logical_extent().height(),
-        )?;
-
-        let (native_x, native_y) = match self.frame.metadata().geometry.rotation() {
-            CaptureRotation::Identity => (x, y),
-            CaptureRotation::Clockwise90 => (y, x.checked_reflect(self.crop_extent.height())?),
-            CaptureRotation::Clockwise180 => (
-                x.checked_reflect(self.crop_extent.width())?,
-                y.checked_reflect(self.crop_extent.height())?,
-            ),
-            CaptureRotation::Clockwise270 => (y.checked_reflect(self.crop_extent.width())?, x),
-        };
-        let geometry = self.frame.metadata().geometry;
-        let storage_x = native_x
-            .checked_add_integer(self.crop_origin.0)?
-            .checked_scale(
-                geometry.storage_extent().width(),
-                geometry.native_extent().width(),
-            )?;
-        let storage_y = native_y
-            .checked_add_integer(self.crop_origin.1)?
-            .checked_scale(
-                geometry.storage_extent().height(),
-                geometry.native_extent().height(),
-            )?;
-
-        Ok(CpuMappedSamplingPoint {
-            x: storage_x.into_storage_coordinate(),
-            y: storage_y.into_storage_coordinate(),
-            x_reversed: self.storage_x_reversed,
-            y_reversed: self.storage_y_reversed,
+        self.transform.map_logical_edge(WideSamplingPoint {
+            x: WideRational::from_screen(point.x),
+            y: WideRational::from_screen(point.y),
         })
     }
 
@@ -304,7 +702,14 @@ impl<'frame> CpuSamplingView<'frame> {
         self.read_storage_pixel(x, y)
     }
 
-    fn read_storage_pixel(&self, x: u32, y: u32) -> Result<[u8; 4], CpuSamplingError> {
+    pub(crate) fn read_storage_pixel(&self, x: u32, y: u32) -> Result<[u8; 4], CpuSamplingError> {
+        self.storage_row(y)?.read_rgba(x)
+    }
+
+    pub(crate) fn storage_row(&self, y: u32) -> Result<CpuSamplingRow<'frame>, CpuSamplingError> {
+        if y >= self.storage_extent().height() {
+            return Err(CpuSamplingError::StorageAddressOverflow);
+        }
         let row_offset = i128::try_from(self.storage.row0_offset())
             .map_err(|_| CpuSamplingError::StorageAddressOverflow)?
             .checked_add(
@@ -313,20 +718,53 @@ impl<'frame> CpuSamplingView<'frame> {
                     .ok_or(CpuSamplingError::StorageAddressOverflow)?,
             )
             .ok_or(CpuSamplingError::StorageAddressOverflow)?;
-        let pixel_offset = row_offset
-            .checked_add(i128::from(x) * CHANNELS_PER_PIXEL)
+        let row_offset =
+            usize::try_from(row_offset).map_err(|_| CpuSamplingError::StorageAddressOverflow)?;
+        let row_bytes = usize::try_from(self.storage_extent().width())
+            .map_err(|_| CpuSamplingError::StorageAddressOverflow)?
+            .checked_mul(
+                usize::try_from(CHANNELS_PER_PIXEL)
+                    .expect("capture channel count fits the process address space"),
+            )
             .ok_or(CpuSamplingError::StorageAddressOverflow)?;
-        let pixel_offset =
-            usize::try_from(pixel_offset).map_err(|_| CpuSamplingError::StorageAddressOverflow)?;
+        let row_end = row_offset
+            .checked_add(row_bytes)
+            .ok_or(CpuSamplingError::StorageAddressOverflow)?;
+        let bytes = self
+            .storage
+            .bytes()
+            .get(row_offset..row_end)
+            .ok_or(CpuSamplingError::StorageAddressOverflow)?;
+        Ok(CpuSamplingRow {
+            bytes,
+            format: self.storage.format(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CpuSamplingRow<'frame> {
+    bytes: &'frame [u8],
+    format: CapturePixelFormat,
+}
+
+impl CpuSamplingRow<'_> {
+    pub(crate) fn read_rgba(self, x: u32) -> Result<[u8; 4], CpuSamplingError> {
+        let pixel_offset = usize::try_from(x)
+            .map_err(|_| CpuSamplingError::StorageAddressOverflow)?
+            .checked_mul(
+                usize::try_from(CHANNELS_PER_PIXEL)
+                    .expect("capture channel count fits the process address space"),
+            )
+            .ok_or(CpuSamplingError::StorageAddressOverflow)?;
         let pixel_end = pixel_offset
             .checked_add(4)
             .ok_or(CpuSamplingError::StorageAddressOverflow)?;
         let pixel = self
-            .storage
-            .bytes()
+            .bytes
             .get(pixel_offset..pixel_end)
             .ok_or(CpuSamplingError::StorageAddressOverflow)?;
-        Ok(match self.storage.format() {
+        Ok(match self.format {
             CapturePixelFormat::Rgba8 => [pixel[0], pixel[1], pixel[2], pixel[3]],
             CapturePixelFormat::Bgra8 => [pixel[2], pixel[1], pixel[0], pixel[3]],
         })
@@ -364,9 +802,34 @@ impl WideRational {
         Self::new(numerator, self.denominator.get())
     }
 
-    fn checked_scale(self, numerator: u32, denominator: u32) -> Result<Self, CpuSamplingError> {
-        let mut numerator = u128::from(numerator);
-        let mut denominator = u128::from(denominator);
+    fn checked_add(self, other: Self) -> Result<Self, CpuSamplingError> {
+        let denominator_divisor =
+            greatest_common_divisor(self.denominator.get(), other.denominator.get());
+        let self_factor = other.denominator.get() / denominator_divisor;
+        let other_factor = self.denominator.get() / denominator_divisor;
+        let numerator = self
+            .numerator
+            .checked_mul(self_factor)
+            .and_then(|left| {
+                other
+                    .numerator
+                    .checked_mul(other_factor)
+                    .and_then(|right| left.checked_add(right))
+            })
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let denominator = self
+            .denominator
+            .get()
+            .checked_mul(self_factor)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        Self::new(numerator, denominator)
+    }
+
+    fn checked_scale(
+        self,
+        mut numerator: u128,
+        mut denominator: u128,
+    ) -> Result<Self, CpuSamplingError> {
         let ratio_divisor = greatest_common_divisor(numerator, denominator);
         numerator /= ratio_divisor;
         denominator /= ratio_divisor;
@@ -379,6 +842,26 @@ impl WideRational {
             .checked_mul(denominator / left_divisor)
             .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
         Self::new(result_numerator, result_denominator)
+    }
+
+    fn cmp_exact(self, other: Self) -> Ordering {
+        compare_non_negative_rationals(
+            self.numerator,
+            self.denominator.get(),
+            other.numerator,
+            other.denominator.get(),
+        )
+    }
+
+    const fn is_zero(self) -> bool {
+        self.numerator == 0
+    }
+
+    const fn from_u32(value: u32) -> Self {
+        Self {
+            numerator: value as u128,
+            denominator: NonZeroU128::MIN,
+        }
     }
 
     fn new(numerator: u128, denominator: u128) -> Result<Self, CpuSamplingError> {
@@ -400,6 +883,12 @@ impl WideRational {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct WideSamplingPoint {
+    x: WideRational,
+    y: WideRational,
+}
+
 fn greatest_common_divisor(mut left: u128, mut right: u128) -> u128 {
     while right != 0 {
         let remainder = left % right;
@@ -407,6 +896,53 @@ fn greatest_common_divisor(mut left: u128, mut right: u128) -> u128 {
         right = remainder;
     }
     left
+}
+
+fn compare_non_negative_rationals(
+    mut left_numerator: u128,
+    mut left_denominator: u128,
+    mut right_numerator: u128,
+    mut right_denominator: u128,
+) -> Ordering {
+    let mut reversed = false;
+    loop {
+        let left_integer = left_numerator / left_denominator;
+        let right_integer = right_numerator / right_denominator;
+        let ordering = left_integer.cmp(&right_integer);
+        if ordering != Ordering::Equal {
+            return if reversed {
+                ordering.reverse()
+            } else {
+                ordering
+            };
+        }
+        let left_remainder = left_numerator % left_denominator;
+        let right_remainder = right_numerator % right_denominator;
+        match (left_remainder == 0, right_remainder == 0) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => {
+                return if reversed {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                };
+            }
+            (false, true) => {
+                return if reversed {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                };
+            }
+            (false, false) => {
+                left_numerator = left_denominator;
+                left_denominator = left_remainder;
+                right_numerator = right_denominator;
+                right_denominator = right_remainder;
+                reversed = !reversed;
+            }
+        }
+    }
 }
 
 fn validate_logical_scale(
@@ -441,6 +977,19 @@ fn validate_logical_point(
         Ok(())
     } else {
         Err(CpuSamplingError::LogicalPointOutOfBounds { point, extent })
+    }
+}
+
+fn validate_wide_logical_point(
+    point: WideSamplingPoint,
+    extent: PixelExtent,
+) -> Result<(), CpuSamplingError> {
+    if point.x.cmp_exact(WideRational::from_u32(extent.width())) != Ordering::Greater
+        && point.y.cmp_exact(WideRational::from_u32(extent.height())) != Ordering::Greater
+    {
+        Ok(())
+    } else {
+        Err(CpuSamplingError::SourceRegionOutOfBounds)
     }
 }
 
@@ -544,6 +1093,12 @@ pub enum CpuSamplingError {
     /// Cursor storage contradicts the resolved source capabilities.
     #[error("frame cursor storage is not supported by the resolved source")]
     CursorContentUnsupported,
+    /// A descriptor selected an empty source-space region.
+    #[error("CPU sampling source region must be non-empty")]
+    EmptySourceRegion,
+    /// A descriptor source-space region escaped the final logical extent.
+    #[error("CPU sampling source region is outside the final logical extent")]
+    SourceRegionOutOfBounds,
     /// A point escaped the inclusive source edge bounds.
     #[error("logical point {point:?} is outside source extent {extent:?}")]
     LogicalPointOutOfBounds {

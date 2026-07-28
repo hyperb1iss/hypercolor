@@ -164,7 +164,7 @@ fn frame(
     cursor: CaptureCursor,
 ) -> CaptureFrame<RawCaptureSurface> {
     let captured_at = Instant::now();
-    let source_extent = source.logical_extent();
+    let source_extent = source.config().geometry().storage_extent();
     CaptureFrame::new(
         CaptureFrameMetadata {
             source_id: source.epoch().source_id.clone(),
@@ -395,7 +395,7 @@ fn reordered_equal_sized_outputs_are_rejected_before_writes() {
 }
 
 #[test]
-fn cover_region_and_pending_transforms_are_rejected_without_approximation() {
+fn cover_region_and_pending_transforms_prepare_without_approximation() {
     let executor = executor();
     let source = source(extent(16, 9));
     let cover = demand(
@@ -411,10 +411,9 @@ fn cover_region_and_pending_transforms_are_rejected_without_approximation() {
         60,
         executor.capabilities(),
     );
-    assert_eq!(
-        prepare_batch(&executor, &source, [cover]).expect_err("Cover is not approximated"),
-        CpuReductionError::UnsupportedSourceRegion
-    );
+    let batch = prepare_batch(&executor, &source, [cover]).expect("Cover prepares exactly");
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch.output_byte_len(0), Some(8 * 8 * 4));
 
     let reflected = source_with(
         extent(16, 9),
@@ -422,11 +421,9 @@ fn cover_region_and_pending_transforms_are_rejected_without_approximation() {
         ScreenCursorCapabilities::clean_only(),
         11,
     );
-    assert_eq!(
-        prepare_batch(&executor, &reflected, std::iter::empty())
-            .expect_err("reflection requires the sampling view"),
-        CpuReductionError::UnsupportedSourceTransform
-    );
+    let reflected_batch = prepare_batch(&executor, &reflected, std::iter::empty())
+        .expect("reflection is represented by the sampling transform");
+    assert!(reflected_batch.is_empty());
 }
 
 #[test]
