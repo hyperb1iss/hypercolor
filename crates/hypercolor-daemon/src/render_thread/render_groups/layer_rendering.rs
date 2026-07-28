@@ -59,7 +59,7 @@ impl ZoneRuntime {
                     group.layout.canvas_width,
                     group.layout.canvas_height,
                     *rgba,
-                )),
+                )?),
                 LayerSource::Media { asset_id, playback } => {
                     match self.render_media_layer_frame(
                         *asset_id,
@@ -88,7 +88,7 @@ impl ZoneRuntime {
                                 &mut self.static_layer_surface_cache,
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
-                            ))
+                            )?)
                         }
                         MediaLayerFrame::Missing => {
                             self.layer_runtime.note_health(
@@ -101,7 +101,7 @@ impl ZoneRuntime {
                                 &mut self.static_layer_surface_cache,
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
-                            ))
+                            )?)
                         }
                         MediaLayerFrame::Failed(reason) => {
                             self.layer_runtime.note_health(
@@ -114,12 +114,13 @@ impl ZoneRuntime {
                                 &mut self.static_layer_surface_cache,
                                 group.layout.canvas_width,
                                 group.layout.canvas_height,
-                            ))
+                            )?)
                         }
                     }
                 }
                 LayerSource::ScreenRegion { viewport } => {
-                    if let Some(frame) = screen_region_layer_frame(context.inputs.screen, *viewport)
+                    if let Some(frame) =
+                        screen_region_layer_frame(context.inputs.screen, *viewport)?
                     {
                         self.layer_runtime.note_health(
                             context.active_scene_id,
@@ -139,7 +140,7 @@ impl ZoneRuntime {
                             &mut self.static_layer_surface_cache,
                             group.layout.canvas_width,
                             group.layout.canvas_height,
-                        ))
+                        )?)
                     }
                 }
                 #[cfg(not(feature = "servo"))]
@@ -156,7 +157,7 @@ impl ZoneRuntime {
                         &mut self.static_layer_surface_cache,
                         group.layout.canvas_width,
                         group.layout.canvas_height,
-                    ))
+                    )?)
                 }
             };
             let Some(frame) = frame else {
@@ -401,7 +402,8 @@ impl ZoneRuntime {
 
         #[cfg(not(feature = "servo-gpu-import"))]
         {
-            let mut canvas = Canvas::new(group.layout.canvas_width, group.layout.canvas_height);
+            let mut canvas =
+                Canvas::try_new(group.layout.canvas_width, group.layout.canvas_height)?;
             self.effect_pool
                 .render_layer_into(
                     group,

@@ -149,6 +149,15 @@ impl ZoneRuntime {
     ) -> Result<Self, SurfaceResourceError> {
         let (combined_led_layout, combined_led_spatial_engine) =
             combined_led_state(empty_group_layout(scene_width, scene_height));
+        let mut scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
+            SurfaceDescriptor::rgba8888(scene_width, scene_height),
+            initial_slots,
+            max_slots,
+        )?;
+        scene_surface_pool
+            .try_dequeue()?
+            .expect("new scene surface pool must expose an initial slot")
+            .release();
         Ok(Self {
             asset_library: None,
             effect_pool: EffectPool::new(),
@@ -165,11 +174,7 @@ impl ZoneRuntime {
             // display-output dispatch + one pin per display worker mid-
             // encode). The higher cap lets preview/display bursts settle
             // into a larger working set instead of reallocating per frame.
-            scene_surface_pool: RenderSurfacePool::try_with_lazy_slot_count_and_cap(
-                SurfaceDescriptor::rgba8888(scene_width, scene_height),
-                initial_slots,
-                max_slots,
-            )?,
+            scene_surface_pool,
             scene_surface_pool_initial_slots: initial_slots,
             scene_surface_pool_max_slots: max_slots,
             reconciled_dependency_key: None,
@@ -193,11 +198,15 @@ impl ZoneRuntime {
             return Ok(());
         }
 
-        let scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
+        let mut scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
             SurfaceDescriptor::rgba8888(scene_width, scene_height),
             self.scene_surface_pool_initial_slots,
             self.scene_surface_pool_max_slots,
         )?;
+        scene_surface_pool
+            .try_dequeue()?
+            .expect("replacement scene surface pool must expose an initial slot")
+            .release();
 
         self.scene_width = scene_width;
         self.scene_height = scene_height;

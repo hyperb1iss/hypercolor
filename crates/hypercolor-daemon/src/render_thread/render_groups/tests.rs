@@ -48,6 +48,7 @@ fn generation_zero_surface_materialization_records_full_frame_copy() {
         ProducerFrame::Surface(surface),
         &mut full_frame_copy,
     )
+    .expect("surface allocation should succeed")
     .expect("surface should be materialized into the pool");
 
     assert!(matches!(backed, ProducerFrame::Surface(_)));
@@ -60,13 +61,14 @@ fn generation_zero_surface_materialization_records_full_frame_copy() {
 }
 
 #[test]
-fn high_resolution_runtime_defers_scene_surface_storage() {
-    let runtime = ZoneRuntime::try_new(7_680, 4_320)
-        .expect("addressable high-resolution runtime should construct");
+fn wide_runtime_admits_one_scene_surface_without_eager_fanout() {
+    let runtime =
+        ZoneRuntime::try_new(7_681, 1).expect("addressable wide runtime should construct");
 
-    assert_eq!(runtime.scene_surface_pool.descriptor().width, 7_680);
-    assert_eq!(runtime.scene_surface_pool.descriptor().height, 4_320);
-    assert_eq!(runtime.scene_surface_pool.materialized_slot_count(), 0);
+    assert_eq!(runtime.scene_surface_pool.descriptor().width, 7_681);
+    assert_eq!(runtime.scene_surface_pool.descriptor().height, 1);
+    assert_eq!(runtime.scene_surface_pool.materialized_slot_count(), 1);
+    assert!(runtime.scene_surface_pool.slot_count() > 1);
 }
 
 #[test]

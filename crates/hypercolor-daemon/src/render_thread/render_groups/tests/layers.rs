@@ -18,8 +18,10 @@ fn static_layer_surfaces_reuse_final_srgba_storage() {
     let mut cache = StaticLayerSurfaceCache::default();
     let rgba = [0.25, 0.5, 0.75, 0.4];
 
-    let first = color_fill_frame(&mut cache, 3, 2, rgba);
-    let second = color_fill_frame(&mut cache, 3, 2, rgba);
+    let first =
+        color_fill_frame(&mut cache, 3, 2, rgba).expect("static layer surface should allocate");
+    let second =
+        color_fill_frame(&mut cache, 3, 2, rgba).expect("static layer surface should allocate");
     let expected = RgbaF32::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_srgba();
 
     assert_eq!(
@@ -42,7 +44,8 @@ fn static_layer_surfaces_reuse_final_srgba_storage() {
 fn transparent_static_layer_surface_preserves_zero_alpha() {
     let mut cache = StaticLayerSurfaceCache::default();
 
-    let frame = transparent_black_frame(&mut cache, 2, 2);
+    let frame = transparent_black_frame(&mut cache, 2, 2)
+        .expect("transparent layer surface should allocate");
 
     assert!(
         static_surface(&frame)
@@ -53,17 +56,31 @@ fn transparent_static_layer_surface_preserves_zero_alpha() {
 }
 
 #[test]
+fn static_layer_allocation_failure_does_not_poison_cache() {
+    let mut cache = StaticLayerSurfaceCache::default();
+
+    let error = color_fill_frame(&mut cache, u32::MAX, u32::MAX, [1.0, 0.0, 0.0, 1.0])
+        .expect_err("overflowed static layer surface should be rejected");
+
+    assert!(error.to_string().contains("overflow"));
+    assert_eq!(cache.entry_count(), 0);
+}
+
+#[test]
 fn static_layer_surface_cache_stays_bounded() {
     let mut cache = StaticLayerSurfaceCache::default();
-    let first = color_fill_frame(&mut cache, 1, 1, [1.0, 0.0, 0.0, 1.0]);
+    let first = color_fill_frame(&mut cache, 1, 1, [1.0, 0.0, 0.0, 1.0])
+        .expect("static layer surface should allocate");
     let first_identity = static_surface(&first).storage_identity();
 
     for width in 2..=33 {
-        let _ = color_fill_frame(&mut cache, width, 1, [1.0, 0.0, 0.0, 1.0]);
+        color_fill_frame(&mut cache, width, 1, [1.0, 0.0, 0.0, 1.0])
+            .expect("static layer surface should allocate");
     }
 
     assert_eq!(cache.entry_count(), 32);
-    let recreated = color_fill_frame(&mut cache, 1, 1, [1.0, 0.0, 0.0, 1.0]);
+    let recreated = color_fill_frame(&mut cache, 1, 1, [1.0, 0.0, 0.0, 1.0])
+        .expect("static layer surface should allocate");
     assert_ne!(
         static_surface(&recreated).storage_identity(),
         first_identity

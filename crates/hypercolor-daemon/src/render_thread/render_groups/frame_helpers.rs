@@ -37,28 +37,28 @@ pub(super) struct StaticLayerSurfaceCache {
 }
 
 impl StaticLayerSurfaceCache {
-    fn frame(&mut self, width: u32, height: u32, color: Rgba) -> ProducerFrame {
+    fn frame(&mut self, width: u32, height: u32, color: Rgba) -> anyhow::Result<ProducerFrame> {
         let key = StaticLayerSurfaceKey {
             width,
             height,
             color,
         };
         if let Some((_, surface)) = self.surfaces.iter().find(|(cached, _)| *cached == key) {
-            return ProducerFrame::Surface(surface.clone());
+            return Ok(ProducerFrame::Surface(surface.clone()));
         }
 
         let mut pool =
-            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(width, height), 1);
+            RenderSurfacePool::try_with_slot_count(SurfaceDescriptor::rgba8888(width, height), 1)?;
         let mut lease = pool
-            .dequeue()
-            .expect("new static layer surface pool should expose its initial slot");
+            .try_dequeue()?
+            .expect("new static layer surface pool must expose its initial slot");
         lease.canvas_mut().fill(color);
         let surface = lease.submit(0, 0);
         if self.surfaces.len() == STATIC_LAYER_SURFACE_CACHE_CAPACITY {
             let _ = self.surfaces.pop_front();
         }
         self.surfaces.push_back((key, surface.clone()));
-        ProducerFrame::Surface(surface)
+        Ok(ProducerFrame::Surface(surface))
     }
 
     #[cfg(test)]
@@ -137,7 +137,7 @@ pub(super) fn color_fill_frame(
     width: u32,
     height: u32,
     rgba: [f32; 4],
-) -> ProducerFrame {
+) -> anyhow::Result<ProducerFrame> {
     cache.frame(
         width,
         height,
@@ -148,27 +148,29 @@ pub(super) fn color_fill_frame(
 pub(super) fn screen_region_layer_frame(
     screen: Option<&ScreenData>,
     viewport: ViewportRect,
-) -> Option<ProducerFrame> {
-    let source_surface = screen?.canvas_downscale.as_ref()?;
+) -> anyhow::Result<Option<ProducerFrame>> {
+    let Some(source_surface) = screen.and_then(|screen| screen.canvas_downscale.as_ref()) else {
+        return Ok(None);
+    };
     let source = Canvas::from_published_surface(source_surface);
     if source.width() == 0 || source.height() == 0 {
-        return None;
+        return Ok(None);
     }
     let viewport = viewport.clamp();
     let rect = viewport.to_pixel_rect(source.width(), source.height());
     if rect.width == 0 || rect.height == 0 {
-        return None;
+        return Ok(None);
     }
-    let mut target = Canvas::new(rect.width, rect.height);
+    let mut target = Canvas::try_new(rect.width, rect.height)?;
     sample_viewport(&mut target, &source, viewport, FitMode::Stretch, 1.0);
-    Some(ProducerFrame::Canvas(target))
+    Ok(Some(ProducerFrame::Canvas(target)))
 }
 
 pub(super) fn transparent_black_frame(
     cache: &mut StaticLayerSurfaceCache,
     width: u32,
     height: u32,
-) -> ProducerFrame {
+) -> anyhow::Result<ProducerFrame> {
     cache.frame(width, height, Rgba::TRANSPARENT)
 }
 
@@ -242,26 +244,30 @@ pub(super) fn surface_backed_frame(
     surface_pool: &mut RenderSurfacePool,
     frame: ProducerFrame,
     full_frame_copy: &mut FullFrameCopyMetrics,
-) -> Option<ProducerFrame> {
+) -> anyhow::Result<Option<ProducerFrame>> {
     match frame {
         ProducerFrame::Canvas(canvas) => {
-            let mut lease = surface_pool.dequeue()?;
+            let Some(mut lease) = surface_pool.try_dequeue()? else {
+                return Ok(None);
+            };
             *lease.canvas_mut() = canvas;
-            Some(ProducerFrame::Surface(lease.submit(0, 0)))
+            Ok(Some(ProducerFrame::Surface(lease.submit(0, 0))))
         }
         ProducerFrame::Surface(surface) if surface.generation() == 0 => {
-            let mut lease = surface_pool.dequeue()?;
+            let Some(mut lease) = surface_pool.try_dequeue()? else {
+                return Ok(None);
+            };
             full_frame_copy.record(
                 usize_to_u32(surface.rgba_bytes().len()),
                 "generation_zero_surface_pool_materialization",
             );
             *lease.canvas_mut() =
-                Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
-            Some(ProducerFrame::Surface(
+                Canvas::try_from_rgba(surface.rgba_bytes(), surface.width(), surface.height())?;
+            Ok(Some(ProducerFrame::Surface(
                 lease.submit(surface.frame_number(), surface.timestamp_ms()),
-            ))
+            )))
         }
-        frame => Some(frame),
+        frame => Ok(Some(frame)),
     }
 }
 

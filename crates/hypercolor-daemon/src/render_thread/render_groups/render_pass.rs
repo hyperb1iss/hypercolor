@@ -54,7 +54,7 @@ impl ZoneRuntime {
                 &mut self.static_layer_surface_cache,
                 group.layout.canvas_width,
                 group.layout.canvas_height,
-            )
+            )?
         } else if passthrough_effect_layer(group).is_some() {
             let Some(frame) = self.render_passthrough_effect_layer_frame(group, context)? else {
                 return Ok(None);
@@ -75,7 +75,8 @@ impl ZoneRuntime {
             };
             frame
         };
-        let Some(frame) = self.surface_backed_direct_frame(group.id, frame, full_frame_copy) else {
+        let Some(frame) = self.surface_backed_direct_frame(group.id, frame, full_frame_copy)?
+        else {
             return Ok(None);
         };
         record_producer_frame(&frame);

@@ -11,7 +11,7 @@ impl ZoneRuntime {
         &mut self,
         frame: ProducerFrame,
         full_frame_copy: &mut FullFrameCopyMetrics,
-    ) -> Option<ProducerFrame> {
+    ) -> anyhow::Result<Option<ProducerFrame>> {
         surface_backed_frame(&mut self.scene_surface_pool, frame, full_frame_copy)
     }
 
@@ -20,8 +20,10 @@ impl ZoneRuntime {
         group_id: ZoneId,
         frame: ProducerFrame,
         full_frame_copy: &mut FullFrameCopyMetrics,
-    ) -> Option<ProducerFrame> {
-        let surface_pool = self.direct_surface_pools.get_mut(&group_id)?;
+    ) -> anyhow::Result<Option<ProducerFrame>> {
+        let Some(surface_pool) = self.direct_surface_pools.get_mut(&group_id) else {
+            return Ok(None);
+        };
         surface_backed_frame(surface_pool, frame, full_frame_copy)
     }
 

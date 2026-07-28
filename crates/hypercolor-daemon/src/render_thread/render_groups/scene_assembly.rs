@@ -133,8 +133,10 @@ impl ZoneRuntime {
             };
             frame
         };
-        let Some(scene_frame) = self
-            .surface_backed_scene_frame(scene_frame, &mut rendered_groups.producer_full_frame_copy)
+        let Some(scene_frame) = self.surface_backed_scene_frame(
+            scene_frame,
+            &mut rendered_groups.producer_full_frame_copy,
+        )?
         else {
             return Ok(None);
         };
