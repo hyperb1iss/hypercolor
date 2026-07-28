@@ -372,11 +372,27 @@ pub(super) async fn active_layout_targets_enabled_device(
         candidates
     };
 
-    let spatial = runtime.spatial_engine.read().await;
-    spatial
-        .layout()
-        .zones
+    let targeted_by_spatial_layout = {
+        let spatial = runtime.spatial_engine.read().await;
+        spatial
+            .layout()
+            .zones
+            .iter()
+            .any(|zone| candidate_ids.contains(&zone.device_id))
+    };
+    if targeted_by_spatial_layout {
+        return true;
+    }
+
+    // Studio composes scenes and never writes the legacy spatial layout, so
+    // a device placed only through a scene zone is invisible above. Without
+    // this arm it stays Deferred forever: discovered, never connected, and
+    // never surfacing an error to explain why.
+    let scene_manager = runtime.scene_manager.read().await;
+    scene_manager
+        .active_render_groups()
         .iter()
+        .flat_map(|group| group.layout.zones.iter())
         .any(|zone| candidate_ids.contains(&zone.device_id))
 }
 
