@@ -20,10 +20,10 @@ use hypercolor_core::input::screen::{
     ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationFreshness,
     ScreenPublicationHealth, ScreenPublicationHubError, ScreenPublicationKind,
     ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationSlotPolicy,
-    ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind, ScreenSceneCutPolicy,
-    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSurfacePayload,
-    ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
-    ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenSurfacePayload, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
+    ScreenUnknownColorPolicy, ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerPreparationTicket, ScreenZonesPayload, SourceScale,
 };
 
@@ -206,17 +206,54 @@ fn output_extent(descriptor: &ResolvedScreenPublicationDescriptor) -> PixelExten
     descriptor.geometry().output_extent()
 }
 
-fn exact_ledger(
+struct BoundExactResources {
+    ledger: ScreenExactResourceLedger,
+    lifetimes: Vec<ScreenResourceLifetime>,
+}
+
+impl BoundExactResources {
+    fn acknowledge(
+        self,
+        ticket: &ScreenWorkerPreparationTicket,
+    ) -> Result<hypercolor_core::input::screen::ScreenPreparedWorkerToken, ScreenPlanError> {
+        let Self { ledger, lifetimes } = self;
+        ticket.acknowledge(ledger, &lifetimes)
+    }
+}
+
+fn exact_resources(
     ticket: &ScreenWorkerPreparationTicket,
-) -> Result<ScreenExactResourceLedger, ScreenPlanError> {
-    ScreenExactResourceLedger::try_new(ticket.required_minimums().iter().map(|expected| {
-        ScreenExactResource::try_new(
-            Arc::clone(expected.name()),
-            expected.resource(),
-            expected.minimum_bytes(),
-        )
-        .expect("ticket resource names are valid")
-    }))
+) -> Result<BoundExactResources, ScreenPlanError> {
+    bind_resources(
+        ticket,
+        ticket.required_minimums().iter().map(|expected| {
+            ScreenExactResource::try_new(
+                Arc::clone(expected.name()),
+                expected.resource(),
+                expected.minimum_bytes(),
+            )
+            .expect("ticket resource names are valid")
+        }),
+    )
+}
+
+fn bind_resources(
+    ticket: &ScreenWorkerPreparationTicket,
+    resources: impl IntoIterator<Item = ScreenExactResource>,
+) -> Result<BoundExactResources, ScreenPlanError> {
+    bind_ledger(ticket, ScreenExactResourceLedger::try_new(resources)?)
+}
+
+fn bind_ledger(
+    ticket: &ScreenWorkerPreparationTicket,
+    ledger: ScreenExactResourceLedger,
+) -> Result<BoundExactResources, ScreenPlanError> {
+    let lifetimes = ledger
+        .resources()
+        .iter()
+        .map(|resource| ticket.bind_resource_lifetime(resource))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(BoundExactResources { ledger, lifetimes })
 }
 
 fn required_scope(
@@ -349,7 +386,7 @@ fn commit_demands_outcome(
     let required_sources = preparing.required_sources().to_vec();
     for source_id in required_sources {
         let ticket = preparing.worker_ticket(&source_id)?;
-        let token = ticket.acknowledge(exact_ledger(&ticket)?)?;
+        let token = exact_resources(&ticket)?.acknowledge(&ticket)?;
         preparing.acknowledge(token)?;
     }
     let armed = preparing
@@ -392,8 +429,9 @@ fn arm_demands(
         let ticket = preparing
             .worker_ticket(&source_id)
             .expect("required worker ticket is issued");
-        let token = ticket
-            .acknowledge(exact_ledger(&ticket).expect("ticket contract is representable"))
+        let token = exact_resources(&ticket)
+            .expect("ticket contract is representable")
+            .acknowledge(&ticket)
             .expect("exact ledger covers the ticket");
         preparing
             .acknowledge(token)
@@ -1701,19 +1739,117 @@ fn worker_tokens_are_candidate_transaction_source_and_nonce_bound() {
     let foreign_ticket = foreign_candidate
         .worker_ticket(&source_id("display-a"))
         .expect("same-source foreign candidate ticket is issued");
-    let foreign_token = foreign_ticket
-        .acknowledge(exact_ledger(&foreign_ticket).expect("foreign contract is representable"))
+    let foreign_token = exact_resources(&foreign_ticket)
+        .expect("foreign contract is representable")
+        .acknowledge(&foreign_ticket)
         .expect("foreign exact ledger covers its ticket");
     assert!(matches!(
         target.acknowledge(foreign_token),
         Err(ScreenPlanError::WorkerCandidateMismatch { .. })
     ));
-    let target_token = target_ticket
-        .acknowledge(exact_ledger(&target_ticket).expect("target contract is representable"))
+    let target_token = exact_resources(&target_ticket)
+        .expect("target contract is representable")
+        .acknowledge(&target_ticket)
         .expect("target exact ledger covers its ticket");
     target
         .acknowledge(target_token)
         .expect("issued candidate capability and nonce are accepted");
+}
+
+#[test]
+fn resource_lifetimes_are_exact_and_ticket_bound_without_arming_on_failure() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
+    let demand = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            60,
+        ),
+        &source,
+    );
+    let graph = ScreenInputGraphGeneration::new(1);
+    let capacity = ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let revision = next_demand_revision(&builder);
+    let mut target = builder
+        .prepare([demand.clone()], None, revision, graph, capacity)
+        .expect("target prepares");
+    let mut foreign = builder
+        .prepare([demand], None, revision, graph, capacity)
+        .expect("foreign candidate prepares");
+    let ticket = target
+        .worker_ticket(&source_id("display-a"))
+        .expect("target ticket is issued");
+    let foreign_ticket = foreign
+        .worker_ticket(&source_id("display-a"))
+        .expect("foreign ticket is issued");
+    let bound = exact_resources(&ticket).expect("target resources bind");
+    let last = bound
+        .lifetimes
+        .len()
+        .checked_sub(1)
+        .expect("surface ticket has required resources");
+
+    assert!(matches!(
+        ticket.acknowledge(bound.ledger.clone(), &bound.lifetimes[..last]),
+        Err(ScreenPlanError::MissingResourceLifetime { .. })
+    ));
+
+    let mut duplicate = bound.lifetimes.clone();
+    duplicate.push(bound.lifetimes[0].clone());
+    assert!(matches!(
+        ticket.acknowledge(bound.ledger.clone(), &duplicate),
+        Err(ScreenPlanError::DuplicateResourceLifetime { .. })
+    ));
+
+    let mut foreign_lifetimes = bound.lifetimes.clone();
+    foreign_lifetimes[0] = foreign_ticket
+        .bind_resource_lifetime(bound.lifetimes[0].resource())
+        .expect("foreign allocation lifetime binds");
+    assert!(matches!(
+        ticket.acknowledge(bound.ledger.clone(), &foreign_lifetimes),
+        Err(ScreenPlanError::ResourceLifetimeTicketMismatch { .. })
+    ));
+
+    let expected = &bound.ledger.resources()[0];
+    let mismatched = ScreenExactResource::try_new_scoped(
+        Arc::clone(expected.name()),
+        Arc::clone(expected.accounting_scope()),
+        expected.resource(),
+        expected.bytes() + 1,
+    )
+    .expect("mismatched lifetime description is structurally valid");
+    let mut mismatched_lifetimes = bound.lifetimes.clone();
+    mismatched_lifetimes[0] = ticket
+        .bind_resource_lifetime(&mismatched)
+        .expect("mismatched allocation lifetime binds");
+    assert!(matches!(
+        ticket.acknowledge(bound.ledger.clone(), &mismatched_lifetimes),
+        Err(ScreenPlanError::ResourceLifetimeAccountingMismatch { .. })
+    ));
+
+    let unexpected = ScreenExactResource::try_new_scoped(
+        "unexpected-allocation",
+        Arc::clone(expected.accounting_scope()),
+        ScreenResourceKind::WorkerAdditional,
+        1,
+    )
+    .expect("unexpected resource is structurally valid");
+    let mut unexpected_lifetimes = bound.lifetimes.clone();
+    unexpected_lifetimes.push(
+        ticket
+            .bind_resource_lifetime(&unexpected)
+            .expect("unexpected allocation lifetime binds"),
+    );
+    assert!(matches!(
+        ticket.acknowledge(bound.ledger, &unexpected_lifetimes),
+        Err(ScreenPlanError::UnexpectedResourceLifetime { .. })
+    ));
+    assert_eq!(hub.pending_retired_bytes(), 0);
 }
 
 #[test]
@@ -1762,7 +1898,9 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
 
     let omitted = ScreenExactResourceLedger::try_new([]).expect("empty ledger is representable");
     assert!(matches!(
-        ticket.acknowledge(omitted),
+        bind_ledger(&ticket, omitted)
+            .expect("empty resource set binds")
+            .acknowledge(&ticket),
         Err(ScreenPlanError::MissingExactResource { .. })
     ));
 
@@ -1775,7 +1913,9 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
     .expect("ticket name is valid")])
     .expect("partial ledger is representable");
     assert!(matches!(
-        ticket.acknowledge(partial),
+        bind_ledger(&ticket, partial)
+            .expect("partial resource set binds")
+            .acknowledge(&ticket),
         Err(ScreenPlanError::MissingExactResource { .. })
     ));
 
@@ -1800,7 +1940,9 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
         )
         .expect("domain-omitted ledger is representable");
         assert!(matches!(
-            ticket.acknowledge(omitted_domain),
+            bind_ledger(&ticket, omitted_domain)
+                .expect("domain-omitted resource set binds")
+                .acknowledge(&ticket),
             Err(ScreenPlanError::MissingExactResource { resource, .. })
                 if resource == omitted_kind
         ));
@@ -1862,7 +2004,9 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
     )
     .expect("unknown scope remains structurally representable");
     assert!(matches!(
-        ticket.acknowledge(unknown_scope),
+        bind_ledger(&ticket, unknown_scope)
+            .expect("unknown-scope resource set binds")
+            .acknowledge(&ticket),
         Err(ScreenPlanError::UnknownExactResourceScope { .. })
     ));
 
@@ -1896,8 +2040,9 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
             ]),
     )
     .expect("complete ledger with disjoint extras is representable");
-    let with_extras = ticket
-        .acknowledge(with_extras)
+    let with_extras = bind_ledger(&ticket, with_extras)
+        .expect("complete resource set binds")
+        .acknowledge(&ticket)
         .expect("unique additional accounting entries are accepted");
     let staged = preparing.admission().staged();
     let staged_worker_bytes = staged.total_bytes()
@@ -1931,7 +2076,9 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
         ))
         .expect("wrong-kind ledger is structurally representable");
     assert!(matches!(
-        ticket.acknowledge(wrong_kind),
+        bind_ledger(&ticket, wrong_kind)
+            .expect("wrong-kind resource set binds")
+            .acknowledge(&ticket),
         Err(ScreenPlanError::ExactResourceKindMismatch { .. })
     ));
 
@@ -1954,12 +2101,15 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
         }))
         .expect("understated ledger is structurally representable");
     assert!(matches!(
-        ticket.acknowledge(understated),
+        bind_ledger(&ticket, understated)
+            .expect("understated resource set binds")
+            .acknowledge(&ticket),
         Err(ScreenPlanError::UnderstatedExactResource { .. })
     ));
 
-    let exact = ticket
-        .acknowledge(exact_ledger(&ticket).expect("ticket contract is representable"))
+    let exact = exact_resources(&ticket)
+        .expect("ticket contract is representable")
+        .acknowledge(&ticket)
         .expect("exact coverage is accepted");
     assert_eq!(exact.exact_ledger().total_bytes(), staged_worker_bytes);
     let overestimated =
@@ -1972,7 +2122,12 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
             .expect("resource name is valid")
         }))
         .expect("overestimated ledger is representable");
-    assert!(ticket.acknowledge(overestimated).is_ok());
+    assert!(
+        bind_ledger(&ticket, overestimated)
+            .expect("overestimated resource set binds")
+            .acknowledge(&ticket)
+            .is_ok()
+    );
     preparing
         .acknowledge(with_extras)
         .expect("issued exhaustive token is accepted by its preparation");
@@ -2045,8 +2200,9 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
             .expect("extra resource name is valid")]),
     )
     .expect("worker ledger with disjoint staging overhead is representable");
-    let token = ticket
-        .acknowledge(ledger)
+    let token = bind_ledger(&ticket, ledger)
+        .expect("worker resources bind to the ticket")
+        .acknowledge(&ticket)
         .expect("required minimums and extra overhead are exhaustive");
     preparing
         .acknowledge(token)
@@ -2146,8 +2302,9 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
             .expect("backend extra is valid")]),
     )
     .expect("surface exact ledger is representable");
-    let token = ticket
-        .acknowledge(surface_ledger)
+    let token = bind_ledger(&ticket, surface_ledger)
+        .expect("surface resources bind to the ticket")
+        .acknowledge(&ticket)
         .expect("surface exact ledger covers its contract");
     preparing
         .acknowledge(token)
@@ -2195,8 +2352,9 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
     let ticket = preparing
         .worker_ticket(&source_id("display-a"))
         .expect("zones worker ticket is issued");
-    let token = ticket
-        .acknowledge(exact_ledger(&ticket).expect("zones ledger is representable"))
+    let token = exact_resources(&ticket)
+        .expect("zones ledger is representable")
+        .acknowledge(&ticket)
         .expect("zones exact ledger covers its contract");
     preparing
         .acknowledge(token)
@@ -2223,8 +2381,9 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
     let ticket = preparing
         .worker_ticket(&source_id("display-a"))
         .expect("abort worker ticket is issued");
-    let token = ticket
-        .acknowledge(exact_ledger(&ticket).expect("abort ledger is representable"))
+    let token = exact_resources(&ticket)
+        .expect("abort ledger is representable")
+        .acknowledge(&ticket)
         .expect("abort ledger covers its contract");
     preparing
         .acknowledge(token)
@@ -2235,6 +2394,138 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
     let abort = armed.abort();
     assert_eq!(abort.active_plan(), builder.current().as_ref());
     assert_eq!(builder.retained_exact_bytes(), 122);
+}
+
+#[test]
+fn same_scope_worker_allocations_retire_independently_by_identity() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
+    let surface = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            60,
+        ),
+        &source,
+    );
+    let graph = ScreenInputGraphGeneration::new(15);
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let revision = next_demand_revision(&builder);
+    let mut preparing = builder
+        .prepare(
+            [surface],
+            None,
+            revision,
+            graph,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("surface candidate prepares");
+    let ticket = preparing
+        .worker_ticket(&source_id("display-a"))
+        .expect("surface worker ticket is issued");
+    let backend_scope = required_scope(&ticket, ScreenResourceKind::BackendAllocation);
+    let bound = bind_resources(
+        &ticket,
+        ticket
+            .required_minimums()
+            .iter()
+            .map(|minimum| {
+                ScreenExactResource::try_new(
+                    Arc::clone(minimum.name()),
+                    minimum.resource(),
+                    minimum.minimum_bytes(),
+                )
+                .expect("ticket resource names are valid")
+            })
+            .chain([
+                ScreenExactResource::try_new_scoped(
+                    "stale-seven-byte-allocation",
+                    Arc::clone(&backend_scope),
+                    ScreenResourceKind::WorkerAdditional,
+                    7,
+                )
+                .expect("seven-byte allocation is valid"),
+                ScreenExactResource::try_new_scoped(
+                    "released-eleven-byte-allocation",
+                    backend_scope,
+                    ScreenResourceKind::WorkerAdditional,
+                    11,
+                )
+                .expect("eleven-byte allocation is valid"),
+            ]),
+    )
+    .expect("same-scope worker allocations bind");
+    let allocation_count = bound.lifetimes.len();
+    let stale_lifetime = bound
+        .lifetimes
+        .iter()
+        .find(|lifetime| lifetime.resource().bytes() == 7)
+        .expect("seven-byte lifetime exists")
+        .clone();
+    let token = bound
+        .acknowledge(&ticket)
+        .expect("same-scope resources exactly cover the ticket");
+    preparing
+        .acknowledge(token)
+        .expect("worker token is accepted");
+    let armed = preparing
+        .arm(builder.current().generation(), revision, graph)
+        .expect("surface candidate arms");
+    reclaim_committed(
+        builder
+            .commit(armed, revision, graph)
+            .expect("surface candidate commits"),
+    );
+
+    let retired_resource_bytes = builder.retained_exact_bytes();
+    let committed = commit_demands_with_retirement(&mut builder, std::iter::empty())
+        .expect("surface removal commits");
+    let (_, retirement) = committed.into_parts();
+    assert_eq!(retirement.resource_count(), allocation_count);
+    assert_eq!(retirement.pending_bytes(), 144 + retired_resource_bytes);
+
+    let retirement = retirement
+        .try_reclaim()
+        .expect_err("one stale job still owns the seven-byte allocation");
+    assert_eq!(retirement.branch_count(), 0);
+    assert_eq!(retirement.resource_count(), 1);
+    assert_eq!(retirement.pending_bytes(), 7);
+    assert_eq!(hub.pending_retired_bytes(), 7);
+    drop(retirement);
+    assert_eq!(hub.pending_retired_bytes(), 7);
+
+    let pressure_revision = next_demand_revision(&builder);
+    assert!(matches!(
+        builder.prepare(
+            std::iter::empty(),
+            None,
+            pressure_revision,
+            graph,
+            ScreenAdmissionCapacity::new(6, 6),
+        ),
+        Err(ScreenPlanError::RetirementPressure {
+            requested: 7,
+            available: 6,
+            ..
+        })
+    ));
+    drop(stale_lifetime);
+    assert_eq!(hub.pending_retired_bytes(), 0);
+
+    let recovered_revision = next_demand_revision(&builder);
+    let preparing = builder
+        .prepare(
+            std::iter::empty(),
+            None,
+            recovered_revision,
+            graph,
+            ScreenAdmissionCapacity::new(0, 0),
+        )
+        .expect("capacity recovers after the stale allocation owner releases");
+    let _abort = preparing.abort();
 }
 
 #[test]
@@ -2267,6 +2558,7 @@ fn arm_and_commit_recheck_plan_and_graph_generation_fences() {
     );
     let mut builder = ScreenPlanBuilder::new();
     commit_demands(&mut builder, [surface], None).expect("surface becomes active");
+    let hub = builder.publication_hub();
     let active = builder.current().clone();
     let graph = ScreenInputGraphGeneration::new(11);
     let revision = next_demand_revision(&builder);
@@ -2355,8 +2647,9 @@ fn arm_and_commit_recheck_plan_and_graph_generation_fences() {
     let ticket = preparing
         .worker_ticket(&source_id("display-a"))
         .expect("worker ticket is issued");
-    let token = ticket
-        .acknowledge(exact_ledger(&ticket).expect("ticket contract is representable"))
+    let token = exact_resources(&ticket)
+        .expect("ticket contract is representable")
+        .acknowledge(&ticket)
         .expect("exact ledger covers the ticket");
     preparing
         .acknowledge(token)
@@ -2374,6 +2667,7 @@ fn arm_and_commit_recheck_plan_and_graph_generation_fences() {
     ));
     assert_eq!(failure.into_armed().abort().active_plan(), active.as_ref());
     assert_eq!(builder.current(), active);
+    assert_eq!(hub.pending_retired_bytes(), 0);
 }
 
 #[test]
@@ -2865,8 +3159,9 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
         .worker_ticket(&source)
         .expect("cadence-only change requires fresh worker authority");
     assert!(ticket.required_minimums().is_empty());
-    let token = ticket
-        .acknowledge(exact_ledger(&ticket).expect("empty delta ledger is exact"))
+    let token = exact_resources(&ticket)
+        .expect("empty delta ledger is exact")
+        .acknowledge(&ticket)
         .expect("cadence worker attests its empty allocation delta");
     let candidate_binding = token.binding().clone();
     assert_eq!(
@@ -2903,7 +3198,12 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
     let committed = builder
         .commit(armed, revision, graph)
         .expect("cadence candidate commits atomically");
-    reclaim_committed(committed);
+    let (_, retirement) = committed.into_parts();
+    assert_eq!(retirement.branch_count(), 0);
+    assert_eq!(retirement.resource_count(), 0);
+    retirement
+        .try_reclaim()
+        .expect("cadence rebind preserves every allocation identity");
     let committed_state = builder.committed_state();
     assert!(Arc::ptr_eq(&committed_state, &candidate_state));
     assert_eq!(hub.generation(), candidate_state.plan().generation());
@@ -2957,6 +3257,7 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
     assert!(lease.read().is_some());
 
     let removal_revision = next_demand_revision(&builder);
+    let retired_resource_bytes = builder.retained_exact_bytes();
     let mut preparing = builder
         .prepare(
             std::iter::empty(),
@@ -2970,8 +3271,9 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
     let ticket = preparing
         .worker_ticket(&source)
         .expect("source removal still requires an exact worker handoff");
-    let token = ticket
-        .acknowledge(exact_ledger(&ticket).expect("removal ledger is exact"))
+    let token = exact_resources(&ticket)
+        .expect("removal ledger is exact")
+        .acknowledge(&ticket)
         .expect("removal worker token is accepted");
     let removal_binding = token.binding().clone();
     preparing
@@ -2993,12 +3295,14 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
         lease.delivery_state(Instant::now()).lifecycle(),
         ScreenBranchDeliveryLifecycle::Retired
     );
-    assert_eq!(retirement.pending_bytes(), 144);
-    assert_eq!(hub.pending_retired_bytes(), 144);
+    let retired_bytes = 144 + retired_resource_bytes;
+    assert!(retirement.resource_count() > 0);
+    assert_eq!(retirement.pending_bytes(), retired_bytes);
+    assert_eq!(hub.pending_retired_bytes(), retired_bytes);
     drop(retirement);
     assert_eq!(
         hub.pending_retired_bytes(),
-        144,
+        retired_bytes,
         "dropping the handoff cannot uncharge externally owned retired storage"
     );
     let pressure_revision = next_demand_revision(&builder);
@@ -3008,13 +3312,13 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
             None,
             pressure_revision,
             graph,
-            ScreenAdmissionCapacity::new(143, 143),
+            ScreenAdmissionCapacity::new(retired_bytes - 1, retired_bytes - 1),
         ),
         Err(ScreenPlanError::RetirementPressure {
-            requested: 144,
-            available: 143,
+            requested,
+            available,
             ..
-        })
+        }) if requested == retired_bytes && available == retired_bytes - 1
     ));
     drop((
         lease,
@@ -3087,17 +3391,20 @@ fn retirement_reclaims_ready_entries_without_unaccounting_pinned_payloads() {
     let weak_publication = Arc::downgrade(&pinned_publication);
     drop((receipt, small_publisher));
 
+    let retired_resource_bytes = builder.retained_exact_bytes();
     let committed = commit_demands_with_retirement(&mut builder, std::iter::empty())
         .expect("both branch pools retire");
     let (_, retirement) = committed.into_parts();
     assert_eq!(retirement.branch_count(), 2);
-    assert_eq!(retirement.pending_bytes(), 156);
-    assert_eq!(hub.pending_retired_bytes(), 156);
+    assert!(retirement.resource_count() > 0);
+    assert_eq!(retirement.pending_bytes(), 156 + retired_resource_bytes);
+    assert_eq!(hub.pending_retired_bytes(), 156 + retired_resource_bytes);
 
     let retirement = retirement
         .try_reclaim()
         .expect_err("the raw small publication still pins one pool");
     assert_eq!(retirement.branch_count(), 1);
+    assert_eq!(retirement.resource_count(), 0);
     assert_eq!(retirement.pending_bytes(), 12);
     assert_eq!(
         hub.pending_retired_bytes(),

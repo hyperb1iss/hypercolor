@@ -3,13 +3,13 @@
 use std::collections::{HashMap, HashSet};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use thiserror::Error;
 
 use super::hub::{
     ScreenCommitActivation, ScreenCommittedState, ScreenPublicationHub,
-    ScreenPublicationRetirement, ScreenPublicationSlotPolicy,
+    ScreenPublicationRetirement, ScreenPublicationSlotPolicy, ScreenRetirementCharge,
 };
 use super::{
     CaptureSourceId, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
@@ -561,6 +561,49 @@ impl ScreenExactResource {
     }
 }
 
+#[derive(Debug)]
+struct ScreenResourceLifetimeInner {
+    source_id: CaptureSourceId,
+    plan_generation: ScreenPlanGeneration,
+    demand_revision: InputPublicationDemandRevision,
+    transaction_id: ScreenPlanTransactionId,
+    worker_nonce: NonZeroU64,
+    allocation_nonce: NonZeroU64,
+    resource: ScreenExactResource,
+    retirement_charge: Arc<ScreenRetirementCharge>,
+}
+
+/// Ticket-bound ownership handle for one exact worker allocation.
+///
+/// Runtime storage retains a clone for its entire physical lifetime. The
+/// committed plan retains another clone while the allocation is authoritative.
+/// Once commit retires the allocation, its bytes remain charged until every
+/// stale job and state snapshot releases this handle.
+#[derive(Clone, Debug)]
+pub struct ScreenResourceLifetime {
+    inner: Arc<ScreenResourceLifetimeInner>,
+}
+
+impl ScreenResourceLifetime {
+    /// Exact allocation represented by this lifetime.
+    #[must_use]
+    pub fn resource(&self) -> &ScreenExactResource {
+        &self.inner.resource
+    }
+
+    pub(crate) fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    pub(crate) fn is_final_owner(&self) -> bool {
+        Arc::strong_count(&self.inner) == 1
+    }
+
+    pub(crate) fn arm_retirement(&self) {
+        self.inner.retirement_charge.arm();
+    }
+}
+
 /// Opaque exact resource ledger returned after real worker allocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenExactResourceLedger {
@@ -817,6 +860,8 @@ pub struct ScreenWorkerPreparationTicket {
     activation: Arc<ScreenWorkerActivationLatch>,
     candidate: Arc<ScreenCapturePlan>,
     required_minimums: Arc<Vec<ScreenRequiredResourceMinimum>>,
+    pending_retired_bytes: Arc<AtomicU64>,
+    next_allocation_nonce: AtomicU64,
 }
 
 impl ScreenWorkerPreparationTicket {
@@ -856,6 +901,45 @@ impl ScreenWorkerPreparationTicket {
         self.required_minimums.as_slice()
     }
 
+    /// Bind one exact allocation to this ticket before worker acknowledgement.
+    ///
+    /// The worker retains the returned handle with its storage and also passes
+    /// a borrowed handle to [`Self::acknowledge`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure if this ticket exhausts allocation identities.
+    pub fn bind_resource_lifetime(
+        &self,
+        resource: &ScreenExactResource,
+    ) -> Result<ScreenResourceLifetime, ScreenPlanError> {
+        let previous_nonce = self
+            .next_allocation_nonce
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |nonce| {
+                nonce.checked_add(1)
+            })
+            .map_err(|_| ScreenPlanError::ResourceLifetimeNonceExhausted)?;
+        let allocation_nonce = previous_nonce
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .ok_or(ScreenPlanError::ResourceLifetimeNonceExhausted)?;
+        Ok(ScreenResourceLifetime {
+            inner: Arc::new(ScreenResourceLifetimeInner {
+                source_id: self.source_id.clone(),
+                plan_generation: self.plan_generation,
+                demand_revision: self.demand_revision,
+                transaction_id: self.transaction_id,
+                worker_nonce: self.worker_nonce,
+                allocation_nonce,
+                resource: resource.clone(),
+                retirement_charge: Arc::new(ScreenRetirementCharge::new(
+                    Arc::clone(&self.pending_retired_bytes),
+                    resource.bytes,
+                )),
+            }),
+        })
+    }
+
     /// Attest an exhaustive, disjoint worker ledger and bind it into a token.
     ///
     /// Required planner minima must be present with their exact categories and
@@ -868,10 +952,12 @@ impl ScreenWorkerPreparationTicket {
     pub fn acknowledge(
         &self,
         exact_ledger: ScreenExactResourceLedger,
+        lifetimes: &[ScreenResourceLifetime],
     ) -> Result<ScreenPreparedWorkerToken, ScreenPlanError> {
         validate_resource_coverage(self.required_minimums.as_slice(), &exact_ledger)?;
+        let lifetimes = validate_resource_lifetimes(self, &exact_ledger, lifetimes)?;
         let retained_resources =
-            bind_retained_resources(self.required_minimums.as_slice(), &exact_ledger)?;
+            bind_retained_resources(self.required_minimums.as_slice(), &exact_ledger, &lifetimes)?;
         let binding = ScreenWorkerBinding::new(
             self.source_id.clone(),
             self.plan_generation,
@@ -982,11 +1068,59 @@ pub(crate) struct ScreenRetainedResourceLedger {
     pub(crate) total_bytes: u64,
 }
 
+impl ScreenRetainedResourceLedger {
+    pub(crate) fn retired_lifetimes(
+        &self,
+        candidate: &Self,
+    ) -> Result<Vec<ScreenResourceLifetime>, ScreenPlanError> {
+        let mut retired = Vec::new();
+        retired
+            .try_reserve_exact(self.entries.len())
+            .map_err(|_| ScreenPlanError::AllocationFailed)?;
+        let mut active_index = 0;
+        let mut candidate_index = 0;
+        while let Some(active) = self.entries.get(active_index) {
+            let Some(next) = candidate.entries.get(candidate_index) else {
+                retired.extend(
+                    self.entries[active_index..]
+                        .iter()
+                        .map(|entry| entry.lifetime.clone()),
+                );
+                break;
+            };
+            match compare_retained_resources(active, next) {
+                std::cmp::Ordering::Less => {
+                    retired.push(active.lifetime.clone());
+                    active_index += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    candidate_index += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if !active.lifetime.is_same(&next.lifetime) {
+                        retired.push(active.lifetime.clone());
+                    }
+                    active_index += 1;
+                    candidate_index += 1;
+                }
+            }
+        }
+        Ok(retired)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ScreenRetainedResourceEntry {
+    pub(crate) name: Arc<str>,
     pub(crate) retention: ScreenResourceRetentionKey,
     pub(crate) descriptor: Arc<ResolvedScreenPublicationDescriptor>,
-    pub(crate) bytes: u64,
+    pub(crate) lifetime: ScreenResourceLifetime,
+}
+
+impl ScreenRetainedResourceEntry {
+    fn bytes(&self) -> u64 {
+        self.lifetime.resource().bytes
+    }
 }
 
 impl PreparingScreenPlan {
@@ -1071,6 +1205,8 @@ impl PreparingScreenPlan {
             activation: Arc::clone(&self.activation),
             candidate: Arc::clone(&self.candidate),
             required_minimums,
+            pending_retired_bytes: self.base_state.pending_retirement_counter(),
+            next_allocation_nonce: AtomicU64::new(0),
         })
     }
 
@@ -1691,6 +1827,9 @@ pub enum ScreenPlanError {
     /// A preparation exhausted its non-zero worker ticket nonce space.
     #[error("screen publication worker nonce exhausted")]
     WorkerNonceExhausted,
+    /// A worker ticket exhausted its non-zero allocation identity space.
+    #[error("screen publication resource lifetime nonce exhausted")]
+    ResourceLifetimeNonceExhausted,
     /// The compatibility mirror did not name an ordinary candidate branch.
     #[error("compatibility mirror descriptor is absent from the candidate plan")]
     CompatibilityBranchMissing,
@@ -1768,6 +1907,36 @@ pub enum ScreenPlanError {
     #[error("exact worker resource ledger overflow at {resource}")]
     ExactLedgerOverflow {
         /// Opaque worker resource whose addition overflowed.
+        resource: Arc<str>,
+    },
+    /// An exact allocation had no ticket-bound worker lifetime.
+    #[error("exact worker resource {resource} has no bound allocation lifetime")]
+    MissingResourceLifetime {
+        /// Resource missing its lifetime proof.
+        resource: Arc<str>,
+    },
+    /// More than one lifetime claimed the same exact allocation name.
+    #[error("exact worker resource {resource} has duplicate allocation lifetimes")]
+    DuplicateResourceLifetime {
+        /// Resource with duplicate lifetime proofs.
+        resource: Arc<str>,
+    },
+    /// A lifetime was supplied for an allocation absent from the exact ledger.
+    #[error("allocation lifetime references unexpected exact worker resource {resource}")]
+    UnexpectedResourceLifetime {
+        /// Resource absent from the ledger.
+        resource: Arc<str>,
+    },
+    /// An allocation lifetime belongs to another worker ticket.
+    #[error("allocation lifetime for {resource} belongs to another worker ticket")]
+    ResourceLifetimeTicketMismatch {
+        /// Foreign resource lifetime.
+        resource: Arc<str>,
+    },
+    /// Lifetime accounting differs from its exact ledger entry.
+    #[error("allocation lifetime accounting differs for exact worker resource {resource}")]
+    ResourceLifetimeAccountingMismatch {
+        /// Resource whose lifetime description differs.
         resource: Arc<str>,
     },
     /// Worker ledger omitted a required candidate resource.
@@ -2036,15 +2205,99 @@ fn validate_resource_coverage(
     Ok(())
 }
 
+fn validate_resource_lifetimes(
+    ticket: &ScreenWorkerPreparationTicket,
+    exact: &ScreenExactResourceLedger,
+    lifetimes: &[ScreenResourceLifetime],
+) -> Result<Vec<ScreenResourceLifetime>, ScreenPlanError> {
+    let mut ordered = Vec::new();
+    ordered
+        .try_reserve_exact(lifetimes.len())
+        .map_err(|_| ScreenPlanError::AllocationFailed)?;
+    for lifetime in lifetimes {
+        let inner = &lifetime.inner;
+        if inner.source_id != ticket.source_id
+            || inner.plan_generation != ticket.plan_generation
+            || inner.demand_revision != ticket.demand_revision
+            || inner.transaction_id != ticket.transaction_id
+            || inner.worker_nonce != ticket.worker_nonce
+        {
+            return Err(ScreenPlanError::ResourceLifetimeTicketMismatch {
+                resource: Arc::clone(inner.resource.name()),
+            });
+        }
+        ordered.push(lifetime.clone());
+    }
+    ordered.sort_unstable_by(|left, right| {
+        left.resource()
+            .name
+            .cmp(&right.resource().name)
+            .then_with(|| {
+                left.inner
+                    .allocation_nonce
+                    .cmp(&right.inner.allocation_nonce)
+            })
+    });
+    if let Some(duplicate) = ordered
+        .windows(2)
+        .find(|pair| pair[0].resource().name == pair[1].resource().name)
+    {
+        return Err(ScreenPlanError::DuplicateResourceLifetime {
+            resource: Arc::clone(duplicate[1].resource().name()),
+        });
+    }
+
+    let mut exact_index = 0;
+    let mut lifetime_index = 0;
+    while let (Some(resource), Some(lifetime)) = (
+        exact.resources().get(exact_index),
+        ordered.get(lifetime_index),
+    ) {
+        match resource.name.cmp(&lifetime.resource().name) {
+            std::cmp::Ordering::Less => {
+                return Err(ScreenPlanError::MissingResourceLifetime {
+                    resource: Arc::clone(&resource.name),
+                });
+            }
+            std::cmp::Ordering::Greater => {
+                return Err(ScreenPlanError::UnexpectedResourceLifetime {
+                    resource: Arc::clone(lifetime.resource().name()),
+                });
+            }
+            std::cmp::Ordering::Equal => {
+                if resource != lifetime.resource() {
+                    return Err(ScreenPlanError::ResourceLifetimeAccountingMismatch {
+                        resource: Arc::clone(&resource.name),
+                    });
+                }
+                exact_index += 1;
+                lifetime_index += 1;
+            }
+        }
+    }
+    if let Some(resource) = exact.resources().get(exact_index) {
+        return Err(ScreenPlanError::MissingResourceLifetime {
+            resource: Arc::clone(&resource.name),
+        });
+    }
+    if let Some(lifetime) = ordered.get(lifetime_index) {
+        return Err(ScreenPlanError::UnexpectedResourceLifetime {
+            resource: Arc::clone(lifetime.resource().name()),
+        });
+    }
+    Ok(ordered)
+}
+
 fn bind_retained_resources(
     required: &[ScreenRequiredResourceMinimum],
     exact: &ScreenExactResourceLedger,
+    lifetimes: &[ScreenResourceLifetime],
 ) -> Result<ScreenRetainedResourceLedger, ScreenPlanError> {
     let mut entries = Vec::new();
     entries
         .try_reserve_exact(exact.resources().len())
         .map_err(|_| ScreenPlanError::AllocationFailed)?;
-    for resource in exact.resources() {
+    for (resource, lifetime) in exact.resources().iter().zip(lifetimes) {
         let requirement = required
             .binary_search_by(|requirement| requirement.name.cmp(&resource.name))
             .or_else(|_| {
@@ -2059,12 +2312,13 @@ fn bind_retained_resources(
                 scope: Arc::clone(&resource.accounting_scope),
             })?;
         entries.push(ScreenRetainedResourceEntry {
+            name: Arc::clone(&resource.name),
             retention: requirement.retention.clone(),
             descriptor: Arc::clone(&requirement.descriptor),
-            bytes: resource.bytes,
+            lifetime: lifetime.clone(),
         });
     }
-    let entries = merge_retained_resources(entries)?;
+    let entries = normalize_retained_resources(entries)?;
     Ok(ScreenRetainedResourceLedger {
         entries: Arc::new(entries),
         total_bytes: exact.total_bytes,
@@ -2102,14 +2356,14 @@ fn candidate_retained_resources(
     {
         entries.push(entry.clone());
     }
-    let entries = merge_retained_resources(entries)?;
+    let entries = normalize_retained_resources(entries)?;
     let mut total_bytes = 0_u64;
     for entry in &entries {
         total_bytes = checked_sum(
             &entry.descriptor,
             ScreenResourceKind::WorkerExactLedger,
             total_bytes,
-            entry.bytes,
+            entry.bytes(),
         )?;
     }
     let minimum_bytes = full_plan_ledger(candidate)?.total_bytes;
@@ -2125,29 +2379,28 @@ fn candidate_retained_resources(
     })
 }
 
-fn merge_retained_resources(
+fn normalize_retained_resources(
     mut entries: Vec<ScreenRetainedResourceEntry>,
 ) -> Result<Vec<ScreenRetainedResourceEntry>, ScreenPlanError> {
-    entries.sort_unstable_by(|left, right| left.retention.cmp(&right.retention));
-    let mut merged: Vec<ScreenRetainedResourceEntry> = Vec::new();
-    merged
-        .try_reserve_exact(entries.len())
-        .map_err(|_| ScreenPlanError::AllocationFailed)?;
-    for entry in entries {
-        if let Some(previous) = merged.last_mut()
-            && previous.retention == entry.retention
-        {
-            previous.bytes = checked_sum(
-                &previous.descriptor,
-                ScreenResourceKind::WorkerExactLedger,
-                previous.bytes,
-                entry.bytes,
-            )?;
-            continue;
-        }
-        merged.push(entry);
+    entries.sort_unstable_by(compare_retained_resources);
+    if let Some(duplicate) = entries
+        .windows(2)
+        .find(|pair| pair[0].retention == pair[1].retention && pair[0].name == pair[1].name)
+    {
+        return Err(ScreenPlanError::DuplicateExactResourceName {
+            resource: Arc::clone(&duplicate[1].name),
+        });
     }
-    Ok(merged)
+    Ok(entries)
+}
+
+fn compare_retained_resources(
+    left: &ScreenRetainedResourceEntry,
+    right: &ScreenRetainedResourceEntry,
+) -> std::cmp::Ordering {
+    left.retention
+        .cmp(&right.retention)
+        .then_with(|| left.name.cmp(&right.name))
 }
 
 fn required_source_minimums(

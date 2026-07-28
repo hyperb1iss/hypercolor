@@ -16,7 +16,8 @@ use hypercolor_core::input::screen::{
     ScreenProcessingProfile, ScreenPublicationHealth, ScreenPublicationHub,
     ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
     ScreenPublicationRequest, ScreenPublicationSlotPolicy, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, SourceScale,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
+    SourceScale,
 };
 
 fn non_zero(value: u32) -> NonZeroU32 {
@@ -100,15 +101,24 @@ fn demand(
 
 fn exact_ledger(
     ticket: &hypercolor_core::input::screen::ScreenWorkerPreparationTicket,
-) -> Result<ScreenExactResourceLedger, ScreenPlanError> {
-    ScreenExactResourceLedger::try_new(ticket.required_minimums().iter().map(|minimum| {
-        ScreenExactResource::try_new(
-            Arc::clone(minimum.name()),
-            minimum.resource(),
-            minimum.minimum_bytes(),
-        )
-        .expect("test resource attestation is exact")
-    }))
+) -> Result<(ScreenExactResourceLedger, Vec<ScreenResourceLifetime>), ScreenPlanError> {
+    let resources = ticket
+        .required_minimums()
+        .iter()
+        .map(|minimum| {
+            ScreenExactResource::try_new(
+                Arc::clone(minimum.name()),
+                minimum.resource(),
+                minimum.minimum_bytes(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let lifetimes = resources
+        .iter()
+        .map(|resource| ticket.bind_resource_lifetime(resource))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ledger = ScreenExactResourceLedger::try_new(resources)?;
+    Ok((ledger, lifetimes))
 }
 
 fn commit(
@@ -130,16 +140,19 @@ fn commit(
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
         )
         .expect("test plan prepares");
+    let mut worker_lifetimes = Vec::new();
     for required_source in preparing.required_sources().to_vec() {
         let ticket = preparing
             .worker_ticket(&required_source)
             .expect("required source has a worker ticket");
+        let (ledger, lifetimes) = exact_ledger(&ticket).expect("exact ledger is valid");
         let token = ticket
-            .acknowledge(exact_ledger(&ticket).expect("exact ledger is valid"))
+            .acknowledge(ledger, &lifetimes)
             .expect("worker resources satisfy the ticket");
         preparing
             .acknowledge(token)
             .expect("worker token belongs to the candidate");
+        worker_lifetimes.push(lifetimes);
     }
     let armed = preparing
         .arm(
@@ -151,6 +164,7 @@ fn commit(
     let committed = builder
         .commit(armed, demand_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("test plan commits: {}", failure.error()));
+    drop(worker_lifetimes);
     reclaim(committed)
 }
 

@@ -61,7 +61,7 @@ pub use plan::{
     ScreenPlanAbort, ScreenPlanAdmissionLedger, ScreenPlanArmFailure, ScreenPlanBuilder,
     ScreenPlanCommitFailure, ScreenPlanError, ScreenPlanGeneration, ScreenPlanTransactionId,
     ScreenPreparedWorkerToken, ScreenRequiredResourceMinimum, ScreenResourceKind,
-    ScreenResourceLedger, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenResourceLedger, ScreenResourceLifetime, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerPreparationTicket,
 };
 pub use process::CaptureFrameProcessor;

@@ -11,7 +11,8 @@ use thiserror::Error;
 
 use super::plan::{
     InputPublicationDemandRevision, ScreenCapturePlan, ScreenPlanError, ScreenPlanGeneration,
-    ScreenRetainedResourceLedger, ScreenWorkerActivationLatch, ScreenWorkerBinding,
+    ScreenResourceLifetime, ScreenRetainedResourceLedger, ScreenWorkerActivationLatch,
+    ScreenWorkerBinding,
 };
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat,
@@ -561,14 +562,14 @@ impl ScreenPublicationStorage {
 }
 
 #[derive(Debug)]
-struct ScreenRetirementCharge {
+pub(crate) struct ScreenRetirementCharge {
     pending_bytes: Arc<AtomicU64>,
     bytes: u64,
     armed: AtomicBool,
 }
 
 impl ScreenRetirementCharge {
-    fn new(pending_bytes: Arc<AtomicU64>, bytes: u64) -> Self {
+    pub(crate) fn new(pending_bytes: Arc<AtomicU64>, bytes: u64) -> Self {
         Self {
             pending_bytes,
             bytes,
@@ -576,7 +577,7 @@ impl ScreenRetirementCharge {
         }
     }
 
-    fn arm(&self) {
+    pub(crate) fn arm(&self) {
         let was_armed = self.armed.swap(true, Ordering::AcqRel);
         assert!(!was_armed, "retirement charge is armed exactly once");
     }
@@ -1039,11 +1040,26 @@ impl ScreenCommittedState {
         barrier_entries.extend(branches.iter().map(|branch| Arc::clone(&branch.entry)));
         barrier_entries.sort_unstable_by(|left, right| left.descriptor.cmp(&right.descriptor));
         barrier_entries.dedup_by(|right, left| Arc::ptr_eq(left, right));
-        let retired_bytes = retired_entries.iter().try_fold(0_u64, |total, entry| {
-            total
-                .checked_add(entry.allocation_bytes)
-                .ok_or(ScreenPlanError::RetirementAccountingOverflow)
-        })?;
+        let retired_publication_bytes =
+            retired_entries.iter().try_fold(0_u64, |total, entry| {
+                total
+                    .checked_add(entry.allocation_bytes)
+                    .ok_or(ScreenPlanError::RetirementAccountingOverflow)
+            })?;
+        let retired_resource_lifetimes = base
+            .retained_resources
+            .retired_lifetimes(&retained_resources)?;
+        let retired_resource_bytes =
+            retired_resource_lifetimes
+                .iter()
+                .try_fold(0_u64, |total, lifetime| {
+                    total
+                        .checked_add(lifetime.resource().bytes())
+                        .ok_or(ScreenPlanError::RetirementAccountingOverflow)
+                })?;
+        let retired_bytes = retired_publication_bytes
+            .checked_add(retired_resource_bytes)
+            .ok_or(ScreenPlanError::RetirementAccountingOverflow)?;
 
         Ok((
             Arc::new(Self {
@@ -1058,6 +1074,7 @@ impl ScreenCommittedState {
                 activation,
                 barrier_entries,
                 retired_entries,
+                retired_resource_lifetimes,
                 retired_bindings,
                 retired_bytes,
             },
@@ -1082,6 +1099,10 @@ impl ScreenCommittedState {
 
     pub(crate) const fn retained_resources(&self) -> &ScreenRetainedResourceLedger {
         &self.retained_resources
+    }
+
+    pub(crate) fn pending_retirement_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.pending_retired_bytes)
     }
 
     /// Fixed slot policy represented by this snapshot.
@@ -1157,6 +1178,7 @@ fn compare_bindings(left: &ScreenWorkerBinding, right: &ScreenWorkerBinding) -> 
 #[must_use = "retired publication pools must be reclaimed outside the coordinator lock"]
 pub struct ScreenPublicationRetirement {
     entries: Vec<Arc<ScreenBranchEntry>>,
+    resource_lifetimes: Vec<ScreenResourceLifetime>,
     bytes: u64,
 }
 
@@ -1171,6 +1193,12 @@ impl ScreenPublicationRetirement {
     #[must_use]
     pub fn branch_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Number of retired worker allocations still owned by this handoff.
+    #[must_use]
+    pub fn resource_count(&self) -> usize {
+        self.resource_lifetimes.len()
     }
 
     /// Reclaim every pool for which this handle is the final owner.
@@ -1193,8 +1221,17 @@ impl ScreenPublicationRetirement {
             }
             blocked
         });
+        self.resource_lifetimes.retain(|lifetime| {
+            let blocked = !lifetime.is_final_owner();
+            if blocked {
+                blocked_bytes = blocked_bytes
+                    .checked_add(lifetime.resource().bytes())
+                    .expect("retirement subset cannot exceed its checked total");
+            }
+            blocked
+        });
         self.bytes = blocked_bytes;
-        if self.entries.is_empty() {
+        if self.entries.is_empty() && self.resource_lifetimes.is_empty() {
             Ok(())
         } else {
             Err(self)
@@ -1207,6 +1244,7 @@ impl fmt::Debug for ScreenPublicationRetirement {
         formatter
             .debug_struct("ScreenPublicationRetirement")
             .field("branch_count", &self.entries.len())
+            .field("resource_count", &self.resource_lifetimes.len())
             .field("pending_bytes", &self.bytes)
             .finish_non_exhaustive()
     }
@@ -1218,6 +1256,7 @@ pub(crate) struct ScreenCommitActivation {
     activation: Arc<ScreenWorkerActivationLatch>,
     barrier_entries: Vec<Arc<ScreenBranchEntry>>,
     retired_entries: Vec<Arc<ScreenBranchEntry>>,
+    retired_resource_lifetimes: Vec<ScreenResourceLifetime>,
     retired_bindings: Vec<ScreenWorkerBinding>,
     retired_bytes: u64,
 }
@@ -1639,6 +1678,9 @@ impl ScreenPublicationHub {
         for entry in &activation.retired_entries {
             entry.retirement_charge.arm();
         }
+        for lifetime in &activation.retired_resource_lifetimes {
+            lifetime.arm_retirement();
+        }
         self.state.store(state);
         for entry in &activation.retired_entries {
             entry.retire();
@@ -1652,11 +1694,13 @@ impl ScreenPublicationHub {
             activation: _,
             barrier_entries: _,
             retired_entries,
+            retired_resource_lifetimes,
             retired_bindings: _,
             retired_bytes,
         } = *activation;
         Ok(ScreenPublicationRetirement {
             entries: retired_entries,
+            resource_lifetimes: retired_resource_lifetimes,
             bytes: retired_bytes,
         })
     }
