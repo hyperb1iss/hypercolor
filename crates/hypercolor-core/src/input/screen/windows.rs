@@ -1050,15 +1050,7 @@ fn reduction_issue(telemetry: &ReductionTelemetry) -> Option<SourceIssue> {
     telemetry.issue.as_ref().map(|issue| {
         SourceIssue::new(
             "windows_capture_gpu_reduction_degraded",
-            format!(
-                "path={:?}; {issue}; gpu_failures={}, gpu_completed={}, cpu_completed={}, ring_busy={}, readback_bytes={}",
-                telemetry.path,
-                telemetry.gpu_failures,
-                telemetry.gpu_completed,
-                telemetry.cpu_completed,
-                telemetry.ring_busy,
-                telemetry.readback_bytes,
-            ),
+            format!("GPU reduction fell back to CPU: {issue}"),
             true,
         )
         .with_remediation("update the display driver or restart the capture session")
@@ -1071,10 +1063,11 @@ fn record_capture_health(
     freshness_deadline: std::time::Instant,
     telemetry: &ReductionTelemetry,
 ) {
-    let _ = status.record_sample(captured_at, freshness_deadline, 1);
     status.publish_diagnostics(reduction_diagnostics(telemetry));
     if let Some(issue) = reduction_issue(telemetry) {
-        status.degraded(issue);
+        let _ = status.record_degraded_sample(captured_at, freshness_deadline, 1, issue);
+    } else {
+        let _ = status.record_sample(captured_at, freshness_deadline, 1);
     }
 }
 

@@ -1265,6 +1265,47 @@ impl SourceSessionWriter {
         freshness_deadline: Instant,
         resource_count: usize,
     ) -> Result<bool, SourceStatusError> {
+        self.record_sample_with_health(
+            sampled_at,
+            freshness_deadline,
+            resource_count,
+            SourceState::Live,
+            None,
+        )
+    }
+
+    /// Publish a fresh sample while preserving recoverable degraded health.
+    ///
+    /// Steady degraded samples update the allocation-free sample plane without
+    /// republishing an identical structural transition.
+    ///
+    /// # Errors
+    ///
+    /// Error behavior matches [`Self::record_sample`].
+    pub fn record_degraded_sample(
+        &self,
+        sampled_at: Instant,
+        freshness_deadline: Instant,
+        resource_count: usize,
+        issue: SourceIssue,
+    ) -> Result<bool, SourceStatusError> {
+        self.record_sample_with_health(
+            sampled_at,
+            freshness_deadline,
+            resource_count,
+            SourceState::Degraded,
+            Some(issue),
+        )
+    }
+
+    fn record_sample_with_health(
+        &self,
+        sampled_at: Instant,
+        freshness_deadline: Instant,
+        resource_count: usize,
+        state: SourceState,
+        issue: Option<SourceIssue>,
+    ) -> Result<bool, SourceStatusError> {
         let mut control = lock_control(&self.shared);
         if control.active_session != Some(self.session_generation) {
             return Ok(false);
@@ -1294,19 +1335,19 @@ impl SourceSessionWriter {
         let observed_stale = token_identity(prior_token) == token_identity(previous.token)
             && token_observed_stale(prior_token);
         let current = self.shared.latest.load_full();
-        if current.state != SourceState::Live
+        if current.state != state
             || current.freshness != SourceFreshness::Fresh
             || current.denied_resource_count != 0
-            || current.issue.is_some()
+            || current.issue != issue
         {
             let mut status = (*current).clone();
-            status.state = SourceState::Live;
+            status.state = state;
             status.freshness = SourceFreshness::Fresh;
             status.last_sample_at = Some(sampled_at);
             status.freshness_deadline = Some(freshness_deadline);
             status.resource_count = resource_count;
             status.denied_resource_count = 0;
-            status.issue = None;
+            status.issue = issue;
             status.freshness_issue = None;
             publish_structural(&self.shared, status);
             return Ok(true);

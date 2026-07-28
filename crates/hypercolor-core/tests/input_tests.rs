@@ -3390,6 +3390,66 @@ async fn sample_refresh_reschedules_expiry_without_a_structural_wake() {
 }
 
 #[tokio::test]
+async fn degraded_sample_refresh_does_not_flap_structural_health() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    let mut subscription = handle.subscribe();
+    let first_sample = Instant::now();
+    let issue = test_issue("gpu_reduction_fallback");
+
+    assert_eq!(
+        session.record_degraded_sample(
+            first_sample,
+            first_sample + Duration::from_secs(1),
+            1,
+            issue.clone(),
+        ),
+        Ok(true)
+    );
+    let degraded = subscription
+        .changed()
+        .await
+        .expect("initial degraded sample should publish");
+    assert_eq!(degraded.state, SourceState::Degraded);
+    assert_eq!(degraded.freshness, SourceFreshness::Fresh);
+
+    let second_sample = first_sample + Duration::from_millis(10);
+    assert_eq!(
+        session.record_degraded_sample(
+            second_sample,
+            second_sample + Duration::from_secs(1),
+            1,
+            issue,
+        ),
+        Ok(true)
+    );
+    let mut duplicate = Box::pin(subscription.changed());
+    tokio::select! {
+        biased;
+        result = &mut duplicate => panic!("degraded sample republished: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    drop(duplicate);
+
+    assert_eq!(
+        session.record_sample(
+            second_sample + Duration::from_millis(10),
+            second_sample + Duration::from_secs(1),
+            1,
+        ),
+        Ok(true)
+    );
+    let recovered = subscription
+        .changed()
+        .await
+        .expect("healthy sample should publish recovery");
+    assert_eq!(recovered.state, SourceState::Live);
+    assert!(recovered.issue.is_none());
+}
+
+#[tokio::test]
 async fn cancelled_status_wait_can_reenter_without_losing_a_publication() {
     let (writer, handle) = test_status_writer();
     let session = writer

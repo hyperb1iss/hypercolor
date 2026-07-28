@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 use windows::Win32::Foundation::{E_ACCESSDENIED, E_FAIL};
+use windows::Win32::Graphics::Direct3D11::D3D11_ASYNC_GETDATA_DONOTFLUSH;
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
     DXGI_ERROR_NOT_CURRENTLY_AVAILABLE, DXGI_ERROR_SESSION_DISCONNECTED, DXGI_ERROR_WAIT_TIMEOUT,
@@ -188,7 +189,7 @@ fn second_gpu_query_retry_is_nonflushing() {
     let (first, second) = super::gpu_reduction::query_poll_flags_for_test();
 
     assert_eq!(first, 0);
-    assert_ne!(second, 0);
+    assert_eq!(second, D3D11_ASYNC_GETDATA_DONOTFLUSH.0.cast_unsigned());
 }
 
 #[test]

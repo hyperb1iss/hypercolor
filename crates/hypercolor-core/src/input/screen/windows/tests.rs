@@ -60,8 +60,8 @@ fn healthy_gpu_reduction_counters_are_visible_through_source_diagnostics() {
     assert_eq!(diagnostics.readback_bytes, 8192);
 }
 
-#[test]
-fn gpu_reduction_degradation_survives_successful_sample_recording() {
+#[tokio::test]
+async fn gpu_reduction_degradation_survives_successful_sample_recording_without_flapping() {
     let mut reporter = SourceStatusReporter::new(
         "windows_screen_capture",
         SourceKind::Screen,
@@ -76,7 +76,7 @@ fn gpu_reduction_degradation_survives_successful_sample_recording() {
         .expect("status session starts")
         .expect("configured reporter yields a writer");
     let now = Instant::now();
-    let telemetry = ReductionTelemetry {
+    let mut telemetry = ReductionTelemetry {
         path: ReductionPath::CpuFallback,
         gpu_completed: 7,
         cpu_completed: 2,
@@ -88,12 +88,21 @@ fn gpu_reduction_degradation_survives_successful_sample_recording() {
     };
 
     record_capture_health(&status, now, now + Duration::from_millis(50), &telemetry);
+    let mut subscription = reporter.handle().subscribe();
+    telemetry.cpu_completed += 1;
     record_capture_health(
         &status,
         now + Duration::from_millis(10),
         now + Duration::from_millis(60),
         &telemetry,
     );
+    let mut duplicate = Box::pin(subscription.changed());
+    tokio::select! {
+        biased;
+        result = &mut duplicate => panic!("fallback counters republished health: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    drop(duplicate);
 
     let snapshot = reporter.handle().snapshot();
     assert_eq!(snapshot.state, SourceState::Degraded);
@@ -105,8 +114,8 @@ fn gpu_reduction_degradation_survives_successful_sample_recording() {
         issue.code.as_ref(),
         "windows_capture_gpu_reduction_degraded"
     );
-    assert!(issue.message.contains("ring_busy=3"));
-    assert!(issue.message.contains("readback_bytes=4096"));
+    assert!(issue.message.contains("injected map failure"));
+    assert!(!issue.message.contains("cpu_completed"));
     let diagnostics = reporter
         .handle()
         .diagnostics_snapshot()
@@ -116,7 +125,7 @@ fn gpu_reduction_degradation_survives_successful_sample_recording() {
         diagnostics.reduction_path,
         ScreenCaptureReductionPath::CpuFallback
     );
-    assert_eq!(diagnostics.cpu_completed, 2);
+    assert_eq!(diagnostics.cpu_completed, 3);
     assert_eq!(diagnostics.gpu_failures, 1);
 }
 
