@@ -705,6 +705,34 @@ mod tests {
     }
 
     #[test]
+    fn screen_data_to_surface_reserves_scratch_before_grid_growth() {
+        let screen_data = ScreenData::from_zones(
+            (0_u8..12)
+                .map(|value| ZoneColors {
+                    zone_id: format!("screen:{value}"),
+                    colors: vec![[value, 0, 0]],
+                })
+                .collect(),
+            4,
+            3,
+        );
+        let mut sector_grid = Vec::with_capacity(8);
+        assert!(sector_grid.capacity() < 12);
+        let mut surface_pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 3), 2);
+
+        let surface =
+            screen_data_to_surface(&screen_data, 4, 3, &mut sector_grid, &mut surface_pool)
+                .expect("growing screen grid conversion should succeed")
+                .expect("screen surface should build");
+
+        assert_eq!(sector_grid.len(), 12);
+        assert!(sector_grid.capacity() >= 12);
+        assert_eq!(surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
+        assert_eq!(surface.get_pixel(3, 2), Rgba::new(11, 0, 0, 255));
+    }
+
+    #[test]
     fn screen_data_to_surface_preserves_pool_after_geometry_overflow() {
         let screen_data = ScreenData::from_zones(
             vec![ZoneColors {

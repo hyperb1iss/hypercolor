@@ -41,11 +41,9 @@ pub(crate) fn screen_data_to_surface(
         return Ok(None);
     }
     sector_grid.clear();
-    if sector_grid.capacity() < cell_count {
-        sector_grid
-            .try_reserve(cell_count - sector_grid.capacity())
-            .context("screen sector-grid allocation failed")?;
-    }
+    sector_grid
+        .try_reserve(cell_count)
+        .context("screen sector-grid allocation failed")?;
     for zone in &screen_data.zone_colors {
         let Some(color) = zone.colors.first() else {
             return Ok(None);
