@@ -603,6 +603,71 @@ fn register_html_effects_skips_builtin_html_ports_without_servo() {
     assert_eq!(registry.len(), 0);
 }
 
+#[cfg(feature = "servo")]
+#[test]
+fn stale_screen_cast_html_coexists_with_native_and_current_canvas_port() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    let stale_path = root.join("user/stale-screen-cast.html");
+    let canvas_path = root.join("user/screen-cast-canvas2d.html");
+
+    write_html(
+        &stale_path,
+        r#"
+<head>
+  <title>Stale Screen Cast</title>
+  <meta builtin-id="screen_cast" />
+</head>
+"#,
+    );
+    write_html(
+        &canvas_path,
+        r#"
+<head>
+  <title>Screen Cast Canvas2D</title>
+  <meta builtin-id="screen_cast_canvas2d" />
+</head>
+"#,
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    register_builtin_effects(&mut registry);
+    let native_id = registry
+        .iter()
+        .find(|(_, entry)| {
+            matches!(&entry.metadata.source, EffectSource::Native { .. })
+                && entry.metadata.source.source_stem() == Some("screen_cast")
+        })
+        .map(|(id, _)| *id)
+        .expect("native Screen Cast should be registered");
+    let builtin_count = registry.len();
+
+    let report = register_html_effects(&mut registry, &[root]);
+
+    assert_eq!(report.loaded_effects, 2);
+    assert_eq!(report.replaced_effects, 0);
+    assert_eq!(registry.len(), builtin_count + 2);
+    assert!(matches!(
+        registry.get(&native_id).map(|entry| &entry.metadata.source),
+        Some(EffectSource::Native { .. })
+    ));
+    for path in [stale_path, canvas_path] {
+        let canonical_path = fs::canonicalize(&path).expect("effect path should canonicalize");
+        let html_entry = registry
+            .iter()
+            .find(|(_, entry)| entry.source_path == canonical_path)
+            .map(|(id, entry)| (*id, entry))
+            .expect("HTML effect should remain discoverable");
+        assert_ne!(html_entry.0, native_id);
+        assert!(matches!(
+            &html_entry.1.metadata.source,
+            EffectSource::Html { .. }
+        ));
+        let path_alias = html_path_effect_id_for_testing(&path);
+        assert_eq!(registry.resolve_id(&path_alias), Some(html_entry.0));
+    }
+}
+
 #[test]
 fn generated_audio_effects_keep_audio_reactive_metadata() {
     let root = bundled_effects_root();

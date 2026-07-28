@@ -25,6 +25,8 @@ use super::{EffectEntry, EffectRegistry};
 use crate::effect::builtin::builtin_effect_stable_id;
 
 const HTML_EXTENSION: &str = "html";
+#[cfg(feature = "servo")]
+const NATIVE_SCREEN_CAST_BUILTIN_ID: &str = "screen_cast";
 
 /// Discovery error for a single file/path during HTML scanning.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,6 +282,7 @@ fn html_effect_id(
     parsed
         .builtin_id
         .as_deref()
+        .filter(|builtin_id| *builtin_id != NATIVE_SCREEN_CAST_BUILTIN_ID)
         .map(builtin_effect_stable_id)
         .or_else(|| stable_bundled_html_effect_id(source_path))
         .unwrap_or_else(|| deterministic_html_effect_id(source_path))
