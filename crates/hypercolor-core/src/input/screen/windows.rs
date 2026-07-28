@@ -1540,6 +1540,15 @@ fn build_capture_frame(
 ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
     let source_id = capture_source_id(&frame.source_id)?;
     let topology_generation = frame.topology_generation;
+    let cursor_content = if frame.cursor.visible {
+        if frame.cursor.composed {
+            super::CaptureCursorContent::Composed
+        } else {
+            super::CaptureCursorContent::Absent
+        }
+    } else {
+        super::CaptureCursorContent::Hidden
+    };
     let cursor = CaptureCursor {
         visible: frame.cursor.visible,
         position: (frame.cursor.width > 0 && frame.cursor.height > 0).then_some(PhysicalOrigin {
@@ -1555,7 +1564,7 @@ fn build_capture_frame(
             .transpose()?,
         shape_generation: (frame.cursor.shape_generation > 0)
             .then_some(frame.cursor.shape_generation),
-        composed: frame.cursor.composed,
+        content: cursor_content,
     };
     let storage_extent = PixelExtent::new(frame.width, frame.height)?;
     let native_extent = PixelExtent::new(frame.native_width, frame.native_height)?;

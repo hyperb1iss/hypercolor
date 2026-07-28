@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureFrame, CaptureFrameMetadata,
+    CaptureColorSpace, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
+    CaptureCursorShapeFormat, CaptureDamage, CaptureFrame, CaptureFrameError, CaptureFrameMetadata,
     CaptureFrameProcessor, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
     CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin,
     PixelExtent, PixelRect, RawCaptureSurface, SourceScale,
@@ -348,7 +349,7 @@ fn cursor_geometry_tracks_crop_and_rotation() {
         hotspot: Some(PhysicalOrigin { x: 1, y: 0 }),
         shape_extent: Some(extent(2, 1)),
         shape_generation: Some(7),
-        composed: true,
+        content: hypercolor_core::input::screen::CaptureCursorContent::Composed,
     };
     let frame = CaptureFrame::new(
         metadata,
@@ -375,4 +376,128 @@ fn cursor_geometry_tracks_crop_and_rotation() {
         Some(PhysicalOrigin { x: 0, y: 1 })
     );
     assert_eq!(processed.metadata().cursor.shape_extent, Some(extent(1, 2)));
+}
+
+#[test]
+fn outside_crop_separate_cursor_keeps_content_for_identity_transform() {
+    let crop = PixelRect::new(0, 0, 2, 2).expect("test crop is valid");
+    let mut metadata = metadata(4, 3, CaptureRotation::Identity, Some(crop));
+    let shape = Arc::new(
+        CaptureCursorShape::new(
+            3,
+            extent(1, 1),
+            CaptureCursorShapeFormat::ColorBgra8,
+            4,
+            vec![0; 4].into(),
+        )
+        .expect("test cursor shape is valid"),
+    );
+    metadata.cursor = CaptureCursor {
+        visible: true,
+        position: Some(PhysicalOrigin { x: 3, y: 2 }),
+        hotspot: Some(PhysicalOrigin { x: 0, y: 0 }),
+        shape_extent: Some(shape.extent()),
+        shape_generation: Some(shape.generation().get()),
+        content: CaptureCursorContent::Separate(Arc::clone(&shape)),
+    };
+    let frame = CaptureFrame::<RawCaptureSurface>::new(
+        metadata,
+        CaptureStorage::Cpu(CpuCaptureStorage::new(
+            labeled_rgba(4, 3),
+            CapturePixelFormat::Rgba8,
+            16,
+            0,
+        )),
+        CaptureDamage::default(),
+    )
+    .expect("raw separate-cursor frame is valid");
+
+    let processed = CaptureFrameProcessor::default()
+        .process(frame)
+        .expect("identity processing preserves separate cursor pixels");
+    assert!(!processed.metadata().cursor.visible);
+    assert_eq!(
+        processed.metadata().cursor.position,
+        Some(PhysicalOrigin { x: 3, y: 2 })
+    );
+    let CaptureCursorContent::Separate(processed_shape) = &processed.metadata().cursor.content
+    else {
+        panic!("separate cursor ownership must survive cropping");
+    };
+    assert!(Arc::ptr_eq(processed_shape, &shape));
+}
+
+#[test]
+fn outside_crop_composed_cursor_keeps_content_through_rotation() {
+    let crop = PixelRect::new(0, 0, 2, 2).expect("test crop is valid");
+    let mut metadata = metadata(4, 3, CaptureRotation::Clockwise90, Some(crop));
+    metadata.cursor = CaptureCursor {
+        visible: true,
+        position: Some(PhysicalOrigin { x: 3, y: 2 }),
+        hotspot: Some(PhysicalOrigin { x: 0, y: 0 }),
+        shape_extent: Some(extent(2, 1)),
+        shape_generation: Some(3),
+        content: CaptureCursorContent::Composed,
+    };
+    let frame = CaptureFrame::<RawCaptureSurface>::new(
+        metadata,
+        CaptureStorage::Cpu(CpuCaptureStorage::new(
+            labeled_rgba(4, 3),
+            CapturePixelFormat::Rgba8,
+            16,
+            0,
+        )),
+        CaptureDamage::default(),
+    )
+    .expect("raw composed-cursor frame is valid");
+
+    let processed = CaptureFrameProcessor::default()
+        .process(frame)
+        .expect("surface rotation also rotates composed cursor pixels");
+    assert!(!processed.metadata().cursor.visible);
+    assert_eq!(
+        processed.metadata().cursor.content,
+        CaptureCursorContent::Composed
+    );
+    assert_eq!(processed.metadata().cursor.shape_extent, Some(extent(1, 2)));
+}
+
+#[test]
+fn rotated_separate_cursor_requires_shape_aware_processing() {
+    let crop = PixelRect::new(0, 0, 2, 2).expect("test crop is valid");
+    let mut metadata = metadata(4, 3, CaptureRotation::Clockwise90, Some(crop));
+    let shape = Arc::new(
+        CaptureCursorShape::new(
+            3,
+            extent(2, 1),
+            CaptureCursorShapeFormat::ColorBgra8,
+            8,
+            vec![0; 8].into(),
+        )
+        .expect("test cursor shape is valid"),
+    );
+    metadata.cursor = CaptureCursor {
+        visible: true,
+        position: Some(PhysicalOrigin { x: 3, y: 2 }),
+        hotspot: Some(PhysicalOrigin { x: 0, y: 0 }),
+        shape_extent: Some(shape.extent()),
+        shape_generation: Some(shape.generation().get()),
+        content: CaptureCursorContent::Separate(shape),
+    };
+    let frame = CaptureFrame::<RawCaptureSurface>::new(
+        metadata,
+        CaptureStorage::Cpu(CpuCaptureStorage::new(
+            labeled_rgba(4, 3),
+            CapturePixelFormat::Rgba8,
+            16,
+            0,
+        )),
+        CaptureDamage::default(),
+    )
+    .expect("raw separate-cursor frame is valid");
+
+    assert!(matches!(
+        CaptureFrameProcessor::default().process(frame),
+        Err(CaptureFrameError::SeparateCursorGeometryProcessingRequired)
+    ));
 }

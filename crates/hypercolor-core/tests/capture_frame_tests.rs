@@ -5,7 +5,8 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
+    CaptureColorSpace, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
+    CaptureCursorShapeFormat, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
     CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool, CaptureRotation,
     CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
     MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface,
@@ -52,6 +53,216 @@ fn cpu_storage(width: u32, height: u32) -> CaptureStorage {
         i64::from(width * 4),
         0,
     ))
+}
+
+#[test]
+fn cursor_shapes_enforce_exact_native_plane_layouts() {
+    let color = CaptureCursorShape::new(
+        7,
+        extent(2, 3),
+        CaptureCursorShapeFormat::ColorBgra8,
+        12,
+        vec![0; 36].into(),
+    )
+    .expect("padded color rows are valid");
+    assert_eq!(color.generation().get(), 7);
+    assert_eq!(color.extent(), extent(2, 3));
+    assert_eq!(color.row_stride(), 12);
+    assert_eq!(color.bytes().len(), 36);
+
+    let monochrome = CaptureCursorShape::new(
+        9,
+        extent(10, 3),
+        CaptureCursorShapeFormat::MonochromeAndXor,
+        4,
+        vec![0; 24].into(),
+    )
+    .expect("monochrome AND and XOR planes each contain visible-height rows");
+    assert_eq!(
+        monochrome.format(),
+        CaptureCursorShapeFormat::MonochromeAndXor
+    );
+
+    CaptureCursorShape::new(
+        11,
+        extent(2, 2),
+        CaptureCursorShapeFormat::MaskedColorBgra8,
+        8,
+        vec![0; 16].into(),
+    )
+    .expect("masked-color rows share the BGRA layout");
+}
+
+#[test]
+fn malformed_cursor_shapes_return_typed_errors() {
+    assert_eq!(
+        CaptureCursorShape::new(
+            0,
+            extent(1, 1),
+            CaptureCursorShapeFormat::ColorBgra8,
+            4,
+            vec![0; 4].into(),
+        ),
+        Err(CaptureFrameError::ZeroCursorShapeGeneration)
+    );
+    assert_eq!(
+        CaptureCursorShape::new(
+            1,
+            extent(2, 1),
+            CaptureCursorShapeFormat::MaskedColorBgra8,
+            7,
+            vec![0; 7].into(),
+        ),
+        Err(CaptureFrameError::InvalidCursorShapeStride {
+            stride: 7,
+            minimum: 8,
+        })
+    );
+    assert_eq!(
+        CaptureCursorShape::new(
+            1,
+            extent(9, 2),
+            CaptureCursorShapeFormat::MonochromeAndXor,
+            2,
+            vec![0; 7].into(),
+        ),
+        Err(CaptureFrameError::CursorShapeLengthMismatch {
+            actual: 7,
+            expected: 8,
+        })
+    );
+}
+
+#[test]
+fn explicit_hidden_cannot_be_visible_but_stored_content_may_be_off_surface() {
+    let mut visible_hidden = metadata(CaptureRotation::Identity);
+    visible_hidden.cursor.visible = true;
+    visible_hidden.cursor.content = CaptureCursorContent::Hidden;
+    assert!(matches!(
+        CaptureFrame::<RawCaptureSurface>::new(
+            visible_hidden,
+            cpu_storage(4, 3),
+            CaptureDamage::default(),
+        ),
+        Err(CaptureFrameError::VisibleCursorMarkedHidden)
+    ));
+
+    let mut hidden_composed = metadata(CaptureRotation::Identity);
+    hidden_composed.cursor.content = CaptureCursorContent::Composed;
+    let frame = CaptureFrame::<RawCaptureSurface>::new(
+        hidden_composed,
+        cpu_storage(4, 3),
+        CaptureDamage::default(),
+    )
+    .expect("composed source semantics remain valid outside the selected surface");
+    assert!(!frame.metadata().cursor.visible);
+    assert_eq!(
+        frame.metadata().cursor.content,
+        CaptureCursorContent::Composed
+    );
+}
+
+#[test]
+fn separate_cursor_metadata_must_match_its_shape() {
+    let shape = Arc::new(
+        CaptureCursorShape::new(
+            7,
+            extent(2, 1),
+            CaptureCursorShapeFormat::ColorBgra8,
+            8,
+            vec![0; 8].into(),
+        )
+        .expect("test cursor shape is valid"),
+    );
+    let mut wrong_extent = metadata(CaptureRotation::Identity);
+    wrong_extent.cursor = CaptureCursor {
+        visible: true,
+        shape_extent: Some(extent(1, 2)),
+        shape_generation: Some(7),
+        content: CaptureCursorContent::Separate(Arc::clone(&shape)),
+        ..CaptureCursor::default()
+    };
+    assert!(matches!(
+        CaptureFrame::<RawCaptureSurface>::new(
+            wrong_extent,
+            cpu_storage(4, 3),
+            CaptureDamage::default(),
+        ),
+        Err(CaptureFrameError::CursorShapeExtentMismatch { .. })
+    ));
+
+    let mut wrong_generation = metadata(CaptureRotation::Identity);
+    wrong_generation.cursor = CaptureCursor {
+        visible: true,
+        shape_extent: Some(shape.extent()),
+        shape_generation: Some(8),
+        content: CaptureCursorContent::Separate(shape),
+        ..CaptureCursor::default()
+    };
+    assert!(matches!(
+        CaptureFrame::<RawCaptureSurface>::new(
+            wrong_generation,
+            cpu_storage(4, 3),
+            CaptureDamage::default(),
+        ),
+        Err(CaptureFrameError::CursorShapeGenerationMismatch { .. })
+    ));
+}
+
+#[test]
+fn shared_cpu_owner_retains_the_original_arc_allocation() {
+    let owner = Arc::new(vec![0_u8; 16]);
+    let owner_identity = Arc::as_ptr(&owner).cast::<()>();
+    let storage =
+        CpuCaptureStorage::from_shared_owner(Arc::clone(&owner), CapturePixelFormat::Rgba8, 8, 0);
+
+    assert_eq!(storage.owner_identity(), owner_identity);
+    assert_eq!(Arc::strong_count(&owner), 2);
+    assert_eq!(storage.bytes().as_ptr(), owner.as_ptr());
+}
+
+#[test]
+fn normalized_transition_stamps_output_color_metadata_only() {
+    let raw_metadata = metadata(CaptureRotation::Identity);
+    let expected_source = raw_metadata.source_id.clone();
+    let expected_captured_at = raw_metadata.captured_at;
+    let expected_fresh_until = raw_metadata.fresh_until;
+    let expected_topology = raw_metadata.topology_generation;
+    let expected_session = raw_metadata.session_generation;
+    let expected_sequence = raw_metadata.sequence;
+    let geometry = raw_metadata.geometry;
+    let output_cursor = CaptureCursor {
+        content: CaptureCursorContent::Hidden,
+        ..CaptureCursor::default()
+    };
+    let raw = CaptureFrame::<RawCaptureSurface>::new(
+        raw_metadata,
+        cpu_storage(4, 3),
+        CaptureDamage::default(),
+    )
+    .expect("raw frame is valid");
+
+    let normalized = raw
+        .into_geometry_normalized_with_output_metadata(
+            geometry,
+            cpu_storage(4, 3),
+            CaptureDamage::default(),
+            CaptureColorSpace::DisplayP3,
+            CaptureTransferFunction::Linear,
+            output_cursor.clone(),
+        )
+        .expect("identity geometry is normalized");
+    let output = normalized.metadata();
+
+    assert_eq!(output.source_id, expected_source);
+    assert_eq!(output.topology_generation, expected_topology);
+    assert_eq!(output.session_generation, expected_session);
+    assert_eq!(output.sequence, expected_sequence);
+    assert_eq!(output.captured_at, expected_captured_at);
+    assert_eq!(output.fresh_until, expected_fresh_until);
+    assert_eq!(output.color_space, CaptureColorSpace::DisplayP3);
+    assert_eq!(output.transfer_function, CaptureTransferFunction::Linear);
+    assert_eq!(output.cursor, output_cursor);
 }
 
 #[test]

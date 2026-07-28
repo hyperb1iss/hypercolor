@@ -3,6 +3,7 @@
 use std::any::Any;
 use std::fmt;
 use std::marker::PhantomData;
+use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -335,6 +336,142 @@ pub enum CaptureTransferFunction {
     Unknown,
 }
 
+/// Native encoding of one separately-owned cursor shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureCursorShapeFormat {
+    /// BGRA color pixels with backend-defined alpha semantics.
+    ColorBgra8,
+    /// One bit-per-pixel AND plane followed by one XOR plane.
+    MonochromeAndXor,
+    /// BGRA pixels whose alpha selects copy or desktop-XOR behavior.
+    MaskedColorBgra8,
+}
+
+/// Immutable cursor pixels with an exact generation and memory layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureCursorShape {
+    generation: NonZeroU64,
+    extent: PixelExtent,
+    format: CaptureCursorShapeFormat,
+    row_stride: usize,
+    bytes: Arc<[u8]>,
+}
+
+impl CaptureCursorShape {
+    /// Validate and retain one backend-provided cursor shape without copying.
+    ///
+    /// Monochrome storage contains `height` AND rows followed by `height` XOR
+    /// rows. Color formats contain exactly `height` rows. Row padding is
+    /// retained, but trailing bytes are rejected so every shape has one exact
+    /// allocation contract.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero generations, undersized strides, and any allocation whose
+    /// length does not exactly match its declared layout.
+    pub fn new(
+        generation: u64,
+        extent: PixelExtent,
+        format: CaptureCursorShapeFormat,
+        row_stride: usize,
+        bytes: Arc<[u8]>,
+    ) -> Result<Self, CaptureFrameError> {
+        let generation =
+            NonZeroU64::new(generation).ok_or(CaptureFrameError::ZeroCursorShapeGeneration)?;
+        let width = usize::try_from(extent.width)
+            .map_err(|_| CaptureFrameError::CursorShapeSizeOverflow)?;
+        let height = usize::try_from(extent.height)
+            .map_err(|_| CaptureFrameError::CursorShapeSizeOverflow)?;
+        let (minimum_stride, rows) = match format {
+            CaptureCursorShapeFormat::ColorBgra8 | CaptureCursorShapeFormat::MaskedColorBgra8 => (
+                width
+                    .checked_mul(4)
+                    .ok_or(CaptureFrameError::CursorShapeSizeOverflow)?,
+                height,
+            ),
+            CaptureCursorShapeFormat::MonochromeAndXor => (
+                width
+                    .checked_add(7)
+                    .ok_or(CaptureFrameError::CursorShapeSizeOverflow)?
+                    / 8,
+                height
+                    .checked_mul(2)
+                    .ok_or(CaptureFrameError::CursorShapeSizeOverflow)?,
+            ),
+        };
+        if row_stride < minimum_stride {
+            return Err(CaptureFrameError::InvalidCursorShapeStride {
+                stride: row_stride,
+                minimum: minimum_stride,
+            });
+        }
+        let expected = row_stride
+            .checked_mul(rows)
+            .ok_or(CaptureFrameError::CursorShapeSizeOverflow)?;
+        if bytes.len() != expected {
+            return Err(CaptureFrameError::CursorShapeLengthMismatch {
+                actual: bytes.len(),
+                expected,
+            });
+        }
+        Ok(Self {
+            generation,
+            extent,
+            format,
+            row_stride,
+            bytes,
+        })
+    }
+
+    /// Stable shape generation within the capture source session.
+    #[must_use]
+    pub const fn generation(&self) -> NonZeroU64 {
+        self.generation
+    }
+
+    /// Visible cursor bounds represented by the shape.
+    #[must_use]
+    pub const fn extent(&self) -> PixelExtent {
+        self.extent
+    }
+
+    /// Native shape encoding.
+    #[must_use]
+    pub const fn format(&self) -> CaptureCursorShapeFormat {
+        self.format
+    }
+
+    /// Byte distance between rows within each plane.
+    #[must_use]
+    pub const fn row_stride(&self) -> usize {
+        self.row_stride
+    }
+
+    /// Exact shape bytes, including declared row padding.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Where cursor pixels for one capture frame reside.
+///
+/// This records source storage semantics independently of [`CaptureCursor::visible`].
+/// A cursor can retain separate or composed source content while falling outside
+/// a processed crop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CaptureCursorContent {
+    /// The backend supplied no cursor pixels for this frame.
+    #[default]
+    Absent,
+    /// The backend explicitly reported that the cursor is hidden.
+    Hidden,
+    /// Cursor pixels are owned separately from the captured surface.
+    Separate(Arc<CaptureCursorShape>),
+    /// Cursor pixels are already composed into the captured surface.
+    Composed,
+}
+
 /// Cursor metadata in native scanout coordinates.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CaptureCursor {
@@ -348,8 +485,8 @@ pub struct CaptureCursor {
     pub shape_extent: Option<PixelExtent>,
     /// Backend-specific shape generation, without exposing its native handle.
     pub shape_generation: Option<u64>,
-    /// Whether cursor pixels are already composed into storage.
-    pub composed: bool,
+    /// Ownership and composition state of the cursor pixels.
+    pub content: CaptureCursorContent,
 }
 
 /// Pixel encoding of a capture storage plane.
@@ -371,6 +508,7 @@ impl CapturePixelFormat {
 
 trait CaptureBytePlane: Send + Sync {
     fn bytes(&self) -> &[u8];
+    fn owner_identity(&self) -> *const ();
 }
 
 impl<T> CaptureBytePlane for T
@@ -379,6 +517,10 @@ where
 {
     fn bytes(&self) -> &[u8] {
         self.as_ref()
+    }
+
+    fn owner_identity(&self) -> *const () {
+        std::ptr::from_ref(self).cast()
     }
 }
 
@@ -423,6 +565,25 @@ impl CpuCaptureStorage {
         }
     }
 
+    /// Retain an already shared owner without allocating an outer `Arc`.
+    #[must_use]
+    pub fn from_shared_owner<T>(
+        owner: Arc<T>,
+        format: CapturePixelFormat,
+        row_stride: i64,
+        row0_offset: usize,
+    ) -> Self
+    where
+        T: AsRef<[u8]> + Send + Sync + 'static,
+    {
+        Self {
+            plane: owner,
+            format,
+            row_stride,
+            row0_offset,
+        }
+    }
+
     /// Shared pixel bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
@@ -445,6 +606,12 @@ impl CpuCaptureStorage {
     #[must_use]
     pub const fn row0_offset(&self) -> usize {
         self.row0_offset
+    }
+
+    /// Identity of the retained owner allocation.
+    #[must_use]
+    pub fn owner_identity(&self) -> *const () {
+        self.plane.owner_identity()
     }
 
     pub(crate) fn tightly_packed_rgba8(&self, extent: PixelExtent) -> Option<&[u8]> {
@@ -962,6 +1129,32 @@ impl CaptureFrame<RawCaptureSurface> {
         metadata.cursor = cursor;
         CaptureFrame::from_parts(metadata, storage, damage)
     }
+
+    /// Consume a raw frame and stamp all byte-changing output metadata.
+    ///
+    /// Source identity, epochs, sequence, and acquisition timestamps remain
+    /// unchanged. Geometry, color space, transfer function, and cursor describe
+    /// the replacement storage produced at this transition.
+    ///
+    /// # Errors
+    ///
+    /// Applies normalized-stage validation to the complete output contract.
+    pub fn into_geometry_normalized_with_output_metadata(
+        self,
+        geometry: CaptureGeometry,
+        storage: CaptureStorage,
+        damage: CaptureDamage,
+        color_space: CaptureColorSpace,
+        transfer_function: CaptureTransferFunction,
+        cursor: CaptureCursor,
+    ) -> Result<CaptureFrame<GeometryNormalizedCaptureSurface>, CaptureFrameError> {
+        let mut metadata = self.metadata;
+        metadata.geometry = geometry;
+        metadata.color_space = color_space;
+        metadata.transfer_function = transfer_function;
+        metadata.cursor = cursor;
+        CaptureFrame::from_parts(metadata, storage, damage)
+    }
 }
 
 impl<S: CaptureSurfaceStage> CaptureFrame<S> {
@@ -1048,6 +1241,31 @@ fn validate_metadata<S: CaptureSurfaceStage>(
     if metadata.fresh_until < metadata.captured_at {
         return Err(CaptureFrameError::InvalidFreshness);
     }
+    match &metadata.cursor.content {
+        CaptureCursorContent::Hidden if metadata.cursor.visible => {
+            return Err(CaptureFrameError::VisibleCursorMarkedHidden);
+        }
+        CaptureCursorContent::Separate(shape)
+            if metadata.cursor.shape_extent != Some(shape.extent()) =>
+        {
+            return Err(CaptureFrameError::CursorShapeExtentMismatch {
+                metadata: metadata.cursor.shape_extent,
+                shape: shape.extent(),
+            });
+        }
+        CaptureCursorContent::Separate(shape)
+            if metadata.cursor.shape_generation != Some(shape.generation().get()) =>
+        {
+            return Err(CaptureFrameError::CursorShapeGenerationMismatch {
+                metadata: metadata.cursor.shape_generation,
+                shape: shape.generation().get(),
+            });
+        }
+        CaptureCursorContent::Absent
+        | CaptureCursorContent::Hidden
+        | CaptureCursorContent::Separate(_)
+        | CaptureCursorContent::Composed => {}
+    }
     if S::KIND == CaptureStageKind::GeometryNormalized
         && metadata.geometry.rotation != CaptureRotation::Identity
     {
@@ -1119,6 +1337,33 @@ pub enum CaptureFrameError {
     /// Freshness deadline preceded acquisition.
     #[error("capture freshness deadline precedes acquisition")]
     InvalidFreshness,
+    /// Separately-owned cursor generations start at one.
+    #[error("cursor shape generation must be non-zero")]
+    ZeroCursorShapeGeneration,
+    /// Cursor stride cannot address one complete encoded row.
+    #[error("cursor shape stride {stride} is smaller than the {minimum}-byte row")]
+    InvalidCursorShapeStride { stride: usize, minimum: usize },
+    /// Cursor layout arithmetic overflowed the host address space.
+    #[error("cursor shape size overflow")]
+    CursorShapeSizeOverflow,
+    /// Cursor allocation length disagrees with its exact plane layout.
+    #[error("cursor shape has {actual} bytes; expected exactly {expected}")]
+    CursorShapeLengthMismatch { actual: usize, expected: usize },
+    /// Visible cursor metadata cannot claim an explicitly hidden cursor.
+    #[error("visible cursor is marked hidden")]
+    VisibleCursorMarkedHidden,
+    /// Cursor metadata bounds disagree with separately-owned shape pixels.
+    #[error("cursor metadata extent {metadata:?} differs from shape extent {shape:?}")]
+    CursorShapeExtentMismatch {
+        metadata: Option<PixelExtent>,
+        shape: PixelExtent,
+    },
+    /// Cursor metadata generation disagrees with its separately-owned shape.
+    #[error("cursor metadata generation {metadata:?} differs from shape generation {shape}")]
+    CursorShapeGenerationMismatch { metadata: Option<u64>, shape: u64 },
+    /// Legacy geometry processing cannot rotate separately-owned cursor pixels.
+    #[error("separate cursor shape requires shape-aware geometry processing")]
+    SeparateCursorGeometryProcessingRequired,
     /// CPU stride cannot address one complete row.
     #[error("CPU stride {stride} is smaller than the {minimum}-byte row")]
     InvalidCpuStride { stride: i64, minimum: usize },

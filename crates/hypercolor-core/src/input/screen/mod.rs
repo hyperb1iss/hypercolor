@@ -17,7 +17,10 @@
 
 mod cadence;
 mod frame;
+mod hub;
+mod plan;
 mod process;
+mod publication;
 pub mod sector;
 pub mod smooth;
 pub mod tune;
@@ -30,14 +33,48 @@ pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
 };
 pub use frame::{
-    CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
+    CaptureColorSpace, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
+    CaptureCursorShapeFormat, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
     CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlaneLease, CapturePlanePool,
     CaptureRotation, CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction,
     CpuCaptureStorage, GeometryNormalizedCaptureSurface, MoveRegion, PhysicalOrigin, PixelExtent,
     PixelRect, PlatformGpuApi, PlatformGpuSurface, PooledCapturePlane, RawCaptureSurface,
     SourceScale,
 };
+pub use hub::{
+    PreparedScreenPublication, ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState,
+    ScreenBranchLease, ScreenBranchPayload, ScreenBranchPublication, ScreenBranchPublisher,
+    ScreenCommittedState, ScreenContinuityActivationFailure, ScreenContinuityError,
+    ScreenContinuityLease, ScreenContinuityStageFailure, ScreenLiveBranchReceipt,
+    ScreenPayloadKind, ScreenPublicationColorimetry, ScreenPublicationFreshness,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationMetadata, ScreenPublicationRetirement, ScreenPublicationSlotPolicy,
+    ScreenSurfacePayload, ScreenTwoPlanContinuityLease, ScreenZonesPayload,
+};
+pub use plan::{
+    ArmedScreenPlan, AwaitingBackendScreenPlan, CommittedScreenPlan,
+    InputPublicationDemandRevision, PreparingScreenPlan, ScreenAdmissionCapacity,
+    ScreenBranchDemand, ScreenCapturePlan, ScreenCompatibilitySelection, ScreenExactResource,
+    ScreenExactResourceLedger, ScreenInputGraphGeneration, ScreenPhysicalReductionDemand,
+    ScreenPlanAbort, ScreenPlanAdmissionLedger, ScreenPlanArmFailure, ScreenPlanBuilder,
+    ScreenPlanCommitFailure, ScreenPlanError, ScreenPlanGeneration, ScreenPlanTransactionId,
+    ScreenPreparedWorkerToken, ScreenRequiredResourceMinimum, ScreenResourceKind,
+    ScreenResourceLedger, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenWorkerPreparationTicket,
+};
 pub use process::CaptureFrameProcessor;
+pub use publication::{
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenGeometry,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBoundedExtent, ScreenCaptureBackend,
+    ScreenColorTuning, ScreenContentBarsPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
+    ScreenExtentRequest, ScreenGridPolicy, ScreenLetterboxFill, ScreenPhysicalReductionDescriptor,
+    ScreenPhysicalReductionKey, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenProfileScalar, ScreenPublicationError, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenRational, ScreenReductionFilter, ScreenResourceApi, ScreenSceneCutPolicy,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSubpixelRect,
+    ScreenUpscalePolicy,
+};
 pub use sector::{LetterboxBars, SectorGrid};
 pub use smooth::TemporalSmoother;
 pub use tune::ColorTuning;

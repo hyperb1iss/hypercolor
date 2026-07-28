@@ -355,6 +355,14 @@ fn transform_cursor(
     crop: NativeCrop,
     rotation: CaptureRotation,
 ) -> Result<crate::input::screen::CaptureCursor, CaptureFrameError> {
+    if rotation != CaptureRotation::Identity
+        && matches!(
+            &cursor.content,
+            crate::input::screen::CaptureCursorContent::Separate(_)
+        )
+    {
+        return Err(CaptureFrameError::SeparateCursorGeometryProcessingRequired);
+    }
     let shape = cursor.shape_extent.unwrap_or(PixelExtent::new(1, 1)?);
     let position = cursor
         .position
@@ -378,7 +386,7 @@ fn transform_cursor(
             .shape_extent
             .map(|extent| rotation.apply_to_extent(extent)),
         shape_generation: cursor.shape_generation,
-        composed: cursor.composed,
+        content: cursor.content.clone(),
     })
 }
 
