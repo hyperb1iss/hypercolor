@@ -39,6 +39,8 @@ pub use smooth::TemporalSmoother;
 pub use tune::ColorTuning;
 #[cfg(target_os = "linux")]
 pub use wayland::WaylandScreenCaptureInput;
+#[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+pub use windows::WindowsScreenCaptureFixture;
 #[cfg(target_os = "windows")]
 pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
 

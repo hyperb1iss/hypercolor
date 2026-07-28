@@ -179,6 +179,72 @@ pub struct WindowsScreenCaptureInput {
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
     source_sink: Option<CaptureSourceSink>,
+    #[cfg(feature = "windows-capture-fixtures")]
+    fixture: Option<Arc<WindowsScreenCaptureFixtureState>>,
+}
+
+#[cfg(feature = "windows-capture-fixtures")]
+struct WindowsScreenCaptureFixtureState {
+    analyzer: Mutex<ScreenCaptureInput>,
+    epoch: CaptureEpoch,
+    active: Mutex<Option<ActiveCaptureEpoch>>,
+}
+
+/// Deterministic adapter-boundary publisher for Windows capture integration tests.
+#[cfg(feature = "windows-capture-fixtures")]
+#[doc(hidden)]
+pub struct WindowsScreenCaptureFixture {
+    state: Arc<WindowsScreenCaptureFixtureState>,
+    publication: Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
+    status_session: SourceSessionSlot,
+}
+
+#[cfg(feature = "windows-capture-fixtures")]
+impl WindowsScreenCaptureFixture {
+    /// Whether daemon demand has activated the deterministic source.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.state
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Analyze and publish one raw frame as if Desktop Duplication produced it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while the source is inactive or when frame validation
+    /// or analysis rejects the injected adapter output.
+    pub fn publish(&self, frame: CaptureFrame<RawCaptureSurface>) -> anyhow::Result<bool> {
+        let captured_at = frame.metadata().captured_at;
+        let fresh_until = frame.metadata().fresh_until;
+        let active = self
+            .state
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| anyhow!("deterministic Windows capture source is inactive"))?;
+        let snapshot = {
+            let mut analyzer = self
+                .state
+                .analyzer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            analyze_capture_frame(&mut analyzer, &active, frame)?
+        };
+        let published = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .publish(&active, snapshot);
+        if published && let Some(status) = self.status_session.load() {
+            status.record_sample(captured_at, fresh_until, 1)?;
+        }
+        Ok(published)
+    }
 }
 
 struct CaptureWorker {
@@ -243,7 +309,45 @@ impl WindowsScreenCaptureInput {
             ),
             status_session: SourceSessionSlot::new(),
             source_sink: None,
+            #[cfg(feature = "windows-capture-fixtures")]
+            fixture: None,
         }
+    }
+
+    /// Create a source whose post-adapter frames are supplied deterministically.
+    ///
+    /// The returned source retains the production epoch validation, screen
+    /// analysis, lifecycle status, and latest-value publication path. It never
+    /// opens Desktop Duplication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the supplied epoch contains a zero generation.
+    #[cfg(feature = "windows-capture-fixtures")]
+    #[doc(hidden)]
+    pub fn new_deterministic_fixture(
+        config: CaptureConfig,
+        epoch: CaptureEpoch,
+    ) -> anyhow::Result<(Self, WindowsScreenCaptureFixture)> {
+        if epoch.topology_generation == 0 {
+            anyhow::bail!("deterministic Windows capture topology generation must be nonzero");
+        }
+        if epoch.session_generation == 0 {
+            anyhow::bail!("deterministic Windows capture session generation must be nonzero");
+        }
+        let mut source = Self::new(config.clone());
+        let state = Arc::new(WindowsScreenCaptureFixtureState {
+            analyzer: Mutex::new(ScreenCaptureInput::new(config)),
+            epoch,
+            active: Mutex::new(None),
+        });
+        source.fixture = Some(Arc::clone(&state));
+        let fixture = WindowsScreenCaptureFixture {
+            state,
+            publication: Arc::clone(&source.publication),
+            status_session: source.status_session.clone(),
+        };
+        Ok((source, fixture))
     }
 
     /// Attach a callback that persists resolved legacy monitor selections.
@@ -411,6 +515,43 @@ impl WindowsScreenCaptureInput {
         anyhow::bail!("replacement Windows screen capture worker rejected activation")
     }
 
+    fn activate_backend(&mut self, activity_generation: u64) -> anyhow::Result<()> {
+        #[cfg(feature = "windows-capture-fixtures")]
+        if let Some(fixture) = self.fixture.as_ref() {
+            let source_generation = self.settings.snapshot().source_generation;
+            let active = ActiveCaptureEpoch {
+                epoch: fixture.epoch.clone(),
+                source_generation,
+                activity_generation,
+                duplication_generation: 1,
+            };
+            let activated = activate_capture_epoch(&self.publication, active.clone());
+            if !activated {
+                anyhow::bail!("deterministic Windows capture epoch was fenced before activation");
+            }
+            *fixture
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(active);
+            return Ok(());
+        }
+        self.activate_worker(activity_generation)
+    }
+
+    fn deactivate_backend(&mut self, activity_generation: u64) {
+        #[cfg(feature = "windows-capture-fixtures")]
+        if let Some(fixture) = self.fixture.as_ref() {
+            *fixture
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            return;
+        }
+        if !self.send_activity_command(false, activity_generation) {
+            self.shutdown_worker();
+        }
+    }
+
     fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active == active {
             return Ok(());
@@ -431,9 +572,9 @@ impl WindowsScreenCaptureInput {
         }
 
         if active {
-            self.activate_worker(activity_generation)?;
-        } else if !self.send_activity_command(false, activity_generation) {
-            self.shutdown_worker();
+            self.activate_backend(activity_generation)?;
+        } else {
+            self.deactivate_backend(activity_generation);
         }
 
         self.capture_active = active;
@@ -461,6 +602,14 @@ impl WindowsScreenCaptureInput {
         }
         current.value = config;
         self.settings.generation.fetch_add(1, Ordering::Release);
+        #[cfg(feature = "windows-capture-fixtures")]
+        if let Some(fixture) = self.fixture.as_ref() {
+            *fixture
+                .analyzer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                ScreenCaptureInput::new(current.value.clone());
+        }
         if source_changed {
             publication
                 .as_mut()
@@ -484,7 +633,7 @@ impl InputSource for WindowsScreenCaptureInput {
                 self.status_session.store(session);
             }
             let activity_generation = self.settings.activity_generation.load(Ordering::Acquire);
-            if let Err(error) = self.activate_worker(activity_generation) {
+            if let Err(error) = self.activate_backend(activity_generation) {
                 self.status_session.clear();
                 self.status.stop();
                 self.shutdown_worker();
@@ -506,6 +655,14 @@ impl InputSource for WindowsScreenCaptureInput {
         self.running = false;
         self.capture_active = false;
         self.shutdown_worker();
+
+        #[cfg(feature = "windows-capture-fixtures")]
+        if let Some(fixture) = self.fixture.as_ref() {
+            *fixture
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
 
         clear_capture_publication(&self.publication);
     }
@@ -815,17 +972,16 @@ fn run_worker(
                 let frame_period =
                     Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
                 let raw_frame = build_capture_frame(frame, session_generation, frame_period);
-                let snapshot = raw_frame.and_then(|frame| {
-                    frame.validate_epoch(&current_epoch.epoch)?;
-                    analyze_screen_frame(&mut analyzer, frame)
+                let published = raw_frame.and_then(|frame| {
+                    let snapshot = analyze_capture_frame(&mut analyzer, &current_epoch, frame)?;
+                    Ok(publication
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .publish(&current_epoch, snapshot))
                 });
-                let Ok(snapshot) = snapshot else {
+                let Ok(published) = published else {
                     continue;
                 };
-                let published = publication
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .publish(&current_epoch, snapshot);
                 if published && let Some(status) = status_session.load() {
                     record_capture_health(
                         &status,
@@ -861,6 +1017,15 @@ fn run_worker(
 
     clear_capture_publication(publication);
     debug!("Windows screen capture worker stopped");
+}
+
+fn analyze_capture_frame(
+    analyzer: &mut ScreenCaptureInput,
+    active: &ActiveCaptureEpoch,
+    frame: CaptureFrame<RawCaptureSurface>,
+) -> anyhow::Result<AnalyzedScreenSnapshot> {
+    frame.validate_epoch(&active.epoch)?;
+    analyze_screen_frame(analyzer, frame)
 }
 
 fn capture_source_id(source_id: &str) -> anyhow::Result<CaptureSourceId> {

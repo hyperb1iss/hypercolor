@@ -74,6 +74,7 @@ thread-priority = "3.0.0"
 windows-service = "0.8.0"
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
+hypercolor-core = { path = "../hypercolor-core", default-features = false, features = ["windows-capture-fixtures"] }
 hypercolor-windows-input = { path = "../hypercolor-windows-input" }
 
 [dev-dependencies]
