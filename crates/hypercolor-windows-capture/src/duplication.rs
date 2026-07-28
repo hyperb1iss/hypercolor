@@ -1599,8 +1599,7 @@ impl DesktopDuplicator {
                     let (logical_width, logical_height, rotation) =
                         duplication_geometry(duplication);
                     let (gpu_reducer, reduction_status) =
-                        initialize_gpu_reduction(&device, &context)
-                            .map_err(session_rebuild_error)?;
+                        initialize_gpu_reduction(&device, &context)?;
                     Ok((
                         logical_width,
                         logical_height,
@@ -1609,7 +1608,8 @@ impl DesktopDuplicator {
                         reduction_status,
                     ))
                 },
-            )?;
+            )
+            .map_err(session_rebuild_error)?;
         let (native_width, native_height) =
             native_scanout_extent(logical_width, logical_height, rotation);
         let region = self
