@@ -6,28 +6,23 @@ use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::input::BrowserInputPublicationId;
 use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrame as WireInteractivePreviewFrame,
-    PreviewPixelFormat as WirePreviewPixelFormat,
+    PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
 use super::preview_encode::{PreviewJpegEncoder, PreviewRawEncoder};
 use super::protocol::CanvasFormat;
+use super::relays::PreviewOutboundSender;
 use crate::interactive_preview::InteractivePreviewFrame;
 use crate::preview_runtime::PreviewPixelFormat;
-
-pub(super) struct InteractivePreviewOutbound {
-    pub(super) preview_id: String,
-    pub(super) publication_id: BrowserInputPublicationId,
-    pub(super) bytes: Bytes,
-}
 
 pub(super) fn spawn_interactive_preview_relay(
     preview_id: String,
     publication_id: BrowserInputPublicationId,
     mut frames: watch::Receiver<Option<Arc<InteractivePreviewFrame>>>,
-    outbound: mpsc::Sender<InteractivePreviewOutbound>,
+    outbound: PreviewOutboundSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut raw_encoder = PreviewRawEncoder::new();
@@ -53,16 +48,12 @@ pub(super) fn spawn_interactive_preview_relay(
                     continue;
                 }
             };
-            let message = InteractivePreviewOutbound {
-                preview_id: preview_id.clone(),
-                publication_id,
+            if let Err(error) = outbound.publish(
+                PreviewStreamId::Interactive(preview_id.clone()),
                 bytes,
-            };
-            if matches!(
-                outbound.try_send(message),
-                Err(mpsc::error::TrySendError::Closed(_))
+                Some(publication_id),
             ) {
-                break;
+                warn!(preview_id, %error, "Rejected interactive preview publication");
             }
         }
     })

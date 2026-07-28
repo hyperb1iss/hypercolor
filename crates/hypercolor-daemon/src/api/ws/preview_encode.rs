@@ -416,9 +416,10 @@ fn resolve_preview_dimensions(
     requested_width: u32,
     requested_height: u32,
 ) -> Result<(u32, u32)> {
-    let dimensions = if source_width == 0 || source_height == 0 {
-        (source_width, source_height)
-    } else if requested_width == 0 && requested_height == 0 {
+    let dimensions = if source_width == 0
+        || source_height == 0
+        || (requested_width == 0 && requested_height == 0)
+    {
         (source_width, source_height)
     } else if requested_width == 0 {
         let height = requested_height.max(1);

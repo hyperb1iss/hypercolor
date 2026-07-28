@@ -15,8 +15,9 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_leptos_ext::ws::{
-    InteractivePreviewFrame as WireInteractivePreviewFrame,
-    PreviewPixelFormat as WirePreviewPixelFormat, TimedInputEventPayload,
+    InteractivePreviewFrame as WireInteractivePreviewFrame, PreviewFrame as WirePreviewFrame,
+    PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId,
+    TimedInputEventPayload,
 };
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
@@ -50,7 +51,6 @@ use super::cache::{
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
 };
-use super::interactive_preview_relay::InteractivePreviewOutbound;
 use super::preview_encode::{
     PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_binary_stateless,
     encode_canvas_jpeg_payload_scaled_stateless,
@@ -65,10 +65,11 @@ use super::protocol::{
     validate_interactive_preview_id, validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
-    build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
+    PreviewOutboundLimits, PreviewOutboundReceiver, PreviewOutboundSender, PreviewPublishOutcome,
+    PreviewSendCursor, build_device_metrics_message, build_metrics_message,
+    preview_outbound_channel, preview_outbound_channel_with_limits, publish_subscriptions,
     relay_device_metrics, relay_display_preview, relay_events, relay_frames, relay_metrics,
-    relay_screen_canvas, relay_sensors, relay_spectrum, relay_web_viewport_canvas,
-    sync_preview_receiver, try_enqueue_json,
+    relay_sensors, relay_spectrum, sync_preview_receiver, try_enqueue_json,
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_channels,
@@ -90,7 +91,6 @@ use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
 };
 use crate::render_thread::{InputPublicationConsumer, InputPublicationDemandHandle};
-use crate::session::OutputPowerState;
 use crate::startup::input_status_events::InputStatusEventPublisher;
 
 #[test]
@@ -1400,34 +1400,6 @@ async fn relay_spectrum_subscribes_lazily() {
     relay_handle.abort();
 }
 
-async fn assert_backpressure_notice_does_not_repeat(
-    expected_channel: &'static str,
-    relay_handle: tokio::task::JoinHandle<()>,
-    json_rx: &mut tokio::sync::mpsc::Receiver<Utf8Bytes>,
-) {
-    let first = tokio::time::timeout(std::time::Duration::from_millis(300), json_rx.recv())
-        .await
-        .expect("relay should emit an initial backpressure notice")
-        .expect("backpressure notice should be delivered");
-    let payload: serde_json::Value =
-        serde_json::from_str(first.as_str()).expect("backpressure notice should parse");
-
-    assert_eq!(payload["type"], "backpressure");
-    assert_eq!(payload["channel"], expected_channel);
-    assert_eq!(payload["dropped_frames"], 1);
-    assert_eq!(payload["recommendation"], "reduce_fps");
-
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(700), json_rx.recv())
-            .await
-            .is_err(),
-        "relay should not keep retrying the same payload after backpressure"
-    );
-
-    relay_handle.abort();
-    let _ = relay_handle.await;
-}
-
 async fn publish_display_preview_snapshot(
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     device_id: DeviceId,
@@ -1480,6 +1452,37 @@ fn display_preview_payload_frame_number(payload: &Bytes) -> u32 {
     )
 }
 
+fn preview_test_frame(
+    channel: PreviewFrameChannel,
+    frame_number: u32,
+    payload_len: usize,
+) -> Bytes {
+    WirePreviewFrame {
+        channel,
+        frame_number,
+        timestamp_ms: frame_number,
+        width: 1,
+        height: 1,
+        format: WirePreviewPixelFormat::Jpeg,
+        payload: Bytes::from(vec![0x42; payload_len]),
+    }
+    .try_encode()
+    .expect("preview test frame")
+}
+
+async fn receive_direct_preview(receiver: &PreviewOutboundReceiver) -> Bytes {
+    let publication = tokio::time::timeout(Duration::from_millis(250), receiver.recv())
+        .await
+        .expect("preview publication should arrive");
+    let mut cursor = PreviewSendCursor::new(publication, super::protocol::MAX_WS_MESSAGE_BYTES)
+        .expect("direct preview cursor");
+    assert!(!cursor.is_chunked());
+    cursor
+        .next_message()
+        .expect("direct preview encoding")
+        .expect("direct preview message")
+}
+
 #[test]
 fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
     let _guard = WS_CACHE_TEST_LOCK
@@ -1495,8 +1498,8 @@ fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
         captured_at: SystemTime::UNIX_EPOCH + Duration::from_millis(99),
     };
 
-    let first = cached_display_preview_payload(&snapshot);
-    let second = cached_display_preview_payload(&snapshot);
+    let first = cached_display_preview_payload(&snapshot).expect("first display preview payload");
+    let second = cached_display_preview_payload(&snapshot).expect("second display preview payload");
 
     assert_eq!(display_preview_payload_frame_number(&first), 17);
     assert_eq!(first, second);
@@ -1519,8 +1522,8 @@ fn cached_display_preview_payload_skips_cache_for_large_payloads() {
         captured_at: SystemTime::UNIX_EPOCH + Duration::from_millis(101),
     };
 
-    let first = cached_display_preview_payload(&snapshot);
-    let second = cached_display_preview_payload(&snapshot);
+    let first = cached_display_preview_payload(&snapshot).expect("first display preview payload");
+    let second = cached_display_preview_payload(&snapshot).expect("second display preview payload");
 
     assert_eq!(display_preview_payload_frame_number(&first), 21);
     assert_eq!(first, second);
@@ -1547,7 +1550,8 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
 
     // Derive the wire-header length from a probe payload so the boundary math
     // tracks the real header layout instead of a hard-coded guess.
-    let probe = cached_display_preview_payload(&display_preview_snapshot(1, 30));
+    let probe = cached_display_preview_payload(&display_preview_snapshot(1, 30))
+        .expect("display preview probe payload");
     let header_len = probe.len() - 1;
     reset_ws_payload_caches();
 
@@ -1556,8 +1560,8 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
     // the allocator happened to reuse the freed Vec's address.
     let at_limit = WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES - header_len;
     let snapshot = display_preview_snapshot(at_limit, 31);
-    let first = cached_display_preview_payload(&snapshot);
-    let second = cached_display_preview_payload(&snapshot);
+    let first = cached_display_preview_payload(&snapshot).expect("first display preview payload");
+    let second = cached_display_preview_payload(&snapshot).expect("second display preview payload");
     assert_eq!(
         first.as_ptr(),
         second.as_ptr(),
@@ -1566,8 +1570,8 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
 
     reset_ws_payload_caches();
     let snapshot = display_preview_snapshot(at_limit + 1, 32);
-    let first = cached_display_preview_payload(&snapshot);
-    let second = cached_display_preview_payload(&snapshot);
+    let first = cached_display_preview_payload(&snapshot).expect("first display preview payload");
+    let second = cached_display_preview_payload(&snapshot).expect("second display preview payload");
     assert_ne!(
         first.as_ptr(),
         second.as_ptr(),
@@ -1575,76 +1579,82 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
     );
 }
 
-#[tokio::test]
-async fn relay_canvas_clears_pending_send_after_backpressure() {
-    let state = Arc::new(AppState::new());
-    let mut subscriptions = SubscriptionState::default();
-    subscriptions.channels.insert(WsChannel::Canvas);
-    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
-    let (_power_state_tx, power_state_rx) = watch::channel(OutputPowerState::default());
-    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
-    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
-    binary_tx
-        .try_send(Bytes::from_static(b"occupied"))
-        .expect("binary queue should start full");
+#[test]
+fn preview_router_replaces_same_stream_with_latest() {
+    let (sender, receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
+        max_publication_bytes: 256,
+        max_connection_bytes: 512,
+    });
+    let stream = PreviewStreamId::Passive(PreviewFrameChannel::Canvas);
 
-    let relay_handle = tokio::spawn(relay_canvas(
-        Arc::clone(&state.preview_runtime),
-        power_state_rx,
-        json_tx,
-        binary_tx,
-        subscriptions_rx,
-    ));
+    assert_eq!(
+        sender
+            .publish(
+                stream.clone(),
+                preview_test_frame(PreviewFrameChannel::Canvas, 1, 32),
+                None,
+            )
+            .expect("first preview publication"),
+        PreviewPublishOutcome::Queued
+    );
+    assert_eq!(
+        sender
+            .publish(
+                stream,
+                preview_test_frame(PreviewFrameChannel::Canvas, 2, 32),
+                None,
+            )
+            .expect("replacement preview publication"),
+        PreviewPublishOutcome::Replaced
+    );
 
-    assert_backpressure_notice_does_not_repeat("canvas", relay_handle, &mut json_rx).await;
-    let _ = binary_rx.recv().await;
+    let publication = receiver.try_recv().expect("latest preview publication");
+    let mut cursor = PreviewSendCursor::new(publication, super::protocol::MAX_WS_MESSAGE_BYTES)
+        .expect("latest preview cursor");
+    let encoded = cursor
+        .next_message()
+        .expect("latest preview encoding")
+        .expect("latest preview message");
+    let decoded = WirePreviewFrame::decode_bytes(&encoded).expect("latest preview frame");
+    assert_eq!(decoded.frame_number, 2);
+    assert!(receiver.try_recv().is_none());
 }
 
-#[tokio::test]
-async fn relay_screen_canvas_clears_pending_send_after_backpressure() {
-    let state = Arc::new(AppState::new());
-    let mut subscriptions = SubscriptionState::default();
-    subscriptions.channels.insert(WsChannel::ScreenCanvas);
-    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
-    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
-    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
-    binary_tx
-        .try_send(Bytes::from_static(b"occupied"))
-        .expect("binary queue should start full");
+#[test]
+fn preview_router_evicts_oldest_stream_to_honor_byte_budget() {
+    let canvas = preview_test_frame(PreviewFrameChannel::Canvas, 1, 64);
+    let screen = preview_test_frame(PreviewFrameChannel::ScreenCanvas, 2, 64);
+    let publication_bytes = canvas.len().max(screen.len());
+    let (sender, receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
+        max_publication_bytes: publication_bytes,
+        max_connection_bytes: publication_bytes,
+    });
 
-    let relay_handle = tokio::spawn(relay_screen_canvas(
-        Arc::clone(&state.preview_runtime),
-        json_tx,
-        binary_tx,
-        subscriptions_rx,
-    ));
+    sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+            canvas,
+            None,
+        )
+        .expect("canvas preview publication");
+    sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
+            screen,
+            None,
+        )
+        .expect("screen preview publication");
 
-    assert_backpressure_notice_does_not_repeat("screen_canvas", relay_handle, &mut json_rx).await;
-    let _ = binary_rx.recv().await;
-}
-
-#[tokio::test]
-async fn relay_web_viewport_canvas_clears_pending_send_after_backpressure() {
-    let state = Arc::new(AppState::new());
-    let mut subscriptions = SubscriptionState::default();
-    subscriptions.channels.insert(WsChannel::WebViewportCanvas);
-    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
-    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
-    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
-    binary_tx
-        .try_send(Bytes::from_static(b"occupied"))
-        .expect("binary queue should start full");
-
-    let relay_handle = tokio::spawn(relay_web_viewport_canvas(
-        Arc::clone(&state.preview_runtime),
-        json_tx,
-        binary_tx,
-        subscriptions_rx,
-    ));
-
-    assert_backpressure_notice_does_not_repeat("web_viewport_canvas", relay_handle, &mut json_rx)
-        .await;
-    let _ = binary_rx.recv().await;
+    let publication = receiver.try_recv().expect("remaining preview publication");
+    let mut cursor = PreviewSendCursor::new(publication, super::protocol::MAX_WS_MESSAGE_BYTES)
+        .expect("remaining preview cursor");
+    let encoded = cursor
+        .next_message()
+        .expect("remaining preview encoding")
+        .expect("remaining preview message");
+    let decoded = WirePreviewFrame::decode_bytes(&encoded).expect("remaining preview frame");
+    assert_eq!(decoded.channel, PreviewFrameChannel::ScreenCanvas);
+    assert!(receiver.try_recv().is_none());
 }
 
 #[tokio::test]
@@ -1666,23 +1676,18 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
     subscriptions.config.display_preview.device_id = Some(device_id.to_string());
     subscriptions.config.display_preview.fps = 30;
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
-    let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
-    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
+    let (preview_tx, preview_rx) = preview_outbound_channel();
 
     let relay_handle = tokio::spawn(relay_display_preview(
         Arc::clone(&state),
         Arc::clone(&display_frames),
-        json_tx,
-        binary_tx,
+        preview_tx,
         subscriptions_rx,
     ));
 
     wait_for_display_preview_subscribers(&display_frames, 1).await;
     publish_display_preview_snapshot(&display_frames, device_id, 1).await;
-    let first = tokio::time::timeout(Duration::from_millis(250), binary_rx.recv())
-        .await
-        .expect("display preview relay should emit the first frame")
-        .expect("display preview relay should stay connected");
+    let first = receive_direct_preview(&preview_rx).await;
     assert_eq!(display_preview_payload_frame_number(&first), 1);
 
     display_frames.write().await.remove(device_id);
@@ -1702,10 +1707,7 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
     .expect("display preview relay should reattach after the sender closes");
 
     publish_display_preview_snapshot(&display_frames, device_id, 2).await;
-    let second = tokio::time::timeout(Duration::from_millis(250), binary_rx.recv())
-        .await
-        .expect("display preview relay should emit after the stream reopens")
-        .expect("display preview relay should deliver the reopened stream frame");
+    let second = receive_direct_preview(&preview_rx).await;
     assert_eq!(display_preview_payload_frame_number(&second), 2);
 
     relay_handle.abort();
@@ -1721,14 +1723,12 @@ async fn relay_display_preview_does_not_subscribe_unknown_device() {
     subscriptions.channels.insert(WsChannel::DisplayPreview);
     subscriptions.config.display_preview.device_id = Some(unknown_device_id.to_string());
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
-    let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
-    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
+    let (preview_tx, preview_rx) = preview_outbound_channel();
 
     let relay_handle = tokio::spawn(relay_display_preview(
         Arc::clone(&state),
         Arc::clone(&display_frames),
-        json_tx,
-        binary_tx,
+        preview_tx,
         subscriptions_rx,
     ));
 
@@ -1736,7 +1736,7 @@ async fn relay_display_preview_does_not_subscribe_unknown_device() {
     let metrics = display_frames.read().await.metrics_snapshot();
     assert_eq!(metrics.preview_subscribers, 0);
     assert!(
-        tokio::time::timeout(Duration::from_millis(50), binary_rx.recv())
+        tokio::time::timeout(Duration::from_millis(50), preview_rx.recv())
             .await
             .is_err()
     );
@@ -2712,10 +2712,10 @@ fn browser_preview_session(
     executor: Arc<InteractivePreviewExecutor>,
 ) -> (
     BrowserPreviewSession,
-    tokio::sync::mpsc::Sender<InteractivePreviewOutbound>,
-    tokio::sync::mpsc::Receiver<InteractivePreviewOutbound>,
+    PreviewOutboundSender,
+    PreviewOutboundReceiver,
 ) {
-    let (outbound, receiver) = tokio::sync::mpsc::channel(8);
+    let (outbound, receiver) = preview_outbound_channel();
     (
         BrowserPreviewSession::new(handle, routing, Some(executor), outbound.clone()),
         outbound,
@@ -2861,7 +2861,7 @@ fn interactive_preview_dimensions_use_shape_admission_not_axis_caps() {
 
 #[test]
 fn interactive_preview_open_rejects_invalid_render_config() {
-    for (field, value) in [("fps", 0), ("fps", 61), ("width", 0), ("width", 4097)] {
+    for (field, value) in [("fps", 0), ("fps", 61), ("width", 0), ("height", 0)] {
         let mut payload = serde_json::json!({
             "type": "interactive_preview_open",
             "preview_id": "main",
@@ -3097,7 +3097,7 @@ async fn interactive_preview_explicit_close_and_drop_are_exactly_once() {
 async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication() {
     let (_source, handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
-    let (mut session, outbound, mut frames) = browser_preview_session(handle, routing, executor);
+    let (mut session, outbound, _frames) = browser_preview_session(handle, routing, executor);
     let (_, first_publication, _) = opened_address(
         session
             .open("same".to_owned(), interactive_preview_config())
@@ -3119,12 +3119,12 @@ async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication
     .encode()
     .expect("addressed frame should encode");
     outbound
-        .try_send(InteractivePreviewOutbound {
-            preview_id: "same".to_owned(),
-            publication_id: first_publication_id,
-            bytes: wire.clone(),
-        })
-        .expect("old publication frame should enter the bounded queue");
+        .publish(
+            hypercolor_leptos_ext::ws::PreviewStreamId::Interactive("same".to_owned()),
+            wire.clone(),
+            Some(first_publication_id),
+        )
+        .expect("old publication frame should enter the preview router");
 
     session.close("same".to_owned());
     let (_, second_publication, _) = opened_address(
@@ -3137,23 +3137,8 @@ async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication
         .publication_id("same")
         .expect("second publication should be active");
     assert_ne!(first_publication, second_publication);
-
-    let queued = loop {
-        let frame = frames
-            .recv()
-            .await
-            .expect("queued frame should remain readable");
-        if frame.bytes == wire {
-            break frame;
-        }
-    };
-    assert!(!session.is_current_publication(&queued));
-    let current = InteractivePreviewOutbound {
-        preview_id: "same".to_owned(),
-        publication_id: second_publication_id,
-        bytes: wire.clone(),
-    };
-    assert!(session.is_current_publication(&current));
+    assert!(!session.is_current_publication("same", first_publication_id));
+    assert!(session.is_current_publication("same", second_publication_id));
     let decoded = WireInteractivePreviewFrame::decode_bytes(&wire)
         .expect("public binary frame should remain independently decodable");
     assert_eq!(decoded.preview_id, "same");
@@ -3163,7 +3148,7 @@ async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication
 async fn interactive_preview_open_streams_addressed_frames_from_real_lane() {
     let (_source, handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
-    let (mut session, _outbound, mut frames) = browser_preview_session(handle, routing, executor);
+    let (mut session, _outbound, frames) = browser_preview_session(handle, routing, executor);
     let mut config = interactive_preview_config();
     config.width = 16;
     config.height = 8;
@@ -3172,12 +3157,20 @@ async fn interactive_preview_open_streams_addressed_frames_from_real_lane() {
         .await
         .expect("interactive preview should open a real lane");
 
-    let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+    let publication = tokio::time::timeout(Duration::from_secs(1), frames.recv())
         .await
-        .expect("real preview lane should publish within one second")
-        .expect("interactive preview relay should remain active");
-    assert!(session.is_current_publication(&frame));
-    let decoded = WireInteractivePreviewFrame::decode_bytes(&frame.bytes)
+        .expect("real preview lane should publish within one second");
+    let (preview_id, publication_id) = publication
+        .interactive_fence()
+        .expect("interactive publication carries its input fence");
+    assert!(session.is_current_publication(preview_id, publication_id));
+    let mut cursor = PreviewSendCursor::new(publication, super::protocol::MAX_WS_MESSAGE_BYTES)
+        .expect("interactive publication cursor");
+    let frame = cursor
+        .next_message()
+        .expect("interactive publication encoding")
+        .expect("interactive publication contains one message");
+    let decoded = WireInteractivePreviewFrame::decode_bytes(&frame)
         .expect("relayed interactive preview frame should decode");
     assert_eq!(decoded.preview_id, "live");
     assert_eq!((decoded.width, decoded.height), (16, 8));
@@ -3189,7 +3182,7 @@ async fn interactive_preview_open_streams_addressed_frames_from_real_lane() {
 async fn interactive_preview_open_without_executor_creates_no_input_attachment() {
     let (_source, handle, routing) = browser_preview_test_context();
     let registry = handle.registry();
-    let (outbound, _frames) = tokio::sync::mpsc::channel(1);
+    let (outbound, _frames) = preview_outbound_channel();
     let mut session = BrowserPreviewSession::new(handle, routing, None, outbound);
 
     let error = session
@@ -4530,7 +4523,7 @@ fn display_preview_payload_decodes_with_shared_codec() {
     reset_ws_payload_caches();
 
     let snapshot = display_preview_snapshot(64, 5);
-    let payload = cached_display_preview_payload(&snapshot);
+    let payload = cached_display_preview_payload(&snapshot).expect("display preview payload");
     let decoded = shared_wire::PreviewFrame::decode(&payload)
         .expect("shared codec must decode daemon display preview payloads");
 
@@ -4594,7 +4587,8 @@ fn screen_zones_encoding_round_trips_through_shared_wire_format() {
         colors: Arc::new(colors.clone()),
     };
 
-    let encoded = super::relays::encode_screen_zones_frame(&frame);
+    let encoded = super::relays::encode_screen_zones_frame(&frame)
+        .expect("screen zones encoding should succeed");
     let decoded = hypercolor_leptos_ext::ws::ScreenZonesFrame::decode(&encoded)
         .expect("daemon encoding must decode with the shared wire format");
 
@@ -4612,7 +4606,8 @@ fn screen_zones_encoding_round_trips_through_shared_wire_format() {
 #[test]
 fn screen_zones_empty_frame_encodes_as_no_signal() {
     let frame = hypercolor_core::bus::ScreenZonesFrame::default();
-    let encoded = super::relays::encode_screen_zones_frame(&frame);
+    let encoded = super::relays::encode_screen_zones_frame(&frame)
+        .expect("empty screen zones encoding should succeed");
     let decoded = hypercolor_leptos_ext::ws::ScreenZonesFrame::decode(&encoded)
         .expect("empty zones frame must remain decodable");
 

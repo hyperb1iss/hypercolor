@@ -1547,6 +1547,13 @@ pub(super) struct MetricsWebsocket {
     pub(super) frame_payload_cache_hits: u64,
     pub(super) canvas_payload_builds: u64,
     pub(super) canvas_payload_cache_hits: u64,
+    pub(super) preview_publications_queued: u64,
+    pub(super) preview_publications_replaced: u64,
+    pub(super) preview_publications_evicted: u64,
+    pub(super) preview_publications_rejected: u64,
+    pub(super) preview_publications_sent: u64,
+    pub(super) preview_chunks_sent: u64,
+    pub(super) preview_queue_bytes: usize,
 }
 
 #[derive(Debug)]

@@ -49,6 +49,7 @@ pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = PreviewFrameChannel::WebVie
 /// Binary header byte for per-display preview JPEG frames streamed by
 /// the `display_preview` channel. Body layout matches the canvas frame:
 /// `[frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8=2 (JPEG)][jpeg_payload]`.
+#[cfg(test)]
 pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = PreviewFrameChannel::DisplayPreview.tag();
 #[cfg(test)]
 pub(super) const WS_ZONE_PREVIEW_HEADER: u8 = ZONE_PREVIEW_FRAME_TAG;
@@ -1075,13 +1076,15 @@ pub(super) fn reset_display_preview_payload_cache_for_tests() {
     }
 }
 
-pub(super) fn cached_display_preview_payload(snapshot: &DisplayFrameSnapshot) -> Bytes {
+pub(super) fn cached_display_preview_payload(snapshot: &DisplayFrameSnapshot) -> Option<Bytes> {
     let key = display_preview_payload_key(snapshot);
     if let Some(cached) = display_preview_payload_cache_get(key) {
-        return cached;
+        return Some(cached);
     }
 
-    let payload = build_display_preview_payload(snapshot, key);
+    let payload = build_display_preview_payload(snapshot, key)
+        .inspect_err(|error| warn!(?error, "failed to encode display preview"))
+        .ok()?;
     if payload.len() <= WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES {
         display_preview_payload_cache_put(key, payload.clone());
     } else {
@@ -1091,7 +1094,7 @@ pub(super) fn cached_display_preview_payload(snapshot: &DisplayFrameSnapshot) ->
             "display preview payload exceeds cache size limit; serving uncached"
         );
     }
-    payload
+    Some(payload)
 }
 
 fn frame_payload_cache_get(key: FramePayloadCacheKey) -> Option<FrameRelayMessage> {
@@ -1301,22 +1304,18 @@ fn display_preview_payload_key(snapshot: &DisplayFrameSnapshot) -> DisplayPrevie
 fn build_display_preview_payload(
     snapshot: &DisplayFrameSnapshot,
     key: DisplayPreviewPayloadCacheKey,
-) -> Bytes {
-    const JPEG_FORMAT: u8 = 2;
-    const HEADER_LEN: usize = 1 + 4 + 4 + 2 + 2 + 1;
-
-    let jpeg = snapshot.jpeg_data.as_ref().as_slice();
-    let mut buf = Vec::with_capacity(HEADER_LEN + jpeg.len());
-    buf.push(WS_DISPLAY_PREVIEW_HEADER);
-    buf.extend_from_slice(&key.frame_number.to_le_bytes());
-    buf.extend_from_slice(&key.timestamp_ms.to_le_bytes());
-    let width_u16 = u16::try_from(snapshot.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(snapshot.height).unwrap_or(u16::MAX);
-    buf.extend_from_slice(&width_u16.to_le_bytes());
-    buf.extend_from_slice(&height_u16.to_le_bytes());
-    buf.push(JPEG_FORMAT);
-    buf.extend_from_slice(jpeg);
-    Bytes::from(buf)
+) -> Result<Bytes> {
+    PreviewFrame {
+        channel: PreviewFrameChannel::DisplayPreview,
+        frame_number: key.frame_number,
+        timestamp_ms: key.timestamp_ms,
+        width: snapshot.width,
+        height: snapshot.height,
+        format: WirePreviewPixelFormat::Jpeg,
+        payload: Bytes::copy_from_slice(snapshot.jpeg_data.as_ref()),
+    }
+    .try_encode()
+    .context("failed to encode display preview wire frame")
 }
 
 #[expect(
@@ -1361,12 +1360,10 @@ fn resolve_canvas_output_size(
     requested_width: u32,
     requested_height: u32,
 ) -> Result<CanvasOutputSize> {
-    let output_size = if source_width == 0 || source_height == 0 {
-        CanvasOutputSize {
-            width: source_width,
-            height: source_height,
-        }
-    } else if requested_width == 0 && requested_height == 0 {
+    let output_size = if source_width == 0
+        || source_height == 0
+        || (requested_width == 0 && requested_height == 0)
+    {
         CanvasOutputSize {
             width: source_width,
             height: source_height,

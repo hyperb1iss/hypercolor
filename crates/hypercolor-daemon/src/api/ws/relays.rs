@@ -6,19 +6,27 @@
 //! mpsc channels and `try_send` backpressure — drop under load rather than
 //! queue unboundedly.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
+use hypercolor_core::input::BrowserInputPublicationId;
+use hypercolor_leptos_ext::ws::{
+    InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
+    PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
+    PreviewPixelFormat as WirePreviewFormat, PreviewPublicationMetadata, PreviewStreamId,
+    ScreenZonesFrame as WireScreenZonesFrame, ZonePreviewFrame as WireZonePreviewFrame,
+};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::sensor::SystemSnapshot;
+use thiserror::Error;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{Notify, broadcast, watch};
 use tracing::{debug, warn};
 
 use super::cache::{
@@ -30,11 +38,11 @@ use super::cache::{
     try_encode_cached_canvas_preview_binary, try_encode_cached_zone_preview_binary_scaled,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane,
-    MetricsDisplayOutput, MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory,
-    MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces,
-    MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig,
-    SubscriptionState, WsChannel, event_message_parts, should_relay_event,
+    ActiveFramesConfig, CanvasConfig, MAX_PREVIEW_PUBLICATION_BYTES, MetricsCopies, MetricsDevices,
+    MetricsDisplayLane, MetricsDisplayOutput, MetricsEffectHealth, MetricsFps, MetricsFrameTime,
+    MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand,
+    MetricsRenderSurfaces, MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage,
+    SpectrumConfig, SubscriptionState, WsChannel, event_message_parts, should_relay_event,
 };
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
@@ -43,6 +51,525 @@ use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewSt
 use crate::session::OutputPowerState;
 
 const BACKPRESSURE_REPORT_INTERVAL: Duration = Duration::from_millis(500);
+const MAX_PREVIEW_ENCODED_PUBLICATION_BYTES: usize = MAX_PREVIEW_PUBLICATION_BYTES + 64 * 1024;
+const MAX_PREVIEW_CONNECTION_QUEUE_BYTES: usize = 1024 * 1024 * 1024;
+
+pub(super) static WS_PREVIEW_PUBLICATION_QUEUED_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(super) static WS_PREVIEW_PUBLICATION_REPLACED_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(super) static WS_PREVIEW_PUBLICATION_EVICTED_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(super) static WS_PREVIEW_PUBLICATION_REJECTED_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(super) static WS_PREVIEW_PUBLICATION_SENT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(super) static WS_PREVIEW_CHUNK_SENT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(super) static WS_PREVIEW_QUEUE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PreviewOutboundLimits {
+    pub(super) max_publication_bytes: usize,
+    pub(super) max_connection_bytes: usize,
+}
+
+impl Default for PreviewOutboundLimits {
+    fn default() -> Self {
+        Self {
+            max_publication_bytes: MAX_PREVIEW_ENCODED_PUBLICATION_BYTES,
+            max_connection_bytes: MAX_PREVIEW_CONNECTION_QUEUE_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreviewPublishOutcome {
+    Queued,
+    Replaced,
+}
+
+#[derive(Debug, Error)]
+pub(super) enum PreviewOutboundError {
+    #[error("preview publication is invalid: {0}")]
+    InvalidPublication(String),
+    #[error("preview publication stream does not match its wire frame")]
+    StreamMismatch,
+    #[error("interactive preview publication is missing its input-publication fence")]
+    MissingInteractiveFence,
+    #[error("passive preview publication unexpectedly carries an interactive fence")]
+    UnexpectedInteractiveFence,
+    #[error("preview publication uses {actual} bytes, exceeding the {maximum}-byte budget")]
+    PublicationBudgetExceeded { maximum: usize, actual: usize },
+    #[error(
+        "preview connection queue cannot admit a {actual}-byte publication within {maximum} bytes"
+    )]
+    ConnectionBudgetExceeded { maximum: usize, actual: usize },
+    #[error("preview publication identity space is exhausted")]
+    PublicationIdExhausted,
+    #[error("preview chunk encoding failed: {0}")]
+    ChunkEncoding(String),
+}
+
+#[derive(Debug)]
+pub(super) struct PreviewPublication {
+    metadata: PreviewPublicationMetadata,
+    encoded: Bytes,
+    interactive_fence: Option<BrowserInputPublicationId>,
+}
+
+impl PreviewPublication {
+    pub(super) fn stream(&self) -> &PreviewStreamId {
+        &self.metadata.stream
+    }
+
+    pub(super) const fn publication_id(&self) -> u64 {
+        self.metadata.publication_id
+    }
+
+    pub(super) fn interactive_fence(&self) -> Option<(&str, BrowserInputPublicationId)> {
+        match (&self.metadata.stream, self.interactive_fence) {
+            (PreviewStreamId::Interactive(preview_id), Some(publication_id)) => {
+                Some((preview_id, publication_id))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PreviewOutboundState {
+    queued: VecDeque<PreviewPublication>,
+    queued_bytes: usize,
+    current: Vec<(PreviewStreamId, u64)>,
+    next_publication_id: u64,
+    limits: PreviewOutboundLimits,
+}
+
+impl Drop for PreviewOutboundState {
+    fn drop(&mut self) {
+        WS_PREVIEW_QUEUE_BYTES.fetch_sub(self.queued_bytes, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+struct PreviewOutboundShared {
+    state: StdMutex<PreviewOutboundState>,
+    notify: Notify,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PreviewOutboundSender {
+    shared: Arc<PreviewOutboundShared>,
+}
+
+#[derive(Debug)]
+pub(super) struct PreviewOutboundReceiver {
+    shared: Arc<PreviewOutboundShared>,
+}
+
+pub(super) fn preview_outbound_channel() -> (PreviewOutboundSender, PreviewOutboundReceiver) {
+    preview_outbound_channel_with_limits(PreviewOutboundLimits::default())
+}
+
+pub(super) fn preview_outbound_channel_with_limits(
+    limits: PreviewOutboundLimits,
+) -> (PreviewOutboundSender, PreviewOutboundReceiver) {
+    let shared = Arc::new(PreviewOutboundShared {
+        state: StdMutex::new(PreviewOutboundState {
+            queued: VecDeque::new(),
+            queued_bytes: 0,
+            current: Vec::new(),
+            next_publication_id: 1,
+            limits,
+        }),
+        notify: Notify::new(),
+    });
+    (
+        PreviewOutboundSender {
+            shared: Arc::clone(&shared),
+        },
+        PreviewOutboundReceiver { shared },
+    )
+}
+
+impl PreviewOutboundSender {
+    pub(super) fn publish(
+        &self,
+        stream: PreviewStreamId,
+        encoded: Bytes,
+        interactive_fence: Option<BrowserInputPublicationId>,
+    ) -> Result<PreviewPublishOutcome, PreviewOutboundError> {
+        let result = self.publish_inner(stream, encoded, interactive_fence);
+        if result.is_err() {
+            WS_PREVIEW_PUBLICATION_REJECTED_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn publish_inner(
+        &self,
+        stream: PreviewStreamId,
+        encoded: Bytes,
+        interactive_fence: Option<BrowserInputPublicationId>,
+    ) -> Result<PreviewPublishOutcome, PreviewOutboundError> {
+        validate_preview_fence(&stream, interactive_fence)?;
+        let fields = decode_preview_fields(&stream, &encoded)?;
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if encoded.len() > state.limits.max_publication_bytes {
+            return Err(PreviewOutboundError::PublicationBudgetExceeded {
+                maximum: state.limits.max_publication_bytes,
+                actual: encoded.len(),
+            });
+        }
+        if encoded.len() > state.limits.max_connection_bytes {
+            return Err(PreviewOutboundError::ConnectionBudgetExceeded {
+                maximum: state.limits.max_connection_bytes,
+                actual: encoded.len(),
+            });
+        }
+        let publication_id = state.next_publication_id;
+        state.next_publication_id = publication_id
+            .checked_add(1)
+            .ok_or(PreviewOutboundError::PublicationIdExhausted)?;
+
+        let replaced = state
+            .queued
+            .iter()
+            .position(|publication| publication.stream() == &stream)
+            .and_then(|index| state.queued.remove(index));
+        let outcome = if replaced.is_some() {
+            PreviewPublishOutcome::Replaced
+        } else {
+            PreviewPublishOutcome::Queued
+        };
+        if let Some(replaced) = replaced {
+            state.queued_bytes -= replaced.encoded.len();
+            WS_PREVIEW_QUEUE_BYTES.fetch_sub(replaced.encoded.len(), Ordering::Relaxed);
+            WS_PREVIEW_PUBLICATION_REPLACED_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        while state
+            .queued_bytes
+            .checked_add(encoded.len())
+            .is_none_or(|bytes| bytes > state.limits.max_connection_bytes)
+        {
+            let Some(evicted) = state.queued.pop_front() else {
+                return Err(PreviewOutboundError::ConnectionBudgetExceeded {
+                    maximum: state.limits.max_connection_bytes,
+                    actual: encoded.len(),
+                });
+            };
+            state.queued_bytes -= evicted.encoded.len();
+            remove_current_publication(
+                &mut state.current,
+                evicted.stream(),
+                evicted.publication_id(),
+            );
+            WS_PREVIEW_QUEUE_BYTES.fetch_sub(evicted.encoded.len(), Ordering::Relaxed);
+            WS_PREVIEW_PUBLICATION_EVICTED_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        set_current_publication(&mut state.current, &stream, publication_id);
+        state.queued_bytes += encoded.len();
+        WS_PREVIEW_QUEUE_BYTES.fetch_add(encoded.len(), Ordering::Relaxed);
+        state.queued.push_back(PreviewPublication {
+            metadata: PreviewPublicationMetadata {
+                stream,
+                publication_id,
+                frame_number: fields.frame_number,
+                timestamp_ms: fields.timestamp_ms,
+                width: fields.width,
+                height: fields.height,
+                format: fields.format,
+            },
+            encoded,
+            interactive_fence,
+        });
+        WS_PREVIEW_PUBLICATION_QUEUED_COUNT.fetch_add(1, Ordering::Relaxed);
+        drop(state);
+        self.shared.notify.notify_one();
+        Ok(outcome)
+    }
+
+    pub(super) fn cancel(&self, stream: &PreviewStreamId) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(index) = state
+            .queued
+            .iter()
+            .position(|publication| publication.stream() == stream)
+            && let Some(removed) = state.queued.remove(index)
+        {
+            state.queued_bytes -= removed.encoded.len();
+            WS_PREVIEW_QUEUE_BYTES.fetch_sub(removed.encoded.len(), Ordering::Relaxed);
+        }
+        state.current.retain(|(candidate, _)| candidate != stream);
+    }
+}
+
+impl PreviewOutboundReceiver {
+    pub(super) async fn recv(&self) -> PreviewPublication {
+        loop {
+            let notified = self.shared.notify.notified();
+            if let Some(publication) = self.try_recv() {
+                return publication;
+            }
+            notified.await;
+        }
+    }
+
+    pub(super) fn try_recv(&self) -> Option<PreviewPublication> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let publication = state.queued.pop_front()?;
+        state.queued_bytes -= publication.encoded.len();
+        WS_PREVIEW_QUEUE_BYTES.fetch_sub(publication.encoded.len(), Ordering::Relaxed);
+        Some(publication)
+    }
+
+    pub(super) fn is_current(&self, publication: &PreviewPublication) -> bool {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .current
+            .iter()
+            .any(|(stream, publication_id)| {
+                stream == publication.stream() && *publication_id == publication.publication_id()
+            })
+    }
+
+    pub(super) fn complete(&self, publication: &PreviewPublication) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        remove_current_publication(
+            &mut state.current,
+            publication.stream(),
+            publication.publication_id(),
+        );
+    }
+}
+
+pub(super) struct PreviewSendCursor {
+    publication: PreviewPublication,
+    payload_capacity: usize,
+    next_offset: usize,
+    next_chunk_index: u32,
+    chunk_count: u32,
+    chunked: bool,
+}
+
+impl PreviewSendCursor {
+    pub(super) fn new(
+        publication: PreviewPublication,
+        max_message_bytes: usize,
+    ) -> Result<Self, PreviewOutboundError> {
+        let identity_len = match publication.stream() {
+            PreviewStreamId::Passive(_) | PreviewStreamId::ScreenZones => 0,
+            PreviewStreamId::Zone { .. } => 32,
+            PreviewStreamId::Interactive(preview_id) => preview_id.len(),
+        };
+        let envelope_len = PREVIEW_CHUNK_FIXED_HEADER_LEN
+            .checked_add(identity_len)
+            .ok_or_else(|| {
+                PreviewOutboundError::ChunkEncoding("envelope length overflow".into())
+            })?;
+        let chunked = publication.encoded.len() > max_message_bytes;
+        let payload_capacity = if chunked {
+            max_message_bytes
+                .checked_sub(envelope_len)
+                .filter(|bytes| *bytes > 0)
+                .ok_or_else(|| {
+                    PreviewOutboundError::ChunkEncoding(
+                        "message budget cannot fit chunk envelope".into(),
+                    )
+                })?
+        } else {
+            publication.encoded.len()
+        };
+        let chunk_count = if chunked {
+            u32::try_from(publication.encoded.len().div_ceil(payload_capacity)).map_err(|_| {
+                PreviewOutboundError::ChunkEncoding("chunk count exceeds u32".into())
+            })?
+        } else {
+            1
+        };
+        Ok(Self {
+            publication,
+            payload_capacity,
+            next_offset: 0,
+            next_chunk_index: 0,
+            chunk_count,
+            chunked,
+        })
+    }
+
+    pub(super) const fn publication(&self) -> &PreviewPublication {
+        &self.publication
+    }
+
+    pub(super) fn next_message(&mut self) -> Result<Option<Bytes>, PreviewOutboundError> {
+        if self.next_offset >= self.publication.encoded.len() {
+            return Ok(None);
+        }
+        if !self.chunked {
+            self.next_offset = self.publication.encoded.len();
+            return Ok(Some(self.publication.encoded.clone()));
+        }
+        let end = self
+            .next_offset
+            .checked_add(self.payload_capacity)
+            .map_or(self.publication.encoded.len(), |end| {
+                end.min(self.publication.encoded.len())
+            });
+        let message = PreviewChunkFrame {
+            metadata: self.publication.metadata.clone(),
+            total_encoded_bytes: u64::try_from(self.publication.encoded.len()).map_err(|_| {
+                PreviewOutboundError::ChunkEncoding("publication length exceeds u64".into())
+            })?,
+            chunk_offset: u64::try_from(self.next_offset).map_err(|_| {
+                PreviewOutboundError::ChunkEncoding("chunk offset exceeds u64".into())
+            })?,
+            chunk_index: self.next_chunk_index,
+            chunk_count: self.chunk_count,
+            payload: self.publication.encoded.slice(self.next_offset..end),
+        }
+        .try_encode()
+        .map_err(|error| PreviewOutboundError::ChunkEncoding(error.to_string()))?;
+        self.next_offset = end;
+        self.next_chunk_index += 1;
+        Ok(Some(message))
+    }
+
+    pub(super) fn is_complete(&self) -> bool {
+        self.next_offset >= self.publication.encoded.len()
+    }
+
+    pub(super) const fn is_chunked(&self) -> bool {
+        self.chunked
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreviewWireFields {
+    frame_number: u32,
+    timestamp_ms: u32,
+    width: u32,
+    height: u32,
+    format: WirePreviewFormat,
+}
+
+fn validate_preview_fence(
+    stream: &PreviewStreamId,
+    fence: Option<BrowserInputPublicationId>,
+) -> Result<(), PreviewOutboundError> {
+    match (stream, fence) {
+        (PreviewStreamId::Interactive(_), None) => {
+            Err(PreviewOutboundError::MissingInteractiveFence)
+        }
+        (PreviewStreamId::Interactive(_), Some(_)) | (_, None) => Ok(()),
+        (_, Some(_)) => Err(PreviewOutboundError::UnexpectedInteractiveFence),
+    }
+}
+
+fn decode_preview_fields(
+    stream: &PreviewStreamId,
+    encoded: &Bytes,
+) -> Result<PreviewWireFields, PreviewOutboundError> {
+    let invalid = |error: String| PreviewOutboundError::InvalidPublication(error);
+    match stream {
+        PreviewStreamId::Passive(expected_channel) => {
+            let frame = WirePreviewFrame::decode_bytes(encoded)
+                .map_err(|error| invalid(error.to_string()))?;
+            if frame.channel != *expected_channel {
+                return Err(PreviewOutboundError::StreamMismatch);
+            }
+            Ok(PreviewWireFields::from_preview_frame(&frame))
+        }
+        PreviewStreamId::Zone { scene_id, zone_id } => {
+            let frame = WireZonePreviewFrame::decode_bytes(encoded)
+                .map_err(|error| invalid(error.to_string()))?;
+            if frame.scene_id != *scene_id || frame.zone_id != *zone_id {
+                return Err(PreviewOutboundError::StreamMismatch);
+            }
+            Ok(PreviewWireFields {
+                frame_number: frame.frame_number,
+                timestamp_ms: frame.timestamp_ms,
+                width: frame.width,
+                height: frame.height,
+                format: frame.format,
+            })
+        }
+        PreviewStreamId::Interactive(expected_preview_id) => {
+            let frame = WireInteractivePreviewFrame::decode_bytes(encoded)
+                .map_err(|error| invalid(error.to_string()))?;
+            if frame.preview_id != *expected_preview_id {
+                return Err(PreviewOutboundError::StreamMismatch);
+            }
+            Ok(PreviewWireFields {
+                frame_number: frame.frame_number,
+                timestamp_ms: frame.timestamp_ms,
+                width: frame.width,
+                height: frame.height,
+                format: frame.format,
+            })
+        }
+        PreviewStreamId::ScreenZones => {
+            let frame = WireScreenZonesFrame::decode(encoded)
+                .map_err(|error| invalid(error.to_string()))?;
+            Ok(PreviewWireFields {
+                frame_number: frame.frame_number,
+                timestamp_ms: frame.timestamp_ms,
+                width: frame.source_width,
+                height: frame.source_height,
+                format: WirePreviewFormat::Rgb,
+            })
+        }
+    }
+}
+
+impl PreviewWireFields {
+    const fn from_preview_frame(frame: &WirePreviewFrame) -> Self {
+        Self {
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: frame.width,
+            height: frame.height,
+            format: frame.format,
+        }
+    }
+}
+
+fn set_current_publication(
+    current: &mut Vec<(PreviewStreamId, u64)>,
+    stream: &PreviewStreamId,
+    publication_id: u64,
+) {
+    if let Some((_, current_id)) = current
+        .iter_mut()
+        .find(|(candidate, _)| candidate == stream)
+    {
+        *current_id = publication_id;
+    } else {
+        current.push((stream.clone(), publication_id));
+    }
+}
+
+fn remove_current_publication(
+    current: &mut Vec<(PreviewStreamId, u64)>,
+    stream: &PreviewStreamId,
+    publication_id: u64,
+) {
+    current.retain(|(candidate, current_id)| candidate != stream || *current_id != publication_id);
+}
 
 #[derive(Debug, Default)]
 struct BackpressureReporter {
@@ -73,6 +600,21 @@ impl BackpressureReporter {
             channel,
             dropped_frames, current_fps, "Dropping WebSocket binary payloads for slow consumer"
         );
+    }
+}
+
+fn publish_preview(
+    preview_tx: &PreviewOutboundSender,
+    stream: PreviewStreamId,
+    payload: Bytes,
+    channel: &'static str,
+) -> bool {
+    match preview_tx.publish(stream, payload, None) {
+        Ok(_) => true,
+        Err(error) => {
+            warn!(channel, %error, "Rejected WebSocket preview publication");
+            false
+        }
     }
 }
 
@@ -290,8 +832,7 @@ pub(super) async fn relay_spectrum(
 pub(super) async fn relay_canvas(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
     mut power_state_rx: watch::Receiver<OutputPowerState>,
-    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
-    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    preview_tx: PreviewOutboundSender,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
@@ -301,7 +842,6 @@ pub(super) async fn relay_canvas(
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
-    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_canvas_config.is_none() {
@@ -406,8 +946,12 @@ pub(super) async fn relay_canvas(
                     continue;
                 };
 
-                if binary_tx.try_send(payload).is_err() {
-                    backpressure.record_drop(&json_tx, "canvas", canvas_config.fps);
+                if !publish_preview(
+                    &preview_tx,
+                    PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+                    payload,
+                    "canvas",
+                ) {
                     last_sent_at = Instant::now();
                     pending_send = false;
                     continue;
@@ -424,8 +968,7 @@ pub(super) async fn relay_canvas(
 /// Relay raw screen-source canvas updates to the WebSocket client.
 pub(super) async fn relay_screen_canvas(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
-    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
-    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    preview_tx: PreviewOutboundSender,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
@@ -435,7 +978,6 @@ pub(super) async fn relay_screen_canvas(
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
-    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_canvas_config.is_none() {
@@ -519,8 +1061,12 @@ pub(super) async fn relay_screen_canvas(
                     continue;
                 };
 
-                if binary_tx.try_send(payload).is_err() {
-                    backpressure.record_drop(&json_tx, "screen_canvas", canvas_config.fps);
+                if !publish_preview(
+                    &preview_tx,
+                    PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
+                    payload,
+                    "screen_canvas",
+                ) {
                     last_sent_at = Instant::now();
                     pending_send = false;
                     continue;
@@ -543,7 +1089,7 @@ pub(super) async fn relay_screen_canvas(
 pub(super) async fn relay_screen_zones(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
-    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    preview_tx: PreviewOutboundSender,
 ) {
     let mut zones_rx = None::<tokio::sync::watch::Receiver<hypercolor_core::bus::ScreenZonesFrame>>;
 
@@ -567,9 +1113,20 @@ pub(super) async fn relay_screen_zones(
                         break;
                     }
                     let frame = receiver.borrow_and_update().clone();
-                    let payload = encode_screen_zones_frame(&frame);
-                    if binary_tx.try_send(payload).is_err() {
-                        debug!("Dropped screen zones frame for slow client");
+                    let payload = match encode_screen_zones_frame(&frame) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            warn!(%error, "Failed to encode screen zones preview");
+                            continue;
+                        }
+                    };
+                    if !publish_preview(
+                        &preview_tx,
+                        PreviewStreamId::ScreenZones,
+                        payload,
+                        "screen_zones",
+                    ) {
+                        continue;
                     }
                 }
                 changed = subscriptions.changed() => {
@@ -588,8 +1145,16 @@ pub(super) async fn relay_screen_zones(
     }
 }
 
-pub(super) fn encode_screen_zones_frame(frame: &hypercolor_core::bus::ScreenZonesFrame) -> Bytes {
-    let saturate_u8 = |value: u32| u8::try_from(value).unwrap_or(u8::MAX);
+pub(super) fn encode_screen_zones_frame(
+    frame: &hypercolor_core::bus::ScreenZonesFrame,
+) -> Result<Bytes, PreviewOutboundError> {
+    let checked_u8 = |field: &'static str, value: u32| {
+        u8::try_from(value).map_err(|_| {
+            PreviewOutboundError::InvalidPublication(format!(
+                "screen zones {field} value {value} exceeds u8"
+            ))
+        })
+    };
     let payload: Vec<u8> = frame
         .colors
         .iter()
@@ -601,23 +1166,23 @@ pub(super) fn encode_screen_zones_frame(frame: &hypercolor_core::bus::ScreenZone
         timestamp_ms: frame.timestamp_ms,
         source_width: frame.source_width,
         source_height: frame.source_height,
-        grid_cols: saturate_u8(frame.grid_cols),
-        grid_rows: saturate_u8(frame.grid_rows),
+        grid_cols: checked_u8("grid_cols", frame.grid_cols)?,
+        grid_rows: checked_u8("grid_rows", frame.grid_rows)?,
         letterbox: [
-            saturate_u8(frame.letterbox[0]),
-            saturate_u8(frame.letterbox[1]),
-            saturate_u8(frame.letterbox[2]),
-            saturate_u8(frame.letterbox[3]),
+            checked_u8("letterbox_top", frame.letterbox[0])?,
+            checked_u8("letterbox_bottom", frame.letterbox[1])?,
+            checked_u8("letterbox_left", frame.letterbox[2])?,
+            checked_u8("letterbox_right", frame.letterbox[3])?,
         ],
         payload: Bytes::from(payload),
     }
-    .encode()
+    .try_encode()
+    .map_err(|error| PreviewOutboundError::InvalidPublication(error.to_string()))
 }
 
 pub(super) async fn relay_web_viewport_canvas(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
-    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
-    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    preview_tx: PreviewOutboundSender,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut canvas_rx = None::<crate::preview_runtime::PreviewFrameReceiver>;
@@ -627,7 +1192,6 @@ pub(super) async fn relay_web_viewport_canvas(
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
-    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_canvas_config.is_none() {
@@ -711,12 +1275,12 @@ pub(super) async fn relay_web_viewport_canvas(
                     continue;
                 };
 
-                if binary_tx.try_send(payload).is_err() {
-                    backpressure.record_drop(
-                        &json_tx,
-                        "web_viewport_canvas",
-                        canvas_config.fps,
-                    );
+                if !publish_preview(
+                    &preview_tx,
+                    PreviewStreamId::Passive(PreviewFrameChannel::WebViewportCanvas),
+                    payload,
+                    "web_viewport_canvas",
+                ) {
                     last_sent_at = Instant::now();
                     pending_send = false;
                     continue;
@@ -732,8 +1296,7 @@ pub(super) async fn relay_web_viewport_canvas(
 
 pub(super) async fn relay_zone_preview(
     preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
-    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
-    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    preview_tx: PreviewOutboundSender,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut preview_rx = None::<crate::preview_runtime::ZonePreviewFrameReceiver>;
@@ -744,7 +1307,6 @@ pub(super) async fn relay_zone_preview(
     let mut pending_send = false;
     let mut active_fps = 15_u32;
     let mut last_sent_at = preview_initial_last_sent();
-    let mut backpressure = BackpressureReporter::default();
 
     loop {
         if active_canvas_config.is_none() {
@@ -808,8 +1370,6 @@ pub(super) async fn relay_zone_preview(
                     latest.clone()
                 };
                 let mut active_zone_ids = HashSet::new();
-                let mut sent_any = false;
-                let mut hit_backpressure = false;
                 for zone_preview in &zone_previews {
                     active_zone_ids.insert(zone_preview.zone_id);
                     let surface_identity = preview_surface_identity(&zone_preview.frame);
@@ -825,20 +1385,22 @@ pub(super) async fn relay_zone_preview(
                     let Some(payload) = payload else {
                         continue;
                     };
-                    if binary_tx.try_send(payload).is_err() {
-                        backpressure.record_drop(&json_tx, "zone_preview", canvas_config.fps);
-                        hit_backpressure = true;
-                        break;
+                    if !publish_preview(
+                        &preview_tx,
+                        PreviewStreamId::Zone {
+                            scene_id: *zone_preview.scene_id.0.as_bytes(),
+                            zone_id: *zone_preview.zone_id.0.as_bytes(),
+                        },
+                        payload,
+                        "zone_preview",
+                    ) {
+                        continue;
                     }
                     last_sent_surfaces.insert(zone_preview.zone_id, surface_identity);
-                    sent_any = true;
                 }
                 last_sent_surfaces.retain(|zone_id, _| active_zone_ids.contains(zone_id));
                 last_sent_at = Instant::now();
-                pending_send = hit_backpressure && !sent_any;
-                if !hit_backpressure {
-                    pending_send = false;
-                }
+                pending_send = false;
             }
         }
     }
@@ -886,8 +1448,7 @@ fn sync_zone_preview_receiver(
 pub(super) async fn relay_display_preview(
     state: Arc<AppState>,
     display_frames: Arc<tokio::sync::RwLock<crate::display_frames::DisplayFrameRuntime>>,
-    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
-    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    preview_tx: PreviewOutboundSender,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     use crate::display_frames::DisplayFrameSnapshot;
@@ -907,7 +1468,6 @@ pub(super) async fn relay_display_preview(
     }
 
     let mut active: Option<ActiveTarget> = None;
-    let mut backpressure = BackpressureReporter::default();
 
     loop {
         // Re-derive the desired target from the current subscription
@@ -1013,9 +1573,17 @@ pub(super) async fn relay_display_preview(
                     continue;
                 }
 
-                let payload = cached_display_preview_payload(&snapshot);
-                if binary_tx.try_send(payload).is_err() {
-                    backpressure.record_drop(&json_tx, "display_preview", target.fps);
+                let Some(payload) = cached_display_preview_payload(&snapshot) else {
+                    target.last_sent_at = Instant::now();
+                    target.pending_send = false;
+                    continue;
+                };
+                if !publish_preview(
+                    &preview_tx,
+                    PreviewStreamId::Passive(PreviewFrameChannel::DisplayPreview),
+                    payload,
+                    "display_preview",
+                ) {
                     // Advance last_sent_at so the next retry waits out a
                     // full fps interval instead of spinning the encoder.
                     // Clear pending_send too — if the consumer is slow
@@ -1776,6 +2344,18 @@ pub(super) async fn build_metrics_message(
                 canvas_payload_builds: WS_CANVAS_PAYLOAD_BUILD_COUNT.load(Ordering::Relaxed),
                 canvas_payload_cache_hits: WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT
                     .load(Ordering::Relaxed),
+                preview_publications_queued: WS_PREVIEW_PUBLICATION_QUEUED_COUNT
+                    .load(Ordering::Relaxed),
+                preview_publications_replaced: WS_PREVIEW_PUBLICATION_REPLACED_COUNT
+                    .load(Ordering::Relaxed),
+                preview_publications_evicted: WS_PREVIEW_PUBLICATION_EVICTED_COUNT
+                    .load(Ordering::Relaxed),
+                preview_publications_rejected: WS_PREVIEW_PUBLICATION_REJECTED_COUNT
+                    .load(Ordering::Relaxed),
+                preview_publications_sent: WS_PREVIEW_PUBLICATION_SENT_COUNT
+                    .load(Ordering::Relaxed),
+                preview_chunks_sent: WS_PREVIEW_CHUNK_SENT_COUNT.load(Ordering::Relaxed),
+                preview_queue_bytes: WS_PREVIEW_QUEUE_BYTES.load(Ordering::Relaxed),
             },
         },
     }

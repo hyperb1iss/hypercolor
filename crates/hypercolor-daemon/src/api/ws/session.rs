@@ -30,9 +30,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use super::cache::{WS_BUFFER_SIZE, WsClientGuard, track_ws_bytes_sent};
 use super::command::dispatch_command;
-use super::interactive_preview_relay::{
-    InteractivePreviewOutbound, spawn_interactive_preview_relay,
-};
+use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
     BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, InteractivePreviewConfig,
     MAX_WS_MESSAGE_BYTES, NameRef, SceneRef, ServerMessage, SubscriptionState, WsChannel,
@@ -40,9 +38,11 @@ use super::protocol::{
     validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
-    publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
-    relay_frames, relay_metrics, relay_screen_canvas, relay_screen_zones, relay_sensors,
-    relay_spectrum, relay_web_viewport_canvas, relay_zone_preview,
+    PreviewOutboundSender, PreviewSendCursor, WS_PREVIEW_CHUNK_SENT_COUNT,
+    WS_PREVIEW_PUBLICATION_SENT_COUNT, preview_outbound_channel, publish_subscriptions,
+    relay_canvas, relay_device_metrics, relay_display_preview, relay_events, relay_frames,
+    relay_metrics, relay_screen_canvas, relay_screen_zones, relay_sensors, relay_spectrum,
+    relay_web_viewport_canvas, relay_zone_preview,
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
@@ -66,11 +66,6 @@ use crate::render_thread::{
 const WS_PROTOCOL_VERSION: &str = "1.0";
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
-
-enum BinaryOutbound {
-    Passive(Bytes),
-    Interactive(InteractivePreviewOutbound),
-}
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
@@ -181,17 +176,16 @@ async fn handle_socket(
 
     // Subscribe to the event bus and watch channels.
     let event_rx = state.event_bus.subscribe_all();
-    // Split outbound traffic: both queues are bounded so slow clients cannot
-    // grow daemon memory without limit.
+    // JSON and small binary telemetry stay count-bounded. Preview surfaces use
+    // a keyed, byte-accounted latest-value router below.
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(WS_BUFFER_SIZE);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(WS_BUFFER_SIZE);
-    let (interactive_preview_tx, mut interactive_preview_rx) =
-        tokio::sync::mpsc::channel::<InteractivePreviewOutbound>(WS_BUFFER_SIZE);
+    let (preview_tx, preview_rx) = preview_outbound_channel();
     let mut browser_previews = BrowserPreviewSession::new(
         state.browser_input.clone(),
         state.interaction_routing.clone(),
         state.preview_runtime.interactive_executor(),
-        interactive_preview_tx,
+        preview_tx.clone(),
     );
 
     // Spawn event relay tasks — each watches immutable subscription snapshots.
@@ -216,38 +210,33 @@ async fn handle_socket(
     let canvas_relay_handle = tokio::spawn(relay_canvas(
         Arc::clone(&state.preview_runtime),
         canvas_power_rx,
-        json_tx.clone(),
-        binary_tx.clone(),
+        preview_tx.clone(),
         subscriptions_rx.clone(),
     ));
     let screen_canvas_relay_handle = tokio::spawn(relay_screen_canvas(
         Arc::clone(&state.preview_runtime),
-        json_tx.clone(),
-        binary_tx.clone(),
+        preview_tx.clone(),
         subscriptions_rx.clone(),
     ));
     let screen_zones_relay_handle = tokio::spawn(relay_screen_zones(
         Arc::clone(&state.preview_runtime),
         subscriptions_rx.clone(),
-        binary_tx.clone(),
+        preview_tx.clone(),
     ));
     let web_viewport_canvas_relay_handle = tokio::spawn(relay_web_viewport_canvas(
         Arc::clone(&state.preview_runtime),
-        json_tx.clone(),
-        binary_tx.clone(),
+        preview_tx.clone(),
         subscriptions_rx.clone(),
     ));
     let zone_preview_relay_handle = tokio::spawn(relay_zone_preview(
         Arc::clone(&state.preview_runtime),
-        json_tx.clone(),
-        binary_tx.clone(),
+        preview_tx.clone(),
         subscriptions_rx.clone(),
     ));
     let display_preview_relay_handle = tokio::spawn(relay_display_preview(
         Arc::clone(&state),
         Arc::clone(&state.display_frames),
-        json_tx.clone(),
-        binary_tx.clone(),
+        preview_tx,
         subscriptions_rx.clone(),
     ));
     let metrics_relay_handle = tokio::spawn(relay_metrics(
@@ -271,11 +260,10 @@ async fn handle_socket(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
+    let mut preview_cursor = None::<PreviewSendCursor>;
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
-            biased;
-
             // Outbound JSON: bounded queue (drop under pressure in producer tasks).
             json_msg = json_rx.recv() => {
                 match json_msg {
@@ -290,33 +278,66 @@ async fn handle_socket(
                 }
             }
 
-            binary_msg = async {
-                tokio::select! {
-                    message = binary_rx.recv() => message.map(BinaryOutbound::Passive),
-                    message = interactive_preview_rx.recv() => {
-                        message.map(BinaryOutbound::Interactive)
-                    }
+            binary_msg = binary_rx.recv() => {
+                let Some(bytes) = binary_msg else {
+                    break;
+                };
+                let sent_len = bytes.len();
+                if socket.send(Message::Binary(bytes)).await.is_err() {
+                    break;
                 }
-            } => {
-                match binary_msg {
-                    Some(BinaryOutbound::Passive(bytes)) => {
-                        let sent_len = bytes.len();
-                        if socket.send(Message::Binary(bytes)).await.is_err() {
-                            break;
-                        }
-                        track_ws_bytes_sent(sent_len);
+                track_ws_bytes_sent(sent_len);
+            }
+
+            publication = preview_rx.recv(), if preview_cursor.is_none() => {
+                match PreviewSendCursor::new(publication, MAX_WS_MESSAGE_BYTES) {
+                    Ok(cursor) => preview_cursor = Some(cursor),
+                    Err(error) => warn!(%error, "Rejected queued WebSocket preview publication"),
+                }
+            }
+
+            () = tokio::task::yield_now(), if preview_cursor.is_some() => {
+                let cursor = preview_cursor
+                    .as_mut()
+                    .expect("preview cursor exists behind select guard");
+                let interactive_is_current = cursor
+                    .publication()
+                    .interactive_fence()
+                    .is_none_or(|(preview_id, publication_id)| {
+                        browser_previews.is_current_publication(preview_id, publication_id)
+                    });
+                if !preview_rx.is_current(cursor.publication()) || !interactive_is_current {
+                    preview_rx.complete(cursor.publication());
+                    preview_cursor = None;
+                    continue;
+                }
+                let message = match cursor.next_message() {
+                    Ok(Some(message)) => message,
+                    Ok(None) => {
+                        preview_rx.complete(cursor.publication());
+                        preview_cursor = None;
+                        continue;
                     }
-                    Some(BinaryOutbound::Interactive(frame))
-                        if browser_previews.is_current_publication(&frame) =>
-                    {
-                        let sent_len = frame.bytes.len();
-                        if socket.send(Message::Binary(frame.bytes)).await.is_err() {
-                            break;
-                        }
-                        track_ws_bytes_sent(sent_len);
+                    Err(error) => {
+                        warn!(%error, "Failed to encode WebSocket preview chunk");
+                        preview_rx.complete(cursor.publication());
+                        preview_cursor = None;
+                        continue;
                     }
-                    Some(BinaryOutbound::Interactive(_)) => {}
-                    None => break,
+                };
+                let sent_len = message.len();
+                if socket.send(Message::Binary(message)).await.is_err() {
+                    break;
+                }
+                track_ws_bytes_sent(sent_len);
+                if cursor.is_chunked() {
+                    WS_PREVIEW_CHUNK_SENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if cursor.is_complete() {
+                    WS_PREVIEW_PUBLICATION_SENT_COUNT
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    preview_rx.complete(cursor.publication());
+                    preview_cursor = None;
                 }
             }
 
@@ -479,7 +500,7 @@ pub(super) struct BrowserPreviewSession {
     browser_input: BrowserInputHandle,
     interaction_routing: InteractionRoutingControl,
     executor: Option<Arc<InteractivePreviewExecutor>>,
-    outbound: tokio::sync::mpsc::Sender<InteractivePreviewOutbound>,
+    outbound: PreviewOutboundSender,
     previews: HashMap<String, BrowserPreviewBinding>,
 }
 
@@ -495,7 +516,7 @@ impl BrowserPreviewSession {
         browser_input: BrowserInputHandle,
         interaction_routing: InteractionRoutingControl,
         executor: Option<Arc<InteractivePreviewExecutor>>,
-        outbound: tokio::sync::mpsc::Sender<InteractivePreviewOutbound>,
+        outbound: PreviewOutboundSender,
     ) -> Self {
         Self {
             connection: next_browser_connection_incarnation(),
@@ -524,6 +545,10 @@ impl BrowserPreviewSession {
         config: InteractivePreviewConfig,
     ) -> Result<ServerMessage, WsProtocolError> {
         validate_interactive_preview_shape(config.width, config.height)?;
+        self.outbound
+            .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
+                preview_id.clone(),
+            ));
         if let Some(binding) = self.previews.get_mut(&preview_id) {
             binding
                 .lane
@@ -587,6 +612,10 @@ impl BrowserPreviewSession {
     }
 
     pub(super) fn close(&mut self, preview_id: String) -> ServerMessage {
+        self.outbound
+            .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
+                preview_id.clone(),
+            ));
         let closed = self.previews.remove(&preview_id).is_some_and(|binding| {
             close_preview_binding(&self.interaction_routing, binding);
             true
@@ -594,8 +623,12 @@ impl BrowserPreviewSession {
         ServerMessage::InteractivePreviewClosed { preview_id, closed }
     }
 
-    pub(super) fn is_current_publication(&self, frame: &InteractivePreviewOutbound) -> bool {
-        self.publication_id(&frame.preview_id) == Some(frame.publication_id)
+    pub(super) fn is_current_publication(
+        &self,
+        preview_id: &str,
+        publication_id: hypercolor_core::input::BrowserInputPublicationId,
+    ) -> bool {
+        self.publication_id(preview_id) == Some(publication_id)
     }
 
     pub(super) fn publication_id(
