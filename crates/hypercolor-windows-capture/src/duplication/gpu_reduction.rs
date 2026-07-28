@@ -28,6 +28,10 @@ use windows::core::{BOOL, HRESULT, Interface, PCSTR, w};
 use super::{CaptureMetadata, PointerShapeKind, PointerState};
 use crate::{CaptureRegion, DisplayRotation, subsample_stride, subsampled_extent};
 
+#[cfg(test)]
+#[path = "gpu_reduction/allocation_tests.rs"]
+mod allocation_tests;
+
 const READBACK_RING_LEN: usize = 3;
 const THREAD_GROUP: u32 = 8;
 const SHADER_SOURCE: &[u8] = include_bytes!("reduction.hlsl");
@@ -47,13 +51,98 @@ type D3DCompileFn = unsafe extern "system" fn(
 ) -> HRESULT;
 
 #[derive(Debug, Error)]
-#[error("{0}")]
-pub(super) struct GpuReductionError(String);
+pub(super) enum GpuReductionError {
+    #[error("{message}")]
+    Operation { message: String },
+    #[error("{context}: {message}")]
+    Windows {
+        context: &'static str,
+        message: String,
+    },
+    #[error("{context}: RGBA8 byte size overflows for {width}x{height}")]
+    SizeOverflow {
+        context: &'static str,
+        width: u32,
+        height: u32,
+    },
+    #[error("{context}: could not reserve {requested_bytes} bytes: {message}")]
+    ResourceExhausted {
+        context: &'static str,
+        requested_bytes: usize,
+        message: String,
+    },
+}
 
 impl GpuReductionError {
-    fn windows(context: &'static str, error: impl std::fmt::Display) -> Self {
-        Self(format!("{context}: {error}"))
+    fn operation(message: impl Into<String>) -> Self {
+        Self::Operation {
+            message: message.into(),
+        }
     }
+
+    fn windows(context: &'static str, error: impl std::fmt::Display) -> Self {
+        Self::Windows {
+            context,
+            message: error.to_string(),
+        }
+    }
+
+    fn resource_exhausted(
+        context: &'static str,
+        requested_bytes: usize,
+        error: impl std::fmt::Display,
+    ) -> Self {
+        Self::ResourceExhausted {
+            context,
+            requested_bytes,
+            message: error.to_string(),
+        }
+    }
+}
+
+fn checked_rgba_len(
+    width: u32,
+    height: u32,
+    context: &'static str,
+) -> Result<usize, GpuReductionError> {
+    usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(GpuReductionError::SizeOverflow {
+            context,
+            width,
+            height,
+        })
+}
+
+fn checked_rgba_row_pitch(
+    width: u32,
+    height: u32,
+    context: &'static str,
+) -> Result<u32, GpuReductionError> {
+    width.checked_mul(4).ok_or(GpuReductionError::SizeOverflow {
+        context,
+        width,
+        height,
+    })
+}
+
+fn admit_vec_len(
+    buffer: &mut Vec<u8>,
+    requested_len: usize,
+    context: &'static str,
+) -> Result<(), GpuReductionError> {
+    if requested_len <= buffer.capacity() {
+        return Ok(());
+    }
+    buffer
+        .try_reserve(requested_len.saturating_sub(buffer.len()))
+        .map_err(|error| GpuReductionError::resource_exhausted(context, requested_len, error))
 }
 
 struct ShaderBytecode {
@@ -91,7 +180,7 @@ fn compiled_shaders() -> Result<&'static ShaderBytecode, GpuReductionError> {
             })
         })
         .as_ref()
-        .map_err(|message| GpuReductionError(message.clone()))
+        .map_err(|message| GpuReductionError::operation(message.clone()))
 }
 
 fn compile_entry(compile: D3DCompileFn, entry: &'static CStr) -> Result<Vec<u8>, String> {
@@ -250,6 +339,7 @@ pub(super) struct GpuReducer {
 pub(super) enum InjectedPollFailure {
     Query,
     Map,
+    Allocation,
 }
 
 impl GpuReducer {
@@ -398,7 +488,7 @@ impl GpuReducer {
         #[cfg(test)]
         if matches!(self.poll_failure, Some(InjectedPollFailure::Query)) {
             self.poll_failure = None;
-            return Err(GpuReductionError("injected query failure".to_owned()));
+            return Err(GpuReductionError::operation("injected query failure"));
         }
         let Some(resources) = self.resources.as_mut() else {
             return Ok(false);
@@ -428,7 +518,7 @@ impl GpuReducer {
         #[cfg(test)]
         if matches!(self.poll_failure, Some(InjectedPollFailure::Map)) {
             self.poll_failure = None;
-            return Err(GpuReductionError("injected map failure".to_owned()));
+            return Err(GpuReductionError::operation("injected map failure"));
         }
         let resources = self
             .resources
@@ -439,6 +529,20 @@ impl GpuReducer {
             .pending
             .as_ref()
             .expect("a ready query has pending frame metadata");
+        #[cfg(test)]
+        if matches!(self.poll_failure, Some(InjectedPollFailure::Allocation)) {
+            self.poll_failure = None;
+            admit_vec_len(rgba, usize::MAX, "injected readback allocation")?;
+            unreachable!("usize::MAX growth must fail");
+        }
+        let output_len = checked_rgba_len(
+            resources.key.output_width,
+            resources.key.output_height,
+            "allocate reduced readback",
+        )?;
+        let row_bytes =
+            checked_rgba_len(resources.key.output_width, 1, "validate reduced row pitch")?;
+        admit_vec_len(rgba, output_len, "allocate reduced readback")?;
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         // SAFETY: staging is CPU-readable and its event query completed.
         unsafe {
@@ -446,15 +550,23 @@ impl GpuReducer {
                 .Map(&slot.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
         }
         .map_err(|error| GpuReductionError::windows("map reduced staging texture", error))?;
-        let row_bytes = resources.key.output_width as usize * 4;
-        let output_len = row_bytes * resources.key.output_height as usize;
-        rgba.resize(output_len, 0);
         let row_pitch = mapped.RowPitch as usize;
+        let mapped_len = row_pitch
+            .checked_mul(resources.key.output_height as usize)
+            .filter(|len| *len <= isize::MAX as usize);
+        if row_pitch < row_bytes || mapped_len.is_none() || mapped.pData.is_null() {
+            // SAFETY: pairs with the successful Map above.
+            unsafe { self.context.Unmap(&slot.staging, 0) };
+            return Err(GpuReductionError::operation(
+                "mapped reduction surface has invalid row geometry",
+            ));
+        }
+        rgba.resize(output_len, 0);
         // SAFETY: Map exposes RowPitch bytes for each output row until Unmap.
         let source = unsafe {
             std::slice::from_raw_parts(
                 mapped.pData.cast::<u8>(),
-                row_pitch * resources.key.output_height as usize,
+                mapped_len.expect("mapped length was validated above"),
             )
         };
         for row in 0..resources.key.output_height as usize {
@@ -491,8 +603,8 @@ impl GpuReducer {
             desc
         } else {
             let Some(resources) = self.resources.as_ref() else {
-                return Err(GpuReductionError(
-                    "no retained clean desktop is available for reduction".to_owned(),
+                return Err(GpuReductionError::operation(
+                    "no retained clean desktop is available for reduction",
                 ));
             };
             source_desc(resources.key)
@@ -540,7 +652,7 @@ impl GpuReducer {
             return Ok(());
         }
 
-        let pixels = normalized_pointer(shape);
+        let pixels = normalized_pointer(shape)?;
         let desc = D3D11_TEXTURE2D_DESC {
             Width: shape.width,
             Height: visible_height,
@@ -558,7 +670,11 @@ impl GpuReducer {
         };
         let initial = D3D11_SUBRESOURCE_DATA {
             pSysMem: pixels.as_ptr().cast(),
-            SysMemPitch: shape.width.saturating_mul(4),
+            SysMemPitch: checked_rgba_row_pitch(
+                shape.width,
+                visible_height,
+                "create pointer texture",
+            )?,
             SysMemSlicePitch: 0,
         };
         let texture = create_texture(&self.device, &desc, Some(&initial))?;
@@ -613,21 +729,24 @@ fn resource_key(
     region: CaptureRegion,
 ) -> Result<ResourceKey, GpuReductionError> {
     if desc.Width == 0 || desc.Height == 0 {
-        return Err(GpuReductionError(
-            "duplicated texture has an empty extent".to_owned(),
+        return Err(GpuReductionError::operation(
+            "duplicated texture has an empty extent",
         ));
     }
     if !region.fits_within(desc.Width, desc.Height) {
-        return Err(GpuReductionError(
-            "capture region is outside the duplicated texture".to_owned(),
+        return Err(GpuReductionError::operation(
+            "capture region is outside the duplicated texture",
         ));
     }
     let stride = subsample_stride(region.width(), max_width);
+    let output_width = subsampled_extent(region.width(), stride);
+    let output_height = subsampled_extent(region.height(), stride);
+    checked_rgba_len(output_width, output_height, "admit reduction geometry")?;
     Ok(ResourceKey {
         width: desc.Width,
         height: desc.Height,
-        output_width: subsampled_extent(region.width(), stride),
-        output_height: subsampled_extent(region.height(), stride),
+        output_width,
+        output_height,
         stride,
         format: desc.Format,
         region,
@@ -725,7 +844,7 @@ fn require_format_support(
     let support = unsafe { device.CheckFormatSupport(format) }
         .map_err(|error| GpuReductionError::windows("query texture format support", error))?;
     if support & required != required {
-        return Err(GpuReductionError(format!(
+        return Err(GpuReductionError::operation(format!(
             "format {format:?} lacks {usage} support"
         )));
     }
@@ -741,7 +860,7 @@ fn create_compute_shader(
     // live for the duration of the call.
     unsafe { device.CreateComputeShader(bytecode, None, Some(&mut shader)) }
         .map_err(|error| GpuReductionError::windows("create capture compute shader", error))?;
-    shader.ok_or_else(|| GpuReductionError("compute shader creation returned no shader".to_owned()))
+    shader.ok_or_else(|| GpuReductionError::operation("compute shader creation returned no shader"))
 }
 
 fn create_constant_buffer(device: &ID3D11Device) -> Result<ID3D11Buffer, GpuReductionError> {
@@ -758,7 +877,7 @@ fn create_constant_buffer(device: &ID3D11Device) -> Result<ID3D11Buffer, GpuRedu
     unsafe { device.CreateBuffer(&desc, None, Some(&mut buffer)) }
         .map_err(|error| GpuReductionError::windows("create reduction constants", error))?;
     buffer
-        .ok_or_else(|| GpuReductionError("constant buffer creation returned no buffer".to_owned()))
+        .ok_or_else(|| GpuReductionError::operation("constant buffer creation returned no buffer"))
 }
 
 fn create_texture(
@@ -766,12 +885,22 @@ fn create_texture(
     desc: &D3D11_TEXTURE2D_DESC,
     initial: Option<&D3D11_SUBRESOURCE_DATA>,
 ) -> Result<ID3D11Texture2D, GpuReductionError> {
+    checked_rgba_len(desc.Width, desc.Height, "admit D3D11 texture")?;
+    if let Some(initial) = initial {
+        let minimum_pitch =
+            checked_rgba_row_pitch(desc.Width, desc.Height, "admit D3D11 texture row pitch")?;
+        if initial.pSysMem.is_null() || initial.SysMemPitch < minimum_pitch {
+            return Err(GpuReductionError::operation(
+                "initial D3D11 texture data has invalid row geometry",
+            ));
+        }
+    }
     let mut texture = None;
     // SAFETY: descriptor and optional initial data are live through the call;
     // the out-pointer remains valid.
     unsafe { device.CreateTexture2D(desc, initial.map(std::ptr::from_ref), Some(&mut texture)) }
         .map_err(|error| GpuReductionError::windows("create reduction texture", error))?;
-    texture.ok_or_else(|| GpuReductionError("texture creation returned no texture".to_owned()))
+    texture.ok_or_else(|| GpuReductionError::operation("texture creation returned no texture"))
 }
 
 fn create_srv(
@@ -783,7 +912,7 @@ fn create_srv(
     // view spans its only subresource.
     unsafe { device.CreateShaderResourceView(texture, None, Some(&mut view)) }
         .map_err(|error| GpuReductionError::windows("create reduction SRV", error))?;
-    view.ok_or_else(|| GpuReductionError("SRV creation returned no view".to_owned()))
+    view.ok_or_else(|| GpuReductionError::operation("SRV creation returned no view"))
 }
 
 fn create_uav(
@@ -795,7 +924,7 @@ fn create_uav(
     // default view spans its only subresource.
     unsafe { device.CreateUnorderedAccessView(texture, None, Some(&mut view)) }
         .map_err(|error| GpuReductionError::windows("create reduction UAV", error))?;
-    view.ok_or_else(|| GpuReductionError("UAV creation returned no view".to_owned()))
+    view.ok_or_else(|| GpuReductionError::operation("UAV creation returned no view"))
 }
 
 fn create_event_query(device: &ID3D11Device) -> Result<ID3D11Query, GpuReductionError> {
@@ -807,11 +936,17 @@ fn create_event_query(device: &ID3D11Device) -> Result<ID3D11Query, GpuReduction
     // SAFETY: the event query descriptor and out-pointer remain live.
     unsafe { device.CreateQuery(&desc, Some(&mut query)) }
         .map_err(|error| GpuReductionError::windows("create reduction event query", error))?;
-    query.ok_or_else(|| GpuReductionError("query creation returned no query".to_owned()))
+    query.ok_or_else(|| GpuReductionError::operation("query creation returned no query"))
 }
 
-fn normalized_pointer(shape: &super::PointerShape) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(shape.width as usize * shape.visible_height() as usize * 4);
+fn normalized_pointer(shape: &super::PointerShape) -> Result<Vec<u8>, GpuReductionError> {
+    let output_len = checked_rgba_len(
+        shape.width,
+        shape.visible_height(),
+        "normalize pointer texture",
+    )?;
+    let mut pixels = Vec::new();
+    admit_vec_len(&mut pixels, output_len, "normalize pointer texture")?;
     for y in 0..shape.visible_height() as usize {
         for x in 0..shape.width as usize {
             match shape.kind {
@@ -842,7 +977,7 @@ fn normalized_pointer(shape: &super::PointerShape) -> Vec<u8> {
             }
         }
     }
-    pixels
+    Ok(pixels)
 }
 
 const fn pointer_kind_code(kind: PointerShapeKind) -> u32 {
@@ -946,13 +1081,15 @@ impl CaptureReductionBenchmark {
         .map_err(|error| format!("create benchmark D3D11 device: {error}"))?;
         let device = device.ok_or_else(|| "D3D11 returned no benchmark device".to_owned())?;
         let context = context.ok_or_else(|| "D3D11 returned no benchmark context".to_owned())?;
-        let pixel_count = u64::from(width) * u64::from(height);
-        let rgba = (0..pixel_count)
-            .flat_map(|index| {
-                let value = index as u8;
-                [value, value.wrapping_add(47), value.wrapping_add(109), 0xFF]
-            })
-            .collect::<Vec<_>>();
+        let rgba_len = checked_rgba_len(width, height, "allocate benchmark source")
+            .map_err(|error| error.to_string())?;
+        let mut rgba = Vec::new();
+        admit_vec_len(&mut rgba, rgba_len, "allocate benchmark source")
+            .map_err(|error| error.to_string())?;
+        for index in 0..rgba_len / 4 {
+            let value = index as u8;
+            rgba.extend_from_slice(&[value, value.wrapping_add(47), value.wrapping_add(109), 0xFF]);
+        }
         let desc = D3D11_TEXTURE2D_DESC {
             Width: width,
             Height: height,
@@ -970,22 +1107,24 @@ impl CaptureReductionBenchmark {
         };
         let initial = D3D11_SUBRESOURCE_DATA {
             pSysMem: rgba.as_ptr().cast(),
-            SysMemPitch: width.saturating_mul(4),
+            SysMemPitch: checked_rgba_row_pitch(width, height, "create benchmark source")
+                .map_err(|error| error.to_string())?,
             SysMemSlicePitch: 0,
         };
-        let source = create_texture(&device, &desc, Some(&initial)).map_err(|error| error.0)?;
-        let mut reducer = GpuReducer::new(&device, &context).map_err(|error| error.0)?;
+        let source =
+            create_texture(&device, &desc, Some(&initial)).map_err(|error| error.to_string())?;
+        let mut reducer = GpuReducer::new(&device, &context).map_err(|error| error.to_string())?;
         let region = CaptureRegion::full(width, height);
         reducer
             .ensure_resources(Some(&source), max_width, region)
-            .map_err(|error| error.0)?;
+            .map_err(|error| error.to_string())?;
         Ok(Self {
             context,
             reducer,
             source,
             pointer: PointerState::default(),
             max_width,
-            source_bytes: pixel_count.saturating_mul(4),
+            source_bytes: u64::try_from(rgba_len).unwrap_or(u64::MAX),
             source_width: width,
             source_height: height,
             output: Vec::new(),
@@ -1023,14 +1162,18 @@ impl CaptureReductionBenchmark {
         match self
             .reducer
             .submit(None, self.max_width, metadata)
-            .map_err(|error| error.0)?
+            .map_err(|error| error.to_string())?
         {
             SubmitOutcome::Submitted => {}
             SubmitOutcome::Busy => return Err("benchmark readback ring is busy".to_owned()),
         }
         let analysis_enqueue = reduction_started.elapsed();
         let wait_started = Instant::now();
-        while !self.reducer.query_ready().map_err(|error| error.0)? {
+        while !self
+            .reducer
+            .query_ready()
+            .map_err(|error| error.to_string())?
+        {
             std::hint::spin_loop();
         }
         let wait = wait_started.elapsed();
@@ -1038,7 +1181,7 @@ impl CaptureReductionBenchmark {
         let frame = self
             .reducer
             .read_ready(&mut self.output)
-            .map_err(|error| error.0)?;
+            .map_err(|error| error.to_string())?;
         let map = map_started.elapsed();
         Ok(ReductionBenchmarkSample {
             acquisition_enqueue,
@@ -1082,13 +1225,13 @@ impl CaptureReductionBenchmark {
             let acquisition_started = Instant::now();
             self.reducer
                 .update_clean(Some(&self.source), self.max_width, &metadata)
-                .map_err(|error| error.0)?;
+                .map_err(|error| error.to_string())?;
             acquisition_enqueue.push(acquisition_started.elapsed());
 
             if let Some(frame) = self
                 .reducer
                 .poll(&mut self.output)
-                .map_err(|error| error.0)?
+                .map_err(|error| error.to_string())?
             {
                 if let Some(submitted_at) = submitted.remove(&frame.metadata.sequence) {
                     analysis_latency.push(submitted_at.elapsed());
@@ -1102,14 +1245,14 @@ impl CaptureReductionBenchmark {
                 match self
                     .reducer
                     .submit(None, self.max_width, metadata)
-                    .map_err(|error| error.0)?
+                    .map_err(|error| error.to_string())?
                 {
                     SubmitOutcome::Submitted => {
                         submitted.insert(sequence, submitted_at);
                         if let Some(frame) = self
                             .reducer
                             .poll(&mut self.output)
-                            .map_err(|error| error.0)?
+                            .map_err(|error| error.to_string())?
                         {
                             if let Some(submitted_at) = submitted.remove(&frame.metadata.sequence) {
                                 analysis_latency.push(submitted_at.elapsed());
@@ -1123,7 +1266,7 @@ impl CaptureReductionBenchmark {
             if let Some(frame) = self
                 .reducer
                 .poll(&mut self.output)
-                .map_err(|error| error.0)?
+                .map_err(|error| error.to_string())?
             {
                 if let Some(submitted_at) = submitted.remove(&frame.metadata.sequence) {
                     analysis_latency.push(submitted_at.elapsed());
@@ -1137,7 +1280,7 @@ impl CaptureReductionBenchmark {
             if let Some(frame) = self
                 .reducer
                 .poll(&mut self.output)
-                .map_err(|error| error.0)?
+                .map_err(|error| error.to_string())?
             {
                 if let Some(submitted_at) = submitted.remove(&frame.metadata.sequence) {
                     analysis_latency.push(submitted_at.elapsed());
@@ -1206,7 +1349,7 @@ pub(super) fn compile_shaders_for_test() -> Result<(), GpuReductionError> {
 
 #[cfg(test)]
 pub(super) fn normalized_pointer_for_test(shape: &super::PointerShape) -> Vec<u8> {
-    normalized_pointer(shape)
+    normalized_pointer(shape).expect("pointer fixture geometry must be allocatable")
 }
 
 #[cfg(test)]
@@ -1313,14 +1456,14 @@ pub(super) fn poll_failure_preserves_clean_metadata_for_test(
         match reducer.poll(&mut output) {
             Err(_) => break,
             Ok(Some(_)) => {
-                return Err(GpuReductionError(
-                    "injected poll failure unexpectedly delivered a frame".to_owned(),
+                return Err(GpuReductionError::operation(
+                    "injected poll failure unexpectedly delivered a frame",
                 ));
             }
             Ok(None) if Instant::now() < deadline => std::thread::yield_now(),
             Ok(None) => {
-                return Err(GpuReductionError(
-                    "injected poll failure did not trigger within two seconds".to_owned(),
+                return Err(GpuReductionError::operation(
+                    "injected poll failure did not trigger within two seconds",
                 ));
             }
         }
@@ -1403,8 +1546,8 @@ pub(super) fn reduce_region_fixture(
     match reducer.submit(Some(&source), max_width, metadata)? {
         SubmitOutcome::Submitted => {}
         SubmitOutcome::Busy => {
-            return Err(GpuReductionError(
-                "fresh test reduction unexpectedly found a busy ring".to_owned(),
+            return Err(GpuReductionError::operation(
+                "fresh test reduction unexpectedly found a busy ring",
             ));
         }
     }
@@ -1465,8 +1608,8 @@ fn test_device() -> Result<(ID3D11Device, ID3D11DeviceContext), GpuReductionErro
     }
     .map_err(|error| GpuReductionError::windows("create WARP test device", error))?;
     Ok((
-        device.ok_or_else(|| GpuReductionError("WARP returned no device".to_owned()))?,
-        context.ok_or_else(|| GpuReductionError("WARP returned no context".to_owned()))?,
+        device.ok_or_else(|| GpuReductionError::operation("WARP returned no device"))?,
+        context.ok_or_else(|| GpuReductionError::operation("WARP returned no context"))?,
     ))
 }
 
@@ -1477,6 +1620,13 @@ fn test_source(
     width: u32,
     height: u32,
 ) -> Result<ID3D11Texture2D, GpuReductionError> {
+    let expected_len = checked_rgba_len(width, height, "validate WARP test source")?;
+    if bgra.len() != expected_len {
+        return Err(GpuReductionError::operation(format!(
+            "WARP test source has {} bytes, expected {expected_len}",
+            bgra.len()
+        )));
+    }
     let desc = D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
@@ -1494,7 +1644,7 @@ fn test_source(
     };
     let initial = D3D11_SUBRESOURCE_DATA {
         pSysMem: bgra.as_ptr().cast(),
-        SysMemPitch: width.saturating_mul(4),
+        SysMemPitch: checked_rgba_row_pitch(width, height, "create WARP test source")?,
         SysMemSlicePitch: 0,
     };
     create_texture(device, &desc, Some(&initial))
@@ -1512,7 +1662,7 @@ fn poll_test_reduction(reducer: &mut GpuReducer) -> Result<Vec<u8>, GpuReduction
         }
         std::thread::yield_now();
     }
-    Err(GpuReductionError(
-        "WARP reduction query did not complete within two seconds".to_owned(),
+    Err(GpuReductionError::operation(
+        "WARP reduction query did not complete within two seconds",
     ))
 }
