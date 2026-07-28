@@ -509,7 +509,7 @@ fn validate_passive_preview_shape(
     if config.width == 0 || config.height == 0 {
         return Ok(());
     }
-    validate_preview_surface_resource(config.width, config.height)
+    validate_preview_surface_resource(config.width, config.height, config.format)
         .map(|_| ())
         .map_err(|reason| {
             WsProtocolError::invalid_config_resource(field, config.width, config.height, reason)
@@ -599,6 +599,8 @@ pub(super) enum ClientMessage {
         channels: Vec<String>,
         #[serde(default)]
         config: Option<ChannelConfigPatch>,
+        #[serde(default)]
+        preview_transport: Option<String>,
     },
     /// Unsubscribe from one or more channels.
     Unsubscribe { channels: Vec<String> },
@@ -777,13 +779,29 @@ where
 pub(super) fn validate_interactive_preview_shape(
     width: u32,
     height: u32,
+    format: CanvasFormat,
 ) -> Result<(), WsProtocolError> {
-    validate_preview_surface_resource(width, height)
+    validate_preview_surface_resource(width, height, format)
         .map(|_| ())
         .map_err(WsProtocolError::invalid_request)
 }
 
-pub(super) fn validate_preview_surface_resource(width: u32, height: u32) -> Result<usize, String> {
+pub(super) fn validate_preview_surface_resource(
+    width: u32,
+    height: u32,
+    format: CanvasFormat,
+) -> Result<usize, String> {
+    if format == CanvasFormat::Jpeg && (width > u32::from(u16::MAX) || height > u32::from(u16::MAX))
+    {
+        return Err(format!(
+            "JPEG preview axes cannot exceed {} pixels; requested {width}x{height}",
+            u16::MAX
+        ));
+    }
+    validate_preview_surface_bytes(width, height)
+}
+
+pub(super) fn validate_preview_surface_bytes(width: u32, height: u32) -> Result<usize, String> {
     let byte_len = SurfaceDescriptor::rgba8888(width, height)
         .try_non_empty_byte_len()
         .map_err(|error| error.to_string())?;
@@ -1057,6 +1075,7 @@ pub(super) enum ServerMessage {
     Subscribed {
         channels: Vec<String>,
         config: serde_json::Value,
+        preview_transport: String,
     },
     /// Unsubscribe acknowledgment.
     Unsubscribed {

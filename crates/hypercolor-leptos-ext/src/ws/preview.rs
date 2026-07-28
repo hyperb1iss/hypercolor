@@ -21,6 +21,8 @@ pub const WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN: usize = 19;
 pub const INTERACTIVE_PREVIEW_ID_MAX_BYTES: usize = 128;
 pub const PREVIEW_CHUNK_FRAME_TAG: u8 = 0x0F;
 pub const PREVIEW_CHUNK_FIXED_HEADER_LEN: usize = 55;
+pub const PREVIEW_MIN_MESSAGE_BYTES: usize =
+    PREVIEW_CHUNK_FIXED_HEADER_LEN + INTERACTIVE_PREVIEW_ID_MAX_BYTES + 1;
 pub const PREVIEW_CHUNK_SCHEMA: u8 = 1;
 pub const PREVIEW_CANCEL_FRAME_TAG: u8 = 0x10;
 pub const PREVIEW_CANCEL_FIXED_HEADER_LEN: usize = 14;
@@ -842,6 +844,12 @@ pub fn split_preview_publication(
     max_message_bytes: usize,
 ) -> Result<Vec<Bytes>, PreviewChunkError> {
     let capability = PreviewTransportCapability::default();
+    if encoded.len() > capability.max_encoded_publication_bytes {
+        return Err(PreviewChunkError::PublicationBudgetExceeded {
+            requested: encoded.len(),
+            limit: capability.max_encoded_publication_bytes,
+        });
+    }
     if max_message_bytes > capability.max_message_bytes {
         return Err(PreviewChunkError::MessageBudgetExceeded {
             requested: max_message_bytes,
@@ -928,6 +936,24 @@ pub struct PreviewTransportCapability {
 
 impl PreviewTransportCapability {
     #[must_use]
+    pub fn negotiated_with(self, peer: Self) -> Self {
+        Self {
+            max_decoded_publication_bytes: self
+                .max_decoded_publication_bytes
+                .min(peer.max_decoded_publication_bytes),
+            max_encoded_publication_bytes: self
+                .max_encoded_publication_bytes
+                .min(peer.max_encoded_publication_bytes),
+            max_connection_bytes: self.max_connection_bytes.min(peer.max_connection_bytes),
+            max_streams: self.max_streams.min(peer.max_streams),
+            max_tombstones: self.max_tombstones.min(peer.max_tombstones),
+            max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
+            max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
+            max_chunk_count: self.max_chunk_count.min(peer.max_chunk_count),
+        }
+    }
+
+    #[must_use]
     pub fn encode(self) -> String {
         format!(
             "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},streams={},tombstones={},idle_ms={},message={},chunks={}",
@@ -997,7 +1023,7 @@ impl PreviewTransportCapability {
             || self.max_streams == 0
             || self.max_tombstones == 0
             || self.max_idle_ms == 0
-            || self.max_message_bytes <= PREVIEW_CHUNK_FIXED_HEADER_LEN
+            || self.max_message_bytes < PREVIEW_MIN_MESSAGE_BYTES
             || self.max_chunk_count == 0
         {
             return Err(PreviewCapabilityError::InvalidLimits);
@@ -1024,19 +1050,26 @@ impl Default for PreviewTransportCapability {
 impl PreviewReassemblyLimits {
     #[must_use]
     pub fn negotiated_with(self, peer: PreviewTransportCapability) -> Self {
+        let negotiated = PreviewTransportCapability {
+            max_decoded_publication_bytes: self.max_decoded_publication_bytes,
+            max_encoded_publication_bytes: self.max_encoded_publication_bytes,
+            max_connection_bytes: self.max_connection_bytes,
+            max_streams: self.max_streams,
+            max_tombstones: self.max_tombstones,
+            max_idle_ms: self.max_idle_ms,
+            max_message_bytes: self.max_message_bytes,
+            max_chunk_count: self.max_chunk_count,
+        }
+        .negotiated_with(peer);
         Self {
-            max_decoded_publication_bytes: self
-                .max_decoded_publication_bytes
-                .min(peer.max_decoded_publication_bytes),
-            max_encoded_publication_bytes: self
-                .max_encoded_publication_bytes
-                .min(peer.max_encoded_publication_bytes),
-            max_connection_bytes: self.max_connection_bytes.min(peer.max_connection_bytes),
-            max_streams: self.max_streams.min(peer.max_streams),
-            max_tombstones: self.max_tombstones.min(peer.max_tombstones),
-            max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
-            max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
-            max_chunk_count: self.max_chunk_count.min(peer.max_chunk_count),
+            max_decoded_publication_bytes: negotiated.max_decoded_publication_bytes,
+            max_encoded_publication_bytes: negotiated.max_encoded_publication_bytes,
+            max_connection_bytes: negotiated.max_connection_bytes,
+            max_streams: negotiated.max_streams,
+            max_tombstones: negotiated.max_tombstones,
+            max_idle_ms: negotiated.max_idle_ms,
+            max_message_bytes: negotiated.max_message_bytes,
+            max_chunk_count: negotiated.max_chunk_count,
         }
     }
 }
@@ -1163,15 +1196,14 @@ impl PreviewChunkReassembler {
 
         let stream = chunk.metadata.stream.clone();
         let publication_id = chunk.metadata.publication_id;
-        if let Some(state) = self.streams.get(&stream) {
-            if publication_id < state.high_water_publication_id
-                || (publication_id == state.high_water_publication_id && state.partial.is_none())
-            {
-                return Err(PreviewChunkError::StalePublication {
-                    publication_id,
-                    high_water: state.high_water_publication_id,
-                });
-            }
+        if let Some(state) = self.streams.get(&stream)
+            && (publication_id < state.high_water_publication_id
+                || (publication_id == state.high_water_publication_id && state.partial.is_none()))
+        {
+            return Err(PreviewChunkError::StalePublication {
+                publication_id,
+                high_water: state.high_water_publication_id,
+            });
         }
 
         let starts_new_publication = self
@@ -1322,9 +1354,11 @@ impl PreviewChunkReassembler {
             .ok_or(PreviewChunkError::LengthOverflow)?;
         self.active_streams = self.active_streams.saturating_sub(1);
         self.mark_tombstone(stream);
+        let encoded = Bytes::from(completed.bytes);
+        validate_completed_publication(&completed.metadata, &encoded)?;
         Ok(Some(ReassembledPreviewPublication {
             metadata: completed.metadata,
-            encoded: Bytes::from(completed.bytes),
+            encoded,
         }))
     }
 
@@ -1496,57 +1530,16 @@ fn validate_reassembly_admission(
         });
     }
 
-    let header_len = publication_header_len(metadata)?;
     if matches!(metadata.stream, PreviewStreamId::ScreenZones) {
-        let header =
-            ScreenZonesFrameHeader::decode(&chunk.payload).map_err(PreviewChunkError::Frame)?;
-        if header.frame_number != metadata.frame_number
-            || header.timestamp_ms != metadata.timestamp_ms
-            || header.source_width != metadata.width
-            || header.source_height != metadata.height
-        {
-            return Err(PreviewChunkError::MetadataChanged);
-        }
-        let payload_len = usize::from(header.grid_cols)
-            .checked_mul(usize::from(header.grid_rows))
-            .and_then(|zones| zones.checked_mul(3))
-            .ok_or(PreviewChunkError::LengthOverflow)?;
-        let expected = header
-            .payload_offset
-            .checked_add(payload_len)
-            .ok_or(PreviewChunkError::LengthOverflow)?;
-        if total_encoded_bytes != expected {
-            return Err(PreviewChunkError::RawPublicationLengthMismatch {
-                expected,
-                actual: total_encoded_bytes,
-            });
+        if metadata.format != PreviewPixelFormat::Rgb || total_encoded_bytes == 0 {
+            return Err(PreviewChunkError::InvalidLayout);
         }
         return Ok(());
     }
 
-    let (decoded_width, decoded_height) = if metadata.format == PreviewPixelFormat::Jpeg {
-        let jpeg = chunk
-            .payload
-            .get(header_len..)
-            .ok_or(PreviewChunkError::Frame(
-                PreviewFrameDecodeError::JpegDimensionsUnavailable,
-            ))?;
-        jpeg_dimensions(jpeg).map_err(PreviewChunkError::Frame)?
-    } else {
-        (metadata.width, metadata.height)
-    };
-    if decoded_width != metadata.width || decoded_height != metadata.height {
-        return Err(PreviewChunkError::Frame(
-            PreviewFrameDecodeError::JpegDimensionsMismatch {
-                expected_width: metadata.width,
-                expected_height: metadata.height,
-                actual_width: decoded_width,
-                actual_height: decoded_height,
-            },
-        ));
-    }
+    let header_len = publication_header_len(metadata)?;
     let decoded_bytes =
-        raw_payload_len(decoded_width, decoded_height, 4).map_err(PreviewChunkError::Frame)?;
+        raw_payload_len(metadata.width, metadata.height, 4).map_err(PreviewChunkError::Frame)?;
     if decoded_bytes > limits.max_decoded_publication_bytes {
         return Err(PreviewChunkError::DecodedPublicationBudgetExceeded {
             requested: decoded_bytes,
@@ -1573,10 +1566,61 @@ fn validate_reassembly_admission(
     Ok(())
 }
 
+fn validate_completed_publication(
+    metadata: &PreviewPublicationMetadata,
+    encoded: &Bytes,
+) -> Result<(), PreviewChunkError> {
+    let metadata_matches = match &metadata.stream {
+        PreviewStreamId::Passive(channel) => {
+            let frame = PreviewFrame::decode_bytes(encoded).map_err(PreviewChunkError::Frame)?;
+            frame.channel == *channel
+                && frame.frame_number == metadata.frame_number
+                && frame.timestamp_ms == metadata.timestamp_ms
+                && frame.width == metadata.width
+                && frame.height == metadata.height
+                && frame.format == metadata.format
+        }
+        PreviewStreamId::Zone { scene_id, zone_id } => {
+            let frame =
+                ZonePreviewFrame::decode_bytes(encoded).map_err(PreviewChunkError::Frame)?;
+            frame.scene_id == *scene_id
+                && frame.zone_id == *zone_id
+                && frame.frame_number == metadata.frame_number
+                && frame.timestamp_ms == metadata.timestamp_ms
+                && frame.width == metadata.width
+                && frame.height == metadata.height
+                && frame.format == metadata.format
+        }
+        PreviewStreamId::Interactive(preview_id) => {
+            let frame =
+                InteractivePreviewFrame::decode_bytes(encoded).map_err(PreviewChunkError::Frame)?;
+            frame.preview_id == *preview_id
+                && frame.frame_number == metadata.frame_number
+                && frame.timestamp_ms == metadata.timestamp_ms
+                && frame.width == metadata.width
+                && frame.height == metadata.height
+                && frame.format == metadata.format
+        }
+        PreviewStreamId::ScreenZones => {
+            let frame = ScreenZonesFrame::decode(encoded).map_err(PreviewChunkError::Frame)?;
+            frame.frame_number == metadata.frame_number
+                && frame.timestamp_ms == metadata.timestamp_ms
+                && frame.source_width == metadata.width
+                && frame.source_height == metadata.height
+                && metadata.format == PreviewPixelFormat::Rgb
+        }
+    };
+    if metadata_matches {
+        Ok(())
+    } else {
+        Err(PreviewChunkError::MetadataChanged)
+    }
+}
+
 fn publication_header_len(
     metadata: &PreviewPublicationMetadata,
 ) -> Result<usize, PreviewChunkError> {
-    let wide = metadata.width > u16::MAX as u32 || metadata.height > u16::MAX as u32;
+    let wide = metadata.width > u32::from(u16::MAX) || metadata.height > u32::from(u16::MAX);
     match &metadata.stream {
         PreviewStreamId::Passive(_) => Ok(if wide {
             WIDE_PREVIEW_FRAME_HEADER_LEN
@@ -2108,6 +2152,15 @@ impl PreviewFrameView {
         let header_bytes = data.subarray(0, header_len as u32).to_vec();
         let header = PreviewFrameHeader::decode(&header_bytes)?;
         let end = header.end_offset(data.length() as usize)?;
+        if header.format == PreviewPixelFormat::Jpeg {
+            validate_jpeg_array_dimensions(
+                &data,
+                header.payload_offset,
+                end,
+                header.width,
+                header.height,
+            )?;
+        }
 
         Ok(Self {
             channel: header.channel,
@@ -2219,6 +2272,15 @@ impl ZonePreviewFrameView {
         let header_bytes = data.subarray(0, header_len as u32).to_vec();
         let header = ZonePreviewFrameHeader::decode(&header_bytes)?;
         let end = header.end_offset(data.length() as usize)?;
+        if header.format == PreviewPixelFormat::Jpeg {
+            validate_jpeg_array_dimensions(
+                &data,
+                header.payload_offset,
+                end,
+                header.width,
+                header.height,
+            )?;
+        }
 
         Ok(Self {
             scene_id: header.scene_id,
@@ -2257,6 +2319,15 @@ impl InteractivePreviewFrameView {
         let header_bytes = data.subarray(0, header_len as u32).to_vec();
         let header = InteractivePreviewFrameHeader::decode(&header_bytes)?;
         let end = header.end_offset(data.length() as usize)?;
+        if header.format == PreviewPixelFormat::Jpeg {
+            validate_jpeg_array_dimensions(
+                &data,
+                header.payload_offset,
+                end,
+                header.width,
+                header.height,
+            )?;
+        }
 
         Ok(Self {
             preview_id: header.preview_id,
@@ -2377,17 +2448,49 @@ fn validate_payload(
 }
 
 fn jpeg_dimensions(payload: &[u8]) -> Result<(u32, u32), PreviewFrameDecodeError> {
-    if payload.get(..2) != Some(&[0xFF, 0xD8]) {
+    jpeg_dimensions_from_reader(payload.len(), |index| payload.get(index).copied())
+}
+
+#[cfg(feature = "ws-client-wasm")]
+fn validate_jpeg_array_dimensions(
+    data: &js_sys::Uint8Array,
+    payload_offset: usize,
+    end: usize,
+    width: u32,
+    height: u32,
+) -> Result<(), PreviewFrameDecodeError> {
+    let payload_len = end
+        .checked_sub(payload_offset)
+        .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+    let (actual_width, actual_height) = jpeg_dimensions_from_reader(payload_len, |index| {
+        let absolute = payload_offset.checked_add(index)?;
+        let absolute = u32::try_from(absolute).ok()?;
+        (absolute < data.length()).then(|| data.get_index(absolute))
+    })?;
+    if actual_width != width || actual_height != height {
+        return Err(PreviewFrameDecodeError::JpegDimensionsMismatch {
+            expected_width: width,
+            expected_height: height,
+            actual_width,
+            actual_height,
+        });
+    }
+    Ok(())
+}
+
+fn jpeg_dimensions_from_reader(
+    payload_len: usize,
+    mut byte_at: impl FnMut(usize) -> Option<u8>,
+) -> Result<(u32, u32), PreviewFrameDecodeError> {
+    if byte_at(0) != Some(0xFF) || byte_at(1) != Some(0xD8) {
         return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
     }
     let mut offset = 2_usize;
-    while offset < payload.len() {
-        while payload.get(offset) == Some(&0xFF) {
+    while offset < payload_len {
+        while byte_at(offset) == Some(0xFF) {
             offset = offset.saturating_add(1);
         }
-        let marker = *payload
-            .get(offset)
-            .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?;
+        let marker = byte_at(offset).ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?;
         offset = offset.saturating_add(1);
         if marker == 0x00 || marker == 0xD8 || marker == 0xD9 || (0xD0..=0xD7).contains(&marker) {
             continue;
@@ -2395,22 +2498,20 @@ fn jpeg_dimensions(payload: &[u8]) -> Result<(u32, u32), PreviewFrameDecodeError
         if marker == 0xDA {
             return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
         }
-        let segment_len = usize::from(u16::from_be_bytes(
-            payload
-                .get(offset..offset.saturating_add(2))
-                .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?
-                .try_into()
-                .expect("JPEG segment length has two bytes"),
-        ));
+        let segment_len = usize::from(u16::from_be_bytes([
+            byte_at(offset).ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?,
+            byte_at(offset.saturating_add(1))
+                .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?,
+        ]));
         if segment_len < 2 {
             return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
         }
         let segment_end = offset
             .checked_add(segment_len)
             .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
-        let segment = payload
-            .get(offset..segment_end)
-            .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?;
+        if segment_end > payload_len {
+            return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
+        }
         if matches!(
             marker,
             0xC0 | 0xC1
@@ -2426,11 +2527,21 @@ fn jpeg_dimensions(payload: &[u8]) -> Result<(u32, u32), PreviewFrameDecodeError
                 | 0xCE
                 | 0xCF
         ) {
-            if segment.len() < 7 {
+            if segment_len < 7 {
                 return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
             }
-            let height = u32::from(u16::from_be_bytes([segment[3], segment[4]]));
-            let width = u32::from(u16::from_be_bytes([segment[5], segment[6]]));
+            let height = u32::from(u16::from_be_bytes([
+                byte_at(offset.saturating_add(3))
+                    .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?,
+                byte_at(offset.saturating_add(4))
+                    .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?,
+            ]));
+            let width = u32::from(u16::from_be_bytes([
+                byte_at(offset.saturating_add(5))
+                    .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?,
+                byte_at(offset.saturating_add(6))
+                    .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?,
+            ]));
             if width == 0 || height == 0 {
                 return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
             }

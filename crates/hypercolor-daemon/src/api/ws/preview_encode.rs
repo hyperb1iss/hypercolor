@@ -12,7 +12,9 @@ use hypercolor_leptos_ext::ws::{
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
 use super::preview_scale::{PreviewScaleFormat, scale_rgba_bilinear};
-use super::protocol::{CanvasFormat, validate_preview_surface_resource};
+use super::protocol::{
+    CanvasFormat, validate_preview_surface_bytes, validate_preview_surface_resource,
+};
 
 const PREVIEW_JPEG_QUALITY: u8 = 80;
 const PREVIEW_JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
@@ -178,6 +180,8 @@ impl PreviewJpegEncoder {
             requested_width,
             requested_height,
         )?;
+        validate_preview_surface_resource(target_width, target_height, CanvasFormat::Jpeg)
+            .map_err(anyhow::Error::msg)?;
         let width = usize::try_from(target_width).context("preview width exceeds address space")?;
         let height =
             usize::try_from(target_height).context("preview height exceeds address space")?;
@@ -444,7 +448,7 @@ fn resolve_preview_dimensions(
     } else {
         (requested_width.max(1), requested_height.max(1))
     };
-    validate_preview_surface_resource(dimensions.0, dimensions.1).map_err(anyhow::Error::msg)?;
+    validate_preview_surface_bytes(dimensions.0, dimensions.1).map_err(anyhow::Error::msg)?;
     Ok(dimensions)
 }
 

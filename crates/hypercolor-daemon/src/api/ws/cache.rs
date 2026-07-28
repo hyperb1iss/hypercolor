@@ -31,7 +31,7 @@ use super::preview_encode::{
 };
 use super::protocol::{
     ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection,
-    validate_preview_surface_resource,
+    validate_preview_surface_bytes,
 };
 use crate::api::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
@@ -1424,7 +1424,7 @@ pub(super) fn resolve_canvas_output_size(
             height: requested_height.max(1),
         }
     };
-    validate_preview_surface_resource(output_size.width, output_size.height)
+    validate_preview_surface_bytes(output_size.width, output_size.height)
         .map_err(anyhow::Error::msg)?;
     Ok(output_size)
 }

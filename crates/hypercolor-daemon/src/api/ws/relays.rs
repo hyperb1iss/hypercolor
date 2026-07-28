@@ -110,6 +110,8 @@ pub(super) enum PreviewOutboundError {
     PublicationIdExhausted,
     #[error("preview chunk encoding failed: {0}")]
     ChunkEncoding(String),
+    #[error("preview transport must be negotiated before preview activation")]
+    TransportAlreadyActive,
 }
 
 #[derive(Debug)]
@@ -352,6 +354,42 @@ pub(super) fn preview_outbound_channel_with_limits(
 }
 
 impl PreviewOutboundSender {
+    pub(super) fn negotiate_transport(
+        &self,
+        peer: PreviewTransportCapability,
+    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !state.current.is_empty()
+            || !state.queued.is_empty()
+            || !state.in_flight.is_empty()
+            || !state.pending_cancellations.is_empty()
+        {
+            return Err(PreviewOutboundError::TransportAlreadyActive);
+        }
+        let local = PreviewTransportCapability {
+            max_encoded_publication_bytes: state
+                .capability
+                .max_encoded_publication_bytes
+                .min(state.limits.max_publication_bytes),
+            max_connection_bytes: state
+                .capability
+                .max_connection_bytes
+                .min(state.limits.max_connection_bytes),
+            ..state.capability
+        };
+        let negotiated = local.negotiated_with(peer);
+        state.capability = negotiated;
+        state.limits = PreviewOutboundLimits {
+            max_publication_bytes: negotiated.max_encoded_publication_bytes,
+            max_connection_bytes: negotiated.max_connection_bytes,
+        };
+        Ok(negotiated)
+    }
+
     pub(super) fn publish(
         &self,
         stream: PreviewStreamId,
@@ -674,6 +712,7 @@ pub(super) struct PreviewSendCursor {
 }
 
 impl PreviewSendCursor {
+    #[cfg(test)]
     pub(super) fn new(
         publication: PreviewPublication,
         max_message_bytes: usize,
@@ -685,6 +724,20 @@ impl PreviewSendCursor {
                 capability.max_message_bytes
             )));
         }
+        Self::with_capability(
+            publication,
+            PreviewTransportCapability {
+                max_message_bytes,
+                ..capability
+            },
+        )
+    }
+
+    pub(super) fn with_capability(
+        publication: PreviewPublication,
+        capability: PreviewTransportCapability,
+    ) -> Result<Self, PreviewOutboundError> {
+        let max_message_bytes = capability.max_message_bytes;
         let identity_len = match publication.stream() {
             PreviewStreamId::Passive(_) | PreviewStreamId::ScreenZones => 0,
             PreviewStreamId::Zone { .. } => 32,
@@ -800,6 +853,19 @@ impl PreviewCursorQueue {
             tail: None,
             max_streams,
         }
+    }
+
+    pub(super) fn set_max_streams(
+        &mut self,
+        max_streams: usize,
+    ) -> Result<(), PreviewOutboundError> {
+        if self.cursors.len() > max_streams {
+            return Err(PreviewOutboundError::StreamBudgetExceeded {
+                maximum: max_streams,
+            });
+        }
+        self.max_streams = max_streams;
+        Ok(())
     }
 
     pub(super) fn try_insert(

@@ -6,9 +6,9 @@ use hypercolor_leptos_ext::ws::{
     INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, INTERACTIVE_PREVIEW_FRAME_TAG,
     INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_CANCEL_FRAME_TAG,
     PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG, PREVIEW_FRAME_HEADER_LEN,
-    PreviewCancelFrame, PreviewChunkError, PreviewChunkFrame, PreviewChunkReassembler,
-    PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat,
-    PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
+    PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame, PreviewChunkError, PreviewChunkFrame,
+    PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
+    PreviewPixelFormat, PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
     PreviewTransportCapability, SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG,
     ScreenZonesFrame, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
     WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN,
@@ -34,6 +34,138 @@ fn jpeg_payload(width: u32, height: u32, len: usize) -> Bytes {
     assert!(len >= payload.len());
     payload.resize(len, 0);
     Bytes::from(payload)
+}
+
+fn assert_one_byte_chunks_reassemble(
+    encoded: Bytes,
+    metadata: PreviewPublicationMetadata,
+    identity_len: usize,
+) {
+    let max_message_bytes = PREVIEW_CHUNK_FIXED_HEADER_LEN + identity_len + 1;
+    let chunks = split_preview_publication(&encoded, &metadata, max_message_bytes)
+        .expect("one-byte publication chunks");
+    assert_eq!(chunks.len(), encoded.len());
+    assert_eq!(
+        PreviewChunkFrame::decode_bytes(&chunks[0])
+            .expect("first chunk")
+            .payload
+            .len(),
+        1,
+    );
+
+    let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits::default());
+    let mut completed = None;
+    for chunk in chunks {
+        completed = reassembler
+            .push(&chunk)
+            .expect("valid tiny chunk")
+            .or(completed);
+    }
+    assert_eq!(
+        completed,
+        Some(hypercolor_leptos_ext::ws::ReassembledPreviewPublication { metadata, encoded })
+    );
+}
+
+#[test]
+fn passive_publication_reassembles_with_one_byte_payload_chunks() {
+    let frame = PreviewFrame {
+        channel: PreviewFrameChannel::Canvas,
+        frame_number: 1,
+        timestamp_ms: 11,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[1, 2, 3]),
+    };
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Passive(frame.channel),
+        publication_id: 1,
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        width: frame.width,
+        height: frame.height,
+        format: frame.format,
+    };
+    assert_one_byte_chunks_reassemble(frame.encode(), metadata, 0);
+}
+
+#[test]
+fn screen_zones_publication_reassembles_with_one_byte_payload_chunks() {
+    let frame = ScreenZonesFrame {
+        frame_number: 2,
+        timestamp_ms: 22,
+        source_width: 3840,
+        source_height: 2160,
+        grid_cols: 1,
+        grid_rows: 1,
+        letterbox: [0; 4],
+        payload: Bytes::from_static(&[4, 5, 6]),
+    };
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::ScreenZones,
+        publication_id: 2,
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        width: frame.source_width,
+        height: frame.source_height,
+        format: PreviewPixelFormat::Rgb,
+    };
+    assert_one_byte_chunks_reassemble(frame.encode(), metadata, 0);
+}
+
+#[test]
+fn zone_publication_reassembles_with_one_byte_payload_chunks() {
+    let frame = ZonePreviewFrame {
+        scene_id: [0x11; 16],
+        zone_id: [0x22; 16],
+        frame_number: 3,
+        timestamp_ms: 33,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[7, 8, 9]),
+    };
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Zone {
+            scene_id: frame.scene_id,
+            zone_id: frame.zone_id,
+        },
+        publication_id: 3,
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        width: frame.width,
+        height: frame.height,
+        format: frame.format,
+    };
+    assert_one_byte_chunks_reassemble(frame.encode(), metadata, 32);
+}
+
+#[test]
+fn interactive_publication_reassembles_with_one_byte_payload_chunks() {
+    let frame = InteractivePreviewFrame {
+        preview_id: "main".to_owned(),
+        frame_number: 4,
+        timestamp_ms: 44,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[10, 11, 12]),
+    };
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Interactive(frame.preview_id.clone()),
+        publication_id: 4,
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        width: frame.width,
+        height: frame.height,
+        format: frame.format,
+    };
+    assert_one_byte_chunks_reassemble(
+        frame.encode().expect("interactive frame"),
+        metadata,
+        frame.preview_id.len(),
+    );
 }
 
 #[test]
@@ -545,6 +677,7 @@ fn raw_4096_square_publication_chunks_and_reassembles() {
         .expect("fixture allocates");
     encoded.resize(encoded_len, 0x5A);
     encoded[0] = PreviewFrameChannel::Canvas.tag();
+    encoded[1..9].fill(0);
     encoded[9..11].copy_from_slice(&4096_u16.to_le_bytes());
     encoded[11..13].copy_from_slice(&4096_u16.to_le_bytes());
     encoded[13] = PreviewPixelFormat::Rgba.tag();
@@ -908,7 +1041,7 @@ fn chunk_admission_enforces_message_and_chunk_count_budgets() {
 }
 
 #[test]
-fn jpeg_intrinsic_dimensions_are_checked_before_reservation() {
+fn jpeg_intrinsic_dimensions_are_checked_before_publication_completion() {
     let metadata = PreviewPublicationMetadata {
         width: 16,
         height: 16,
@@ -917,7 +1050,7 @@ fn jpeg_intrinsic_dimensions_are_checked_before_reservation() {
     let PreviewStreamId::Interactive(preview_id) = &metadata.stream else {
         unreachable!();
     };
-    let encoded = InteractivePreviewFrame {
+    let mut encoded = InteractivePreviewFrame {
         preview_id: preview_id.clone(),
         frame_number: metadata.frame_number,
         timestamp_ms: metadata.timestamp_ms,
@@ -927,12 +1060,18 @@ fn jpeg_intrinsic_dimensions_are_checked_before_reservation() {
         payload: jpeg_payload(32, 16, 64),
     }
     .encode()
-    .expect("mismatched fixture frame encodes");
+    .expect("valid fixture frame encodes")
+    .to_vec();
+    encoded[10..12].copy_from_slice(&metadata.width.to_le_bytes()[..2]);
+    let encoded = Bytes::from(encoded);
     let chunks = split_preview_publication(&encoded, &metadata, 128).expect("fixture chunks");
     let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits::default());
 
+    for chunk in &chunks[..chunks.len() - 1] {
+        assert_eq!(reassembler.push(chunk), Ok(None));
+    }
     assert!(matches!(
-        reassembler.push(&chunks[0]),
+        reassembler.push(chunks.last().expect("final chunk")),
         Err(PreviewChunkError::Frame(
             PreviewFrameDecodeError::JpegDimensionsMismatch { .. }
         ))
@@ -1023,6 +1162,18 @@ fn preview_transport_capability_roundtrips_shared_resource_budgets() {
         Some(capability)
     );
     assert!(capability.max_connection_bytes >= capability.max_encoded_publication_bytes * 2);
+}
+
+#[test]
+fn preview_transport_capability_fits_every_stream_identity() {
+    let capability = PreviewTransportCapability {
+        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES - 1,
+        ..PreviewTransportCapability::default()
+    };
+    assert!(
+        hypercolor_leptos_ext::ws::PreviewTransportCapability::decode(&capability.encode())
+            .is_err()
+    );
 }
 
 #[test]

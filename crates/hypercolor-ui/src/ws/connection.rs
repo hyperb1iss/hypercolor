@@ -19,7 +19,9 @@ use hypercolor_leptos_ext::prelude::{
 use hypercolor_leptos_ext::ws::transport::{
     WebSocketEventHandlers, arraybuffer_websocket, message_array_buffer, send_websocket_json,
 };
-use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
+use hypercolor_leptos_ext::ws::{
+    ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL, PreviewTransportCapability,
+};
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::MessageEvent;
@@ -311,6 +313,7 @@ impl WsManager {
                 let subscribe_msg = serde_json::json!({
                     "type": "subscribe",
                     "channels": ["events", "metrics", "sensors"],
+                    "preview_transport": PreviewTransportCapability::default().encode(),
                     "config": {
                         "metrics": { "interval_ms": 500 }
                     }

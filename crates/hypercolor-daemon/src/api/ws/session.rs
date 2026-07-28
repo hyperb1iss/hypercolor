@@ -14,6 +14,7 @@ use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
+use hypercolor_leptos_ext::ws::PreviewTransportCapability;
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::watch;
@@ -280,7 +281,7 @@ async fn handle_socket(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    let preview_capability = hypercolor_leptos_ext::ws::PreviewTransportCapability::default();
+    let mut preview_capability = PreviewTransportCapability::default();
     let mut preview_cursors = PreviewCursorQueue::new(preview_capability.max_streams);
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
@@ -330,7 +331,7 @@ async fn handle_socket(
                     PreviewOutboundItem::Publication(publication) => {
                         let stream = publication.stream().clone();
                         let publication_id = publication.publication_id();
-                        match PreviewSendCursor::new(publication, MAX_WS_MESSAGE_BYTES) {
+                        match PreviewSendCursor::with_capability(publication, preview_capability) {
                             Ok(cursor) => match preview_cursors.try_insert(cursor) {
                                 Ok(Some(replaced)) => preview_rx.complete(replaced.publication()),
                                 Ok(None) => {}
@@ -441,6 +442,8 @@ async fn handle_socket(
                             &mut zone_layout_preview_keys,
                             &mut browser_previews,
                             &preview_tx,
+                            &mut preview_capability,
+                            &mut preview_cursors,
                             &mut socket,
                         )
                         .await;
@@ -687,7 +690,7 @@ impl BrowserPreviewSession {
         preview_id: String,
         config: InteractivePreviewConfig,
     ) -> Result<ServerMessage, WsProtocolError> {
-        validate_interactive_preview_shape(config.width, config.height)?;
+        validate_interactive_preview_shape(config.width, config.height, config.format)?;
         self.outbound
             .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
                 preview_id.clone(),
@@ -938,6 +941,25 @@ pub(super) fn authorize_subscription_channels(
     }
 }
 
+pub(super) fn negotiate_preview_transport(
+    encoded_capability: &str,
+    preview_outbound: &PreviewOutboundSender,
+    preview_cursors: &mut PreviewCursorQueue,
+    preview_capability: &mut PreviewTransportCapability,
+) -> Result<PreviewTransportCapability, WsProtocolError> {
+    let peer = PreviewTransportCapability::decode(encoded_capability).map_err(|error| {
+        WsProtocolError::invalid_request(format!("Invalid preview_transport capability: {error}"))
+    })?;
+    let negotiated = preview_outbound
+        .negotiate_transport(peer)
+        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
+    preview_cursors
+        .set_max_streams(negotiated.max_streams)
+        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
+    *preview_capability = negotiated;
+    Ok(negotiated)
+}
+
 /// Process a client subscription/unsubscription message.
 async fn handle_client_message(
     text: &str,
@@ -949,6 +971,8 @@ async fn handle_client_message(
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
     browser_previews: &mut BrowserPreviewSession,
     preview_outbound: &PreviewOutboundSender,
+    preview_capability: &mut PreviewTransportCapability,
+    preview_cursors: &mut PreviewCursorQueue,
     socket: &mut WebSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
@@ -965,7 +989,11 @@ async fn handle_client_message(
     };
 
     match msg {
-        ClientMessage::Subscribe { channels, config } => {
+        ClientMessage::Subscribe {
+            channels,
+            config,
+            preview_transport,
+        } => {
             let parsed_channels = match parse_channels(&channels) {
                 Ok(parsed) => parsed,
                 Err(error) => {
@@ -990,6 +1018,17 @@ async fn handle_client_message(
             for channel in &parsed_channels {
                 next_subscriptions.channels.insert(*channel);
             }
+            if let Some(encoded_capability) = preview_transport
+                && let Err(error) = negotiate_preview_transport(
+                    &encoded_capability,
+                    preview_outbound,
+                    preview_cursors,
+                    preview_capability,
+                )
+            {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
             if let Err(error) = input_demand_leases.synchronize(&next_subscriptions) {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
@@ -999,6 +1038,7 @@ async fn handle_client_message(
             let ack = ServerMessage::Subscribed {
                 channels: unique_sorted_channel_names(&parsed_channels),
                 config: subscriptions.config.filtered_json(subscriptions.channels),
+                preview_transport: preview_capability.encode(),
             };
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;

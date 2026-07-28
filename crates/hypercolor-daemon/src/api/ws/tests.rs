@@ -16,9 +16,10 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_leptos_ext::ws::{
-    InteractivePreviewFrame as WireInteractivePreviewFrame, PreviewFrame as WirePreviewFrame,
+    InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FRAME_TAG,
+    PREVIEW_MIN_MESSAGE_BYTES, PreviewChunkFrame, PreviewFrame as WirePreviewFrame,
     PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId,
-    TimedInputEventPayload,
+    PreviewTransportCapability, TimedInputEventPayload,
 };
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
@@ -66,15 +67,16 @@ use super::protocol::{
     validate_interactive_preview_id, validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
-    PreviewOutboundItem, PreviewOutboundLimits, PreviewOutboundReceiver, PreviewOutboundSender,
-    PreviewPublication, PreviewPublishOutcome, PreviewSendCursor, build_device_metrics_message,
-    build_metrics_message, preview_outbound_channel, preview_outbound_channel_with_limits,
-    publish_subscriptions, relay_device_metrics, relay_display_preview, relay_events, relay_frames,
-    relay_metrics, relay_sensors, relay_spectrum, sync_preview_receiver, try_enqueue_json,
+    PreviewCursorQueue, PreviewOutboundError, PreviewOutboundItem, PreviewOutboundLimits,
+    PreviewOutboundReceiver, PreviewOutboundSender, PreviewPublication, PreviewPublishOutcome,
+    PreviewSendCursor, build_device_metrics_message, build_metrics_message,
+    preview_outbound_channel, preview_outbound_channel_with_limits, publish_subscriptions,
+    relay_device_metrics, relay_display_preview, relay_events, relay_frames, relay_metrics,
+    relay_sensors, relay_spectrum, sync_preview_receiver, try_enqueue_json,
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_channels,
-    validated_zone_layout_preview,
+    negotiate_preview_transport, validated_zone_layout_preview,
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
@@ -1548,6 +1550,151 @@ fn jpeg_test_payload(width: u16, height: u16, payload_len: usize) -> Vec<u8> {
     payload
 }
 
+#[test]
+fn subscribe_wire_negotiates_preview_transport_before_publication() {
+    let peer = PreviewTransportCapability {
+        max_decoded_publication_bytes: 1024 * 1024,
+        max_encoded_publication_bytes: 1024,
+        max_connection_bytes: 1024,
+        max_streams: 2,
+        max_tombstones: 8,
+        max_idle_ms: 1000,
+        max_message_bytes: 256,
+        max_chunk_count: 128,
+    };
+    let message: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "subscribe",
+        "channels": ["canvas"],
+        "preview_transport": peer.encode(),
+        "config": { "canvas": { "format": "jpeg" } }
+    }))
+    .expect("capability-bearing subscribe parses");
+    let ClientMessage::Subscribe {
+        preview_transport: Some(encoded_capability),
+        ..
+    } = message
+    else {
+        panic!("expected capability-bearing subscribe");
+    };
+
+    let (sender, receiver) = preview_outbound_channel();
+    let mut capability = PreviewTransportCapability::default();
+    let mut cursors = PreviewCursorQueue::new(capability.max_streams);
+    let negotiated =
+        negotiate_preview_transport(&encoded_capability, &sender, &mut cursors, &mut capability)
+            .expect("transport negotiation succeeds before publication");
+    assert_eq!(negotiated, peer);
+    assert_eq!(capability, peer);
+
+    sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+            preview_test_frame(PreviewFrameChannel::Canvas, 1, 512),
+            None,
+        )
+        .expect("publication fits negotiated byte budgets");
+    let publication =
+        try_receive_preview_publication(&receiver).expect("negotiated publication arrives");
+    let mut cursor = PreviewSendCursor::with_capability(publication, negotiated)
+        .expect("negotiated cursor builds");
+    let mut message_count = 0_u32;
+    while let Some(message) = cursor.next_message().expect("chunk encoding") {
+        assert!(message.len() <= peer.max_message_bytes);
+        assert_eq!(message[0], PREVIEW_CHUNK_FRAME_TAG);
+        let chunk = PreviewChunkFrame::decode_bytes(&message).expect("chunk decodes");
+        assert!(chunk.chunk_count <= peer.max_chunk_count);
+        message_count += 1;
+    }
+    assert!(message_count > 1);
+
+    let ack = serde_json::to_value(ServerMessage::Subscribed {
+        channels: vec!["canvas".to_owned()],
+        config: serde_json::json!({}),
+        preview_transport: negotiated.encode(),
+    })
+    .expect("subscribe acknowledgment serializes");
+    assert_eq!(ack["preview_transport"], peer.encode());
+
+    let (byte_sender, byte_receiver) = preview_outbound_channel();
+    let mut byte_capability = PreviewTransportCapability::default();
+    let mut byte_cursors = PreviewCursorQueue::new(byte_capability.max_streams);
+    negotiate_preview_transport(
+        &peer.encode(),
+        &byte_sender,
+        &mut byte_cursors,
+        &mut byte_capability,
+    )
+    .expect("byte-accounting transport negotiation");
+    byte_sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+            preview_test_frame(PreviewFrameChannel::Canvas, 1, 512),
+            None,
+        )
+        .expect("first byte-accounted publication");
+    let _in_flight =
+        try_receive_preview_publication(&byte_receiver).expect("first publication moves in flight");
+    assert!(matches!(
+        byte_sender.negotiate_transport(peer),
+        Err(PreviewOutboundError::TransportAlreadyActive)
+    ));
+    assert!(matches!(
+        byte_sender.publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
+            preview_test_frame(PreviewFrameChannel::ScreenCanvas, 2, 512),
+            None,
+        ),
+        Err(PreviewOutboundError::ConnectionBudgetExceeded { maximum: 1024, .. })
+    ));
+
+    let (stream_sender, _stream_receiver) = preview_outbound_channel();
+    let mut stream_capability = PreviewTransportCapability::default();
+    let mut stream_cursors = PreviewCursorQueue::new(stream_capability.max_streams);
+    negotiate_preview_transport(
+        &peer.encode(),
+        &stream_sender,
+        &mut stream_cursors,
+        &mut stream_capability,
+    )
+    .expect("stream-accounting transport negotiation");
+    for (channel, frame_number) in [
+        (PreviewFrameChannel::Canvas, 1),
+        (PreviewFrameChannel::ScreenCanvas, 2),
+    ] {
+        stream_sender
+            .publish(
+                PreviewStreamId::Passive(channel),
+                preview_test_frame(channel, frame_number, 400),
+                None,
+            )
+            .expect("stream fits negotiated count and byte budgets");
+    }
+    assert!(matches!(
+        stream_sender.publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::WebViewportCanvas),
+            preview_test_frame(PreviewFrameChannel::WebViewportCanvas, 3, 32),
+            None,
+        ),
+        Err(PreviewOutboundError::StreamBudgetExceeded { maximum: 2 })
+    ));
+}
+
+#[test]
+fn legacy_subscribe_without_transport_capability_remains_valid() {
+    let message: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "subscribe",
+        "channels": ["events"]
+    }))
+    .expect("legacy subscribe parses");
+    assert!(matches!(
+        message,
+        ClientMessage::Subscribe {
+            preview_transport: None,
+            ..
+        }
+    ));
+}
+
 async fn receive_direct_preview(receiver: &PreviewOutboundReceiver) -> Bytes {
     let publication = tokio::time::timeout(Duration::from_millis(250), async {
         loop {
@@ -2921,7 +3068,7 @@ fn interactive_preview_commands_are_addressed_and_acknowledged() {
 }
 
 #[test]
-fn interactive_preview_dimensions_use_shape_admission_not_axis_caps() {
+fn interactive_preview_dimensions_use_format_aware_shape_admission() {
     let wide: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "interactive_preview_open",
         "preview_id": "wide",
@@ -2939,8 +3086,14 @@ fn interactive_preview_dimensions_use_shape_admission_not_axis_caps() {
             ..
         }
     ));
-    validate_interactive_preview_shape(100_000, 1_000)
+    validate_interactive_preview_shape(100_000, 1_000, CanvasFormat::Rgba)
         .expect("wide shape fits the publication budget");
+
+    let jpeg_error = validate_interactive_preview_shape(65_536, 1, CanvasFormat::Jpeg)
+        .expect_err("JPEG exposes its format-level axis ceiling");
+    assert!(jpeg_error.message.contains("JPEG preview axes"));
+    validate_interactive_preview_shape(65_536, 1, CanvasFormat::Rgba)
+        .expect("raw previews retain u32 axes within the byte budget");
 
     let zero = serde_json::from_value::<ClientMessage>(serde_json::json!({
         "type": "interactive_preview_open",
@@ -2952,7 +3105,7 @@ fn interactive_preview_dimensions_use_shape_admission_not_axis_caps() {
     }));
     assert!(zero.is_err());
 
-    let error = validate_interactive_preview_shape(32_768, 4_097)
+    let error = validate_interactive_preview_shape(32_768, 4_097, CanvasFormat::Rgba)
         .expect_err("over-budget interactive shape is rejected");
     assert_eq!(error.code, "invalid_request");
 }
@@ -3370,6 +3523,23 @@ fn websocket_manifest_matches_protocol_constants() {
     assert_eq!(
         manifest["preview_transport"]["max_message_bytes"],
         super::protocol::MAX_WS_MESSAGE_BYTES
+    );
+    assert_eq!(
+        manifest["preview_transport"]["min_message_bytes"],
+        PREVIEW_MIN_MESSAGE_BYTES
+    );
+    assert_eq!(manifest["preview_transport"]["jpeg_max_axis"], u16::MAX);
+    assert_eq!(
+        manifest["preview_transport"]["negotiation"]["client_subscribe_field"],
+        "preview_transport"
+    );
+    assert_eq!(
+        manifest["preview_transport"]["negotiation"]["server_subscribed_field"],
+        "preview_transport"
+    );
+    assert_eq!(
+        manifest["preview_transport"]["negotiation"]["legacy_client_policy"],
+        "server defaults"
     );
     for channel in [
         "canvas",

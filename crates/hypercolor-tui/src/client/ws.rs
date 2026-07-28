@@ -54,9 +54,14 @@ pub async fn connect(
     let (mut write, mut read) = ws_stream.split();
 
     // Send subscription message
+    let preview_transport = PreviewTransportCapability {
+        max_streams: TUI_MAX_PREVIEW_STREAMS,
+        ..PreviewTransportCapability::default()
+    };
     let subscribe = serde_json::json!({
         "type": "subscribe",
         "channels": ["canvas", "spectrum", "events", "metrics"],
+        "preview_transport": preview_transport.encode(),
         "config": {
             "canvas": { "fps": TUI_CANVAS_FPS, "format": "rgb" },
             "spectrum": { "fps": 15, "bins": 64 },

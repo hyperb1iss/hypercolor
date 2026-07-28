@@ -113,8 +113,17 @@
   ],
   "preview_transport": {
     "dimension_type": "u32",
+    "jpeg_max_axis": 65535,
     "passive_zero_dimension": "auto",
     "interactive_zero_dimension": "invalid",
+    "min_message_bytes": 184,
+    "negotiation": {
+      "client_subscribe_field": "preview_transport",
+      "server_subscribed_field": "preview_transport",
+      "encoding": "preview_transport_v1 capability string",
+      "rule": "fieldwise minimum before preview activation",
+      "legacy_client_policy": "server defaults"
+    },
     "max_message_bytes": 1048576,
     "max_chunk_count": 4096,
     "max_publication_decoded_bytes": 536870912,

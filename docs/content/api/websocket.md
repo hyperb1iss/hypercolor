@@ -99,8 +99,8 @@ sequenceDiagram
   C->>D: GET /api/v1/ws (Upgrade, hypercolor-v1)
   D-->>C: hello (state snapshot + capabilities)
   Note over C,D: events channel already live
-  C->>D: subscribe { channels: [frames, spectrum] }
-  D-->>C: subscribed (echoed config)
+  C->>D: subscribe { channels, preview_transport }
+  D-->>C: subscribed (config + effective transport)
   loop while subscribed
     D-->>C: binary frame 0x01 (LED colors)
     D-->>C: binary frame 0x02 (spectrum)
@@ -155,7 +155,14 @@ plus feature flags such as `commands`, `canvas_format_jpeg`,
 `interactive_previews`, `wide_preview_frames`, and `preview_chunking`. The
 `preview_transport_v1` capability advertises the receiver's decoded,
 encoded, connection, stream, tombstone, idle-time, message, and chunk-count
-budgets. A client and server use the minimum value for each budget.
+budgets. A client sends its own capability string in the optional
+`preview_transport` field of its first `subscribe`; the daemon applies the
+field-by-field minimum before activating preview channels and returns the
+effective capability in `subscribed`. A legacy client that omits the field uses
+the daemon's advertised defaults. Renegotiation after a preview publication is
+active is rejected instead of changing limits underneath in-flight state.
+The advertised message budget must be at least 184 bytes so every bounded
+stream identity can still carry a one-byte publication fragment.
 `subscriptions` shows
 what is already live — only `events` by default.
 
@@ -203,12 +210,15 @@ canonical inventory lives in `protocol/websocket-v1.json`.
 
 Subscribe to one or more channels. An optional `config` patch tunes per-channel
 parameters in the same message; only the channels you name are touched, and the
-rest keep their current settings.
+rest keep their current settings. Preview-capable clients should also send their
+`preview_transport_v1` capability string in `preview_transport` on the first
+subscription so both peers enforce the same physical budgets.
 
 ```json
 {
   "type": "subscribe",
   "channels": ["frames", "metrics"],
+  "preview_transport": "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
   "config": {
     "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
     "metrics": { "interval_ms": 1000 }
@@ -223,6 +233,7 @@ currently subscribed channel that exposes one:
 {
   "type": "subscribed",
   "channels": ["frames", "metrics"],
+  "preview_transport": "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
   "config": {
     "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
     "metrics": { "interval_ms": 1000 }
@@ -515,6 +526,12 @@ These four preview channels share the same config shape:
 | `width` | integer | `0` | unsigned 32-bit; 0 selects the source width or preserves aspect ratio |
 | `height` | integer | `0` | unsigned 32-bit; 0 selects the source height or preserves aspect ratio |
 
+Raw RGB and RGBA previews retain the full unsigned 32-bit axis vocabulary,
+subject only to the advertised decoded-byte budget. Standard JPEG stores each
+axis in 16 bits, so JPEG requests are rejected explicitly when either resolved
+axis exceeds 65,535 pixels. The daemon never silently resizes an over-limit
+request.
+
 The canvas dimensions default to the daemon's configured render size, which is
 640×480 unless `daemon.canvas_width`/`daemon.canvas_height` change it — never
 assume a fixed size. If both dimensions are zero, the daemon publishes the source
@@ -620,8 +637,9 @@ Byte(s)  Field
 
 The legacy preview family shares one 14-byte header and remains byte-exact for
 dimensions that fit `u16`. `display_preview` (`0x07`) is always JPEG; the others
-honor the `format` you subscribed with. Larger dimensions use the additive wide
-layout documented below.
+honor the `format` you subscribed with. Raw dimensions above 65,535 use the
+additive wide layout documented below; JPEG's intrinsic 16-bit axis limit is
+validated before encoding.
 
 ```
 Byte(s)  Field
