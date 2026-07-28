@@ -1592,7 +1592,7 @@ impl WsProtocolError {
         }
     }
 
-    fn invalid_config_resource(
+    pub(super) fn invalid_config_resource(
         field: &'static str,
         width: u32,
         height: u32,

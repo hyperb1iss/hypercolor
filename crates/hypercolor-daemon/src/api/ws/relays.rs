@@ -6,7 +6,7 @@
 //! mpsc channels and `try_send` backpressure — drop under load rather than
 //! queue unboundedly.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
@@ -18,7 +18,7 @@ use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::BrowserInputPublicationId;
 use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
-    PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
+    PreviewCancelFrame, PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewFormat, PreviewPublicationMetadata, PreviewStreamId,
     PreviewTransportCapability, ScreenZonesFrame as WireScreenZonesFrame,
     ZonePreviewFrame as WireZonePreviewFrame,
@@ -102,6 +102,8 @@ pub(super) enum PreviewOutboundError {
     ConnectionBudgetExceeded { maximum: usize, actual: usize },
     #[error("preview connection stream limit is {maximum}")]
     StreamBudgetExceeded { maximum: usize },
+    #[error("preview cancellation queue limit is {maximum}")]
+    CancellationBudgetExceeded { maximum: usize },
     #[error("preview router could not allocate indexed state for {entries} streams")]
     RouterAllocationFailed { entries: usize },
     #[error("preview publication identity space is exhausted")]
@@ -152,6 +154,8 @@ struct PreviewOutboundState {
     in_flight: HashMap<PreviewPublicationKey, usize>,
     in_flight_bytes: usize,
     current: HashMap<PreviewStreamId, u64>,
+    pending_cancellations: HashMap<PreviewStreamId, u64>,
+    cancellation_order: VecDeque<PreviewStreamId>,
     next_publication_id: u64,
     limits: PreviewOutboundLimits,
     capability: PreviewTransportCapability,
@@ -176,8 +180,12 @@ impl PreviewOutboundState {
         self.queued
             .try_reserve(1)
             .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
+        let prospective_queued = self
+            .queued
+            .len()
+            .saturating_add(usize::from(!self.queued.contains_key(stream)));
         self.in_flight
-            .try_reserve(1)
+            .try_reserve(prospective_queued)
             .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
         if !self.current.contains_key(stream) {
             self.current
@@ -187,11 +195,45 @@ impl PreviewOutboundState {
         Ok(())
     }
 
+    fn try_reserve_cancellations(&mut self, additional: usize) -> Result<(), PreviewOutboundError> {
+        let entries = self.pending_cancellations.len().saturating_add(additional);
+        if entries > self.capability.max_tombstones {
+            return Err(PreviewOutboundError::CancellationBudgetExceeded {
+                maximum: self.capability.max_tombstones,
+            });
+        }
+        self.pending_cancellations
+            .try_reserve(additional)
+            .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
+        self.cancellation_order
+            .try_reserve(additional)
+            .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })
+    }
+
+    fn record_cancellation(&mut self, stream: PreviewStreamId, publication_id: u64) {
+        if let Some(existing) = self.pending_cancellations.get_mut(&stream) {
+            *existing = (*existing).max(publication_id);
+            return;
+        }
+        self.cancellation_order.push_back(stream.clone());
+        self.pending_cancellations.insert(stream, publication_id);
+    }
+
+    fn pop_cancellation(&mut self) -> Option<PreviewCancelFrame> {
+        let stream = self.cancellation_order.pop_front()?;
+        let publication_id = self
+            .pending_cancellations
+            .remove(&stream)
+            .expect("cancellation order must reference indexed state");
+        Some(PreviewCancelFrame {
+            stream,
+            publication_id,
+        })
+    }
+
     fn enqueue(&mut self, publication: PreviewPublication) -> Option<PreviewPublication> {
         let stream = publication.stream().clone();
-        if let Some(queued) = self.queued.get_mut(&stream) {
-            return Some(std::mem::replace(&mut queued.publication, publication));
-        }
+        let replaced = self.remove_queued(&stream);
 
         let previous = self.queue_tail.clone();
         if let Some(tail) = &previous {
@@ -211,7 +253,7 @@ impl PreviewOutboundState {
                 next: None,
             },
         );
-        None
+        replaced
     }
 
     fn remove_queued(&mut self, stream: &PreviewStreamId) -> Option<PreviewPublication> {
@@ -293,6 +335,8 @@ pub(super) fn preview_outbound_channel_with_limits(
             in_flight: HashMap::new(),
             in_flight_bytes: 0,
             current: HashMap::new(),
+            pending_cancellations: HashMap::new(),
+            cancellation_order: VecDeque::new(),
             next_publication_id: 1,
             limits,
             capability: PreviewTransportCapability::default(),
@@ -374,6 +418,10 @@ impl PreviewOutboundSender {
                 maximum: state.limits.max_connection_bytes,
                 actual: encoded.len(),
             })?;
+        let mut cancellation_reservations = usize::from(
+            state.current.contains_key(&stream)
+                && !state.pending_cancellations.contains_key(&stream),
+        );
         let mut eviction_cursor = state.queue_head.clone();
         while projected_bytes > state.limits.max_connection_bytes {
             let Some(candidate) = eviction_cursor.take() else {
@@ -390,9 +438,13 @@ impl PreviewOutboundSender {
             if candidate == stream {
                 continue;
             }
+            if !state.pending_cancellations.contains_key(&candidate) {
+                cancellation_reservations = cancellation_reservations.saturating_add(1);
+            }
             projected_bytes = projected_bytes.saturating_sub(queued.publication.encoded.len());
         }
         state.try_reserve_stream_state(&stream)?;
+        state.try_reserve_cancellations(cancellation_reservations)?;
 
         let publication_id = state.next_publication_id;
         let next_publication_id = publication_id
@@ -411,6 +463,9 @@ impl PreviewOutboundSender {
             encoded,
             interactive_fence,
         };
+        if let Some(previous_publication_id) = state.current.get(&stream).copied() {
+            state.record_cancellation(stream.clone(), previous_publication_id);
+        }
         let replaced = state.enqueue(publication);
         let outcome = if let Some(replaced) = replaced {
             state.queued_bytes = state.queued_bytes.saturating_sub(replaced.encoded.len());
@@ -433,6 +488,7 @@ impl PreviewOutboundSender {
                 .remove_queued(&candidate)
                 .expect("eviction candidate must remain indexed");
             state.queued_bytes = state.queued_bytes.saturating_sub(evicted.encoded.len());
+            state.record_cancellation(candidate.clone(), evicted.publication_id());
             remove_current_publication(
                 &mut state.current,
                 evicted.stream(),
@@ -452,22 +508,100 @@ impl PreviewOutboundSender {
         Ok(outcome)
     }
 
-    pub(super) fn cancel(&self, stream: &PreviewStreamId) {
+    pub(super) fn cancel(&self, stream: &PreviewStreamId) -> Result<bool, PreviewOutboundError> {
         let mut state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let Some(publication_id) = state.current.get(stream).copied() else {
+            return Ok(false);
+        };
+        let additional = usize::from(!state.pending_cancellations.contains_key(stream));
+        state.try_reserve_cancellations(additional)?;
         if let Some(removed) = state.remove_queued(stream) {
             state.queued_bytes = state.queued_bytes.saturating_sub(removed.encoded.len());
             WS_PREVIEW_QUEUE_BYTES.fetch_sub(removed.encoded.len(), Ordering::Relaxed);
         }
+        state.record_cancellation(stream.clone(), publication_id);
         state.current.remove(stream);
+        drop(state);
+        self.shared.notify.notify_one();
+        Ok(true)
+    }
+
+    pub(super) fn cancel_channel(&self, channel: WsChannel) -> Result<usize, PreviewOutboundError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut streams = Vec::new();
+        streams.try_reserve(state.current.len()).map_err(|_| {
+            PreviewOutboundError::RouterAllocationFailed {
+                entries: state.current.len(),
+            }
+        })?;
+        streams.extend(
+            state
+                .current
+                .keys()
+                .filter(|stream| preview_stream_matches_channel(stream, channel))
+                .cloned(),
+        );
+        let additional = streams
+            .iter()
+            .filter(|stream| !state.pending_cancellations.contains_key(*stream))
+            .count();
+        state.try_reserve_cancellations(additional)?;
+        for stream in &streams {
+            let publication_id = state
+                .current
+                .remove(stream)
+                .expect("matched cancellation stream must remain current");
+            if let Some(removed) = state.remove_queued(stream) {
+                state.queued_bytes = state.queued_bytes.saturating_sub(removed.encoded.len());
+                WS_PREVIEW_QUEUE_BYTES.fetch_sub(removed.encoded.len(), Ordering::Relaxed);
+            }
+            state.record_cancellation(stream.clone(), publication_id);
+        }
+        let cancelled = streams.len();
+        drop(state);
+        if cancelled > 0 {
+            self.shared.notify.notify_one();
+        }
+        Ok(cancelled)
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum PreviewOutboundItem {
+    Publication(PreviewPublication),
+    Cancellation(PreviewCancelFrame),
+}
+
+const fn preview_stream_matches_channel(stream: &PreviewStreamId, channel: WsChannel) -> bool {
+    match (stream, channel) {
+        (PreviewStreamId::Passive(frame_channel), WsChannel::Canvas) => {
+            matches!(frame_channel, PreviewFrameChannel::Canvas)
+        }
+        (PreviewStreamId::Passive(frame_channel), WsChannel::ScreenCanvas) => {
+            matches!(frame_channel, PreviewFrameChannel::ScreenCanvas)
+        }
+        (PreviewStreamId::Passive(frame_channel), WsChannel::WebViewportCanvas) => {
+            matches!(frame_channel, PreviewFrameChannel::WebViewportCanvas)
+        }
+        (PreviewStreamId::Passive(frame_channel), WsChannel::DisplayPreview) => {
+            matches!(frame_channel, PreviewFrameChannel::DisplayPreview)
+        }
+        (PreviewStreamId::ScreenZones, WsChannel::ScreenZones)
+        | (PreviewStreamId::Zone { .. }, WsChannel::ZonePreview) => true,
+        _ => false,
     }
 }
 
 impl PreviewOutboundReceiver {
-    pub(super) async fn recv(&self) -> PreviewPublication {
+    pub(super) async fn recv(&self) -> PreviewOutboundItem {
         loop {
             let notified = self.shared.notify.notified();
             if let Some(publication) = self.try_recv() {
@@ -477,12 +611,15 @@ impl PreviewOutboundReceiver {
         }
     }
 
-    pub(super) fn try_recv(&self) -> Option<PreviewPublication> {
+    pub(super) fn try_recv(&self) -> Option<PreviewOutboundItem> {
         let mut state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        if let Some(cancellation) = state.pop_cancellation() {
+            return Some(PreviewOutboundItem::Cancellation(cancellation));
+        }
         let stream = state.queue_head.clone()?;
         let publication = state
             .remove_queued(&stream)
@@ -491,7 +628,7 @@ impl PreviewOutboundReceiver {
         state.queued_bytes = state.queued_bytes.saturating_sub(byte_len);
         state.in_flight_bytes = state.in_flight_bytes.saturating_add(byte_len);
         state.in_flight.insert(publication.key(), byte_len);
-        Some(publication)
+        Some(PreviewOutboundItem::Publication(publication))
     }
 
     pub(super) fn is_current(&self, publication: &PreviewPublication) -> bool {
@@ -505,21 +642,24 @@ impl PreviewOutboundReceiver {
     }
 
     pub(super) fn complete(&self, publication: &PreviewPublication) {
+        self.complete_publication(publication.stream(), publication.publication_id());
+    }
+
+    pub(super) fn complete_publication(&self, stream: &PreviewStreamId, publication_id: u64) {
         let mut state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let key = publication.key();
+        let key = PreviewPublicationKey {
+            stream: stream.clone(),
+            publication_id,
+        };
         if let Some(byte_len) = state.in_flight.remove(&key) {
             state.in_flight_bytes = state.in_flight_bytes.saturating_sub(byte_len);
             WS_PREVIEW_QUEUE_BYTES.fetch_sub(byte_len, Ordering::Relaxed);
         }
-        remove_current_publication(
-            &mut state.current,
-            publication.stream(),
-            publication.publication_id(),
-        );
+        remove_current_publication(&mut state.current, stream, publication_id);
     }
 }
 
@@ -538,6 +678,13 @@ impl PreviewSendCursor {
         publication: PreviewPublication,
         max_message_bytes: usize,
     ) -> Result<Self, PreviewOutboundError> {
+        let capability = PreviewTransportCapability::default();
+        if max_message_bytes > capability.max_message_bytes {
+            return Err(PreviewOutboundError::ChunkEncoding(format!(
+                "message budget {max_message_bytes} exceeds advertised limit {}",
+                capability.max_message_bytes
+            )));
+        }
         let identity_len = match publication.stream() {
             PreviewStreamId::Passive(_) | PreviewStreamId::ScreenZones => 0,
             PreviewStreamId::Zone { .. } => 32,
@@ -568,6 +715,12 @@ impl PreviewSendCursor {
         } else {
             1
         };
+        if chunk_count > capability.max_chunk_count {
+            return Err(PreviewOutboundError::ChunkEncoding(format!(
+                "chunk count {chunk_count} exceeds advertised limit {}",
+                capability.max_chunk_count
+            )));
+        }
         Ok(Self {
             publication,
             payload_capacity,
@@ -632,10 +785,6 @@ struct QueuedPreviewCursor {
 }
 
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "the WebSocket session scheduler consumes this fairness boundary"
-)]
 pub(super) struct PreviewCursorQueue {
     cursors: HashMap<PreviewStreamId, QueuedPreviewCursor>,
     head: Option<PreviewStreamId>,
@@ -658,19 +807,25 @@ impl PreviewCursorQueue {
         cursor: PreviewSendCursor,
     ) -> Result<Option<PreviewSendCursor>, PreviewOutboundError> {
         let stream = cursor.publication().stream().clone();
-        if let Some(queued) = self.cursors.get_mut(&stream) {
-            return Ok(Some(std::mem::replace(&mut queued.cursor, cursor)));
-        }
-        if self.cursors.len() >= self.max_streams {
+        let replacing = self.cursors.contains_key(&stream);
+        if !replacing && self.cursors.len() >= self.max_streams {
             return Err(PreviewOutboundError::StreamBudgetExceeded {
                 maximum: self.max_streams,
             });
         }
-        self.cursors
-            .try_reserve(1)
-            .map_err(|_| PreviewOutboundError::RouterAllocationFailed {
-                entries: self.cursors.len().saturating_add(1),
+        if !replacing {
+            self.cursors.try_reserve(1).map_err(|_| {
+                PreviewOutboundError::RouterAllocationFailed {
+                    entries: self.cursors.len().saturating_add(1),
+                }
             })?;
+        }
+        let replaced = self.remove(&stream);
+        self.insert_at_tail(stream, cursor);
+        Ok(replaced)
+    }
+
+    fn insert_at_tail(&mut self, stream: PreviewStreamId, cursor: PreviewSendCursor) {
         let previous = self.tail.clone();
         if let Some(tail) = &previous {
             self.cursors
@@ -689,7 +844,40 @@ impl PreviewCursorQueue {
                 next: None,
             },
         );
-        Ok(None)
+    }
+
+    pub(super) fn remove(&mut self, stream: &PreviewStreamId) -> Option<PreviewSendCursor> {
+        let queued = self.cursors.remove(stream)?;
+        if let Some(previous) = &queued.previous {
+            self.cursors
+                .get_mut(previous)
+                .expect("cursor predecessor must remain indexed")
+                .next
+                .clone_from(&queued.next);
+        } else {
+            self.head.clone_from(&queued.next);
+        }
+        if let Some(next) = &queued.next {
+            self.cursors
+                .get_mut(next)
+                .expect("cursor successor must remain indexed")
+                .previous
+                .clone_from(&queued.previous);
+        } else {
+            self.tail.clone_from(&queued.previous);
+        }
+        Some(queued.cursor)
+    }
+
+    pub(super) fn remove_cancelled(
+        &mut self,
+        cancellation: &PreviewCancelFrame,
+    ) -> Option<PreviewSendCursor> {
+        let cursor = self.cursors.get(&cancellation.stream)?;
+        if cursor.cursor.publication().publication_id() > cancellation.publication_id {
+            return None;
+        }
+        self.remove(&cancellation.stream)
     }
 
     pub(super) fn pop_next(&mut self) -> Option<PreviewSendCursor> {
@@ -710,17 +898,11 @@ impl PreviewCursorQueue {
         Some(queued.cursor)
     }
 
-    pub(super) fn requeue(
-        &mut self,
-        cursor: PreviewSendCursor,
-    ) -> Result<(), PreviewOutboundError> {
-        let replaced = self.try_insert(cursor)?;
-        debug_assert!(replaced.is_none());
-        Ok(())
-    }
-
-    pub(super) fn len(&self) -> usize {
-        self.cursors.len()
+    pub(super) fn requeue(&mut self, cursor: PreviewSendCursor) {
+        let stream = cursor.publication().stream().clone();
+        debug_assert!(!self.cursors.contains_key(&stream));
+        debug_assert!(self.cursors.len() < self.max_streams);
+        self.insert_at_tail(stream, cursor);
     }
 
     pub(super) fn is_empty(&self) -> bool {

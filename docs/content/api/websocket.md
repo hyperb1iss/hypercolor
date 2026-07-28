@@ -142,7 +142,8 @@ subscribed.
     "screen_canvas", "screen_zones", "web_viewport_canvas", "zone_preview",
     "metrics", "device_metrics", "sensors", "display_preview", "input_events",
     "commands", "canvas_format_jpeg", "interactive_previews",
-    "wide_preview_frames", "preview_chunking"
+    "wide_preview_frames", "preview_chunking",
+    "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096"
   ],
   "subscriptions": ["events"]
 }
@@ -151,7 +152,10 @@ subscribed.
 `version` is the protocol version (`"1.0"`), distinct from the
 `server.version` daemon build string. `capabilities` lists all 14 channel names
 plus feature flags such as `commands`, `canvas_format_jpeg`,
-`interactive_previews`, `wide_preview_frames`, and `preview_chunking`.
+`interactive_previews`, `wide_preview_frames`, and `preview_chunking`. The
+`preview_transport_v1` capability advertises the receiver's decoded,
+encoded, connection, stream, tombstone, idle-time, message, and chunk-count
+budgets. A client and server use the minimum value for each budget.
 `subscriptions` shows
 what is already live — only `events` by default.
 
@@ -561,6 +565,7 @@ at offset 1. All integers are little-endian.
 | `0x0D` | wide addressed interactive preview | 19 bytes + preview id |
 | `0x0E` | wide screen zones | 23 bytes |
 | `0x0F` | chunked preview envelope | 55 bytes + stream identity |
+| `0x10` | preview publication cancellation | 14 bytes + stream identity |
 | `0x80` | RPC request | 2-byte prefix |
 | `0x81` | RPC response | 2-byte prefix |
 
@@ -715,6 +720,23 @@ index and offset zero, remain contiguous, and keep identical metadata. Clients
 must bound partial state by bytes and stream count, discard it on reconnect, and
 validate the completed publication against the envelope metadata before display.
 
+The transport also bounds each connection's active partials and reclaimable
+high-water tombstones. A partial that receives no chunk for the negotiated idle
+interval expires on a wall-clock deadline, even when no more messages arrive.
+
+### Preview publication cancellation (0x10)
+
+When a queued or partially sent publication is superseded, evicted,
+unsubscribed, or explicitly closed, the server sends a schema `1` cancellation
+for that exact stream and publication id. The 14-byte fixed header contains the
+tag, schema, stream kind, channel tag, identity length, and `u64` publication
+id. The stream identity follows the header.
+
+Clients release any partial publication at or below that id while retaining the
+stream high-water mark. A cancellation never removes a newer publication for
+the same stream. Recent high-water tombstones reject delayed stale chunks;
+older tombstones are reclaimed within the advertised bound.
+
 ### RPC frames (0x80 / 0x81)
 
 The CinderRPC request/response frames are the one binary type that uses the
@@ -740,7 +762,7 @@ ws.onmessage = (event) => {
     const tag = view.getUint8(0);
     // 0x01 frames, 0x02 spectrum, 0x03/0x05/0x06/0x07 previews,
     // 0x08 zone, 0x09 screen zones, 0x0A interactive, 0x0B-0x0E wide,
-    // 0x0F preview chunks
+    // 0x0F preview chunks, 0x10 publication cancellation
     if (tag === 0x01) parseFramePayload(view);
     return;
   }

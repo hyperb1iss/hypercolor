@@ -9,10 +9,10 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use hypercolor_leptos_ext::ws::{
-    PREVIEW_CHUNK_FRAME_TAG, PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel,
-    PreviewPixelFormat, PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
-    ReassembledPreviewPublication, SPECTRUM_FRAME_TAG, SpectrumFrame, WIDE_ZONE_PREVIEW_FRAME_TAG,
-    ZONE_PREVIEW_FRAME_TAG,
+    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkReassembler,
+    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, PreviewReassemblyLimits,
+    PreviewStreamId, PreviewTransportCapability, ReassembledPreviewPublication, SPECTRUM_FRAME_TAG,
+    SpectrumFrame, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
 };
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -71,7 +71,21 @@ pub async fn connect(
     let mut binary_decoder = WsBinaryDecoder::new();
 
     // Read loop
-    while let Some(msg) = read.next().await {
+    loop {
+        let next_message = if let Some(deadline) = binary_decoder.next_expiry_deadline() {
+            tokio::select! {
+                message = read.next() => message,
+                () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                    binary_decoder.expire_now();
+                    continue;
+                }
+            }
+        } else {
+            read.next().await
+        };
+        let Some(msg) = next_message else {
+            break;
+        };
         let msg = match msg {
             Ok(m) => m,
             Err(e) => {
@@ -130,12 +144,13 @@ fn percent_encode(input: &str) -> String {
 /// Canvas frames are decoded zero-copy (the pixel payload is a refcounted
 /// slice of the message). Preview channels the TUI doesn't render yet
 /// (screen/web-viewport/display/zone previews) are recognized and dropped.
-pub fn decode_binary(data: &Bytes) -> Option<WsMessage> {
-    WsBinaryDecoder::new().decode(data)
+pub fn decode_binary(decoder: &mut WsBinaryDecoder, data: &Bytes) -> Option<WsMessage> {
+    decoder.decode(data)
 }
 
 pub struct WsBinaryDecoder {
     preview_chunks: PreviewChunkReassembler,
+    started_at: std::time::Instant,
 }
 
 impl Default for WsBinaryDecoder {
@@ -152,6 +167,7 @@ impl WsBinaryDecoder {
                 max_streams: TUI_MAX_PREVIEW_STREAMS,
                 ..PreviewReassemblyLimits::default()
             }),
+            started_at: std::time::Instant::now(),
         }
     }
 
@@ -176,8 +192,13 @@ impl WsBinaryDecoder {
     }
 
     pub fn decode(&mut self, data: &Bytes) -> Option<WsMessage> {
+        let now_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.decode_at(data, now_ms)
+    }
+
+    pub fn decode_at(&mut self, data: &Bytes, now_ms: u64) -> Option<WsMessage> {
         if data.first() == Some(&PREVIEW_CHUNK_FRAME_TAG) {
-            return match self.preview_chunks.push(data) {
+            return match self.preview_chunks.push_at(data, now_ms) {
                 Ok(Some(publication)) => decode_reassembled_preview(&publication),
                 Ok(None) => None,
                 Err(error) => {
@@ -186,8 +207,39 @@ impl WsBinaryDecoder {
                 }
             };
         }
+        if data.first() == Some(&PREVIEW_CANCEL_FRAME_TAG) {
+            match PreviewCancelFrame::decode_bytes(data).and_then(|cancellation| {
+                self.preview_chunks
+                    .cancel_publication(&cancellation)
+                    .map(|_| ())
+            }) {
+                Ok(()) => {}
+                Err(error) => tracing::warn!(%error, "Rejected preview cancellation"),
+            }
+            return None;
+        }
 
         decode_unchunked_binary(data)
+    }
+
+    fn next_expiry_deadline(&self) -> Option<std::time::Instant> {
+        self.next_expiry_ms().and_then(|deadline_ms| {
+            self.started_at
+                .checked_add(std::time::Duration::from_millis(deadline_ms))
+        })
+    }
+
+    fn expire_now(&mut self) {
+        let now_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.expire_at(now_ms);
+    }
+
+    pub fn next_expiry_ms(&self) -> Option<u64> {
+        self.preview_chunks.next_expiry_ms()
+    }
+
+    pub fn expire_at(&mut self, now_ms: u64) -> usize {
+        self.preview_chunks.expire_at(now_ms)
     }
 }
 

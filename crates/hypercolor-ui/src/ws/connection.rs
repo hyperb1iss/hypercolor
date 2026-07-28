@@ -1,5 +1,6 @@
 //! WebSocket connection lifecycle, reconnect logic, and exponential backoff.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -48,6 +49,45 @@ use crate::api::client;
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
 const TAURI_WINDOW_VISIBILITY_EVENT: &str = "hypercolor-window-visibility";
 const TAURI_WINDOW_VISIBLE_GLOBAL: &str = "__HYPERCOLOR_TAURI_WINDOW_VISIBLE";
+
+fn preview_now_ms() -> u64 {
+    let milliseconds = now_ms();
+    if !milliseconds.is_finite() || milliseconds <= 0.0 {
+        return 0;
+    }
+    Duration::try_from_secs_f64(milliseconds / 1_000.0)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(u64::MAX)
+}
+
+fn clear_preview_decoder(
+    decoder: &Rc<RefCell<PreviewBinaryDecoder>>,
+    timeout: &Rc<RefCell<Option<BrowserTimeoutHandle>>>,
+) {
+    timeout.borrow_mut().take();
+    decoder.borrow_mut().clear();
+}
+
+fn schedule_preview_expiry(
+    decoder: &Rc<RefCell<PreviewBinaryDecoder>>,
+    timeout: &Rc<RefCell<Option<BrowserTimeoutHandle>>>,
+) {
+    timeout.borrow_mut().take();
+    let Some(deadline_ms) = decoder.borrow().next_expiry_ms() else {
+        return;
+    };
+    let delay = Duration::from_millis(deadline_ms.saturating_sub(preview_now_ms()));
+    let decoder_for_timeout = Rc::clone(decoder);
+    let timeout_for_callback = Rc::clone(timeout);
+    let timeout_for_schedule = Rc::clone(timeout);
+    let handle = browser_set_timeout(delay, move || {
+        timeout_for_callback.borrow_mut().take();
+        decoder_for_timeout.borrow_mut().expire_at(preview_now_ms());
+        schedule_preview_expiry(&decoder_for_timeout, &timeout_for_schedule);
+    });
+    *timeout.borrow_mut() = Some(handle);
+}
 
 fn quantize_preview_fps(value: f64) -> f32 {
     #[allow(clippy::cast_possible_truncation)]
@@ -257,6 +297,8 @@ impl WsManager {
                 }
             };
             ws_handle.set_value(Some(ws.clone()));
+            let preview_decoder = Rc::new(RefCell::new(PreviewBinaryDecoder::default()));
+            let preview_expiry_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
 
             // onopen — subscribe to events, metrics, and host sensors
             let ws_clone = ws.clone();
@@ -277,7 +319,10 @@ impl WsManager {
             };
 
             // onclose — schedule reconnect with backoff
+            let close_preview_decoder = Rc::clone(&preview_decoder);
+            let close_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
             let on_close = move |_| {
+                clear_preview_decoder(&close_preview_decoder, &close_preview_expiry_timeout);
                 set_connection_state.set(ConnectionState::Disconnected);
                 ws_handle.set_value(None);
                 clear_preview_subscription(
@@ -306,17 +351,28 @@ impl WsManager {
             };
 
             // onerror (browser fires close after error, so reconnect triggers there)
+            let error_preview_decoder = Rc::clone(&preview_decoder);
+            let error_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
             let on_error = move |_| {
+                clear_preview_decoder(&error_preview_decoder, &error_preview_expiry_timeout);
                 set_connection_state.set(ConnectionState::Error);
                 ws_handle.set_value(None);
             };
 
             // onmessage — handle both JSON and binary frames
-            let mut preview_decoder = PreviewBinaryDecoder::default();
+            let message_preview_decoder = Rc::clone(&preview_decoder);
+            let message_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
                 if let Some(buffer) = message_array_buffer(&event) {
-                    if let Some(message) = preview_decoder.decode(buffer) {
+                    let message = message_preview_decoder
+                        .borrow_mut()
+                        .decode_at(buffer, preview_now_ms());
+                    schedule_preview_expiry(
+                        &message_preview_decoder,
+                        &message_preview_expiry_timeout,
+                    );
+                    if let Some(message) = message {
                         match message {
                             PreviewBinaryMessage::Zone(_) => {}
                             PreviewBinaryMessage::Interactive(preview_id, frame) => {
@@ -400,7 +456,13 @@ impl WsManager {
                     && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
                 {
                     if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
-                        preview_decoder.apply_hello_capabilities(&msg);
+                        message_preview_decoder
+                            .borrow_mut()
+                            .apply_hello_capabilities(&msg);
+                        schedule_preview_expiry(
+                            &message_preview_decoder,
+                            &message_preview_expiry_timeout,
+                        );
                         set_interactive_preview_available.set(interactive_preview_supported(&msg));
                     }
                     if let Some(update) = server_update(&msg) {

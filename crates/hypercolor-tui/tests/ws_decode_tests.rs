@@ -6,11 +6,15 @@
 
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
-    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, PreviewPublicationMetadata,
-    PreviewStreamId, SpectrumFrame, TimedInputEventPayload, ZONE_PREVIEW_FRAME_TAG,
-    ZonePreviewFrame, split_preview_publication,
+    PreviewCancelFrame, PreviewFrame, PreviewFrameChannel, PreviewPixelFormat,
+    PreviewPublicationMetadata, PreviewStreamId, SpectrumFrame, TimedInputEventPayload,
+    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, split_preview_publication,
 };
 use hypercolor_tui::client::ws::{self, WsBinaryDecoder, WsMessage};
+
+fn decode_binary_once(data: &Bytes) -> Option<WsMessage> {
+    ws::decode_binary(&mut WsBinaryDecoder::new(), data)
+}
 
 fn canvas_frame(format: PreviewPixelFormat, width: u32, height: u32, pixels: &[u8]) -> Bytes {
     PreviewFrame {
@@ -39,12 +43,28 @@ fn spectrum_frame(bins: Vec<f32>) -> Bytes {
     .encode()
 }
 
+fn jpeg_payload(width: u16, height: u16) -> Vec<u8> {
+    vec![
+        0xFF,
+        0xD8,
+        0xFF,
+        0xC0,
+        0x00,
+        0x07,
+        0x08,
+        height.to_be_bytes()[0],
+        height.to_be_bytes()[1],
+        width.to_be_bytes()[0],
+        width.to_be_bytes()[1],
+    ]
+}
+
 // ── Canvas decode tests ──────────────────────────────────────────
 
 #[test]
 fn decode_canvas_rgb_roundtrip_is_zero_copy() {
     let data = canvas_frame(PreviewPixelFormat::Rgb, 1, 1, &[255, 0, 128]);
-    let msg = ws::decode_binary(&data);
+    let msg = decode_binary_once(&data);
     let Some(WsMessage::Canvas(frame)) = msg else {
         panic!("expected Canvas variant");
     };
@@ -60,7 +80,7 @@ fn decode_canvas_rgb_roundtrip_is_zero_copy() {
 #[test]
 fn decode_canvas_rgba_strips_alpha() {
     let data = canvas_frame(PreviewPixelFormat::Rgba, 1, 1, &[100, 200, 50, 255]);
-    let Some(WsMessage::Canvas(frame)) = ws::decode_binary(&data) else {
+    let Some(WsMessage::Canvas(frame)) = decode_binary_once(&data) else {
         panic!("expected Canvas variant");
     };
     assert_eq!(frame.pixels, Bytes::from(vec![100, 200, 50]));
@@ -70,7 +90,7 @@ fn decode_canvas_rgba_strips_alpha() {
 fn decode_wide_canvas_preserves_u32_dimensions() {
     let pixels = vec![0_u8; 65_536 * 3];
     let data = canvas_frame(PreviewPixelFormat::Rgb, 65_536, 1, &pixels);
-    let Some(WsMessage::Canvas(frame)) = ws::decode_binary(&data) else {
+    let Some(WsMessage::Canvas(frame)) = decode_binary_once(&data) else {
         panic!("wide canvas should decode");
     };
     assert_eq!(frame.width, 65_536);
@@ -93,9 +113,11 @@ fn stateful_decoder_reassembles_chunked_canvas_once() {
     assert!(chunks.len() > 1);
     let mut decoder = WsBinaryDecoder::new();
     for chunk in &chunks[..chunks.len() - 1] {
-        assert!(decoder.decode(chunk).is_none());
+        assert!(ws::decode_binary(&mut decoder, chunk).is_none());
     }
-    let Some(WsMessage::Canvas(frame)) = decoder.decode(chunks.last().expect("last chunk")) else {
+    let Some(WsMessage::Canvas(frame)) =
+        ws::decode_binary(&mut decoder, chunks.last().expect("last chunk"))
+    else {
         panic!("complete publication should activate once");
     };
     assert_eq!(frame.width, 2);
@@ -105,9 +127,60 @@ fn stateful_decoder_reassembles_chunked_canvas_once() {
 }
 
 #[test]
+fn cancellation_aborts_partial_canvas_publication() {
+    let encoded = canvas_frame(PreviewPixelFormat::Rgb, 2, 1, &[1, 2, 3, 4, 5, 6]);
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+        publication_id: 11,
+        frame_number: 1,
+        timestamp_ms: 42,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+    };
+    let chunks = split_preview_publication(&encoded, &metadata, 70).expect("frame chunks");
+    let cancellation = PreviewCancelFrame {
+        stream: metadata.stream.clone(),
+        publication_id: metadata.publication_id,
+    }
+    .try_encode()
+    .expect("cancellation encodes");
+    let mut decoder = WsBinaryDecoder::new();
+
+    assert!(decoder.decode_at(&chunks[0], 100).is_none());
+    assert!(decoder.decode_at(&cancellation, 101).is_none());
+    for chunk in &chunks[1..] {
+        assert!(decoder.decode_at(chunk, 102).is_none());
+    }
+}
+
+#[test]
+fn silent_partial_canvas_expires_on_wall_clock_deadline() {
+    let encoded = canvas_frame(PreviewPixelFormat::Rgb, 2, 1, &[1, 2, 3, 4, 5, 6]);
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+        publication_id: 12,
+        frame_number: 1,
+        timestamp_ms: 42,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+    };
+    let chunks = split_preview_publication(&encoded, &metadata, 70).expect("frame chunks");
+    let mut decoder = WsBinaryDecoder::new();
+
+    assert!(decoder.decode_at(&chunks[0], 100).is_none());
+    let deadline = decoder.next_expiry_ms().expect("partial has a deadline");
+    assert_eq!(decoder.expire_at(deadline), 1);
+    for chunk in &chunks[1..] {
+        assert!(decoder.decode_at(chunk, deadline + 1).is_none());
+    }
+}
+
+#[test]
 fn decode_canvas_jpeg_returns_none() {
-    let data = canvas_frame(PreviewPixelFormat::Jpeg, 320, 200, b"jpeg-bytes");
-    assert!(ws::decode_binary(&data).is_none());
+    let data = canvas_frame(PreviewPixelFormat::Jpeg, 320, 200, &jpeg_payload(320, 200));
+    assert!(decode_binary_once(&data).is_none());
 }
 
 #[test]
@@ -115,7 +188,7 @@ fn decode_canvas_truncated_pixels_returns_none() {
     // Header says 2x2 RGB (needs 12 payload bytes); hand-truncate to 3.
     let full = canvas_frame(PreviewPixelFormat::Rgb, 2, 2, &[0; 12]);
     let truncated = full.slice(..14 + 3);
-    assert!(ws::decode_binary(&truncated).is_none());
+    assert!(decode_binary_once(&truncated).is_none());
 }
 
 #[test]
@@ -136,7 +209,7 @@ fn decode_non_canvas_preview_channels_return_none() {
         }
         .encode();
         assert!(
-            ws::decode_binary(&data).is_none(),
+            decode_binary_once(&data).is_none(),
             "channel {channel:?} should be recognized but dropped"
         );
     }
@@ -156,7 +229,7 @@ fn decode_zone_preview_returns_none_for_now() {
     }
     .encode();
     assert_eq!(data[0], ZONE_PREVIEW_FRAME_TAG);
-    assert!(ws::decode_binary(&data).is_none());
+    assert!(decode_binary_once(&data).is_none());
 }
 
 // ── Spectrum decode tests ────────────────────────────────────────
@@ -164,7 +237,7 @@ fn decode_zone_preview_returns_none_for_now() {
 #[test]
 fn decode_spectrum_with_bins() {
     let data = spectrum_frame(vec![0.1, 0.5, 0.9, 0.3]);
-    let Some(WsMessage::Spectrum(snap)) = ws::decode_binary(&data) else {
+    let Some(WsMessage::Spectrum(snap)) = decode_binary_once(&data) else {
         panic!("expected Spectrum variant");
     };
     assert_eq!(snap.timestamp_ms, 100);
@@ -182,7 +255,7 @@ fn decode_spectrum_with_bins() {
 #[test]
 fn decode_spectrum_no_bins() {
     let data = spectrum_frame(Vec::new());
-    let Some(WsMessage::Spectrum(snap)) = ws::decode_binary(&data) else {
+    let Some(WsMessage::Spectrum(snap)) = decode_binary_once(&data) else {
         panic!("expected Spectrum variant");
     };
     assert!(snap.bins.is_empty());
@@ -190,14 +263,14 @@ fn decode_spectrum_no_bins() {
 
 #[test]
 fn decode_spectrum_too_short_returns_none() {
-    assert!(ws::decode_binary(&Bytes::from_static(&[0x02; 10])).is_none());
+    assert!(decode_binary_once(&Bytes::from_static(&[0x02; 10])).is_none());
 }
 
 #[test]
 fn decode_spectrum_beat_false() {
     let mut data = spectrum_frame(Vec::new()).to_vec();
     data[22] = 0; // beat = false
-    let Some(WsMessage::Spectrum(snap)) = ws::decode_binary(&Bytes::from(data)) else {
+    let Some(WsMessage::Spectrum(snap)) = decode_binary_once(&Bytes::from(data)) else {
         panic!("expected Spectrum variant");
     };
     assert!(!snap.beat);
@@ -207,12 +280,12 @@ fn decode_spectrum_beat_false() {
 
 #[test]
 fn decode_binary_unknown_type_returns_none() {
-    assert!(ws::decode_binary(&Bytes::from_static(&[0xFF, 0, 0, 0])).is_none());
+    assert!(decode_binary_once(&Bytes::from_static(&[0xFF, 0, 0, 0])).is_none());
 }
 
 #[test]
 fn decode_binary_empty_returns_none() {
-    assert!(ws::decode_binary(&Bytes::new()).is_none());
+    assert!(decode_binary_once(&Bytes::new()).is_none());
 }
 
 // ── JSON decode tests ────────────────────────────────────────────

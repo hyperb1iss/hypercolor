@@ -22,13 +22,19 @@ pub const INTERACTIVE_PREVIEW_ID_MAX_BYTES: usize = 128;
 pub const PREVIEW_CHUNK_FRAME_TAG: u8 = 0x0F;
 pub const PREVIEW_CHUNK_FIXED_HEADER_LEN: usize = 55;
 pub const PREVIEW_CHUNK_SCHEMA: u8 = 1;
+pub const PREVIEW_CANCEL_FRAME_TAG: u8 = 0x10;
+pub const PREVIEW_CANCEL_FIXED_HEADER_LEN: usize = 14;
+pub const PREVIEW_CANCEL_SCHEMA: u8 = 1;
 pub const DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES + 64 * 1024;
 pub const DEFAULT_PREVIEW_MAX_CONNECTION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES * 2;
 pub const DEFAULT_PREVIEW_MAX_REASSEMBLY_STREAMS: usize = 256;
-pub const DEFAULT_PREVIEW_MAX_IDLE_CHUNKS: u64 = 1024;
+pub const DEFAULT_PREVIEW_MAX_TOMBSTONES: usize = 1024;
+pub const DEFAULT_PREVIEW_MAX_IDLE_MS: u64 = 5_000;
+pub const DEFAULT_PREVIEW_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_PREVIEW_MAX_CHUNK_COUNT: u32 = 4096;
 pub const PREVIEW_TRANSPORT_CAPABILITY_PREFIX: &str = "preview_transport_v1:";
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -147,7 +153,7 @@ impl PreviewFrame {
     }
 
     pub fn try_encode(&self) -> Result<Bytes, PreviewFrameDecodeError> {
-        validate_payload(self.width, self.height, self.format, self.payload.len())?;
+        validate_payload(self.width, self.height, self.format, &self.payload)?;
         let encoded_len = self
             .header_len()
             .checked_add(self.payload.len())
@@ -192,6 +198,12 @@ impl PreviewFrame {
     pub fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
         let header = PreviewFrameHeader::decode(input)?;
         let end = header.end_offset(input.len())?;
+        validate_payload(
+            header.width,
+            header.height,
+            header.format,
+            &input[header.payload_offset..end],
+        )?;
 
         Ok(Self {
             channel: header.channel,
@@ -210,6 +222,12 @@ impl PreviewFrame {
     pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewFrameDecodeError> {
         let header = PreviewFrameHeader::decode(input)?;
         let end = header.end_offset(input.len())?;
+        validate_payload(
+            header.width,
+            header.height,
+            header.format,
+            &input[header.payload_offset..end],
+        )?;
 
         Ok(Self {
             channel: header.channel,
@@ -238,7 +256,7 @@ impl ZonePreviewFrame {
     }
 
     pub fn try_encode(&self) -> Result<Bytes, PreviewFrameDecodeError> {
-        validate_payload(self.width, self.height, self.format, self.payload.len())?;
+        validate_payload(self.width, self.height, self.format, &self.payload)?;
         let encoded_len = self
             .header_len()
             .checked_add(self.payload.len())
@@ -284,6 +302,12 @@ impl ZonePreviewFrame {
     pub fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
         let header = ZonePreviewFrameHeader::decode(input)?;
         let end = header.end_offset(input.len())?;
+        validate_payload(
+            header.width,
+            header.height,
+            header.format,
+            &input[header.payload_offset..end],
+        )?;
 
         Ok(Self {
             scene_id: header.scene_id,
@@ -302,6 +326,12 @@ impl ZonePreviewFrame {
     pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewFrameDecodeError> {
         let header = ZonePreviewFrameHeader::decode(input)?;
         let end = header.end_offset(input.len())?;
+        validate_payload(
+            header.width,
+            header.height,
+            header.format,
+            &input[header.payload_offset..end],
+        )?;
 
         Ok(Self {
             scene_id: header.scene_id,
@@ -333,7 +363,7 @@ impl InteractivePreviewFrame {
                 actual: self.preview_id.len(),
             }
         })?;
-        validate_payload(self.width, self.height, self.format, self.payload.len())?;
+        validate_payload(self.width, self.height, self.format, &self.payload)?;
         let encoded_len = self
             .prefix_len()
             .checked_add(self.preview_id.len())
@@ -380,6 +410,12 @@ impl InteractivePreviewFrame {
     pub fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
         let header = InteractivePreviewFrameHeader::decode(input)?;
         let end = header.end_offset(input.len())?;
+        validate_payload(
+            header.width,
+            header.height,
+            header.format,
+            &input[header.payload_offset..end],
+        )?;
         Ok(Self {
             preview_id: header.preview_id,
             frame_number: header.frame_number,
@@ -394,6 +430,12 @@ impl InteractivePreviewFrame {
     pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewFrameDecodeError> {
         let header = InteractivePreviewFrameHeader::decode(input)?;
         let end = header.end_offset(input.len())?;
+        validate_payload(
+            header.width,
+            header.height,
+            header.format,
+            &input[header.payload_offset..end],
+        )?;
         Ok(Self {
             preview_id: header.preview_id,
             frame_number: header.frame_number,
@@ -445,8 +487,8 @@ impl ScreenZonesFrame {
             .checked_mul(usize::from(self.grid_rows))
             .and_then(|zones| zones.checked_mul(3))
             .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
-        if self.payload.len() < payload_len {
-            return Err(PreviewFrameDecodeError::PayloadTooShort {
+        if self.payload.len() != payload_len {
+            return Err(PreviewFrameDecodeError::PayloadLengthMismatch {
                 expected: payload_len,
                 actual: self.payload.len(),
             });
@@ -730,11 +772,82 @@ impl PreviewChunkFrame {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewCancelFrame {
+    pub stream: PreviewStreamId,
+    pub publication_id: u64,
+}
+
+impl PreviewCancelFrame {
+    pub fn try_encode(&self) -> Result<Bytes, PreviewChunkError> {
+        let (stream_kind, channel, identity) =
+            self.stream.wire_parts().map_err(PreviewChunkError::Frame)?;
+        let identity_len =
+            u16::try_from(identity.len()).map_err(|_| PreviewChunkError::InvalidStreamIdentity)?;
+        let encoded_len = PREVIEW_CANCEL_FIXED_HEADER_LEN
+            .checked_add(identity.len())
+            .ok_or(PreviewChunkError::LengthOverflow)?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(encoded_len)
+            .map_err(|_| PreviewChunkError::AllocationFailed { bytes: encoded_len })?;
+        out.put_u8(PREVIEW_CANCEL_FRAME_TAG);
+        out.put_u8(PREVIEW_CANCEL_SCHEMA);
+        out.put_u8(stream_kind);
+        out.put_u8(channel);
+        out.put_u16_le(identity_len);
+        out.put_u64_le(self.publication_id);
+        out.extend_from_slice(&identity);
+        Ok(Bytes::from(out))
+    }
+
+    pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewChunkError> {
+        if input.len() < PREVIEW_CANCEL_FIXED_HEADER_LEN {
+            return Err(PreviewChunkError::TooShort {
+                expected: PREVIEW_CANCEL_FIXED_HEADER_LEN,
+                actual: input.len(),
+            });
+        }
+        if input[0] != PREVIEW_CANCEL_FRAME_TAG {
+            return Err(PreviewChunkError::UnknownTag { actual: input[0] });
+        }
+        if input[1] != PREVIEW_CANCEL_SCHEMA {
+            return Err(PreviewChunkError::UnknownSchema { actual: input[1] });
+        }
+        let identity_len = usize::from(u16::from_le_bytes(
+            input[4..6].try_into().expect("slice has 2 bytes"),
+        ));
+        let expected = PREVIEW_CANCEL_FIXED_HEADER_LEN
+            .checked_add(identity_len)
+            .ok_or(PreviewChunkError::LengthOverflow)?;
+        if input.len() != expected {
+            return Err(PreviewChunkError::MessageLengthMismatch {
+                expected,
+                actual: input.len(),
+            });
+        }
+        Ok(Self {
+            stream: PreviewStreamId::decode(
+                input[2],
+                input[3],
+                &input[PREVIEW_CANCEL_FIXED_HEADER_LEN..],
+            )?,
+            publication_id: u64::from_le_bytes(input[6..14].try_into().expect("slice has 8 bytes")),
+        })
+    }
+}
+
 pub fn split_preview_publication(
     encoded: &Bytes,
     metadata: &PreviewPublicationMetadata,
     max_message_bytes: usize,
 ) -> Result<Vec<Bytes>, PreviewChunkError> {
+    let capability = PreviewTransportCapability::default();
+    if max_message_bytes > capability.max_message_bytes {
+        return Err(PreviewChunkError::MessageBudgetExceeded {
+            requested: max_message_bytes,
+            limit: capability.max_message_bytes,
+        });
+    }
     let (_, _, identity) = metadata
         .stream
         .wire_parts()
@@ -755,6 +868,12 @@ pub fn split_preview_publication(
     let chunk_count = encoded.len().div_ceil(payload_capacity);
     let chunk_count_u32 =
         u32::try_from(chunk_count).map_err(|_| PreviewChunkError::LengthOverflow)?;
+    if chunk_count_u32 > capability.max_chunk_count {
+        return Err(PreviewChunkError::ChunkCountBudgetExceeded {
+            requested: chunk_count_u32,
+            limit: capability.max_chunk_count,
+        });
+    }
     let total_encoded_bytes =
         u64::try_from(encoded.len()).map_err(|_| PreviewChunkError::LengthOverflow)?;
     let chunk_index_bytes = chunk_count
@@ -789,7 +908,10 @@ pub struct PreviewReassemblyLimits {
     pub max_encoded_publication_bytes: usize,
     pub max_connection_bytes: usize,
     pub max_streams: usize,
-    pub max_idle_chunks: u64,
+    pub max_tombstones: usize,
+    pub max_idle_ms: u64,
+    pub max_message_bytes: usize,
+    pub max_chunk_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -798,19 +920,25 @@ pub struct PreviewTransportCapability {
     pub max_encoded_publication_bytes: usize,
     pub max_connection_bytes: usize,
     pub max_streams: usize,
-    pub max_idle_chunks: u64,
+    pub max_tombstones: usize,
+    pub max_idle_ms: u64,
+    pub max_message_bytes: usize,
+    pub max_chunk_count: u32,
 }
 
 impl PreviewTransportCapability {
     #[must_use]
     pub fn encode(self) -> String {
         format!(
-            "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},streams={},idle_chunks={}",
+            "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},streams={},tombstones={},idle_ms={},message={},chunks={}",
             self.max_decoded_publication_bytes,
             self.max_encoded_publication_bytes,
             self.max_connection_bytes,
             self.max_streams,
-            self.max_idle_chunks,
+            self.max_tombstones,
+            self.max_idle_ms,
+            self.max_message_bytes,
+            self.max_chunk_count,
         )
     }
 
@@ -822,7 +950,10 @@ impl PreviewTransportCapability {
         let mut encoded = None;
         let mut connection = None;
         let mut streams = None;
-        let mut idle_chunks = None;
+        let mut tombstones = None;
+        let mut idle_ms = None;
+        let mut message = None;
+        let mut chunks = None;
         for field in fields.split(',') {
             let (name, value) = field
                 .split_once('=')
@@ -832,7 +963,10 @@ impl PreviewTransportCapability {
                 "encoded" => parse_capability_field(value, &mut encoded)?,
                 "connection" => parse_capability_field(value, &mut connection)?,
                 "streams" => parse_capability_field(value, &mut streams)?,
-                "idle_chunks" => parse_capability_field(value, &mut idle_chunks)?,
+                "tombstones" => parse_capability_field(value, &mut tombstones)?,
+                "idle_ms" => parse_capability_field(value, &mut idle_ms)?,
+                "message" => parse_capability_field(value, &mut message)?,
+                "chunks" => parse_capability_field(value, &mut chunks)?,
                 _ => return Err(PreviewCapabilityError::InvalidField),
             }
         }
@@ -841,7 +975,10 @@ impl PreviewTransportCapability {
             max_encoded_publication_bytes: encoded.ok_or(PreviewCapabilityError::MissingField)?,
             max_connection_bytes: connection.ok_or(PreviewCapabilityError::MissingField)?,
             max_streams: streams.ok_or(PreviewCapabilityError::MissingField)?,
-            max_idle_chunks: idle_chunks.ok_or(PreviewCapabilityError::MissingField)?,
+            max_tombstones: tombstones.ok_or(PreviewCapabilityError::MissingField)?,
+            max_idle_ms: idle_ms.ok_or(PreviewCapabilityError::MissingField)?,
+            max_message_bytes: message.ok_or(PreviewCapabilityError::MissingField)?,
+            max_chunk_count: chunks.ok_or(PreviewCapabilityError::MissingField)?,
         };
         capability.validate()?;
         Ok(capability)
@@ -858,7 +995,10 @@ impl PreviewTransportCapability {
             || self.max_encoded_publication_bytes == 0
             || self.max_connection_bytes < self.max_encoded_publication_bytes
             || self.max_streams == 0
-            || self.max_idle_chunks == 0
+            || self.max_tombstones == 0
+            || self.max_idle_ms == 0
+            || self.max_message_bytes <= PREVIEW_CHUNK_FIXED_HEADER_LEN
+            || self.max_chunk_count == 0
         {
             return Err(PreviewCapabilityError::InvalidLimits);
         }
@@ -873,7 +1013,10 @@ impl Default for PreviewTransportCapability {
             max_encoded_publication_bytes: DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES,
             max_connection_bytes: DEFAULT_PREVIEW_MAX_CONNECTION_BYTES,
             max_streams: DEFAULT_PREVIEW_MAX_REASSEMBLY_STREAMS,
-            max_idle_chunks: DEFAULT_PREVIEW_MAX_IDLE_CHUNKS,
+            max_tombstones: DEFAULT_PREVIEW_MAX_TOMBSTONES,
+            max_idle_ms: DEFAULT_PREVIEW_MAX_IDLE_MS,
+            max_message_bytes: DEFAULT_PREVIEW_MAX_MESSAGE_BYTES,
+            max_chunk_count: DEFAULT_PREVIEW_MAX_CHUNK_COUNT,
         }
     }
 }
@@ -890,7 +1033,10 @@ impl PreviewReassemblyLimits {
                 .min(peer.max_encoded_publication_bytes),
             max_connection_bytes: self.max_connection_bytes.min(peer.max_connection_bytes),
             max_streams: self.max_streams.min(peer.max_streams),
-            max_idle_chunks: self.max_idle_chunks.min(peer.max_idle_chunks),
+            max_tombstones: self.max_tombstones.min(peer.max_tombstones),
+            max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
+            max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
+            max_chunk_count: self.max_chunk_count.min(peer.max_chunk_count),
         }
     }
 }
@@ -903,7 +1049,10 @@ impl Default for PreviewReassemblyLimits {
             max_encoded_publication_bytes: capability.max_encoded_publication_bytes,
             max_connection_bytes: capability.max_connection_bytes,
             max_streams: capability.max_streams,
-            max_idle_chunks: capability.max_idle_chunks,
+            max_tombstones: capability.max_tombstones,
+            max_idle_ms: capability.max_idle_ms,
+            max_message_bytes: capability.max_message_bytes,
+            max_chunk_count: capability.max_chunk_count,
         }
     }
 }
@@ -942,15 +1091,19 @@ struct PartialPreviewPublication {
 struct PreviewStreamState {
     high_water_publication_id: u64,
     partial: Option<PartialPreviewPublication>,
-    last_activity: u64,
+    last_activity_ms: u64,
+    tombstone_generation: u64,
 }
 
 #[derive(Debug)]
 pub struct PreviewChunkReassembler {
     limits: PreviewReassemblyLimits,
     streams: HashMap<PreviewStreamId, PreviewStreamState>,
+    active_streams: usize,
+    tombstones: usize,
     reserved_bytes: usize,
-    ingress_sequence: u64,
+    logical_now_ms: u64,
+    next_tombstone_generation: u64,
     superseded_publications: u64,
     expired_publications: u64,
 }
@@ -961,8 +1114,11 @@ impl PreviewChunkReassembler {
         Self {
             limits,
             streams: HashMap::new(),
+            active_streams: 0,
+            tombstones: 0,
             reserved_bytes: 0,
-            ingress_sequence: 0,
+            logical_now_ms: 0,
+            next_tombstone_generation: 1,
             superseded_publications: 0,
             expired_publications: 0,
         }
@@ -972,12 +1128,32 @@ impl PreviewChunkReassembler {
         &mut self,
         encoded_chunk: &Bytes,
     ) -> Result<Option<ReassembledPreviewPublication>, PreviewChunkError> {
-        self.ingress_sequence = self.ingress_sequence.saturating_add(1);
-        self.expire_idle_partials();
+        self.logical_now_ms = self.logical_now_ms.saturating_add(1);
+        self.push_at(encoded_chunk, self.logical_now_ms)
+    }
+
+    pub fn push_at(
+        &mut self,
+        encoded_chunk: &Bytes,
+        now_ms: u64,
+    ) -> Result<Option<ReassembledPreviewPublication>, PreviewChunkError> {
+        self.logical_now_ms = self.logical_now_ms.max(now_ms);
+        self.expire_at(now_ms);
+        if encoded_chunk.len() > self.limits.max_message_bytes {
+            return Err(PreviewChunkError::MessageBudgetExceeded {
+                requested: encoded_chunk.len(),
+                limit: self.limits.max_message_bytes,
+            });
+        }
         let chunk = PreviewChunkFrame::decode_bytes(encoded_chunk)?;
+        if chunk.chunk_count > self.limits.max_chunk_count {
+            return Err(PreviewChunkError::ChunkCountBudgetExceeded {
+                requested: chunk.chunk_count,
+                limit: self.limits.max_chunk_count,
+            });
+        }
         let total_encoded_bytes = usize::try_from(chunk.total_encoded_bytes)
             .map_err(|_| PreviewChunkError::LengthOverflow)?;
-        validate_reassembly_admission(&chunk.metadata, total_encoded_bytes, self.limits)?;
         if total_encoded_bytes > self.limits.max_encoded_publication_bytes {
             return Err(PreviewChunkError::PublicationBudgetExceeded {
                 requested: total_encoded_bytes,
@@ -988,13 +1164,9 @@ impl PreviewChunkReassembler {
         let stream = chunk.metadata.stream.clone();
         let publication_id = chunk.metadata.publication_id;
         if let Some(state) = self.streams.get(&stream) {
-            if publication_id < state.high_water_publication_id {
-                return Err(PreviewChunkError::StalePublication {
-                    publication_id,
-                    high_water: state.high_water_publication_id,
-                });
-            }
-            if publication_id == state.high_water_publication_id && state.partial.is_none() {
+            if publication_id < state.high_water_publication_id
+                || (publication_id == state.high_water_publication_id && state.partial.is_none())
+            {
                 return Err(PreviewChunkError::StalePublication {
                     publication_id,
                     high_water: state.high_water_publication_id,
@@ -1007,21 +1179,27 @@ impl PreviewChunkReassembler {
             .get(&stream)
             .is_none_or(|state| publication_id > state.high_water_publication_id);
         if starts_new_publication {
-            self.admit_partial(&chunk, total_encoded_bytes)?;
+            self.admit_partial(&chunk, total_encoded_bytes, now_ms)?;
         }
-        self.append_chunk(&stream, &chunk, total_encoded_bytes)
+        self.append_chunk(&stream, &chunk, total_encoded_bytes, now_ms)
     }
 
     fn admit_partial(
         &mut self,
         chunk: &PreviewChunkFrame,
         total_encoded_bytes: usize,
+        now_ms: u64,
     ) -> Result<(), PreviewChunkError> {
         if chunk.chunk_index != 0 || chunk.chunk_offset != 0 {
             return Err(PreviewChunkError::MissingPublicationStart);
         }
+        validate_reassembly_admission(chunk, total_encoded_bytes, self.limits)?;
         let stream = &chunk.metadata.stream;
-        if !self.streams.contains_key(stream) && self.streams.len() >= self.limits.max_streams {
+        let existing_is_active = self
+            .streams
+            .get(stream)
+            .is_some_and(|state| state.partial.is_some());
+        if !existing_is_active && self.active_streams >= self.limits.max_streams {
             return Err(PreviewChunkError::StreamBudgetExceeded {
                 limit: self.limits.max_streams,
             });
@@ -1058,12 +1236,25 @@ impl PreviewChunkReassembler {
             next_chunk_index: 0,
             bytes,
         };
+        if !self.streams.contains_key(stream) {
+            self.streams
+                .try_reserve(1)
+                .map_err(|_| PreviewChunkError::AllocationFailed { bytes: 0 })?;
+        }
+        let existing_was_tombstone = self
+            .streams
+            .get(stream)
+            .is_some_and(|state| state.partial.is_none());
+        if existing_was_tombstone {
+            self.tombstones = self.tombstones.saturating_sub(1);
+        }
         let replaced = self.streams.insert(
             stream.clone(),
             PreviewStreamState {
                 high_water_publication_id: chunk.metadata.publication_id,
                 partial: Some(partial),
-                last_activity: self.ingress_sequence,
+                last_activity_ms: now_ms,
+                tombstone_generation: 0,
             },
         );
         if replaced
@@ -1071,6 +1262,9 @@ impl PreviewChunkReassembler {
             .is_some_and(|state| state.partial.is_some())
         {
             self.superseded_publications = self.superseded_publications.saturating_add(1);
+        }
+        if !existing_is_active {
+            self.active_streams = self.active_streams.saturating_add(1);
         }
         self.reserved_bytes = requested;
         Ok(())
@@ -1081,6 +1275,7 @@ impl PreviewChunkReassembler {
         stream: &PreviewStreamId,
         chunk: &PreviewChunkFrame,
         total_encoded_bytes: usize,
+        now_ms: u64,
     ) -> Result<Option<ReassembledPreviewPublication>, PreviewChunkError> {
         let state = self
             .streams
@@ -1109,7 +1304,7 @@ impl PreviewChunkReassembler {
             .next_chunk_index
             .checked_add(1)
             .ok_or(PreviewChunkError::LengthOverflow)?;
-        state.last_activity = self.ingress_sequence;
+        state.last_activity_ms = now_ms;
 
         if partial.next_chunk_index != partial.chunk_count {
             return Ok(None);
@@ -1125,20 +1320,21 @@ impl PreviewChunkReassembler {
             .reserved_bytes
             .checked_sub(completed.total_encoded_bytes)
             .ok_or(PreviewChunkError::LengthOverflow)?;
+        self.active_streams = self.active_streams.saturating_sub(1);
+        self.mark_tombstone(stream);
         Ok(Some(ReassembledPreviewPublication {
             metadata: completed.metadata,
             encoded: Bytes::from(completed.bytes),
         }))
     }
 
-    fn expire_idle_partials(&mut self) {
-        let max_idle_chunks = self.limits.max_idle_chunks;
-        let ingress_sequence = self.ingress_sequence;
+    pub fn expire_at(&mut self, now_ms: u64) -> usize {
+        let max_idle_ms = self.limits.max_idle_ms;
         let mut expired_bytes = 0_usize;
         let mut expired_publications = 0_u64;
         for state in self.streams.values_mut() {
             let expired = state.partial.is_some()
-                && ingress_sequence.saturating_sub(state.last_activity) > max_idle_chunks;
+                && now_ms.saturating_sub(state.last_activity_ms) >= max_idle_ms;
             if !expired {
                 continue;
             }
@@ -1146,12 +1342,32 @@ impl PreviewChunkReassembler {
                 expired_bytes = expired_bytes.saturating_add(partial.total_encoded_bytes);
                 expired_publications = expired_publications.saturating_add(1);
             }
-            state.last_activity = ingress_sequence;
+            state.tombstone_generation = self.next_tombstone_generation;
+            self.next_tombstone_generation = self.next_tombstone_generation.saturating_add(1);
+            self.tombstones = self.tombstones.saturating_add(1);
         }
+        self.active_streams = self
+            .active_streams
+            .saturating_sub(usize::try_from(expired_publications).unwrap_or(usize::MAX));
         self.reserved_bytes = self.reserved_bytes.saturating_sub(expired_bytes);
         self.expired_publications = self
             .expired_publications
             .saturating_add(expired_publications);
+        self.prune_tombstones();
+        usize::try_from(expired_publications).unwrap_or(usize::MAX)
+    }
+
+    #[must_use]
+    pub fn next_expiry_ms(&self) -> Option<u64> {
+        self.streams
+            .values()
+            .filter(|state| state.partial.is_some())
+            .map(|state| {
+                state
+                    .last_activity_ms
+                    .saturating_add(self.limits.max_idle_ms)
+            })
+            .min()
     }
 
     #[must_use]
@@ -1171,37 +1387,108 @@ impl PreviewChunkReassembler {
 
     #[must_use]
     pub fn partial_count(&self) -> usize {
-        self.streams
-            .values()
-            .filter(|state| state.partial.is_some())
-            .count()
+        self.active_streams
     }
 
-    pub fn cancel_stream(&mut self, stream: &PreviewStreamId) -> bool {
-        let Some(state) = self.streams.get_mut(stream) else {
-            return false;
-        };
-        let Some(partial) = state.partial.take() else {
-            return false;
-        };
-        self.reserved_bytes = self
-            .reserved_bytes
-            .saturating_sub(partial.total_encoded_bytes);
-        state.last_activity = self.ingress_sequence;
-        true
+    #[must_use]
+    pub const fn tombstone_count(&self) -> usize {
+        self.tombstones
+    }
+
+    pub fn cancel_publication(
+        &mut self,
+        cancellation: &PreviewCancelFrame,
+    ) -> Result<bool, PreviewChunkError> {
+        if !self.streams.contains_key(&cancellation.stream) {
+            self.streams
+                .try_reserve(1)
+                .map_err(|_| PreviewChunkError::AllocationFailed { bytes: 0 })?;
+            self.streams.insert(
+                cancellation.stream.clone(),
+                PreviewStreamState {
+                    high_water_publication_id: cancellation.publication_id,
+                    partial: None,
+                    last_activity_ms: self.logical_now_ms,
+                    tombstone_generation: 0,
+                },
+            );
+            self.mark_tombstone(&cancellation.stream);
+            return Ok(false);
+        }
+
+        let state = self
+            .streams
+            .get_mut(&cancellation.stream)
+            .expect("stream existence checked");
+        if state.high_water_publication_id > cancellation.publication_id {
+            return Ok(false);
+        }
+        state.high_water_publication_id = cancellation.publication_id;
+        let cancelled = state.partial.take();
+        if let Some(partial) = &cancelled {
+            self.reserved_bytes = self
+                .reserved_bytes
+                .saturating_sub(partial.total_encoded_bytes);
+            self.active_streams = self.active_streams.saturating_sub(1);
+        }
+        self.mark_tombstone(&cancellation.stream);
+        Ok(cancelled.is_some())
     }
 
     pub fn clear(&mut self) {
         self.streams.clear();
+        self.active_streams = 0;
+        self.tombstones = 0;
         self.reserved_bytes = 0;
+    }
+
+    fn mark_tombstone(&mut self, stream: &PreviewStreamId) {
+        let state = self
+            .streams
+            .get_mut(stream)
+            .expect("tombstone stream must exist");
+        if state.tombstone_generation == 0 {
+            self.tombstones = self.tombstones.saturating_add(1);
+        }
+        state.tombstone_generation = self.next_tombstone_generation;
+        self.next_tombstone_generation = self.next_tombstone_generation.saturating_add(1);
+        self.prune_tombstones();
+    }
+
+    fn prune_tombstones(&mut self) {
+        while self.tombstones > self.limits.max_tombstones {
+            let Some(oldest_generation) = self
+                .streams
+                .values()
+                .filter(|state| state.partial.is_none())
+                .map(|state| state.tombstone_generation)
+                .min()
+            else {
+                break;
+            };
+            let mut removed = false;
+            self.streams.retain(|_, state| {
+                let evict = !removed
+                    && state.partial.is_none()
+                    && state.tombstone_generation == oldest_generation;
+                removed |= evict;
+                !evict
+            });
+            if removed {
+                self.tombstones = self.tombstones.saturating_sub(1);
+            } else {
+                break;
+            }
+        }
     }
 }
 
 fn validate_reassembly_admission(
-    metadata: &PreviewPublicationMetadata,
+    chunk: &PreviewChunkFrame,
     total_encoded_bytes: usize,
     limits: PreviewReassemblyLimits,
 ) -> Result<(), PreviewChunkError> {
+    let metadata = &chunk.metadata;
     if metadata.width == 0 || metadata.height == 0 {
         return Err(PreviewChunkError::InvalidGeometry {
             width: metadata.width,
@@ -1209,21 +1496,65 @@ fn validate_reassembly_admission(
         });
     }
 
-    if !matches!(metadata.stream, PreviewStreamId::ScreenZones) {
-        let decoded_bytes = raw_payload_len(metadata.width, metadata.height, 4)
-            .map_err(PreviewChunkError::Frame)?;
-        if decoded_bytes > limits.max_decoded_publication_bytes {
-            return Err(PreviewChunkError::DecodedPublicationBudgetExceeded {
-                requested: decoded_bytes,
-                limit: limits.max_decoded_publication_bytes,
+    let header_len = publication_header_len(metadata)?;
+    if matches!(metadata.stream, PreviewStreamId::ScreenZones) {
+        let header =
+            ScreenZonesFrameHeader::decode(&chunk.payload).map_err(PreviewChunkError::Frame)?;
+        if header.frame_number != metadata.frame_number
+            || header.timestamp_ms != metadata.timestamp_ms
+            || header.source_width != metadata.width
+            || header.source_height != metadata.height
+        {
+            return Err(PreviewChunkError::MetadataChanged);
+        }
+        let payload_len = usize::from(header.grid_cols)
+            .checked_mul(usize::from(header.grid_rows))
+            .and_then(|zones| zones.checked_mul(3))
+            .ok_or(PreviewChunkError::LengthOverflow)?;
+        let expected = header
+            .payload_offset
+            .checked_add(payload_len)
+            .ok_or(PreviewChunkError::LengthOverflow)?;
+        if total_encoded_bytes != expected {
+            return Err(PreviewChunkError::RawPublicationLengthMismatch {
+                expected,
+                actual: total_encoded_bytes,
             });
         }
+        return Ok(());
     }
 
-    let header_len = publication_header_len(metadata)?;
-    if let Some(bytes_per_pixel) = metadata.format.bytes_per_pixel()
-        && !matches!(metadata.stream, PreviewStreamId::ScreenZones)
-    {
+    let (decoded_width, decoded_height) = if metadata.format == PreviewPixelFormat::Jpeg {
+        let jpeg = chunk
+            .payload
+            .get(header_len..)
+            .ok_or(PreviewChunkError::Frame(
+                PreviewFrameDecodeError::JpegDimensionsUnavailable,
+            ))?;
+        jpeg_dimensions(jpeg).map_err(PreviewChunkError::Frame)?
+    } else {
+        (metadata.width, metadata.height)
+    };
+    if decoded_width != metadata.width || decoded_height != metadata.height {
+        return Err(PreviewChunkError::Frame(
+            PreviewFrameDecodeError::JpegDimensionsMismatch {
+                expected_width: metadata.width,
+                expected_height: metadata.height,
+                actual_width: decoded_width,
+                actual_height: decoded_height,
+            },
+        ));
+    }
+    let decoded_bytes =
+        raw_payload_len(decoded_width, decoded_height, 4).map_err(PreviewChunkError::Frame)?;
+    if decoded_bytes > limits.max_decoded_publication_bytes {
+        return Err(PreviewChunkError::DecodedPublicationBudgetExceeded {
+            requested: decoded_bytes,
+            limit: limits.max_decoded_publication_bytes,
+        });
+    }
+
+    if let Some(bytes_per_pixel) = metadata.format.bytes_per_pixel() {
         let expected = header_len
             .checked_add(
                 raw_payload_len(metadata.width, metadata.height, bytes_per_pixel)
@@ -1314,6 +1645,12 @@ pub enum PreviewChunkError {
     AllocationFailed { bytes: usize },
     #[error("preview chunk message budget needs {required} bytes, got {actual}")]
     MessageBudgetTooSmall { required: usize, actual: usize },
+    #[error("preview WebSocket message needs {requested} bytes; limit is {limit}")]
+    MessageBudgetExceeded { requested: usize, limit: usize },
+    #[error("preview publication needs {requested} chunks; limit is {limit}")]
+    ChunkCountBudgetExceeded { requested: u32, limit: u32 },
+    #[error("preview control message must be {expected} bytes, got {actual}")]
+    MessageLengthMismatch { expected: usize, actual: usize },
     #[error("preview publication needs {requested} bytes; limit is {limit}")]
     PublicationBudgetExceeded { requested: usize, limit: usize },
     #[error("decoded preview publication needs {requested} bytes; limit is {limit}")]
@@ -1416,8 +1753,8 @@ impl ScreenZonesFrameHeader {
             .payload_offset
             .checked_add(payload_len)
             .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
-        if input_len < end {
-            return Err(PreviewFrameDecodeError::PayloadTooShort {
+        if input_len != end {
+            return Err(PreviewFrameDecodeError::PayloadLengthMismatch {
                 expected: payload_len,
                 actual: input_len.saturating_sub(self.payload_offset),
             });
@@ -1541,6 +1878,12 @@ impl PreviewFrameHeader {
                 actual: input_len.saturating_sub(self.payload_offset),
             });
         }
+        if self.format.bytes_per_pixel().is_some() && input_len != end {
+            return Err(PreviewFrameDecodeError::PayloadLengthMismatch {
+                expected: payload_len,
+                actual: input_len.saturating_sub(self.payload_offset),
+            });
+        }
         Ok(end)
     }
 }
@@ -1604,6 +1947,12 @@ impl ZonePreviewFrameHeader {
             .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
         if input_len < end {
             return Err(PreviewFrameDecodeError::PayloadTooShort {
+                expected: payload_len,
+                actual: input_len.saturating_sub(self.payload_offset),
+            });
+        }
+        if self.format.bytes_per_pixel().is_some() && input_len != end {
+            return Err(PreviewFrameDecodeError::PayloadLengthMismatch {
                 expected: payload_len,
                 actual: input_len.saturating_sub(self.payload_offset),
             });
@@ -1694,6 +2043,12 @@ impl InteractivePreviewFrameHeader {
             .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
         if input_len < end {
             return Err(PreviewFrameDecodeError::PayloadTooShort {
+                expected: payload_len,
+                actual: input_len.saturating_sub(self.payload_offset),
+            });
+        }
+        if self.format.bytes_per_pixel().is_some() && input_len != end {
+            return Err(PreviewFrameDecodeError::PayloadLengthMismatch {
                 expected: payload_len,
                 actual: input_len.saturating_sub(self.payload_offset),
             });
@@ -1939,6 +2294,19 @@ pub enum PreviewFrameDecodeError {
     AllocationFailed { bytes: usize },
     #[error("preview frame payload is too short: expected {expected} bytes, got {actual}")]
     PayloadTooShort { expected: usize, actual: usize },
+    #[error("preview frame payload must be {expected} bytes, got {actual}")]
+    PayloadLengthMismatch { expected: usize, actual: usize },
+    #[error("JPEG preview does not contain readable intrinsic dimensions")]
+    JpegDimensionsUnavailable,
+    #[error(
+        "JPEG intrinsic dimensions {actual_width}x{actual_height} do not match {expected_width}x{expected_height}"
+    )]
+    JpegDimensionsMismatch {
+        expected_width: u32,
+        expected_height: u32,
+        actual_width: u32,
+        actual_height: u32,
+    },
     #[error("interactive preview id cannot be empty")]
     EmptyPreviewId,
     #[error("interactive preview id exceeds {maximum} bytes: got {actual}")]
@@ -1983,13 +2351,92 @@ fn validate_payload(
     width: u32,
     height: u32,
     format: PreviewPixelFormat,
-    actual: usize,
+    payload: &[u8],
 ) -> Result<(), PreviewFrameDecodeError> {
     if let Some(bytes_per_pixel) = format.bytes_per_pixel() {
         let expected = raw_payload_len(width, height, bytes_per_pixel)?;
-        if actual < expected {
-            return Err(PreviewFrameDecodeError::PayloadTooShort { expected, actual });
+        if payload.len() != expected {
+            return Err(PreviewFrameDecodeError::PayloadLengthMismatch {
+                expected,
+                actual: payload.len(),
+            });
         }
+        return Ok(());
+    }
+
+    let (actual_width, actual_height) = jpeg_dimensions(payload)?;
+    if actual_width != width || actual_height != height {
+        return Err(PreviewFrameDecodeError::JpegDimensionsMismatch {
+            expected_width: width,
+            expected_height: height,
+            actual_width,
+            actual_height,
+        });
     }
     Ok(())
+}
+
+fn jpeg_dimensions(payload: &[u8]) -> Result<(u32, u32), PreviewFrameDecodeError> {
+    if payload.get(..2) != Some(&[0xFF, 0xD8]) {
+        return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
+    }
+    let mut offset = 2_usize;
+    while offset < payload.len() {
+        while payload.get(offset) == Some(&0xFF) {
+            offset = offset.saturating_add(1);
+        }
+        let marker = *payload
+            .get(offset)
+            .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?;
+        offset = offset.saturating_add(1);
+        if marker == 0x00 || marker == 0xD8 || marker == 0xD9 || (0xD0..=0xD7).contains(&marker) {
+            continue;
+        }
+        if marker == 0xDA {
+            return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
+        }
+        let segment_len = usize::from(u16::from_be_bytes(
+            payload
+                .get(offset..offset.saturating_add(2))
+                .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?
+                .try_into()
+                .expect("JPEG segment length has two bytes"),
+        ));
+        if segment_len < 2 {
+            return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
+        }
+        let segment_end = offset
+            .checked_add(segment_len)
+            .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
+        let segment = payload
+            .get(offset..segment_end)
+            .ok_or(PreviewFrameDecodeError::JpegDimensionsUnavailable)?;
+        if matches!(
+            marker,
+            0xC0 | 0xC1
+                | 0xC2
+                | 0xC3
+                | 0xC5
+                | 0xC6
+                | 0xC7
+                | 0xC9
+                | 0xCA
+                | 0xCB
+                | 0xCD
+                | 0xCE
+                | 0xCF
+        ) {
+            if segment.len() < 7 {
+                return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
+            }
+            let height = u32::from(u16::from_be_bytes([segment[3], segment[4]]));
+            let width = u32::from(u16::from_be_bytes([segment[5], segment[6]]));
+            if width == 0 || height == 0 {
+                return Err(PreviewFrameDecodeError::JpegDimensionsUnavailable);
+            }
+            return Ok((width, height));
+        }
+        offset = segment_end;
+    }
+    Err(PreviewFrameDecodeError::JpegDimensionsUnavailable)
 }

@@ -8,6 +8,7 @@ use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserInputSource,
     BrowserPreviewId, InputData, InputGraphHandle, InputManager, InputSource, SourceIssue,
@@ -65,11 +66,11 @@ use super::protocol::{
     validate_interactive_preview_id, validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
-    PreviewOutboundLimits, PreviewOutboundReceiver, PreviewOutboundSender, PreviewPublishOutcome,
-    PreviewSendCursor, build_device_metrics_message, build_metrics_message,
-    preview_outbound_channel, preview_outbound_channel_with_limits, publish_subscriptions,
-    relay_device_metrics, relay_display_preview, relay_events, relay_frames, relay_metrics,
-    relay_sensors, relay_spectrum, sync_preview_receiver, try_enqueue_json,
+    PreviewOutboundItem, PreviewOutboundLimits, PreviewOutboundReceiver, PreviewOutboundSender,
+    PreviewPublication, PreviewPublishOutcome, PreviewSendCursor, build_device_metrics_message,
+    build_metrics_message, preview_outbound_channel, preview_outbound_channel_with_limits,
+    publish_subscriptions, relay_device_metrics, relay_display_preview, relay_events, relay_frames,
+    relay_metrics, relay_sensors, relay_spectrum, sync_preview_receiver, try_enqueue_json,
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_channels,
@@ -96,44 +97,70 @@ use crate::startup::input_status_events::InputStatusEventPublisher;
 #[test]
 fn websocket_input_demand_leases_follow_subscription_lifetime() {
     let demands = InputPublicationDemandHandle::new();
-    let mut leases = WsInputDemandLeases::new(demands.clone(), 60);
+    let base_screen_extent = PixelExtent::new(1_920, 1_080).expect("fixture extent");
+    let mut leases = WsInputDemandLeases::new(demands.clone(), 60, base_screen_extent);
     let mut subscriptions = SubscriptionState::default();
 
-    leases.synchronize(&subscriptions);
+    leases
+        .synchronize(&subscriptions)
+        .expect("empty subscription demand synchronizes");
     assert_eq!(
         demands.registration_count(InputPublicationConsumer::PassiveStream),
         0
     );
 
+    subscriptions.channels.insert(WsChannel::ScreenCanvas);
+    subscriptions.config.screen_canvas.width = 5_120;
+    subscriptions.config.screen_canvas.height = 0;
+    leases
+        .synchronize(&subscriptions)
+        .expect("partial-axis screen demand synchronizes");
+    assert_eq!(
+        leases.screen_requested_extent(),
+        PixelExtent::new(5_120, 2_880).ok()
+    );
+
     subscriptions.channels.insert(WsChannel::Spectrum);
     subscriptions.config.spectrum.fps = 24;
-    subscriptions.channels.insert(WsChannel::ScreenCanvas);
+    subscriptions.config.screen_canvas.height = 720;
     subscriptions.channels.insert(WsChannel::ScreenZones);
     subscriptions.channels.insert(WsChannel::InputEvents);
-    leases.synchronize(&subscriptions);
+    leases
+        .synchronize(&subscriptions)
+        .expect("wide screen demand synchronizes");
     assert_eq!(
         demands.registration_count(InputPublicationConsumer::PassiveStream),
         3
     );
     assert_eq!(demands.requested_hz(SourceKind::Audio), 24);
     assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
+    assert_eq!(
+        leases.screen_requested_extent(),
+        PixelExtent::new(5_120, 1_080).ok()
+    );
     assert_eq!(demands.requested_hz(SourceKind::Interaction), 60);
 
     subscriptions.config.spectrum.fps = 48;
     subscriptions.channels.remove(WsChannel::ScreenCanvas);
-    leases.synchronize(&subscriptions);
+    leases
+        .synchronize(&subscriptions)
+        .expect("screen zone demand synchronizes");
     assert_eq!(demands.requested_hz(SourceKind::Audio), 48);
     assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
+    assert_eq!(leases.screen_requested_extent(), Some(base_screen_extent));
 
     subscriptions.channels.remove(WsChannel::ScreenZones);
     subscriptions.channels.remove(WsChannel::InputEvents);
-    leases.synchronize(&subscriptions);
+    leases
+        .synchronize(&subscriptions)
+        .expect("removed screen demand synchronizes");
     assert_eq!(
         demands.registration_count(InputPublicationConsumer::PassiveStream),
         1
     );
     assert_eq!(demands.requested_hz(SourceKind::Screen), 0);
     assert_eq!(demands.requested_hz(SourceKind::Interaction), 0);
+    assert_eq!(leases.screen_requested_extent(), None);
 
     drop(leases);
     assert_eq!(
@@ -1408,7 +1435,7 @@ async fn publish_display_preview_snapshot(
     display_frames.write().await.set_frame(
         device_id,
         DisplayFrameSnapshot {
-            jpeg_data: Arc::new(vec![0xff, 0xd8, frame_number.to_le_bytes()[0], 0xff, 0xd9]),
+            jpeg_data: Arc::new(jpeg_test_payload(32, 32, 16)),
             width: 32,
             height: 32,
             circular: false,
@@ -1496,16 +1523,41 @@ fn preview_test_frame(
         width: 1,
         height: 1,
         format: WirePreviewPixelFormat::Jpeg,
-        payload: Bytes::from(vec![0x42; payload_len]),
+        payload: Bytes::from(jpeg_test_payload(1, 1, payload_len)),
     }
     .try_encode()
     .expect("preview test frame")
 }
 
+fn jpeg_test_payload(width: u16, height: u16, payload_len: usize) -> Vec<u8> {
+    let mut payload = vec![
+        0xFF,
+        0xD8,
+        0xFF,
+        0xC0,
+        0x00,
+        0x07,
+        0x08,
+        height.to_be_bytes()[0],
+        height.to_be_bytes()[1],
+        width.to_be_bytes()[0],
+        width.to_be_bytes()[1],
+    ];
+    assert!(payload_len >= payload.len());
+    payload.resize(payload_len, 0);
+    payload
+}
+
 async fn receive_direct_preview(receiver: &PreviewOutboundReceiver) -> Bytes {
-    let publication = tokio::time::timeout(Duration::from_millis(250), receiver.recv())
-        .await
-        .expect("preview publication should arrive");
+    let publication = tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            if let PreviewOutboundItem::Publication(publication) = receiver.recv().await {
+                break publication;
+            }
+        }
+    })
+    .await
+    .expect("preview publication should arrive");
     let mut cursor = PreviewSendCursor::new(publication, super::protocol::MAX_WS_MESSAGE_BYTES)
         .expect("direct preview cursor");
     assert!(!cursor.is_chunked());
@@ -1515,6 +1567,17 @@ async fn receive_direct_preview(receiver: &PreviewOutboundReceiver) -> Bytes {
         .expect("direct preview message")
 }
 
+fn try_receive_preview_publication(
+    receiver: &PreviewOutboundReceiver,
+) -> Option<PreviewPublication> {
+    loop {
+        match receiver.try_recv()? {
+            PreviewOutboundItem::Publication(publication) => return Some(publication),
+            PreviewOutboundItem::Cancellation(_) => {}
+        }
+    }
+}
+
 #[test]
 fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
     let _guard = WS_CACHE_TEST_LOCK
@@ -1522,7 +1585,7 @@ fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
         .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
     let snapshot = DisplayFrameSnapshot {
-        jpeg_data: Arc::new(vec![0xff, 0xd8, 0x42, 0xff, 0xd9]),
+        jpeg_data: Arc::new(jpeg_test_payload(32, 32, 16)),
         width: 32,
         height: 32,
         circular: false,
@@ -1544,7 +1607,7 @@ fn cached_display_preview_payload_skips_cache_for_large_payloads() {
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
-    let large_jpeg = vec![0_u8; 300 * 1024];
+    let large_jpeg = jpeg_test_payload(512, 512, 300 * 1024);
     let snapshot = DisplayFrameSnapshot {
         jpeg_data: Arc::new(large_jpeg),
         width: 512,
@@ -1564,7 +1627,7 @@ fn cached_display_preview_payload_skips_cache_for_large_payloads() {
 
 fn display_preview_snapshot(jpeg_len: usize, frame_number: u64) -> DisplayFrameSnapshot {
     DisplayFrameSnapshot {
-        jpeg_data: Arc::new(vec![0_u8; jpeg_len]),
+        jpeg_data: Arc::new(jpeg_test_payload(256, 256, jpeg_len)),
         width: 256,
         height: 256,
         circular: false,
@@ -1582,9 +1645,10 @@ fn cached_display_preview_payload_respects_the_size_boundary() {
 
     // Derive the wire-header length from a probe payload so the boundary math
     // tracks the real header layout instead of a hard-coded guess.
-    let probe = cached_display_preview_payload(&display_preview_snapshot(1, 30))
+    let probe_payload_len = 16;
+    let probe = cached_display_preview_payload(&display_preview_snapshot(probe_payload_len, 30))
         .expect("display preview probe payload");
-    let header_len = probe.len() - 1;
+    let header_len = probe.len() - probe_payload_len;
     reset_ws_payload_caches();
 
     // The cache key includes the jpeg Arc's storage address, so both calls
@@ -1640,7 +1704,8 @@ fn preview_router_replaces_same_stream_with_latest() {
         PreviewPublishOutcome::Replaced
     );
 
-    let publication = receiver.try_recv().expect("latest preview publication");
+    let publication =
+        try_receive_preview_publication(&receiver).expect("latest preview publication");
     let mut cursor = PreviewSendCursor::new(publication, super::protocol::MAX_WS_MESSAGE_BYTES)
         .expect("latest preview cursor");
     let encoded = cursor
@@ -1677,7 +1742,8 @@ fn preview_router_evicts_oldest_stream_to_honor_byte_budget() {
         )
         .expect("screen preview publication");
 
-    let publication = receiver.try_recv().expect("remaining preview publication");
+    let publication =
+        try_receive_preview_publication(&receiver).expect("remaining preview publication");
     let mut cursor = PreviewSendCursor::new(publication, super::protocol::MAX_WS_MESSAGE_BYTES)
         .expect("remaining preview cursor");
     let encoded = cursor
@@ -3189,9 +3255,15 @@ async fn interactive_preview_open_streams_addressed_frames_from_real_lane() {
         .await
         .expect("interactive preview should open a real lane");
 
-    let publication = tokio::time::timeout(Duration::from_secs(1), frames.recv())
-        .await
-        .expect("real preview lane should publish within one second");
+    let publication = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let PreviewOutboundItem::Publication(publication) = frames.recv().await {
+                break publication;
+            }
+        }
+    })
+    .await
+    .expect("real preview lane should publish within one second");
     let (preview_id, publication_id) = publication
         .interactive_fence()
         .expect("interactive publication carries its input fence");

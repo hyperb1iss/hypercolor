@@ -8,11 +8,11 @@ pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 use hypercolor_leptos_ext::ws::{
     INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame, InteractivePreviewFrameView,
-    PREVIEW_CHUNK_FRAME_TAG, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
-    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
-    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
-    ZonePreviewFrame, ZonePreviewFrameView,
+    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkReassembler,
+    PreviewFrame, PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
+    PreviewTransportCapability, ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG,
+    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
+    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, ZonePreviewFrameView,
 };
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
@@ -558,11 +558,15 @@ impl PreviewBinaryDecoder {
         );
     }
 
-    pub(super) fn decode(&mut self, buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMessage> {
+    pub(super) fn decode_at(
+        &mut self,
+        buffer: js_sys::ArrayBuffer,
+        now_ms: u64,
+    ) -> Option<PreviewBinaryMessage> {
         let bytes = js_sys::Uint8Array::new(&buffer);
         if bytes.length() > 0 && bytes.get_index(0) == PREVIEW_CHUNK_FRAME_TAG {
             let encoded = Bytes::from(bytes.to_vec());
-            return match self.chunks.push(&encoded) {
+            return match self.chunks.push_at(&encoded, now_ms) {
                 Ok(Some(publication)) => decode_reassembled_preview(&publication),
                 Ok(None) => None,
                 Err(error) => {
@@ -571,8 +575,30 @@ impl PreviewBinaryDecoder {
                 }
             };
         }
+        if bytes.length() > 0 && bytes.get_index(0) == PREVIEW_CANCEL_FRAME_TAG {
+            let encoded = Bytes::from(bytes.to_vec());
+            match PreviewCancelFrame::decode_bytes(&encoded)
+                .and_then(|cancellation| self.chunks.cancel_publication(&cancellation).map(|_| ()))
+            {
+                Ok(()) => {}
+                Err(error) => log::warn!("rejected preview cancellation: {error}"),
+            }
+            return None;
+        }
 
         decode_direct_preview(buffer)
+    }
+
+    pub(super) fn expire_at(&mut self, now_ms: u64) -> usize {
+        self.chunks.expire_at(now_ms)
+    }
+
+    pub(super) fn next_expiry_ms(&self) -> Option<u64> {
+        self.chunks.next_expiry_ms()
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.chunks.clear();
     }
 }
 

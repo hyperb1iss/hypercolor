@@ -108,14 +108,21 @@
     "canvas_format_jpeg",
     "interactive_previews",
     "wide_preview_frames",
-    "preview_chunking"
+    "preview_chunking",
+    "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096"
   ],
   "preview_transport": {
     "dimension_type": "u32",
     "passive_zero_dimension": "auto",
     "interactive_zero_dimension": "invalid",
     "max_message_bytes": 1048576,
-    "max_publication_decoded_bytes": 536870912
+    "max_chunk_count": 4096,
+    "max_publication_decoded_bytes": 536870912,
+    "max_publication_encoded_bytes": 536936448,
+    "max_connection_bytes": 1073872896,
+    "max_reassembly_streams": 256,
+    "max_reassembly_tombstones": 1024,
+    "partial_idle_ms": 5000
   },
   "json_messages": {
     "client": [
@@ -336,6 +343,12 @@
       "tag": 15,
       "channel": "preview_transport",
       "layout": "preview_chunk_frame"
+    },
+    {
+      "name": "preview_cancel",
+      "tag": 16,
+      "channel": "preview_transport",
+      "layout": "preview_cancel_frame"
     }
   ],
   "preview_frame": {
@@ -602,6 +615,20 @@
       ["u32_le", "chunk_count"],
       ["bytes", "stream_identity"],
       ["bytes", "chunk_payload"]
+    ]
+  },
+  "preview_cancel_frame": {
+    "schema": 1,
+    "fixed_header_len": 14,
+    "description": "Publication-specific cancellation preserving per-stream high-water state.",
+    "layout": [
+      ["u8", "tag"],
+      ["u8", "schema"],
+      ["u8", "stream_kind"],
+      ["u8", "channel_tag"],
+      ["u16_le", "stream_identity_len"],
+      ["u64_le", "publication_id"],
+      ["bytes", "stream_identity"]
     ]
   },
   "channel_config": {

@@ -263,9 +263,9 @@ struct DisplayPreviewPayloadCacheKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct CanvasOutputSize {
-    width: u32,
-    height: u32,
+pub(super) struct CanvasOutputSize {
+    pub(super) width: u32,
+    pub(super) height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1384,7 +1384,7 @@ fn should_cache_canvas_raw_body(
     }
 }
 
-fn resolve_canvas_output_size(
+pub(super) fn resolve_canvas_output_size(
     source_width: u32,
     source_height: u32,
     requested_width: u32,

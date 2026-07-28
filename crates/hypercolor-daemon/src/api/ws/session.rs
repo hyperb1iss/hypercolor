@@ -21,14 +21,18 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
     BrowserInputRegistryError, BrowserPreviewId,
 };
+use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::scene::{Scene, SceneId, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
 
-use super::cache::{WS_BUFFER_SIZE, WsClientGuard, track_ws_bytes_sent};
+use super::cache::{
+    WS_BUFFER_SIZE, WsClientGuard, resolve_canvas_output_size, track_ws_bytes_sent,
+};
 use super::command::dispatch_command;
 use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
@@ -38,11 +42,11 @@ use super::protocol::{
     validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
-    PreviewOutboundSender, PreviewSendCursor, WS_PREVIEW_CHUNK_SENT_COUNT,
-    WS_PREVIEW_PUBLICATION_SENT_COUNT, preview_outbound_channel, publish_subscriptions,
-    relay_canvas, relay_device_metrics, relay_display_preview, relay_events, relay_frames,
-    relay_metrics, relay_screen_canvas, relay_screen_zones, relay_sensors, relay_spectrum,
-    relay_web_viewport_canvas, relay_zone_preview,
+    PreviewCursorQueue, PreviewOutboundItem, PreviewOutboundSender, PreviewSendCursor,
+    WS_PREVIEW_CHUNK_SENT_COUNT, WS_PREVIEW_PUBLICATION_SENT_COUNT, preview_outbound_channel,
+    publish_subscriptions, relay_canvas, relay_device_metrics, relay_display_preview, relay_events,
+    relay_frames, relay_metrics, relay_screen_canvas, relay_screen_zones, relay_sensors,
+    relay_spectrum, relay_web_viewport_canvas, relay_zone_preview,
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
@@ -155,9 +159,25 @@ async fn handle_socket(
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
     let mut subscriptions = initial_subscriptions;
+    let (screen_base_width, screen_base_height) = state.config_manager.as_ref().map_or(
+        (DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
+        |manager| {
+            let config = manager.get();
+            (config.daemon.canvas_width, config.daemon.canvas_height)
+        },
+    );
+    let Ok(screen_base_extent) = PixelExtent::new(screen_base_width, screen_base_height) else {
+        warn!(
+            width = screen_base_width,
+            height = screen_base_height,
+            "Cannot open WebSocket with an empty passive screen extent"
+        );
+        return;
+    };
     let mut input_demand_leases = WsInputDemandLeases::new(
         state.input_publication_demands.clone(),
         state.configured_max_fps_tier.get().fps(),
+        screen_base_extent,
     );
 
     // Send hello message.
@@ -236,7 +256,7 @@ async fn handle_socket(
     let display_preview_relay_handle = tokio::spawn(relay_display_preview(
         Arc::clone(&state),
         Arc::clone(&state.display_frames),
-        preview_tx,
+        preview_tx.clone(),
         subscriptions_rx.clone(),
     ));
     let metrics_relay_handle = tokio::spawn(relay_metrics(
@@ -260,7 +280,8 @@ async fn handle_socket(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    let mut preview_cursor = None::<PreviewSendCursor>;
+    let preview_capability = hypercolor_leptos_ext::ws::PreviewTransportCapability::default();
+    let mut preview_cursors = PreviewCursorQueue::new(preview_capability.max_streams);
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
@@ -289,16 +310,47 @@ async fn handle_socket(
                 track_ws_bytes_sent(sent_len);
             }
 
-            publication = preview_rx.recv(), if preview_cursor.is_none() => {
-                match PreviewSendCursor::new(publication, MAX_WS_MESSAGE_BYTES) {
-                    Ok(cursor) => preview_cursor = Some(cursor),
-                    Err(error) => warn!(%error, "Rejected queued WebSocket preview publication"),
+            outbound = preview_rx.recv() => {
+                match outbound {
+                    PreviewOutboundItem::Cancellation(cancellation) => {
+                        if let Some(cursor) = preview_cursors.remove_cancelled(&cancellation) {
+                            preview_rx.complete(cursor.publication());
+                        }
+                        match cancellation.try_encode() {
+                            Ok(message) => {
+                                let sent_len = message.len();
+                                if socket.send(Message::Binary(message)).await.is_err() {
+                                    break;
+                                }
+                                track_ws_bytes_sent(sent_len);
+                            }
+                            Err(error) => warn!(%error, "Failed to encode WebSocket preview cancellation"),
+                        }
+                    }
+                    PreviewOutboundItem::Publication(publication) => {
+                        let stream = publication.stream().clone();
+                        let publication_id = publication.publication_id();
+                        match PreviewSendCursor::new(publication, MAX_WS_MESSAGE_BYTES) {
+                            Ok(cursor) => match preview_cursors.try_insert(cursor) {
+                                Ok(Some(replaced)) => preview_rx.complete(replaced.publication()),
+                                Ok(None) => {}
+                                Err(error) => {
+                                    warn!(%error, "Rejected queued WebSocket preview cursor");
+                                    preview_rx.complete_publication(&stream, publication_id);
+                                }
+                            },
+                            Err(error) => {
+                                warn!(%error, "Rejected queued WebSocket preview publication");
+                                preview_rx.complete_publication(&stream, publication_id);
+                            }
+                        }
+                    }
                 }
             }
 
-            () = tokio::task::yield_now(), if preview_cursor.is_some() => {
-                let cursor = preview_cursor
-                    .as_mut()
+            () = tokio::task::yield_now(), if !preview_cursors.is_empty() => {
+                let mut cursor = preview_cursors
+                    .pop_next()
                     .expect("preview cursor exists behind select guard");
                 let interactive_is_current = cursor
                     .publication()
@@ -307,21 +359,40 @@ async fn handle_socket(
                         browser_previews.is_current_publication(preview_id, publication_id)
                     });
                 if !preview_rx.is_current(cursor.publication()) || !interactive_is_current {
+                    if let Ok(message) = (hypercolor_leptos_ext::ws::PreviewCancelFrame {
+                        stream: cursor.publication().stream().clone(),
+                        publication_id: cursor.publication().publication_id(),
+                    }).try_encode() {
+                        let sent_len = message.len();
+                        if socket.send(Message::Binary(message)).await.is_err() {
+                            preview_rx.complete(cursor.publication());
+                            break;
+                        }
+                        track_ws_bytes_sent(sent_len);
+                    }
                     preview_rx.complete(cursor.publication());
-                    preview_cursor = None;
                     continue;
                 }
                 let message = match cursor.next_message() {
                     Ok(Some(message)) => message,
                     Ok(None) => {
                         preview_rx.complete(cursor.publication());
-                        preview_cursor = None;
                         continue;
                     }
                     Err(error) => {
                         warn!(%error, "Failed to encode WebSocket preview chunk");
+                        if let Ok(message) = (hypercolor_leptos_ext::ws::PreviewCancelFrame {
+                            stream: cursor.publication().stream().clone(),
+                            publication_id: cursor.publication().publication_id(),
+                        }).try_encode() {
+                            let sent_len = message.len();
+                            if socket.send(Message::Binary(message)).await.is_err() {
+                                preview_rx.complete(cursor.publication());
+                                break;
+                            }
+                            track_ws_bytes_sent(sent_len);
+                        }
                         preview_rx.complete(cursor.publication());
-                        preview_cursor = None;
                         continue;
                     }
                 };
@@ -337,7 +408,8 @@ async fn handle_socket(
                     WS_PREVIEW_PUBLICATION_SENT_COUNT
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     preview_rx.complete(cursor.publication());
-                    preview_cursor = None;
+                } else {
+                    preview_cursors.requeue(cursor);
                 }
             }
 
@@ -368,6 +440,7 @@ async fn handle_socket(
                             &mut input_demand_leases,
                             &mut zone_layout_preview_keys,
                             &mut browser_previews,
+                            &preview_tx,
                             &mut socket,
                         )
                         .await;
@@ -406,6 +479,9 @@ async fn handle_socket(
     metrics_relay_handle.abort();
     device_metrics_relay_handle.abort();
     sensors_relay_handle.abort();
+    while let Some(cursor) = preview_cursors.pop_next() {
+        preview_rx.complete(cursor.publication());
+    }
     drop(input_demand_leases);
     state
         .zone_layout_previews
@@ -417,23 +493,82 @@ async fn handle_socket(
 pub(super) struct WsInputDemandLeases {
     demands: InputPublicationDemandHandle,
     interaction_hz: u32,
+    screen_base_extent: PixelExtent,
     spectrum: Option<InputPublicationDemandRegistration>,
     screen: Option<InputPublicationDemandRegistration>,
     interaction: Option<InputPublicationDemandRegistration>,
+    #[cfg(test)]
+    screen_requested_extent: Option<PixelExtent>,
 }
 
 impl WsInputDemandLeases {
-    pub(super) fn new(demands: InputPublicationDemandHandle, interaction_hz: u32) -> Self {
+    pub(super) fn new(
+        demands: InputPublicationDemandHandle,
+        interaction_hz: u32,
+        screen_base_extent: PixelExtent,
+    ) -> Self {
         Self {
             demands,
             interaction_hz,
+            screen_base_extent,
             spectrum: None,
             screen: None,
             interaction: None,
+            #[cfg(test)]
+            screen_requested_extent: None,
         }
     }
 
-    pub(super) fn synchronize(&mut self, subscriptions: &SubscriptionState) {
+    pub(super) fn synchronize(
+        &mut self,
+        subscriptions: &SubscriptionState,
+    ) -> Result<(), WsProtocolError> {
+        let screen_active = subscriptions.channels.contains(WsChannel::ScreenCanvas)
+            || subscriptions.channels.contains(WsChannel::ScreenZones);
+        let (screen_demand, screen_requested_extent) = if screen_active {
+            let mut requested_extent = subscriptions
+                .channels
+                .contains(WsChannel::ScreenZones)
+                .then_some(self.screen_base_extent);
+            if subscriptions.channels.contains(WsChannel::ScreenCanvas) {
+                let output = resolve_canvas_output_size(
+                    self.screen_base_extent.width(),
+                    self.screen_base_extent.height(),
+                    subscriptions.config.screen_canvas.width,
+                    subscriptions.config.screen_canvas.height,
+                )
+                .map_err(|error| {
+                    WsProtocolError::invalid_config_resource(
+                        "config.screen_canvas",
+                        subscriptions.config.screen_canvas.width,
+                        subscriptions.config.screen_canvas.height,
+                        error.to_string(),
+                    )
+                })?;
+                let canvas_extent =
+                    PixelExtent::new(output.width, output.height).map_err(|error| {
+                        WsProtocolError::invalid_config_resource(
+                            "config.screen_canvas",
+                            output.width,
+                            output.height,
+                            error.to_string(),
+                        )
+                    })?;
+                requested_extent = Some(
+                    requested_extent.map_or(canvas_extent, |extent| extent.union(canvas_extent)),
+                );
+            }
+            let requested_extent =
+                requested_extent.expect("an active screen subscription has an extent");
+            (
+                InputPublicationDemand::default()
+                    .with_screen(subscriptions.config.screen_canvas.fps, requested_extent),
+                Some(requested_extent),
+            )
+        } else {
+            (InputPublicationDemand::default(), None)
+        };
+
         Self::synchronize_domain(
             &self.demands,
             &mut self.spectrum,
@@ -446,12 +581,8 @@ impl WsInputDemandLeases {
         Self::synchronize_domain(
             &self.demands,
             &mut self.screen,
-            subscriptions.channels.contains(WsChannel::ScreenCanvas)
-                || subscriptions.channels.contains(WsChannel::ScreenZones),
-            InputPublicationDemand::default().with_source(
-                hypercolor_core::input::SourceKind::Screen,
-                subscriptions.config.screen_canvas.fps,
-            ),
+            screen_active,
+            screen_demand,
         );
         Self::synchronize_domain(
             &self.demands,
@@ -462,6 +593,18 @@ impl WsInputDemandLeases {
                 self.interaction_hz,
             ),
         );
+        #[cfg(test)]
+        {
+            self.screen_requested_extent = screen_requested_extent;
+        }
+        #[cfg(not(test))]
+        let _ = screen_requested_extent;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) const fn screen_requested_extent(&self) -> Option<PixelExtent> {
+        self.screen_requested_extent
     }
 
     fn synchronize_domain(
@@ -548,7 +691,8 @@ impl BrowserPreviewSession {
         self.outbound
             .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
                 preview_id.clone(),
-            ));
+            ))
+            .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
         if let Some(binding) = self.previews.get_mut(&preview_id) {
             binding
                 .lane
@@ -612,10 +756,14 @@ impl BrowserPreviewSession {
     }
 
     pub(super) fn close(&mut self, preview_id: String) -> ServerMessage {
-        self.outbound
-            .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
-                preview_id.clone(),
-            ));
+        if let Err(error) =
+            self.outbound
+                .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
+                    preview_id.clone(),
+                ))
+        {
+            warn!(%error, %preview_id, "Failed to queue interactive preview cancellation");
+        }
         let closed = self.previews.remove(&preview_id).is_some_and(|binding| {
             close_preview_binding(&self.interaction_routing, binding);
             true
@@ -800,6 +948,7 @@ async fn handle_client_message(
     input_demand_leases: &mut WsInputDemandLeases,
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
     browser_previews: &mut BrowserPreviewSession,
+    preview_outbound: &PreviewOutboundSender,
     socket: &mut WebSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
@@ -830,22 +979,27 @@ async fn handle_client_message(
                 return;
             }
 
+            let mut next_subscriptions = subscriptions.clone();
             if let Some(config_patch) = config
-                && let Err(error) = subscriptions.config.apply_patch(config_patch)
+                && let Err(error) = next_subscriptions.config.apply_patch(config_patch)
             {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
 
             for channel in &parsed_channels {
-                subscriptions.channels.insert(*channel);
+                next_subscriptions.channels.insert(*channel);
             }
+            if let Err(error) = input_demand_leases.synchronize(&next_subscriptions) {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
+            *subscriptions = next_subscriptions;
 
             let ack = ServerMessage::Subscribed {
                 channels: unique_sorted_channel_names(&parsed_channels),
                 config: subscriptions.config.filtered_json(subscriptions.channels),
             };
-            input_demand_leases.synchronize(subscriptions);
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }
@@ -858,8 +1012,19 @@ async fn handle_client_message(
                 }
             };
 
+            let mut next_subscriptions = subscriptions.clone();
             for channel in &parsed_channels {
-                subscriptions.channels.remove(*channel);
+                next_subscriptions.channels.remove(*channel);
+            }
+            if let Err(error) = input_demand_leases.synchronize(&next_subscriptions) {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
+            }
+            *subscriptions = next_subscriptions;
+            for channel in &parsed_channels {
+                if let Err(error) = preview_outbound.cancel_channel(*channel) {
+                    warn!(%error, channel = channel.as_str(), "Failed to cancel unsubscribed preview channel");
+                }
             }
             let remaining = sorted_channel_names(subscriptions.channels);
 
@@ -867,7 +1032,6 @@ async fn handle_client_message(
                 channels: unique_sorted_channel_names(&parsed_channels),
                 remaining,
             };
-            input_demand_leases.synchronize(subscriptions);
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }
