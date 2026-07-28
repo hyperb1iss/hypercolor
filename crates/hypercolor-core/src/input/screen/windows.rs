@@ -25,11 +25,11 @@ use hypercolor_windows_capture::{
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage,
-    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
-    CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
-    PhysicalOrigin, PixelExtent, RawCaptureSurface, ScreenCaptureDemand, ScreenCaptureInput,
-    SourceScale, analyze_screen_frame,
+    AnalyzedScreenSnapshot, CaptureCadence, CaptureCadenceError, CaptureColorSpace, CaptureConfig,
+    CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
+    CaptureGeometry, CapturePacer, CapturePixelFormat, CaptureRotation, CaptureSourceId,
+    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent,
+    RawCaptureSurface, ScreenCaptureDemand, ScreenCaptureInput, SourceScale, analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
@@ -91,9 +91,45 @@ struct CaptureSettingsSnapshot {
 
 struct PreparedWorkerSettings {
     config: CaptureConfig,
+    cadence: CaptureCadence,
     source_generation: u64,
     demand: ScreenCaptureDemand,
     analyzer: ScreenCaptureInput,
+}
+
+struct WorkerCaptureSchedule {
+    cadence: CaptureCadence,
+    pacer: CapturePacer,
+    next_analysis_at: Instant,
+}
+
+impl WorkerCaptureSchedule {
+    fn new(cadence: CaptureCadence, now: Instant) -> Self {
+        Self {
+            cadence,
+            pacer: cadence.pacer(),
+            next_analysis_at: now,
+        }
+    }
+
+    fn replace(&mut self, cadence: CaptureCadence, now: Instant) {
+        *self = Self::new(cadence, now);
+    }
+
+    fn wait_duration(&self, now: Instant) -> Option<Duration> {
+        let wait = self.next_analysis_at.saturating_duration_since(now);
+        (!wait.is_zero()).then_some(wait)
+    }
+
+    fn record_frame(
+        &mut self,
+        captured_at: Instant,
+        now: Instant,
+    ) -> Result<Instant, CaptureCadenceError> {
+        let freshness_deadline = self.cadence.freshness_deadline(captured_at)?;
+        self.next_analysis_at = self.pacer.advance_deadline(self.next_analysis_at, now)?;
+        Ok(freshness_deadline)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -630,13 +666,15 @@ impl WindowsScreenCaptureInput {
         config: CaptureConfig,
         source_generation: u64,
         demand: ScreenCaptureDemand,
-    ) -> Result<PreparedWorkerSettings, SurfaceResourceError> {
+    ) -> anyhow::Result<PreparedWorkerSettings> {
         let requested_extent = demand
             .requested_extent()
             .expect("active Windows capture settings carry an extent");
+        let cadence = CaptureCadence::new(config.target_fps)?;
         let analyzer = ScreenCaptureInput::with_requested_extent(config.clone(), requested_extent)?;
         Ok(PreparedWorkerSettings {
             config,
+            cadence,
             source_generation,
             demand,
             analyzer,
@@ -715,14 +753,16 @@ impl WindowsScreenCaptureInput {
         }
         let admission = demand
             .requested_extent()
-            .map(|requested_extent| {
+            .map(|requested_extent| -> anyhow::Result<_> {
                 let config = self.settings.snapshot().config;
-                ScreenCaptureInput::with_requested_extent(config, requested_extent)
+                let cadence = CaptureCadence::new(config.target_fps)?;
+                let analyzer = ScreenCaptureInput::with_requested_extent(config, requested_extent)?;
+                Ok((analyzer, cadence))
             })
             .transpose()?;
         #[cfg(feature = "windows-capture-fixtures")]
         let prepared_fixture_analyzer = if self.fixture.is_some() {
-            admission
+            admission.map(|(analyzer, _)| analyzer)
         } else {
             None
         };
@@ -821,6 +861,7 @@ impl WindowsScreenCaptureInput {
 
     /// Publish new settings and bump the generation the worker polls.
     fn reconfigure(&mut self, config: CaptureConfig) -> anyhow::Result<()> {
+        CaptureCadence::new(config.target_fps)?;
         let snapshot = self.settings.snapshot();
         if snapshot.config == config {
             return Ok(());
@@ -1061,6 +1102,20 @@ fn run_worker(
 ) {
     let initial_settings = settings.snapshot();
     let mut config = initial_settings.config;
+    let mut schedule = match CaptureCadence::new(config.target_fps) {
+        Ok(cadence) => WorkerCaptureSchedule::new(cadence, Instant::now()),
+        Err(error) => {
+            if let Some(status) = status_session.load() {
+                status.unavailable(SourceIssue::new(
+                    "windows_capture_cadence_unrepresentable",
+                    error.to_string(),
+                    false,
+                ));
+            }
+            let _ = ready.send(Err(error.to_string()));
+            return;
+        }
+    };
     let mut source_generation = initial_settings.source_generation;
     let mut demand = initial_settings.demand;
     let mut generation = settings.generation.load(Ordering::Acquire);
@@ -1097,6 +1152,7 @@ fn run_worker(
             settings,
             publication,
             &mut config,
+            &mut schedule,
             &mut source_generation,
             &mut demand,
             &mut generation,
@@ -1134,6 +1190,7 @@ fn run_worker(
                     settings,
                     publication,
                     &mut config,
+                    &mut schedule,
                     &mut source_generation,
                     &mut demand,
                     &mut generation,
@@ -1158,10 +1215,29 @@ fn run_worker(
                 || Instant::now() >= settings_retry_at)
         {
             let next_settings = settings.snapshot();
+            let next_cadence = match CaptureCadence::new(next_settings.config.target_fps) {
+                Ok(cadence) => cadence,
+                Err(error) => {
+                    failed_settings_generation = Some(latest_generation);
+                    settings_retry_at = Instant::now()
+                        .checked_add(REOPEN_BACKOFF)
+                        .unwrap_or_else(Instant::now);
+                    warn!(%error, generation = latest_generation, "Retaining prior Windows capture cadence after admission failure");
+                    if let Some(status) = status_session.load() {
+                        status.degraded(SourceIssue::new(
+                            "windows_capture_cadence_unrepresentable",
+                            error.to_string(),
+                            false,
+                        ));
+                    }
+                    continue;
+                }
+            };
             match build_worker_analyzer(&next_settings.config, next_settings.demand) {
                 Ok(next_analyzer) => {
                     let previous_source = config.source.clone();
                     config = next_settings.config;
+                    schedule.replace(next_cadence, Instant::now());
                     source_generation = next_settings.source_generation;
                     demand = next_settings.demand;
                     analyzer = next_analyzer;
@@ -1244,6 +1320,7 @@ fn run_worker(
                             settings,
                             publication,
                             &mut config,
+                            &mut schedule,
                             &mut source_generation,
                             &mut demand,
                             &mut generation,
@@ -1282,6 +1359,11 @@ fn run_worker(
             continue;
         }
 
+        if let Some(wait) = schedule.wait_duration(Instant::now()) {
+            thread::sleep(wait.min(FRAME_WAIT));
+            continue;
+        }
+
         let frame_result = session.next_frame(FRAME_WAIT);
         let reduction_telemetry = session.reduction_telemetry();
         let current_epoch = if frame_result.is_ok() {
@@ -1316,9 +1398,21 @@ fn run_worker(
                     continue;
                 };
                 let captured_at = frame.captured_at;
-                let frame_period =
-                    Duration::from_secs_f64(1.0 / f64::from(config.target_fps.max(1)));
-                let raw_frame = build_capture_frame(frame, session_generation, frame_period);
+                let freshness_deadline = match schedule.record_frame(captured_at, Instant::now()) {
+                    Ok(deadline) => deadline,
+                    Err(error) => {
+                        warn!(%error, "Windows screen capture cadence deadline is unrepresentable");
+                        if let Some(status) = status_session.load() {
+                            status.unavailable(SourceIssue::new(
+                                "windows_capture_cadence_deadline_unrepresentable",
+                                error.to_string(),
+                                false,
+                            ));
+                        }
+                        break;
+                    }
+                };
+                let raw_frame = build_capture_frame(frame, session_generation, freshness_deadline);
                 let published = raw_frame.and_then(|frame| {
                     let snapshot = analyze_capture_frame(&mut analyzer, &current_epoch, frame)?;
                     Ok(publication
@@ -1333,7 +1427,7 @@ fn run_worker(
                     record_capture_health(
                         &status,
                         captured_at,
-                        captured_at + frame_period + frame_period,
+                        freshness_deadline,
                         &reduction_telemetry,
                     );
                 }
@@ -1376,6 +1470,7 @@ fn run_worker(
                         settings,
                         publication,
                         &mut config,
+                        &mut schedule,
                         &mut source_generation,
                         &mut demand,
                         &mut generation,
@@ -1441,7 +1536,7 @@ fn capture_epoch(
 fn build_capture_frame(
     frame: NativeCaptureFrame,
     session_generation: u64,
-    frame_period: Duration,
+    freshness_deadline: Instant,
 ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
     let source_id = capture_source_id(&frame.source_id)?;
     let topology_generation = frame.topology_generation;
@@ -1483,7 +1578,7 @@ fn build_capture_frame(
             session_generation,
             sequence: frame.sequence,
             captured_at: frame.captured_at,
-            fresh_until: frame.captured_at + frame_period + frame_period,
+            fresh_until: freshness_deadline,
             geometry,
             color_space: CaptureColorSpace::Unknown,
             transfer_function: CaptureTransferFunction::Unknown,
@@ -1538,6 +1633,7 @@ fn drain_commands(
     settings: &SharedSettings,
     publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>,
     config: &mut CaptureConfig,
+    schedule: &mut WorkerCaptureSchedule,
     source_generation: &mut u64,
     demand: &mut ScreenCaptureDemand,
     generation: &mut u64,
@@ -1562,6 +1658,7 @@ fn drain_commands(
                 settings,
                 publication,
                 config,
+                schedule,
                 source_generation,
                 demand,
                 generation,
@@ -1585,6 +1682,7 @@ fn adopt_prepared_worker_settings(
     settings: &SharedSettings,
     publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>,
     config: &mut CaptureConfig,
+    schedule: &mut WorkerCaptureSchedule,
     source_generation: &mut u64,
     demand: &mut ScreenCaptureDemand,
     generation: &mut u64,
@@ -1609,6 +1707,7 @@ fn adopt_prepared_worker_settings(
         duplicator.set_requested_extent(native_capture_extent(requested_extent));
     }
     config.clone_from(&prepared.config);
+    schedule.replace(prepared.cadence, Instant::now());
     *source_generation = prepared.source_generation;
     *demand = prepared.demand;
     *generation = settings.commit_values(

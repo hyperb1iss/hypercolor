@@ -27,11 +27,12 @@ use pw::spa;
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage,
-    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
-    CapturePlanePool, CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction,
-    CpuCaptureStorage, PhysicalOrigin, PixelExtent, PixelRect, PooledCapturePlane,
-    RawCaptureSurface, ScreenCaptureDemand, ScreenCaptureInput, SourceScale, analyze_screen_frame,
+    AnalyzedScreenSnapshot, CaptureCadence, CaptureColorSpace, CaptureConfig, CaptureCursor,
+    CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePacer,
+    CapturePixelFormat, CapturePlanePool, CaptureRotation, CaptureSourceId, CaptureStorage,
+    CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent, PixelRect,
+    PooledCapturePlane, RawCaptureSurface, ScreenCaptureDemand, ScreenCaptureInput, SourceScale,
+    analyze_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
@@ -450,6 +451,7 @@ struct CaptureRuntimeSettings {
 
 struct PreparedWaylandSettings {
     config: CaptureConfig,
+    cadence: CaptureCadence,
     demand: ScreenCaptureDemand,
     analyzer: ScreenCaptureInput,
     pipewire_format: Option<PreparedPipeWireFormat>,
@@ -469,9 +471,7 @@ struct PipeWireFormatRequest {
 
 impl PipeWireFormatRequest {
     fn new(extent: PixelExtent, target_fps: u32) -> anyhow::Result<Self> {
-        if target_fps == 0 {
-            return Err(anyhow!("PipeWire capture cadence must be non-zero"));
-        }
+        CaptureCadence::new(target_fps)?;
         Ok(Self { extent, target_fps })
     }
 
@@ -588,6 +588,7 @@ impl PipeWireFormatState {
 
 struct PreparedAnalysisSettings {
     config: CaptureConfig,
+    cadence: CaptureCadence,
     demand: ScreenCaptureDemand,
     analyzer: ScreenCaptureInput,
 }
@@ -1296,10 +1297,6 @@ impl WaylandScreenCaptureInput {
         self
     }
 
-    fn current_target_fps(&self) -> u32 {
-        self.settings.config_snapshot().target_fps
-    }
-
     fn prepare_active_settings(
         &self,
         config: CaptureConfig,
@@ -1309,6 +1306,7 @@ impl WaylandScreenCaptureInput {
         let requested_extent = demand
             .requested_extent()
             .context("active Wayland capture settings must carry an extent")?;
+        let cadence = CaptureCadence::new(config.target_fps)?;
         let analyzer = ScreenCaptureInput::with_requested_extent(config.clone(), requested_extent)?;
         let pipewire_format = if format_changed {
             let callback_capacity = NegotiatedFormat {
@@ -1328,6 +1326,7 @@ impl WaylandScreenCaptureInput {
         };
         Ok(PreparedWaylandSettings {
             config,
+            cadence,
             demand,
             analyzer,
             pipewire_format,
@@ -1413,6 +1412,7 @@ impl WaylandScreenCaptureInput {
     /// Analysis settings and PipeWire format changes are prepared together,
     /// then adopted by both workers without interrupting the portal session.
     fn reconfigure(&mut self, config: CaptureConfig) -> anyhow::Result<()> {
+        CaptureCadence::new(config.target_fps)?;
         let current = self.settings.config_snapshot();
         let reconnecting =
             self.running && self.capture_demand.is_active() && self.request_active_worker_demand();
@@ -1420,6 +1420,7 @@ impl WaylandScreenCaptureInput {
             let prepared = self.prepare_active_settings(config, self.capture_demand, false)?;
             let next = PreparedAnalysisSettings {
                 config: prepared.config,
+                cadence: prepared.cadence,
                 demand: prepared.demand,
                 analyzer: prepared.analyzer,
             };
@@ -1438,6 +1439,7 @@ impl WaylandScreenCaptureInput {
             } else {
                 let next = PreparedAnalysisSettings {
                     config: prepared.config,
+                    cadence: prepared.cadence,
                     demand: prepared.demand,
                     analyzer: prepared.analyzer,
                 };
@@ -1507,6 +1509,7 @@ impl WaylandScreenCaptureInput {
             } else {
                 let next = PreparedAnalysisSettings {
                     config: prepared.config,
+                    cadence: prepared.cadence,
                     demand: prepared.demand,
                     analyzer: prepared.analyzer,
                 };
@@ -1518,9 +1521,11 @@ impl WaylandScreenCaptureInput {
 
         let _admission = demand
             .requested_extent()
-            .map(|requested_extent| {
+            .map(|requested_extent| -> anyhow::Result<_> {
                 let config = self.settings.config_snapshot();
-                ScreenCaptureInput::with_requested_extent(config, requested_extent)
+                let cadence = CaptureCadence::new(config.target_fps)?;
+                let analyzer = ScreenCaptureInput::with_requested_extent(config, requested_extent)?;
+                Ok((analyzer, cadence))
             })
             .transpose()?;
 
@@ -1769,6 +1774,7 @@ impl InputSource for WaylandScreenCaptureInput {
         if self.running {
             return Ok(());
         }
+        CaptureCadence::new(self.settings.config_snapshot().target_fps)?;
 
         if self.capture_demand.is_active() {
             if let Some(session) = self.status.begin_session()? {
@@ -1848,11 +1854,10 @@ impl InputSource for WaylandScreenCaptureInput {
         }
         if snapshot.generation != self.status_snapshot_generation {
             if let Some(status) = self.status.session() {
-                let frame_period =
-                    Duration::from_secs_f64(1.0 / f64::from(self.current_target_fps().max(1)));
+                let cadence = CaptureCadence::new(self.settings.config_snapshot().target_fps)?;
                 status.record_sample(
                     metadata.captured_at,
-                    metadata.captured_at + frame_period + frame_period,
+                    cadence.freshness_deadline(metadata.captured_at)?,
                     1,
                 )?;
             }
@@ -2327,6 +2332,9 @@ impl AnalysisExchange {
 
 struct WaylandAnalysisState {
     analyzer: ScreenCaptureInput,
+    cadence: CaptureCadence,
+    pacer: CapturePacer,
+    next_analysis_at: Instant,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     plane_pool: CapturePlanePool,
     settings: Arc<SharedSettings>,
@@ -2343,16 +2351,20 @@ impl WaylandAnalysisState {
         source: WaylandSourceMetadata,
         config: CaptureConfig,
         demand: ScreenCaptureDemand,
-    ) -> Result<Self, SurfaceResourceError> {
+    ) -> anyhow::Result<Self> {
         let applied_generation = settings.generation.load(Ordering::Acquire);
         let requested_extent = demand
             .requested_extent()
             .expect("an active Wayland analysis worker carries an extent");
+        let cadence = CaptureCadence::new(config.target_fps)?;
         let mut analyzer = ScreenCaptureInput::with_requested_extent(config, requested_extent)?;
-        let _ = analyzer.start();
+        analyzer.start()?;
 
         Ok(Self {
             analyzer,
+            cadence,
+            pacer: cadence.pacer(),
+            next_analysis_at: Instant::now(),
             latest_snapshot,
             plane_pool: CapturePlanePool::default(),
             settings,
@@ -2376,13 +2388,26 @@ impl WaylandAnalysisState {
         else {
             return false;
         };
+        let next_cadence = match CaptureCadence::new(runtime.config.target_fps) {
+            Ok(cadence) => cadence,
+            Err(error) => {
+                warn!(%error, generation, "Retaining prior Wayland capture cadence");
+                return true;
+            }
+        };
         if let Some(requested_extent) = runtime.demand.requested_extent() {
             if let Err(error) = self.analyzer.set_requested_extent(requested_extent) {
                 warn!(%error, generation, previous_demand = ?self.applied_demand, next_demand = ?runtime.demand, "Retaining prior Wayland screen analysis settings");
                 return true;
             }
         }
-        self.analyzer.apply_settings(runtime.config);
+        if let Err(error) = self.analyzer.apply_settings(runtime.config) {
+            warn!(%error, generation, "Retaining prior Wayland capture settings");
+            return true;
+        }
+        self.cadence = next_cadence;
+        self.pacer = next_cadence.pacer();
+        self.next_analysis_at = Instant::now();
         self.applied_demand = runtime.demand;
         self.applied_generation = generation;
         debug!(generation, "Applied live screen capture settings");
@@ -2402,6 +2427,7 @@ impl WaylandAnalysisState {
         }
         let PreparedAnalysisSettings {
             mut config,
+            cadence,
             demand,
             analyzer,
         } = adoption.prepared;
@@ -2435,6 +2461,9 @@ impl WaylandAnalysisState {
                     .wrapping_add(1);
                 generation.set(committed_generation);
                 self.analyzer = analyzer;
+                self.cadence = cadence;
+                self.pacer = cadence.pacer();
+                self.next_analysis_at = Instant::now();
                 self.applied_demand = demand;
                 self.applied_generation = committed_generation;
                 fence_previous_publication(&mut latest_snapshot);
@@ -2479,8 +2508,7 @@ impl WaylandAnalysisState {
         let row_stride = i64::from(width)
             .checked_mul(4)
             .ok_or_else(|| anyhow!("Wayland capture row stride overflow"))?;
-        let frame_period =
-            Duration::from_secs_f64(1.0 / f64::from(self.analyzer.config().target_fps.max(1)));
+        let freshness_deadline = self.cadence.freshness_deadline(captured_at)?;
         let frame = CaptureFrame::new(
             CaptureFrameMetadata {
                 source_id: self.source.signature.source_id.clone(),
@@ -2488,7 +2516,7 @@ impl WaylandAnalysisState {
                 session_generation: self.source.session_generation,
                 sequence: self.sequence,
                 captured_at,
-                fresh_until: captured_at + frame_period + frame_period,
+                fresh_until: freshness_deadline,
                 geometry: CaptureGeometry::new(
                     self.source.signature.origin,
                     topology.native_extent,
@@ -2516,6 +2544,11 @@ impl WaylandAnalysisState {
         frame.validate_epoch(&expected)?;
         Ok(frame)
     }
+
+    fn advance_deadline(&mut self, now: Instant) -> anyhow::Result<()> {
+        self.next_analysis_at = self.pacer.advance_deadline(self.next_analysis_at, now)?;
+        Ok(())
+    }
 }
 
 fn run_analysis_worker(
@@ -2535,8 +2568,7 @@ fn run_analysis_worker(
                 return;
             }
         };
-    let mut deadline = Instant::now();
-    while let Some(event) = exchange.wait_for_event(deadline, cancel) {
+    while let Some(event) = exchange.wait_for_event(state.next_analysis_at, cancel) {
         let decoded = match event {
             AnalysisEvent::Frame(decoded) => decoded,
             AnalysisEvent::Adoption(adoption) => {
@@ -2545,6 +2577,10 @@ fn run_analysis_worker(
             }
         };
         if !state.sync_settings(cancel) {
+            return;
+        }
+        if let Err(error) = state.advance_deadline(Instant::now()) {
+            warn!(%error, "Wayland screen analysis cadence deadline is unrepresentable");
             return;
         }
         let Some(rgba_len) = usize::try_from(decoded.width)
@@ -2585,13 +2621,6 @@ fn run_analysis_worker(
         state
             .settings
             .publish_snapshot(&state.latest_snapshot, analysis);
-
-        let period =
-            Duration::from_secs_f64(1.0 / f64::from(state.analyzer.config().target_fps.max(1)));
-        deadline = deadline
-            .checked_add(period)
-            .unwrap_or_else(Instant::now)
-            .max(Instant::now());
     }
 }
 
@@ -3523,6 +3552,7 @@ fn run_pipewire_loop(
                 }
                 let PreparedWaylandSettings {
                     config,
+                    cadence,
                     demand,
                     analyzer,
                     pipewire_format,
@@ -3534,6 +3564,7 @@ fn run_pipewire_loop(
                 let adoption = AnalysisAdoption {
                     prepared: PreparedAnalysisSettings {
                         config,
+                        cadence,
                         demand,
                         analyzer,
                     },

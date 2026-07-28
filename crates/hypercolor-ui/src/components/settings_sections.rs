@@ -248,15 +248,13 @@ pub fn CaptureSection(
                 {move || if show_advanced.get() { "Hide advanced tuning" } else { "Advanced tuning" }}
             </button>
             <Show when=move || show_advanced.get()>
-                <SettingSlider
+                <SettingNumberInput
                     label="Capture FPS"
                     description="How often the screen is sampled per second"
                     key="capture.capture_fps"
                     value=capture_fps
                     on_change=on_change
-                    min=1.0 max=60.0 step=1.0
-                    decimals=0
-                    integer=true
+                    min=1.0 max={u32::MAX as f64} step=1.0
                 />
                 <SettingSlider
                     label="Color response"

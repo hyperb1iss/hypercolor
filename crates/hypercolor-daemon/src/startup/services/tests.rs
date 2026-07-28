@@ -138,7 +138,7 @@ fn stale_windows_callback_cannot_rewrite_a_newer_capture_epoch() {
 #[test]
 fn screen_capture_config_conversion_preserves_validated_values_exactly() {
     let capture = hypercolor_types::config::CaptureConfig {
-        capture_fps: 240,
+        capture_fps: hypercolor_core::input::screen::MAX_REPRESENTABLE_CAPTURE_FPS,
         grid_cols: 64,
         grid_rows: 1,
         smoothing: 1.0,
@@ -148,7 +148,10 @@ fn screen_capture_config_conversion_preserves_validated_values_exactly() {
 
     let runtime = screen_capture_config_from(&capture).expect("boundary config should validate");
 
-    assert_eq!(runtime.target_fps, 240);
+    assert_eq!(
+        runtime.target_fps,
+        hypercolor_core::input::screen::MAX_REPRESENTABLE_CAPTURE_FPS
+    );
     assert_eq!(runtime.grid_cols, 64);
     assert_eq!(runtime.grid_rows, 1);
     assert!((runtime.smoothing_alpha - 1.0).abs() < f32::EPSILON);
@@ -156,16 +159,16 @@ fn screen_capture_config_conversion_preserves_validated_values_exactly() {
 }
 
 #[test]
-fn screen_capture_config_conversion_rejects_instead_of_clamping() {
+fn screen_capture_config_conversion_rejects_unrepresentable_scheduler_cadence() {
     let capture = hypercolor_types::config::CaptureConfig {
-        capture_fps: 241,
+        capture_fps: hypercolor_core::input::screen::MAX_REPRESENTABLE_CAPTURE_FPS + 1,
         ..hypercolor_types::config::CaptureConfig::default()
     };
 
     let error = screen_capture_config_from(&capture)
-        .expect_err("unsupported cadence must not be silently clamped");
+        .expect_err("runtime cadence beyond clock resolution must fail admission");
 
-    assert!(format!("{error:#}").contains("1..=240"));
+    assert!(format!("{error:#}").contains("scheduler clock limit"));
 }
 
 #[test]

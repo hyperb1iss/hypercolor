@@ -9,15 +9,17 @@ use super::{
     NegotiatedPipeWireFormat, PendingPipeWireAdoption, PipeWireFormatAcknowledgment,
     PipeWireFormatRequest, PipeWireFormatState, PipeWireLoopExit, RestoreTokenSink,
     SettingsDecision, SharedSettings, SpaChunkView, SpaVideoFormat, UnavailablePark,
-    WaylandAnalysisState, WaylandCaptureUserData, WaylandSourceMetadata, WaylandTopologySignature,
-    WorkerCommand, build_format_params, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
-    fence_previous_publication, initial_worker_demand, park_unavailable_worker,
-    publish_unexpected_exit_status, request_active_worker_demand, settle_pipewire_restoration,
-    unavailable_format_outcome, wait_for_adoption_result, worker_demand_epoch, worker_demanded,
+    WaylandAnalysisState, WaylandCaptureUserData, WaylandScreenCaptureInput, WaylandSourceMetadata,
+    WaylandTopologySignature, WorkerCommand, build_format_params, commit_if_authorized,
+    convert_packed_to_rgba, decode_chunk, fence_previous_publication, initial_worker_demand,
+    park_unavailable_worker, publish_unexpected_exit_status, request_active_worker_demand,
+    settle_pipewire_restoration, unavailable_format_outcome, wait_for_adoption_result,
+    worker_demand_epoch, worker_demanded,
 };
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureConfig, CaptureRotation, CaptureSourceId, PhysicalOrigin,
-    PixelExtent, PixelRect, ScreenCaptureDemand, analyze_screen_frame,
+    AnalyzedScreenSnapshot, CaptureConfig, CaptureRotation, CaptureSourceId,
+    MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent, PixelRect, ScreenCaptureDemand,
+    analyze_screen_frame,
 };
 use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
@@ -1170,6 +1172,63 @@ fn exact_pipewire_format_has_no_local_cadence_or_extent_range() {
     assert_eq!(info.size().height, requested.height());
     assert_eq!(info.framerate().num, 10_000);
     assert_eq!(info.framerate().denom, 1);
+}
+
+#[test]
+fn pipewire_format_uses_the_shared_scheduler_boundary_without_a_product_cap() {
+    let requested = extent(7680, 4320);
+    let request = PipeWireFormatRequest::new(requested, MAX_REPRESENTABLE_CAPTURE_FPS)
+        .expect("scheduler boundary cadence is admitted");
+
+    assert_eq!(request.extent, requested);
+    assert_eq!(request.target_fps, MAX_REPRESENTABLE_CAPTURE_FPS);
+    assert!(PipeWireFormatRequest::new(requested, MAX_REPRESENTABLE_CAPTURE_FPS + 1).is_err());
+}
+
+#[test]
+fn inactive_wayland_reconfigure_rejects_invalid_cadence_transactionally() {
+    let mut input = WaylandScreenCaptureInput::new(CaptureConfig::default());
+    let baseline = input.settings.config_snapshot();
+    let rejected = CaptureConfig {
+        target_fps: MAX_REPRESENTABLE_CAPTURE_FPS + 1,
+        ..baseline.clone()
+    };
+
+    let error = input
+        .reconfigure(rejected)
+        .expect_err("inactive Wayland capture must reject invalid cadence");
+
+    assert!(error.to_string().contains("scheduler clock limit"));
+    assert_eq!(input.settings.config_snapshot(), baseline);
+}
+
+#[test]
+fn wayland_analysis_schedule_never_catches_up_in_a_burst() {
+    let settings = settings(17);
+    let latest = Arc::new(Mutex::new(None));
+    let mut state = WaylandAnalysisState::new(
+        settings,
+        latest,
+        source(17, PhysicalOrigin::default(), extent(1920, 1080)),
+        CaptureConfig::default(),
+        active_demand(),
+    )
+    .expect("test analysis state is admitted");
+    let initial_deadline = state.next_analysis_at;
+
+    state
+        .advance_deadline(initial_deadline)
+        .expect("live scheduler deadline fits Instant");
+    assert!(state.next_analysis_at > initial_deadline);
+
+    let late = state.next_analysis_at + Duration::from_secs(1);
+    state
+        .advance_deadline(late)
+        .expect("live scheduler deadline fits Instant");
+    assert!(
+        state.next_analysis_at > late,
+        "lateness must schedule a future interval instead of an immediate burst"
+    );
 }
 
 #[test]

@@ -984,6 +984,8 @@ pub(crate) fn screen_capture_config_from(
     capture
         .validate()
         .context("invalid screen capture configuration")?;
+    hypercolor_core::input::screen::CaptureCadence::new(capture.capture_fps)
+        .context("screen capture cadence is not representable by the runtime scheduler")?;
     Ok(ScreenCaptureConfig {
         target_fps: capture.capture_fps,
         grid_cols: capture.grid_cols,

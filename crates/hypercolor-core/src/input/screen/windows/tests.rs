@@ -9,14 +9,14 @@ use hypercolor_windows_capture::{
 
 use super::{
     ActiveCaptureEpoch, CapturePublication, CaptureWorker, WindowsScreenCaptureInput,
-    WorkerCommand, capture_epoch, capture_geometry, capture_issue, record_capture_health,
-    settle_inactive_capture,
+    WorkerCaptureSchedule, WorkerCommand, capture_epoch, capture_geometry, capture_issue,
+    record_capture_health, settle_inactive_capture,
 };
 use crate::input::screen::{
-    CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
+    CaptureCadence, CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureStorage,
-    CaptureTransferFunction, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface,
-    ScreenCaptureDemand,
+    CaptureTransferFunction, CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin,
+    PixelExtent, RawCaptureSurface, ScreenCaptureDemand,
 };
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
 use crate::input::traits::InputSource;
@@ -136,6 +136,79 @@ fn extent(width: u32, height: u32) -> PixelExtent {
 
 fn active_demand() -> ScreenCaptureDemand {
     ScreenCaptureDemand::active(extent(640, 480))
+}
+
+#[test]
+fn unrepresentable_cadence_cannot_activate_capture() {
+    let config = CaptureConfig {
+        target_fps: MAX_REPRESENTABLE_CAPTURE_FPS + 1,
+        ..CaptureConfig::default()
+    };
+    let mut input = WindowsScreenCaptureInput::new(config);
+
+    let error = input
+        .set_capture_demand_state(active_demand())
+        .expect_err("an unrepresentable scheduler cadence must fail admission");
+
+    assert!(error.to_string().contains("scheduler clock limit"));
+    assert_eq!(input.capture_demand, ScreenCaptureDemand::Inactive);
+}
+
+#[test]
+fn active_reconfigure_retains_last_good_cadence_after_admission_failure() {
+    let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
+    input
+        .set_capture_demand_state(active_demand())
+        .expect("baseline capture demand is admitted");
+    let baseline = input.settings.snapshot().config;
+    let mut rejected = baseline.clone();
+    rejected.target_fps = MAX_REPRESENTABLE_CAPTURE_FPS + 1;
+
+    let error = input
+        .reconfigure(rejected)
+        .expect_err("active capture must reject an unrepresentable cadence");
+
+    assert!(error.to_string().contains("scheduler clock limit"));
+    assert_eq!(input.settings.snapshot().config, baseline);
+    assert_eq!(input.capture_demand, active_demand());
+}
+
+#[test]
+fn inactive_reconfigure_retains_last_good_cadence_after_admission_failure() {
+    let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
+    let baseline = input.settings.snapshot().config;
+    let mut rejected = baseline.clone();
+    rejected.target_fps = MAX_REPRESENTABLE_CAPTURE_FPS + 1;
+
+    let error = input
+        .reconfigure(rejected)
+        .expect_err("inactive capture must reject an unrepresentable cadence");
+
+    assert!(error.to_string().contains("scheduler clock limit"));
+    assert_eq!(input.settings.snapshot().config, baseline);
+    assert_eq!(input.capture_demand, ScreenCaptureDemand::Inactive);
+}
+
+#[test]
+fn worker_schedule_gates_analysis_and_never_catches_up_in_a_burst() {
+    let cadence = CaptureCadence::new(30).expect("30 FPS is representable");
+    let started_at = Instant::now();
+    let mut schedule = WorkerCaptureSchedule::new(cadence, started_at);
+
+    assert_eq!(schedule.wait_duration(started_at), None);
+    schedule
+        .record_frame(started_at, started_at)
+        .expect("live scheduler deadline fits Instant");
+    assert!(schedule.wait_duration(started_at).is_some());
+
+    let late = started_at + Duration::from_secs(1);
+    schedule
+        .record_frame(late, late)
+        .expect("live scheduler deadline fits Instant");
+    assert!(
+        schedule.wait_duration(late).is_some(),
+        "lateness must schedule a future interval instead of an immediate burst"
+    );
 }
 
 fn active_epoch(
