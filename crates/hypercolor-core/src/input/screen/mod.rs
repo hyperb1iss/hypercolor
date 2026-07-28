@@ -409,13 +409,9 @@ impl ScreenCaptureInput {
         let elapsed = self.latest_acquired_at.map_or(Duration::ZERO, |previous| {
             acquired_at.saturating_duration_since(previous)
         });
-        let mut next_smoother = self.smoother.clone();
-        if (self.latest_grid_width != 0 || self.latest_grid_height != 0)
+        let reset_smoother = (self.latest_grid_width != 0 || self.latest_grid_height != 0)
             && (self.latest_grid_width != effective_cols
-                || self.latest_grid_height != effective_rows)
-        {
-            next_smoother.reset();
-        }
+                || self.latest_grid_height != effective_rows);
         let Some(canvas_downscale) = downscale_frame(
             frame,
             width,
@@ -424,10 +420,11 @@ impl ScreenCaptureInput {
             downscale_width,
             downscale_height,
             &mut self.downscale_pool,
-            &mut next_smoother,
+            &mut self.smoother,
             self.config.tuning,
             &mut self.policy_pixels,
             elapsed,
+            reset_smoother,
         ) else {
             return false;
         };
@@ -444,7 +441,7 @@ impl ScreenCaptureInput {
         let colors = zone_data.iter().map(|(_, color)| *color).collect();
         let zone_ids = zone_data.into_iter().map(|(id, _)| id).collect();
 
-        self.smoother = next_smoother;
+        self.smoother.commit_staged();
         self.latest_canvas_downscale = Some(canvas_downscale);
         self.latest_grid_width = effective_cols;
         self.latest_grid_height = effective_rows;
@@ -642,6 +639,7 @@ fn downscale_frame(
     tuning: ColorTuning,
     policy_pixels: &mut Vec<[u8; 3]>,
     elapsed: Duration,
+    reset_smoother: bool,
 ) -> Option<PublishedSurface> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
         return None;
@@ -702,7 +700,15 @@ fn downscale_frame(
             .chunks_exact(4)
             .map(|pixel| [pixel[0], pixel[1], pixel[2]]),
     );
-    smoother.apply_for_elapsed_grid(policy_pixels, target_width, target_height, elapsed);
+    if !smoother.stage_for_elapsed_grid(
+        policy_pixels,
+        target_width,
+        target_height,
+        elapsed,
+        reset_smoother,
+    ) {
+        return None;
+    }
     tuning.apply(policy_pixels);
     for (pixel, color) in bytes.chunks_exact_mut(4).zip(policy_pixels.iter()) {
         pixel[..3].copy_from_slice(color);

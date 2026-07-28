@@ -457,19 +457,36 @@ fn temporal_smoothing_response_is_frame_rate_independent() {
 
 #[test]
 fn temporal_scene_cut_threshold_is_grid_size_independent() {
-    fn response(zone_count: usize, target: [u8; 3]) -> [u8; 3] {
-        let mut smoother = TemporalSmoother::new(0.0, 100.0);
-        let mut colors = vec![[0, 0, 0]; zone_count];
-        smoother.apply(&mut colors);
-        colors.fill(target);
-        smoother.apply(&mut colors);
-        colors[0]
+    const BASELINE: [[u8; 3]; 4] = [[0, 20, 40], [32, 64, 96], [96, 32, 64], [64, 96, 32]];
+    const SOFT_CHANGE: [[u8; 3]; 4] = [[16, 36, 56], [48, 80, 112], [112, 48, 80], [80, 112, 48]];
+    const SCENE_CUT: [[u8; 3]; 4] = [
+        [255, 220, 240],
+        [220, 255, 240],
+        [240, 220, 255],
+        [255, 240, 220],
+    ];
+
+    fn tiled(pattern: &[[u8; 3]; 4], repeats: u32) -> Vec<[u8; 3]> {
+        let side = repeats * 2;
+        (0..side)
+            .flat_map(|row| (0..side).map(move |col| pattern[((row % 2) * 2 + col % 2) as usize]))
+            .collect()
     }
 
-    assert_eq!(response(1, [64, 64, 64]), [0, 0, 0]);
-    assert_eq!(response(64, [64, 64, 64]), [0, 0, 0]);
-    assert_eq!(response(1, [200, 200, 200]), [200, 200, 200]);
-    assert_eq!(response(64, [200, 200, 200]), [200, 200, 200]);
+    fn response(repeats: u32, target: &[[u8; 3]; 4]) -> Vec<[u8; 3]> {
+        let mut smoother = TemporalSmoother::new(0.0, 100.0);
+        let side = repeats * 2;
+        let mut colors = tiled(&BASELINE, repeats);
+        smoother.apply_for_elapsed_grid(&mut colors, side, side, Duration::from_millis(16));
+        colors = tiled(target, repeats);
+        smoother.apply_for_elapsed_grid(&mut colors, side, side, Duration::from_millis(16));
+        colors
+    }
+
+    assert_eq!(response(1, &SOFT_CHANGE), tiled(&BASELINE, 1));
+    assert_eq!(response(8, &SOFT_CHANGE), tiled(&BASELINE, 8));
+    assert_eq!(response(1, &SCENE_CUT), tiled(&SCENE_CUT, 1));
+    assert_eq!(response(8, &SCENE_CUT), tiled(&SCENE_CUT, 8));
 }
 
 // ── Temporal Smoothing: Static Scene ─────────────────────────────────────
@@ -759,6 +776,61 @@ fn temporal_smoother_equal_count_shape_change_reinitializes() {
     smoother.apply_for_elapsed_grid(&mut vertical, 1, 2, Duration::from_millis(16));
 
     assert_eq!(vertical, expected);
+}
+
+#[test]
+fn temporal_smoother_adapts_to_checked_portrait_ultrawide_and_odd_shapes() {
+    let mut smoother = TemporalSmoother::new(0.0, 10_000.0);
+
+    for (width, height) in [(3, 7), (11, 3), (7, 5)] {
+        let len = usize::try_from(width * height).expect("test grid should fit usize");
+        let mut colors = (0..len)
+            .map(|index| {
+                let coordinate = index.to_le_bytes()[0];
+                [
+                    coordinate,
+                    coordinate.wrapping_mul(3),
+                    coordinate.wrapping_mul(7),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let expected = colors.clone();
+
+        smoother.apply_for_elapsed_grid(&mut colors, width, height, Duration::from_millis(16));
+
+        assert_eq!(colors, expected, "shape {width}x{height} should initialize");
+
+        colors.fill([255, 255, 255]);
+        smoother.apply_for_elapsed_grid(&mut colors, width, height, Duration::from_millis(16));
+        assert_eq!(
+            colors, expected,
+            "shape {width}x{height} should retain history"
+        );
+    }
+}
+
+#[test]
+fn temporal_smoother_rejects_invalid_grid_math_transactionally() {
+    let mut smoother = TemporalSmoother::new(0.0, 10_000.0);
+    let mut baseline = [[0, 255, 0]];
+    smoother.apply_for_elapsed_grid(&mut baseline, 1, 1, Duration::from_millis(16));
+
+    let mut overflowing = [[255, 0, 255]];
+    smoother.apply_for_elapsed_grid(
+        &mut overflowing,
+        u32::MAX,
+        u32::MAX,
+        Duration::from_millis(16),
+    );
+    assert_eq!(overflowing, [[255, 0, 255]]);
+
+    let mut mismatched = [[255, 255, 0], [0, 255, 255]];
+    smoother.apply_for_elapsed_grid(&mut mismatched, 1, 1, Duration::from_millis(16));
+    assert_eq!(mismatched, [[255, 255, 0], [0, 255, 255]]);
+
+    let mut next = [[255, 0, 255]];
+    smoother.apply_for_elapsed_grid(&mut next, 1, 1, Duration::from_millis(16));
+    assert_eq!(next, [[0, 255, 0]]);
 }
 
 #[test]

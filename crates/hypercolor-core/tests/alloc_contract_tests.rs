@@ -22,6 +22,7 @@ use hypercolor_core::input::screen::CaptureRotation;
 use hypercolor_core::input::screen::wayland::{
     DoubleBuffer, SpaChunkView, SpaVideoFormat, decode_chunk,
 };
+use hypercolor_core::input::screen::{CaptureConfig, ScreenCaptureInput, TemporalSmoother};
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserInputSource,
     BrowserPreviewId, InputData, InputManager, InputSource, InteractionBatch, InteractionData,
@@ -57,6 +58,109 @@ fn preallocated_control(storage: &mut Vec<u8>) -> Stats {
     black_box(value);
 
     region.change()
+}
+
+fn screen_push_round(
+    input: &mut ScreenCaptureInput,
+    frame: &[u8],
+    width: u32,
+    height: u32,
+) -> Stats {
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    input.push_frame(black_box(frame), width, height);
+    region.change()
+}
+
+fn patterned_rgba_frame(width: u32, height: u32) -> Vec<u8> {
+    let byte_len = usize::try_from(width)
+        .ok()
+        .and_then(|width| usize::try_from(height).ok()?.checked_mul(width))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .expect("test frame extent should fit usize");
+    let mut frame = vec![0_u8; byte_len];
+    for (index, pixel) in frame.chunks_exact_mut(4).enumerate() {
+        let coordinate = index.to_le_bytes()[0];
+        pixel.copy_from_slice(&[
+            coordinate,
+            coordinate.wrapping_mul(3),
+            coordinate.wrapping_mul(7),
+            255,
+        ]);
+    }
+    frame
+}
+
+fn steady_screen_shape_push_control(
+    input: &mut ScreenCaptureInput,
+    width: u32,
+    height: u32,
+) -> (Stats, Stats) {
+    let frame = patterned_rgba_frame(width, height);
+
+    for _ in 0..3 {
+        input.push_frame(&frame, width, height);
+    }
+
+    (
+        screen_push_round(input, &frame, width, height),
+        screen_push_round(input, &frame, width, height),
+    )
+}
+
+fn steady_screen_push_control() -> [(Stats, Stats); 3] {
+    let mut input = ScreenCaptureInput::new(CaptureConfig {
+        grid_cols: 16,
+        grid_rows: 9,
+        letterbox_enabled: false,
+        ..CaptureConfig::default()
+    });
+
+    [
+        steady_screen_shape_push_control(&mut input, 333, 777),
+        steady_screen_shape_push_control(&mut input, 1_001, 333),
+        steady_screen_shape_push_control(&mut input, 641, 479),
+    ]
+}
+
+fn smoother_round(
+    smoother: &mut TemporalSmoother,
+    colors: &mut [[u8; 3]],
+    width: u32,
+    height: u32,
+) -> Stats {
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    smoother.apply_for_elapsed_grid(colors, width, height, Duration::from_millis(16));
+    region.change()
+}
+
+fn steady_smoother_shape_control(
+    smoother: &mut TemporalSmoother,
+    width: u32,
+    height: u32,
+) -> (Stats, Stats) {
+    let len = usize::try_from(width)
+        .ok()
+        .and_then(|width| usize::try_from(height).ok()?.checked_mul(width))
+        .expect("test smoother extent should fit usize");
+    let mut colors = vec![[96, 32, 160]; len];
+    smoother.apply_for_elapsed_grid(&mut colors, width, height, Duration::from_millis(16));
+    smoother.apply_for_elapsed_grid(&mut colors, width, height, Duration::from_millis(16));
+
+    (
+        smoother_round(smoother, &mut colors, width, height),
+        smoother_round(smoother, &mut colors, width, height),
+    )
+}
+
+fn steady_smoother_control() -> [(Stats, Stats); 3] {
+    let mut smoother = TemporalSmoother::new(0.3, 100.0);
+    [
+        steady_smoother_shape_control(&mut smoother, 333, 777),
+        steady_smoother_shape_control(&mut smoother, 1_001, 333),
+        steady_smoother_shape_control(&mut smoother, 641, 479),
+    ]
 }
 
 fn audio_callback_round(input: &[f32], ring: &AudioFrameRing) -> (PushStats, Stats) {
@@ -543,6 +647,24 @@ fn counting_allocator_is_active_and_scoped() {
     let (first_browser_samples, second_browser_samples) = steady_browser_sampling_control();
     assert_eq!(first_browser_samples, Stats::default());
     assert_eq!(second_browser_samples, first_browser_samples);
+
+    for (first_smoother, second_smoother) in steady_smoother_control() {
+        assert_eq!(first_smoother, Stats::default());
+        assert_eq!(second_smoother, first_smoother);
+    }
+
+    for (first_screen_push, second_screen_push) in steady_screen_push_control() {
+        assert_eq!(first_screen_push, second_screen_push);
+        assert_eq!(first_screen_push.reallocations, 0);
+        assert!(
+            first_screen_push.allocations <= 16 * 9 + 5,
+            "steady screen push exceeded the zone strings plus five publication containers: {first_screen_push:?}"
+        );
+        assert!(
+            first_screen_push.bytes_allocated <= 12 * 1_024,
+            "steady screen push copied or rebuilt large frame state: {first_screen_push:?}"
+        );
+    }
 
     let (first_route, second_route) = steady_router_resolution_control();
     assert_eq!(first_route, Stats::default());

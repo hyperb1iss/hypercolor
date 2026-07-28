@@ -37,6 +37,9 @@ pub struct TemporalSmoother {
     /// Spatial identity of `prev`; equal counts with different geometry must
     /// never blend unrelated coordinates.
     prev_shape: Option<(u32, u32)>,
+
+    staged: Vec<[f32; 3]>,
+    staged_shape: Option<(u32, u32)>,
 }
 
 impl TemporalSmoother {
@@ -52,6 +55,8 @@ impl TemporalSmoother {
             scene_cut_threshold,
             prev: Vec::new(),
             prev_shape: None,
+            staged: Vec::new(),
+            staged_shape: None,
         }
     }
 
@@ -104,6 +109,9 @@ impl TemporalSmoother {
     }
 
     /// Apply smoothing to a spatial grid using its full shape as state identity.
+    ///
+    /// An overflowing shape or one whose checked pixel count differs from
+    /// `colors.len()` leaves both the colors and committed history unchanged.
     pub fn apply_for_elapsed_grid(
         &mut self,
         colors: &mut [[u8; 3]],
@@ -111,23 +119,57 @@ impl TemporalSmoother {
         height: u32,
         elapsed: Duration,
     ) {
+        if self.stage_for_elapsed_grid(colors, width, height, elapsed, false) {
+            self.commit_staged();
+        }
+    }
+
+    pub(super) fn stage_for_elapsed_grid(
+        &mut self,
+        colors: &mut [[u8; 3]],
+        width: u32,
+        height: u32,
+        elapsed: Duration,
+        reset_history: bool,
+    ) -> bool {
+        let Some(expected_len) = usize::try_from(width)
+            .ok()
+            .and_then(|width| usize::try_from(height).ok()?.checked_mul(width))
+        else {
+            return false;
+        };
+        let history_bytes_fit = expected_len
+            .checked_mul(std::mem::size_of::<[f32; 3]>())
+            .and_then(|bytes| bytes.checked_mul(2))
+            .is_some();
+        if expected_len != colors.len() || !history_bytes_fit {
+            return false;
+        }
+        if self
+            .staged
+            .try_reserve_exact(expected_len.saturating_sub(self.staged.len()))
+            .is_err()
+        {
+            return false;
+        }
+
         let shape = (width, height);
-        // First frame or spatial shape changed — initialize without smoothing.
-        if self.prev.len() != colors.len() || self.prev_shape != Some(shape) {
-            self.prev.clear();
-            self.prev.extend(colors.iter().map(|color| {
+        self.staged.clear();
+        self.staged_shape = Some(shape);
+
+        if reset_history || self.prev.len() != colors.len() || self.prev_shape != Some(shape) {
+            self.staged.extend(colors.iter().map(|color| {
                 [
                     srgb_u8_to_linear(color[0]) * 255.0,
                     srgb_u8_to_linear(color[1]) * 255.0,
                     srgb_u8_to_linear(color[2]) * 255.0,
                 ]
             }));
-            self.prev_shape = Some(shape);
-            return;
+            return true;
         }
 
         if colors.is_empty() {
-            return;
+            return true;
         }
 
         // Compute frame difference metric.
@@ -135,38 +177,48 @@ impl TemporalSmoother {
 
         // Scene cut detected — snap to new colors immediately.
         if diff > self.scene_cut_threshold {
-            for (previous, color) in self.prev.iter_mut().zip(colors.iter()) {
-                *previous = [
+            self.staged.extend(colors.iter().map(|color| {
+                [
                     srgb_u8_to_linear(color[0]) * 255.0,
                     srgb_u8_to_linear(color[1]) * 255.0,
                     srgb_u8_to_linear(color[2]) * 255.0,
-                ];
-            }
-            return;
+                ]
+            }));
+            return true;
         }
 
         // Normal EMA smoothing: smoothed = prev + alpha * (new - prev)
         let alpha = elapsed_alpha(self.alpha, elapsed);
-        for (i, color) in colors.iter_mut().enumerate() {
-            let prev = &mut self.prev[i];
+        for (color, previous) in colors.iter_mut().zip(self.prev.iter()) {
             let new_r = srgb_u8_to_linear(color[0]) * 255.0;
             let new_g = srgb_u8_to_linear(color[1]) * 255.0;
             let new_b = srgb_u8_to_linear(color[2]) * 255.0;
 
-            prev[0] += alpha * (new_r - prev[0]);
-            prev[1] += alpha * (new_g - prev[1]);
-            prev[2] += alpha * (new_b - prev[2]);
+            let next = [
+                previous[0] + alpha * (new_r - previous[0]),
+                previous[1] + alpha * (new_g - previous[1]),
+                previous[2] + alpha * (new_b - previous[2]),
+            ];
+            self.staged.push(next);
 
-            color[0] = linear_to_srgb_u8((prev[0] / 255.0).clamp(0.0, 1.0));
-            color[1] = linear_to_srgb_u8((prev[1] / 255.0).clamp(0.0, 1.0));
-            color[2] = linear_to_srgb_u8((prev[2] / 255.0).clamp(0.0, 1.0));
+            color[0] = linear_to_srgb_u8((next[0] / 255.0).clamp(0.0, 1.0));
+            color[1] = linear_to_srgb_u8((next[1] / 255.0).clamp(0.0, 1.0));
+            color[2] = linear_to_srgb_u8((next[2] / 255.0).clamp(0.0, 1.0));
         }
+        true
+    }
+
+    pub(super) fn commit_staged(&mut self) {
+        std::mem::swap(&mut self.prev, &mut self.staged);
+        self.prev_shape = self.staged_shape.take();
     }
 
     /// Reset internal state. Next call to `apply` will initialize fresh.
     pub fn reset(&mut self) {
         self.prev.clear();
         self.prev_shape = None;
+        self.staged.clear();
+        self.staged_shape = None;
     }
 
     /// Compute the mean absolute RGB-channel delta per zone.
