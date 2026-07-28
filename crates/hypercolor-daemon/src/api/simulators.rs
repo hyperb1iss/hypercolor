@@ -11,6 +11,7 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use serde::Deserialize;
 
+use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::DisconnectReason;
 
@@ -81,12 +82,12 @@ pub async fn create_simulated_display(
         height: body.height,
         circular: body.circular,
         enabled: body.enabled.unwrap_or(true),
-    }
-    .normalized();
+    };
 
     if let Err(error) = validate_simulator_config(&config) {
         return ApiError::validation(error);
     }
+    let config = config.normalized();
 
     {
         let mut store = state.simulated_displays.write().await;
@@ -129,12 +130,12 @@ pub async fn patch_simulated_display(
             height: body.height.unwrap_or(existing.height),
             circular: body.circular.unwrap_or(existing.circular),
             enabled: body.enabled.unwrap_or(existing.enabled),
-        }
-        .normalized();
+        };
 
         if let Err(error) = validate_simulator_config(&updated) {
             return ApiError::validation(error);
         }
+        let updated = updated.normalized();
 
         store.upsert(updated.clone());
         updated
@@ -268,12 +269,9 @@ fn validate_simulator_config(config: &SimulatedDisplayConfig) -> Result<(), Stri
     if config.name.trim().is_empty() {
         return Err("Simulator name must not be empty".to_owned());
     }
-    if config.width == 0 || config.height == 0 {
-        return Err("Simulator width and height must be greater than zero".to_owned());
-    }
-    if config.width > 4096 || config.height > 4096 {
-        return Err("Simulator width and height must be 4096 or less".to_owned());
-    }
+    SurfaceDescriptor::rgba8888(config.width, config.height)
+        .try_non_empty_byte_len()
+        .map_err(|error| format!("Simulator dimensions are invalid: {error}"))?;
     Ok(())
 }
 

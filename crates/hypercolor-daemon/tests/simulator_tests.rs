@@ -303,6 +303,68 @@ async fn activate_simulated_displays_keeps_disabled_simulator_non_renderable() {
 }
 
 #[tokio::test]
+async fn simulated_display_create_accepts_large_addressable_resolution() {
+    let (state, _tempdir) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/simulators/displays")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "8K Preview",
+                        "width": 7_680,
+                        "height": 4_320,
+                        "enabled": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = body_json(response).await;
+    assert_eq!(created["data"]["width"], 7_680);
+    assert_eq!(created["data"]["height"], 4_320);
+}
+
+#[tokio::test]
+async fn simulated_display_create_rejects_invalid_resource_dimensions() {
+    let (state, _tempdir) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+
+    for (width, height) in [(0_u32, 240_u32), (u32::MAX, u32::MAX)] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/simulators/displays")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": "Invalid Preview",
+                            "width": width,
+                            "height": height
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    assert!(state.simulated_displays.read().await.list().is_empty());
+}
+
+#[tokio::test]
 async fn simulated_display_crud_routes_update_runtime_state() {
     let (state, _tempdir) = isolated_state();
     let app = api::build_router(Arc::clone(&state), None);
