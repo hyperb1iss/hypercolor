@@ -1,6 +1,6 @@
 +++
 title = "WebSocket protocol"
-description = "The /api/v1/ws protocol: subprotocol token, JSON client/server messages, all 13 subscription channels, and the binary frame wire format."
+description = "The /api/v1/ws protocol: subprotocol token, JSON client/server messages, all 14 subscription channels, and the binary frame wire format."
 weight = 30
 template = "page.html"
 +++
