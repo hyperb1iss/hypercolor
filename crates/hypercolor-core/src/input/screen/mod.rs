@@ -85,7 +85,8 @@ pub use publication::{
 };
 pub use reducer::{
     CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError, CpuReductionExecutor,
-    CpuReductionLayout, CpuReductionRequest, PreparedCpuReductionBatch,
+    CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
+    PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
 };
 pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,

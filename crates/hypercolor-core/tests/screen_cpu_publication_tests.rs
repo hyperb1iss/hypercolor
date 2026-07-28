@@ -9,13 +9,14 @@ use hypercolor_core::input::screen::{
     CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
     CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, ColorTuning,
     CommittedScreenPlan, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError,
-    CpuReductionExecutor, CpuZoneMaterializationError, KnownCaptureColorimetry, PhysicalOrigin,
-    PixelExtent, PreparedCpuZoneMaterializer, RawCaptureSurface, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
-    ScreenColorTuning, ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger,
-    ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration, ScreenPayloadKind,
+    CpuReductionExecutor, CpuSurfaceReductionJob, CpuZoneMaterializationError,
+    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PreparedCpuZoneMaterializer,
+    RawCaptureSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTuning,
+    ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
+    ScreenGridPolicy, ScreenInputGraphGeneration, ScreenPayloadKind,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationHealth, ScreenPublicationKind,
     ScreenPublicationMetadata, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
@@ -210,6 +211,13 @@ fn reclaim(committed: CommittedScreenPlan) -> ScreenCapturePlan {
 }
 
 fn frame(source: &ResolvedScreenSource) -> CaptureFrame<RawCaptureSurface> {
+    frame_with_sequence(source, 17)
+}
+
+fn frame_with_sequence(
+    source: &ResolvedScreenSource,
+    sequence: u64,
+) -> CaptureFrame<RawCaptureSurface> {
     let captured_at = Instant::now();
     let source_extent = source.config().geometry().storage_extent();
     let mut pixels = Vec::with_capacity(
@@ -231,7 +239,7 @@ fn frame(source: &ResolvedScreenSource) -> CaptureFrame<RawCaptureSurface> {
             source_id: source.epoch().source_id.clone(),
             topology_generation: source.epoch().topology_generation,
             session_generation: source.epoch().session_generation,
-            sequence: 17,
+            sequence,
             captured_at,
             fresh_until: captured_at + Duration::from_secs(2),
             geometry: source.config().geometry(),
@@ -313,9 +321,15 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     let batch = executor
         .prepare_batch(&source, &plan)
         .expect("shared physical batch prepares");
+    let mut workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("shared physical workspace prepares");
     let frame = frame(&source);
 
     assert_eq!(batch.len(), 1);
+    assert_eq!(workspace.len(), 1);
+    assert_eq!(workspace.pixels(0), None);
+    assert_eq!(workspace.completed_source_sequence(0), None);
     let physical = batch.descriptor(0).expect("shared physical key exists");
     let surface_descriptor = surface_branch(&plan, physical);
     let zones_descriptor = zones_branch(&plan, physical, ScreenGridPolicy::AreaWeighted);
@@ -351,15 +365,44 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
         )
         .expect("zones slot reserves");
 
-    let report = executor
-        .execute_surface_publications(
-            &batch,
-            &frame,
-            std::slice::from_mut(&mut surface_publication),
-        )
-        .expect("one physical reduction writes the surface slot");
+    surface_publication
+        .surface_pixels_mut()
+        .expect("surface slot is writable")
+        .fill(0xA5);
+    {
+        let mut duplicate_jobs = [CpuSurfaceReductionJob::new(0, &mut surface_publication)];
+        assert_eq!(duplicate_jobs[0].batch_index(), 0);
+        assert_eq!(
+            duplicate_jobs[0].publication().descriptor(),
+            surface_descriptor
+        );
+        assert_eq!(
+            executor.execute_scheduled_publications(
+                &batch,
+                &frame,
+                &mut workspace,
+                &[0],
+                &mut duplicate_jobs,
+            ),
+            Err(CpuReductionError::ScheduledPhysicalKeyDuplicated { batch_index: 0 })
+        );
+    }
+    assert!(
+        surface_publication
+            .surface_pixels_mut()
+            .expect("duplicate schedule preserves the reservation")
+            .iter()
+            .all(|byte| *byte == 0xA5)
+    );
+    let report = {
+        let mut surface_jobs = [CpuSurfaceReductionJob::new(0, &mut surface_publication)];
+        executor
+            .execute_scheduled_publications(&batch, &frame, &mut workspace, &[], &mut surface_jobs)
+            .expect("one physical reduction writes the surface slot")
+    };
     assert_eq!(report.completed_jobs(), 1);
     assert_eq!(report.output_bytes(), 17 * 11 * 4);
+    assert_eq!(workspace.pixels(0), None);
     materializer
         .materialize(
             physical,
@@ -394,6 +437,245 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     assert_eq!(zones.rows(), non_zero(23));
     assert_eq!(zones.colors().len(), 29 * 23);
     assert!(zones.colors().iter().any(|color| *color != [0, 0, 0]));
+}
+
+#[test]
+fn materialization_workspace_retains_only_branch_local_physical_keys() {
+    let executor = executor();
+    let source = source(extent(17, 17));
+    let identity_surface = demand(
+        &source,
+        extent(15, 3),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let zones = demand_for_kind(
+        &source,
+        extent(3, 15),
+        ScreenPublicationKind::Zones {
+            columns: non_zero(7),
+            rows: non_zero(5),
+        },
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let tuned_surface = demand(
+        &source,
+        extent(9, 9),
+        ScreenProcessingProfileConfig {
+            tuning: ScreenColorTuning::try_new(1.25, 1.0, 1.0).expect("test tuning is finite"),
+            ..ScreenProcessingProfileConfig::default()
+        },
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [identity_surface, zones, tuned_surface]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("mixed physical batch prepares");
+    let mut workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("branch-local workspace prepares");
+    let frame = frame(&source);
+
+    assert_eq!(batch.len(), 3);
+    assert_eq!(workspace.plan_generation(), plan.generation());
+    assert_eq!(workspace.len(), 2);
+    assert!(!workspace.is_empty());
+    assert!(workspace.allocation_byte_len() >= 3 * 15 * 4 + 9 * 9 * 4);
+    assert!((0..workspace.len()).all(|workspace_index| {
+        workspace
+            .physical_descriptor(workspace_index)
+            .is_some_and(|physical| physical.reduction_extent() != extent(15, 3))
+    }));
+    assert!((0..workspace.len()).all(|workspace_index| {
+        workspace.pixels(workspace_index).is_none()
+            && workspace
+                .completed_source_sequence(workspace_index)
+                .is_none()
+    }));
+
+    let mut expected = (0..batch.len())
+        .map(|index| vec![0; batch.output_byte_len(index).expect("output size exists")])
+        .collect::<Vec<_>>();
+    let mut jobs = expected
+        .iter_mut()
+        .enumerate()
+        .map(|(index, output)| {
+            CpuReductionBatchJob::new(
+                batch.descriptor(index).expect("batch descriptor exists"),
+                output,
+            )
+        })
+        .collect::<Vec<_>>();
+    executor
+        .execute_batch(&batch, &frame, &mut jobs)
+        .expect("reference batch executes");
+    drop(jobs);
+    let identity_batch_index = (0..batch.len())
+        .find(|index| {
+            batch
+                .descriptor(*index)
+                .is_some_and(|physical| physical.reduction_extent() == extent(15, 3))
+        })
+        .expect("identity Surface physical key exists");
+    let identity_physical = batch
+        .descriptor(identity_batch_index)
+        .expect("identity Surface descriptor exists");
+    let identity_descriptor = surface_branch(&plan, identity_physical);
+    let identity_publisher = hub
+        .publisher(identity_descriptor, &binding)
+        .expect("identity Surface publisher is committed");
+    let mut identity_publication = hub
+        .prepare_writable_publication(
+            &identity_publisher,
+            ScreenPayloadKind::Surface,
+            &intent(identity_descriptor, &binding, &frame),
+        )
+        .expect("identity Surface slot reserves");
+    let report = {
+        let mut surface_jobs = [CpuSurfaceReductionJob::new(
+            identity_batch_index,
+            &mut identity_publication,
+        )];
+        executor
+            .execute_scheduled_publications(
+                &batch,
+                &frame,
+                &mut workspace,
+                &[0, 1],
+                &mut surface_jobs,
+            )
+            .expect("mixed due set executes every physical key once")
+    };
+    assert_eq!(report.completed_jobs(), 3);
+    assert_eq!(report.output_bytes(), 15 * 3 * 4 + 3 * 15 * 4 + 9 * 9 * 4);
+    hub.finalize_writable_publication(
+        identity_publication,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("identity Surface publication finalizes");
+    let identity_latest = hub
+        .lease(identity_descriptor)
+        .expect("identity Surface branch has a lease")
+        .read()
+        .expect("identity Surface branch is live");
+    let ScreenBranchPayload::Surface(identity_surface) = identity_latest.payload() else {
+        panic!("identity Surface descriptor publishes a surface");
+    };
+    assert_eq!(identity_surface.pixels(), expected[identity_batch_index]);
+    for workspace_index in 0..workspace.len() {
+        let batch_index = workspace
+            .batch_index(workspace_index)
+            .expect("workspace index maps to the batch");
+        assert_eq!(
+            workspace
+                .pixels(workspace_index)
+                .expect("workspace pixels exist"),
+            expected[batch_index]
+        );
+        assert_eq!(
+            workspace.completed_source_sequence(workspace_index),
+            Some(17)
+        );
+    }
+
+    let zones_workspace_index = (0..workspace.len())
+        .find(|workspace_index| {
+            workspace
+                .physical_descriptor(*workspace_index)
+                .is_some_and(|physical| physical.reduction_extent() == extent(3, 15))
+        })
+        .expect("zones physical key owns retained storage");
+    let physical = workspace
+        .physical_descriptor(zones_workspace_index)
+        .expect("zones physical descriptor exists");
+    let descriptor = zones_branch(&plan, physical, ScreenGridPolicy::AreaWeighted);
+    let materializer =
+        PreparedCpuZoneMaterializer::prepare(descriptor).expect("zones materializer prepares");
+    let publisher = hub
+        .publisher(descriptor, &binding)
+        .expect("zones publisher is committed");
+    let mut publication = hub
+        .prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Zones,
+            &intent(descriptor, &binding, &frame),
+        )
+        .expect("zones slot reserves without a surface slot");
+    materializer
+        .materialize(
+            physical,
+            workspace
+                .pixels(zones_workspace_index)
+                .expect("zones physical pixels are retained"),
+            &mut publication,
+        )
+        .expect("zones materialize without a surface publication");
+    hub.finalize_writable_publication(
+        publication,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("zones-only publication finalizes");
+    let latest = hub
+        .lease(descriptor)
+        .expect("zones-only branch has a lease")
+        .read()
+        .expect("zones-only branch is live");
+    let ScreenBranchPayload::Zones(zones) = latest.payload() else {
+        panic!("zones-only descriptor publishes zones");
+    };
+    assert_eq!(zones.colors().len(), 7 * 5);
+    assert!(zones.colors().iter().any(|color| *color != [0, 0, 0]));
+
+    let next_frame = frame_with_sequence(&source, 18);
+    let workspace_report = executor
+        .execute_materialization_workspace(&batch, &next_frame, &mut workspace)
+        .expect("independent logical cadence refreshes retained planes only");
+    assert_eq!(workspace_report.completed_jobs(), 2);
+    assert_eq!(workspace_report.output_bytes(), 3 * 15 * 4 + 9 * 9 * 4);
+    assert!((0..workspace.len()).all(|workspace_index| {
+        workspace.completed_source_sequence(workspace_index) == Some(18)
+    }));
+    let before_mismatch = workspace
+        .pixels(zones_workspace_index)
+        .expect("zones pixels remain available")
+        .to_vec();
+    assert_eq!(
+        executor.execute_materialization_workspace(&batch, &next_frame, &mut workspace),
+        Err(CpuReductionError::WorkspaceFrameSequenceNotIncreasing {
+            workspace_index: 0,
+            previous: 18,
+            actual: 18,
+        })
+    );
+    assert_eq!(workspace.completed_source_sequence(0), Some(18));
+    assert_eq!(
+        workspace
+            .pixels(zones_workspace_index)
+            .expect("stale sequence preserves retained pixels"),
+        before_mismatch
+    );
+    let independently_prepared = executor
+        .prepare_batch(&source, &plan)
+        .expect("equivalent independent batch prepares");
+    assert_eq!(
+        executor.execute_materialization_workspace(
+            &independently_prepared,
+            &next_frame,
+            &mut workspace,
+        ),
+        Err(CpuReductionError::WorkspaceBatchMismatch)
+    );
+    assert_eq!(
+        workspace
+            .pixels(zones_workspace_index)
+            .expect("mismatch preserves retained pixels"),
+        before_mismatch
+    );
 }
 
 #[test]
@@ -739,9 +1021,15 @@ fn incompatible_exact_surfaces_publish_directly_without_an_envelope() {
     let batch = executor
         .prepare_batch(&source, &plan)
         .expect("committed exact batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("identity-only surfaces need no retained planes");
     let frame = frame(&source);
 
     assert_eq!(batch.len(), 2);
+    assert!(workspace.is_empty());
+    assert_eq!(workspace.len(), 0);
+    assert_eq!(workspace.allocation_byte_len(), 0);
     let extents = plan
         .physical_reductions()
         .iter()

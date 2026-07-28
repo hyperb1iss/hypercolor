@@ -1,6 +1,7 @@
 //! Deterministic arbitrary-resolution CPU screen reduction.
 
 use std::fmt;
+use std::mem::size_of;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 
@@ -19,11 +20,11 @@ use super::{
     CaptureCursor, CaptureCursorContent, CaptureDynamicRange, CaptureFrame, CaptureFrameError,
     CapturePixelFormat, CaptureRotation, CaptureTransferFunction, CpuCaptureStorage, PixelExtent,
     PreparedScreenPublication, RawCaptureSurface, ResolvedScreenColorPipeline,
-    ResolvedScreenColorTransform, ResolvedScreenSource, ScreenCapturePlan,
-    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenContentBarsPolicy,
-    ScreenCursorPolicy, ScreenLetterboxFill, ScreenPhysicalReductionDescriptor,
-    ScreenPlanGeneration, ScreenPublicationKind, ScreenReductionFilter, ScreenSmoothingPolicy,
-    ScreenSourceReflection, ScreenSubpixelRect,
+    ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenColorTuning,
+    ScreenContentBarsPolicy, ScreenCursorPolicy, ScreenLetterboxFill,
+    ScreenPhysicalReductionDescriptor, ScreenPlanGeneration, ScreenPublicationKind,
+    ScreenReductionFilter, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSubpixelRect,
 };
 
 const CHANNELS_PER_PIXEL: u64 = 4;
@@ -255,6 +256,147 @@ impl PreparedCpuReductionBatch {
             .get(index)
             .map(|reduction| reduction.output.byte_len_usize())
     }
+
+    /// Allocate exact retained planes only for keys with branch-local work.
+    ///
+    /// Identity-only Surface keys can reduce directly into publication slots,
+    /// while Zones and policy-bearing Surface keys retain one shared physical
+    /// plane for independent logical cadence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another plan generation or physical-key set and reports
+    /// fallible plan-lifetime allocation failures before returning a workspace.
+    pub fn prepare_materialization_workspace(
+        &self,
+        plan: &ScreenCapturePlan,
+    ) -> Result<PreparedCpuMaterializationWorkspace, CpuReductionError> {
+        if plan.generation() != self.plan_generation {
+            return Err(CpuReductionError::WorkspacePlanGenerationMismatch);
+        }
+        let selected_count = self.reductions.iter().enumerate().try_fold(
+            0_usize,
+            |count, (batch_index, reduction)| {
+                if physical_requires_materialization(plan, reduction, batch_index)? {
+                    count
+                        .checked_add(1)
+                        .ok_or(CpuReductionError::GeometryOverflow {
+                            resource: "materialization workspace",
+                        })
+                } else {
+                    Ok(count)
+                }
+            },
+        )?;
+        let mut planes = Vec::new();
+        planes
+            .try_reserve_exact(selected_count)
+            .map_err(|_| CpuReductionError::WorkspaceMetadataAllocationFailed)?;
+        for (batch_index, reduction) in self.reductions.iter().enumerate() {
+            if !physical_requires_materialization(plan, reduction, batch_index)? {
+                continue;
+            }
+            let byte_len = reduction.output.byte_len_usize();
+            let mut pixels = Vec::new();
+            pixels.try_reserve_exact(byte_len).map_err(|_| {
+                CpuReductionError::WorkspacePlaneAllocationFailed {
+                    batch_index,
+                    byte_len,
+                }
+            })?;
+            pixels.resize(byte_len, 0);
+            planes.push(CpuMaterializationPlane {
+                batch_index,
+                pixels,
+                completed_source_sequence: None,
+            });
+        }
+        let allocation_byte_len = workspace_allocation_byte_len(&planes, planes.capacity())?;
+        Ok(PreparedCpuMaterializationWorkspace {
+            plan_generation: self.plan_generation,
+            reductions: Arc::clone(&self.reductions),
+            planes,
+            allocation_byte_len,
+        })
+    }
+}
+
+/// Retained physical planes required by branch-local CPU materialization.
+#[derive(Debug)]
+pub struct PreparedCpuMaterializationWorkspace {
+    plan_generation: ScreenPlanGeneration,
+    reductions: Arc<[PreparedCpuReduction]>,
+    planes: Vec<CpuMaterializationPlane>,
+    allocation_byte_len: u64,
+}
+
+impl PreparedCpuMaterializationWorkspace {
+    /// Plan generation whose physical keys own this workspace.
+    #[must_use]
+    pub const fn plan_generation(&self) -> ScreenPlanGeneration {
+        self.plan_generation
+    }
+
+    /// Number of physical planes retained for branch-local work.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.planes.len()
+    }
+
+    /// Whether every physical key can publish directly without logical work.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.planes.is_empty()
+    }
+
+    /// Full plan-lifetime heap allocation owned by workspace metadata and pixels.
+    #[must_use]
+    pub const fn allocation_byte_len(&self) -> u64 {
+        self.allocation_byte_len
+    }
+
+    /// Prepared batch index backing one retained plane.
+    #[must_use]
+    pub fn batch_index(&self, workspace_index: usize) -> Option<usize> {
+        self.planes
+            .get(workspace_index)
+            .map(|plane| plane.batch_index)
+    }
+
+    /// Exact physical key backing one retained plane.
+    #[must_use]
+    pub fn physical_descriptor(
+        &self,
+        workspace_index: usize,
+    ) -> Option<&ScreenPhysicalReductionDescriptor> {
+        self.batch_index(workspace_index)
+            .and_then(|batch_index| self.reductions.get(batch_index))
+            .map(|reduction| &reduction.descriptor)
+    }
+
+    /// Last completed physical bytes for logical branch materialization.
+    #[must_use]
+    pub fn pixels(&self, workspace_index: usize) -> Option<&[u8]> {
+        self.planes
+            .get(workspace_index)
+            .filter(|plane| plane.completed_source_sequence.is_some())
+            .map(|plane| plane.pixels.as_slice())
+    }
+
+    /// Native source sequence that last completed one retained plane.
+    #[must_use]
+    pub fn completed_source_sequence(&self, workspace_index: usize) -> Option<u64> {
+        self.planes
+            .get(workspace_index)
+            .and_then(|plane| plane.completed_source_sequence)
+    }
+}
+
+#[derive(Debug)]
+struct CpuMaterializationPlane {
+    batch_index: usize,
+    pixels: Vec<u8>,
+    completed_source_sequence: Option<u64>,
 }
 
 /// One caller-owned destination paired by index with a prepared physical key.
@@ -262,6 +404,38 @@ impl PreparedCpuReductionBatch {
 pub struct CpuReductionBatchJob<'descriptor, 'output> {
     descriptor: &'descriptor ScreenPhysicalReductionDescriptor,
     output: &'output mut [u8],
+}
+
+/// One due identity Surface destination bound to its prepared batch index.
+#[derive(Debug)]
+pub struct CpuSurfaceReductionJob<'publication> {
+    batch_index: usize,
+    publication: &'publication mut PreparedScreenPublication,
+}
+
+impl<'publication> CpuSurfaceReductionJob<'publication> {
+    /// Bind a due writable Surface slot to one precomputed physical index.
+    #[must_use]
+    pub const fn new(
+        batch_index: usize,
+        publication: &'publication mut PreparedScreenPublication,
+    ) -> Self {
+        Self {
+            batch_index,
+            publication,
+        }
+    }
+
+    /// Prepared physical index written by this due job.
+    #[must_use]
+    pub const fn batch_index(&self) -> usize {
+        self.batch_index
+    }
+
+    /// Exact logical Surface reservation receiving physical bytes.
+    pub const fn publication(&self) -> &PreparedScreenPublication {
+        self.publication
+    }
 }
 
 impl<'descriptor, 'output> CpuReductionBatchJob<'descriptor, 'output> {
@@ -303,6 +477,16 @@ impl CpuReductionDestination for CpuReductionBatchJob<'_, '_> {
     }
 }
 
+impl CpuReductionDestination for CpuSurfaceReductionJob<'_> {
+    fn physical_descriptor(&self) -> &ScreenPhysicalReductionDescriptor {
+        self.publication.descriptor().physical()
+    }
+
+    fn output_mut(&mut self, _index: usize) -> Result<&mut [u8], CpuReductionError> {
+        self.publication.output_mut(self.batch_index)
+    }
+}
+
 impl CpuReductionDestination for PreparedScreenPublication {
     fn physical_descriptor(&self) -> &ScreenPhysicalReductionDescriptor {
         self.descriptor().physical()
@@ -312,17 +496,176 @@ impl CpuReductionDestination for PreparedScreenPublication {
         if !matches!(self.descriptor().kind(), ScreenPublicationKind::Surface) {
             return Err(CpuReductionError::BatchPublicationNotSurface { index });
         }
-        let profile = self.descriptor().processing_profile();
-        if profile.content_bars() != ScreenContentBarsPolicy::Disabled
-            || profile.letterbox_fill() != ScreenLetterboxFill::default()
-            || profile.smoothing() != ScreenSmoothingPolicy::Disabled
-            || profile.tuning() != ScreenColorTuning::default()
-        {
+        if branch_requires_materialization(self.descriptor()) {
             return Err(CpuReductionError::BatchPublicationRequiresMaterialization { index });
         }
         self.surface_pixels_mut()
             .map_err(|_| CpuReductionError::BatchPublicationReservationUnavailable { index })
     }
+}
+
+fn branch_requires_materialization(descriptor: &ResolvedScreenPublicationDescriptor) -> bool {
+    if matches!(descriptor.kind(), ScreenPublicationKind::Zones { .. }) {
+        return true;
+    }
+    let profile = descriptor.processing_profile();
+    profile.content_bars() != ScreenContentBarsPolicy::Disabled
+        || profile.letterbox_fill() != ScreenLetterboxFill::default()
+        || profile.smoothing() != ScreenSmoothingPolicy::Disabled
+        || profile.tuning() != ScreenColorTuning::default()
+}
+
+fn physical_requires_materialization(
+    plan: &ScreenCapturePlan,
+    reduction: &PreparedCpuReduction,
+    batch_index: usize,
+) -> Result<bool, CpuReductionError> {
+    let plan_index = plan
+        .physical_reductions()
+        .binary_search_by(|demand| demand.descriptor().cmp(&reduction.descriptor))
+        .map_err(|_| CpuReductionError::WorkspacePhysicalPlanMismatch { batch_index })?;
+    Ok(plan.physical_reductions()[plan_index]
+        .branch_indices()
+        .iter()
+        .any(|branch_index| {
+            plan.branches()
+                .get(*branch_index)
+                .is_some_and(|branch| branch_requires_materialization(branch.descriptor()))
+        }))
+}
+
+fn workspace_allocation_byte_len(
+    planes: &[CpuMaterializationPlane],
+    metadata_capacity: usize,
+) -> Result<u64, CpuReductionError> {
+    let metadata = u64::try_from(metadata_capacity)
+        .ok()
+        .and_then(|count| {
+            u64::try_from(size_of::<CpuMaterializationPlane>())
+                .ok()
+                .and_then(|item_size| count.checked_mul(item_size))
+        })
+        .ok_or(CpuReductionError::GeometryOverflow {
+            resource: "materialization workspace",
+        })?;
+    planes.iter().try_fold(metadata, |total, plane| {
+        total
+            .checked_add(u64::try_from(plane.pixels.capacity()).map_err(|_| {
+                CpuReductionError::GeometryOverflow {
+                    resource: "materialization workspace",
+                }
+            })?)
+            .ok_or(CpuReductionError::GeometryOverflow {
+                resource: "materialization workspace",
+            })
+    })
+}
+
+fn validate_workspace_schedule(
+    workspace: &PreparedCpuMaterializationWorkspace,
+    workspace_indices: &[usize],
+) -> Result<(), CpuReductionError> {
+    let mut previous = None;
+    for &workspace_index in workspace_indices {
+        if previous.is_some_and(|previous| workspace_index <= previous) {
+            return Err(CpuReductionError::WorkspaceScheduleNotCanonical);
+        }
+        if workspace_index >= workspace.planes.len() {
+            return Err(CpuReductionError::WorkspaceScheduleIndexOutOfBounds {
+                workspace_index,
+                workspace_len: workspace.planes.len(),
+            });
+        }
+        previous = Some(workspace_index);
+    }
+    Ok(())
+}
+
+fn validate_surface_schedule(
+    batch: &PreparedCpuReductionBatch,
+    jobs: &[CpuSurfaceReductionJob<'_>],
+) -> Result<(), CpuReductionError> {
+    let mut previous = None;
+    for job in jobs {
+        if previous.is_some_and(|previous| job.batch_index <= previous) {
+            return Err(CpuReductionError::SurfaceScheduleNotCanonical);
+        }
+        let reduction = batch.reductions.get(job.batch_index).ok_or(
+            CpuReductionError::SurfaceScheduleIndexOutOfBounds {
+                batch_index: job.batch_index,
+                batch_len: batch.reductions.len(),
+            },
+        )?;
+        if job.physical_descriptor() != &reduction.descriptor {
+            return Err(CpuReductionError::BatchDescriptorMismatch {
+                index: job.batch_index,
+            });
+        }
+        previous = Some(job.batch_index);
+    }
+    Ok(())
+}
+
+fn validate_schedule_disjoint(
+    workspace: &PreparedCpuMaterializationWorkspace,
+    workspace_indices: &[usize],
+    surface_jobs: &[CpuSurfaceReductionJob<'_>],
+) -> Result<(), CpuReductionError> {
+    let mut workspace_cursor = 0;
+    let mut surface_cursor = 0;
+    while workspace_cursor < workspace_indices.len() && surface_cursor < surface_jobs.len() {
+        let workspace_batch_index =
+            workspace.planes[workspace_indices[workspace_cursor]].batch_index;
+        let surface_batch_index = surface_jobs[surface_cursor].batch_index;
+        match workspace_batch_index.cmp(&surface_batch_index) {
+            std::cmp::Ordering::Less => workspace_cursor += 1,
+            std::cmp::Ordering::Greater => surface_cursor += 1,
+            std::cmp::Ordering::Equal => {
+                return Err(CpuReductionError::ScheduledPhysicalKeyDuplicated {
+                    batch_index: workspace_batch_index,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preflight updates the exact shared receipt without allocating a temporary record"
+)]
+fn preflight_reduction(
+    reduction: &PreparedCpuReduction,
+    output: &[u8],
+    frame: &CaptureFrame<RawCaptureSurface>,
+    output_bytes: &mut u64,
+    scheduled_tiles: &mut u64,
+    worker_count: NonZeroUsize,
+    tile_rows: NonZeroU32,
+    batch_index: usize,
+) -> Result<(), CpuReductionError> {
+    let expected = reduction.output.byte_len_usize();
+    if output.len() != expected {
+        return Err(CpuReductionError::BatchOutputLengthMismatch {
+            index: batch_index,
+            expected,
+            actual: output.len(),
+        });
+    }
+    validate_cursor(reduction.descriptor.cursor(), &frame.metadata().cursor)?;
+    *output_bytes = output_bytes
+        .checked_add(reduction.output.byte_len())
+        .ok_or(CpuReductionError::GeometryOverflow {
+            resource: "scheduled output",
+        })?;
+    *scheduled_tiles = scheduled_tiles
+        .checked_add(
+            prepare_reduction_tiles(reduction.output, worker_count, tile_rows)?.scheduled_tiles,
+        )
+        .ok_or(CpuReductionError::GeometryOverflow {
+            resource: "scheduled tile count",
+        })?;
+    Ok(())
 }
 
 /// Completion receipt for one allocation-free CPU batch execution.
@@ -547,6 +890,224 @@ impl CpuReductionExecutor {
         publications: &mut [PreparedScreenPublication],
     ) -> Result<CpuReductionBatchReport, CpuReductionError> {
         self.execute_destinations(batch, frame, publications)
+    }
+
+    /// Execute one sparse due set across retained planes and direct Surfaces.
+    ///
+    /// Both schedules are canonical, strictly increasing index lists prepared
+    /// by the caller's plan-lifetime fanout. A physical key may appear in one
+    /// schedule only: shared Surface/Zones work chooses the Surface slot when
+    /// it is due, otherwise the retained plane. The union runs exactly once in
+    /// the fixed Rayon pool without allocating, grouping, or sorting per frame.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another workspace identity, malformed or overlapping schedules,
+    /// stale workspace sequences, incompatible publications or cursor storage,
+    /// and mismatched frames before any destination write begins.
+    pub fn execute_scheduled_publications(
+        &self,
+        batch: &PreparedCpuReductionBatch,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        workspace: &mut PreparedCpuMaterializationWorkspace,
+        workspace_indices: &[usize],
+        surface_jobs: &mut [CpuSurfaceReductionJob<'_>],
+    ) -> Result<CpuReductionBatchReport, CpuReductionError> {
+        if !Arc::ptr_eq(&batch.reductions, &workspace.reductions) {
+            return Err(CpuReductionError::WorkspaceBatchMismatch);
+        }
+        validate_workspace_schedule(workspace, workspace_indices)?;
+        validate_surface_schedule(batch, surface_jobs)?;
+        validate_schedule_disjoint(workspace, workspace_indices, surface_jobs)?;
+        let view =
+            CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)?;
+        let source_sequence = frame.metadata().sequence;
+        let mut output_bytes = 0_u64;
+        let mut scheduled_tiles = 0_u64;
+        for &workspace_index in workspace_indices {
+            let plane = &workspace.planes[workspace_index];
+            if plane
+                .completed_source_sequence
+                .is_some_and(|previous| source_sequence <= previous)
+            {
+                return Err(CpuReductionError::WorkspaceFrameSequenceNotIncreasing {
+                    workspace_index,
+                    previous: plane
+                        .completed_source_sequence
+                        .expect("non-increasing workspace sequence exists"),
+                    actual: source_sequence,
+                });
+            }
+            let reduction = &batch.reductions[plane.batch_index];
+            preflight_reduction(
+                reduction,
+                &plane.pixels,
+                frame,
+                &mut output_bytes,
+                &mut scheduled_tiles,
+                self.inner.worker_count,
+                self.inner.tile_rows,
+                plane.batch_index,
+            )?;
+        }
+        for job in surface_jobs.iter_mut() {
+            let reduction = &batch.reductions[job.batch_index];
+            let batch_index = job.batch_index;
+            let output = job.output_mut(batch_index)?;
+            preflight_reduction(
+                reduction,
+                output,
+                frame,
+                &mut output_bytes,
+                &mut scheduled_tiles,
+                self.inner.worker_count,
+                self.inner.tile_rows,
+                batch_index,
+            )?;
+        }
+        for &workspace_index in workspace_indices {
+            workspace.planes[workspace_index].completed_source_sequence = None;
+        }
+        let (workspace_result, surface_result) = self.inner.pool.install(|| {
+            rayon::join(
+                || {
+                    workspace
+                        .planes
+                        .par_iter_mut()
+                        .enumerate()
+                        .filter(|(workspace_index, _)| {
+                            workspace_indices.binary_search(workspace_index).is_ok()
+                        })
+                        .try_for_each(|(_, plane)| {
+                            let reduction = &batch.reductions[plane.batch_index];
+                            reduce_prepared_in_pool(
+                                &view,
+                                reduction,
+                                self.inner.worker_count,
+                                self.inner.tile_rows,
+                                &mut plane.pixels,
+                            )
+                        })
+                },
+                || {
+                    surface_jobs.par_iter_mut().try_for_each(|job| {
+                        let batch_index = job.batch_index;
+                        let reduction = &batch.reductions[batch_index];
+                        reduce_prepared_in_pool(
+                            &view,
+                            reduction,
+                            self.inner.worker_count,
+                            self.inner.tile_rows,
+                            job.output_mut(batch_index)?,
+                        )
+                    })
+                },
+            )
+        });
+        workspace_result?;
+        surface_result?;
+        for &workspace_index in workspace_indices {
+            workspace.planes[workspace_index].completed_source_sequence = Some(source_sequence);
+        }
+        Ok(CpuReductionBatchReport {
+            source_sequence,
+            completed_jobs: workspace_indices.len() + surface_jobs.len(),
+            scheduled_tiles,
+            output_bytes,
+        })
+    }
+
+    /// Execute only physical keys retained for branch-local materialization.
+    ///
+    /// The workspace is prepared once from this exact batch and owns no plane
+    /// for identity-only Surface keys. Every selected key is preflighted before
+    /// writes begin, then reduced in parallel through the executor's fixed pool.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a workspace prepared from another batch, stale or mismatched
+    /// frames, incompatible cursor storage, and corrupted plane lengths before
+    /// reducer writes begin.
+    pub fn execute_materialization_workspace(
+        &self,
+        batch: &PreparedCpuReductionBatch,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        workspace: &mut PreparedCpuMaterializationWorkspace,
+    ) -> Result<CpuReductionBatchReport, CpuReductionError> {
+        if !Arc::ptr_eq(&batch.reductions, &workspace.reductions) {
+            return Err(CpuReductionError::WorkspaceBatchMismatch);
+        }
+        let view =
+            CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)?;
+        let source_sequence = frame.metadata().sequence;
+        let mut output_bytes = 0_u64;
+        let mut scheduled_tiles = 0_u64;
+        for (workspace_index, plane) in workspace.planes.iter().enumerate() {
+            if plane
+                .completed_source_sequence
+                .is_some_and(|previous| source_sequence <= previous)
+            {
+                return Err(CpuReductionError::WorkspaceFrameSequenceNotIncreasing {
+                    workspace_index,
+                    previous: plane
+                        .completed_source_sequence
+                        .expect("non-increasing workspace sequence exists"),
+                    actual: source_sequence,
+                });
+            }
+            let reduction = &batch.reductions[plane.batch_index];
+            let expected = reduction.output.byte_len_usize();
+            if plane.pixels.len() != expected {
+                return Err(CpuReductionError::WorkspacePlaneLengthMismatch {
+                    batch_index: plane.batch_index,
+                    expected,
+                    actual: plane.pixels.len(),
+                });
+            }
+            validate_cursor(reduction.descriptor.cursor(), &frame.metadata().cursor)?;
+            output_bytes = output_bytes
+                .checked_add(reduction.output.byte_len())
+                .ok_or(CpuReductionError::GeometryOverflow {
+                    resource: "materialization workspace output",
+                })?;
+            scheduled_tiles = scheduled_tiles
+                .checked_add(
+                    prepare_reduction_tiles(
+                        reduction.output,
+                        self.inner.worker_count,
+                        self.inner.tile_rows,
+                    )?
+                    .scheduled_tiles,
+                )
+                .ok_or(CpuReductionError::GeometryOverflow {
+                    resource: "materialization workspace tile count",
+                })?;
+        }
+        for plane in &mut workspace.planes {
+            plane.completed_source_sequence = None;
+        }
+        let execution = self.inner.pool.install(|| {
+            workspace.planes.par_iter_mut().try_for_each(|plane| {
+                let reduction = &batch.reductions[plane.batch_index];
+                reduce_prepared_in_pool(
+                    &view,
+                    reduction,
+                    self.inner.worker_count,
+                    self.inner.tile_rows,
+                    &mut plane.pixels,
+                )
+            })
+        });
+        execution?;
+        for plane in &mut workspace.planes {
+            plane.completed_source_sequence = Some(source_sequence);
+        }
+        Ok(CpuReductionBatchReport {
+            source_sequence,
+            completed_jobs: workspace.planes.len(),
+            scheduled_tiles,
+            output_bytes,
+        })
     }
 
     fn execute_destinations<D>(
@@ -1063,6 +1624,60 @@ pub enum CpuReductionError {
     /// Plan-lifetime descriptor storage could not be reserved.
     #[error("failed to allocate CPU reduction batch metadata")]
     BatchPreparationAllocationFailed,
+    /// Workspace preparation received another committed plan generation.
+    #[error("CPU materialization workspace plan generation does not match its prepared batch")]
+    WorkspacePlanGenerationMismatch,
+    /// A prepared physical key is absent from the supplied committed plan.
+    #[error("CPU materialization workspace key {batch_index} is absent from its plan")]
+    WorkspacePhysicalPlanMismatch { batch_index: usize },
+    /// Plan-lifetime workspace metadata could not be reserved.
+    #[error("failed to allocate CPU materialization workspace metadata")]
+    WorkspaceMetadataAllocationFailed,
+    /// One selected physical plane could not reserve its exact storage.
+    #[error("failed to allocate {byte_len} bytes for CPU workspace key {batch_index}")]
+    WorkspacePlaneAllocationFailed { batch_index: usize, byte_len: usize },
+    /// Execution received a workspace prepared from another batch identity.
+    #[error("CPU materialization workspace belongs to another prepared batch")]
+    WorkspaceBatchMismatch,
+    /// Due retained-plane indices must be unique and strictly increasing.
+    #[error("CPU materialization workspace schedule is not canonical")]
+    WorkspaceScheduleNotCanonical,
+    /// One due retained-plane index escapes the prepared workspace.
+    #[error(
+        "CPU workspace schedule index {workspace_index} escapes its {workspace_len}-plane workspace"
+    )]
+    WorkspaceScheduleIndexOutOfBounds {
+        workspace_index: usize,
+        workspace_len: usize,
+    },
+    /// Due direct-Surface indices must be unique and strictly increasing.
+    #[error("CPU direct-Surface schedule is not canonical")]
+    SurfaceScheduleNotCanonical,
+    /// One due direct-Surface index escapes the prepared physical batch.
+    #[error("CPU direct-Surface index {batch_index} escapes its {batch_len}-key batch")]
+    SurfaceScheduleIndexOutOfBounds {
+        batch_index: usize,
+        batch_len: usize,
+    },
+    /// One physical key was scheduled into both workspace and Surface storage.
+    #[error("CPU physical key {batch_index} has duplicate scheduled destinations")]
+    ScheduledPhysicalKeyDuplicated { batch_index: usize },
+    /// Retained planes may only advance through native source sequences.
+    #[error(
+        "CPU workspace plane {workspace_index} source sequence {actual} does not advance {previous}"
+    )]
+    WorkspaceFrameSequenceNotIncreasing {
+        workspace_index: usize,
+        previous: u64,
+        actual: u64,
+    },
+    /// Retained physical storage no longer matches its prepared exact length.
+    #[error("CPU workspace key {batch_index} has {actual} bytes; expected exactly {expected}")]
+    WorkspacePlaneLengthMismatch {
+        batch_index: usize,
+        expected: usize,
+        actual: usize,
+    },
     /// A physical key for this stable source named another epoch or source config.
     #[error("screen physical reduction source config does not match its worker source")]
     SourceConfigMismatch,
