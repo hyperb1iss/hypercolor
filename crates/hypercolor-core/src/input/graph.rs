@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use tokio::sync::watch;
 
 use super::{InputData, SourceKind, SourceStatusHandle};
 use crate::types::event::TimedInputEvent;
@@ -472,15 +473,18 @@ impl Drop for PublicationRevisionGuard<'_> {
 #[derive(Clone)]
 pub struct InputGraphHandle {
     latest: Arc<ArcSwap<InputGraphSnapshot>>,
+    generation: watch::Sender<u64>,
 }
 
 impl InputGraphHandle {
     pub(crate) fn new() -> Self {
+        let (generation, _) = watch::channel(0);
         Self {
             latest: Arc::new(ArcSwap::from_pointee(InputGraphSnapshot {
                 generation: 0,
                 slots: Arc::from([]),
             })),
+            generation,
         }
     }
 
@@ -490,9 +494,22 @@ impl InputGraphHandle {
         self.latest.load_full()
     }
 
+    /// Subscribe to canonical graph-generation changes.
+    #[must_use]
+    pub fn subscribe_generation(&self) -> watch::Receiver<u64> {
+        self.generation.subscribe()
+    }
+
     pub(crate) fn publish(&self, generation: u64, slots: Arc<[InputSourceSlot]>) {
         self.latest
             .store(Arc::new(InputGraphSnapshot { generation, slots }));
+        self.generation.send_if_modified(|current| {
+            if *current == generation {
+                return false;
+            }
+            *current = generation;
+            true
+        });
     }
 }
 

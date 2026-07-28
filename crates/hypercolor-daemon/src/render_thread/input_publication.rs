@@ -558,6 +558,7 @@ async fn run_pump(
     let mut schedule = InputPublicationSchedule::default();
     let mut capture_demand = CaptureDemandState::default();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
+    let mut graph_changes = reader.graph.subscribe_generation();
     loop {
         let demand = demands.snapshot();
         let mut graph = reader.graph_snapshot();
@@ -582,6 +583,7 @@ async fn run_pump(
             tokio::select! {
                 () = cancel.cancelled() => break,
                 () = demands.changed() => {}
+                _ = graph_changes.changed() => {}
             }
             continue;
         }
@@ -590,6 +592,7 @@ async fn run_pump(
             tokio::select! {
                 () = cancel.cancelled() => break,
                 () = demands.changed() => {}
+                _ = graph_changes.changed() => {}
                 () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {}
             }
             continue;
@@ -599,6 +602,7 @@ async fn run_pump(
             tokio::select! {
                 () = cancel.cancelled() => break,
                 () = demands.changed() => {}
+                _ = graph_changes.changed() => {}
                 () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {}
             }
             continue;
@@ -612,6 +616,7 @@ async fn run_pump(
             tokio::select! {
                 () = cancel.cancelled() => break,
                 () = demands.changed() => {}
+                _ = graph_changes.changed() => {}
                 () = tokio::time::sleep_until(TokioInstant::from_std(wake_at)) => {}
             }
             continue;
@@ -622,6 +627,7 @@ async fn run_pump(
         let mut manager = tokio::select! {
             () = cancel.cancelled() => break,
             () = demands.changed() => continue,
+            _ = graph_changes.changed() => continue,
             manager = &mut manager_lock => manager,
         };
         schedule.collect_due(Instant::now(), &mut due_sources);

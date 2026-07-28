@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
@@ -12,6 +12,7 @@ use super::{
 
 struct CountingSource {
     samples: Arc<AtomicUsize>,
+    capture_active: Arc<AtomicBool>,
     running: bool,
 }
 
@@ -19,6 +20,15 @@ impl CountingSource {
     fn new(samples: Arc<AtomicUsize>) -> Self {
         Self {
             samples,
+            capture_active: Arc::new(AtomicBool::new(true)),
+            running: false,
+        }
+    }
+
+    fn with_capture_active(samples: Arc<AtomicUsize>, capture_active: Arc<AtomicBool>) -> Self {
+        Self {
+            samples,
+            capture_active,
             running: false,
         }
     }
@@ -49,6 +59,11 @@ impl InputSource for CountingSource {
 
     fn is_interaction_source(&self) -> bool {
         true
+    }
+
+    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active.store(active, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -266,6 +281,35 @@ async fn pump_sleeps_with_zero_typed_demand() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(samples.load(Ordering::Relaxed), 0);
+    pump.shutdown()
+        .await
+        .expect("publication pump should stop cleanly");
+}
+
+#[tokio::test]
+async fn zero_demand_graph_change_shuts_down_new_source() {
+    let manager = Arc::new(Mutex::new(InputManager::new()));
+    let mut pump =
+        InputPublicationPump::start(Arc::clone(&manager), InputPublicationDemandHandle::new())
+            .await
+            .expect("publication pump should start");
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    let capture_active = Arc::new(AtomicBool::new(true));
+    let mut source = CountingSource::with_capture_active(
+        Arc::new(AtomicUsize::new(0)),
+        Arc::clone(&capture_active),
+    );
+    source.start().expect("counting source should start");
+
+    manager.lock().await.add_source(Box::new(source));
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while capture_active.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("zero aggregate demand should stop a newly registered source");
     pump.shutdown()
         .await
         .expect("publication pump should stop cleanly");
