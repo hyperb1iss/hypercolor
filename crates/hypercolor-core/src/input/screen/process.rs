@@ -2,8 +2,8 @@
 
 use crate::input::screen::frame::{
     CaptureDamage, CaptureFrame, CaptureFrameError, CaptureGeometry, CapturePixelFormat,
-    CapturePlanePool, CaptureRotation, CaptureStorage, CpuCaptureStorage, PhysicalOrigin,
-    PixelExtent, ProcessedCaptureSurface, RawCaptureSurface, SourceScale,
+    CapturePlanePool, CaptureRotation, CaptureStorage, CpuCaptureStorage,
+    GeometryNormalizedCaptureSurface, PhysicalOrigin, PixelExtent, RawCaptureSurface, SourceScale,
 };
 
 /// Reusable raw-to-processed capture converter.
@@ -27,7 +27,7 @@ impl CaptureFrameProcessor {
     pub fn process(
         &self,
         frame: CaptureFrame<RawCaptureSurface>,
-    ) -> Result<CaptureFrame<ProcessedCaptureSurface>, CaptureFrameError> {
+    ) -> Result<CaptureFrame<GeometryNormalizedCaptureSurface>, CaptureFrameError> {
         let geometry = frame.metadata().geometry;
         let storage_extent = geometry.storage_extent();
         let identity_geometry =
@@ -40,7 +40,7 @@ impl CaptureFrameProcessor {
                 {
                     let storage = CaptureStorage::Cpu(storage.clone());
                     let damage = frame.damage().clone();
-                    return frame.into_processed(
+                    return frame.into_geometry_normalized(
                         canonical_geometry(
                             geometry,
                             geometry.origin(),
@@ -54,7 +54,7 @@ impl CaptureFrameProcessor {
                 CaptureStorage::Gpu(storage) => {
                     let storage = CaptureStorage::Gpu(storage.clone());
                     let damage = frame.damage().clone();
-                    return frame.into_processed(
+                    return frame.into_geometry_normalized(
                         canonical_geometry(
                             geometry,
                             geometry.origin(),
@@ -109,7 +109,7 @@ impl CaptureFrameProcessor {
         let cursor = transform_cursor(&frame.metadata().cursor, native_crop, geometry.rotation())?;
         let origin = transform_capture_origin(geometry, native_crop)?;
 
-        frame.into_processed_with_cursor(
+        frame.into_geometry_normalized_with_cursor(
             canonical_geometry(geometry, origin, logical_extent, output_extent)?,
             processed_storage,
             CaptureDamage::default(),

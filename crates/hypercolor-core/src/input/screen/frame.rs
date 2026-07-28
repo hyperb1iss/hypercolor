@@ -797,8 +797,8 @@ impl CaptureDamage {
 pub enum CaptureStageKind {
     /// Native scanout pixels with rotation still pending.
     Raw,
-    /// Canonical pixels after geometry and color processing.
-    Processed,
+    /// Canonical pixels after crop, rotation, and channel-layout normalization.
+    GeometryNormalized,
 }
 
 mod stage_sealed {
@@ -823,14 +823,14 @@ impl CaptureSurfaceStage for RawCaptureSurface {
     const KIND: CaptureStageKind = CaptureStageKind::Raw;
 }
 
-/// Canonical processed surface. Its rotation must be identity.
+/// Geometry-normalized surface before screen analysis policy is applied.
 #[derive(Clone, Copy, Debug)]
-pub struct ProcessedCaptureSurface;
+pub struct GeometryNormalizedCaptureSurface;
 
-impl stage_sealed::Sealed for ProcessedCaptureSurface {}
+impl stage_sealed::Sealed for GeometryNormalizedCaptureSurface {}
 
-impl CaptureSurfaceStage for ProcessedCaptureSurface {
-    const KIND: CaptureStageKind = CaptureStageKind::Processed;
+impl CaptureSurfaceStage for GeometryNormalizedCaptureSurface {
+    const KIND: CaptureStageKind = CaptureStageKind::GeometryNormalized;
 }
 
 /// Metadata shared by CPU and GPU capture frames.
@@ -893,7 +893,7 @@ impl CaptureFrame<RawCaptureSurface> {
         Self::from_parts(metadata, storage, damage)
     }
 
-    /// Consume a raw frame and publish the canonical output of geometry processing.
+    /// Consume a raw frame and publish geometry-normalized pixels.
     ///
     /// The source identity, epochs, sequence, timestamps, and color metadata are
     /// retained from the raw input. Callers supply only the processed geometry,
@@ -904,14 +904,14 @@ impl CaptureFrame<RawCaptureSurface> {
     ///
     /// Rejects processed geometry with a pending crop or rotation and validates
     /// the replacement storage against its stored extent.
-    pub fn into_processed(
+    pub fn into_geometry_normalized(
         self,
         geometry: CaptureGeometry,
         storage: CaptureStorage,
         damage: CaptureDamage,
-    ) -> Result<CaptureFrame<ProcessedCaptureSurface>, CaptureFrameError> {
+    ) -> Result<CaptureFrame<GeometryNormalizedCaptureSurface>, CaptureFrameError> {
         let cursor = self.metadata.cursor.clone();
-        self.into_processed_with_cursor(geometry, storage, damage, cursor)
+        self.into_geometry_normalized_with_cursor(geometry, storage, damage, cursor)
     }
 
     /// Consume a raw frame and publish canonical geometry and cursor metadata.
@@ -921,14 +921,14 @@ impl CaptureFrame<RawCaptureSurface> {
     ///
     /// # Errors
     ///
-    /// Applies the same processed-stage validation as [`Self::into_processed`].
-    pub fn into_processed_with_cursor(
+    /// Applies the same normalized-stage validation as [`Self::into_geometry_normalized`].
+    pub fn into_geometry_normalized_with_cursor(
         self,
         geometry: CaptureGeometry,
         storage: CaptureStorage,
         damage: CaptureDamage,
         cursor: CaptureCursor,
-    ) -> Result<CaptureFrame<ProcessedCaptureSurface>, CaptureFrameError> {
+    ) -> Result<CaptureFrame<GeometryNormalizedCaptureSurface>, CaptureFrameError> {
         let mut metadata = self.metadata;
         metadata.geometry = geometry;
         metadata.cursor = cursor;
@@ -1020,14 +1020,14 @@ fn validate_metadata<S: CaptureSurfaceStage>(
     if metadata.fresh_until < metadata.captured_at {
         return Err(CaptureFrameError::InvalidFreshness);
     }
-    if S::KIND == CaptureStageKind::Processed
+    if S::KIND == CaptureStageKind::GeometryNormalized
         && metadata.geometry.rotation != CaptureRotation::Identity
     {
         return Err(CaptureFrameError::ProcessedRotationPending(
             metadata.geometry.rotation,
         ));
     }
-    if S::KIND == CaptureStageKind::Processed
+    if S::KIND == CaptureStageKind::GeometryNormalized
         && let Some(crop) = metadata.geometry.crop
     {
         return Err(CaptureFrameError::ProcessedCropPending(crop));

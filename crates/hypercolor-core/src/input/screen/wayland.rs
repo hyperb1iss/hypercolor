@@ -26,11 +26,11 @@ use pw::spa;
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool, CaptureRotation,
-    CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
-    LegacyScreenSnapshot, PhysicalOrigin, PixelExtent, PixelRect, PooledCapturePlane,
-    RawCaptureSurface, ScreenCaptureInput, SourceScale, analyze_legacy_screen_frame,
+    AnalyzedScreenSnapshot, CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage,
+    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
+    CapturePlanePool, CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction,
+    CpuCaptureStorage, PhysicalOrigin, PixelExtent, PixelRect, PooledCapturePlane,
+    RawCaptureSurface, ScreenCaptureInput, SourceScale, analyze_screen_frame,
 };
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
@@ -445,7 +445,7 @@ struct WaylandTopologyState {
 
 #[derive(Clone)]
 struct CapturedScreenSnapshot {
-    legacy: LegacyScreenSnapshot,
+    analysis: AnalyzedScreenSnapshot,
     generation: u64,
 }
 
@@ -544,7 +544,12 @@ impl SharedSettings {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if latest.as_ref().is_some_and(|snapshot| {
-            snapshot.legacy.frame().metadata().session_generation == session_generation
+            snapshot
+                .analysis
+                .geometry_frame()
+                .metadata()
+                .session_generation
+                == session_generation
         }) {
             *latest = None;
         }
@@ -647,7 +652,7 @@ impl SharedSettings {
     fn publish_snapshot(
         &self,
         latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
-        legacy: LegacyScreenSnapshot,
+        analysis: AnalyzedScreenSnapshot,
     ) -> bool {
         let expected = self
             .expected_epoch
@@ -656,7 +661,7 @@ impl SharedSettings {
         let Some(expected) = expected.as_ref() else {
             return false;
         };
-        if legacy.frame().validate_epoch(expected).is_err() {
+        if analysis.geometry_frame().validate_epoch(expected).is_err() {
             return false;
         }
         let Ok(mut latest) = latest_snapshot.lock() else {
@@ -666,7 +671,10 @@ impl SharedSettings {
             .frame_generation
             .fetch_add(1, Ordering::Release)
             .wrapping_add(1);
-        *latest = Some(CapturedScreenSnapshot { legacy, generation });
+        *latest = Some(CapturedScreenSnapshot {
+            analysis,
+            generation,
+        });
         true
     }
 
@@ -697,7 +705,12 @@ impl SharedSettings {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if latest.as_ref().is_some_and(|snapshot| {
-            snapshot.legacy.frame().metadata().session_generation == session_generation
+            snapshot
+                .analysis
+                .geometry_frame()
+                .metadata()
+                .session_generation
+                == session_generation
         }) {
             *latest = None;
         }
@@ -1110,11 +1123,16 @@ impl InputSource for WaylandScreenCaptureInput {
         let Some(snapshot) = snapshot else {
             return Ok(InputData::None);
         };
-        let metadata = snapshot.legacy.frame().metadata();
+        let metadata = snapshot.analysis.geometry_frame().metadata();
         let Some(expected) = self.settings.expected_epoch() else {
             return Ok(InputData::None);
         };
-        if snapshot.legacy.frame().validate_epoch(&expected).is_err() {
+        if snapshot
+            .analysis
+            .geometry_frame()
+            .validate_epoch(&expected)
+            .is_err()
+        {
             return Ok(InputData::None);
         }
         if snapshot.generation != self.status_snapshot_generation {
@@ -1129,7 +1147,7 @@ impl InputSource for WaylandScreenCaptureInput {
             }
             self.status_snapshot_generation = snapshot.generation;
         }
-        Ok(InputData::Screen(snapshot.legacy.data().clone()))
+        Ok(InputData::Screen(snapshot.analysis.data().clone()))
     }
 
     fn is_running(&self) -> bool {
@@ -1664,12 +1682,12 @@ fn run_analysis_worker(
         else {
             continue;
         };
-        let Ok(legacy) = analyze_legacy_screen_frame(&mut state.analyzer, frame) else {
+        let Ok(analysis) = analyze_screen_frame(&mut state.analyzer, frame) else {
             continue;
         };
         state
             .settings
-            .publish_snapshot(&state.latest_snapshot, legacy);
+            .publish_snapshot(&state.latest_snapshot, analysis);
 
         let period =
             Duration::from_secs_f64(1.0 / f64::from(state.analyzer.config().target_fps.max(1)));

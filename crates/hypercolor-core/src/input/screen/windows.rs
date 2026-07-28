@@ -25,11 +25,11 @@ use hypercolor_windows_capture::{
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, LegacyScreenSnapshot,
+    AnalyzedScreenSnapshot, CaptureColorSpace, CaptureConfig, CaptureCursor, CaptureDamage,
+    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
+    CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
     PhysicalOrigin, PixelExtent, RawCaptureSurface, ScreenCaptureInput, SourceScale,
-    analyze_legacy_screen_frame,
+    analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
@@ -174,7 +174,7 @@ pub struct WindowsScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
     capture_active: bool,
-    publication: Arc<Mutex<CapturePublication<LegacyScreenSnapshot>>>,
+    publication: Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
     worker: Option<CaptureWorker>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
@@ -526,7 +526,11 @@ impl InputSource for WindowsScreenCaptureInput {
         let Some(snapshot) = publication.latest.as_ref() else {
             return Ok(InputData::None);
         };
-        if snapshot.frame().validate_epoch(&active.epoch).is_err() {
+        if snapshot
+            .geometry_frame()
+            .validate_epoch(&active.epoch)
+            .is_err()
+        {
             return Ok(InputData::None);
         }
         Ok(InputData::Screen(snapshot.data().clone()))
@@ -608,7 +612,7 @@ fn active_capture_epoch(
 }
 
 fn activate_capture_epoch(
-    publication: &Mutex<CapturePublication<LegacyScreenSnapshot>>,
+    publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>,
     active: ActiveCaptureEpoch,
 ) -> bool {
     publication
@@ -617,7 +621,7 @@ fn activate_capture_epoch(
         .activate(active)
 }
 
-fn clear_capture_publication(publication: &Mutex<CapturePublication<LegacyScreenSnapshot>>) {
+fn clear_capture_publication(publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>) {
     publication
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -636,7 +640,7 @@ fn settle_inactive_capture<T>(
 /// Worker loop: own the duplication session, analyze frames, publish results.
 fn run_worker(
     settings: &Arc<SharedSettings>,
-    publication: &Arc<Mutex<CapturePublication<LegacyScreenSnapshot>>>,
+    publication: &Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
     command_rx: &mpsc::Receiver<WorkerCommand>,
     cancel: &Arc<AtomicBool>,
     processed_activity_generation: &AtomicU64,
@@ -813,7 +817,7 @@ fn run_worker(
                 let raw_frame = build_capture_frame(frame, session_generation, frame_period);
                 let snapshot = raw_frame.and_then(|frame| {
                     frame.validate_epoch(&current_epoch.epoch)?;
-                    analyze_legacy_screen_frame(&mut analyzer, frame)
+                    analyze_screen_frame(&mut analyzer, frame)
                 });
                 let Ok(snapshot) = snapshot else {
                     clear_capture_publication(publication);

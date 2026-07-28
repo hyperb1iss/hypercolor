@@ -365,7 +365,7 @@ fn processed_transition_rejects_any_pending_rotation_or_crop() {
     )
     .expect("raw input is valid");
     assert!(matches!(
-        raw.into_processed(
+        raw.into_geometry_normalized(
             CaptureGeometry::new(
                 PhysicalOrigin::default(),
                 extent(4, 3),
@@ -391,7 +391,7 @@ fn processed_transition_rejects_any_pending_rotation_or_crop() {
     .expect("raw input is valid");
     let pending_crop = PixelRect::new(1, 1, 2, 2).expect("test crop is valid");
     assert!(matches!(
-        raw.into_processed(
+        raw.into_geometry_normalized(
             CaptureGeometry::new(
                 PhysicalOrigin::default(),
                 extent(4, 3),
@@ -414,7 +414,7 @@ fn processed_transition_rejects_any_pending_rotation_or_crop() {
     )
     .expect("raw input is valid");
     let processed = raw
-        .into_processed(
+        .into_geometry_normalized(
             CaptureGeometry::new(
                 PhysicalOrigin::default(),
                 extent(4, 3),
@@ -428,7 +428,7 @@ fn processed_transition_rejects_any_pending_rotation_or_crop() {
             CaptureDamage::default(),
         )
         .expect("canonical geometry is a legal processed stage");
-    assert_eq!(processed.stage(), CaptureStageKind::Processed);
+    assert_eq!(processed.stage(), CaptureStageKind::GeometryNormalized);
 }
 
 #[test]

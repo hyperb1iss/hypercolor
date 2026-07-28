@@ -29,8 +29,8 @@ pub use frame::{
     CaptureColorSpace, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError,
     CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlaneLease, CapturePlanePool,
     CaptureRotation, CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction,
-    CpuCaptureStorage, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi,
-    PlatformGpuSurface, PooledCapturePlane, ProcessedCaptureSurface, RawCaptureSurface,
+    CpuCaptureStorage, GeometryNormalizedCaptureSurface, MoveRegion, PhysicalOrigin, PixelExtent,
+    PixelRect, PlatformGpuApi, PlatformGpuSurface, PooledCapturePlane, RawCaptureSurface,
     SourceScale,
 };
 pub use process::CaptureFrameProcessor;
@@ -52,14 +52,14 @@ use crate::types::event::ZoneColors;
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
-pub(crate) struct LegacyScreenSnapshot {
-    frame: CaptureFrame<ProcessedCaptureSurface>,
+pub(crate) struct AnalyzedScreenSnapshot {
+    geometry_frame: CaptureFrame<GeometryNormalizedCaptureSurface>,
     data: ScreenData,
 }
 
-impl LegacyScreenSnapshot {
-    pub(crate) const fn frame(&self) -> &CaptureFrame<ProcessedCaptureSurface> {
-        &self.frame
+impl AnalyzedScreenSnapshot {
+    pub(crate) const fn geometry_frame(&self) -> &CaptureFrame<GeometryNormalizedCaptureSurface> {
+        &self.geometry_frame
     }
 
     pub(crate) const fn data(&self) -> &ScreenData {
@@ -67,10 +67,10 @@ impl LegacyScreenSnapshot {
     }
 }
 
-pub(crate) fn analyze_legacy_screen_frame(
+pub(crate) fn analyze_screen_frame(
     analyzer: &mut ScreenCaptureInput,
     frame: CaptureFrame<RawCaptureSurface>,
-) -> anyhow::Result<LegacyScreenSnapshot> {
+) -> anyhow::Result<AnalyzedScreenSnapshot> {
     let captured_at = frame.metadata().captured_at;
     let frame = analyzer.capture_processor.process(frame)?;
     let geometry = &frame.metadata().geometry;
@@ -85,7 +85,10 @@ pub(crate) fn analyze_legacy_screen_frame(
     let InputData::Screen(data) = analyzer.sample()? else {
         anyhow::bail!("legacy screen analysis did not produce a snapshot");
     };
-    Ok(LegacyScreenSnapshot { frame, data })
+    Ok(AnalyzedScreenSnapshot {
+        geometry_frame: frame,
+        data,
+    })
 }
 
 // ── CaptureConfig ─────────────────────────────────────────────────────────

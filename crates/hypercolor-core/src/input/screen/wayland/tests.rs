@@ -11,8 +11,8 @@ use super::{
     publish_unexpected_exit_status,
 };
 use crate::input::screen::{
-    CaptureConfig, CaptureRotation, CaptureSourceId, LegacyScreenSnapshot, PhysicalOrigin,
-    PixelExtent, PixelRect, analyze_legacy_screen_frame,
+    AnalyzedScreenSnapshot, CaptureConfig, CaptureRotation, CaptureSourceId, PhysicalOrigin,
+    PixelExtent, PixelRect, analyze_screen_frame,
 };
 use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
@@ -57,7 +57,7 @@ fn capture_legacy(
     width: u32,
     height: u32,
     fill: u8,
-) -> LegacyScreenSnapshot {
+) -> AnalyzedScreenSnapshot {
     let plane_len = usize::try_from(width)
         .expect("test width fits usize")
         .checked_mul(usize::try_from(height).expect("test height fits usize"))
@@ -75,8 +75,8 @@ fn capture_legacy(
             plane.freeze(),
         )
         .expect("test frame is valid");
-    analyze_legacy_screen_frame(&mut state.analyzer, frame)
-        .expect("legacy analysis accepts canonical test geometry")
+    analyze_screen_frame(&mut state.analyzer, frame)
+        .expect("screen analysis accepts canonical test geometry")
 }
 
 fn rgba_view<'a>(
@@ -188,7 +188,11 @@ fn stale_worker_cannot_overwrite_the_successor_snapshot() {
         .clone()
         .expect("successor snapshot remains published");
     assert_eq!(
-        published.legacy.frame().metadata().session_generation,
+        published
+            .analysis
+            .geometry_frame()
+            .metadata()
+            .session_generation,
         active_session
     );
     assert_eq!(published.generation, 1);

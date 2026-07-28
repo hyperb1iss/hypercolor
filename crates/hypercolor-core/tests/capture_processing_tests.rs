@@ -107,7 +107,7 @@ fn raw_rgba_with_geometry(
 }
 
 fn red_labels(
-    frame: &CaptureFrame<hypercolor_core::input::screen::ProcessedCaptureSurface>,
+    frame: &CaptureFrame<hypercolor_core::input::screen::GeometryNormalizedCaptureSurface>,
 ) -> Vec<u8> {
     let CaptureStorage::Cpu(storage) = frame.storage() else {
         panic!("test processor should publish CPU storage");
@@ -147,7 +147,7 @@ fn every_rotation_is_applied_exactly_once() {
             .process(raw_rgba(3, 2, rotation, None))
             .expect("rotation should process");
 
-        assert_eq!(processed.stage(), CaptureStageKind::Processed);
+        assert_eq!(processed.stage(), CaptureStageKind::GeometryNormalized);
         assert_eq!(
             processed.metadata().geometry.rotation(),
             CaptureRotation::Identity
