@@ -937,7 +937,7 @@ pub struct PreviewTransportCapability {
 impl PreviewTransportCapability {
     #[must_use]
     pub fn negotiated_with(self, peer: Self) -> Self {
-        Self {
+        let mut negotiated = Self {
             max_decoded_publication_bytes: self
                 .max_decoded_publication_bytes
                 .min(peer.max_decoded_publication_bytes),
@@ -950,7 +950,16 @@ impl PreviewTransportCapability {
             max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
             max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
             max_chunk_count: self.max_chunk_count.min(peer.max_chunk_count),
-        }
+        };
+        negotiated.max_encoded_publication_bytes = negotiated
+            .max_encoded_publication_bytes
+            .min(negotiated.max_connection_bytes / 2)
+            .min(
+                negotiated
+                    .max_transmissible_encoded_bytes()
+                    .unwrap_or_default(),
+            );
+        negotiated
     }
 
     #[must_use]
@@ -1019,7 +1028,12 @@ impl PreviewTransportCapability {
     fn validate(self) -> Result<(), PreviewCapabilityError> {
         if self.max_decoded_publication_bytes == 0
             || self.max_encoded_publication_bytes == 0
-            || self.max_connection_bytes < self.max_encoded_publication_bytes
+            || self
+                .max_encoded_publication_bytes
+                .checked_mul(2)
+                .is_none_or(|replacement_bytes| {
+                    self.max_connection_bytes < replacement_bytes
+                })
             || self.max_streams == 0
             || self.max_tombstones == 0
             || self.max_idle_ms == 0
@@ -1028,7 +1042,26 @@ impl PreviewTransportCapability {
         {
             return Err(PreviewCapabilityError::InvalidLimits);
         }
+        if self.max_encoded_publication_bytes
+            > self
+                .max_transmissible_encoded_bytes()
+                .ok_or(PreviewCapabilityError::InvalidLimits)?
+        {
+            return Err(PreviewCapabilityError::InvalidLimits);
+        }
         Ok(())
+    }
+
+    fn max_transmissible_encoded_bytes(self) -> Option<usize> {
+        let envelope_bytes =
+            PREVIEW_CHUNK_FIXED_HEADER_LEN.checked_add(INTERACTIVE_PREVIEW_ID_MAX_BYTES)?;
+        let payload_bytes = self.max_message_bytes.checked_sub(envelope_bytes)?;
+        let chunk_count = usize::try_from(self.max_chunk_count).ok()?;
+        let chunked_bytes = match payload_bytes.checked_mul(chunk_count) {
+            Some(bytes) => bytes,
+            None => usize::MAX,
+        };
+        Some(self.max_message_bytes.max(chunked_bytes))
     }
 }
 

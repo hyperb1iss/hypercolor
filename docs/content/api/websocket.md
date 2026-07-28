@@ -163,6 +163,11 @@ the daemon's advertised defaults. Renegotiation after a preview publication is
 active is rejected instead of changing limits underneath in-flight state.
 The advertised message budget must be at least 184 bytes so every bounded
 stream identity can still carry a one-byte publication fragment.
+The encoded budget cannot exceed the bytes representable by the advertised
+message and chunk counts. The connection budget must hold two maximum encoded
+publications so latest-value replacement can retain the active writer until its
+cancellation is observed while admitting the replacement without exceeding the
+negotiated memory contract.
 `subscriptions` shows
 what is already live — only `events` by default.
 

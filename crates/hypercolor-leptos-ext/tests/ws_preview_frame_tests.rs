@@ -1177,6 +1177,138 @@ fn preview_transport_capability_fits_every_stream_identity() {
 }
 
 #[test]
+fn preview_transport_capability_enforces_encoded_chunk_capacity() {
+    let payload_bytes = 16_usize;
+    let chunk_count = 16_u32;
+    let max_message_bytes =
+        PREVIEW_CHUNK_FIXED_HEADER_LEN + INTERACTIVE_PREVIEW_ID_MAX_BYTES + payload_bytes;
+    let max_encoded_publication_bytes =
+        payload_bytes * usize::try_from(chunk_count).expect("fixture chunk count fits usize");
+    let exact = PreviewTransportCapability {
+        max_encoded_publication_bytes,
+        max_connection_bytes: max_encoded_publication_bytes * 2,
+        max_message_bytes,
+        max_chunk_count: chunk_count,
+        ..PreviewTransportCapability::default()
+    };
+    assert_eq!(
+        PreviewTransportCapability::decode(&exact.encode()),
+        Ok(exact)
+    );
+
+    let impossible = PreviewTransportCapability {
+        max_encoded_publication_bytes: max_encoded_publication_bytes + 1,
+        max_connection_bytes: (max_encoded_publication_bytes + 1) * 2,
+        ..exact
+    };
+    assert_eq!(
+        PreviewTransportCapability::decode(&impossible.encode()),
+        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
+    );
+}
+
+#[test]
+fn preview_transport_capability_handles_capacity_overflow_without_wrapping() {
+    let capability = PreviewTransportCapability {
+        max_encoded_publication_bytes: usize::MAX / 2,
+        max_connection_bytes: usize::MAX,
+        max_message_bytes: usize::MAX - 1,
+        max_chunk_count: 2,
+        ..PreviewTransportCapability::default()
+    };
+    assert_eq!(
+        PreviewTransportCapability::decode(&capability.encode()),
+        Ok(capability)
+    );
+
+    let impossible = PreviewTransportCapability {
+        max_encoded_publication_bytes: PREVIEW_MIN_MESSAGE_BYTES + 1,
+        max_connection_bytes: (PREVIEW_MIN_MESSAGE_BYTES + 1) * 2,
+        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES,
+        max_chunk_count: 1,
+        ..PreviewTransportCapability::default()
+    };
+    assert_eq!(
+        PreviewTransportCapability::decode(&impossible.encode()),
+        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
+    );
+}
+
+#[test]
+fn preview_transport_capability_requires_replacement_headroom() {
+    let encoded_bytes = 1_024_usize;
+    let exact = PreviewTransportCapability {
+        max_encoded_publication_bytes: encoded_bytes,
+        max_connection_bytes: encoded_bytes * 2,
+        ..PreviewTransportCapability::default()
+    };
+    assert_eq!(
+        PreviewTransportCapability::decode(&exact.encode()),
+        Ok(exact)
+    );
+
+    let insufficient = PreviewTransportCapability {
+        max_connection_bytes: encoded_bytes * 2 - 1,
+        ..exact
+    };
+    assert_eq!(
+        PreviewTransportCapability::decode(&insufficient.encode()),
+        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
+    );
+
+    let overflow = PreviewTransportCapability {
+        max_encoded_publication_bytes: usize::MAX,
+        max_connection_bytes: usize::MAX,
+        max_message_bytes: usize::MAX,
+        max_chunk_count: u32::MAX,
+        ..PreviewTransportCapability::default()
+    };
+    assert_eq!(
+        PreviewTransportCapability::decode(&overflow.encode()),
+        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
+    );
+}
+
+#[test]
+fn preview_transport_negotiation_clamps_cross_field_chunk_capacity() {
+    let narrow_messages = PreviewTransportCapability {
+        max_encoded_publication_bytes: 1_000,
+        max_connection_bytes: 2_000,
+        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES,
+        max_chunk_count: 1_000,
+        ..PreviewTransportCapability::default()
+    };
+    let narrow_chunk_count = PreviewTransportCapability {
+        max_encoded_publication_bytes: 1_000,
+        max_connection_bytes: 2_000,
+        max_message_bytes: 1_000,
+        max_chunk_count: 1,
+        ..PreviewTransportCapability::default()
+    };
+    assert_eq!(
+        PreviewTransportCapability::decode(&narrow_messages.encode()),
+        Ok(narrow_messages)
+    );
+    assert_eq!(
+        PreviewTransportCapability::decode(&narrow_chunk_count.encode()),
+        Ok(narrow_chunk_count)
+    );
+
+    let negotiated = narrow_messages.negotiated_with(narrow_chunk_count);
+    assert_eq!(negotiated.max_message_bytes, PREVIEW_MIN_MESSAGE_BYTES);
+    assert_eq!(negotiated.max_chunk_count, 1);
+    assert_eq!(
+        negotiated.max_encoded_publication_bytes,
+        PREVIEW_MIN_MESSAGE_BYTES
+    );
+    assert_eq!(negotiated.max_connection_bytes, 2_000);
+    assert_eq!(
+        PreviewTransportCapability::decode(&negotiated.encode()),
+        Ok(negotiated)
+    );
+}
+
+#[test]
 fn preview_transport_negotiation_uses_each_peers_physical_minimum() {
     let local = PreviewReassemblyLimits::default();
     let peer = PreviewTransportCapability {

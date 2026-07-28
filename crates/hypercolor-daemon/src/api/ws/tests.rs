@@ -1555,8 +1555,8 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
     let peer = PreviewTransportCapability {
         max_decoded_publication_bytes: 1024 * 1024,
         max_encoded_publication_bytes: 1024,
-        max_connection_bytes: 1024,
-        max_streams: 2,
+        max_connection_bytes: 2048,
+        max_streams: 4,
         max_tombstones: 8,
         max_idle_ms: 1000,
         max_message_bytes: 256,
@@ -1607,6 +1607,25 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
     }
     assert!(message_count > 1);
 
+    sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
+            preview_test_frame(PreviewFrameChannel::Canvas, 2, 512),
+            None,
+        )
+        .expect("negotiated headroom admits a latest replacement while the old cursor is active");
+    let Some(PreviewOutboundItem::Cancellation(cancellation)) = receiver.try_recv() else {
+        panic!("latest replacement must cancel the active publication first");
+    };
+    assert_eq!(cancellation.publication_id, cursor.publication().publication_id());
+    receiver.complete(cursor.publication());
+    let replacement = try_receive_preview_publication(&receiver)
+        .expect("latest replacement follows its cancellation");
+    assert!(replacement.publication_id() > cancellation.publication_id);
+    assert!(receiver.is_current(&replacement));
+    receiver.complete(&replacement);
+    assert!(!receiver.is_current(&replacement));
+
     let ack = serde_json::to_value(ServerMessage::Subscribed {
         channels: vec!["canvas".to_owned()],
         config: serde_json::json!({}),
@@ -1632,26 +1651,48 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
             None,
         )
         .expect("first byte-accounted publication");
-    let _in_flight =
+    let _in_flight_one =
         try_receive_preview_publication(&byte_receiver).expect("first publication moves in flight");
     assert!(matches!(
         byte_sender.negotiate_transport(peer),
         Err(PreviewOutboundError::TransportAlreadyActive)
     ));
+    byte_sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
+            preview_test_frame(PreviewFrameChannel::ScreenCanvas, 2, 700),
+            None,
+        )
+        .expect("second byte-accounted publication");
+    let _in_flight_two = try_receive_preview_publication(&byte_receiver)
+        .expect("second publication moves in flight");
+    byte_sender
+        .publish(
+            PreviewStreamId::Passive(PreviewFrameChannel::WebViewportCanvas),
+            preview_test_frame(PreviewFrameChannel::WebViewportCanvas, 3, 700),
+            None,
+        )
+        .expect("third byte-accounted publication");
+    let _in_flight_three = try_receive_preview_publication(&byte_receiver)
+        .expect("third publication moves in flight");
     assert!(matches!(
         byte_sender.publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
-            preview_test_frame(PreviewFrameChannel::ScreenCanvas, 2, 512),
+            PreviewStreamId::Passive(PreviewFrameChannel::DisplayPreview),
+            preview_test_frame(PreviewFrameChannel::DisplayPreview, 4, 700),
             None,
         ),
-        Err(PreviewOutboundError::ConnectionBudgetExceeded { maximum: 1024, .. })
+        Err(PreviewOutboundError::ConnectionBudgetExceeded { maximum: 2048, .. })
     ));
 
     let (stream_sender, _stream_receiver) = preview_outbound_channel();
     let mut stream_capability = PreviewTransportCapability::default();
     let mut stream_cursors = PreviewCursorQueue::new(stream_capability.max_streams);
+    let stream_peer = PreviewTransportCapability {
+        max_streams: 2,
+        ..peer
+    };
     negotiate_preview_transport(
-        &peer.encode(),
+        &stream_peer.encode(),
         &stream_sender,
         &mut stream_cursors,
         &mut stream_capability,
