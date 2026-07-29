@@ -1489,11 +1489,8 @@ fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
 
     assert_eq!(ledger.publication_retention_bytes(), 0);
     assert_eq!(ledger.publication_subscriber_slot_bytes(), 0);
-    assert_eq!(ledger.total_bytes(), ledger.physical_plane_bytes());
-    assert_eq!(
-        ledger.physical_plane_bytes(),
-        u64::from(7680_u32) * u64::from(4320_u32) * 4
-    );
+    assert_eq!(ledger.physical_plane_bytes(), 0);
+    assert_eq!(ledger.total_bytes(), 0);
 }
 
 #[test]
@@ -1537,10 +1534,12 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
         )
         .expect("unchanged plan reuses every resource");
-    assert_eq!(unchanged.admission().active().total_bytes(), 192);
-    assert_eq!(unchanged.admission().candidate().total_bytes(), 192);
+    assert_eq!(unchanged.admission().active().total_bytes(), 144);
+    assert_eq!(unchanged.admission().candidate().total_bytes(), 144);
+    assert_eq!(unchanged.admission().active().physical_plane_bytes(), 0);
+    assert_eq!(unchanged.admission().candidate().physical_plane_bytes(), 0);
     assert_eq!(unchanged.admission().staged().total_bytes(), 0);
-    assert_eq!(unchanged.admission().overlap().total_bytes(), 192);
+    assert_eq!(unchanged.admission().overlap().total_bytes(), 144);
     assert_eq!(
         unchanged.admission().active().publication_retention_bytes(),
         48
@@ -1564,9 +1563,10 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
         )
         .expect("replacement shares the physical reduction");
-    assert_eq!(replacement.admission().active().total_bytes(), 192);
+    assert_eq!(replacement.admission().active().total_bytes(), 144);
     assert_eq!(replacement.admission().candidate().total_bytes(), 84);
-    assert_eq!(replacement.admission().staged().total_bytes(), 36);
+    assert_eq!(replacement.admission().staged().total_bytes(), 84);
+    assert_eq!(replacement.admission().staged().physical_plane_bytes(), 48);
     assert_eq!(replacement.admission().overlap().total_bytes(), 228);
     assert_eq!(
         replacement
@@ -1600,11 +1600,11 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
     );
     for (capacity, expected_resource) in [
         (
-            ScreenAdmissionCapacity::new(191, u64::MAX),
+            ScreenAdmissionCapacity::new(143, u64::MAX),
             ScreenResourceKind::ByteBudget,
         ),
         (
-            ScreenAdmissionCapacity::new(u64::MAX, 191),
+            ScreenAdmissionCapacity::new(u64::MAX, 143),
             ScreenResourceKind::BackendCapacity,
         ),
     ] {
@@ -1618,7 +1618,7 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
                 ScreenInputGraphGeneration::new(1),
                 capacity,
             )
-            .expect_err("192-byte admitted plan exceeds the explicit capacity");
+            .expect_err("144-byte admitted plan exceeds the explicit capacity");
         match error {
             ScreenPlanError::ResourceExhausted {
                 descriptor,
@@ -1628,8 +1628,8 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
             } => {
                 assert_eq!(descriptor.as_ref(), surface.descriptor());
                 assert_eq!(resource, expected_resource);
-                assert_eq!(requested, 192);
-                assert_eq!(available, 191);
+                assert_eq!(requested, 144);
+                assert_eq!(available, 143);
             }
             other => panic!("unexpected admission error: {other:?}"),
         }
@@ -1671,7 +1671,7 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
             available,
         } => {
             assert_eq!(descriptor.as_ref(), maximum_surface.descriptor());
-            assert_eq!(resource, ScreenResourceKind::PhysicalPlane);
+            assert_eq!(resource, ScreenResourceKind::PublicationRetention);
             assert_eq!(requested, u128::from(u32::MAX) * u128::from(u32::MAX) * 4);
             assert_eq!(available, u64::MAX);
         }
@@ -1907,7 +1907,10 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
             ScreenPublicationKind::Surface,
             ScreenExtentRequest::Native,
             ScreenAspectPolicy::Contain,
-            default_profile(),
+            profile(ScreenProcessingProfileConfig {
+                tuning: ScreenColorTuning::try_new(1.1, 1.0, 1.0).expect("test tuning is finite"),
+                ..ScreenProcessingProfileConfig::default()
+            }),
             60,
         ),
         &source,
@@ -2268,7 +2271,7 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
     let abort = failure.into_preparing().abort();
     assert_eq!(abort.active_plan(), active.as_ref());
     assert_eq!(abort.prepared_tokens().len(), 1);
-    assert_eq!(abort.prepared_tokens()[0].exact_ledger().total_bytes(), 16);
+    assert_eq!(abort.prepared_tokens()[0].exact_ledger().total_bytes(), 64);
     assert_eq!(builder.current(), active);
 
     let overflow = ScreenExactResourceLedger::try_new([
@@ -2292,7 +2295,10 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
             ScreenPublicationKind::Surface,
             ScreenExtentRequest::Native,
             ScreenAspectPolicy::Contain,
-            default_profile(),
+            profile(ScreenProcessingProfileConfig {
+                tuning: ScreenColorTuning::try_new(1.1, 1.0, 1.0).expect("test tuning is finite"),
+                ..ScreenProcessingProfileConfig::default()
+            }),
             60,
         ),
         &source,
