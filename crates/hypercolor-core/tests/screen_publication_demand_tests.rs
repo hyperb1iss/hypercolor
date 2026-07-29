@@ -16,7 +16,7 @@ use hypercolor_core::input::screen::{
     ScreenWorkerRetirement, SourceScale,
 };
 use hypercolor_core::input::{InputData, InputManager, InputSource};
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, Notify};
 
 fn branch(kind: ScreenPublicationKind) -> RegisteredScreenBranchDemand {
     branch_for(ScreenSourceSelector::Configured, kind)
@@ -124,6 +124,13 @@ struct ExactWorkerState {
     retirements: AtomicUsize,
     fail_preparation: AtomicBool,
     allocations: Mutex<Vec<RuntimeAllocation>>,
+    last_binding: Mutex<Option<ScreenWorkerBinding>>,
+}
+
+#[derive(Clone)]
+struct WorkerPreparationPause {
+    reached: Arc<Notify>,
+    release: Arc<Notify>,
 }
 
 impl ExactWorkerState {
@@ -140,6 +147,7 @@ struct ExactDemandProbe {
     hub: Arc<Mutex<Option<Arc<ScreenPublicationHub>>>>,
     worker: Arc<ExactWorkerState>,
     preparation_barrier: Option<Arc<Barrier>>,
+    completion_pause: Option<WorkerPreparationPause>,
 }
 
 impl ExactDemandProbe {
@@ -193,11 +201,17 @@ impl ExactDemandProbe {
             hub,
             worker,
             preparation_barrier: None,
+            completion_pause: None,
         }
     }
 
     fn with_preparation_barrier(mut self, barrier: Arc<Barrier>) -> Self {
         self.preparation_barrier = Some(barrier);
+        self
+    }
+
+    fn with_completion_pause(mut self, pause: WorkerPreparationPause) -> Self {
+        self.completion_pause = Some(pause);
         self
     }
 }
@@ -256,6 +270,7 @@ impl InputSource for ExactDemandProbe {
         let worker = Arc::clone(&self.worker);
         let abort_worker = Arc::clone(&self.worker);
         let preparation_barrier = self.preparation_barrier.clone();
+        let completion_pause = self.completion_pause.clone();
         Ok(ScreenWorkerPreparation::with_abort(
             async move {
                 if let Some(barrier) = preparation_barrier {
@@ -275,6 +290,10 @@ impl InputSource for ExactDemandProbe {
                 let exact = ledger.finish()?;
                 let binding = exact.token().binding().clone();
                 let (token, lifetimes) = exact.into_parts();
+                *worker
+                    .last_binding
+                    .lock()
+                    .expect("last worker binding mutex is healthy") = Some(binding.clone());
                 worker
                     .allocations
                     .lock()
@@ -283,6 +302,10 @@ impl InputSource for ExactDemandProbe {
                         binding,
                         _lifetimes: lifetimes,
                     });
+                if let Some(pause) = completion_pause {
+                    pause.reached.notify_one();
+                    pause.release.notified().await;
+                }
                 if worker.fail_preparation.load(Ordering::Acquire) {
                     anyhow::bail!("injected exact worker failure");
                 }
@@ -581,6 +604,58 @@ fn explicit_abort_cancels_unpolled_workers_and_preserves_active_plan() {
     assert_eq!(abort.active_plan().generation().get(), 0);
     assert_eq!(worker.preparations.load(Ordering::Acquire), 0);
     assert_eq!(worker.aborts.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn cancelling_worker_await_aborts_activation_before_cleanup() {
+    let attached_hub = Arc::new(Mutex::new(None));
+    let worker = Arc::new(ExactWorkerState::default());
+    let pause = WorkerPreparationPause {
+        reached: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+    let mut manager = InputManager::new();
+    let hub = manager.screen_publication_hub();
+    manager.add_source(Box::new(
+        ExactDemandProbe::new(Arc::clone(&attached_hub), Arc::clone(&worker))
+            .with_completion_pause(pause.clone()),
+    ));
+    let exact = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
+    let before = hub.committed_state();
+    let preparation = manager
+        .begin_screen_publication_transition(exact)
+        .expect("exact plan resolves")
+        .expect("new exact plan prepares");
+    let awaiting = tokio::spawn(preparation.await_workers());
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        pause.reached.notified(),
+    )
+    .await
+    .expect("worker should allocate before the cancellation gate");
+    awaiting.abort();
+    let cancellation = awaiting
+        .await
+        .expect_err("aborted worker await should report task cancellation");
+    assert!(cancellation.is_cancelled());
+
+    let binding = worker
+        .last_binding
+        .lock()
+        .expect("last worker binding mutex is healthy")
+        .clone()
+        .expect("worker allocation records its activation binding");
+    assert_eq!(binding.state(), ScreenWorkerBindingState::Aborted);
+    assert_eq!(worker.aborts.load(Ordering::Acquire), 1);
+    assert!(
+        worker
+            .allocations
+            .lock()
+            .expect("runtime allocation mutex is healthy")
+            .is_empty()
+    );
+    assert!(Arc::ptr_eq(&before, &hub.committed_state()));
 }
 
 #[tokio::test]

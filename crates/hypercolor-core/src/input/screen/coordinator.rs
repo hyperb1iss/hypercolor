@@ -170,12 +170,78 @@ pub(crate) struct PendingScreenWorkerPreparation {
     pub(crate) preparation: ScreenWorkerPreparation,
 }
 
+type WorkerCompletionFuture = Pin<
+    Box<
+        dyn Future<
+                Output = (
+                    CaptureSourceId,
+                    (anyhow::Result<ScreenPreparedWorkerToken>, ScreenWorkerAbort),
+                ),
+            > + Send
+            + 'static,
+    >,
+>;
+
+struct ScreenPublicationAwaitGuard {
+    preparing: Option<PreparingScreenPlan>,
+    completions: FuturesUnordered<WorkerCompletionFuture>,
+    worker_aborts: Vec<ScreenWorkerAbort>,
+}
+
+impl ScreenPublicationAwaitGuard {
+    fn new(preparing: PreparingScreenPlan, workers: Vec<PendingScreenWorkerPreparation>) -> Self {
+        let guard = Self {
+            preparing: Some(preparing),
+            completions: FuturesUnordered::new(),
+            worker_aborts: Vec::new(),
+        };
+        for worker in workers {
+            guard.completions.push(Box::pin(async move {
+                (worker.source_id, worker.preparation.complete().await)
+            }));
+        }
+        guard
+    }
+
+    fn preparing_mut(&mut self) -> &mut PreparingScreenPlan {
+        self.preparing
+            .as_mut()
+            .expect("awaiting screen publication retains its candidate")
+    }
+
+    fn abort(&mut self) -> ScreenPlanAbort {
+        self.preparing
+            .take()
+            .expect("awaiting screen publication aborts once")
+            .abort()
+    }
+
+    fn into_prepared(
+        mut self,
+        demand: ScreenPublicationDemandSnapshot,
+    ) -> PreparedScreenPublicationPlan {
+        debug_assert!(self.completions.is_empty());
+        PreparedScreenPublicationPlan {
+            preparing: self.preparing.take(),
+            demand,
+            worker_aborts: std::mem::take(&mut self.worker_aborts),
+        }
+    }
+}
+
+impl Drop for ScreenPublicationAwaitGuard {
+    fn drop(&mut self) {
+        if let Some(preparing) = self.preparing.take() {
+            drop(preparing.abort());
+        }
+    }
+}
+
 /// Candidate plan whose real worker resources are preparing out of lock.
 #[must_use = "screen publication preparation must be awaited or aborted"]
 pub struct ScreenPublicationPreparation {
     preparing: Option<PreparingScreenPlan>,
     workers: Vec<PendingScreenWorkerPreparation>,
-    worker_aborts: Vec<ScreenWorkerAbort>,
     demand: ScreenPublicationDemandSnapshot,
 }
 
@@ -188,7 +254,6 @@ impl ScreenPublicationPreparation {
         Self {
             preparing: Some(preparing),
             workers,
-            worker_aborts: Vec::new(),
             demand,
         }
     }
@@ -204,41 +269,36 @@ impl ScreenPublicationPreparation {
     pub async fn await_workers(
         mut self,
     ) -> Result<PreparedScreenPublicationPlan, ScreenPublicationTransitionFailure> {
-        let mut preparing = self
+        let preparing = self
             .preparing
             .take()
             .expect("screen publication preparation is consumed once");
         let workers = std::mem::take(&mut self.workers);
-        let mut completions = workers
-            .into_iter()
-            .map(|worker| async move { (worker.source_id, worker.preparation.complete().await) })
-            .collect::<FuturesUnordered<_>>();
-        while let Some((source_id, (token, abort))) = completions.next().await {
-            self.worker_aborts.push(abort);
+        let mut awaiting = ScreenPublicationAwaitGuard::new(preparing, workers);
+        while let Some((source_id, (token, abort))) = awaiting.completions.next().await {
+            awaiting.worker_aborts.push(abort);
             let token = match token {
                 Ok(token) => token,
                 Err(error) => {
+                    let abort = awaiting.abort();
                     return Err(ScreenPublicationTransitionFailure::new(
                         ScreenPublicationTransitionError::WorkerPreparationFailed {
                             source_id,
                             message: Arc::from(error.to_string()),
                         },
-                        preparing.abort(),
+                        abort,
                     ));
                 }
             };
-            if let Err(error) = preparing.acknowledge(token) {
+            if let Err(error) = awaiting.preparing_mut().acknowledge(token) {
+                let abort = awaiting.abort();
                 return Err(ScreenPublicationTransitionFailure::new(
                     ScreenPublicationTransitionError::Plan(error),
-                    preparing.abort(),
+                    abort,
                 ));
             }
         }
-        Ok(PreparedScreenPublicationPlan {
-            preparing: Some(preparing),
-            demand: self.demand.clone(),
-            worker_aborts: std::mem::take(&mut self.worker_aborts),
-        })
+        Ok(awaiting.into_prepared(self.demand.clone()))
     }
 
     /// Explicitly abandon all started worker preparations.
