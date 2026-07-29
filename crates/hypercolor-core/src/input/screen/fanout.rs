@@ -194,6 +194,12 @@ impl PreparedCpuPublicationFanoutCandidate {
         })
     }
 
+    /// Heap bytes retained by unpublished routing metadata and kernels.
+    #[must_use]
+    pub const fn allocation_byte_len(&self) -> u64 {
+        self.allocation_byte_len
+    }
+
     /// Bind one unpublished candidate to an exact immutable authority snapshot.
     ///
     /// Successful binding only moves owned storage and clones retained `Arc`

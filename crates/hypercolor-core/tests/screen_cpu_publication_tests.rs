@@ -326,8 +326,10 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     let mut workspace = batch
         .prepare_materialization_workspace(&plan)
         .expect("shared physical workspace prepares");
-    let mut fanout = PreparedCpuPublicationFanout::prepare_candidate(&batch, &workspace, &plan)
-        .expect("shared physical fanout candidate prepares")
+    let fanout = PreparedCpuPublicationFanout::prepare_candidate(&batch, &workspace, &plan)
+        .expect("shared physical fanout candidate prepares");
+    assert!(fanout.allocation_byte_len() > 0);
+    let mut fanout = fanout
         .bind(builder.committed_state(), &binding)
         .expect("shared physical fanout binds");
     let frame = frame(&source);
