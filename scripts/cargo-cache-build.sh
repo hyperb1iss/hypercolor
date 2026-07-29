@@ -50,63 +50,88 @@ fi
 
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"
-ENABLE_RUST_SCCACHE=1
-FORCE_RUST_SCCACHE="${HYPERCOLOR_FORCE_SCCACHE:-0}"
+DISABLE_SCCACHE="${HYPERCOLOR_NO_SCCACHE:-0}"
 
-if [ "$FORCE_RUST_SCCACHE" != "1" ] && [ "$FORCE_RUST_SCCACHE" != "true" ]; then
-  for ((i = 1; i <= $#; i++)); do
-    arg="${!i}"
-    case "$arg" in
-      --release)
-        ENABLE_RUST_SCCACHE=1
-        ;;
-      --profile)
-        next_index=$((i + 1))
-        if [ "$next_index" -le "$#" ]; then
-          next_arg="${!next_index}"
-          if [ "$next_arg" != "release" ] && [ "$next_arg" != "bench" ]; then
-            ENABLE_RUST_SCCACHE=0
-          fi
+RELEASE_LIKE_PROFILE=0
+for ((i = 1; i <= $#; i++)); do
+  arg="${!i}"
+  case "$arg" in
+    --release)
+      RELEASE_LIKE_PROFILE=1
+      ;;
+    --profile)
+      next_index=$((i + 1))
+      if [ "$next_index" -le "$#" ]; then
+        next_arg="${!next_index}"
+        if [ "$next_arg" = "release" ] || [ "$next_arg" = "bench" ]; then
+          RELEASE_LIKE_PROFILE=1
         fi
-        ;;
-      --profile=*)
-        profile_name="${arg#--profile=}"
-        if [ "$profile_name" != "release" ] && [ "$profile_name" != "bench" ]; then
-          ENABLE_RUST_SCCACHE=0
-        fi
-        ;;
-    esac
-  done
+      fi
+      ;;
+    --profile=release | --profile=bench)
+      RELEASE_LIKE_PROFILE=1
+      ;;
+  esac
+done
 
-  if [ "$#" -gt 0 ] && ! printf '%s\n' "$*" | grep -Eq -- '(^| )--release($| )|(^| )--profile(=| )(release|bench)($| )'; then
-    ENABLE_RUST_SCCACHE=0
-  fi
+# sccache is the cross-worktree sharing layer: every worktree keeps its own
+# target dir (so parallel agent builds never contend on Cargo's target lock),
+# while identical compiles hit one bounded cache under the shared cache root.
+# sccache and incremental compilation are mutually exclusive (sccache 0.17
+# hard-errors on either the env var or -Cincremental), so the wrapper picks
+# per command: codegen-heavy tree ops go through sccache; metadata-only ops
+# (check/clippy) keep incremental because sccache cannot cache
+# --emit=metadata units at all.
+CARGO_SUBCOMMAND=""
+if [ "$#" -gt 1 ]; then
+  case "$(basename "$1")" in
+    cargo | cargo.exe)
+      for ((i = 2; i <= $#; i++)); do
+        arg="${!i}"
+        case "$arg" in
+          -* | +*) continue ;;
+          *)
+            CARGO_SUBCOMMAND="$arg"
+            break
+            ;;
+        esac
+      done
+      ;;
+  esac
 fi
 
-if [ -n "$SCCACHE_BIN" ] && [ "$ENABLE_RUST_SCCACHE" -eq 1 ]; then
+FORCE_SCCACHE="${HYPERCOLOR_FORCE_SCCACHE:-0}"
+ITERATE="${HYPERCOLOR_ITERATE:-0}"
+# `run` stays incremental: it is the edit-run iteration loop, and a measured
+# edit-rebuild of hypercolor-core is ~45s non-incremental vs ~11s
+# incremental. Whole-tree ops win with sccache instead.
+WANTS_SCCACHE=0
+case "$CARGO_SUBCOMMAND" in
+  build | test | bench) WANTS_SCCACHE=1 ;;
+esac
+if [ "$RELEASE_LIKE_PROFILE" -eq 1 ] || [ "$FORCE_SCCACHE" = "1" ] || [ "$FORCE_SCCACHE" = "true" ]; then
+  WANTS_SCCACHE=1
+fi
+if [ "$DISABLE_SCCACHE" = "1" ] || [ "$DISABLE_SCCACHE" = "true" ] \
+  || [ "$ITERATE" = "1" ] || [ "$ITERATE" = "true" ] \
+  || { [ -n "${CARGO_INCREMENTAL:-}" ] && [ "$CARGO_INCREMENTAL" != "0" ]; }; then
+  WANTS_SCCACHE=0
+fi
+
+if [ -n "$SCCACHE_BIN" ] && [ "$WANTS_SCCACHE" -eq 1 ]; then
   export SCCACHE_DIR="${SCCACHE_DIR:-$CACHE_ROOT/sccache}"
   mkdir -p "$SCCACHE_DIR"
+  export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-${HYPERCOLOR_SCCACHE_SIZE:-75G}}"
   export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$SCCACHE_BIN}"
-  # sccache rejects incremental compilation entirely, so prefer the
-  # compiler cache and force a compatible Cargo setting.
-  unset CARGO_INCREMENTAL || true
-  export CARGO_BUILD_INCREMENTAL="false"
-  export CARGO_PROFILE_DEV_INCREMENTAL="false"
-  export CARGO_PROFILE_RELEASE_INCREMENTAL="false"
-  export CARGO_PROFILE_TEST_INCREMENTAL="false"
-  export CARGO_PROFILE_BENCH_INCREMENTAL="false"
-  export CARGO_PROFILE_PREVIEW_INCREMENTAL="false"
-  echo "[cargo-cache] sccache enabled for Rust compilation"
-  echo "[cargo-cache] SCCACHE_DIR=$SCCACHE_DIR"
-  echo "[cargo-cache] incremental compilation disabled for sccache compatibility"
+  export CARGO_INCREMENTAL="0"
+  echo "[cargo-cache] sccache mode: Rust cached, incremental off (cap $SCCACHE_CACHE_SIZE)"
+  echo "[cargo-cache] SCCACHE_DIR=$SCCACHE_DIR (HYPERCOLOR_NO_SCCACHE=1 or HYPERCOLOR_ITERATE=1 to disable)"
 else
   export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
-  if [ -n "$SCCACHE_BIN" ]; then
-    echo "[cargo-cache] skipping rust sccache for dev/preview-style build; using Cargo incremental instead"
-  else
-    echo "[cargo-cache] sccache not found; Rust compilation will use Cargo incremental only"
+  if [ -z "$SCCACHE_BIN" ]; then
+    echo "[cargo-cache] sccache not found; run 'cargo install --locked sccache' for shared build caching"
   fi
-  echo "[cargo-cache] CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
+  echo "[cargo-cache] incremental mode: CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
 fi
 
 if [ "$HOST_TRIPLE" = "x86_64-unknown-linux-gnu" ] \

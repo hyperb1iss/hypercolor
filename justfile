@@ -142,23 +142,23 @@ test *args='':
 test *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ args }}
 
-# Run tests for a specific crate
+# Run tests for a specific crate (iteration-shaped: keeps incremental rebuilds)
 [unix]
 test-crate crate *args='':
-    ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ args }}
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ args }}
 
 [windows]
 test-crate crate *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ args }}
+    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ args }}
 
-# Run a specific test by name
+# Run a specific test by name (iteration-shaped: keeps incremental rebuilds)
 [unix]
 test-one name *args='':
-    ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
 
 [windows]
 test-one name *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ name }} {{ args }}
+    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ name }} {{ args }}
 
 # Manually run the Cinder/Leptos extension design audit snapshot generator
 cinder-audit:
@@ -364,10 +364,10 @@ app-assets:
     just ui-build
     just effects-build
 
-# Run the unified desktop app
+# Run the unified desktop app (iteration-shaped: keeps incremental rebuilds)
 [unix]
 app *args='': app-assets
-    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-app --bin hypercolor-app --profile preview
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-app --bin hypercolor-app --profile preview
     "${CARGO_TARGET_DIR:-target}/preview/hypercolor-app" {{ args }}
 
 [windows]
@@ -674,10 +674,14 @@ e2e-build:
     just effects-build
     just ui-build
 
-# Build the fallback CPU smoke stack without the Servo renderer
+# Build the fallback CPU smoke stack without the Servo renderer.
+# Isolated target lane: the --no-default-features shape unifies crate features
+# differently from the daily builds, and letting it share target/ churns and
+# strands artifacts for the whole dependency graph on every alternation.
+# CI pins CARGO_TARGET_DIR per lane, so an ambient value wins.
 e2e-build-cpu:
-    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
-    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-cli
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-cli
     just effects-build
     just ui-build
 
@@ -813,6 +817,52 @@ udev-install:
 # Clean build artifacts
 clean:
     ./scripts/cargo-cache-build.sh cargo clean
+
+# Report build artifact and shared cache disk usage for this checkout
+disk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cache_root="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
+    target="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"
+    echo "── target profiles ──"
+    [ -d "$target" ] && du -sh "$target"/* 2>/dev/null | sort -rh | head -15
+    echo "── shared caches ($cache_root) ──"
+    [ -d "$cache_root" ] && du -sh "$cache_root"/* 2>/dev/null | sort -rh
+    if command -v sccache >/dev/null 2>&1; then
+        echo "── sccache ──"
+        sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true
+    fi
+
+# Sweep stale build artifacts (orphaned toolchains, then >14 days old) from this checkout
+gc:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
+    cargo sweep --installed
+    cargo sweep --time 14
+    echo '🧹 stale artifacts swept'
+
+# Sweep every worktree of this repo (run after merges or when disk runs hot)
+gc-worktrees:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
+    git worktree prune
+    git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do
+        [ -d "$wt/target" ] || continue
+        echo "── sweeping $wt"
+        cargo sweep --installed "$wt" || true
+        cargo sweep --time 14 "$wt" || true
+    done
+    echo '🧹 all worktree lanes swept'
+
+# Deep clean: sweep, then drop incremental state and the CPU-smoke lane
+gc-deep: gc
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"
+    rm -rf "$target"/*/incremental "$target/cpu-smoke"
+    echo '🧹 incremental state and cpu-smoke lane dropped'
 
 # Show workspace dependency tree
 deps:

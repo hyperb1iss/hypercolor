@@ -95,27 +95,84 @@ function Initialize-HypercolorCargoCache {
         }
     }
 
-    $sccache = Get-Command sccache.exe -ErrorAction SilentlyContinue
+    # sccache is the cross-worktree sharing layer: every worktree keeps its own
+    # target dir (so parallel agent builds never contend on Cargo's target
+    # lock), while identical compiles hit one bounded cache under the shared
+    # cache root. sccache and incremental compilation are mutually exclusive
+    # (sccache 0.17 hard-errors on either the env var or -Cincremental), so
+    # the wrapper picks per command: codegen-heavy tree ops go through
+    # sccache; metadata-only ops (check/clippy) keep incremental because
+    # sccache cannot cache --emit=metadata units at all.
+    $cargoSubcommand = ''
+    if ($CommandArgs.Count -gt 1 -and $CommandArgs[0] -match 'cargo(\.exe)?$') {
+        for ($i = 1; $i -lt $CommandArgs.Count; $i += 1) {
+            if ($CommandArgs[$i] -notmatch '^[-+]') {
+                $cargoSubcommand = $CommandArgs[$i]
+                break
+            }
+        }
+    }
+    # `run` stays incremental: it is the edit-run iteration loop, and a
+    # measured edit-rebuild of hypercolor-core is ~45s non-incremental vs
+    # ~11s incremental. Whole-tree ops win with sccache instead.
+    $sccacheSubcommands = @('build', 'test', 'bench')
     $forceSccache = $env:HYPERCOLOR_FORCE_SCCACHE -in @('1', 'true', 'TRUE')
-    if ($null -ne $sccache -and ($usesReleaseLikeProfile -or $forceSccache)) {
+    $wantsSccache = $forceSccache -or $usesReleaseLikeProfile -or ($cargoSubcommand -in $sccacheSubcommands)
+
+    $sccache = Get-Command sccache.exe -ErrorAction SilentlyContinue
+    $disableSccache = ($env:HYPERCOLOR_NO_SCCACHE -in @('1', 'true', 'TRUE')) -or
+        ($env:HYPERCOLOR_ITERATE -in @('1', 'true', 'TRUE')) -or
+        ($env:CARGO_INCREMENTAL -and $env:CARGO_INCREMENTAL -ne '0')
+    if ($null -ne $sccache -and $wantsSccache -and -not $disableSccache) {
         if (-not $env:SCCACHE_DIR) {
             $env:SCCACHE_DIR = Join-Path $cacheRoot 'sccache'
         }
         New-Item -ItemType Directory -Force -Path $env:SCCACHE_DIR | Out-Null
+        if (-not $env:SCCACHE_CACHE_SIZE) {
+            $env:SCCACHE_CACHE_SIZE = if ($env:HYPERCOLOR_SCCACHE_SIZE) {
+                $env:HYPERCOLOR_SCCACHE_SIZE
+            } else {
+                '75G'
+            }
+        }
         if (-not $env:RUSTC_WRAPPER) {
             $env:RUSTC_WRAPPER = $sccache.Source
         }
-        $env:CARGO_BUILD_INCREMENTAL = 'false'
-        $env:CARGO_PROFILE_RELEASE_INCREMENTAL = 'false'
-        $env:CARGO_PROFILE_BENCH_INCREMENTAL = 'false'
-        Write-Host "[cargo-cache] sccache enabled for Rust compilation"
-        Write-Host "[cargo-cache] SCCACHE_DIR=$env:SCCACHE_DIR"
+        # C/C++ caching: mozangle (ANGLE) builds through the cc crate and
+        # turbojpeg through CMake; both honor these and route cl.exe through
+        # sccache, which is where repeat ANGLE builds go to die.
+        if (-not $env:CMAKE_C_COMPILER_LAUNCHER) {
+            $env:CMAKE_C_COMPILER_LAUNCHER = $sccache.Source
+        }
+        if (-not $env:CMAKE_CXX_COMPILER_LAUNCHER) {
+            $env:CMAKE_CXX_COMPILER_LAUNCHER = $sccache.Source
+        }
+        if (-not $env:CC) {
+            $env:CC = 'sccache cl'
+        }
+        if (-not $env:CXX) {
+            $env:CXX = 'sccache cl'
+        }
+        $env:CARGO_INCREMENTAL = '0'
+        Write-Host "[cargo-cache] sccache mode: Rust + C/C++ cached, incremental off (cap $env:SCCACHE_CACHE_SIZE)"
+        Write-Host "[cargo-cache] SCCACHE_DIR=$env:SCCACHE_DIR (HYPERCOLOR_NO_SCCACHE=1 or HYPERCOLOR_ITERATE=1 to disable)"
     } else {
         if (-not $env:CARGO_INCREMENTAL) {
             $env:CARGO_INCREMENTAL = '1'
         }
-        Write-Host "[cargo-cache] using Cargo incremental compilation on Windows"
-        Write-Host "[cargo-cache] CARGO_INCREMENTAL=$env:CARGO_INCREMENTAL"
+        if ($null -eq $sccache) {
+            Write-Host "[cargo-cache] sccache not found; run 'cargo install --locked sccache' for shared build caching"
+        }
+        Write-Host "[cargo-cache] incremental mode: CARGO_INCREMENTAL=$env:CARGO_INCREMENTAL"
+    }
+
+    # rust-lld ships with the toolchain and links large statically-linked
+    # binaries (daemon + Servo + mozjs) far faster than link.exe. Local-only:
+    # the shared .cargo/config.toml stays portable for CI and release.
+    $disableFastLink = $env:HYPERCOLOR_NO_FAST_LINK -in @('1', 'true', 'TRUE')
+    if (-not $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER -and -not $disableFastLink) {
+        $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = 'rust-lld'
+        Write-Host "[cargo-cache] linker: rust-lld (HYPERCOLOR_NO_FAST_LINK=1 to disable)"
     }
 
     Write-Host "[cargo-cache] CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
