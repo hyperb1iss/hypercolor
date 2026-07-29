@@ -10,9 +10,9 @@ use hypercolor_windows_capture::{
 };
 
 use super::{
-    ActiveCaptureEpoch, CapturePublication, CaptureWorker, WindowsPublicationSource,
-    WindowsScreenCaptureInput, WorkerCaptureSchedule, WorkerCommand, capture_epoch,
-    capture_freshness, capture_geometry, capture_gpu_descriptor, capture_issue,
+    ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactPublicationShared,
+    WindowsPublicationSource, WindowsScreenCaptureInput, WorkerCaptureSchedule, WorkerCommand,
+    capture_epoch, capture_freshness, capture_geometry, capture_gpu_descriptor, capture_issue,
     native_capture_extent, record_capture_health, resolve_windows_publication_branch,
     settle_inactive_capture, windows_gpu_attempt_at, windows_gpu_candidate_admission,
     windows_gpu_preparation_gate, windows_gpu_retry_at,
@@ -297,6 +297,21 @@ fn gpu_preparation_gate_is_shared_per_adapter() {
 
     assert!(Arc::ptr_eq(&first, &same));
     assert!(!Arc::ptr_eq(&first, &other));
+}
+
+#[test]
+fn cpu_executor_is_shared_across_exact_plan_generations() {
+    let exact = ExactPublicationShared::default();
+    let first = exact
+        .cpu_executor()
+        .expect("the source CPU executor prepares");
+
+    for _ in 0..100 {
+        let next = exact
+            .cpu_executor()
+            .expect("later plan generations reuse the executor");
+        assert!(Arc::ptr_eq(&first, &next));
+    }
 }
 
 #[test]

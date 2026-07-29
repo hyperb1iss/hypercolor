@@ -281,6 +281,7 @@ struct ExactPublicationShared {
     source: Mutex<Option<WindowsPublicationSource>>,
     owned_sources: Mutex<Vec<CaptureSourceId>>,
     hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
+    cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
     resolution_revision: AtomicU64,
     next_descriptor_id: AtomicU64,
 }
@@ -331,6 +332,22 @@ impl ExactPublicationShared {
             .owned_sources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = sources;
+    }
+
+    fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
+        let mut executor = self
+            .cpu_executor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(executor) = executor.as_ref() {
+            return Ok(Arc::clone(executor));
+        }
+        let prepared = Arc::new(CpuReductionExecutor::new(
+            thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+            NonZeroU32::new(16).expect("CPU reduction tile height is nonzero"),
+        )?);
+        *executor = Some(Arc::clone(&prepared));
+        Ok(prepared)
     }
 
     fn next_gpu_descriptor_id(&self) -> anyhow::Result<GpuSurfaceDescriptorId> {
@@ -1773,10 +1790,7 @@ fn prepare_windows_exact_runtime(
             source.epoch.clone(),
             cpu_branch.descriptor().source().clone(),
         );
-        let executor = CpuReductionExecutor::new(
-            thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
-            NonZeroU32::new(16).expect("CPU reduction tile height is nonzero"),
-        )?;
+        let executor = exact.cpu_executor()?;
         let batch = executor.prepare_batch(&resolved_source, candidate)?;
         let workspace = batch.prepare_materialization_workspace(candidate)?;
         let workspace_allocation_byte_len = workspace.allocation_byte_len();
