@@ -63,6 +63,31 @@ pub enum ScreenResourceApi {
     PlatformGpu(PlatformGpuApi),
 }
 
+/// Stable physical GPU identity shared across platform API wrappers.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenPhysicalGpuDeviceIdentity {
+    /// Windows DXGI adapter locally unique identifier.
+    Direct3dAdapterLuid {
+        /// Unsigned low 32 bits reported by DXGI.
+        low_part: u32,
+        /// Signed high 32 bits reported by DXGI.
+        high_part: i32,
+    },
+    /// Linux DRM render-node device number.
+    DrmRenderNode {
+        /// Device major number.
+        major: u32,
+        /// Device minor number.
+        minor: u32,
+    },
+    /// Vulkan physical-device UUID.
+    VulkanDeviceUuid([u8; 16]),
+    /// Metal registry identifier.
+    MetalRegistryId(u64),
+    /// Namespaced backend identity for future platform APIs.
+    Other(Arc<str>),
+}
+
 impl Ord for ScreenResourceApi {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
@@ -87,6 +112,7 @@ impl PartialOrd for ScreenResourceApi {
 pub struct ScreenBackendResourceIdentity {
     backend: ScreenCaptureBackend,
     api: ScreenResourceApi,
+    physical_gpu_device: Option<ScreenPhysicalGpuDeviceIdentity>,
     device_generation: u64,
     resource_generation: u64,
 }
@@ -103,6 +129,25 @@ impl ScreenBackendResourceIdentity {
         Self {
             backend,
             api,
+            physical_gpu_device: None,
+            device_generation,
+            resource_generation,
+        }
+    }
+
+    /// Construct a resource fence owned by one stable physical GPU.
+    #[must_use]
+    pub const fn new_with_physical_gpu_device(
+        backend: ScreenCaptureBackend,
+        api: ScreenResourceApi,
+        physical_gpu_device: ScreenPhysicalGpuDeviceIdentity,
+        device_generation: u64,
+        resource_generation: u64,
+    ) -> Self {
+        Self {
+            backend,
+            api,
+            physical_gpu_device: Some(physical_gpu_device),
             device_generation,
             resource_generation,
         }
@@ -118,6 +163,12 @@ impl ScreenBackendResourceIdentity {
     #[must_use]
     pub const fn api(&self) -> &ScreenResourceApi {
         &self.api
+    }
+
+    /// Stable physical GPU identity, when the source owns GPU storage.
+    #[must_use]
+    pub const fn physical_gpu_device(&self) -> Option<&ScreenPhysicalGpuDeviceIdentity> {
+        self.physical_gpu_device.as_ref()
     }
 
     /// Generation of the backend device or adapter.
@@ -386,12 +437,131 @@ impl PartialOrd for ScreenPublicationResidency {
 }
 
 /// Executor requested by one logical publication consumer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenPublicationExecutorRequest {
     /// Materialize exact host-addressable output, reading back a GPU source when needed.
     Cpu,
-    /// Execute on the source's native storage API without host readback.
-    SourceNative,
+    /// Execute for one exact native consumer without host readback.
+    SourceNative(ScreenNativeExecutionTarget),
+}
+
+impl Ord for ScreenPublicationExecutorRequest {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Cpu, Self::Cpu) => Ordering::Equal,
+            (Self::Cpu, Self::SourceNative(_)) => Ordering::Less,
+            (Self::SourceNative(_), Self::Cpu) => Ordering::Greater,
+            (Self::SourceNative(left), Self::SourceNative(right)) => left.cmp(right),
+        }
+    }
+}
+
+impl PartialOrd for ScreenPublicationExecutorRequest {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Process-local identity of one renderer-native execution context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScreenNativeExecutionTargetId(NonZeroU64);
+
+impl ScreenNativeExecutionTargetId {
+    /// Construct an opaque nonzero target identity.
+    #[must_use]
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    /// Recover the process-local numeric identity.
+    #[must_use]
+    pub const fn get(self) -> NonZeroU64 {
+        self.0
+    }
+}
+
+/// Renderer-owned native execution contract for one GPU context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenNativeExecutionTarget {
+    id: ScreenNativeExecutionTargetId,
+    accepted_api: PlatformGpuApi,
+    physical_gpu_device: ScreenPhysicalGpuDeviceIdentity,
+    max_texture_dimension: NonZeroU32,
+}
+
+impl ScreenNativeExecutionTarget {
+    /// Construct one exact native execution target.
+    #[must_use]
+    pub const fn new(
+        id: ScreenNativeExecutionTargetId,
+        accepted_api: PlatformGpuApi,
+        physical_gpu_device: ScreenPhysicalGpuDeviceIdentity,
+        max_texture_dimension: NonZeroU32,
+    ) -> Self {
+        Self {
+            id,
+            accepted_api,
+            physical_gpu_device,
+            max_texture_dimension,
+        }
+    }
+
+    /// Process-local renderer context identity.
+    #[must_use]
+    pub const fn id(&self) -> ScreenNativeExecutionTargetId {
+        self.id
+    }
+
+    /// Source-native API accepted by this target.
+    #[must_use]
+    pub const fn accepted_api(&self) -> &PlatformGpuApi {
+        &self.accepted_api
+    }
+
+    /// Physical GPU that owns this target.
+    #[must_use]
+    pub const fn physical_gpu_device(&self) -> &ScreenPhysicalGpuDeviceIdentity {
+        &self.physical_gpu_device
+    }
+
+    /// Largest exact texture dimension accepted by this target.
+    #[must_use]
+    pub const fn max_texture_dimension(&self) -> NonZeroU32 {
+        self.max_texture_dimension
+    }
+}
+
+impl Ord for ScreenNativeExecutionTarget {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id
+            .cmp(&other.id)
+            .then_with(|| platform_gpu_api_cmp(&self.accepted_api, &other.accepted_api))
+            .then_with(|| self.physical_gpu_device.cmp(&other.physical_gpu_device))
+            .then_with(|| self.max_texture_dimension.cmp(&other.max_texture_dimension))
+    }
+}
+
+impl PartialOrd for ScreenNativeExecutionTarget {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Logical reason a native request resolved to exact CPU execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenPublicationExecutorFallbackReason {
+    /// The capture source is already host-addressable.
+    CpuSource,
+    /// The source GPU API cannot be consumed by the requested target.
+    PlatformApiMismatch,
+    /// The GPU source did not publish a stable physical-device identity.
+    MissingPhysicalGpuDevice,
+    /// The source and target belong to different physical GPUs.
+    PhysicalGpuDeviceMismatch,
+    /// One exact output dimension exceeds the target's texture limit.
+    TargetDimensionLimitExceeded,
+    /// The target cannot execute the requested color contract exactly.
+    NativeColorContractUnsupported,
 }
 
 /// Concrete executor selected after resolving the capture source.
@@ -400,7 +570,7 @@ pub enum ScreenPublicationExecutor {
     /// CPU reduction over a host-addressable source or exact platform readback.
     Cpu,
     /// Native platform reduction retaining GPU ownership.
-    SourceNative(PlatformGpuApi),
+    SourceNative(ScreenNativeExecutionTarget),
 }
 
 impl Ord for ScreenPublicationExecutor {
@@ -409,9 +579,7 @@ impl Ord for ScreenPublicationExecutor {
             (Self::Cpu, Self::Cpu) => Ordering::Equal,
             (Self::Cpu, Self::SourceNative(_)) => Ordering::Less,
             (Self::SourceNative(_), Self::Cpu) => Ordering::Greater,
-            (Self::SourceNative(left), Self::SourceNative(right)) => {
-                platform_gpu_api_cmp(left, right)
-            }
+            (Self::SourceNative(left), Self::SourceNative(right)) => left.cmp(right),
         }
     }
 }
@@ -747,6 +915,51 @@ impl ScreenColorTransformCapabilities {
     #[must_use]
     pub const fn algorithm_revision(self) -> Option<NonZeroU32> {
         self.algorithm_revision
+    }
+}
+
+/// Color operations available independently on CPU and source-native lanes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScreenExecutorColorCapabilities {
+    cpu: ScreenColorTransformCapabilities,
+    source_native: ScreenColorTransformCapabilities,
+}
+
+impl ScreenExecutorColorCapabilities {
+    /// Neither execution lane advertises byte-changing color operations.
+    pub const NONE: Self = Self {
+        cpu: ScreenColorTransformCapabilities::NONE,
+        source_native: ScreenColorTransformCapabilities::NONE,
+    };
+
+    /// Construct independent CPU and source-native color capabilities.
+    #[must_use]
+    pub const fn new(
+        cpu: ScreenColorTransformCapabilities,
+        source_native: ScreenColorTransformCapabilities,
+    ) -> Self {
+        Self { cpu, source_native }
+    }
+
+    /// Construct a contract with color operations available only on CPU.
+    #[must_use]
+    pub const fn cpu_only(cpu: ScreenColorTransformCapabilities) -> Self {
+        Self {
+            cpu,
+            source_native: ScreenColorTransformCapabilities::NONE,
+        }
+    }
+
+    /// CPU reducer capabilities.
+    #[must_use]
+    pub const fn cpu(self) -> ScreenColorTransformCapabilities {
+        self.cpu
+    }
+
+    /// Source-native reducer capabilities.
+    #[must_use]
+    pub const fn source_native(self) -> ScreenColorTransformCapabilities {
+        self.source_native
     }
 }
 
@@ -1170,8 +1383,8 @@ impl ScreenPublicationRequest {
 
     /// Requested execution lane.
     #[must_use]
-    pub const fn executor(&self) -> ScreenPublicationExecutorRequest {
-        self.executor
+    pub const fn executor(&self) -> &ScreenPublicationExecutorRequest {
+        &self.executor
     }
 
     /// Requested extent policy.
@@ -1202,22 +1415,45 @@ impl ScreenPublicationRequest {
         &self,
         source: &ResolvedScreenSource,
     ) -> Result<ResolvedScreenPublicationDescriptor, ScreenPublicationError> {
-        self.resolve_with_color_capabilities(source, ScreenColorTransformCapabilities::NONE)
+        self.resolve_with_executor_capabilities(source, ScreenExecutorColorCapabilities::NONE)
     }
 
-    /// Resolve against one source and the exact color operations implemented
-    /// by the selected reducer.
+    /// Resolve against one source with CPU color capabilities only.
     ///
     /// # Errors
     ///
     /// In addition to ordinary resolution failures, rejects every
-    /// byte-changing color operation not declared by `capabilities`.
+    /// byte-changing CPU color operation not declared by `capabilities`.
     pub fn resolve_with_color_capabilities(
         &self,
         source: &ResolvedScreenSource,
         capabilities: ScreenColorTransformCapabilities,
     ) -> Result<ResolvedScreenPublicationDescriptor, ScreenPublicationError> {
+        self.resolve_with_executor_capabilities(
+            source,
+            ScreenExecutorColorCapabilities::cpu_only(capabilities),
+        )
+    }
+
+    /// Resolve with independent CPU and source-native color capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid logical contracts and color work unsupported by both
+    /// the requested native target and the exact CPU fallback lane.
+    pub fn resolve_with_executor_capabilities(
+        &self,
+        source: &ResolvedScreenSource,
+        capabilities: ScreenExecutorColorCapabilities,
+    ) -> Result<ResolvedScreenPublicationDescriptor, ScreenPublicationError> {
         source.validate_selector(&self.selector)?;
+        let geometry = resolve_geometry(source.config.logical_extent, self.extent, self.aspect)?;
+        let mut execution = resolve_executor(
+            &source.config.resources,
+            self.kind,
+            &self.executor,
+            geometry.output_extent,
+        )?;
         let cursor_capabilities = source.config.cursor_capabilities;
         match self.processing_profile.cursor {
             ScreenCursorPolicy::Exclude if !cursor_capabilities.has_clean_surface() => {
@@ -1228,21 +1464,44 @@ impl ScreenPublicationRequest {
             }
             ScreenCursorPolicy::Exclude | ScreenCursorPolicy::Include => {}
         }
-        let (executor, residency) =
-            resolve_executor(source.config.resources.api(), self.kind, self.executor)?;
-        let geometry = resolve_geometry(source.config.logical_extent, self.extent, self.aspect)?;
-        let color_pipeline = resolve_color_pipeline(
-            &source.config,
-            self.kind,
-            geometry,
-            &self.processing_profile,
-            capabilities,
-        )?;
+        let color_pipeline = if matches!(execution.executor, ScreenPublicationExecutor::Cpu) {
+            resolve_color_pipeline(
+                &source.config,
+                self.kind,
+                geometry,
+                &self.processing_profile,
+                capabilities.cpu(),
+            )?
+        } else {
+            match resolve_color_pipeline(
+                &source.config,
+                self.kind,
+                geometry,
+                &self.processing_profile,
+                capabilities.source_native(),
+            ) {
+                Ok(pipeline) => pipeline,
+                Err(ScreenPublicationError::UnsupportedColorTransform) => {
+                    let pipeline = resolve_color_pipeline(
+                        &source.config,
+                        self.kind,
+                        geometry,
+                        &self.processing_profile,
+                        capabilities.cpu(),
+                    )?;
+                    execution = ResolvedScreenExecution::cpu_fallback(
+                        ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
+                    );
+                    pipeline
+                }
+                Err(error) => return Err(error),
+            }
+        };
         Ok(ResolvedScreenPublicationDescriptor {
             physical: ScreenPhysicalReductionDescriptor {
                 source_epoch: source.epoch.clone(),
                 source: source.config.clone(),
-                executor,
+                executor: execution.executor,
                 source_region: geometry.source_region,
                 reduction_extent: geometry.output_extent,
                 cursor: self.processing_profile.cursor,
@@ -1251,7 +1510,9 @@ impl ScreenPublicationRequest {
                 target_pixel_format: self.processing_profile.target_pixel_format,
                 color_pipeline,
             },
-            residency,
+            residency: execution.residency,
+            requested_executor: self.executor.clone(),
+            executor_fallback: execution.fallback,
             kind: self.kind,
             aspect: self.aspect,
             processing_profile: Arc::clone(&self.processing_profile),
@@ -1564,6 +1825,8 @@ impl PartialOrd for ScreenPhysicalReductionDescriptor {
 pub struct ResolvedScreenPublicationDescriptor {
     physical: ScreenPhysicalReductionDescriptor,
     residency: ScreenPublicationResidency,
+    requested_executor: ScreenPublicationExecutorRequest,
+    executor_fallback: Option<ScreenPublicationExecutorFallbackReason>,
     kind: ScreenPublicationKind,
     aspect: ScreenAspectPolicy,
     processing_profile: Arc<ScreenProcessingProfile>,
@@ -1621,6 +1884,18 @@ impl ResolvedScreenPublicationDescriptor {
         self.physical.executor()
     }
 
+    /// Execution lane originally requested by the logical consumer.
+    #[must_use]
+    pub const fn requested_executor(&self) -> &ScreenPublicationExecutorRequest {
+        &self.requested_executor
+    }
+
+    /// Why a source-native request resolved to exact CPU execution.
+    #[must_use]
+    pub const fn executor_fallback(&self) -> Option<ScreenPublicationExecutorFallbackReason> {
+        self.executor_fallback
+    }
+
     /// Publication kind.
     #[must_use]
     pub const fn kind(&self) -> ScreenPublicationKind {
@@ -1651,6 +1926,8 @@ impl Ord for ResolvedScreenPublicationDescriptor {
         self.physical
             .cmp(&other.physical)
             .then_with(|| self.residency.cmp(&other.residency))
+            .then_with(|| self.requested_executor.cmp(&other.requested_executor))
+            .then_with(|| self.executor_fallback.cmp(&other.executor_fallback))
             .then_with(|| self.kind.cmp(&other.kind))
             .then_with(|| self.aspect.cmp(&other.aspect))
             .then_with(|| self.processing_profile.cmp(&other.processing_profile))
@@ -1701,23 +1978,39 @@ impl RegisteredScreenBranchDemand {
         &self,
         source: &ResolvedScreenSource,
     ) -> Result<ResolvedScreenBranchDemand, ScreenPublicationError> {
-        self.resolve_with_color_capabilities(source, ScreenColorTransformCapabilities::NONE)
+        self.resolve_with_executor_capabilities(source, ScreenExecutorColorCapabilities::NONE)
     }
 
-    /// Resolve with the exact color operations implemented by the selected reducer.
+    /// Resolve with CPU color capabilities and no native color transforms.
     ///
     /// # Errors
     ///
-    /// Propagates publication resolution and capability-admission failures.
+    /// Propagates publication resolution and CPU capability-admission failures.
     pub fn resolve_with_color_capabilities(
         &self,
         source: &ResolvedScreenSource,
         capabilities: ScreenColorTransformCapabilities,
     ) -> Result<ResolvedScreenBranchDemand, ScreenPublicationError> {
+        self.resolve_with_executor_capabilities(
+            source,
+            ScreenExecutorColorCapabilities::cpu_only(capabilities),
+        )
+    }
+
+    /// Resolve with independent CPU and source-native color capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Propagates publication resolution and lane-specific capability failures.
+    pub fn resolve_with_executor_capabilities(
+        &self,
+        source: &ResolvedScreenSource,
+        capabilities: ScreenExecutorColorCapabilities,
+    ) -> Result<ResolvedScreenBranchDemand, ScreenPublicationError> {
         Ok(ResolvedScreenBranchDemand {
             descriptor: self
                 .request
-                .resolve_with_color_capabilities(source, capabilities)?,
+                .resolve_with_executor_capabilities(source, capabilities)?,
             requested_hz: self.requested_hz,
         })
     }
@@ -1798,29 +2091,68 @@ pub enum ScreenPublicationError {
     GeometryOverflow,
 }
 
+struct ResolvedScreenExecution {
+    executor: ScreenPublicationExecutor,
+    residency: ScreenPublicationResidency,
+    fallback: Option<ScreenPublicationExecutorFallbackReason>,
+}
+
+impl ResolvedScreenExecution {
+    const fn cpu_fallback(reason: ScreenPublicationExecutorFallbackReason) -> Self {
+        Self {
+            executor: ScreenPublicationExecutor::Cpu,
+            residency: ScreenPublicationResidency::Cpu,
+            fallback: Some(reason),
+        }
+    }
+}
+
 fn resolve_executor(
-    source_api: &ScreenResourceApi,
+    source: &ScreenBackendResourceIdentity,
     kind: ScreenPublicationKind,
-    requested: ScreenPublicationExecutorRequest,
-) -> Result<(ScreenPublicationExecutor, ScreenPublicationResidency), ScreenPublicationError> {
+    requested: &ScreenPublicationExecutorRequest,
+    output_extent: PixelExtent,
+) -> Result<ResolvedScreenExecution, ScreenPublicationError> {
     match requested {
-        ScreenPublicationExecutorRequest::Cpu => Ok((
-            ScreenPublicationExecutor::Cpu,
-            ScreenPublicationResidency::Cpu,
-        )),
-        ScreenPublicationExecutorRequest::SourceNative => {
+        ScreenPublicationExecutorRequest::Cpu => Ok(ResolvedScreenExecution {
+            executor: ScreenPublicationExecutor::Cpu,
+            residency: ScreenPublicationResidency::Cpu,
+            fallback: None,
+        }),
+        ScreenPublicationExecutorRequest::SourceNative(target) => {
             if matches!(kind, ScreenPublicationKind::Zones { .. }) {
                 return Err(ScreenPublicationError::SourceNativeZonesUnsupported);
             }
-            Ok(match source_api {
-                ScreenResourceApi::Cpu => (
-                    ScreenPublicationExecutor::Cpu,
-                    ScreenPublicationResidency::Cpu,
-                ),
-                ScreenResourceApi::PlatformGpu(api) => (
-                    ScreenPublicationExecutor::SourceNative(api.clone()),
-                    ScreenPublicationResidency::PlatformGpu(api.clone()),
-                ),
+            let ScreenResourceApi::PlatformGpu(source_api) = source.api() else {
+                return Ok(ResolvedScreenExecution::cpu_fallback(
+                    ScreenPublicationExecutorFallbackReason::CpuSource,
+                ));
+            };
+            if source_api != target.accepted_api() {
+                return Ok(ResolvedScreenExecution::cpu_fallback(
+                    ScreenPublicationExecutorFallbackReason::PlatformApiMismatch,
+                ));
+            }
+            let Some(source_device) = source.physical_gpu_device() else {
+                return Ok(ResolvedScreenExecution::cpu_fallback(
+                    ScreenPublicationExecutorFallbackReason::MissingPhysicalGpuDevice,
+                ));
+            };
+            if source_device != target.physical_gpu_device() {
+                return Ok(ResolvedScreenExecution::cpu_fallback(
+                    ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch,
+                ));
+            }
+            let max_dimension = target.max_texture_dimension().get();
+            if output_extent.width() > max_dimension || output_extent.height() > max_dimension {
+                return Ok(ResolvedScreenExecution::cpu_fallback(
+                    ScreenPublicationExecutorFallbackReason::TargetDimensionLimitExceeded,
+                ));
+            }
+            Ok(ResolvedScreenExecution {
+                executor: ScreenPublicationExecutor::SourceNative(target.clone()),
+                residency: ScreenPublicationResidency::PlatformGpu(source_api.clone()),
+                fallback: None,
             })
         }
     }

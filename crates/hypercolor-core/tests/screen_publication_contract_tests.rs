@@ -1,14 +1,16 @@
 //! Cursor capability and output-color identity contracts for screen publications.
 
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 
 use hypercolor_core::input::screen::{
     CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch, CaptureGeometry,
     CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
-    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, RegisteredScreenBranchDemand,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCursorCapabilities,
-    ScreenCursorPolicy, ScreenExtentRequest, ScreenProcessingProfile,
+    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PlatformGpuApi,
+    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenCaptureBackend,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExtentRequest, ScreenNativeExecutionTarget,
+    ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationExecutorRequest,
     ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection,
     ScreenSourceSelector, ScreenTargetColorimetry, SourceScale,
@@ -62,6 +64,18 @@ fn request(profile: ScreenProcessingProfile) -> ScreenPublicationRequest {
     )
 }
 
+fn native_target() -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(NonZeroU64::MIN),
+        PlatformGpuApi::Direct3d11,
+        ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+            low_part: 1,
+            high_part: 0,
+        },
+        NonZeroU32::new(16_384).expect("test texture limit is non-zero"),
+    )
+}
+
 #[test]
 fn source_native_zones_are_rejected_before_transform_admission() {
     let request = ScreenPublicationRequest::new(
@@ -70,7 +84,7 @@ fn source_native_zones_are_rejected_before_transform_admission() {
             columns: std::num::NonZeroU32::MIN,
             rows: std::num::NonZeroU32::MIN,
         },
-        ScreenPublicationExecutorRequest::SourceNative,
+        ScreenPublicationExecutorRequest::SourceNative(native_target()),
         ScreenExtentRequest::Native,
         ScreenAspectPolicy::Contain,
         Arc::new(ScreenProcessingProfile::default()),

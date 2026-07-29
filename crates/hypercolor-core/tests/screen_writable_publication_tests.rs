@@ -11,14 +11,15 @@ use hypercolor_core::input::screen::{
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
     ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExactResource,
-    ScreenExactResourceLedger, ScreenExtentRequest, ScreenGpuSurfacePayload,
-    ScreenInputGraphGeneration, ScreenLiveBranchReceipt, ScreenPayloadKind, ScreenPlanBuilder,
-    ScreenPlanError, ScreenProcessingProfile, ScreenPublicationColorimetry,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
-    ScreenPublicationRequest, ScreenPublicationResidency, ScreenPublicationSlotPolicy,
-    ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenSurfacePayload, ScreenWorkerBinding, SourceScale,
+    ScreenExactResourceLedger, ScreenExecutorColorCapabilities, ScreenExtentRequest,
+    ScreenGpuSurfacePayload, ScreenInputGraphGeneration, ScreenLiveBranchReceipt,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenPayloadKind,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
+    ScreenPublicationColorimetry, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationResidency,
+    ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenSurfacePayload, ScreenWorkerBinding, SourceScale,
 };
 
 fn non_zero(value: u32) -> NonZeroU32 {
@@ -27,6 +28,22 @@ fn non_zero(value: u32) -> NonZeroU32 {
 
 fn pixel_extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extents are non-empty")
+}
+
+fn gpu_device() -> ScreenPhysicalGpuDeviceIdentity {
+    ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+        low_part: 1,
+        high_part: 1,
+    }
+}
+
+fn native_target() -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(NonZeroU64::MIN),
+        PlatformGpuApi::Direct3d11,
+        gpu_device(),
+        non_zero(16_384),
+    )
 }
 
 fn source_id() -> CaptureSourceId {
@@ -87,9 +104,10 @@ fn gpu_source(width: u32, height: u32) -> ResolvedScreenSource {
         CapturePixelFormat::Rgba8,
         CaptureColorimetry::SRGB,
         ScreenCursorCapabilities::clean_with_separate_cursor(),
-        ScreenBackendResourceIdentity::new(
+        ScreenBackendResourceIdentity::new_with_physical_gpu_device(
             ScreenCaptureBackend::WindowsDesktopDuplication,
             ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+            gpu_device(),
             1,
             1,
         ),
@@ -116,7 +134,9 @@ fn demand(
             kind,
             match source.config().resources().api() {
                 ScreenResourceApi::Cpu => ScreenPublicationExecutorRequest::Cpu,
-                ScreenResourceApi::PlatformGpu(_) => ScreenPublicationExecutorRequest::SourceNative,
+                ScreenResourceApi::PlatformGpu(_) => {
+                    ScreenPublicationExecutorRequest::SourceNative(native_target())
+                }
             },
             ScreenExtentRequest::Native,
             ScreenAspectPolicy::Contain,
@@ -124,18 +144,19 @@ fn demand(
         ),
         non_zero(requested_hz),
     );
+    let capabilities = ScreenColorTransformCapabilities::new(
+        true,
+        true,
+        true,
+        registered
+            .request()
+            .processing_profile()
+            .algorithm_revision(),
+    );
     registered
-        .resolve_with_color_capabilities(
+        .resolve_with_executor_capabilities(
             source,
-            ScreenColorTransformCapabilities::new(
-                true,
-                true,
-                true,
-                registered
-                    .request()
-                    .processing_profile()
-                    .algorithm_revision(),
-            ),
+            ScreenExecutorColorCapabilities::new(capabilities, capabilities),
         )
         .expect("test demand resolves")
 }

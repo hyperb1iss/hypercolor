@@ -14,22 +14,42 @@ use hypercolor_core::input::screen::{
     ScreenBranchDeliveryLifecycle, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
     ScreenColorTransformCapabilities, ScreenColorTuning, ScreenCompatibilitySelection,
     ScreenContentBarsPolicy, ScreenContinuityError, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy,
-    ScreenHdrPolicy, ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPlanBuilder,
-    ScreenPlanError, ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
-    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationFreshness, ScreenPublicationHealth,
-    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
-    ScreenPublicationRequest, ScreenPublicationResidency, ScreenPublicationSlotPolicy,
-    ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenSurfacePayload, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
-    ScreenUnknownColorPolicy, ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenExactResource, ScreenExactResourceLedger, ScreenExecutorColorCapabilities,
+    ScreenExtentRequest, ScreenGridPolicy, ScreenHdrPolicy, ScreenInputGraphGeneration,
+    ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
+    ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationColorimetry,
+    ScreenPublicationError, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
+    ScreenPublicationFreshness, ScreenPublicationHealth, ScreenPublicationHubError,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenReductionFilter,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSceneCutPolicy,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSurfacePayload,
+    ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
+    ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerPreparationTicket, ScreenZonesPayload, SourceScale,
 };
 
 fn non_zero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("test values are non-zero")
+}
+
+fn gpu_device() -> ScreenPhysicalGpuDeviceIdentity {
+    ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+        low_part: 9,
+        high_part: 17,
+    }
+}
+
+fn native_target(id: u64) -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(id).expect("test target identity is non-zero"),
+        ),
+        PlatformGpuApi::Direct3d11,
+        gpu_device(),
+        non_zero(16_384),
+    )
 }
 
 fn pixel_extent(width: u32, height: u32) -> PixelExtent {
@@ -210,15 +230,16 @@ fn resolve(
     demand: &RegisteredScreenBranchDemand,
     source: &ResolvedScreenSource,
 ) -> ResolvedScreenBranchDemand {
+    let capabilities = ScreenColorTransformCapabilities::new(
+        true,
+        true,
+        true,
+        demand.request().processing_profile().algorithm_revision(),
+    );
     demand
-        .resolve_with_color_capabilities(
+        .resolve_with_executor_capabilities(
             source,
-            ScreenColorTransformCapabilities::new(
-                true,
-                true,
-                true,
-                demand.request().processing_profile().algorithm_revision(),
-            ),
+            ScreenExecutorColorCapabilities::new(capabilities, capabilities),
         )
         .expect("test publication request resolves")
 }
@@ -1484,9 +1505,10 @@ fn admission_counts_shared_physical_work_and_writable_publication_slots() {
 #[test]
 fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
     let mut config = source_config_parts(7680, 4320);
-    config.resources = ScreenBackendResourceIdentity::new(
+    config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
         ScreenCaptureBackend::WindowsDesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        gpu_device(),
         9,
         17,
     );
@@ -1501,7 +1523,7 @@ fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
         &registered_with_executor(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
-            ScreenPublicationExecutorRequest::SourceNative,
+            ScreenPublicationExecutorRequest::SourceNative(native_target(1)),
             ScreenExtentRequest::Native,
             ScreenAspectPolicy::Contain,
             default_profile(),
@@ -1531,9 +1553,10 @@ fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
 #[test]
 fn executor_identity_separates_physical_sharing_and_source_deltas() {
     let mut config = source_config_parts(3840, 2160);
-    config.resources = ScreenBackendResourceIdentity::new(
+    config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
         ScreenCaptureBackend::WindowsDesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        gpu_device(),
         9,
         17,
     );
@@ -1559,7 +1582,9 @@ fn executor_identity_separates_physical_sharing_and_source_deltas() {
         )
     };
     let cpu = demand(ScreenPublicationExecutorRequest::Cpu);
-    let native = demand(ScreenPublicationExecutorRequest::SourceNative);
+    let native = demand(ScreenPublicationExecutorRequest::SourceNative(
+        native_target(1),
+    ));
 
     assert_eq!(
         cpu.descriptor().required_residency(),
@@ -1575,7 +1600,7 @@ fn executor_identity_separates_physical_sharing_and_source_deltas() {
     );
     assert!(matches!(
         native.descriptor().physical().executor(),
-        ScreenPublicationExecutor::SourceNative(PlatformGpuApi::Direct3d11)
+        ScreenPublicationExecutor::SourceNative(target) if target == &native_target(1)
     ));
     assert_ne!(cpu.descriptor().physical(), native.descriptor().physical());
 

@@ -1,6 +1,6 @@
 //! Descriptor-bound arbitrary-resolution CPU fanout contracts.
 
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,11 +14,13 @@ use hypercolor_core::input::screen::{
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenSource,
     ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
-    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExtentRequest, ScreenInputGraphGeneration,
-    ScreenPlanBuilder, ScreenProcessingProfile, ScreenProcessingProfileConfig,
-    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
+    ScreenExtentRequest, ScreenInputGraphGeneration, ScreenNativeExecutionTarget,
+    ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenUpscalePolicy, SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -27,6 +29,22 @@ fn extent(width: u32, height: u32) -> PixelExtent {
 
 fn non_zero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("test value is non-zero")
+}
+
+fn gpu_device() -> ScreenPhysicalGpuDeviceIdentity {
+    ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+        low_part: 7,
+        high_part: 11,
+    }
+}
+
+fn native_target() -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(NonZeroU64::MIN),
+        PlatformGpuApi::Direct3d11,
+        gpu_device(),
+        non_zero(16_384),
+    )
 }
 
 fn executor() -> CpuReductionExecutor {
@@ -100,12 +118,23 @@ fn source_named_with_api(
             CapturePixelFormat::Rgba8,
             CaptureColorimetry::from_known(KnownCaptureColorimetry::SRGB),
             cursor_capabilities,
-            ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
-                resource_api,
-                7,
-                resource_generation,
-            ),
+            match resource_api {
+                ScreenResourceApi::Cpu => ScreenBackendResourceIdentity::new(
+                    ScreenCaptureBackend::Synthetic,
+                    ScreenResourceApi::Cpu,
+                    7,
+                    resource_generation,
+                ),
+                ScreenResourceApi::PlatformGpu(api) => {
+                    ScreenBackendResourceIdentity::new_with_physical_gpu_device(
+                        ScreenCaptureBackend::Synthetic,
+                        ScreenResourceApi::PlatformGpu(api),
+                        gpu_device(),
+                        7,
+                        resource_generation,
+                    )
+                }
+            },
         ),
     )
 }
@@ -756,13 +785,17 @@ fn gpu_source_readback_requires_an_explicit_cpu_executor() {
     let native_request = ScreenPublicationRequest::new(
         ScreenSourceSelector::Configured,
         ScreenPublicationKind::Surface,
-        ScreenPublicationExecutorRequest::SourceNative,
+        ScreenPublicationExecutorRequest::SourceNative(native_target()),
         ScreenExtentRequest::Native,
         ScreenAspectPolicy::Contain,
         Arc::new(ScreenProcessingProfile::default()),
     );
+    let native_capabilities = executor.capabilities();
     let native_demand = RegisteredScreenBranchDemand::new(native_request, non_zero(60))
-        .resolve_with_color_capabilities(&gpu_source, executor.capabilities())
+        .resolve_with_executor_capabilities(
+            &gpu_source,
+            ScreenExecutorColorCapabilities::new(native_capabilities, native_capabilities),
+        )
         .expect("native GPU demand resolves");
     let mut native_builder = ScreenPlanBuilder::new();
     let native_preparing = native_builder
@@ -778,7 +811,7 @@ fn gpu_source_readback_requires_an_explicit_cpu_executor() {
         native_preparing.candidate_plan().physical_reductions()[0]
             .descriptor()
             .executor(),
-        ScreenPublicationExecutor::SourceNative(PlatformGpuApi::Direct3d11)
+        ScreenPublicationExecutor::SourceNative(target) if target == &native_target()
     ));
     let native_batch = executor
         .prepare_batch(&gpu_source, native_preparing.candidate_plan())
