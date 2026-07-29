@@ -589,6 +589,14 @@ fn dxgi_failure_classes_publish_distinct_issue_codes() {
             },
             "windows_capture_source_missing",
         ),
+        (
+            CaptureError::GpuSurfacePlanInvalidated,
+            "windows_capture_gpu_surface_transient",
+        ),
+        (
+            CaptureError::GpuSurfaceSynchronizationExhausted,
+            "windows_capture_gpu_surface_lifecycle_failed",
+        ),
     ] {
         let issue = capture_issue(&error);
         assert_eq!(&*issue.code, expected);

@@ -1809,6 +1809,38 @@ fn capture_issue(error: &CaptureError) -> SourceIssue {
             error.to_string(),
             false,
         ),
+        CaptureError::UnsupportedGpuSurface { .. }
+        | CaptureError::DuplicateGpuSurfaceDescriptor { .. }
+        | CaptureError::GpuSurfaceRegionOutOfBounds { .. }
+        | CaptureError::GpuSurfaceRotationMismatch { .. }
+        | CaptureError::GpuSurfaceInFlightDepthTooSmall { .. } => SourceIssue::new(
+            "windows_capture_gpu_surface_contract_invalid",
+            error.to_string(),
+            false,
+        ),
+        CaptureError::GpuSurfaceUseUnavailable { .. }
+        | CaptureError::GpuSurfaceCursorShapeUnavailable { .. }
+        | CaptureError::GpuSurfacePlanInvalidated => SourceIssue::new(
+            "windows_capture_gpu_surface_transient",
+            error.to_string(),
+            true,
+        ),
+        CaptureError::GpuSurfacePlanPoisoned { .. }
+        | CaptureError::GpuSurfaceSynchronizationExhausted => SourceIssue::new(
+            "windows_capture_gpu_surface_lifecycle_failed",
+            error.to_string(),
+            true,
+        ),
+        CaptureError::GpuSurfaceBudgetExceeded { .. } => SourceIssue::new(
+            "windows_capture_gpu_surface_budget_exceeded",
+            error.to_string(),
+            true,
+        ),
+        CaptureError::GpuSurfaceFreshnessOverflow => SourceIssue::new(
+            "windows_capture_gpu_surface_freshness_unrepresentable",
+            error.to_string(),
+            false,
+        ),
         CaptureError::InvalidBufferGeometry { .. } => SourceIssue::new(
             "windows_capture_buffer_geometry_invalid",
             error.to_string(),
