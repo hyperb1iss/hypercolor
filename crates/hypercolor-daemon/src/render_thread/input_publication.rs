@@ -97,7 +97,7 @@ impl InputScreenBranchDemand {
         let request = ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
-            ScreenPublicationExecutorRequest::SourceNative,
+            ScreenPublicationExecutorRequest::Cpu,
             extent,
             ScreenAspectPolicy::Contain,
             Arc::new(ScreenProcessingProfile::default()),

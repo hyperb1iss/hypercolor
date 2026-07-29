@@ -128,7 +128,7 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     assert_eq!(canvas_only.len(), 1);
     assert_eq!(
         canvas_only[0].request().executor(),
-        ScreenPublicationExecutorRequest::Cpu
+        &ScreenPublicationExecutorRequest::Cpu
     );
     let ScreenExtentRequest::Bounded(canvas_bounds) = canvas_only[0].request().extent() else {
         panic!("width-only canvas request remains bounded");
@@ -163,9 +163,9 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     let mixed_branches = demands.screen_branches();
     assert_eq!(mixed_branches.len(), 2);
     assert!(
-        mixed_branches
-            .iter()
-            .all(|branch| { branch.request().executor() == ScreenPublicationExecutorRequest::Cpu })
+        mixed_branches.iter().all(|branch| {
+            branch.request().executor() == &ScreenPublicationExecutorRequest::Cpu
+        })
     );
     let ScreenExtentRequest::Bounded(canvas_bounds) = mixed_branches[0].request().extent() else {
         panic!("two-axis canvas request remains bounded");

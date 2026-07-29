@@ -293,9 +293,11 @@ fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
     assert_eq!(snapshot.requested_hz(SourceKind::Screen), 144);
     assert_eq!(snapshot.compatibility_screen_extent, Some(extent(640, 480)));
     assert_eq!(snapshot.screen_branches.len(), 2);
-    assert!(snapshot.screen_branches.iter().all(|branch| {
-        branch.request().executor() == ScreenPublicationExecutorRequest::SourceNative
-    }));
+    assert!(
+        snapshot.screen_branches.iter().all(|branch| {
+            branch.request().executor() == &ScreenPublicationExecutorRequest::Cpu
+        })
+    );
     assert_eq!(
         branch_extent(&snapshot.screen_branches[0]),
         extent(640, 480)
