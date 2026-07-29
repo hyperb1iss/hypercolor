@@ -16,8 +16,8 @@ use hypercolor_core::input::routing::{
     InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
 };
 use hypercolor_core::input::screen::{
-    PixelExtent, ScreenBranchPublication, ScreenNativeExecutionTarget,
-    ScreenPublicationExecutorRequest,
+    PixelExtent, ScreenBranchLease, ScreenBranchPublication, ScreenNativeExecutionTarget,
+    ScreenNativeExecutionTargetId, ScreenPlanGeneration, ScreenPublicationExecutorRequest,
 };
 use hypercolor_core::input::{
     InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
@@ -200,6 +200,14 @@ struct InputRouteCache {
     interaction_availability: Vec<CachedInteractionAvailability>,
     interaction_router: InteractionRouter,
     routed_interaction: RoutedInteraction,
+    native_screen_route: Option<NativeScreenRoute>,
+}
+
+struct NativeScreenRoute {
+    plan_generation: ScreenPlanGeneration,
+    target_id: ScreenNativeExecutionTargetId,
+    extent: PixelExtent,
+    lease: Option<ScreenBranchLease>,
 }
 
 #[cfg(test)]
@@ -230,6 +238,7 @@ impl InputRouteCache {
             interaction_availability: Vec::new(),
             interaction_router: InteractionRouter::default(),
             routed_interaction: RoutedInteraction::new(AUTHORITATIVE_INPUT_CONSUMER),
+            native_screen_route: None,
         }
     }
 
@@ -253,14 +262,39 @@ impl InputRouteCache {
 
         inputs.prepare_for_sample(sensors);
         self.route_latest_into(inputs);
-        inputs.screen_publication = screen_target.and_then(|target| {
-            self.reader.latest_native_screen_publication(
-                target,
-                PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
-                    .expect("render canvas dimensions are non-empty"),
-            )
-        });
+        let screen_extent = PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
+            .expect("render canvas dimensions are non-empty");
+        inputs.screen_publication = self.read_native_screen(screen_target, screen_extent);
         self.route_interaction_into(&state.event_bus, &graph, &browser_registry, inputs);
+    }
+
+    fn read_native_screen(
+        &mut self,
+        target: Option<&ScreenNativeExecutionTarget>,
+        extent: PixelExtent,
+    ) -> Option<Arc<ScreenBranchPublication>> {
+        let Some(target) = target else {
+            self.native_screen_route = None;
+            return None;
+        };
+        let plan_generation = self.reader.screen_publication_generation();
+        let route_is_current = self.native_screen_route.as_ref().is_some_and(|route| {
+            route.plan_generation == plan_generation
+                && route.target_id == target.id()
+                && route.extent == extent
+        });
+        if !route_is_current {
+            self.native_screen_route = Some(NativeScreenRoute {
+                plan_generation,
+                target_id: target.id(),
+                extent,
+                lease: self.reader.native_screen_lease(target, extent),
+            });
+        }
+        self.native_screen_route
+            .as_ref()
+            .and_then(|route| route.lease.as_ref())
+            .and_then(ScreenBranchLease::read)
     }
 
     fn route_interaction_into(

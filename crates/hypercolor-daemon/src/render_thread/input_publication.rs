@@ -8,12 +8,12 @@ use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
 use hypercolor_core::input::screen::{
     CommittedScreenPublicationTransition, InputPublicationDemandRevision, PixelExtent,
-    RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenBranchPublication, ScreenCaptureDemand,
+    RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenBranchLease, ScreenCaptureDemand,
     ScreenExtentRequest, ScreenInputGraphGeneration, ScreenNativeExecutionTarget,
-    ScreenProcessingProfile, ScreenPublicationDemandSnapshot, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenPublicationRetirement, ScreenSourceSelector,
-    ScreenUpscalePolicy,
+    ScreenPlanGeneration, ScreenProcessingProfile, ScreenPublicationDemandSnapshot,
+    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHub,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationRetirement,
+    ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
@@ -739,11 +739,15 @@ impl InputPublicationReader {
         Arc::clone(&self.screen_publications)
     }
 
-    pub(crate) fn latest_native_screen_publication(
+    pub(crate) fn screen_publication_generation(&self) -> ScreenPlanGeneration {
+        self.screen_publications.generation()
+    }
+
+    pub(crate) fn native_screen_lease(
         &self,
         target: &ScreenNativeExecutionTarget,
         extent: PixelExtent,
-    ) -> Option<Arc<ScreenBranchPublication>> {
+    ) -> Option<ScreenBranchLease> {
         let state = self.screen_publications.committed_state();
         let branch = state.plan().branches().iter().find(|branch| {
             let descriptor = branch.descriptor();
@@ -755,10 +759,7 @@ impl InputPublicationReader {
                         if selected.id() == target.id()
                 )
         })?;
-        self.screen_publications
-            .lease(branch.descriptor())
-            .ok()?
-            .read()
+        self.screen_publications.lease(branch.descriptor()).ok()
     }
 }
 
