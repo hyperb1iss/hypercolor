@@ -16,6 +16,7 @@
 //! backend-agnostic and testable with synthetic data.
 
 mod cadence;
+mod coordinator;
 mod demand;
 mod fanout;
 mod frame;
@@ -37,6 +38,12 @@ pub mod windows;
 
 pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
+};
+pub(crate) use coordinator::PendingScreenWorkerPreparation;
+pub use coordinator::{
+    CommittedScreenPublicationTransition, PreparedScreenPublicationPlan,
+    ScreenPublicationPreparation, ScreenPublicationTransitionError,
+    ScreenPublicationTransitionFailure, ScreenWorkerPreparation, ScreenWorkerRetirement,
 };
 pub use demand::{ScreenPublicationDemandError, ScreenPublicationDemandSnapshot};
 pub use fanout::{

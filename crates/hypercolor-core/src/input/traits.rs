@@ -652,16 +652,57 @@ pub trait InputSource: Send {
     ) {
     }
 
-    /// Apply one immutable exact screen-publication demand snapshot.
+    /// Resolve one exact logical branch against this source's current epoch.
     ///
     /// # Errors
     ///
-    /// Returns an error if the source cannot prepare or adopt the snapshot.
-    fn set_screen_publication_demand(
+    /// Returns an error when this source claims the selector but cannot resolve
+    /// current geometry, color, execution, or storage metadata.
+    fn resolve_screen_publication_branch(
+        &self,
+        _demand: &crate::input::screen::RegisteredScreenBranchDemand,
+    ) -> anyhow::Result<Option<crate::input::screen::ResolvedScreenBranchDemand>> {
+        Ok(None)
+    }
+
+    /// Whether this source still owns runtime state for a resolved capture id.
+    ///
+    /// This remains true while a source can prepare a removal-only delta, even
+    /// if the current logical demand no longer selects that source.
+    fn owns_screen_publication_source(
+        &self,
+        _source_id: &crate::input::screen::CaptureSourceId,
+    ) -> bool {
+        false
+    }
+
+    /// Enqueue one source-bound exact plan delta on its owning worker.
+    ///
+    /// This method runs while the input-manager lock is held and must return
+    /// promptly. Real allocation, backend negotiation, and worker
+    /// acknowledgement belong to the returned detached future.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot enqueue the ticket without
+    /// changing its active runtime.
+    fn begin_screen_publication_preparation(
         &mut self,
-        _demand: crate::input::screen::ScreenPublicationDemandSnapshot,
-    ) -> anyhow::Result<()> {
-        Ok(())
+        _ticket: crate::input::screen::ScreenWorkerPreparationTicket,
+    ) -> anyhow::Result<crate::input::screen::ScreenWorkerPreparation> {
+        anyhow::bail!("input source does not support exact screen publication preparation")
+    }
+
+    /// Start source-owned cleanup after committed authority retires bindings.
+    ///
+    /// This method runs under the manager lock and must only enqueue cleanup.
+    /// The returned future releases native runtime owners after the lock is
+    /// dropped; core publication pools are reclaimed through their separate
+    /// retirement handle.
+    fn begin_screen_publication_retirement(
+        &mut self,
+    ) -> Option<crate::input::screen::ScreenWorkerRetirement> {
+        None
     }
 
     /// Reconfigure a running screen source without rebuilding the input manager.

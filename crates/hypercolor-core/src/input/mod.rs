@@ -246,7 +246,8 @@ pub struct InputManager {
     audio_capture_active: Option<bool>,
     screen_capture_demand: Option<ScreenCaptureDemand>,
     screen_publication_demand: Option<ScreenPublicationDemandSnapshot>,
-    screen_publication_hub: Arc<screen::ScreenPublicationHub>,
+    screen_plan_builder: screen::ScreenPlanBuilder,
+    screen_publication_capacity: screen::ScreenAdmissionCapacity,
     interaction_capture_active: Option<bool>,
     sensor_poller: Option<SensorPoller>,
     sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
@@ -455,7 +456,6 @@ impl InputManager {
     /// Create an empty manager with no sources.
     #[must_use]
     pub fn new() -> Self {
-        let screen_publication_hub = screen::ScreenPlanBuilder::new().publication_hub();
         Self {
             sources: Vec::new(),
             source_graph_generation: 0,
@@ -466,7 +466,8 @@ impl InputManager {
             audio_capture_active: None,
             screen_capture_demand: None,
             screen_publication_demand: None,
-            screen_publication_hub,
+            screen_plan_builder: screen::ScreenPlanBuilder::new(),
+            screen_publication_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
             interaction_capture_active: None,
             sensor_poller: None,
             sensor_snapshot_rx: None,
@@ -955,22 +956,250 @@ impl InputManager {
         self.transition_screen_capture_demand(demand)
     }
 
-    /// Apply exact independent screen branches without changing capture life-cycle demand.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a registered screen source rejects the snapshot.
-    pub fn set_screen_publication_demand(
-        &mut self,
-        demand: ScreenPublicationDemandSnapshot,
-    ) -> anyhow::Result<()> {
-        self.transition_screen_publication_demand(demand)
-    }
-
     /// Stable lock-free publication authority shared across screen-source replacement.
     #[must_use]
     pub fn screen_publication_hub(&self) -> Arc<screen::ScreenPublicationHub> {
-        Arc::clone(&self.screen_publication_hub)
+        self.screen_plan_builder.publication_hub()
+    }
+
+    /// Set the process and backend byte fences used for future exact plans.
+    pub fn set_screen_publication_capacity(&mut self, capacity: screen::ScreenAdmissionCapacity) {
+        self.screen_publication_capacity = capacity;
+    }
+
+    /// Resolve and start one exact screen-plan preparation transaction.
+    ///
+    /// Source methods may only enqueue worker-owned work here. Awaiting real
+    /// allocation or backend negotiation happens through the returned handle
+    /// after the caller releases the input-manager lock.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale graph snapshots, unresolved or multiply-owned branches,
+    /// plan admission failures, and sources that cannot enqueue their ticket.
+    pub fn begin_screen_publication_transition(
+        &mut self,
+        demand: ScreenPublicationDemandSnapshot,
+    ) -> Result<
+        Option<screen::ScreenPublicationPreparation>,
+        screen::ScreenPublicationTransitionError,
+    > {
+        let observed_graph = screen::ScreenInputGraphGeneration::new(self.source_graph_generation);
+        if demand.graph_generation() != observed_graph {
+            return Err(
+                screen::ScreenPublicationTransitionError::GraphGenerationConflict {
+                    expected: demand.graph_generation(),
+                    observed: observed_graph,
+                },
+            );
+        }
+        if self.screen_publication_demand.as_ref() == Some(&demand) {
+            return Ok(None);
+        }
+
+        let mut resolved = Vec::new();
+        resolved
+            .try_reserve_exact(demand.branches().len())
+            .map_err(|_| screen::ScreenPlanError::AllocationFailed)?;
+        let mut owners: Vec<(screen::CaptureSourceId, usize)> = Vec::new();
+        for (branch_index, branch) in demand.branches().iter().enumerate() {
+            let mut resolution = None;
+            for (source_index, source) in self.sources.iter().enumerate() {
+                if !source.is_screen_source() {
+                    continue;
+                }
+                let candidate =
+                    source
+                        .resolve_screen_publication_branch(branch)
+                        .map_err(|error| {
+                            screen::ScreenPublicationTransitionError::SourceResolutionFailed {
+                                source_name: Arc::from(source.name()),
+                                branch_index,
+                                message: Arc::from(error.to_string()),
+                            }
+                        })?;
+                let Some(candidate) = candidate else {
+                    continue;
+                };
+                if resolution.is_some() {
+                    return Err(screen::ScreenPublicationTransitionError::AmbiguousBranch {
+                        branch_index,
+                    });
+                }
+                resolution = Some((source_index, candidate));
+            }
+            let Some((source_index, branch)) = resolution else {
+                return Err(screen::ScreenPublicationTransitionError::UnresolvedBranch {
+                    branch_index,
+                });
+            };
+            let source_id = branch.descriptor().source_epoch().source_id.clone();
+            if let Some((_, owner)) = owners.iter().find(|(candidate, _)| *candidate == source_id) {
+                if *owner != source_index {
+                    return Err(
+                        screen::ScreenPublicationTransitionError::SourceOwnershipConflict {
+                            source_id,
+                        },
+                    );
+                }
+            } else {
+                owners
+                    .try_reserve(1)
+                    .map_err(|_| screen::ScreenPlanError::AllocationFailed)?;
+                owners.push((source_id, source_index));
+            }
+            resolved.push(branch);
+        }
+
+        let compatibility_surface =
+            resolved_compatibility_descriptor(&demand, &resolved, demand.compatibility_surface());
+        let compatibility_zones =
+            resolved_compatibility_descriptor(&demand, &resolved, demand.compatibility_zones());
+        let compatibility = compatibility_surface
+            .map(|surface| {
+                screen::ScreenCompatibilitySelection::try_new(surface, compatibility_zones)
+            })
+            .transpose()?;
+        let mut preparing = self.screen_plan_builder.prepare(
+            resolved,
+            compatibility.as_ref(),
+            demand.revision(),
+            demand.graph_generation(),
+            self.screen_publication_capacity,
+        )?;
+
+        let required_sources = preparing.required_sources().to_vec();
+        let mut workers = Vec::new();
+        if workers.try_reserve_exact(required_sources.len()).is_err() {
+            drop(preparing.abort());
+            return Err(screen::ScreenPlanError::AllocationFailed.into());
+        }
+        for source_id in required_sources {
+            let ticket = match preparing.worker_ticket(&source_id) {
+                Ok(ticket) => ticket,
+                Err(error) => {
+                    drop(preparing.abort());
+                    return Err(error.into());
+                }
+            };
+            let owner = owners
+                .iter()
+                .find(|(candidate, _)| candidate == &source_id)
+                .map(|(_, source_index)| *source_index)
+                .or_else(|| {
+                    self.sources.iter().position(|source| {
+                        source.is_screen_source()
+                            && source.owns_screen_publication_source(&source_id)
+                    })
+                });
+            let preparation = if let Some(owner) = owner {
+                match self.sources[owner].begin_screen_publication_preparation(ticket) {
+                    Ok(preparation) => preparation,
+                    Err(error) => {
+                        drop(preparing.abort());
+                        return Err(
+                            screen::ScreenPublicationTransitionError::WorkerPreparationStartFailed {
+                                source_id,
+                                message: Arc::from(error.to_string()),
+                            },
+                        );
+                    }
+                }
+            } else if ticket.source_delta().added_branches().is_empty()
+                && ticket.source_delta().retained_branches().is_empty()
+            {
+                let ledger = match screen::ScreenExactResourceLedger::try_new([]) {
+                    Ok(ledger) => ledger,
+                    Err(error) => {
+                        drop(preparing.abort());
+                        return Err(error.into());
+                    }
+                };
+                let token = match ticket.acknowledge(ledger, &[]) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        drop(preparing.abort());
+                        return Err(error.into());
+                    }
+                };
+                screen::ScreenWorkerPreparation::new(async move { Ok(token) })
+            } else {
+                drop(preparing.abort());
+                return Err(
+                    screen::ScreenPublicationTransitionError::WorkerOwnerMissing { source_id },
+                );
+            };
+            workers.push(screen::PendingScreenWorkerPreparation {
+                source_id,
+                preparation,
+            });
+        }
+
+        Ok(Some(screen::ScreenPublicationPreparation::new(
+            preparing, workers, demand,
+        )))
+    }
+
+    /// Arm and atomically commit one fully acknowledged exact screen plan.
+    ///
+    /// The caller supplies the latest demand revision after reacquiring the
+    /// manager lock. Structural graph generation comes directly from the
+    /// manager, so both fences are rechecked at arm and commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit abort receipt after any fence or commit conflict.
+    pub fn commit_screen_publication_transition(
+        &mut self,
+        mut prepared: screen::PreparedScreenPublicationPlan,
+        observed_demand_revision: screen::InputPublicationDemandRevision,
+    ) -> Result<
+        screen::CommittedScreenPublicationTransition,
+        screen::ScreenPublicationTransitionFailure,
+    > {
+        let demand = prepared.demand().clone();
+        let preparing = prepared.take_preparing();
+        let graph_generation =
+            screen::ScreenInputGraphGeneration::new(self.source_graph_generation);
+        let armed = preparing
+            .arm(
+                self.screen_plan_builder.current().generation(),
+                observed_demand_revision,
+                graph_generation,
+            )
+            .map_err(|failure| {
+                let error = failure.error().clone();
+                screen::ScreenPublicationTransitionFailure::new(
+                    screen::ScreenPublicationTransitionError::Plan(error),
+                    failure.into_preparing().abort(),
+                )
+            })?;
+        let committed = self
+            .screen_plan_builder
+            .commit(armed, observed_demand_revision, graph_generation)
+            .map_err(|failure| {
+                let error = failure.error().clone();
+                screen::ScreenPublicationTransitionFailure::new(
+                    screen::ScreenPublicationTransitionError::Plan(error),
+                    failure.into_armed().abort(),
+                )
+            })?;
+        prepared.disarm_worker_aborts();
+        self.screen_publication_demand = Some(demand);
+        let worker_retirements = self
+            .sources
+            .iter_mut()
+            .filter(|source| source.is_screen_source())
+            .filter_map(|source| {
+                source
+                    .begin_screen_publication_retirement()
+                    .map(|retirement| (Arc::from(source.name()), retirement))
+            })
+            .collect();
+        Ok(screen::CommittedScreenPublicationTransition::new(
+            committed,
+            worker_retirements,
+        ))
     }
 
     /// Whether any registered source handles screen capture.
@@ -1259,7 +1488,7 @@ impl InputManager {
             source,
             id,
             source_graph_generation,
-            Arc::clone(&self.screen_publication_hub),
+            self.screen_plan_builder.publication_hub(),
         )
     }
 
@@ -1414,41 +1643,6 @@ impl InputManager {
         Ok(())
     }
 
-    fn transition_screen_publication_demand(
-        &mut self,
-        demand: ScreenPublicationDemandSnapshot,
-    ) -> anyhow::Result<()> {
-        if self.screen_publication_demand.as_ref() == Some(&demand) {
-            return Ok(());
-        }
-
-        let previous = self.screen_publication_demand.clone().unwrap_or_default();
-        for source_index in 0..self.sources.len() {
-            if !self.sources[source_index].is_screen_source() {
-                continue;
-            }
-            if let Err(error) =
-                self.sources[source_index].set_screen_publication_demand(demand.clone())
-            {
-                for source in &mut self.sources[..source_index] {
-                    if source.is_screen_source()
-                        && let Err(rollback_error) =
-                            source.set_screen_publication_demand(previous.clone())
-                    {
-                        error!(
-                            source = source.name(),
-                            %rollback_error,
-                            "Failed to roll back exact screen publication demand"
-                        );
-                    }
-                }
-                return Err(error);
-            }
-        }
-        self.screen_publication_demand = Some(demand);
-        Ok(())
-    }
-
     fn invalidate_capture_domains(&mut self, domains: (bool, bool, bool)) {
         if domains.0 {
             self.audio_capture_active = None;
@@ -1479,6 +1673,20 @@ impl InputManager {
         self.source_status_registry
             .publish(self.source_graph_generation, handles);
     }
+}
+
+fn resolved_compatibility_descriptor(
+    demand: &ScreenPublicationDemandSnapshot,
+    resolved: &[screen::ResolvedScreenBranchDemand],
+    selection: Option<&screen::RegisteredScreenBranchDemand>,
+) -> Option<screen::ResolvedScreenPublicationDescriptor> {
+    let selection = selection?;
+    demand
+        .branches()
+        .iter()
+        .position(|branch| branch == selection)
+        .and_then(|index| resolved.get(index))
+        .map(|branch| branch.descriptor().clone())
 }
 
 fn declared_source_kind(source: &dyn InputSource) -> Option<SourceKind> {

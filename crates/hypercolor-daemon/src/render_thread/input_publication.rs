@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,15 +9,16 @@ use arc_swap::ArcSwap;
 use hypercolor_core::input::screen::{
     InputPublicationDemandRevision, PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy,
     ScreenCaptureDemand, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenProcessingProfile,
-    ScreenPublicationDemandSnapshot, ScreenPublicationExecutorRequest, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenPublicationDemandSnapshot, ScreenPublicationExecutorRequest, ScreenPublicationHub,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationRetirement,
+    ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::{Mutex, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant as TokioInstant, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -582,16 +584,33 @@ impl OwnedInputPublicationDemand {
 pub(crate) struct InputPublicationReader {
     graph: InputGraphHandle,
     sensors: Option<watch::Receiver<Arc<SystemSnapshot>>>,
+    #[allow(
+        dead_code,
+        reason = "screen publication leases are optional for pump consumers"
+    )]
+    screen_publications: Arc<ScreenPublicationHub>,
 }
 
 impl InputPublicationReader {
-    fn new(graph: InputGraphHandle, sensors: Option<watch::Receiver<Arc<SystemSnapshot>>>) -> Self {
-        Self { graph, sensors }
+    fn new(
+        graph: InputGraphHandle,
+        sensors: Option<watch::Receiver<Arc<SystemSnapshot>>>,
+        screen_publications: Arc<ScreenPublicationHub>,
+    ) -> Self {
+        Self {
+            graph,
+            sensors,
+            screen_publications,
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
-        Self::new(InputGraphHandle::default(), None)
+        Self::new(
+            InputGraphHandle::default(),
+            None,
+            hypercolor_core::input::screen::ScreenPlanBuilder::new().publication_hub(),
+        )
     }
 
     pub(crate) fn graph_snapshot(&self) -> Arc<InputGraphSnapshot> {
@@ -602,6 +621,14 @@ impl InputPublicationReader {
         self.sensors
             .as_ref()
             .map(|receiver| Arc::clone(&receiver.borrow()))
+    }
+
+    #[allow(
+        dead_code,
+        reason = "screen publication leases are optional for pump consumers"
+    )]
+    pub(crate) fn screen_publications(&self) -> Arc<ScreenPublicationHub> {
+        Arc::clone(&self.screen_publications)
     }
 }
 
@@ -666,6 +693,7 @@ impl InputPublicationPump {
             InputPublicationReader::new(
                 manager.input_graph_handle(),
                 manager.sensor_snapshot_receiver(),
+                manager.screen_publication_hub(),
             )
         };
         let cancel = CancellationToken::new();
@@ -806,10 +834,19 @@ async fn run_pump(
     let mut schedule = InputPublicationSchedule::default();
     let mut capture_demand = CaptureDemandState::default();
     let mut applied_exact_screen = None;
+    let mut exact_screen_retry = None;
+    let mut publication_retirements = VecDeque::new();
+    let mut worker_retirement_tasks = JoinSet::new();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
     let mut graph_changes = reader.graph.subscribe_generation();
     let mut demand_changes = demands.subscribe_revision();
-    loop {
+    'pump: loop {
+        reap_screen_publication_retirements(&mut publication_retirements);
+        while let Some(result) = worker_retirement_tasks.try_join_next() {
+            if let Err(error) = result {
+                tracing::warn!(%error, "screen publication retirement task terminated");
+            }
+        }
         let demand = demands.snapshot();
         let desired_capture = demand.capture_demand();
         let mut graph = reader.graph_snapshot();
@@ -830,44 +867,122 @@ async fn run_pump(
         }
         let lifecycle_current = capture_demand.is_current(graph.generation(), desired_capture);
         let exact_screen_key = (demand.revision(), graph.generation());
-        if applied_exact_screen != Some(exact_screen_key) {
-            let manager_lock = manager.lock();
-            tokio::pin!(manager_lock);
-            let mut input_manager = tokio::select! {
-                () = cancel.cancelled() => break,
-                _ = demand_changes.changed() => continue,
-                _ = graph_changes.changed() => continue,
-                manager = &mut manager_lock => manager,
-            };
-            if demands.snapshot().revision() != demand.revision()
-                || reader.graph_snapshot().generation() != graph.generation()
-            {
-                continue;
-            }
-            if let Err(error) = input_manager
-                .set_screen_publication_demand(demand.exact_screen_demand(graph.generation()))
-            {
-                tracing::warn!(%error, "exact screen publication demand was rejected");
-                drop(input_manager);
-                tokio::select! {
-                    () = cancel.cancelled() => break,
-                    _ = demand_changes.changed() => {}
-                    _ = graph_changes.changed() => {}
-                    () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {}
+        let exact_screen_retry_due =
+            exact_screen_retry.is_none_or(|(retry_key, retry_at): (_, Instant)| {
+                retry_key != exact_screen_key || Instant::now() >= retry_at
+            });
+        if applied_exact_screen != Some(exact_screen_key) && exact_screen_retry_due {
+            'exact_transition: {
+                let exact_demand = demand.exact_screen_demand(graph.generation());
+                let manager_lock = manager.lock();
+                tokio::pin!(manager_lock);
+                let mut input_manager = tokio::select! {
+                    () = cancel.cancelled() => break 'pump,
+                    _ = demand_changes.changed() => continue 'pump,
+                    _ = graph_changes.changed() => continue 'pump,
+                    manager = &mut manager_lock => manager,
+                };
+                if demands.snapshot().revision() != demand.revision()
+                    || reader.graph_snapshot().generation() != graph.generation()
+                {
+                    continue 'pump;
                 }
-                continue;
+                let preparation =
+                    match input_manager.begin_screen_publication_transition(exact_demand) {
+                        Ok(preparation) => preparation,
+                        Err(error) => {
+                            tracing::warn!(%error, "exact screen publication plan was rejected");
+                            drop(input_manager);
+                            exact_screen_retry =
+                                Some((exact_screen_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
+                            break 'exact_transition;
+                        }
+                    };
+                drop(input_manager);
+                let Some(preparation) = preparation else {
+                    applied_exact_screen = Some(exact_screen_key);
+                    exact_screen_retry = None;
+                    break 'exact_transition;
+                };
+                let prepared = tokio::select! {
+                    () = cancel.cancelled() => break 'pump,
+                    _ = demand_changes.changed() => continue 'pump,
+                    _ = graph_changes.changed() => continue 'pump,
+                    prepared = preparation.await_workers() => prepared,
+                };
+                let prepared = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        tracing::warn!(%error, "exact screen publication worker preparation failed");
+                        exact_screen_retry =
+                            Some((exact_screen_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
+                        break 'exact_transition;
+                    }
+                };
+                let manager_lock = manager.lock();
+                tokio::pin!(manager_lock);
+                let mut input_manager = tokio::select! {
+                    () = cancel.cancelled() => break 'pump,
+                    _ = demand_changes.changed() => continue 'pump,
+                    _ = graph_changes.changed() => continue 'pump,
+                    manager = &mut manager_lock => manager,
+                };
+                if demands.snapshot().revision() != demand.revision()
+                    || reader.graph_snapshot().generation() != graph.generation()
+                {
+                    continue 'pump;
+                }
+                let committed = match input_manager
+                    .commit_screen_publication_transition(prepared, demand.revision())
+                {
+                    Ok(committed) => committed,
+                    Err(error) => {
+                        tracing::warn!(%error, "exact screen publication plan commit failed");
+                        exact_screen_retry =
+                            Some((exact_screen_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
+                        break 'exact_transition;
+                    }
+                };
+                drop(input_manager);
+                let (committed, worker_retirements) = committed.into_parts();
+                for (source, retirement) in worker_retirements {
+                    worker_retirement_tasks.spawn(async move {
+                        if let Err(error) = retirement.complete().await {
+                            tracing::warn!(%source, %error, "screen source retirement failed");
+                        }
+                    });
+                }
+                let (_, retirement) = committed.into_parts();
+                publication_retirements.push_back(retirement);
+                reap_screen_publication_retirements(&mut publication_retirements);
+                applied_exact_screen = Some(exact_screen_key);
+                exact_screen_retry = None;
             }
-            applied_exact_screen = Some(exact_screen_key);
         }
         let active_demand = demand_for_active_sources(&graph, &demand);
         let now = Instant::now();
         schedule.synchronize(&active_demand, now);
 
         if demand.max_requested_hz() == 0 && lifecycle_current {
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                _ = demand_changes.changed() => {}
-                _ = graph_changes.changed() => {}
+            let retry_at = exact_screen_retry
+                .filter(|(retry_key, _)| *retry_key == exact_screen_key)
+                .map_or_else(
+                    || now + LIFECYCLE_PROBE_INTERVAL,
+                    |(_, retry_at)| retry_at.min(now + LIFECYCLE_PROBE_INTERVAL),
+                );
+            if exact_screen_retry.is_some() || !publication_retirements.is_empty() {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = demand_changes.changed() => {}
+                    _ = graph_changes.changed() => {}
+                    () = tokio::time::sleep_until(TokioInstant::from_std(retry_at)) => {}
+                }
+            } else {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = demand_changes.changed() => {}
+                    _ = graph_changes.changed() => {}
+                }
             }
             continue;
         }
@@ -921,6 +1036,18 @@ async fn run_pump(
         manager.sample_source_kinds(&due_sources);
     }
     debug!("input publication worker exited");
+}
+
+fn reap_screen_publication_retirements(retirements: &mut VecDeque<ScreenPublicationRetirement>) {
+    let pending = retirements.len();
+    for _ in 0..pending {
+        let retirement = retirements
+            .pop_front()
+            .expect("screen retirement count was captured before this pass");
+        if let Err(retirement) = retirement.try_reclaim() {
+            retirements.push_back(retirement);
+        }
+    }
 }
 
 fn demand_for_active_sources(
