@@ -324,13 +324,10 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     let mut workspace = batch
         .prepare_materialization_workspace(&plan)
         .expect("shared physical workspace prepares");
-    let fanout = PreparedCpuPublicationFanout::prepare(
-        &batch,
-        &workspace,
-        builder.committed_state(),
-        &binding,
-    )
-    .expect("shared physical fanout prepares");
+    let mut fanout = PreparedCpuPublicationFanout::prepare_candidate(&batch, &workspace, &plan)
+        .expect("shared physical fanout candidate prepares")
+        .bind(builder.committed_state(), &binding)
+        .expect("shared physical fanout binds");
     let frame = frame(&source);
 
     assert_eq!(batch.len(), 1);
@@ -365,12 +362,12 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
         PreparedCpuZoneMaterializer::prepare(surface_descriptor),
         Err(CpuZoneMaterializationError::BranchNotZones)
     ));
-    let materializer = PreparedCpuZoneMaterializer::prepare(zones_descriptor)
+    let stateless_materializer = PreparedCpuZoneMaterializer::prepare(zones_descriptor)
         .expect("oversubscribed zones prepare");
-    assert_eq!(materializer.descriptor(), zones_descriptor);
-    assert_eq!(materializer.physical_descriptor(), physical);
-    assert_eq!(materializer.zone_count(), 29 * 23);
-    assert!(materializer.precomputed_byte_len() > 0);
+    assert_eq!(stateless_materializer.descriptor(), zones_descriptor);
+    assert_eq!(stateless_materializer.physical_descriptor(), physical);
+    assert_eq!(stateless_materializer.zone_count(), 29 * 23);
+    assert!(stateless_materializer.precomputed_byte_len() > 0);
 
     let surface_publisher = hub
         .publisher(surface_descriptor, &binding)
@@ -431,15 +428,33 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     assert_eq!(report.completed_jobs(), 1);
     assert_eq!(report.output_bytes(), 17 * 11 * 4);
     assert_eq!(workspace.pixels(0), None);
-    materializer
-        .materialize(
+    let stateful_materializer = fanout
+        .physical_mut()
+        .first_mut()
+        .expect("shared physical route exists")
+        .branches_mut()
+        .iter_mut()
+        .find(|branch| branch.kind() == PreparedCpuLogicalFanoutKind::Zones)
+        .and_then(hypercolor_core::input::screen::PreparedCpuLogicalFanout::zone_materializer_mut)
+        .expect("Zones route owns plan-lifetime state");
+    assert_eq!(
+        stateful_materializer.plan_generation(),
+        Some(plan.generation())
+    );
+    let staged = stateful_materializer
+        .stage(
+            plan.generation(),
             physical,
             surface_publication
                 .surface_pixels_mut()
                 .expect("physical surface remains writable"),
+            frame.metadata().captured_at,
             &mut zones_publication,
         )
-        .expect("the same physical bytes materialize zones");
+        .expect("the same physical bytes stage Zones");
+    assert_eq!(staged.columns(), 29);
+    assert_eq!(staged.rows(), 23);
+    assert_eq!(staged.color_count(), 29 * 23);
 
     hub.finalize_writable_publication(
         surface_publication,
@@ -453,6 +468,50 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
         ScreenPublicationHealth::Healthy,
     )
     .expect("zones publication finalizes");
+    stateful_materializer
+        .commit_staged(plan.generation())
+        .expect("accepted Zones state commits");
+    let surface_latest = hub
+        .lease(surface_descriptor)
+        .expect("surface branch has a lease")
+        .read()
+        .expect("surface branch is live");
+    let ScreenBranchPayload::Surface(surface) = surface_latest.payload() else {
+        panic!("surface descriptor publishes a Surface");
+    };
+    let rejected_frame = frame_with_sequence(&source, 18);
+    let mut rejected_publication = hub
+        .prepare_writable_publication(
+            &zones_publisher,
+            ScreenPayloadKind::Zones,
+            &intent(zones_descriptor, &binding, &rejected_frame),
+        )
+        .expect("next Zones slot reserves");
+    stateful_materializer
+        .stage(
+            plan.generation(),
+            physical,
+            surface.pixels(),
+            rejected_frame.metadata().captured_at,
+            &mut rejected_publication,
+        )
+        .expect("next Zones state stages");
+    let rejected_at = rejected_frame
+        .metadata()
+        .captured_at
+        .checked_sub(Duration::from_nanos(1))
+        .expect("test capture timestamp has a predecessor");
+    assert!(matches!(
+        hub.finalize_writable_publication(
+            rejected_publication,
+            rejected_at,
+            ScreenPublicationHealth::Healthy,
+        ),
+        Err(hypercolor_core::input::screen::ScreenPublicationHubError::InvalidPublicationTimeline)
+    ));
+    stateful_materializer
+        .discard_staged(plan.generation())
+        .expect("rejected Zones state discards");
     let zones_latest = hub
         .lease(zones_descriptor)
         .expect("zones branch has a lease")
@@ -465,6 +524,82 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     assert_eq!(zones.rows(), non_zero(23));
     assert_eq!(zones.colors().len(), 29 * 23);
     assert!(zones.colors().iter().any(|color| *color != [0, 0, 0]));
+}
+
+#[test]
+fn fanout_candidate_rejects_stale_authority_generation() {
+    let executor = executor();
+    let source = source(extent(17, 11));
+    let first = demand(
+        &source,
+        extent(13, 7),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let (first_plan, first_binding) = commit(&mut builder, [first]);
+    let batch = executor
+        .prepare_batch(&source, &first_plan)
+        .expect("first exact batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&first_plan)
+        .expect("first direct Surface needs no workspace");
+    let candidate =
+        PreparedCpuPublicationFanout::prepare_candidate(&batch, &workspace, &first_plan)
+            .expect("first candidate allocation completes");
+    let second = demand(
+        &source,
+        extent(11, 5),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    drop(first_binding);
+    let (second_plan, second_binding) = commit(&mut builder, [second]);
+    let second_authority = builder.committed_state();
+
+    assert!(matches!(
+        candidate.bind(Arc::clone(&second_authority), &second_binding),
+        Err(hypercolor_core::input::screen::CpuPublicationFanoutError::PlanGenerationMismatch {
+            batch,
+            authority,
+        }) if batch == first_plan.generation() && authority == second_plan.generation()
+    ));
+    assert_eq!(
+        second_authority.plan().generation(),
+        second_plan.generation()
+    );
+    assert_ne!(first_plan.generation(), second_binding.plan_generation());
+}
+
+#[test]
+fn fanout_candidate_failure_preserves_committed_authority() {
+    let executor = executor();
+    let source = source(extent(17, 11));
+    let surface = demand(
+        &source,
+        extent(13, 7),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let (plan, _) = commit(&mut builder, [surface]);
+    let authority = builder.committed_state();
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("first exact batch prepares");
+    let unrelated_batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("independent exact batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("first workspace prepares");
+
+    assert!(matches!(
+        PreparedCpuPublicationFanout::prepare_candidate(&unrelated_batch, &workspace, &plan),
+        Err(hypercolor_core::input::screen::CpuPublicationFanoutError::WorkspaceBatchMismatch)
+    ));
+    assert!(Arc::ptr_eq(&authority, &builder.committed_state()));
+    assert_eq!(authority.plan().generation(), plan.generation());
 }
 
 #[test]
@@ -505,13 +640,10 @@ fn materialization_workspace_retains_only_branch_local_physical_keys() {
     let mut workspace = batch
         .prepare_materialization_workspace(&plan)
         .expect("branch-local workspace prepares");
-    let fanout = PreparedCpuPublicationFanout::prepare(
-        &batch,
-        &workspace,
-        builder.committed_state(),
-        &binding,
-    )
-    .expect("mixed physical fanout prepares");
+    let fanout = PreparedCpuPublicationFanout::prepare_candidate(&batch, &workspace, &plan)
+        .expect("mixed physical fanout candidate prepares")
+        .bind(builder.committed_state(), &binding)
+        .expect("mixed physical fanout binds");
     let frame = frame(&source);
 
     assert_eq!(batch.len(), 3);
@@ -543,7 +675,7 @@ fn materialization_workspace_retains_only_branch_local_physical_keys() {
     assert_eq!(workspace.plan_generation(), plan.generation());
     assert_eq!(workspace.len(), 2);
     assert!(!workspace.is_empty());
-    assert!(workspace.allocation_byte_len() >= 3 * 15 * 4 + 9 * 9 * 4);
+    assert!(workspace.allocation_byte_len() >= 2 * (3 * 15 * 4 + 9 * 9 * 4));
     assert!((0..workspace.len()).all(|workspace_index| {
         workspace
             .physical_descriptor(workspace_index)

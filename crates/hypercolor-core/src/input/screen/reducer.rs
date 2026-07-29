@@ -18,17 +18,36 @@ use super::sampling::{
 
 use super::{
     CaptureCursor, CaptureCursorContent, CaptureDynamicRange, CaptureFrame, CaptureFrameError,
-    CapturePixelFormat, CaptureRotation, CaptureTransferFunction, CpuCaptureStorage, PixelExtent,
-    PreparedScreenPublication, RawCaptureSurface, ResolvedScreenColorPipeline,
-    ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenColorTuning,
+    CapturePixelFormat, CaptureRotation, CaptureStorage, CaptureTransferFunction,
+    CpuCaptureStorage, PixelExtent, PlatformGpuApi, PreparedScreenPublication, RawCaptureSurface,
+    ResolvedScreenColorPipeline, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenColorTuning,
     ScreenContentBarsPolicy, ScreenCursorPolicy, ScreenLetterboxFill,
     ScreenPhysicalReductionDescriptor, ScreenPlanGeneration, ScreenPublicationKind,
-    ScreenReductionFilter, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSubpixelRect,
+    ScreenReductionFilter, ScreenResourceApi, ScreenSmoothingPolicy, ScreenSourceReflection,
+    ScreenSubpixelRect,
 };
 
 const CHANNELS_PER_PIXEL: u64 = 4;
 const CPU_REDUCTION_ALGORITHM_REVISION: NonZeroU32 = NonZeroU32::MIN;
+
+/// Platform work required before an exact request can enter the CPU reducer.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum CpuFallbackNeed {
+    /// The platform must expose CPU-addressable bytes for its opaque GPU source.
+    #[error("platform GPU source {api:?} requires exact CPU readback")]
+    PlatformReadback { api: PlatformGpuApi },
+}
+
+impl CpuFallbackNeed {
+    /// GPU API whose exact source pixels require platform readback.
+    #[must_use]
+    pub const fn api(&self) -> &PlatformGpuApi {
+        match self {
+            Self::PlatformReadback { api } => api,
+        }
+    }
+}
 
 /// Exact resource geometry for one CPU reduction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -305,9 +324,18 @@ impl PreparedCpuReductionBatch {
                 }
             })?;
             pixels.resize(byte_len, 0);
+            let mut scratch = Vec::new();
+            scratch.try_reserve_exact(byte_len).map_err(|_| {
+                CpuReductionError::WorkspacePlaneAllocationFailed {
+                    batch_index,
+                    byte_len,
+                }
+            })?;
+            scratch.resize(byte_len, 0);
             planes.push(CpuMaterializationPlane {
                 batch_index,
                 pixels,
+                scratch,
                 completed_source_sequence: None,
             });
         }
@@ -400,6 +428,7 @@ impl PreparedCpuMaterializationWorkspace {
 struct CpuMaterializationPlane {
     batch_index: usize,
     pixels: Vec<u8>,
+    scratch: Vec<u8>,
     completed_source_sequence: Option<u64>,
 }
 
@@ -561,6 +590,11 @@ fn workspace_allocation_byte_len(
                     resource: "materialization workspace",
                 }
             })?)
+            .and_then(|total| {
+                u64::try_from(plane.scratch.capacity())
+                    .ok()
+                    .and_then(|scratch| total.checked_add(scratch))
+            })
             .ok_or(CpuReductionError::GeometryOverflow {
                 resource: "materialization workspace",
             })
@@ -634,6 +668,21 @@ fn validate_schedule_disjoint(
         }
     }
     Ok(())
+}
+
+fn prepared_cpu_sampling_view<'frame>(
+    batch: &'frame PreparedCpuReductionBatch,
+    frame: &'frame CaptureFrame<RawCaptureSurface>,
+) -> Result<CpuSamplingView<'frame>, CpuReductionError> {
+    frame.validate_epoch(batch.source.epoch())?;
+    if let CaptureStorage::Gpu(surface) = frame.storage() {
+        return Err(CpuFallbackNeed::PlatformReadback {
+            api: surface.api().clone(),
+        }
+        .into());
+    }
+    CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)
+        .map_err(Into::into)
 }
 
 #[expect(
@@ -827,6 +876,9 @@ impl CpuReductionExecutor {
         source: &ResolvedScreenSource,
         plan: &ScreenCapturePlan,
     ) -> Result<PreparedCpuReductionBatch, CpuReductionError> {
+        if let ScreenResourceApi::PlatformGpu(api) = source.config().resources().api() {
+            return Err(CpuFallbackNeed::PlatformReadback { api: api.clone() }.into());
+        }
         let sampling_transform = CpuSamplingTransform::try_from_source(source)?;
         let source_id = source.epoch().source_id.as_str();
         let physical_reductions = plan.physical_reductions();
@@ -925,8 +977,7 @@ impl CpuReductionExecutor {
         validate_workspace_schedule(workspace, workspace_indices)?;
         validate_surface_schedule(batch, surface_jobs)?;
         validate_schedule_disjoint(workspace, workspace_indices, surface_jobs)?;
-        let view =
-            CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)?;
+        let view = prepared_cpu_sampling_view(batch, frame)?;
         let source_sequence = frame.metadata().sequence;
         let mut output_bytes = 0_u64;
         let mut scheduled_tiles = 0_u64;
@@ -947,7 +998,7 @@ impl CpuReductionExecutor {
             let reduction = &batch.reductions[plane.batch_index];
             preflight_reduction(
                 reduction,
-                &plane.pixels,
+                &plane.scratch,
                 frame,
                 &mut output_bytes,
                 &mut scheduled_tiles,
@@ -971,9 +1022,6 @@ impl CpuReductionExecutor {
                 batch_index,
             )?;
         }
-        for &workspace_index in workspace_indices {
-            workspace.planes[workspace_index].completed_source_sequence = None;
-        }
         let (workspace_result, surface_result) = self.inner.pool.install(|| {
             rayon::join(
                 || {
@@ -991,7 +1039,7 @@ impl CpuReductionExecutor {
                                 reduction,
                                 self.inner.worker_count,
                                 self.inner.tile_rows,
-                                &mut plane.pixels,
+                                &mut plane.scratch,
                             )
                         })
                 },
@@ -1013,7 +1061,9 @@ impl CpuReductionExecutor {
         workspace_result?;
         surface_result?;
         for &workspace_index in workspace_indices {
-            workspace.planes[workspace_index].completed_source_sequence = Some(source_sequence);
+            let plane = &mut workspace.planes[workspace_index];
+            std::mem::swap(&mut plane.pixels, &mut plane.scratch);
+            plane.completed_source_sequence = Some(source_sequence);
         }
         Ok(CpuReductionBatchReport {
             source_sequence,
@@ -1043,8 +1093,7 @@ impl CpuReductionExecutor {
         if !Arc::ptr_eq(&batch.reductions, &workspace.reductions) {
             return Err(CpuReductionError::WorkspaceBatchMismatch);
         }
-        let view =
-            CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)?;
+        let view = prepared_cpu_sampling_view(batch, frame)?;
         let source_sequence = frame.metadata().sequence;
         let mut output_bytes = 0_u64;
         let mut scheduled_tiles = 0_u64;
@@ -1070,6 +1119,13 @@ impl CpuReductionExecutor {
                     actual: plane.pixels.len(),
                 });
             }
+            if plane.scratch.len() != expected {
+                return Err(CpuReductionError::WorkspacePlaneLengthMismatch {
+                    batch_index: plane.batch_index,
+                    expected,
+                    actual: plane.scratch.len(),
+                });
+            }
             validate_cursor(reduction.descriptor.cursor(), &frame.metadata().cursor)?;
             output_bytes = output_bytes
                 .checked_add(reduction.output.byte_len())
@@ -1089,9 +1145,6 @@ impl CpuReductionExecutor {
                     resource: "materialization workspace tile count",
                 })?;
         }
-        for plane in &mut workspace.planes {
-            plane.completed_source_sequence = None;
-        }
         let execution = self.inner.pool.install(|| {
             workspace.planes.par_iter_mut().try_for_each(|plane| {
                 let reduction = &batch.reductions[plane.batch_index];
@@ -1100,12 +1153,13 @@ impl CpuReductionExecutor {
                     reduction,
                     self.inner.worker_count,
                     self.inner.tile_rows,
-                    &mut plane.pixels,
+                    &mut plane.scratch,
                 )
             })
         });
         execution?;
         for plane in &mut workspace.planes {
+            std::mem::swap(&mut plane.pixels, &mut plane.scratch);
             plane.completed_source_sequence = Some(source_sequence);
         }
         Ok(CpuReductionBatchReport {
@@ -1131,8 +1185,7 @@ impl CpuReductionExecutor {
                 actual: destinations.len(),
             });
         }
-        let view =
-            CpuSamplingView::try_new_prepared(frame, &batch.source, batch.sampling_transform)?;
+        let view = prepared_cpu_sampling_view(batch, frame)?;
         let mut output_bytes = 0_u64;
         let mut scheduled_tiles = 0_u64;
         for (index, (reduction, destination)) in batch
@@ -1630,6 +1683,9 @@ pub enum CpuReductionError {
     /// Plan-lifetime descriptor storage could not be reserved.
     #[error("failed to allocate CPU reduction batch metadata")]
     BatchPreparationAllocationFailed,
+    /// Platform work is required before exact CPU reduction can proceed.
+    #[error(transparent)]
+    FallbackRequired(#[from] CpuFallbackNeed),
     /// Workspace preparation received another committed plan generation.
     #[error("CPU materialization workspace plan generation does not match its prepared batch")]
     WorkspacePlanGenerationMismatch,

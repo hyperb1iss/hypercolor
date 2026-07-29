@@ -9,9 +9,9 @@ use hypercolor_core::input::screen::{
     CaptureFrameError, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation,
     CaptureSourceId, CaptureStorage, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError,
     CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
-    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
+    RawCaptureSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
     ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExtentRequest, ScreenInputGraphGeneration,
     ScreenPlanBuilder, ScreenProcessingProfile, ScreenProcessingProfileConfig,
@@ -57,6 +57,24 @@ fn source_named_with(
     cursor_capabilities: ScreenCursorCapabilities,
     resource_generation: u64,
 ) -> ResolvedScreenSource {
+    source_named_with_api(
+        source_id,
+        source_extent,
+        reflection,
+        cursor_capabilities,
+        resource_generation,
+        ScreenResourceApi::Cpu,
+    )
+}
+
+fn source_named_with_api(
+    source_id: &str,
+    source_extent: PixelExtent,
+    reflection: ScreenSourceReflection,
+    cursor_capabilities: ScreenCursorCapabilities,
+    resource_generation: u64,
+    resource_api: ScreenResourceApi,
+) -> ResolvedScreenSource {
     let geometry = CaptureGeometry::new(
         PhysicalOrigin::default(),
         source_extent,
@@ -82,7 +100,7 @@ fn source_named_with(
             cursor_capabilities,
             ScreenBackendResourceIdentity::new(
                 ScreenCaptureBackend::Synthetic,
-                ScreenResourceApi::Cpu,
+                resource_api,
                 7,
                 resource_generation,
             ),
@@ -612,6 +630,127 @@ fn source_config_and_output_count_mismatches_are_fenced() {
     assert!(empty.is_empty());
     assert_eq!(empty.descriptor(0), None);
     assert_eq!(empty.output_byte_len(0), None);
+}
+
+#[test]
+fn opaque_gpu_sources_and_frames_request_typed_platform_readback() {
+    let executor = executor();
+    let source_extent = extent(8, 6);
+    let gpu_source = source_named_with_api(
+        "synthetic:gpu-fallback",
+        source_extent,
+        ScreenSourceReflection::None,
+        ScreenCursorCapabilities::clean_only(),
+        11,
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+    );
+    let gpu_demand = demand(
+        &gpu_source,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::bounded(
+            Some(non_zero(5)),
+            Some(non_zero(3)),
+            ScreenUpscalePolicy::Allow,
+        ),
+        ScreenAspectPolicy::Cover,
+        ScreenProcessingProfileConfig::default(),
+        60,
+        executor.capabilities(),
+    );
+    let mut gpu_builder = ScreenPlanBuilder::new();
+    let gpu_preparing = gpu_builder
+        .prepare(
+            [gpu_demand],
+            None,
+            InputPublicationDemandRevision::new(1),
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("GPU exact plan prepares");
+    let error = executor
+        .prepare_batch(&gpu_source, gpu_preparing.candidate_plan())
+        .expect_err("opaque GPU source requires platform readback");
+    let CpuReductionError::FallbackRequired(need) = error else {
+        panic!("opaque GPU source returned {error:?}");
+    };
+    assert_eq!(need.api(), &PlatformGpuApi::Direct3d11);
+
+    let cpu_source = source(source_extent);
+    let cpu_demand = demand(
+        &cpu_source,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::bounded(
+            Some(non_zero(5)),
+            Some(non_zero(3)),
+            ScreenUpscalePolicy::Allow,
+        ),
+        ScreenAspectPolicy::Cover,
+        ScreenProcessingProfileConfig::default(),
+        60,
+        executor.capabilities(),
+    );
+    let batch =
+        prepare_batch(&executor, &cpu_source, [cpu_demand]).expect("CPU exact batch prepares");
+    let descriptor = batch
+        .descriptor(0)
+        .expect("exact physical key exists")
+        .clone();
+    let gpu_surface = PlatformGpuSurface::new(
+        PlatformGpuApi::Direct3d11,
+        41,
+        source_extent,
+        CapturePixelFormat::Rgba8,
+        Arc::new(()),
+    )
+    .expect("test GPU surface is valid");
+    let captured_at = Instant::now();
+    let gpu_frame = |session_generation| {
+        CaptureFrame::new(
+            CaptureFrameMetadata {
+                source_id: cpu_source.epoch().source_id.clone(),
+                topology_generation: cpu_source.epoch().topology_generation,
+                session_generation,
+                sequence: 17,
+                captured_at,
+                fresh_until: captured_at + Duration::from_secs(1),
+                geometry: cpu_source.config().geometry(),
+                colorimetry: cpu_source.config().colorimetry(),
+                cursor: CaptureCursor::default(),
+            },
+            CaptureStorage::Gpu(gpu_surface.clone()),
+            hypercolor_core::input::screen::CaptureDamage::default(),
+        )
+        .expect("test GPU frame is valid")
+    };
+    let mut output = vec![0xA5; batch.output_byte_len(0).expect("output size exists")];
+    let mut jobs = [CpuReductionBatchJob::new(&descriptor, &mut output)];
+
+    assert_eq!(
+        executor.execute_batch(
+            &batch,
+            &gpu_frame(cpu_source.epoch().session_generation + 1),
+            &mut jobs,
+        ),
+        Err(CpuReductionError::CaptureFrame(
+            CaptureFrameError::StaleSession {
+                expected: cpu_source.epoch().session_generation,
+                actual: cpu_source.epoch().session_generation + 1,
+            }
+        ))
+    );
+    let error = executor
+        .execute_batch(
+            &batch,
+            &gpu_frame(cpu_source.epoch().session_generation),
+            &mut jobs,
+        )
+        .expect_err("opaque GPU frame requires platform readback");
+    let CpuReductionError::FallbackRequired(need) = error else {
+        panic!("opaque GPU frame returned {error:?}");
+    };
+    assert_eq!(need.api(), &PlatformGpuApi::Direct3d11);
+    assert!(output.iter().all(|byte| *byte == 0xA5));
+    assert_eq!(batch.descriptor(0), Some(&descriptor));
 }
 
 #[test]

@@ -9,8 +9,8 @@ use super::reducer::branch_requires_materialization;
 use super::{
     CpuZoneMaterializationError, PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
     PreparedCpuZoneMaterializer, ResolvedScreenPublicationDescriptor, ScreenBranchPublisher,
-    ScreenCommittedState, ScreenPhysicalReductionDescriptor, ScreenPlanGeneration,
-    ScreenPublicationHubError, ScreenPublicationKind, ScreenWorkerBinding,
+    ScreenCapturePlan, ScreenCommittedState, ScreenPhysicalReductionDescriptor,
+    ScreenPlanGeneration, ScreenPublicationHubError, ScreenPublicationKind, ScreenWorkerBinding,
 };
 
 /// Plan-time routing class for one exact logical branch.
@@ -28,7 +28,8 @@ pub enum PreparedCpuLogicalFanoutKind {
 #[derive(Debug)]
 pub struct PreparedCpuLogicalFanout {
     kind: PreparedCpuLogicalFanoutKind,
-    publisher: ScreenBranchPublisher,
+    descriptor: ResolvedScreenPublicationDescriptor,
+    publisher: Option<ScreenBranchPublisher>,
     zone_materializer: Option<PreparedCpuZoneMaterializer>,
 }
 
@@ -41,14 +42,16 @@ impl PreparedCpuLogicalFanout {
 
     /// Descriptor-bound publisher cached from the committed snapshot.
     #[must_use]
-    pub const fn publisher(&self) -> &ScreenBranchPublisher {
-        &self.publisher
+    pub fn publisher(&self) -> &ScreenBranchPublisher {
+        self.publisher
+            .as_ref()
+            .expect("bound CPU fanout routes retain publisher authority")
     }
 
     /// Exact logical descriptor owned by this route.
     #[must_use]
-    pub fn descriptor(&self) -> &ResolvedScreenPublicationDescriptor {
-        self.publisher.descriptor()
+    pub const fn descriptor(&self) -> &ResolvedScreenPublicationDescriptor {
+        &self.descriptor
     }
 
     /// Prepared zone kernel when this route publishes Zones.
@@ -56,72 +59,44 @@ impl PreparedCpuLogicalFanout {
     pub const fn zone_materializer(&self) -> Option<&PreparedCpuZoneMaterializer> {
         self.zone_materializer.as_ref()
     }
+
+    /// Mutable plan-lifetime state for staging one Zones publication.
+    #[must_use]
+    pub fn zone_materializer_mut(&mut self) -> Option<&mut PreparedCpuZoneMaterializer> {
+        self.zone_materializer.as_mut()
+    }
 }
 
-/// All logical branches consuming one canonical physical reduction.
+/// Allocation-complete CPU fanout awaiting immutable runtime authority.
 #[derive(Debug)]
-pub struct PreparedCpuPhysicalFanout {
-    batch_index: usize,
-    workspace_index: Option<usize>,
-    branches: Vec<PreparedCpuLogicalFanout>,
-}
-
-impl PreparedCpuPhysicalFanout {
-    /// Canonical prepared CPU batch index for this physical key.
-    #[must_use]
-    pub const fn batch_index(&self) -> usize {
-        self.batch_index
-    }
-
-    /// Retained plane index when any logical branch needs materialization.
-    #[must_use]
-    pub const fn workspace_index(&self) -> Option<usize> {
-        self.workspace_index
-    }
-
-    /// Canonically ordered logical branches consuming this physical key.
-    #[must_use]
-    pub fn branches(&self) -> &[PreparedCpuLogicalFanout] {
-        &self.branches
-    }
-}
-
-/// Allocation-complete CPU routing snapshot for one source and plan generation.
-#[derive(Debug)]
-pub struct PreparedCpuPublicationFanout {
-    authority: Arc<ScreenCommittedState>,
+pub struct PreparedCpuPublicationFanoutCandidate {
     batch: PreparedCpuReductionBatch,
     physical: Vec<PreparedCpuPhysicalFanout>,
     allocation_byte_len: u64,
 }
 
-impl PreparedCpuPublicationFanout {
-    /// Cache exact physical-to-logical routes and publisher capabilities once.
+impl PreparedCpuPublicationFanoutCandidate {
+    /// Prepare exact routing metadata and branch-local kernels before commit.
     ///
     /// # Errors
     ///
-    /// Rejects substituted plan, batch, workspace, source, or worker authority;
-    /// malformed physical grouping; unsupported zone policy; and fallible
-    /// plan-lifetime metadata allocation.
+    /// Rejects substituted plan, batch, or workspace identities; malformed
+    /// physical grouping; unsupported zone policy; and fallible plan-lifetime
+    /// metadata allocation.
     pub fn prepare(
         batch: &PreparedCpuReductionBatch,
         workspace: &PreparedCpuMaterializationWorkspace,
-        authority: Arc<ScreenCommittedState>,
-        binding: &ScreenWorkerBinding,
+        plan: &ScreenCapturePlan,
     ) -> Result<Self, CpuPublicationFanoutError> {
-        if authority.plan().generation() != batch.plan_generation() {
-            return Err(CpuPublicationFanoutError::PlanGenerationMismatch {
+        if plan.generation() != batch.plan_generation() {
+            return Err(CpuPublicationFanoutError::CandidatePlanGenerationMismatch {
                 batch: batch.plan_generation(),
-                authority: authority.plan().generation(),
+                candidate: plan.generation(),
             });
         }
         if workspace.plan_generation() != batch.plan_generation() || !workspace.belongs_to(batch) {
             return Err(CpuPublicationFanoutError::WorkspaceBatchMismatch);
         }
-        if binding.source_id() != &batch.source().epoch().source_id {
-            return Err(CpuPublicationFanoutError::WorkerSourceMismatch);
-        }
-        let plan = authority.plan();
         let mut physical = Vec::new();
         physical
             .try_reserve_exact(batch.len())
@@ -168,7 +143,6 @@ impl PreparedCpuPublicationFanout {
                 if branch_descriptor.physical() != descriptor {
                     return Err(CpuPublicationFanoutError::BranchPhysicalMismatch { branch_index });
                 }
-                let publisher = authority.publisher(branch_descriptor, binding)?;
                 let (kind, zone_materializer) = match branch_descriptor.kind() {
                     ScreenPublicationKind::Surface
                         if branch_requires_materialization(branch_descriptor) =>
@@ -183,13 +157,17 @@ impl PreparedCpuPublicationFanout {
                         requires_workspace = true;
                         (
                             PreparedCpuLogicalFanoutKind::Zones,
-                            Some(PreparedCpuZoneMaterializer::prepare(branch_descriptor)?),
+                            Some(PreparedCpuZoneMaterializer::prepare_stateful(
+                                branch_descriptor,
+                                batch.plan_generation(),
+                            )?),
                         )
                     }
                 };
                 branches.push(PreparedCpuLogicalFanout {
                     kind,
-                    publisher,
+                    descriptor: branch_descriptor.clone(),
+                    publisher: None,
                     zone_materializer,
                 });
             }
@@ -210,11 +188,111 @@ impl PreparedCpuPublicationFanout {
         }
         let allocation_byte_len = allocation_byte_len(&physical, physical.capacity())?;
         Ok(Self {
-            authority,
             batch: batch.clone(),
             physical,
             allocation_byte_len,
         })
+    }
+
+    /// Bind one unpublished candidate to an exact immutable authority snapshot.
+    ///
+    /// Successful binding only moves owned storage and clones retained `Arc`
+    /// capabilities. It performs no heap allocation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale authority, another source worker, or a substituted worker
+    /// generation without exposing a partially bound fanout.
+    pub fn bind(
+        mut self,
+        authority: Arc<ScreenCommittedState>,
+        binding: &ScreenWorkerBinding,
+    ) -> Result<PreparedCpuPublicationFanout, CpuPublicationFanoutError> {
+        if authority.plan().generation() != self.batch.plan_generation() {
+            return Err(CpuPublicationFanoutError::PlanGenerationMismatch {
+                batch: self.batch.plan_generation(),
+                authority: authority.plan().generation(),
+            });
+        }
+        if binding.source_id() != &self.batch.source().epoch().source_id {
+            return Err(CpuPublicationFanoutError::WorkerSourceMismatch);
+        }
+        if binding.plan_generation() != self.batch.plan_generation() {
+            return Err(CpuPublicationFanoutError::WorkerPlanGenerationMismatch {
+                candidate: self.batch.plan_generation(),
+                binding: binding.plan_generation(),
+            });
+        }
+        for route in &mut self.physical {
+            for branch in &mut route.branches {
+                branch.publisher = Some(authority.publisher(&branch.descriptor, binding)?);
+            }
+        }
+        Ok(PreparedCpuPublicationFanout {
+            authority,
+            batch: self.batch,
+            physical: self.physical,
+            allocation_byte_len: self.allocation_byte_len,
+        })
+    }
+}
+
+/// All logical branches consuming one canonical physical reduction.
+#[derive(Debug)]
+pub struct PreparedCpuPhysicalFanout {
+    batch_index: usize,
+    workspace_index: Option<usize>,
+    branches: Vec<PreparedCpuLogicalFanout>,
+}
+
+impl PreparedCpuPhysicalFanout {
+    /// Canonical prepared CPU batch index for this physical key.
+    #[must_use]
+    pub const fn batch_index(&self) -> usize {
+        self.batch_index
+    }
+
+    /// Retained plane index when any logical branch needs materialization.
+    #[must_use]
+    pub const fn workspace_index(&self) -> Option<usize> {
+        self.workspace_index
+    }
+
+    /// Canonically ordered logical branches consuming this physical key.
+    #[must_use]
+    pub fn branches(&self) -> &[PreparedCpuLogicalFanout] {
+        &self.branches
+    }
+
+    /// Mutable logical routes for plan-lifetime branch processing state.
+    #[must_use]
+    pub fn branches_mut(&mut self) -> &mut [PreparedCpuLogicalFanout] {
+        &mut self.branches
+    }
+}
+
+/// Allocation-complete CPU routing snapshot for one source and plan generation.
+#[derive(Debug)]
+pub struct PreparedCpuPublicationFanout {
+    authority: Arc<ScreenCommittedState>,
+    batch: PreparedCpuReductionBatch,
+    physical: Vec<PreparedCpuPhysicalFanout>,
+    allocation_byte_len: u64,
+}
+
+impl PreparedCpuPublicationFanout {
+    /// Allocate an unpublished fanout candidate from one exact candidate plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation and allocation failures as
+    /// [`PreparedCpuPublicationFanoutCandidate::prepare`].
+    pub fn prepare_candidate(
+        batch: &PreparedCpuReductionBatch,
+        workspace: &PreparedCpuMaterializationWorkspace,
+        plan: &ScreenCapturePlan,
+    ) -> Result<PreparedCpuPublicationFanoutCandidate, CpuPublicationFanoutError> {
+        PreparedCpuPublicationFanoutCandidate::prepare(batch, workspace, plan)
     }
 
     /// Exact committed plan generation retained by this routing snapshot.
@@ -245,6 +323,12 @@ impl PreparedCpuPublicationFanout {
     #[must_use]
     pub fn physical(&self) -> &[PreparedCpuPhysicalFanout] {
         &self.physical
+    }
+
+    /// Mutable physical routes for plan-lifetime branch processing state.
+    #[must_use]
+    pub fn physical_mut(&mut self) -> &mut [PreparedCpuPhysicalFanout] {
+        &mut self.physical
     }
 
     /// Exact physical descriptor for one cached route.
@@ -310,6 +394,12 @@ fn checked_bytes<T>(count: usize) -> Result<u64, CpuPublicationFanoutError> {
 /// Preparation failure for immutable CPU publication fanout.
 #[derive(Debug, Error)]
 pub enum CpuPublicationFanoutError {
+    /// Prepared physical work and the unpublished candidate name different generations.
+    #[error("CPU fanout batch generation {batch:?} does not match candidate {candidate:?}")]
+    CandidatePlanGenerationMismatch {
+        batch: ScreenPlanGeneration,
+        candidate: ScreenPlanGeneration,
+    },
     /// Prepared physical work and committed authority name different generations.
     #[error("CPU fanout batch generation {batch:?} does not match authority {authority:?}")]
     PlanGenerationMismatch {
@@ -322,6 +412,12 @@ pub enum CpuPublicationFanoutError {
     /// Worker authority names another capture source.
     #[error("CPU fanout worker binding names another source")]
     WorkerSourceMismatch,
+    /// Worker authority belongs to another committed plan generation.
+    #[error("CPU fanout candidate generation {candidate:?} does not match worker {binding:?}")]
+    WorkerPlanGenerationMismatch {
+        candidate: ScreenPlanGeneration,
+        binding: ScreenPlanGeneration,
+    },
     /// A prepared physical key is absent from the committed plan.
     #[error("CPU fanout physical key {batch_index} is absent from committed authority")]
     PhysicalPlanMismatch { batch_index: usize },
