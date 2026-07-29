@@ -33,6 +33,9 @@ impl PendingGroupCanvasFrame {
         match &self.frame {
             ProducerFrame::Surface(surface) => surface,
             ProducerFrame::Canvas(_) => panic!("direct group test expected a published surface"),
+            ProducerFrame::ScreenPublication(_) => {
+                panic!("direct group test expected a published surface")
+            }
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => panic!("direct group test expected a CPU surface"),
             #[cfg(feature = "wgpu")]
@@ -140,7 +143,9 @@ pub(super) enum RenderedGroupResidency {
 impl RenderedGroupResidency {
     fn from_producer_frame(frame: &ProducerFrame) -> Self {
         match frame {
-            ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => Self::Cpu,
+            ProducerFrame::Canvas(_)
+            | ProducerFrame::Surface(_)
+            | ProducerFrame::ScreenPublication(_) => Self::Cpu,
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => Self::Gpu,
             #[cfg(feature = "wgpu")]

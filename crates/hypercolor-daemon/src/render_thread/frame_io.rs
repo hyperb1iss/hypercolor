@@ -499,13 +499,6 @@ fn collect_zone_previews(
     previews
 }
 
-#[cfg_attr(
-    not(any(feature = "wgpu", feature = "servo-gpu-import")),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "the return type stays feature-stable because GPU frames cannot be previewed"
-    )
-)]
 fn zone_preview_frame_from_producer(
     frame: &ProducerFrame,
     frame_number: u32,
@@ -525,6 +518,18 @@ fn zone_preview_frame_from_producer(
                 .clone()
                 .with_frame_metadata(frame_number, timestamp_ms),
         )),
+        ProducerFrame::ScreenPublication(_) => {
+            let (canvas, _) = frame.clone().into_cpu_render_frame()?;
+            publication_full_frame_copy.record(
+                usize_to_u32(canvas.rgba_len()),
+                "zone_preview_screen_publication_snapshot",
+            );
+            Some(CanvasFrame::from_owned_canvas(
+                canvas,
+                frame_number,
+                timestamp_ms,
+            ))
+        }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => {
             frame.record_cpu_materialization_blocked();

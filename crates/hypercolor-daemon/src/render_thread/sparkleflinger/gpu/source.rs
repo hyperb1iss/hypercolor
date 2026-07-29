@@ -18,8 +18,17 @@ use crate::render_thread::producer_queue::{GpuTextureFrame, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu::telemetry::record_gpu_source_upload_skipped;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedCpuSourceStorage {
+    PublishedSurface(PublishedSurfaceStorageIdentity),
+    ScreenPublication {
+        plan_generation: u64,
+        branch_sequence: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CachedSourceUpload {
-    storage: PublishedSurfaceStorageIdentity,
+    storage: CachedCpuSourceStorage,
     generation: u64,
     width: u32,
     height: u32,
@@ -292,7 +301,9 @@ pub(super) fn gpu_source_frame(frame: &ProducerFrame) -> Option<GpuSourceFrame<'
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(frame) => Some(GpuSourceFrame::Imported(frame)),
         ProducerFrame::GpuTexture(frame) => Some(GpuSourceFrame::Texture(frame)),
-        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => None,
+        ProducerFrame::Canvas(_)
+        | ProducerFrame::Surface(_)
+        | ProducerFrame::ScreenPublication(_) => None,
     }
 }
 
@@ -523,16 +534,25 @@ fn upload_frame_into_texture_with_encoder(
 pub(super) fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
     match frame {
         ProducerFrame::Surface(surface) => Some(CachedSourceUpload {
-            storage: surface.storage_identity(),
+            storage: CachedCpuSourceStorage::PublishedSurface(surface.storage_identity()),
             generation: surface.generation(),
             width: surface.width(),
             height: surface.height(),
         }),
         ProducerFrame::Canvas(canvas) if canvas.is_shared() => Some(CachedSourceUpload {
-            storage: canvas.storage_identity(),
+            storage: CachedCpuSourceStorage::PublishedSurface(canvas.storage_identity()),
             generation: 0,
             width: canvas.width(),
             height: canvas.height(),
+        }),
+        ProducerFrame::ScreenPublication(publication) => Some(CachedSourceUpload {
+            storage: CachedCpuSourceStorage::ScreenPublication {
+                plan_generation: publication.plan_generation(),
+                branch_sequence: publication.branch_sequence(),
+            },
+            generation: 0,
+            width: publication.surface().extent().width(),
+            height: publication.surface().extent().height(),
         }),
         ProducerFrame::Canvas(_) => None,
         #[cfg(feature = "servo-gpu-import")]

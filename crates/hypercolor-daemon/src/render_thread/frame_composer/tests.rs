@@ -3,7 +3,7 @@ use super::{
     effective_render_group_layer_count, native_copy_failure_retains_last_frame,
     preview_surface_request, producer_frame_requires_composition_for_preview,
     render_group_requires_full_composition, requires_cpu_sampling_canvas,
-    requires_published_surface,
+    requires_published_surface, synchronize_screen_plan_generation,
 };
 use std::sync::Arc;
 
@@ -42,6 +42,34 @@ fn native_copy_failure_falls_back_until_a_last_good_frame_exists() {
 
     let _ = queue.clear_latest();
     assert!(!native_copy_failure_retains_last_frame(&queue));
+}
+
+#[test]
+fn screen_plan_turnover_clears_stale_queue_once_per_generation() {
+    let mut sparkleflinger = SparkleFlinger::cpu();
+    let mut queue = ProducerQueue::new();
+    queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
+
+    assert!(!synchronize_screen_plan_generation(
+        &mut sparkleflinger,
+        &mut queue,
+        1,
+    ));
+    assert!(queue.has_latest());
+    assert!(synchronize_screen_plan_generation(
+        &mut sparkleflinger,
+        &mut queue,
+        2,
+    ));
+    assert!(!queue.has_latest());
+
+    queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
+    assert!(!synchronize_screen_plan_generation(
+        &mut sparkleflinger,
+        &mut queue,
+        2,
+    ));
+    assert!(queue.has_latest());
 }
 
 #[test]

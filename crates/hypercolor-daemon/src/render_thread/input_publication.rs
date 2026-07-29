@@ -11,9 +11,9 @@ use hypercolor_core::input::screen::{
     RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenBranchLease, ScreenCaptureDemand,
     ScreenExtentRequest, ScreenInputGraphGeneration, ScreenNativeExecutionTarget,
     ScreenPlanGeneration, ScreenProcessingProfile, ScreenPublicationDemandSnapshot,
-    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHub,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationRetirement,
-    ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenPublicationRetirement, ScreenSourceSelector,
+    ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
@@ -753,27 +753,24 @@ impl InputPublicationReader {
         Arc::clone(&self.screen_publications)
     }
 
-    pub(crate) fn screen_publication_generation(&self) -> ScreenPlanGeneration {
-        self.screen_publications.generation()
-    }
-
-    pub(crate) fn native_screen_lease(
+    pub(crate) fn screen_observation(
         &self,
-        target: &ScreenNativeExecutionTarget,
+        target: Option<&ScreenNativeExecutionTarget>,
         extent: PixelExtent,
-    ) -> Option<ScreenBranchLease> {
-        let state = self.screen_publications.committed_state();
-        let branch = state.plan().branches().iter().find(|branch| {
-            let descriptor = branch.descriptor();
-            descriptor.kind() == ScreenPublicationKind::Surface
-                && descriptor.geometry().output_extent() == extent
-                && matches!(
-                    descriptor.executor(),
-                    ScreenPublicationExecutor::SourceNative(selected)
-                        if selected.id() == target.id()
-                )
-        })?;
-        self.screen_publications.lease(branch.descriptor()).ok()
+    ) -> (ScreenPlanGeneration, Option<ScreenBranchLease>) {
+        self.screen_publications
+            .observe_matching_lease(|descriptor| {
+                descriptor.kind() == ScreenPublicationKind::Surface
+                    && descriptor.geometry().output_extent() == extent
+                    && match (target, descriptor.requested_executor()) {
+                        (
+                            Some(target),
+                            ScreenPublicationExecutorRequest::SourceNative(selected),
+                        ) => selected.id() == target.id(),
+                        (None, ScreenPublicationExecutorRequest::Cpu) => true,
+                        _ => false,
+                    }
+            })
     }
 }
 

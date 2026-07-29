@@ -369,6 +369,13 @@ fn canvas_from_scene_frame(frame: &ProducerFrame) -> Canvas {
         ProducerFrame::Surface(surface) => {
             Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height())
         }
+        ProducerFrame::ScreenPublication(_) => {
+            frame
+                .clone()
+                .into_cpu_render_frame()
+                .expect("screen publication test frame is CPU-backed")
+                .0
+        }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => {
             panic!("GPU scene frames are sampled by SparkleFlinger before CPU materialization")

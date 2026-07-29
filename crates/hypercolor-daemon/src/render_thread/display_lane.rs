@@ -162,6 +162,11 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         let surface = match frame {
             ProducerFrame::Canvas(canvas) => PublishedSurface::from_owned_canvas(canvas, 0, 0),
             ProducerFrame::Surface(surface) => surface,
+            ProducerFrame::ScreenPublication(publication) => {
+                let (canvas, _) =
+                    ProducerFrame::ScreenPublication(publication).into_cpu_render_frame()?;
+                PublishedSurface::from_owned_canvas(canvas, 0, 0)
+            }
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(frame) => self
                 .compose

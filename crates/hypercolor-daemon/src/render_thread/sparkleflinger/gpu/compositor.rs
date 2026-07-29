@@ -423,7 +423,7 @@ impl GpuSparkleFlinger {
                             && cached.surface.storage_identity() == canvas.storage_identity()
                     })
             }
-            ProducerFrame::Surface(_) => false,
+            ProducerFrame::Surface(_) | ProducerFrame::ScreenPublication(_) => false,
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => false,
             ProducerFrame::GpuTexture(_) => false,
@@ -496,6 +496,9 @@ impl GpuSparkleFlinger {
                 requires_cpu_sampling_canvas,
                 requires_preview_surface,
             ),
+            ProducerFrame::ScreenPublication(_) => {
+                unreachable!("screen publication frames are composed instead of bypassed")
+            }
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => {
                 unreachable!("GPU producer frames are composed instead of bypassed")

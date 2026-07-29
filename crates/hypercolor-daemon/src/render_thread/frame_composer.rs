@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -20,7 +21,7 @@ use super::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
 use super::render_groups::{GroupCanvasFrame, ZoneEffectError, ZoneResult};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
-use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
+use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest, SparkleFlinger};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::performance::FullFrameCopyMetrics;
 use crate::preview_runtime::PreviewDemandSummary;
@@ -521,7 +522,14 @@ impl ComposeContext<'_> {
             }
         };
         if !native_submitted {
-            if let Some(screen_surface) = self
+            if let Some(publication) = self
+                .inputs
+                .screen_publication
+                .as_ref()
+                .and_then(|publication| ProducerFrame::screen_publication(Arc::clone(publication)))
+            {
+                let _ = self.compose.screen_queue.submit_latest(publication);
+            } else if let Some(screen_surface) = self
                 .inputs
                 .screen_data
                 .as_ref()
@@ -697,6 +705,19 @@ impl ComposeContext<'_> {
     }
 }
 
+pub(super) fn synchronize_screen_plan_generation(
+    sparkleflinger: &mut SparkleFlinger,
+    screen_queue: &mut ProducerQueue,
+    generation: u64,
+) -> bool {
+    let changed = sparkleflinger.synchronize_screen_plan_generation(generation);
+    if changed {
+        let _ = screen_queue.clear_latest();
+    }
+    changed
+}
+
+#[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
 fn native_copy_failure_retains_last_frame(screen_queue: &ProducerQueue) -> bool {
     screen_queue.has_latest()
 }

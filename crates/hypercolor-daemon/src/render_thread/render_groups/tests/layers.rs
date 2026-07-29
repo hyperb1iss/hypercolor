@@ -4,6 +4,9 @@ fn static_surface(frame: &ProducerFrame) -> &PublishedSurface {
     match frame {
         ProducerFrame::Surface(surface) => surface,
         ProducerFrame::Canvas(_) => panic!("static layer frame should be surface-backed"),
+        ProducerFrame::ScreenPublication(_) => {
+            panic!("static layer frame should be surface-backed")
+        }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => panic!("static layer frame should not use imported GPU storage"),
         #[cfg(feature = "wgpu")]

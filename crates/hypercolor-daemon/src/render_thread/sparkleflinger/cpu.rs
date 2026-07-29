@@ -235,7 +235,7 @@ fn cached_layer_storage(frame: &ProducerFrame) -> Option<PublishedSurfaceStorage
     match frame {
         ProducerFrame::Surface(surface) => Some(surface.storage_identity()),
         ProducerFrame::Canvas(canvas) if canvas.is_shared() => Some(canvas.storage_identity()),
-        ProducerFrame::Canvas(_) => None,
+        ProducerFrame::Canvas(_) | ProducerFrame::ScreenPublication(_) => None,
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => None,
         #[cfg(feature = "wgpu")]
@@ -365,6 +365,23 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         layer.opaque_hint && !layer.needs_processing_for_size(target.width(), target.height());
     let transform = layer.transform;
     let adjust = layer.adjust;
+    if transform.is_none()
+        && adjust.is_none()
+        && layer.frame.width() == target.width()
+        && layer.frame.height() == target.height()
+    {
+        let Some(source_rgba) = layer.frame.cpu_rgba_bytes() else {
+            return target_opaque;
+        };
+        return compose_rgba_layer(
+            target,
+            target_opaque,
+            layer.mode,
+            layer.opacity,
+            layer_opaque_hint,
+            source_rgba,
+        );
+    }
     let Some((source_canvas, _)) = layer.frame.into_cpu_render_frame() else {
         return target_opaque;
     };
@@ -376,11 +393,27 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         adjust,
     );
 
-    let opacity = layer.opacity.clamp(0.0, 1.0);
-    if layer.mode == CompositionMode::Replace && opacity >= 1.0 {
-        target
-            .as_rgba_bytes_mut()
-            .copy_from_slice(source_canvas.as_rgba_bytes());
+    compose_rgba_layer(
+        target,
+        target_opaque,
+        layer.mode,
+        layer.opacity,
+        layer_opaque_hint,
+        source_canvas.as_rgba_bytes(),
+    )
+}
+
+fn compose_rgba_layer(
+    target: &mut Canvas,
+    target_opaque: bool,
+    mode: CompositionMode,
+    opacity: f32,
+    layer_opaque_hint: bool,
+    source_rgba: &[u8],
+) -> bool {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if mode == CompositionMode::Replace && opacity >= 1.0 {
+        target.as_rgba_bytes_mut().copy_from_slice(source_rgba);
         return layer_opaque_hint;
     }
 
@@ -388,27 +421,19 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         return target_opaque;
     }
 
-    match layer.mode {
+    match mode {
         CompositionMode::Tint => {
-            blend_material_tint_rgba(
-                target.as_rgba_bytes_mut(),
-                source_canvas.as_rgba_bytes(),
-                opacity,
-            );
+            blend_material_tint_rgba(target.as_rgba_bytes_mut(), source_rgba, opacity);
             return target_opaque;
         }
         CompositionMode::LumaReveal => {
-            blend_luma_reveal_rgba(
-                target.as_rgba_bytes_mut(),
-                source_canvas.as_rgba_bytes(),
-                opacity,
-            );
+            blend_luma_reveal_rgba(target.as_rgba_bytes_mut(), source_rgba, opacity);
             return target_opaque;
         }
         _ => {}
     }
 
-    let blend_mode = match layer.mode {
+    let blend_mode = match mode {
         CompositionMode::Replace | CompositionMode::Alpha => RgbaBlendMode::Normal,
         CompositionMode::Add => RgbaBlendMode::Add,
         CompositionMode::Screen => RgbaBlendMode::Screen,
@@ -421,19 +446,10 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
     };
     let result_opaque = target_opaque && layer_opaque_hint;
     if blend_mode == RgbaBlendMode::Normal && result_opaque {
-        blend_opaque_normal_rgba_pixels_in_place(
-            target.as_rgba_bytes_mut(),
-            source_canvas.as_rgba_bytes(),
-            opacity,
-        );
+        blend_opaque_normal_rgba_pixels_in_place(target.as_rgba_bytes_mut(), source_rgba, opacity);
         return true;
     }
-    blend_rgba_pixels_in_place(
-        target.as_rgba_bytes_mut(),
-        source_canvas.as_rgba_bytes(),
-        blend_mode,
-        opacity,
-    );
+    blend_rgba_pixels_in_place(target.as_rgba_bytes_mut(), source_rgba, blend_mode, opacity);
     result_opaque
 }
 

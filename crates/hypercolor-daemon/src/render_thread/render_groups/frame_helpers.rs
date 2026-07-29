@@ -292,6 +292,16 @@ pub(super) fn copy_producer_frame_to_canvas(
             );
             Ok(true)
         }
+        ProducerFrame::ScreenPublication(publication) => {
+            let frame = ProducerFrame::ScreenPublication(publication);
+            let byte_count = usize_to_u32(frame.width() as usize * frame.height() as usize * 4);
+            let Some((canvas, _)) = frame.into_cpu_render_frame() else {
+                return Ok(false);
+            };
+            *target = canvas;
+            full_frame_copy.record(byte_count, "screen_publication_to_group_canvas");
+            Ok(true)
+        }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(frame) => {
             let frame = ProducerFrame::Gpu(frame);
@@ -313,6 +323,8 @@ pub(super) fn producer_frame_is_gpu(frame: &ProducerFrame) -> bool {
         ProducerFrame::Gpu(_) => true,
         #[cfg(feature = "wgpu")]
         ProducerFrame::GpuTexture(_) => true,
-        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => false,
+        ProducerFrame::Canvas(_)
+        | ProducerFrame::Surface(_)
+        | ProducerFrame::ScreenPublication(_) => false,
     }
 }

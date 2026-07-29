@@ -263,6 +263,9 @@ impl CompositionLayer {
     }
 
     fn is_bypass_candidate(&self) -> bool {
+        if matches!(self.frame, ProducerFrame::ScreenPublication(_)) {
+            return false;
+        }
         #[cfg(feature = "servo-gpu-import")]
         if matches!(self.frame, ProducerFrame::Gpu(_)) {
             return false;
@@ -439,6 +442,7 @@ enum SparkleFlingerBackend {
 #[derive(Debug)]
 pub struct SparkleFlinger {
     backend: SparkleFlingerBackend,
+    screen_plan_generation: Option<u64>,
     preview_surface_pool: RenderSurfacePool,
     composition_surface_pool: RenderSurfacePool,
     face_overlay_surface_pool: RenderSurfacePool,
@@ -490,6 +494,15 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    pub(crate) fn synchronize_screen_plan_generation(&mut self, generation: u64) -> bool {
+        let previous = self.screen_plan_generation.replace(generation);
+        let changed = previous.is_some_and(|previous| previous != generation);
+        if changed {
+            self.release_native_screen_caches();
+        }
+        changed
+    }
+
     pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
         #[cfg(all(feature = "wgpu", target_os = "windows"))]
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
@@ -535,6 +548,7 @@ impl SparkleFlinger {
     pub fn cpu() -> Self {
         Self {
             backend: SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
+            screen_plan_generation: None,
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
@@ -567,6 +581,7 @@ impl SparkleFlinger {
         };
         Ok(Self {
             backend,
+            screen_plan_generation: None,
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
@@ -1170,6 +1185,13 @@ fn preview_surface_for_frame(
                 preview_surface_pool,
             )
         }
+        ProducerFrame::ScreenPublication(_) => scaled_preview_surface_from_rgba(
+            frame.cpu_rgba_bytes()?,
+            frame.width(),
+            frame.height(),
+            request,
+            preview_surface_pool,
+        ),
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => {
             frame.record_cpu_materialization_blocked();

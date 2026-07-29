@@ -16,6 +16,17 @@ use super::{
 use super::{gpu_frame_without_cpu_fallback, new_preview_surface_pool};
 use crate::render_thread::producer_queue::ProducerFrame;
 
+#[test]
+fn screen_plan_generation_turnover_runs_once_per_observed_change() {
+    let mut sparkleflinger = SparkleFlinger::cpu();
+
+    assert!(!sparkleflinger.synchronize_screen_plan_generation(7));
+    assert!(!sparkleflinger.synchronize_screen_plan_generation(7));
+    assert!(sparkleflinger.synchronize_screen_plan_generation(8));
+    assert!(!sparkleflinger.synchronize_screen_plan_generation(8));
+    assert!(sparkleflinger.synchronize_screen_plan_generation(11));
+}
+
 fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(2, 2);
     canvas.fill(color);

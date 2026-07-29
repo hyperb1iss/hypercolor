@@ -1322,7 +1322,9 @@ fn preview_surface(
 ) -> Option<PublishedSurface> {
     let request = Some(PreviewSurfaceRequest { width, height });
     match frame {
-        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => {
+        ProducerFrame::Canvas(_)
+        | ProducerFrame::Surface(_)
+        | ProducerFrame::ScreenPublication(_) => {
             sparkleflinger
                 .preview_only_frame(frame, request)
                 .preview_surface

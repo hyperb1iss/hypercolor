@@ -1,4 +1,4 @@
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -7,12 +7,14 @@ use hypercolor_core::input::screen::{
     CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
     CaptureSourceId, CpuReductionExecutor, PhysicalOrigin, PixelExtent,
     RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCaptureDemand,
-    ScreenExtentRequest, ScreenProcessingProfile, ScreenPublicationExecutorRequest,
-    ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
-    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder,
-    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
+    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend,
+    ScreenCaptureDemand, ScreenExtentRequest, ScreenProcessingProfile,
+    ScreenPublicationColorimetry, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata,
+    ScreenPublicationRequest, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenSurfacePayload, ScreenUpscalePolicy, ScreenWorkerBinding,
+    ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation,
+    ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
 };
 use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
 use tokio::sync::{Mutex, Notify};
@@ -24,6 +26,7 @@ use super::{
     InputScreenBranchDemand, LIFECYCLE_PROBE_INTERVAL, cadence_interval,
     exact_screen_failure_retry_at, run_exact_screen_transition,
 };
+use crate::render_thread::producer_queue::ProducerFrame;
 
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is non-empty")
@@ -951,6 +954,86 @@ async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
     })
     .await
     .expect("empty exact demand should retire committed branches");
+    pump.shutdown().await.expect("publication pump stops");
+}
+
+#[tokio::test]
+async fn reader_exposes_exact_cpu_surface_without_legacy_screen_data() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let source = ScreenDemandSource::new(Arc::clone(&transitions));
+    let runtime = Arc::clone(&source.runtime);
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(source));
+    manager.start_all().expect("screen source starts");
+    let manager = Arc::new(Mutex::new(manager));
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+        .await
+        .expect("publication pump starts");
+    let reader = pump.reader();
+    let publications = reader.screen_publications();
+    let output_extent = extent(16, 9);
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, output_extent),
+    );
+
+    wait_for_exact_extent(&publications, output_extent).await;
+    let committed = publications.committed_state();
+    let descriptor = committed.plan().branches()[0].descriptor().clone();
+    let binding = runtime
+        .lock()
+        .expect("screen runtime lock is healthy")
+        .last()
+        .expect("exact runtime allocation exists")
+        .binding
+        .clone();
+    let publisher = publications
+        .publisher(&descriptor, &binding)
+        .expect("committed branch issues a publisher");
+    let pixels = vec![37_u8; 16 * 9 * 4];
+    let now = Instant::now();
+    let metadata = ScreenPublicationMetadata::try_new(
+        descriptor.source_epoch().clone(),
+        binding.plan_generation(),
+        NonZeroU64::MIN,
+        now,
+        now,
+        now + Duration::from_secs(1),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("test publication timeline is valid");
+    let payload = ScreenBranchPayload::Surface(
+        ScreenSurfacePayload::try_new(
+            output_extent,
+            descriptor.physical().target_pixel_format(),
+            ScreenPublicationColorimetry::new(descriptor.physical().color_pipeline().output()),
+            &pixels,
+        )
+        .expect("test payload matches its descriptor"),
+    );
+    publications
+        .publish(&publisher, payload, &metadata)
+        .expect("exact CPU surface publishes");
+
+    let (generation, lease) = reader.screen_observation(None, output_extent);
+    assert_eq!(generation, committed.plan().generation());
+    let publication = lease
+        .expect("CPU route has a lease")
+        .read()
+        .expect("CPU route reads its publication");
+    let frame = ProducerFrame::screen_publication(publication)
+        .expect("RGBA exact surface is a producer frame");
+    assert_eq!((frame.width(), frame.height()), (16, 9));
+    #[cfg(feature = "wgpu")]
+    assert_eq!(frame.cpu_rgba_bytes(), Some(pixels.as_slice()));
+    let (canvas, retained_surface) = frame
+        .into_cpu_render_frame()
+        .expect("CPU backend materializes exact publication");
+    assert!(retained_surface.is_none());
+    assert_eq!(canvas.as_rgba_bytes(), pixels);
+
+    drop(registration);
     pump.shutdown().await.expect("publication pump stops");
 }
 

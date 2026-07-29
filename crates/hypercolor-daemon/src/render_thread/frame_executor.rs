@@ -103,6 +103,15 @@ pub(crate) async fn execute_frame(
         state,
         render.sparkleflinger.screen_native_execution_target(),
     );
+    let screen_plan_generation = frame_loop.inputs.observe_screen_plan(
+        state,
+        render.sparkleflinger.screen_native_execution_target(),
+    );
+    super::frame_composer::synchronize_screen_plan_generation(
+        &mut render.sparkleflinger,
+        &mut render.screen_queue,
+        screen_plan_generation.get(),
+    );
     let mut screen_input_active = frame_loop.has_screen_input_demand();
     scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
     if !screen_input_active {
@@ -184,12 +193,9 @@ pub(crate) async fn execute_frame(
     }
 
     let input_start = Instant::now();
-    let inputs = frame_loop.inputs.inputs_for_frame(
-        state,
-        skip_decision,
-        render.sparkleflinger.screen_native_execution_target(),
-        delta_secs,
-    );
+    let inputs = frame_loop
+        .inputs
+        .inputs_for_frame(state, skip_decision, delta_secs);
     frame_loop
         .publication_cadence
         .observe_audio_publication(inputs.audio_was_published);

@@ -2,9 +2,13 @@
 use hypercolor_core::effect::ImportedEffectFrame;
 #[cfg(all(feature = "wgpu", target_os = "windows"))]
 use hypercolor_core::input::screen::ScreenResourceLifetime;
+use hypercolor_core::input::screen::{
+    CapturePixelFormat, ScreenBranchPayload, ScreenBranchPublication, ScreenSurfacePayload,
+};
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 #[cfg(all(feature = "wgpu", target_os = "windows"))]
 use hypercolor_windows_gpu_interop::ScreenTextureCopy;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "wgpu")]
@@ -79,13 +83,52 @@ pub(crate) struct ProducerFrameCounts {
 pub(crate) enum ProducerFrame {
     Canvas(Canvas),
     Surface(PublishedSurface),
+    ScreenPublication(ScreenPublicationFrame),
     #[cfg(feature = "servo-gpu-import")]
     Gpu(ImportedEffectFrame),
     #[cfg(feature = "wgpu")]
     GpuTexture(GpuTextureFrame),
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ScreenPublicationFrame {
+    publication: Arc<ScreenBranchPublication>,
+}
+
+impl ScreenPublicationFrame {
+    fn try_new(publication: Arc<ScreenBranchPublication>) -> Option<Self> {
+        let ScreenBranchPayload::Surface(surface) = publication.payload() else {
+            return None;
+        };
+        if surface.pixel_format() != CapturePixelFormat::Rgba8 {
+            return None;
+        }
+        Some(Self { publication })
+    }
+
+    pub(crate) fn surface(&self) -> ScreenSurfacePayload<'_> {
+        let ScreenBranchPayload::Surface(surface) = self.publication.payload() else {
+            unreachable!("screen publication frames are validated as CPU surfaces")
+        };
+        surface
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn plan_generation(&self) -> u64 {
+        self.publication.plan_generation().get()
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn branch_sequence(&self) -> u64 {
+        self.publication.branch_sequence().get()
+    }
+}
+
 impl ProducerFrame {
+    pub(crate) fn screen_publication(publication: Arc<ScreenBranchPublication>) -> Option<Self> {
+        ScreenPublicationFrame::try_new(publication).map(Self::ScreenPublication)
+    }
+
     #[cfg_attr(
         not(any(feature = "wgpu", feature = "servo-gpu-import")),
         allow(
@@ -99,7 +142,7 @@ impl ProducerFrame {
             Self::Gpu(_) => true,
             #[cfg(feature = "wgpu")]
             Self::GpuTexture(_) => true,
-            Self::Canvas(_) | Self::Surface(_) => false,
+            Self::Canvas(_) | Self::Surface(_) | Self::ScreenPublication(_) => false,
         }
     }
 
@@ -116,7 +159,6 @@ impl ProducerFrame {
         }
     }
 
-    #[cfg(feature = "wgpu")]
     #[cfg_attr(
         not(feature = "servo-gpu-import"),
         allow(
@@ -128,6 +170,7 @@ impl ProducerFrame {
         match self {
             Self::Canvas(canvas) => Some(canvas.as_rgba_bytes()),
             Self::Surface(surface) => Some(surface.rgba_bytes()),
+            Self::ScreenPublication(publication) => Some(publication.surface().pixels()),
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(_) => {
                 self.record_cpu_materialization_blocked();
@@ -141,10 +184,11 @@ impl ProducerFrame {
         }
     }
 
-    pub(crate) const fn width(&self) -> u32 {
+    pub(crate) fn width(&self) -> u32 {
         match self {
             Self::Canvas(canvas) => canvas.width(),
             Self::Surface(surface) => surface.width(),
+            Self::ScreenPublication(publication) => publication.surface().extent().width(),
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(frame) => frame.width,
             #[cfg(feature = "wgpu")]
@@ -152,10 +196,11 @@ impl ProducerFrame {
         }
     }
 
-    pub(crate) const fn height(&self) -> u32 {
+    pub(crate) fn height(&self) -> u32 {
         match self {
             Self::Canvas(canvas) => canvas.height(),
             Self::Surface(surface) => surface.height(),
+            Self::ScreenPublication(publication) => publication.surface().extent().height(),
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(frame) => frame.height,
             #[cfg(feature = "wgpu")]
@@ -175,6 +220,12 @@ impl ProducerFrame {
             Self::Canvas(canvas) => Some((canvas, None)),
             Self::Surface(surface) => {
                 Some((Canvas::from_published_surface(&surface), Some(surface)))
+            }
+            Self::ScreenPublication(publication) => {
+                let surface = publication.surface();
+                let mut canvas = Canvas::new(surface.extent().width(), surface.extent().height());
+                canvas.as_rgba_bytes_mut().copy_from_slice(surface.pixels());
+                Some((canvas, None))
             }
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(frame) => {
@@ -203,6 +254,9 @@ impl ProducerFrame {
                     && left.height() == right.height()
                     && left.generation() == right.generation()
                     && left.storage_identity() == right.storage_identity()
+            }
+            (Self::ScreenPublication(left), Self::ScreenPublication(right)) => {
+                Arc::ptr_eq(&left.publication, &right.publication)
             }
             #[cfg(feature = "servo-gpu-import")]
             (Self::Gpu(left), Self::Gpu(right)) => {
@@ -244,7 +298,9 @@ fn record_gpu_cpu_materialization_blocked() {
 
 pub(crate) fn record_producer_frame(frame: &ProducerFrame) {
     match frame {
-        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => {
+        ProducerFrame::Canvas(_)
+        | ProducerFrame::Surface(_)
+        | ProducerFrame::ScreenPublication(_) => {
             let _ = PRODUCER_CPU_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
         }
         #[cfg(feature = "servo-gpu-import")]
@@ -291,6 +347,7 @@ impl ProducerQueue {
         self.replace_latest(ProducerSubmission { frame, fresh: true })
     }
 
+    #[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
     pub(crate) const fn has_latest(&self) -> bool {
         self.latest.is_some()
     }

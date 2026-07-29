@@ -3075,6 +3075,39 @@ fn concurrent_armed_candidates_cannot_commit_over_a_newer_plan() {
 }
 
 #[test]
+fn matching_lease_observation_couples_branch_to_one_generation() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);
+    let demand = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            60,
+        ),
+        &source,
+    );
+    let descriptor = demand.descriptor().clone();
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let plan = commit_demands(&mut builder, [demand], None).expect("screen branch commits");
+
+    let (generation, lease) = hub.observe_matching_lease(|candidate| candidate == &descriptor);
+    assert_eq!(generation, plan.generation());
+    assert_eq!(
+        lease
+            .expect("matching committed branch yields a lease")
+            .descriptor(),
+        &descriptor
+    );
+
+    let (same_generation, missing) = hub.observe_matching_lease(|_| false);
+    assert_eq!(same_generation, generation);
+    assert!(missing.is_none());
+}
+
+#[test]
 fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
     let old_demand = resolve(

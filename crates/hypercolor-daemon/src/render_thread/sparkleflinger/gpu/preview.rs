@@ -757,7 +757,7 @@ impl GpuPreviewScaleBindGroups {
 pub(super) fn bypass_preview_surface(frame: &ProducerFrame) -> Option<PublishedSurface> {
     match frame {
         ProducerFrame::Surface(surface) => Some(surface.clone()),
-        ProducerFrame::Canvas(_) => None,
+        ProducerFrame::Canvas(_) | ProducerFrame::ScreenPublication(_) => None,
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => None,
         ProducerFrame::GpuTexture(_) => None,

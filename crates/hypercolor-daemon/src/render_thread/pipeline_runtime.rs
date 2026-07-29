@@ -146,16 +146,26 @@ impl InputReuseState {
         }
     }
 
+    pub(crate) fn observe_screen_plan(
+        &mut self,
+        state: &RenderThreadState,
+        screen_target: Option<&ScreenNativeExecutionTarget>,
+    ) -> ScreenPlanGeneration {
+        let screen_extent = PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
+            .expect("render canvas dimensions are non-empty");
+        let (generation, publication) = self.routes.read_screen(screen_target, screen_extent);
+        self.cached_inputs.screen_publication = publication;
+        generation
+    }
+
     pub(crate) fn inputs_for_frame<'a>(
         &'a mut self,
         state: &RenderThreadState,
         skip_decision: SkipDecision,
-        screen_target: Option<&ScreenNativeExecutionTarget>,
         _delta_secs: f32,
     ) -> &'a mut FrameInputs {
         if matches!(skip_decision, SkipDecision::None) {
-            self.routes
-                .read_into(state, &mut self.cached_inputs, screen_target);
+            self.routes.read_into(state, &mut self.cached_inputs);
         } else {
             self.cached_inputs.clear_transient_interaction();
             self.cached_inputs.input_availability = self.routes.refresh_interaction_availability();
@@ -200,12 +210,12 @@ struct InputRouteCache {
     interaction_availability: Vec<CachedInteractionAvailability>,
     interaction_router: InteractionRouter,
     routed_interaction: RoutedInteraction,
-    native_screen_route: Option<NativeScreenRoute>,
+    screen_publication_route: Option<ScreenPublicationRoute>,
 }
 
-struct NativeScreenRoute {
+struct ScreenPublicationRoute {
     plan_generation: ScreenPlanGeneration,
-    target_id: ScreenNativeExecutionTargetId,
+    target_id: Option<ScreenNativeExecutionTargetId>,
     extent: PixelExtent,
     lease: Option<ScreenBranchLease>,
 }
@@ -238,16 +248,11 @@ impl InputRouteCache {
             interaction_availability: Vec::new(),
             interaction_router: InteractionRouter::default(),
             routed_interaction: RoutedInteraction::new(AUTHORITATIVE_INPUT_CONSUMER),
-            native_screen_route: None,
+            screen_publication_route: None,
         }
     }
 
-    fn read_into(
-        &mut self,
-        state: &RenderThreadState,
-        inputs: &mut FrameInputs,
-        screen_target: Option<&ScreenNativeExecutionTarget>,
-    ) {
+    fn read_into(&mut self, state: &RenderThreadState, inputs: &mut FrameInputs) {
         let sensors = self.reader.latest_sensor_snapshot();
         let graph = self.reader.graph_snapshot();
         let graph_changed = self.graph_generation != Some(graph.generation());
@@ -262,39 +267,35 @@ impl InputRouteCache {
 
         inputs.prepare_for_sample(sensors);
         self.route_latest_into(inputs);
-        let screen_extent = PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
-            .expect("render canvas dimensions are non-empty");
-        inputs.screen_publication = self.read_native_screen(screen_target, screen_extent);
         self.route_interaction_into(&state.event_bus, &graph, &browser_registry, inputs);
     }
 
-    fn read_native_screen(
+    fn read_screen(
         &mut self,
         target: Option<&ScreenNativeExecutionTarget>,
         extent: PixelExtent,
-    ) -> Option<Arc<ScreenBranchPublication>> {
-        let Some(target) = target else {
-            self.native_screen_route = None;
-            return None;
-        };
-        let plan_generation = self.reader.screen_publication_generation();
-        let route_is_current = self.native_screen_route.as_ref().is_some_and(|route| {
+    ) -> (ScreenPlanGeneration, Option<Arc<ScreenBranchPublication>>) {
+        let target_id = target.map(ScreenNativeExecutionTarget::id);
+        let (plan_generation, observed_lease) = self.reader.screen_observation(target, extent);
+        let route_is_current = self.screen_publication_route.as_ref().is_some_and(|route| {
             route.plan_generation == plan_generation
-                && route.target_id == target.id()
+                && route.target_id == target_id
                 && route.extent == extent
         });
         if !route_is_current {
-            self.native_screen_route = Some(NativeScreenRoute {
+            self.screen_publication_route = Some(ScreenPublicationRoute {
                 plan_generation,
-                target_id: target.id(),
+                target_id,
                 extent,
-                lease: self.reader.native_screen_lease(target, extent),
+                lease: observed_lease,
             });
         }
-        self.native_screen_route
+        let publication = self
+            .screen_publication_route
             .as_ref()
             .and_then(|route| route.lease.as_ref())
-            .and_then(ScreenBranchLease::read)
+            .and_then(ScreenBranchLease::read);
+        (plan_generation, publication)
     }
 
     fn route_interaction_into(

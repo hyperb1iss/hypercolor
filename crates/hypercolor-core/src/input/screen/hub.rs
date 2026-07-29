@@ -1531,6 +1531,26 @@ impl ScreenPublicationHub {
         self.state.load().plan.generation()
     }
 
+    /// Observe one matching branch lease and its generation from the same
+    /// committed authority snapshot.
+    #[must_use]
+    pub fn observe_matching_lease(
+        &self,
+        mut matches: impl FnMut(&ResolvedScreenPublicationDescriptor) -> bool,
+    ) -> (ScreenPlanGeneration, Option<ScreenBranchLease>) {
+        let state = self.state.load_full();
+        let generation = state.plan.generation();
+        let lease = state
+            .branches
+            .iter()
+            .find(|branch| matches(&branch.entry.descriptor))
+            .map(|branch| ScreenBranchLease {
+                branch: Arc::clone(&branch.entry),
+                authority: Arc::clone(&self.state),
+            });
+        (generation, lease)
+    }
+
     /// Currently committed demand revision.
     #[must_use]
     pub fn demand_revision(&self) -> InputPublicationDemandRevision {
