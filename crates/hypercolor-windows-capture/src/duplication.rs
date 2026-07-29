@@ -43,8 +43,9 @@ mod gpu_surface;
 
 pub use cpu_readback::PreparedCpuDesktopReadback;
 pub use gpu_surface::{
-    GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication, GpuSurfacePublishOutcome,
-    GpuSurfaceTargetPreparation, GpuSurfaceTargetPreparationSlot, PreparedGpuSurfacePlan,
+    GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication, GpuSurfacePublicationDisposition,
+    GpuSurfacePublishOutcome, GpuSurfaceTargetPreparation, GpuSurfaceTargetPreparationSlot,
+    PreparedGpuSurfacePlan,
 };
 
 /// Requested consumers for one Desktop Duplication acquisition cycle.
@@ -253,6 +254,8 @@ fn advance_cpu_clean(
 }
 
 fn publish_acquired_clean<F>(
+    device: &ID3D11Device,
+    pointer_resource: &mut Option<gpu_surface::PointerResource>,
     clean: &RetainedDesktop,
     duplication_generation: u64,
     gpu: Option<&mut PreparedGpuSurfacePlan>,
@@ -260,10 +263,18 @@ fn publish_acquired_clean<F>(
     report: &mut CapturePumpReport,
     mut emit: F,
 ) where
-    F: FnMut(GpuSurfacePublishOutcome),
+    F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
 {
     if let Some(plan) = gpu {
-        report.gpu = match plan.publish(clean, duplication_generation, &mut emit) {
+        let pointer_result = prepare_gpu_pointer_resource(device, pointer_resource, plan, clean);
+        report.gpu = match pointer_result.and_then(|()| {
+            plan.publish_with_feedback(
+                clean,
+                pointer_resource.as_ref(),
+                duplication_generation,
+                &mut emit,
+            )
+        }) {
             Ok(info) => CaptureLane::Ready(info),
             Err(error) => CaptureLane::Failed(error),
         };
@@ -303,6 +314,24 @@ fn gpu_surface_acquire_timeout(requested: Duration, has_pending_routes: bool) ->
     } else {
         requested
     }
+}
+
+fn prepare_gpu_pointer_resource(
+    device: &ID3D11Device,
+    resource: &mut Option<gpu_surface::PointerResource>,
+    plan: &PreparedGpuSurfacePlan,
+    clean: &RetainedDesktop,
+) -> CaptureResult<()> {
+    if !plan.requires_pointer_for_next_publication() || !clean.metadata.pointer.visible {
+        return Ok(());
+    }
+    gpu_surface::ensure_pointer_resource(
+        device,
+        resource,
+        &clean.metadata.pointer,
+        plan.allocation_byte_len(),
+        plan.texture_budget(),
+    )
 }
 
 const fn desktop_frame_source(
@@ -864,6 +893,7 @@ pub struct DesktopDuplicator {
     rotation: DisplayRotation,
     source_color_space: GpuSurfaceSourceColorSpace,
     pointer: Arc<PointerState>,
+    gpu_pointer: Option<gpu_surface::PointerResource>,
     region: Option<CaptureRegion>,
     capture_sequence: u64,
     latest_capture: Option<CaptureMetadata>,
@@ -958,6 +988,7 @@ impl DesktopDuplicator {
             rotation,
             source_color_space,
             pointer: Arc::new(PointerState::default()),
+            gpu_pointer: None,
             region: None,
             capture_sequence: 0,
             latest_capture: None,
@@ -1272,12 +1303,32 @@ impl DesktopDuplicator {
     /// resource pressure, and execution failures remain lane-local.
     pub fn pump<F>(
         &mut self,
-        mut request: CapturePumpRequest<'_>,
+        request: CapturePumpRequest<'_>,
         timeout: Duration,
         mut emit: F,
     ) -> CaptureResult<CapturePumpReport>
     where
         F: FnMut(GpuSurfacePublishOutcome),
+    {
+        self.pump_with_feedback(request, timeout, |outcome| {
+            emit(outcome);
+            GpuSurfacePublicationDisposition::Accepted
+        })
+    }
+
+    /// Acquire once and retain native retry state until downstream acceptance.
+    ///
+    /// The feedback callback runs after GPU submission. Returning `Retry`
+    /// preserves that route's exact source sequence for the next pump without
+    /// affecting healthy siblings or allocating a side queue.
+    pub fn pump_with_feedback<F>(
+        &mut self,
+        mut request: CapturePumpRequest<'_>,
+        timeout: Duration,
+        mut emit: F,
+    ) -> CaptureResult<CapturePumpReport>
+    where
+        F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
     {
         self.release_frame();
 
@@ -1357,6 +1408,8 @@ impl DesktopDuplicator {
                 )
             })?;
             publish_acquired_clean(
+                &self.device,
+                &mut self.gpu_pointer,
                 clean,
                 self.duplication_generation,
                 gpu.as_deref_mut(),
@@ -1367,7 +1420,11 @@ impl DesktopDuplicator {
         } else if let (Some(plan), Some(clean)) = (gpu, clean.as_ref())
             && plan.has_pending_routes()
         {
-            report.gpu = match plan.retry_pending(clean, &mut emit) {
+            let pointer_result =
+                prepare_gpu_pointer_resource(&self.device, &mut self.gpu_pointer, plan, clean);
+            report.gpu = match pointer_result.and_then(|()| {
+                plan.retry_pending_with_feedback(clean, self.gpu_pointer.as_ref(), &mut emit)
+            }) {
                 Ok(info) => CaptureLane::Ready(info),
                 Err(error) => CaptureLane::Failed(error),
             };
@@ -2014,6 +2071,7 @@ impl DesktopDuplicator {
             .filter(|region| region.fits_within(native_width, native_height));
 
         self.pointer = Arc::new(PointerState::default());
+        self.gpu_pointer = None;
         self.device = device;
         self.context = context;
         self.output = output;
@@ -2372,10 +2430,11 @@ pub mod fixtures {
             metadata,
         };
         let mut publication = None;
-        plan.publish(&clean, config.duplication_generation, |outcome| {
+        plan.publish_with_feedback(&clean, None, config.duplication_generation, |outcome| {
             if let GpuSurfacePublishOutcome::Published(published) = outcome {
                 publication = Some(published);
             }
+            GpuSurfacePublicationDisposition::Accepted
         })?;
         let publication = publication.ok_or_else(|| {
             CaptureError::windows(

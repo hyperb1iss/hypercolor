@@ -466,6 +466,15 @@ pub enum GpuSurfacePublishOutcome {
     Busy(GpuSurfaceDescriptorId),
 }
 
+/// Consumer disposition for one native publication callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuSurfacePublicationDisposition {
+    /// The downstream publication authority accepted the native result.
+    Accepted,
+    /// Preserve the exact source sequence for a later allocation-free retry.
+    Retry,
+}
+
 /// Allocation-free summary of one descriptor fanout pass.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuSurfaceBatchInfo {
@@ -585,11 +594,10 @@ fn require_keyed_mutex(
     }
 }
 
-struct PointerResource {
+pub(super) struct PointerResource {
     generation: u64,
     width: u32,
     height: u32,
-    byte_len: u64,
     srv: ID3D11ShaderResourceView,
 }
 
@@ -604,15 +612,14 @@ pub struct PreparedGpuSurfacePlan {
     logical_source_extent: CaptureExtent,
     source_rotation: crate::DisplayRotation,
     source_color_space: GpuSurfaceSourceColorSpace,
+    #[cfg(test)]
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     context4: ID3D11DeviceContext4,
     shader: ID3D11ComputeShader,
     params: ID3D11Buffer,
-    pointer: Option<PointerResource>,
     routes: Vec<SurfaceRoute>,
     selection_controlled: bool,
-    shared_allocation_byte_len: u64,
     texture_budget: u64,
     allocation_byte_len: u64,
     #[cfg(test)]
@@ -633,10 +640,6 @@ impl std::fmt::Debug for PreparedGpuSurfacePlan {
             .field("source_rotation", &self.source_rotation)
             .field("source_color_space", &self.source_color_space)
             .field("descriptor_count", &self.routes.len())
-            .field(
-                "shared_allocation_byte_len",
-                &self.shared_allocation_byte_len,
-            )
             .field("allocation_byte_len", &self.allocation_byte_len)
             .finish_non_exhaustive()
     }
@@ -660,7 +663,6 @@ impl PreparedGpuSurfacePlan {
         admission: GpuSurfaceAdmission,
     ) -> CaptureResult<Self> {
         let allocation_byte_len = admission.admit(logical_source_extent, descriptors)?;
-        let shared_allocation_byte_len = checked_gpu_surface_bytes(logical_source_extent)?;
         for descriptor in descriptors {
             if descriptor.source_rotation() != source_rotation {
                 return Err(CaptureError::GpuSurfaceRotationMismatch {
@@ -713,15 +715,14 @@ impl PreparedGpuSurfacePlan {
             logical_source_extent,
             source_rotation,
             source_color_space,
+            #[cfg(test)]
             device: device.clone(),
             context: context.clone(),
             context4,
             shader,
             params,
-            pointer: None,
             routes,
             selection_controlled: false,
-            shared_allocation_byte_len,
             texture_budget: admission.max_texture_bytes(),
             allocation_byte_len,
             #[cfg(test)]
@@ -763,6 +764,19 @@ impl PreparedGpuSurfacePlan {
             || self.routes.iter().any(|route| {
                 route.selected_for_next_acquisition || route.pending_source_sequence.is_some()
             })
+    }
+
+    pub(super) fn requires_pointer_for_next_publication(&self) -> bool {
+        self.routes.iter().any(|route| {
+            (!self.selection_controlled
+                || route.selected_for_next_acquisition
+                || route.pending_source_sequence.is_some())
+                && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
+        })
+    }
+
+    pub(super) const fn texture_budget(&self) -> u64 {
+        self.texture_budget
     }
 
     /// Retain every native slot required to prepare one exact renderer route.
@@ -821,12 +835,6 @@ impl PreparedGpuSurfacePlan {
     #[must_use]
     pub const fn allocation_byte_len(&self) -> u64 {
         self.allocation_byte_len
-    }
-
-    /// Checked texture bytes retained only by the plan, not route manifests.
-    #[must_use]
-    pub const fn shared_allocation_byte_len(&self) -> u64 {
-        self.shared_allocation_byte_len
     }
 
     /// GPU Surface publication performs no staging readback.
@@ -897,14 +905,15 @@ impl PreparedGpuSurfacePlan {
             .any(|route| route.pending_source_sequence.is_some())
     }
 
-    pub(super) fn publish<F>(
+    pub(super) fn publish_with_feedback<F>(
         &mut self,
         clean: &RetainedDesktop,
+        pointer_resource: Option<&PointerResource>,
         duplication_generation: u64,
         emit: F,
     ) -> CaptureResult<GpuSurfaceBatchInfo>
     where
-        F: FnMut(GpuSurfacePublishOutcome),
+        F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
     {
         let metadata = &clean.metadata;
         let logical_source_extent = logical_extent(
@@ -943,33 +952,24 @@ impl PreparedGpuSurfacePlan {
                 .ok_or(CaptureError::GpuSurfaceFreshnessOverflow)?;
         }
         self.validate_cursor_shape(metadata)?;
-        if self.routes.iter().any(|route| {
-            route.pending_source_sequence == Some(metadata.sequence)
-                && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
-        }) {
-            self.ensure_pointer(&metadata.pointer)?;
-        }
-        self.fanout_pending(clean, emit)
+        self.validate_pointer_resource(metadata, pointer_resource)?;
+        self.fanout_pending(clean, pointer_resource, emit)
     }
 
-    pub(super) fn retry_pending<F>(
+    pub(super) fn retry_pending_with_feedback<F>(
         &mut self,
         clean: &RetainedDesktop,
+        pointer_resource: Option<&PointerResource>,
         mut emit: F,
     ) -> CaptureResult<GpuSurfaceBatchInfo>
     where
-        F: FnMut(GpuSurfacePublishOutcome),
+        F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
     {
         let metadata = &clean.metadata;
         self.validate_clean(clean)?;
         self.validate_cursor_shape(metadata)?;
-        if self.routes.iter().any(|route| {
-            route.pending_source_sequence == Some(metadata.sequence)
-                && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
-        }) {
-            self.ensure_pointer(&metadata.pointer)?;
-        }
-        self.fanout_pending(clean, &mut emit)
+        self.validate_pointer_resource(metadata, pointer_resource)?;
+        self.fanout_pending(clean, pointer_resource, &mut emit)
     }
 
     fn validate_cursor_shape(&self, metadata: &CaptureMetadata) -> CaptureResult<()> {
@@ -988,13 +988,56 @@ impl PreparedGpuSurfacePlan {
         Ok(())
     }
 
+    fn validate_pointer_resource(
+        &self,
+        metadata: &CaptureMetadata,
+        pointer_resource: Option<&PointerResource>,
+    ) -> CaptureResult<()> {
+        let Some(shape) = metadata
+            .pointer
+            .shape
+            .as_ref()
+            .filter(|_| metadata.pointer.visible)
+        else {
+            return Ok(());
+        };
+        let needs_pointer = self.routes.iter().any(|route| {
+            route.pending_source_sequence == Some(metadata.sequence)
+                && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
+        });
+        if needs_pointer
+            && !pointer_resource.is_some_and(|resource| {
+                resource.generation == metadata.pointer.shape_generation
+                    && resource.width == shape.width
+                    && resource.height == shape.visible_height()
+            })
+        {
+            let descriptor_id = self
+                .routes
+                .iter()
+                .find(|route| {
+                    route.pending_source_sequence == Some(metadata.sequence)
+                        && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
+                })
+                .expect("a pointer-requiring route exists")
+                .descriptor
+                .id();
+            return Err(CaptureError::GpuSurfaceCursorShapeUnavailable {
+                descriptor_id,
+                source_sequence: metadata.sequence,
+            });
+        }
+        Ok(())
+    }
+
     fn fanout_pending<F>(
         &mut self,
         clean: &RetainedDesktop,
+        pointer_resource: Option<&PointerResource>,
         mut emit: F,
     ) -> CaptureResult<GpuSurfaceBatchInfo>
     where
-        F: FnMut(GpuSurfacePublishOutcome),
+        F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
     {
         let metadata = &clean.metadata;
         self.reclaim_abandoned()?;
@@ -1008,7 +1051,7 @@ impl PreparedGpuSurfacePlan {
             if self.routes[route_index].pending_source_sequence != Some(metadata.sequence) {
                 continue;
             }
-            match self.publish_route(route_index, clean) {
+            match self.publish_route(route_index, clean, pointer_resource) {
                 Ok(outcome) => {
                     match outcome {
                         PendingRouteOutcome::Published(_) => published += 1,
@@ -1038,13 +1081,15 @@ impl PreparedGpuSurfacePlan {
             match route.pending {
                 PendingRouteOutcome::None => {}
                 PendingRouteOutcome::Busy => {
-                    emit(GpuSurfacePublishOutcome::Busy(route.descriptor.id()));
+                    let _ = emit(GpuSurfacePublishOutcome::Busy(route.descriptor.id()));
                 }
                 PendingRouteOutcome::Published(slot_index) => {
-                    route.pending_source_sequence = None;
-                    emit(GpuSurfacePublishOutcome::Published(Arc::clone(
+                    let disposition = emit(GpuSurfacePublishOutcome::Published(Arc::clone(
                         &route.slots[slot_index].publication,
                     )));
+                    if disposition == GpuSurfacePublicationDisposition::Accepted {
+                        route.pending_source_sequence = None;
+                    }
                 }
             }
         }
@@ -1213,79 +1258,11 @@ impl PreparedGpuSurfacePlan {
         Ok(())
     }
 
-    fn ensure_pointer(&mut self, pointer: &PointerState) -> CaptureResult<()> {
-        let Some(shape) = pointer.shape.as_ref() else {
-            return Ok(());
-        };
-        let height = shape.visible_height();
-        if self.pointer.as_ref().is_some_and(|resource| {
-            resource.generation == pointer.shape_generation
-                && resource.width == shape.width
-                && resource.height == height
-        }) {
-            return Ok(());
-        }
-        let byte_len = checked_gpu_surface_bytes(CaptureExtent::try_new(shape.width, height)?)?;
-        let previous = self
-            .pointer
-            .as_ref()
-            .map_or(0, |resource| resource.byte_len);
-        let replacement_total = self
-            .allocation_byte_len
-            .checked_sub(previous)
-            .and_then(|bytes| bytes.checked_add(byte_len))
-            .ok_or(CaptureError::GeometryOverflow {
-                operation: "account GPU pointer texture",
-                width: shape.width,
-                height,
-            })?;
-        if replacement_total > self.texture_budget {
-            return Err(CaptureError::GpuSurfaceBudgetExceeded {
-                requested_bytes: replacement_total,
-                budget_bytes: self.texture_budget,
-            });
-        }
-
-        let pixels = normalized_pointer(shape).map_err(capture_gpu_error)?;
-        let desc = texture_desc(
-            CaptureExtent::try_new(shape.width, height)?,
-            DXGI_FORMAT_R8G8B8A8_UINT,
-            D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
-            0,
-        );
-        let initial = D3D11_SUBRESOURCE_DATA {
-            pSysMem: pixels.as_ptr().cast(),
-            SysMemPitch: checked_rgba_row_pitch(shape.width, height, "create GPU pointer texture")
-                .map_err(capture_gpu_error)?,
-            SysMemSlicePitch: 0,
-        };
-        let texture =
-            create_texture(&self.device, &desc, Some(&initial)).map_err(capture_gpu_error)?;
-        let srv = create_srv(&self.device, &texture).map_err(capture_gpu_error)?;
-        self.pointer = Some(PointerResource {
-            generation: pointer.shape_generation,
-            width: shape.width,
-            height,
-            byte_len,
-            srv,
-        });
-        self.shared_allocation_byte_len = self
-            .shared_allocation_byte_len
-            .checked_sub(previous)
-            .and_then(|bytes| bytes.checked_add(byte_len))
-            .ok_or(CaptureError::GeometryOverflow {
-                operation: "account shared GPU Surface plan",
-                width: shape.width,
-                height,
-            })?;
-        self.allocation_byte_len = replacement_total;
-        Ok(())
-    }
-
     fn publish_route(
         &mut self,
         route_index: usize,
         clean: &RetainedDesktop,
+        pointer_resource: Option<&PointerResource>,
     ) -> CaptureResult<PendingRouteOutcome> {
         let metadata = &clean.metadata;
         #[cfg(test)]
@@ -1380,7 +1357,7 @@ impl PreparedGpuSurfacePlan {
         update_params(&self.context, &self.params, &params);
         let srvs = [
             Some(clean.srv.clone()),
-            shape.and(self.pointer.as_ref().map(|resource| resource.srv.clone())),
+            shape.and(pointer_resource.map(|resource| resource.srv.clone())),
         ];
         let uavs = [Some(slot.uav.clone())];
         // SAFETY: prepared descriptors, views, and constants match the shader
@@ -1470,6 +1447,64 @@ impl PreparedGpuSurfacePlan {
         publication.state.store(USE_PREPARED, Ordering::Release);
         Ok(PendingRouteOutcome::Published(slot_index))
     }
+}
+
+pub(super) fn ensure_pointer_resource(
+    device: &ID3D11Device,
+    resource: &mut Option<PointerResource>,
+    pointer: &PointerState,
+    base_allocation_byte_len: u64,
+    texture_budget: u64,
+) -> CaptureResult<()> {
+    let Some(shape) = pointer.shape.as_ref() else {
+        return Ok(());
+    };
+    let height = shape.visible_height();
+    if resource.as_ref().is_some_and(|resource| {
+        resource.generation == pointer.shape_generation
+            && resource.width == shape.width
+            && resource.height == height
+    }) {
+        return Ok(());
+    }
+    let byte_len = checked_gpu_surface_bytes(CaptureExtent::try_new(shape.width, height)?)?;
+    let requested_bytes =
+        base_allocation_byte_len
+            .checked_add(byte_len)
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "account source-owned GPU pointer texture",
+                width: shape.width,
+                height,
+            })?;
+    if requested_bytes > texture_budget {
+        return Err(CaptureError::GpuSurfaceBudgetExceeded {
+            requested_bytes,
+            budget_bytes: texture_budget,
+        });
+    }
+
+    let pixels = normalized_pointer(shape).map_err(capture_gpu_error)?;
+    let desc = texture_desc(
+        CaptureExtent::try_new(shape.width, height)?,
+        DXGI_FORMAT_R8G8B8A8_UINT,
+        D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
+        0,
+    );
+    let initial = D3D11_SUBRESOURCE_DATA {
+        pSysMem: pixels.as_ptr().cast(),
+        SysMemPitch: checked_rgba_row_pitch(shape.width, height, "create GPU pointer texture")
+            .map_err(capture_gpu_error)?,
+        SysMemSlicePitch: 0,
+    };
+    let texture = create_texture(device, &desc, Some(&initial)).map_err(capture_gpu_error)?;
+    let srv = create_srv(device, &texture).map_err(capture_gpu_error)?;
+    *resource = Some(PointerResource {
+        generation: pointer.shape_generation,
+        width: shape.width,
+        height,
+        srv,
+    });
+    Ok(())
 }
 
 fn poison_surface_slot(slot: &SurfaceSlot) {
@@ -1966,6 +2001,7 @@ pub(super) mod fixture {
 
     pub(crate) struct PublishedFixture {
         pub(crate) plan: PreparedGpuSurfacePlan,
+        pointer_resource: Option<PointerResource>,
         clean: RetainedDesktop,
         pub(crate) info: GpuSurfaceBatchInfo,
         pub(crate) outcomes: Vec<GpuSurfacePublishOutcome>,
@@ -2155,10 +2191,24 @@ pub(super) mod fixture {
             texture: source,
             metadata,
         };
+        let mut pointer_resource = None;
+        if plan.requires_pointer_for_next_publication() && clean.metadata.pointer.visible {
+            ensure_pointer_resource(
+                &device,
+                &mut pointer_resource,
+                &clean.metadata.pointer,
+                plan.allocation_byte_len(),
+                plan.texture_budget(),
+            )?;
+        }
         let mut outcomes = Vec::new();
-        let info = plan.publish(&clean, 5, |outcome| outcomes.push(outcome))?;
+        let info = plan.publish_with_feedback(&clean, pointer_resource.as_ref(), 5, |outcome| {
+            outcomes.push(outcome);
+            GpuSurfacePublicationDisposition::Accepted
+        })?;
         Ok(PublishedFixture {
             plan,
+            pointer_resource,
             clean,
             info,
             outcomes,
@@ -2360,6 +2410,18 @@ pub(super) mod fixture {
         fixture: &mut PublishedFixture,
         sequence: u64,
     ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
+        republish_with_disposition(
+            fixture,
+            sequence,
+            GpuSurfacePublicationDisposition::Accepted,
+        )
+    }
+
+    pub(crate) fn republish_with_disposition(
+        fixture: &mut PublishedFixture,
+        sequence: u64,
+        disposition: GpuSurfacePublicationDisposition,
+    ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
         let plan = &mut fixture.plan;
         let metadata = CaptureMetadata {
             source_id: Arc::clone(&plan.source_id),
@@ -2381,19 +2443,37 @@ pub(super) mod fixture {
         };
         fixture.clean.metadata = metadata;
         let mut outcomes = Vec::new();
-        plan.publish(&fixture.clean, plan.duplication_generation, |outcome| {
-            outcomes.push(outcome);
-        })?;
+        plan.publish_with_feedback(
+            &fixture.clean,
+            fixture.pointer_resource.as_ref(),
+            plan.duplication_generation,
+            |outcome| {
+                outcomes.push(outcome);
+                disposition
+            },
+        )?;
         Ok(outcomes)
     }
 
     pub(crate) fn retry_pending(
         fixture: &mut PublishedFixture,
     ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
+        retry_pending_with_disposition(fixture, GpuSurfacePublicationDisposition::Accepted)
+    }
+
+    pub(crate) fn retry_pending_with_disposition(
+        fixture: &mut PublishedFixture,
+        disposition: GpuSurfacePublicationDisposition,
+    ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
         let mut outcomes = Vec::new();
-        fixture
-            .plan
-            .retry_pending(&fixture.clean, |outcome| outcomes.push(outcome))?;
+        fixture.plan.retry_pending_with_feedback(
+            &fixture.clean,
+            fixture.pointer_resource.as_ref(),
+            |outcome| {
+                outcomes.push(outcome);
+                disposition
+            },
+        )?;
         Ok(outcomes)
     }
 
@@ -2449,11 +2529,17 @@ pub(super) mod fixture {
         };
         fixture.clean.metadata = metadata;
         let mut submitted = true;
-        plan.publish(&fixture.clean, plan.duplication_generation, |outcome| {
-            if let GpuSurfacePublishOutcome::Published(publication) = outcome {
-                submitted &= publication.state.load(Ordering::Acquire) == USE_UNCLAIMED;
-            }
-        })?;
+        plan.publish_with_feedback(
+            &fixture.clean,
+            fixture.pointer_resource.as_ref(),
+            plan.duplication_generation,
+            |outcome| {
+                if let GpuSurfacePublishOutcome::Published(publication) = outcome {
+                    submitted &= publication.state.load(Ordering::Acquire) == USE_UNCLAIMED;
+                }
+                GpuSurfacePublicationDisposition::Accepted
+            },
+        )?;
         Ok(submitted)
     }
 

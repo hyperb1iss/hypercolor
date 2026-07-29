@@ -296,17 +296,13 @@ fn exact_gpu_route_selection_is_allocation_free_and_consumed_per_acquisition() {
     ];
     let mut fixture = super::gpu_surface::fixture::publish(&[1, 2, 3, 0xFF], 1, 1, &descriptors)
         .expect("initial exact fanout succeeds");
-    let route_bytes = descriptors.iter().try_fold(0_u64, |total, descriptor| {
+    for descriptor in &descriptors {
         let preparation = fixture
             .plan
             .target_preparation(descriptor.id())
             .expect("route preparation exists");
-        total.checked_add(preparation.allocation_byte_len())
-    });
-    assert_eq!(
-        route_bytes.and_then(|bytes| bytes.checked_add(fixture.plan.shared_allocation_byte_len())),
-        Some(fixture.plan.allocation_byte_len())
-    );
+        assert_eq!(preparation.allocation_byte_len(), 8);
+    }
     for outcome in std::mem::take(&mut fixture.outcomes) {
         let crate::GpuSurfacePublishOutcome::Published(publication) = outcome else {
             panic!("initial exact route unexpectedly busy");
@@ -384,6 +380,63 @@ fn deselected_busy_gpu_route_still_retries_its_latest_acquisition() {
         .expect("pending route publishes after its native slot is released");
     assert_eq!(retried.provenance().source_sequence, 43);
     drop((second, retried));
+}
+
+#[test]
+fn downstream_retry_feedback_preserves_exact_native_sequence_until_acceptance() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        7,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("initial exact publication succeeds");
+    for outcome in std::mem::take(&mut fixture.outcomes) {
+        let crate::GpuSurfacePublishOutcome::Published(publication) = outcome else {
+            panic!("initial exact route unexpectedly busy");
+        };
+        super::gpu_surface::fixture::release_on_producer_device(&fixture.plan, &publication)
+            .expect("initial route releases");
+    }
+
+    let rejected = super::gpu_surface::fixture::republish_with_disposition(
+        &mut fixture,
+        42,
+        crate::GpuSurfacePublicationDisposition::Retry,
+    )
+    .expect("native publication reports downstream pressure");
+    assert_eq!(rejected.len(), 1);
+    drop(rejected);
+
+    let accepted = (0..64)
+        .find_map(|_| {
+            let outcomes = super::gpu_surface::fixture::retry_pending_with_disposition(
+                &mut fixture,
+                crate::GpuSurfacePublicationDisposition::Accepted,
+            )
+            .expect("retained native sequence remains retryable");
+            let publication = outcomes.into_iter().find_map(|outcome| match outcome {
+                crate::GpuSurfacePublishOutcome::Published(publication) => Some(publication),
+                crate::GpuSurfacePublishOutcome::Busy(_) => None,
+            });
+            if publication.is_none() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            publication
+        })
+        .expect("native sequence republishes after downstream acceptance is available");
+    assert_eq!(accepted.provenance().source_sequence, 42);
+    drop(accepted);
+    assert!(
+        super::gpu_surface::fixture::retry_pending(&mut fixture)
+            .expect("accepted route has no pending retry")
+            .is_empty()
+    );
 }
 
 #[test]

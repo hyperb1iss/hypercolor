@@ -233,7 +233,9 @@ impl PreparedCpuDesktopReadback {
         self.last_submitted_sequence != Some(clean.metadata.sequence)
     }
 
-    pub(super) fn has_pending(&self) -> bool {
+    /// Whether at least one submitted readback still awaits mapping.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
         self.slots.iter().any(|slot| slot.pending.is_some())
     }
 

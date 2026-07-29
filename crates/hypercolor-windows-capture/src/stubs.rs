@@ -184,6 +184,15 @@ pub enum GpuSurfacePublishOutcome {
     Busy(GpuSurfaceDescriptorId),
 }
 
+/// API-compatible non-Windows publication feedback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuSurfacePublicationDisposition {
+    /// Unreachable downstream acceptance.
+    Accepted,
+    /// Unreachable downstream retry request.
+    Retry,
+}
+
 /// Non-Windows stand-in for one GPU Surface batch summary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuSurfaceBatchInfo {
@@ -225,6 +234,12 @@ pub struct PreparedCpuDesktopReadback {
 }
 
 impl PreparedCpuDesktopReadback {
+    /// No native readback is pending on this platform.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        match self.never {}
+    }
+
     /// No native readback slots exist on this platform.
     #[must_use]
     pub fn slot_count(&self) -> usize {
@@ -234,12 +249,6 @@ impl PreparedCpuDesktopReadback {
     /// No native readback allocation exists on this platform.
     #[must_use]
     pub fn allocation_byte_len(&self) -> u64 {
-        match self.never {}
-    }
-
-    /// No shared D3D11 plan allocation exists on this platform.
-    #[must_use]
-    pub fn shared_allocation_byte_len(&self) -> u64 {
         match self.never {}
     }
 
@@ -520,6 +529,25 @@ impl DesktopDuplicator {
     ) -> CaptureResult<CapturePumpReport>
     where
         F: FnMut(GpuSurfacePublishOutcome),
+    {
+        let CapturePumpRequest { gpu, cpu } = request;
+        drop((gpu, cpu));
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
+    /// Always fails: Desktop Duplication is Windows-only.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub fn pump_with_feedback<F>(
+        &mut self,
+        request: CapturePumpRequest<'_>,
+        _timeout: Duration,
+        _emit: F,
+    ) -> CaptureResult<CapturePumpReport>
+    where
+        F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
     {
         let CapturePumpRequest { gpu, cpu } = request;
         drop((gpu, cpu));
