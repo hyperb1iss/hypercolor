@@ -1583,16 +1583,40 @@ impl DesktopDuplicator {
                     Err(error) => report.reduction = CaptureLane::Failed(error),
                 }
             }
-        } else if let (Some(plan), Some(clean)) = (gpu, clean.as_ref())
-            && plan.has_pending_routes()
-        {
-            let pointer_result = self.prepare_gpu_pointer_resource(plan, clean);
-            report.gpu = match pointer_result.and_then(|()| {
-                plan.retry_pending_with_feedback(clean, self.gpu_pointer.as_ref(), &mut emit)
-            }) {
-                Ok(info) => CaptureLane::Ready(info),
-                Err(error) => CaptureLane::Failed(error),
-            };
+        } else {
+            if let (Some(plan), Some(clean)) = (gpu, clean.as_ref())
+                && plan.has_pending_routes()
+            {
+                let pointer_result = self.prepare_gpu_pointer_resource(plan, clean);
+                report.gpu = match pointer_result.and_then(|()| {
+                    plan.retry_pending_with_feedback(clean, self.gpu_pointer.as_ref(), &mut emit)
+                }) {
+                    Ok(info) => CaptureLane::Ready(info),
+                    Err(error) => CaptureLane::Failed(error),
+                };
+            }
+            if let (Some(plan), Some(clean)) = (reduction, clean.as_ref()) {
+                if plan.requires_pointer_for_next_publication() && clean.metadata.pointer.visible {
+                    let available_bytes = self.available_gpu_memory_bytes()?;
+                    gpu_surface::ensure_pointer_resource(
+                        &self.device,
+                        &mut self.gpu_pointer,
+                        &clean.metadata.pointer,
+                        available_bytes,
+                    )?;
+                }
+                match plan.submit_selected(
+                    clean,
+                    self.gpu_pointer.as_ref(),
+                    self.duplication_generation,
+                ) {
+                    Ok(submitted) => match &mut report.reduction {
+                        CaptureLane::Ready(info) => info.merge(submitted),
+                        lane => *lane = CaptureLane::Ready(submitted),
+                    },
+                    Err(error) => report.reduction = CaptureLane::Failed(error),
+                }
+            }
         }
 
         if !acquired && let Some(clean) = clean.as_ref() {

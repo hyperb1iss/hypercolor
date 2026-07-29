@@ -696,11 +696,10 @@ impl DesktopDuplicator {
         F: FnMut(GpuSurfacePublishOutcome),
     {
         let CapturePumpRequest {
-            gpu,
-            reduction,
-            cpu,
+            gpu: _gpu,
+            reduction: _reduction,
+            cpu: _cpu,
         } = request;
-        drop((gpu, reduction, cpu));
         Err(CaptureError::UnsupportedPlatform)
     }
 
@@ -719,11 +718,10 @@ impl DesktopDuplicator {
         F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
     {
         let CapturePumpRequest {
-            gpu,
-            reduction,
-            cpu,
+            gpu: _gpu,
+            reduction: _reduction,
+            cpu: _cpu,
         } = request;
-        drop((gpu, reduction, cpu));
         Err(CaptureError::UnsupportedPlatform)
     }
 
@@ -744,11 +742,10 @@ impl DesktopDuplicator {
         R: FnMut(GpuReductionPublishOutcome<'_>) -> GpuReductionPublicationDisposition,
     {
         let CapturePumpRequest {
-            gpu,
-            reduction,
-            cpu,
+            gpu: _gpu,
+            reduction: _reduction,
+            cpu: _cpu,
         } = request;
-        drop((gpu, reduction, cpu));
         Err(CaptureError::UnsupportedPlatform)
     }
 

@@ -23,12 +23,13 @@ use anyhow::anyhow;
 use hypercolor_windows_capture::{
     CaptureError, CaptureExtent as NativeCaptureExtent, CaptureLane, CapturePumpRequest,
     CaptureRegion, CpuDesktopFrame, DesktopDuplicator, DisplayRotation,
-    Frame as NativeCaptureFrame, GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceColorPipeline,
-    GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy, GpuSurfaceDescriptor,
-    GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat,
-    GpuSurfacePlanGeneration, GpuSurfacePublicationDisposition, GpuSurfacePublishOutcome,
-    GpuSurfaceSourceColorSpace, PreparedCpuDesktopReadback, PreparedGpuSurfacePlan,
-    ReductionTelemetry,
+    Frame as NativeCaptureFrame, GpuAdapterLuid, GpuReductionAdmission,
+    GpuReductionPublicationDisposition, GpuReductionPublishOutcome, GpuSurfaceAdmission,
+    GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy,
+    GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter,
+    GpuSurfaceFormat, GpuSurfacePlanGeneration, GpuSurfacePublicationDisposition,
+    GpuSurfacePublishOutcome, GpuSurfaceSourceColorSpace, PreparedCpuDesktopReadback,
+    PreparedGpuReductionPlan, PreparedGpuSurfacePlan, ReductionTelemetry,
 };
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
@@ -47,13 +48,13 @@ use crate::input::screen::{
     ScreenCaptureInput, ScreenColorTransformCapabilities, ScreenCursorCapabilities,
     ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
     ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPreparedWorkerToken, ScreenPublicationColorimetry, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter, ScreenResourceApi,
-    ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder,
-    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
-    analyze_screen_frame,
+    ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
+    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
+    ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
@@ -606,11 +607,24 @@ struct PendingWindowsGpuRuntime {
 }
 
 struct WindowsCpuRuntime {
-    readback: PreparedCpuDesktopReadback,
+    readback: Option<PreparedCpuDesktopReadback>,
+    native_physical_mask: Box<[bool]>,
+    reduction: Option<WindowsGpuReductionRuntime>,
     workspace_allocation_byte_len: u64,
     fanout_candidate: Option<PreparedCpuPublicationFanoutCandidate>,
     fanout: Option<PreparedCpuPublicationFanout>,
     latest_frame: Option<CaptureFrame<RawCaptureSurface>>,
+}
+
+struct WindowsGpuReductionRoute {
+    id: GpuSurfaceDescriptorId,
+    native: Arc<GpuSurfaceDescriptor>,
+    physical_index: usize,
+}
+
+struct WindowsGpuReductionRuntime {
+    plan: PreparedGpuReductionPlan,
+    routes: Vec<WindowsGpuReductionRoute>,
 }
 
 struct WindowsExactRuntime {
@@ -1551,6 +1565,75 @@ fn capture_gpu_descriptor(
     Ok(descriptor)
 }
 
+fn capture_gpu_reduction_descriptor(
+    physical: &ScreenPhysicalReductionDescriptor,
+    source: &WindowsPublicationSource,
+    id: GpuSurfaceDescriptorId,
+    freshness: Duration,
+) -> anyhow::Result<GpuSurfaceDescriptor> {
+    if !matches!(physical.executor(), ScreenPublicationExecutor::Cpu) {
+        anyhow::bail!("Windows reduced readback requires a CPU physical descriptor");
+    }
+    let config = physical.source();
+    let geometry = config.geometry();
+    let scale = geometry.source_scale();
+    if geometry.native_extent() != source.native_extent
+        || geometry.storage_extent() != source.native_extent
+        || geometry.rotation() != source.rotation
+        || geometry.crop().is_some()
+        || scale.numerator() != scale.denominator()
+        || config.logical_extent() != source.logical_extent
+        || config.reflection() != ScreenSourceReflection::None
+        || config.pixel_format() != CapturePixelFormat::Bgra8
+    {
+        anyhow::bail!("Windows GPU readback does not implement this source transform");
+    }
+    let source_region = physical.source_region();
+    let region = CaptureRegion::new(
+        capture_integer_coordinate(source_region.x())?,
+        capture_integer_coordinate(source_region.y())?,
+        capture_integer_coordinate(source_region.width())?,
+        capture_integer_coordinate(source_region.height())?,
+    )
+    .ok_or_else(|| anyhow!("Windows GPU readback source region must be non-empty"))?;
+    let filter = match physical.reduction_filter() {
+        ScreenReductionFilter::Nearest => GpuSurfaceFilter::Nearest,
+        ScreenReductionFilter::Bilinear => GpuSurfaceFilter::Bilinear,
+        ScreenReductionFilter::Area => GpuSurfaceFilter::Area,
+    };
+    if physical.target_pixel_format() != CapturePixelFormat::Rgba8 {
+        anyhow::bail!("Windows GPU readback requires RGBA8 output");
+    }
+    let color_pipeline = match physical.color_pipeline().transform() {
+        ResolvedScreenColorTransform::PreserveEncodedSamples => {
+            GpuSurfaceColorPipeline::PreserveEncoded
+        }
+        ResolvedScreenColorTransform::LinearLightSdr => GpuSurfaceColorPipeline::LinearSdr,
+        transform => anyhow::bail!("Windows GPU readback does not implement {transform:?}"),
+    };
+    let cursor = match physical.cursor() {
+        ScreenCursorPolicy::Exclude => GpuSurfaceCursorPolicy::Exclude,
+        ScreenCursorPolicy::Include => GpuSurfaceCursorPolicy::Include,
+    };
+    let output = physical.reduction_extent();
+    let descriptor = GpuSurfaceDescriptor::new(GpuSurfaceDescriptorConfig {
+        id,
+        source_region: region,
+        coordinate_space: GpuSurfaceCoordinateSpace::LogicalDisplay,
+        source_rotation: display_rotation(source.rotation),
+        source_color_space: source.source_color_space,
+        output_extent: NativeCaptureExtent::try_new(output.width(), output.height())?,
+        filter,
+        format: GpuSurfaceFormat::Rgba8Unorm,
+        color_pipeline,
+        cursor,
+        algorithm_revision: physical.algorithm_revision(),
+        freshness,
+    });
+    descriptor.validate_exact_gpu_readback()?;
+    Ok(descriptor)
+}
+
 fn capture_integer_coordinate(value: super::ScreenRational) -> anyhow::Result<u32> {
     if value.denominator().get() != 1 {
         anyhow::bail!("Windows native capture requires integer source coordinates");
@@ -1561,6 +1644,25 @@ fn capture_integer_coordinate(value: super::ScreenRational) -> anyhow::Result<u3
 
 fn capture_freshness(requested_hz: NonZeroU32) -> Duration {
     Duration::from_nanos(2_000_000_000_u64.div_ceil(u64::from(requested_hz.get())))
+}
+
+fn physical_capture_freshness(
+    plan: &crate::input::screen::ScreenCapturePlan,
+    descriptor: &ScreenPhysicalReductionDescriptor,
+) -> anyhow::Result<Duration> {
+    let physical = plan
+        .physical_reductions()
+        .binary_search_by(|candidate| candidate.descriptor().cmp(descriptor))
+        .ok()
+        .and_then(|index| plan.physical_reductions().get(index))
+        .ok_or_else(|| anyhow!("Windows physical reduction is absent from its candidate plan"))?;
+    physical
+        .branch_indices()
+        .iter()
+        .filter_map(|index| plan.branches().get(*index))
+        .map(|branch| capture_freshness(branch.requested_hz()))
+        .min()
+        .ok_or_else(|| anyhow!("Windows physical reduction has no logical consumers"))
 }
 
 const fn screen_gpu_identity(adapter: GpuAdapterLuid) -> ScreenPhysicalGpuDeviceIdentity {
@@ -1797,9 +1899,71 @@ fn prepare_windows_exact_runtime(
         let fanout_candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
             &executor, &batch, workspace, candidate,
         )?;
-        let readback = duplicator.prepare_cpu_desktop_readback(slot_count)?;
+        let mut native_physical_mask = Vec::new();
+        let mut reduction_descriptors = Vec::new();
+        let mut reduction_routes = Vec::new();
+        native_physical_mask.try_reserve_exact(batch.len())?;
+        reduction_descriptors.try_reserve_exact(batch.len())?;
+        reduction_routes.try_reserve_exact(batch.len())?;
+        for physical_index in 0..batch.len() {
+            let physical = batch
+                .descriptor(physical_index)
+                .expect("prepared CPU batch index is valid");
+            let id = exact.next_gpu_descriptor_id()?;
+            let freshness = physical_capture_freshness(candidate, physical)?;
+            match capture_gpu_reduction_descriptor(physical, source, id, freshness) {
+                Ok(descriptor) => {
+                    native_physical_mask.push(false);
+                    let native = Arc::new(descriptor.clone());
+                    reduction_descriptors.push(descriptor);
+                    reduction_routes.push(WindowsGpuReductionRoute {
+                        id,
+                        native,
+                        physical_index,
+                    });
+                }
+                Err(error) => {
+                    debug!(
+                        physical_index,
+                        reason = %error,
+                        "routing unsupported Windows physical reduction through native readback"
+                    );
+                    native_physical_mask.push(true);
+                }
+            }
+        }
+        let reduction = if reduction_descriptors.is_empty() {
+            None
+        } else {
+            let preparation_gate = windows_gpu_preparation_gate(source.adapter_luid);
+            let _preparation_guard = preparation_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let generation = GpuSurfacePlanGeneration::new(
+                NonZeroU64::new(ticket.plan_generation().get())
+                    .ok_or_else(|| anyhow!("Windows reduction plan generation must be nonzero"))?,
+            );
+            let available_gpu_bytes = duplicator.available_gpu_memory_bytes()?;
+            let admission = GpuReductionAdmission::new(available_gpu_bytes, slot_count);
+            let plan = duplicator.prepare_gpu_reduction_plan(
+                generation,
+                &reduction_descriptors,
+                admission,
+            )?;
+            Some(WindowsGpuReductionRuntime {
+                plan,
+                routes: reduction_routes,
+            })
+        };
+        let readback = native_physical_mask
+            .iter()
+            .any(|native| *native)
+            .then(|| duplicator.prepare_cpu_desktop_readback(slot_count))
+            .transpose()?;
         Some(WindowsCpuRuntime {
             readback,
+            native_physical_mask: native_physical_mask.into_boxed_slice(),
+            reduction,
             workspace_allocation_byte_len,
             fanout_candidate: Some(fanout_candidate),
             fanout: None,
@@ -1811,7 +1975,25 @@ fn prepare_windows_exact_runtime(
 
     let cpu_api_bytes = cpu
         .as_ref()
-        .map_or(0, |runtime| runtime.readback.allocation_byte_len());
+        .map(|runtime| {
+            let native = runtime
+                .readback
+                .as_ref()
+                .map_or(0, PreparedCpuDesktopReadback::allocation_byte_len);
+            let reduced_gpu = runtime
+                .reduction
+                .as_ref()
+                .map_or(0, |reduction| reduction.plan.allocation_byte_len());
+            let reduced_cpu = runtime.reduction.as_ref().map_or(Ok(0), |reduction| {
+                u64::try_from(reduction.plan.publication_buffer_byte_len())
+            })?;
+            native
+                .checked_add(reduced_gpu)
+                .and_then(|bytes| bytes.checked_add(reduced_cpu))
+                .ok_or_else(|| anyhow!("Windows reduction allocation accounting overflow"))
+        })
+        .transpose()?
+        .unwrap_or(0);
     let workspace_bytes = cpu
         .as_ref()
         .map_or(0, |runtime| runtime.workspace_allocation_byte_len);
@@ -1868,6 +2050,27 @@ fn prepare_windows_exact_runtime(
                 )
                 .unwrap_or(u64::MAX),
             )
+        })
+        .and_then(|bytes| {
+            bytes.checked_add(
+                cpu.as_ref()
+                    .and_then(|runtime| runtime.reduction.as_ref())
+                    .map_or(0, |reduction| {
+                        u64::try_from(reduction.routes.capacity())
+                            .ok()
+                            .and_then(|count| {
+                                u64::try_from(std::mem::size_of::<WindowsGpuReductionRoute>())
+                                    .ok()
+                                    .and_then(|size| count.checked_mul(size))
+                            })
+                            .unwrap_or(u64::MAX)
+                    }),
+            )
+        })
+        .and_then(|bytes| {
+            bytes.checked_add(cpu.as_ref().map_or(0, |runtime| {
+                u64::try_from(runtime.native_physical_mask.len()).unwrap_or(u64::MAX)
+            }))
         })
         .ok_or_else(|| anyhow!("Windows exact worker allocation accounting overflow"))?;
 
@@ -2196,6 +2399,56 @@ fn publish_windows_gpu_outcome(
     }
 }
 
+fn publish_windows_reduction_outcome(
+    routes: &[WindowsGpuReductionRoute],
+    source: &WindowsPublicationSource,
+    hub: &ScreenPublicationHub,
+    fanout: &mut PreparedCpuPublicationFanout,
+    outcome: GpuReductionPublishOutcome<'_>,
+) -> anyhow::Result<GpuReductionPublicationDisposition> {
+    let provenance = outcome.provenance();
+    let route = routes
+        .iter()
+        .find(|route| route.id == provenance.descriptor.id())
+        .ok_or_else(|| anyhow!("Windows GPU reduction named an unknown physical route"))?;
+    let physical = fanout
+        .physical_descriptor(route.physical_index)
+        .ok_or_else(|| anyhow!("Windows GPU reduction named an absent physical route"))?;
+    let source_id = capture_source_id(&provenance.source_id)?;
+    let output = physical.reduction_extent();
+    let valid = provenance.descriptor.as_ref() == route.native.as_ref()
+        && provenance.plan_generation.get() == fanout.plan_generation().get()
+        && source_id == source.epoch.source_id
+        && provenance.topology_generation == source.epoch.topology_generation
+        && provenance.duplication_generation == source.duplication_generation
+        && provenance.adapter_luid == source.adapter_luid
+        && provenance.native_source_extent.width() == source.native_extent.width()
+        && provenance.native_source_extent.height() == source.native_extent.height()
+        && provenance.logical_source_extent.width() == source.logical_extent.width()
+        && provenance.logical_source_extent.height() == source.logical_extent.height()
+        && provenance.source_color_space == source.source_color_space
+        && provenance.source_rotation == display_rotation(source.rotation)
+        && provenance.descriptor.output_extent().width() == output.width()
+        && provenance.descriptor.output_extent().height() == output.height()
+        && (!provenance.cursor_composed || physical.cursor() == ScreenCursorPolicy::Include);
+    if !valid
+        || provenance.completed_at < provenance.captured_at
+        || provenance.freshness_deadline < provenance.captured_at
+    {
+        anyhow::bail!("Windows GPU reduction provenance violated its physical route contract");
+    }
+    fanout.publish_prereduced_physical(
+        hub,
+        route.physical_index,
+        outcome.pixels(),
+        provenance.source_sequence,
+        provenance.captured_at,
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )?;
+    Ok(GpuReductionPublicationDisposition::Accepted)
+}
+
 fn defer_windows_gpu_route_retry(
     route: &mut WindowsGpuRoute,
     now: Instant,
@@ -2296,10 +2549,17 @@ fn exact_runtime_wait(runtime: &WindowsExactRuntime, now: Instant) -> Duration {
         .as_ref()
         .and_then(|cpu| cpu.fanout.as_ref())
         .and_then(PreparedCpuPublicationFanout::next_due_at);
+    let reduction_poll = runtime
+        .cpu
+        .as_ref()
+        .and_then(|cpu| cpu.reduction.as_ref())
+        .is_some_and(|reduction| reduction.plan.has_pending_routes())
+        .then_some(READBACK_POLL_WAIT);
     gpu_due
         .into_iter()
         .chain(cpu_due)
         .map(|deadline| deadline.saturating_duration_since(now))
+        .chain(reduction_poll)
         .min()
         .unwrap_or(FRAME_WAIT)
         .min(FRAME_WAIT)
@@ -2311,21 +2571,39 @@ fn pump_windows_exact_runtime(
     hub: &ScreenPublicationHub,
 ) -> anyhow::Result<Duration> {
     let now = Instant::now();
-    let mut cpu_needs_source = false;
+    let mut native_needs_source = false;
+    let mut reduction_requested = false;
     if let Some(cpu) = &mut runtime.cpu {
         let fanout = cpu
             .fanout
             .as_mut()
             .ok_or_else(|| anyhow!("Windows CPU fanout is not bound"))?;
-        cpu_needs_source = fanout
-            .publish_due(
+        native_needs_source = fanout
+            .publish_due_masked(
                 hub,
                 cpu.latest_frame.as_ref(),
                 now,
                 ScreenPublicationHealth::Healthy,
+                &cpu.native_physical_mask,
             )?
             .needs_source()
-            || cpu.readback.has_pending();
+            || cpu
+                .readback
+                .as_ref()
+                .is_some_and(PreparedCpuDesktopReadback::has_pending);
+        if let Some(reduction) = &mut cpu.reduction {
+            reduction
+                .plan
+                .select_routes_for_next_acquisition(|descriptor| {
+                    reduction
+                        .routes
+                        .iter()
+                        .find(|route| route.id == descriptor.id())
+                        .is_some_and(|route| fanout.physical_pending(route.physical_index))
+                });
+            reduction_requested =
+                reduction.plan.has_selected_routes() || reduction.plan.has_pending_routes();
+        }
     }
 
     let mut gpu_requested = false;
@@ -2343,57 +2621,113 @@ fn pump_windows_exact_runtime(
         });
         gpu_requested = gpu.plan.has_selected_routes();
     }
-    if !gpu_requested && !cpu_needs_source {
+    if !gpu_requested && !reduction_requested && !native_needs_source {
         return Ok(exact_runtime_wait(runtime, now));
     }
 
     let source = runtime.source.clone();
     let mut gpu_error = None;
-    let report = match (&mut runtime.gpu, &mut runtime.cpu) {
-        (Some(gpu), Some(cpu)) if gpu_requested && cpu_needs_source => {
-            let routes = &mut gpu.routes;
-            session.pump_with_feedback(
-                CapturePumpRequest::hybrid(&mut gpu.plan, &mut cpu.readback),
-                FRAME_WAIT,
-                |outcome| match publish_windows_gpu_outcome(routes, &source, hub, outcome) {
-                    Ok(disposition) => disposition,
-                    Err(error) => {
-                        if gpu_error.is_none() {
-                            gpu_error = Some(error);
-                        }
-                        GpuSurfacePublicationDisposition::Retry
-                    }
-                },
-            )?
-        }
-        (Some(gpu), _) if gpu_requested => {
-            let routes = &mut gpu.routes;
-            session.pump_with_feedback(
-                CapturePumpRequest::gpu(&mut gpu.plan),
-                FRAME_WAIT,
-                |outcome| match publish_windows_gpu_outcome(routes, &source, hub, outcome) {
-                    Ok(disposition) => disposition,
-                    Err(error) => {
-                        if gpu_error.is_none() {
-                            gpu_error = Some(error);
-                        }
-                        GpuSurfacePublicationDisposition::Retry
-                    }
-                },
-            )?
-        }
-        (_, Some(cpu)) if cpu_needs_source => session.pump_with_feedback(
-            CapturePumpRequest::cpu(&mut cpu.readback),
-            FRAME_WAIT,
-            |_| GpuSurfacePublicationDisposition::Accepted,
-        )?,
-        _ => return Ok(exact_runtime_wait(runtime, now)),
+    let mut reduction_error = None;
+    let (gpu_plan, mut gpu_routes) = if gpu_requested {
+        runtime.gpu.as_mut().map_or((None, None), |gpu| {
+            (Some(&mut gpu.plan), Some(gpu.routes.as_mut_slice()))
+        })
+    } else {
+        (None, None)
     };
+    let (reduction_plan, reduction_routes, native_readback, mut reduction_fanout) =
+        if let Some(cpu) = &mut runtime.cpu {
+            let fanout = cpu
+                .fanout
+                .as_mut()
+                .ok_or_else(|| anyhow!("Windows CPU fanout is not bound"))?;
+            let native_readback = if native_needs_source {
+                Some(cpu.readback.as_mut().ok_or_else(|| {
+                    anyhow!("Windows native fallback demand has no prepared readback ring")
+                })?)
+            } else {
+                None
+            };
+            let (plan, routes) = if reduction_requested {
+                cpu.reduction.as_mut().map_or((None, None), |reduction| {
+                    (Some(&mut reduction.plan), Some(reduction.routes.as_slice()))
+                })
+            } else {
+                (None, None)
+            };
+            (plan, routes, native_readback, Some(fanout))
+        } else {
+            (None, None, None, None)
+        };
+    let request = CapturePumpRequest::with_reduction(gpu_plan, reduction_plan, native_readback);
+    let report = session.pump_with_reduction_feedback(
+        request,
+        FRAME_WAIT,
+        |outcome| {
+            let result = gpu_routes
+                .as_deref_mut()
+                .ok_or_else(|| anyhow!("Windows GPU callback has no requested route set"))
+                .and_then(|routes| publish_windows_gpu_outcome(routes, &source, hub, outcome));
+            match result {
+                Ok(disposition) => disposition,
+                Err(error) => {
+                    if gpu_error.is_none() {
+                        gpu_error = Some(error);
+                    }
+                    GpuSurfacePublicationDisposition::Retry
+                }
+            }
+        },
+        |outcome| {
+            let result = reduction_routes
+                .ok_or_else(|| anyhow!("Windows reduction callback has no requested route set"))
+                .and_then(|routes| {
+                    reduction_fanout
+                        .as_deref_mut()
+                        .ok_or_else(|| anyhow!("Windows reduction callback has no bound fanout"))
+                        .and_then(|fanout| {
+                            publish_windows_reduction_outcome(routes, &source, hub, fanout, outcome)
+                        })
+                });
+            match result {
+                Ok(disposition) => disposition,
+                Err(error) => {
+                    if reduction_error.is_none() {
+                        reduction_error = Some(error);
+                    }
+                    GpuReductionPublicationDisposition::Retry
+                }
+            }
+        },
+    )?;
     if let Some(error) = gpu_error {
+        return Err(error);
+    }
+    if let Some(error) = reduction_error {
         return Err(error);
     }
     if let CaptureLane::Failed(error) = report.gpu {
         return Err(error.into());
+    }
+    let mut poll_again = false;
+    match report.reduction {
+        CaptureLane::Failed(error) => return Err(error.into()),
+        CaptureLane::Ready(info) => {
+            debug!(
+                submitted = info.submitted(),
+                completed = info.completed(),
+                busy = info.busy(),
+                readback_bytes = info.readback_bytes(),
+                "advanced Windows descriptor-keyed GPU reductions"
+            );
+            poll_again = runtime
+                .cpu
+                .as_ref()
+                .and_then(|cpu| cpu.reduction.as_ref())
+                .is_some_and(|reduction| reduction.plan.has_pending_routes());
+        }
+        CaptureLane::Busy => poll_again = true,
+        CaptureLane::NotRequested | CaptureLane::Idle => {}
     }
     match report.cpu {
         CaptureLane::Failed(error) => return Err(error.into()),
@@ -2406,18 +2740,23 @@ fn pump_windows_exact_runtime(
             cpu.fanout
                 .as_mut()
                 .ok_or_else(|| anyhow!("Windows CPU fanout is not bound"))?
-                .publish_due(
+                .publish_due_masked(
                     hub,
                     Some(&frame),
                     Instant::now(),
                     ScreenPublicationHealth::Healthy,
+                    &cpu.native_physical_mask,
                 )?;
             cpu.latest_frame = Some(frame);
         }
-        CaptureLane::Busy => return Ok(READBACK_POLL_WAIT),
+        CaptureLane::Busy => poll_again = true,
         CaptureLane::NotRequested | CaptureLane::Idle => {}
     }
-    Ok(Duration::ZERO)
+    Ok(if poll_again {
+        READBACK_POLL_WAIT
+    } else {
+        Duration::ZERO
+    })
 }
 
 fn pump_current_windows_exact_runtime(

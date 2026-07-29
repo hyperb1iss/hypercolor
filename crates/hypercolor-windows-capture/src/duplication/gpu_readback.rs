@@ -91,6 +91,7 @@ struct ReductionRoute {
     rgba: Vec<u8>,
     in_flight: bool,
     completed: Option<GpuReductionProvenance>,
+    last_submitted_sequence: Option<u64>,
     selected_for_next_acquisition: bool,
 }
 
@@ -215,6 +216,7 @@ impl PreparedGpuReductionPlan {
                 rgba,
                 in_flight: false,
                 completed: None,
+                last_submitted_sequence: None,
                 selected_for_next_acquisition: false,
             });
         }
@@ -399,6 +401,13 @@ impl PreparedGpuReductionPlan {
                 report.busy += 1;
                 continue;
             }
+            if route
+                .last_submitted_sequence
+                .is_some_and(|sequence| sequence >= clean.metadata.sequence)
+            {
+                report.busy += 1;
+                continue;
+            }
             validate_pointer(route, &clean.metadata, pointer_resource)?;
             match route
                 .reducer
@@ -412,6 +421,7 @@ impl PreparedGpuReductionPlan {
             {
                 SubmitOutcome::Submitted => {
                     route.in_flight = true;
+                    route.last_submitted_sequence = Some(clean.metadata.sequence);
                     report.submitted += 1;
                 }
                 SubmitOutcome::Busy => report.busy += 1,

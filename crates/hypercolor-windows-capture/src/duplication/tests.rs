@@ -4,7 +4,12 @@ use super::{
     desktop_frame_source, gpu_surface_acquire_timeout, logical_to_scanout, native_scanout_extent,
     pointer_scanout_geometry, prepare_duplication, scanout_to_logical, session_rebuild_error,
 };
-use crate::{CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, ReductionPath};
+use crate::{
+    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, GpuSurfaceColorPipeline,
+    GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy, GpuSurfaceDescriptor,
+    GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat,
+    GpuSurfaceSourceColorSpace, ReductionPath,
+};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -140,6 +145,35 @@ fn assert_gpu_parity(
 #[test]
 fn embedded_capture_shaders_compile_with_the_system_compiler() {
     super::gpu_reduction::compile_shaders_for_test().expect("both compute entries compile");
+}
+
+#[test]
+fn exact_linear_area_shader_reads_back_only_the_reduced_plane() {
+    let descriptor = GpuSurfaceDescriptor::new(GpuSurfaceDescriptorConfig {
+        id: GpuSurfaceDescriptorId::new(
+            std::num::NonZeroU64::new(71).expect("fixture id is non-zero"),
+        ),
+        source_region: CaptureRegion::new(0, 0, 2, 2).expect("fixture region is non-empty"),
+        coordinate_space: GpuSurfaceCoordinateSpace::LogicalDisplay,
+        source_rotation: DisplayRotation::Identity,
+        source_color_space: GpuSurfaceSourceColorSpace::RgbFullG22P709,
+        output_extent: CaptureExtent::try_new(1, 1).expect("fixture extent is non-empty"),
+        filter: GpuSurfaceFilter::Area,
+        format: GpuSurfaceFormat::Rgba8Unorm,
+        color_pipeline: GpuSurfaceColorPipeline::LinearSdr,
+        cursor: GpuSurfaceCursorPolicy::Exclude,
+        algorithm_revision: std::num::NonZeroU32::MIN,
+        freshness: Duration::from_secs(1),
+    });
+    let checkerboard = [
+        0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0xFF,
+    ];
+
+    let reduced = super::gpu_reduction::reduce_exact_fixture(&checkerboard, 2, 2, &descriptor)
+        .expect("WARP exact linear-area reduction succeeds");
+
+    assert_eq!(reduced, [188, 188, 188, 0xFF]);
+    assert_eq!(reduced.len(), 4);
 }
 
 #[test]

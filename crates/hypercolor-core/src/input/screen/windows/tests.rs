@@ -5,17 +5,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use hypercolor_windows_capture::{
-    CaptureError, DisplayRotation, GpuAdapterLuid, GpuSurfaceDescriptorId,
-    GpuSurfaceSourceColorSpace, ReductionPath, ReductionTelemetry,
+    CaptureError, DisplayRotation, GpuAdapterLuid, GpuSurfaceColorPipeline, GpuSurfaceDescriptorId,
+    GpuSurfaceFilter, GpuSurfaceSourceColorSpace, ReductionPath, ReductionTelemetry,
 };
 
 use super::{
     ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactPublicationShared,
     WindowsPublicationSource, WindowsScreenCaptureInput, WorkerCaptureSchedule, WorkerCommand,
-    capture_epoch, capture_freshness, capture_geometry, capture_gpu_descriptor, capture_issue,
-    native_capture_extent, record_capture_health, resolve_windows_publication_branch,
-    settle_inactive_capture, windows_gpu_attempt_at, windows_gpu_candidate_admission,
-    windows_gpu_preparation_gate, windows_gpu_retry_at,
+    capture_epoch, capture_freshness, capture_geometry, capture_gpu_descriptor,
+    capture_gpu_reduction_descriptor, capture_issue, native_capture_extent, record_capture_health,
+    resolve_windows_publication_branch, settle_inactive_capture, windows_gpu_attempt_at,
+    windows_gpu_candidate_admission, windows_gpu_preparation_gate, windows_gpu_retry_at,
 };
 use crate::input::screen::{
     CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
@@ -241,6 +241,17 @@ fn exact_native_surface_resolves_to_canonical_gpu_storage() {
         resolved.descriptor().geometry().output_extent(),
         extent(3840, 2160)
     );
+    assert!(
+        capture_gpu_reduction_descriptor(
+            resolved.descriptor().physical(),
+            &source,
+            GpuSurfaceDescriptorId::new(NonZeroU64::MIN),
+            capture_freshness(resolved.requested_hz()),
+        )
+        .expect_err("native renderer identity cannot enter the CPU readback plan")
+        .to_string()
+        .contains("CPU physical descriptor")
+    );
 }
 
 #[test]
@@ -347,6 +358,18 @@ fn unsupported_native_filter_falls_back_to_exact_cpu_bgra() {
         resolved.descriptor().source().geometry().rotation(),
         CaptureRotation::Clockwise90
     );
+    let reduced = capture_gpu_reduction_descriptor(
+        resolved.descriptor().physical(),
+        &source,
+        GpuSurfaceDescriptorId::new(NonZeroU64::MIN),
+        capture_freshness(resolved.requested_hz()),
+    )
+    .expect("area-filtered CPU physical work maps to compact GPU readback");
+    assert_eq!(reduced.filter(), GpuSurfaceFilter::Area);
+    assert_eq!(reduced.color_pipeline(), GpuSurfaceColorPipeline::LinearSdr);
+    assert_eq!(reduced.source_rotation(), DisplayRotation::Clockwise90);
+    assert_eq!(reduced.output_extent().width(), 3840);
+    assert_eq!(reduced.output_extent().height(), 2160);
 }
 
 #[test]

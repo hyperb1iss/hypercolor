@@ -1756,6 +1756,42 @@ pub(super) fn reduce_fixture(
 }
 
 #[cfg(test)]
+pub(super) fn reduce_exact_fixture(
+    bgra: &[u8],
+    native_width: u32,
+    native_height: u32,
+    descriptor: &GpuSurfaceDescriptor,
+) -> Result<Vec<u8>, GpuReductionError> {
+    let (device, context) = test_device()?;
+    let source = test_source(&device, bgra, native_width, native_height)?;
+    let pointer = PointerState::default();
+    let metadata = synthetic_metadata(
+        native_width,
+        native_height,
+        &pointer,
+        descriptor.source_rotation(),
+        descriptor.source_region(),
+        41,
+    );
+    let clean = test_clean(&device, &source, metadata.clone())?;
+    let mut reducer = GpuReducer::new_exact(
+        &device,
+        &context,
+        CaptureExtent::try_new(native_width, native_height)
+            .map_err(|error| GpuReductionError::operation(error.to_string()))?,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        descriptor,
+        3,
+    )?;
+    match reducer.submit_exact(&clean, None, descriptor, metadata)? {
+        SubmitOutcome::Submitted => poll_test_reduction(&mut reducer),
+        SubmitOutcome::Busy => Err(GpuReductionError::operation(
+            "fresh exact reduction ring was unexpectedly busy",
+        )),
+    }
+}
+
+#[cfg(test)]
 pub(super) fn reduce_region_fixture(
     bgra: &[u8],
     width: u32,
