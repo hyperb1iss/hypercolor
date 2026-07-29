@@ -105,6 +105,10 @@ pub(crate) async fn execute_frame(
     );
     let mut screen_input_active = frame_loop.has_screen_input_demand();
     scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
+    if !screen_input_active {
+        let _ = render.screen_queue.clear_latest();
+        render.sparkleflinger.release_native_screen_caches();
+    }
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
     if output_power.sleeping {
         if output_power.off_output_behavior == OffOutputBehavior::Static
@@ -162,6 +166,10 @@ pub(crate) async fn execute_frame(
         screen_input_active = frame_loop.has_screen_input_demand();
     }
     scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
+    if !screen_input_active {
+        let _ = render.screen_queue.clear_latest();
+        render.sparkleflinger.release_native_screen_caches();
+    }
 
     if let Some(frame) = maybe_idle_throttle(
         state,

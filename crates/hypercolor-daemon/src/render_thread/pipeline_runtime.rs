@@ -2002,6 +2002,7 @@ mod tests {
     };
     use hypercolor_core::input::screen::{
         PixelExtent, PlatformGpuApi, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+        ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
         ScreenPhysicalGpuDeviceIdentity, ScreenPublicationExecutorRequest,
     };
     use hypercolor_core::input::{
@@ -2038,6 +2039,18 @@ mod tests {
     struct EventOnceSource {
         events: Vec<TimedInputEvent>,
         running: bool,
+    }
+
+    struct InertNativeTargetPreparer;
+
+    impl ScreenNativeTargetPreparer for InertNativeTargetPreparer {
+        fn prepare(
+            &self,
+            _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+            _platform: &ScreenNativePreparationPayload,
+        ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+            anyhow::bail!("test target does not prepare renderer resources")
+        }
     }
 
     impl EventOnceSource {
@@ -2589,6 +2602,7 @@ mod tests {
                 high_part: 11,
             },
             NonZeroU32::new(16_384).expect("test texture limit is non-zero"),
+            Arc::new(InertNativeTargetPreparer),
         );
 
         let demand = authoritative_input_demand(effect_demand, 144, screen_extent, Some(&target));

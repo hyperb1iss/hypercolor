@@ -1,6 +1,10 @@
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::ImportedEffectFrame;
+#[cfg(all(feature = "wgpu", target_os = "windows"))]
+use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+#[cfg(all(feature = "wgpu", target_os = "windows"))]
+use hypercolor_windows_gpu_interop::ScreenTextureCopy;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "wgpu")]
@@ -13,6 +17,44 @@ pub(crate) struct GpuTextureFrame {
     pub(crate) origin: GpuTextureFrameOrigin,
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
+    #[cfg(target_os = "windows")]
+    pub(crate) windows_screen_lease: Option<WindowsScreenTextureLease>,
+}
+
+#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[derive(Debug, Clone)]
+pub(crate) struct WindowsScreenTextureLease {
+    _copy: ScreenTextureCopy,
+    target_lifetime: ScreenResourceLifetime,
+    _capture_lifetime: ScreenResourceLifetime,
+}
+
+#[cfg(all(feature = "wgpu", target_os = "windows"))]
+impl WindowsScreenTextureLease {
+    pub(crate) fn new(
+        copy: ScreenTextureCopy,
+        target_lifetime: ScreenResourceLifetime,
+        capture_lifetime: ScreenResourceLifetime,
+    ) -> Self {
+        Self {
+            _copy: copy,
+            target_lifetime,
+            _capture_lifetime: capture_lifetime,
+        }
+    }
+
+    pub(crate) const fn target_lifetime(&self) -> &ScreenResourceLifetime {
+        &self.target_lifetime
+    }
+}
+
+#[cfg(all(feature = "wgpu", target_os = "windows"))]
+impl GpuTextureFrame {
+    pub(crate) fn screen_target_lifetime(&self) -> Option<&ScreenResourceLifetime> {
+        self.windows_screen_lease
+            .as_ref()
+            .map(WindowsScreenTextureLease::target_lifetime)
+    }
 }
 
 #[cfg(feature = "wgpu")]
@@ -249,6 +291,14 @@ impl ProducerQueue {
         self.replace_latest(ProducerSubmission { frame, fresh: true })
     }
 
+    pub(crate) const fn has_latest(&self) -> bool {
+        self.latest.is_some()
+    }
+
+    pub(crate) fn clear_latest(&mut self) -> Option<ProducerFrame> {
+        self.latest.take().map(|submission| submission.frame)
+    }
+
     pub(crate) fn latch_latest(&mut self) -> Option<LatchedProducerFrame> {
         self.latch_matching(|_| true)
     }
@@ -388,5 +438,18 @@ mod tests {
             .latch_latest()
             .expect("duplicate canvas should leave the previous frame retained");
         assert_eq!(retained.state, ProducerFrameState::Retained);
+    }
+
+    #[test]
+    fn producer_queue_clear_releases_the_retained_frame() {
+        let mut queue = ProducerQueue::new();
+        assert!(!queue.has_latest());
+        assert!(queue.clear_latest().is_none());
+
+        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(3, 5)));
+        assert!(queue.has_latest());
+        assert!(queue.clear_latest().is_some());
+        assert!(!queue.has_latest());
+        assert!(queue.latch_latest().is_none());
     }
 }

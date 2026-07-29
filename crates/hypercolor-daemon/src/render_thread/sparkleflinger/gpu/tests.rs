@@ -17,6 +17,8 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
+#[cfg(target_os = "windows")]
+use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 use super::CachedGpuSourceCopy;
@@ -25,6 +27,11 @@ use super::{
     GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame, GpuSparkleFlinger,
     GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MEDIA_UPLOAD_TEXTURE_RING_LEN,
     MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap, PendingPreviewReadback,
+};
+#[cfg(target_os = "windows")]
+use super::{
+    NativeScreenCopyFailurePolicy, native_screen_copy_failure_policy,
+    screen_storage_requires_cache_turnover, validate_windows_plan_generation,
 };
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 use crate::performance::CompositorBackendKind;
@@ -406,6 +413,56 @@ fn dx12_compositor_exposes_one_renderer_bound_screen_target() {
     } else {
         assert!(compositor.screen_native_execution_target().is_none());
     }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn native_screen_copy_failure_policy_separates_pressure_from_stale_structure() {
+    use std::num::NonZeroU64;
+
+    use hypercolor_windows_capture::{CaptureError, GpuSurfaceDescriptorId};
+
+    assert_eq!(
+        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::KeyedMutexTimeout),
+        NativeScreenCopyFailurePolicy::Retain
+    );
+    assert_eq!(
+        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::Capture(
+            CaptureError::GpuSurfaceUseUnavailable {
+                descriptor_id: GpuSurfaceDescriptorId::new(NonZeroU64::MIN),
+                source_sequence: 7,
+            },
+        )),
+        NativeScreenCopyFailurePolicy::Retain
+    );
+    assert_eq!(
+        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::PreparedTargetMismatch {
+            field: "plan_generation",
+        },),
+        NativeScreenCopyFailurePolicy::Reprepare
+    );
+    assert_eq!(
+        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::TargetContentUncertain {
+            operation: "release capture keyed mutex",
+            source: Box::new(D3d11On12ScreenInteropError::KeyedMutexTimeout),
+        },),
+        NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn native_screen_storage_turnover_purges_only_changed_targets() {
+    assert!(screen_storage_requires_cache_turnover(None, 7));
+    assert!(!screen_storage_requires_cache_turnover(Some(7), 7));
+    assert!(screen_storage_requires_cache_turnover(Some(7), 8));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn native_screen_manifest_generation_is_an_exact_fence() {
+    validate_windows_plan_generation(7, 7).expect("matching plan generation is accepted");
+    assert!(validate_windows_plan_generation(7, 8).is_err());
 }
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]

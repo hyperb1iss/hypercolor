@@ -1,8 +1,9 @@
 use super::{
     PreviewSurfaceDemandLane, PreviewSurfaceRequest, PreviewSurfaceRequestContext,
-    effective_render_group_layer_count, preview_surface_request,
-    producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
-    requires_cpu_sampling_canvas, requires_published_surface,
+    effective_render_group_layer_count, native_copy_failure_retains_last_frame,
+    preview_surface_request, producer_frame_requires_composition_for_preview,
+    render_group_requires_full_composition, requires_cpu_sampling_canvas,
+    requires_published_surface,
 };
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ use hypercolor_types::spatial::{
 
 use crate::preview_runtime::PreviewDemandSummary;
 use crate::render_thread::frame_sampling::LedSamplingStrategy;
-use crate::render_thread::producer_queue::ProducerFrame;
+use crate::render_thread::producer_queue::{ProducerFrame, ProducerQueue};
 use crate::render_thread::sparkleflinger::SparkleFlinger;
 use hypercolor_types::config::RenderAccelerationMode;
 
@@ -29,6 +30,18 @@ fn render_group_layer_count_adds_transition_base_once() {
 fn cpu_sampling_canvas_only_depends_on_preview_receivers_and_gpu_sampling() {
     assert!(!requires_cpu_sampling_canvas(true));
     assert!(requires_cpu_sampling_canvas(false));
+}
+
+#[test]
+fn native_copy_failure_falls_back_until_a_last_good_frame_exists() {
+    let mut queue = ProducerQueue::new();
+    assert!(!native_copy_failure_retains_last_frame(&queue));
+
+    queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
+    assert!(native_copy_failure_retains_last_frame(&queue));
+
+    let _ = queue.clear_latest();
+    assert!(!native_copy_failure_retains_last_frame(&queue));
 }
 
 #[test]

@@ -2,6 +2,8 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::types::canvas::{
     PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
@@ -960,6 +962,8 @@ fn compose_layer_into_gpu(
                 use_front_as_current,
                 current_view,
                 output_view,
+                #[cfg(target_os = "windows")]
+                frame.screen_target_lifetime(),
             )
         };
         dispatch_compose_pass(encoder, pipeline, &bind_group, params_offset, width, height);
@@ -1031,6 +1035,8 @@ struct CachedComposeSourceBindGroup {
     source_view: wgpu::TextureView,
     front_as_current: bool,
     bind_group: wgpu::BindGroup,
+    #[cfg(target_os = "windows")]
+    screen_target_lifetime: Option<ScreenResourceLifetime>,
 }
 
 const COMPOSE_SOURCE_BIND_GROUP_CACHE_CAP: usize = 4;
@@ -1044,6 +1050,7 @@ impl ComposeSourceBindGroupCache {
         front_as_current: bool,
         current_view: &wgpu::TextureView,
         output_view: &wgpu::TextureView,
+        #[cfg(target_os = "windows")] screen_target_lifetime: Option<&ScreenResourceLifetime>,
     ) -> wgpu::BindGroup {
         if let Some(cached) = self.entries.iter().find(|cached| {
             cached.front_as_current == front_as_current && cached.source_view == *source_view
@@ -1069,8 +1076,16 @@ impl ComposeSourceBindGroupCache {
             source_view: source_view.clone(),
             front_as_current,
             bind_group: bind_group.clone(),
+            #[cfg(target_os = "windows")]
+            screen_target_lifetime: screen_target_lifetime.cloned(),
         });
         bind_group
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(super) fn release_native_screen_entries(&mut self) {
+        self.entries
+            .retain(|entry| entry.screen_target_lifetime.is_none());
     }
 }
 

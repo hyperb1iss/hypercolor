@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurfaceStorageIdentity};
 use wgpu::util::DeviceExt;
 
@@ -45,6 +47,8 @@ struct CachedSourceCopyBindGroup {
     source_view: wgpu::TextureView,
     output_view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
+    #[cfg(target_os = "windows")]
+    screen_target_lifetime: Option<ScreenResourceLifetime>,
 }
 
 const SOURCE_COPY_BIND_GROUP_CACHE_CAP: usize = 8;
@@ -56,6 +60,7 @@ impl SourceCopyBindGroupCache {
         pipeline: &GpuCompositorPipeline,
         source_view: &wgpu::TextureView,
         output_view: &wgpu::TextureView,
+        #[cfg(target_os = "windows")] screen_target_lifetime: Option<&ScreenResourceLifetime>,
     ) -> wgpu::BindGroup {
         if let Some(cached) = self
             .entries
@@ -76,8 +81,16 @@ impl SourceCopyBindGroupCache {
             source_view: source_view.clone(),
             output_view: output_view.clone(),
             bind_group: bind_group.clone(),
+            #[cfg(target_os = "windows")]
+            screen_target_lifetime: screen_target_lifetime.cloned(),
         });
         bind_group
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(super) fn release_native_screen_entries(&mut self) {
+        self.entries
+            .retain(|entry| entry.screen_target_lifetime.is_none());
     }
 }
 
@@ -263,6 +276,15 @@ impl GpuSourceFrame<'_> {
             Self::Texture(_) => false,
         }
     }
+
+    #[cfg(target_os = "windows")]
+    pub(super) fn screen_target_lifetime(&self) -> Option<&ScreenResourceLifetime> {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(_) => None,
+            Self::Texture(frame) => frame.screen_target_lifetime(),
+        }
+    }
 }
 
 pub(super) fn gpu_source_frame(frame: &ProducerFrame) -> Option<GpuSourceFrame<'_>> {
@@ -335,8 +357,14 @@ pub(super) fn copy_gpu_source_frame_into_texture(
                 frame.flip_y_on_shader_copy(),
             ),
         );
-        let bind_group =
-            bind_group_cache.get_or_create(device, pipeline, frame.view(), &output.view);
+        let bind_group = bind_group_cache.get_or_create(
+            device,
+            pipeline,
+            frame.view(),
+            &output.view,
+            #[cfg(target_os = "windows")]
+            frame.screen_target_lifetime(),
+        );
         dispatch_source_copy_pass(
             encoder,
             pipeline,

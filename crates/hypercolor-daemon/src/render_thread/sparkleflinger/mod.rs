@@ -498,6 +498,13 @@ impl SparkleFlinger {
         None
     }
 
+    pub(crate) fn release_native_screen_caches(&mut self) {
+        #[cfg(all(feature = "wgpu", target_os = "windows"))]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.release_native_screen_caches();
+        }
+    }
+
     #[cfg(all(feature = "wgpu", target_os = "windows"))]
     pub(crate) fn copy_screen_publication(
         &mut self,

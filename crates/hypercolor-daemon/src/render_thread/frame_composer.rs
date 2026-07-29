@@ -16,7 +16,7 @@ use super::display_lane::{
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
-use super::producer_queue::{ProducerFrame, ProducerFrameState};
+use super::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
 use super::render_groups::{GroupCanvasFrame, ZoneEffectError, ZoneResult};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
@@ -491,8 +491,26 @@ impl ComposeContext<'_> {
                         }
                         Ok(None) => false,
                         Err(error) => {
-                            warn!(%error, "Native screen copy failed; retaining the last frame");
-                            true
+                            if super::sparkleflinger::gpu::native_screen_copy_error_invalidates_frame(
+                                &error,
+                            ) {
+                                let _ = self.compose.screen_queue.clear_latest();
+                            }
+                            let retained = native_copy_failure_retains_last_frame(
+                                self.compose.screen_queue,
+                            );
+                            if super::sparkleflinger::gpu::is_retryable_native_screen_copy_error(
+                                &error,
+                            ) {
+                                tracing::debug!(
+                                    %error,
+                                    retained,
+                                    "Native screen copy deferred"
+                                );
+                            } else {
+                                warn!(%error, retained, "Native screen copy failed");
+                            }
+                            retained
                         }
                     },
                 )
@@ -677,6 +695,10 @@ impl ComposeContext<'_> {
                 reason: reason.map(ToString::to_string),
             });
     }
+}
+
+fn native_copy_failure_retains_last_frame(screen_queue: &ProducerQueue) -> bool {
+    screen_queue.has_latest()
 }
 
 fn requires_cpu_sampling_canvas(can_gpu_sample: bool) -> bool {

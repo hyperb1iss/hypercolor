@@ -2,32 +2,44 @@ use std::collections::HashMap;
 use std::fmt;
 #[cfg(target_os = "windows")]
 use std::num::{NonZeroU32, NonZeroU64};
-#[cfg(target_os = "windows")]
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "windows")]
+use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result};
 #[cfg(test)]
 use hypercolor_core::bus::DisplayYuv420Frame;
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::screen::{
-    PlatformGpuApi, ScreenBranchPayload, ScreenBranchPublication, ScreenNativeExecutionTarget,
-    ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity,
+    CaptureColorSpace, CaptureDynamicRange, CapturePixelFormat, CaptureTransferFunction,
+    PlatformGpuApi, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
+    ScreenBranchPayload, ScreenBranchPublication, ScreenCaptureBackend, ScreenCursorPolicy,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
+    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPlanGeneration, ScreenPublicationKind, ScreenReductionFilter, ScreenResourceApi,
 };
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{
     BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
 };
 #[cfg(target_os = "windows")]
-use hypercolor_windows_capture::GpuSurfacePublication;
+use hypercolor_windows_capture::{
+    GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy, GpuSurfaceFilter,
+    GpuSurfaceFormat, GpuSurfacePublication, GpuSurfaceSourceColorSpace,
+    GpuSurfaceTargetPreparation,
+};
 #[cfg(target_os = "windows")]
-use hypercolor_windows_gpu_interop::D3d11On12ScreenBridge;
+use hypercolor_windows_gpu_interop::{
+    D3d11On12ScreenBridge, D3d11On12ScreenInteropError, PreparedScreenCopyTarget,
+};
 
 use super::{
     CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
     SparkleFlingerSurfacePoolCounts,
 };
 use crate::render_thread::gpu_device::{GpuRenderDevice, texture_format_name};
+#[cfg(target_os = "windows")]
+use crate::render_thread::producer_queue::WindowsScreenTextureLease;
 use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin};
 use crate::render_thread::sparkleflinger::gpu_sampling::{GpuSamplingPlan, GpuSpatialSampler};
 
@@ -88,33 +100,278 @@ static NEXT_GPU_TEXTURE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_SCREEN_TARGET_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(target_os = "windows")]
+struct WindowsScreenBridge {
+    interop: D3d11On12ScreenBridge,
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsScreenTargetPreparer {
+    bridge: Weak<WindowsScreenBridge>,
+}
+
+#[cfg(target_os = "windows")]
+struct PreparedWindowsScreenTarget {
+    interop: PreparedScreenCopyTarget,
+    storage_id: u64,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeScreenCopyFailurePolicy {
+    Retain,
+    Reprepare,
+    InvalidateFrameAndReprepare,
+}
+
+#[cfg(target_os = "windows")]
+fn native_screen_copy_failure_policy(
+    error: &D3d11On12ScreenInteropError,
+) -> NativeScreenCopyFailurePolicy {
+    match error {
+        D3d11On12ScreenInteropError::KeyedMutexTimeout
+        | D3d11On12ScreenInteropError::Capture(
+            hypercolor_windows_capture::CaptureError::GpuSurfaceUseUnavailable { .. },
+        ) => NativeScreenCopyFailurePolicy::Retain,
+        D3d11On12ScreenInteropError::TargetContentUncertain { .. } => {
+            NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare
+        }
+        _ => NativeScreenCopyFailurePolicy::Reprepare,
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn native_screen_copy_error_invalidates_frame(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<D3d11On12ScreenInteropError>()
+        .is_some_and(|error| {
+            native_screen_copy_failure_policy(error)
+                == NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn screen_storage_requires_cache_turnover(current: Option<u64>, next: u64) -> bool {
+    current != Some(next)
+}
+
+#[cfg(target_os = "windows")]
+fn validate_windows_plan_generation(core: u64, native: u64) -> Result<()> {
+    anyhow::ensure!(
+        core == native,
+        "Windows target manifest plan generation does not match the candidate"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn is_retryable_native_screen_copy_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<D3d11On12ScreenInteropError>()
+        .is_some_and(|error| {
+            native_screen_copy_failure_policy(error) == NativeScreenCopyFailurePolicy::Retain
+        })
+}
+
+#[cfg(target_os = "windows")]
+impl ScreenNativeTargetPreparer for WindowsScreenTargetPreparer {
+    fn prepare(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> Result<ScreenNativeTargetPreparation> {
+        let manifest = platform
+            .downcast::<GpuSurfaceTargetPreparation>()
+            .context("Windows screen target received an unknown preparation manifest")?;
+        validate_windows_target_manifest(descriptor, platform.plan_generation(), &manifest)?;
+        let bridge = self
+            .bridge
+            .upgrade()
+            .context("Windows screen renderer was retired during target preparation")?;
+        let interop = bridge
+            .interop
+            .prepare_target(&manifest)
+            .context("failed to prepare the renderer screen-copy target")?;
+        let storage_id = NEXT_GPU_TEXTURE_STORAGE_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| anyhow::anyhow!("GPU texture storage identity space is exhausted"))?;
+        let retained_bytes = interop.retained_bytes();
+        Ok(ScreenNativeTargetPreparation::new(
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(PreparedWindowsScreenTarget {
+                    interop,
+                    storage_id,
+                }),
+            ),
+            retained_bytes,
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn validate_windows_target_manifest(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+    plan_generation: ScreenPlanGeneration,
+    manifest: &GpuSurfaceTargetPreparation,
+) -> Result<()> {
+    anyhow::ensure!(
+        descriptor.kind() == ScreenPublicationKind::Surface,
+        "Windows native target requires a Surface descriptor"
+    );
+    let physical = descriptor.physical();
+    let native = manifest.descriptor();
+    validate_windows_plan_generation(plan_generation.get(), manifest.plan_generation().get())?;
+    let region = physical.source_region();
+    let integer = |value: hypercolor_core::input::screen::ScreenRational| {
+        (value.denominator().get() == 1)
+            .then(|| u32::try_from(value.numerator()).ok())
+            .flatten()
+    };
+    let native_region = native.source_region();
+    anyhow::ensure!(
+        integer(region.x()) == Some(native_region.origin_x())
+            && integer(region.y()) == Some(native_region.origin_y())
+            && integer(region.width()) == Some(native_region.width())
+            && integer(region.height()) == Some(native_region.height()),
+        "Windows target manifest source region does not match the resolved descriptor"
+    );
+    let reduction_extent = physical.reduction_extent();
+    anyhow::ensure!(
+        native.output_extent().width() == reduction_extent.width()
+            && native.output_extent().height() == reduction_extent.height(),
+        "Windows target manifest extent does not match the resolved descriptor"
+    );
+    anyhow::ensure!(
+        native.coordinate_space() == GpuSurfaceCoordinateSpace::LogicalDisplay
+            && native.filter() == GpuSurfaceFilter::Nearest
+            && native.format() == GpuSurfaceFormat::Rgba8Unorm
+            && native.color_pipeline() == GpuSurfaceColorPipeline::PreserveEncoded,
+        "Windows target manifest execution contract is not exact"
+    );
+    anyhow::ensure!(
+        physical.reduction_filter() == ScreenReductionFilter::Nearest
+            && physical.target_pixel_format() == CapturePixelFormat::Rgba8
+            && physical.color_pipeline().transform()
+                == ResolvedScreenColorTransform::PreserveEncodedSamples
+            && native.algorithm_revision() == physical.algorithm_revision(),
+        "Windows target manifest processing contract does not match the resolved descriptor"
+    );
+    let cursor_matches = matches!(
+        (physical.cursor(), native.cursor()),
+        (ScreenCursorPolicy::Exclude, GpuSurfaceCursorPolicy::Exclude)
+            | (ScreenCursorPolicy::Include, GpuSurfaceCursorPolicy::Include)
+    );
+    anyhow::ensure!(
+        cursor_matches,
+        "Windows target manifest cursor contract does not match the resolved descriptor"
+    );
+    let source = descriptor.source();
+    anyhow::ensure!(
+        source.resources().backend() == &ScreenCaptureBackend::WindowsDesktopDuplication
+            && source.resources().api()
+                == &ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        "Windows target manifest was paired with a non-D3D11 source"
+    );
+    let adapter = manifest.adapter_luid();
+    anyhow::ensure!(
+        matches!(
+            source.resources().physical_gpu_device(),
+            Some(ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+                low_part,
+                high_part,
+            }) if *low_part == adapter.low_part() && *high_part == adapter.high_part()
+        ),
+        "Windows target manifest adapter does not match the resolved source"
+    );
+    let source_id = descriptor
+        .source_epoch()
+        .source_id
+        .as_str()
+        .strip_prefix("windows:")
+        .context("Windows source identity is not canonical")?;
+    anyhow::ensure!(
+        manifest.source_id() == source_id
+            && manifest.topology_generation() == descriptor.source_epoch().topology_generation
+            && manifest.duplication_generation() == source.resources().resource_generation(),
+        "Windows target manifest source generation does not match the resolved source"
+    );
+    anyhow::ensure!(
+        source_color_space_matches(source.colorimetry(), native.source_color_space()),
+        "Windows target manifest color space does not match the resolved source"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn source_color_space_matches(
+    core: hypercolor_core::input::screen::CaptureColorimetry,
+    native: GpuSurfaceSourceColorSpace,
+) -> bool {
+    match native {
+        GpuSurfaceSourceColorSpace::RgbFullG22P709 => {
+            core.color_space() == CaptureColorSpace::Srgb
+                && core.transfer_function() == CaptureTransferFunction::Srgb
+                && core.dynamic_range() == Some(CaptureDynamicRange::Standard)
+        }
+        GpuSurfaceSourceColorSpace::RgbFullLinearP709 => {
+            core.color_space() == CaptureColorSpace::Srgb
+                && core.transfer_function() == CaptureTransferFunction::Linear
+                && core.dynamic_range() == Some(CaptureDynamicRange::Standard)
+        }
+        GpuSurfaceSourceColorSpace::RgbFullPqP2020 => {
+            core.color_space() == CaptureColorSpace::Rec2020
+                && core.transfer_function() == CaptureTransferFunction::Pq
+                && core.dynamic_range() == Some(CaptureDynamicRange::High)
+        }
+        GpuSurfaceSourceColorSpace::Unknown => {
+            core.color_space() == CaptureColorSpace::Unknown
+                && core.transfer_function() == CaptureTransferFunction::Unknown
+                && core.dynamic_range().is_none()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn create_screen_bridge(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     max_texture_dimension: u32,
 ) -> (
-    Option<D3d11On12ScreenBridge>,
+    Option<Arc<WindowsScreenBridge>>,
     Option<ScreenNativeExecutionTarget>,
 ) {
-    let bridge = match D3d11On12ScreenBridge::new(device.clone(), queue.clone()) {
+    let interop = match D3d11On12ScreenBridge::new(device.clone(), queue.clone()) {
         Ok(bridge) => bridge,
         Err(error) => {
             tracing::debug!(%error, "renderer does not expose a DX12 screen-copy target");
             return (None, None);
         }
     };
+    let bridge = Arc::new(WindowsScreenBridge { interop });
+    let target = create_screen_target(&bridge, max_texture_dimension);
+    (Some(bridge), target)
+}
+
+#[cfg(target_os = "windows")]
+fn create_screen_target(
+    bridge: &Arc<WindowsScreenBridge>,
+    max_texture_dimension: u32,
+) -> Option<ScreenNativeExecutionTarget> {
     let Ok(target_id) =
         NEXT_SCREEN_TARGET_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
     else {
         tracing::warn!("screen target identity space is exhausted");
-        return (None, None);
+        return None;
     };
     let target_id = ScreenNativeExecutionTargetId::new(
         NonZeroU64::new(target_id).expect("screen target identities start at one"),
     );
-    let adapter_luid = bridge.adapter_luid();
+    let adapter_luid = bridge.interop.adapter_luid();
     let target = ScreenNativeExecutionTarget::new(
         target_id,
         PlatformGpuApi::Direct3d11,
@@ -124,8 +381,11 @@ fn create_screen_bridge(
         },
         NonZeroU32::new(max_texture_dimension)
             .expect("wgpu devices expose a non-zero texture dimension limit"),
+        Arc::new(WindowsScreenTargetPreparer {
+            bridge: Arc::downgrade(bridge),
+        }),
     );
-    (Some(bridge), Some(target))
+    Some(target)
 }
 
 pub(crate) struct GpuSparkleFlinger {
@@ -153,11 +413,11 @@ pub(crate) struct GpuSparkleFlinger {
     producer_content_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
     #[cfg(target_os = "windows")]
-    screen_bridge: Option<D3d11On12ScreenBridge>,
+    screen_bridge: Option<Arc<WindowsScreenBridge>>,
     #[cfg(target_os = "windows")]
     screen_target: Option<ScreenNativeExecutionTarget>,
     #[cfg(target_os = "windows")]
-    screen_storage_ids: HashMap<u64, u64>,
+    screen_storage_id: Option<u64>,
     #[cfg(test)]
     superseded_frame_count: usize,
     #[cfg(test)]
@@ -505,7 +765,7 @@ impl GpuSparkleFlinger {
             #[cfg(target_os = "windows")]
             screen_target,
             #[cfg(target_os = "windows")]
-            screen_storage_ids: HashMap::new(),
+            screen_storage_id: None,
             #[cfg(test)]
             superseded_frame_count: 0,
             #[cfg(test)]
@@ -533,38 +793,97 @@ impl GpuSparkleFlinger {
     }
 
     #[cfg(target_os = "windows")]
+    pub(crate) fn release_native_screen_caches(&mut self) {
+        if let Some(surfaces) = &mut self.surfaces {
+            surfaces
+                .compose_source_bind_groups
+                .release_native_screen_entries();
+            surfaces
+                .source_copy_bind_groups
+                .release_native_screen_entries();
+        }
+        self.screen_storage_id = None;
+    }
+
+    #[cfg(target_os = "windows")]
+    fn reprepare_native_screen_target(&mut self) {
+        self.release_native_screen_caches();
+        self.screen_target = self
+            .screen_bridge
+            .as_ref()
+            .and_then(|bridge| create_screen_target(bridge, self.probe.max_texture_dimension_2d));
+    }
+
+    #[cfg(target_os = "windows")]
     pub(crate) fn copy_screen_publication(
         &mut self,
         publication: &Arc<ScreenBranchPublication>,
     ) -> Result<Option<GpuTextureFrame>> {
-        let Some(bridge) = self.screen_bridge.as_mut() else {
+        let Some(bridge) = self.screen_bridge.clone() else {
             return Ok(None);
         };
         let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
             return Ok(None);
         };
-        let native = payload
+        let Some(native) = payload.surface().owner::<GpuSurfacePublication>() else {
+            self.reprepare_native_screen_target();
+            anyhow::bail!("native screen publication has an unknown platform owner");
+        };
+        let Some(prepared) = payload
             .surface()
-            .owner::<GpuSurfacePublication>()
-            .context("native screen publication has an unknown platform owner")?;
-        bridge
-            .prepare_target(&native.provenance().descriptor)
-            .context("failed to prepare the renderer screen-copy target")?;
-        let copy = bridge
-            .copy_publication(&native)
-            .context("failed to copy the native screen publication")?;
-        let storage_id = *self
-            .screen_storage_ids
-            .entry(copy.storage_id)
-            .or_insert_with(|| NEXT_GPU_TEXTURE_STORAGE_ID.fetch_add(1, Ordering::Relaxed));
+            .retained_owner::<PreparedWindowsScreenTarget>()
+        else {
+            self.reprepare_native_screen_target();
+            anyhow::bail!("native screen publication has no prepared renderer target");
+        };
+        let Some(target_lifetime) = payload.surface().resource_lifetime().cloned() else {
+            self.reprepare_native_screen_target();
+            anyhow::bail!("native screen publication has no renderer allocation lifetime");
+        };
+        let Some(capture_lifetime) = payload.surface().capture_resource_lifetime().cloned() else {
+            self.reprepare_native_screen_target();
+            anyhow::bail!("native screen publication has no capture allocation lifetime");
+        };
+        let copy = match bridge.interop.copy_publication(&prepared.interop, &native) {
+            Ok(copy) => copy,
+            Err(error) => {
+                return match native_screen_copy_failure_policy(&error) {
+                    NativeScreenCopyFailurePolicy::Retain => {
+                        Err(error).context("native screen publication is not ready")
+                    }
+                    NativeScreenCopyFailurePolicy::Reprepare => {
+                        self.reprepare_native_screen_target();
+                        Err(error).context("failed to copy the native screen publication")
+                    }
+                    NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare => {
+                        self.reprepare_native_screen_target();
+                        Err(error).context("native screen target contents became uncertain")
+                    }
+                };
+            }
+        };
+        if screen_storage_requires_cache_turnover(self.screen_storage_id, prepared.storage_id) {
+            self.release_native_screen_caches();
+            self.screen_storage_id = Some(prepared.storage_id);
+        }
+        let width = copy.width;
+        let height = copy.height;
+        let content_generation = copy.content_generation;
+        let texture = copy.texture.as_ref().clone();
+        let view = copy.view.as_ref().clone();
         Ok(Some(GpuTextureFrame {
-            width: copy.width,
-            height: copy.height,
-            storage_id,
-            content_generation: copy.content_generation,
+            width,
+            height,
+            storage_id: prepared.storage_id,
+            content_generation,
             origin: GpuTextureFrameOrigin::ProducerTexture,
-            texture: copy.texture.as_ref().clone(),
-            view: copy.view.as_ref().clone(),
+            texture,
+            view,
+            windows_screen_lease: Some(WindowsScreenTextureLease::new(
+                copy,
+                target_lifetime,
+                capture_lifetime,
+            )),
         }))
     }
 
@@ -591,6 +910,8 @@ impl GpuSparkleFlinger {
             origin: GpuTextureFrameOrigin::CompositorOutput,
             texture: texture.texture.clone(),
             view: texture.view.clone(),
+            #[cfg(target_os = "windows")]
+            windows_screen_lease: None,
         }))
     }
 
@@ -658,6 +979,8 @@ impl GpuSparkleFlinger {
             origin: GpuTextureFrameOrigin::ProducerTexture,
             texture: texture.texture.clone(),
             view: texture.view.clone(),
+            #[cfg(target_os = "windows")]
+            windows_screen_lease: None,
         })
     }
 
