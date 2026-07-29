@@ -27,41 +27,50 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
     }
 
     let wgpu = WgpuFixture::new_dx12("hypercolor D3D11On12 copy fixture")?;
-    let mut bridge = D3d11On12ScreenBridge::new(wgpu.device.clone(), wgpu.queue.clone())
+    let bridge = D3d11On12ScreenBridge::new(wgpu.device.clone(), wgpu.queue.clone())
         .map_err(|error| error.to_string())?;
     let descriptor = fixture_descriptor(29, 4, 3)?;
+    let plan = fixture_plan_generation(11)?;
     let first = publish_fixture(
         bridge.adapter_luid(),
         &descriptor,
+        plan,
         "fixture:left",
         7,
         [10, 20, 30, 255],
     )?;
+    let wrong_target = bridge
+        .prepare_target(fixture_plan_generation(12)?, &descriptor)
+        .map_err(|error| error.to_string())?;
     assert!(matches!(
-        bridge.copy_publication(first.publication()),
-        Err(D3d11On12ScreenInteropError::TargetNotPrepared { .. })
+        bridge.copy_publication(&wrong_target, first.publication()),
+        Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
+            field: "plan_generation"
+        })
     ));
-    bridge
-        .prepare_target(&descriptor)
+    drop(wrong_target);
+    let target = bridge
+        .prepare_target(plan, &descriptor)
         .map_err(|error| error.to_string())?;
     let first_copy = bridge
-        .copy_publication(first.publication())
+        .copy_publication(&target, first.publication())
         .map_err(|error| error.to_string())?;
     assert_pixels(&wgpu, &first_copy, [30, 20, 10, 255])?;
     let duplicate = bridge
-        .copy_publication(first.publication())
+        .copy_publication(&target, first.publication())
         .map_err(|error| error.to_string())?;
     assert_eq!(duplicate.content_generation, first_copy.content_generation);
 
     let second_source = publish_fixture(
         bridge.adapter_luid(),
         &descriptor,
+        plan,
         "fixture:right",
         7,
         [40, 50, 60, 255],
     )?;
     let second_copy = bridge
-        .copy_publication(second_source.publication())
+        .copy_publication(&target, second_source.publication())
         .map_err(|error| error.to_string())?;
     assert!(second_copy.content_generation > first_copy.content_generation);
     assert_pixels(&wgpu, &second_copy, [60, 50, 40, 255])?;
@@ -69,27 +78,95 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
     let restarted = publish_fixture(
         bridge.adapter_luid(),
         &descriptor,
+        plan,
         "fixture:right",
         8,
         [70, 80, 90, 255],
     )?;
     let restarted_copy = bridge
-        .copy_publication(restarted.publication())
+        .copy_publication(&target, restarted.publication())
         .map_err(|error| error.to_string())?;
     assert!(restarted_copy.content_generation > second_copy.content_generation);
     assert_pixels(&wgpu, &restarted_copy, [90, 80, 70, 255])?;
 
-    bridge.retire_source("fixture:right", 3, fixture_plan_generation());
+    bridge.retire_source("fixture:right", 3, plan);
     assert!(matches!(
-        bridge.copy_publication(restarted.publication()),
+        bridge.copy_publication(&target, restarted.publication()),
         Err(D3d11On12ScreenInteropError::Capture(_))
     ));
+
+    let storage_id = target.storage_id();
+    drop(target);
+    assert_eq!(
+        bridge
+            .cache_stats()
+            .map_err(|error| error.to_string())?
+            .prepared_targets,
+        1,
+        "texture readers must retain their prepared target",
+    );
+    let retained_by_readers = bridge
+        .prepare_target(plan, &descriptor)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(retained_by_readers.storage_id(), storage_id);
+    drop(retained_by_readers);
+    drop(restarted_copy);
+    drop(second_copy);
+    drop(duplicate);
+    drop(first_copy);
+    assert_eq!(
+        bridge.cache_stats().map_err(|error| error.to_string())?,
+        hypercolor_windows_gpu_interop::ScreenInteropCacheStats::default(),
+    );
+    Ok(())
+}
+
+#[test]
+fn sequential_plan_turnover_keeps_target_and_surface_caches_bounded() -> Result<(), String> {
+    if std::env::var(RUN_FIXTURE_ENV).as_deref() != Ok("1") {
+        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the D3D11On12 fixture");
+        return Ok(());
+    }
+
+    let wgpu = WgpuFixture::new_dx12("hypercolor D3D11On12 turnover fixture")?;
+    let bridge = D3d11On12ScreenBridge::new(wgpu.device.clone(), wgpu.queue.clone())
+        .map_err(|error| error.to_string())?;
+    let descriptor = fixture_descriptor(30, 4, 3)?;
+
+    for generation in 20..36 {
+        let plan = fixture_plan_generation(generation)?;
+        let fixture = publish_fixture(
+            bridge.adapter_luid(),
+            &descriptor,
+            plan,
+            "fixture:turnover",
+            generation,
+            [generation as u8, 90, 140, 255],
+        )?;
+        let target = bridge
+            .prepare_target(plan, &descriptor)
+            .map_err(|error| error.to_string())?;
+        let copy = bridge
+            .copy_publication(&target, fixture.publication())
+            .map_err(|error| error.to_string())?;
+        let stats = bridge.cache_stats().map_err(|error| error.to_string())?;
+        assert_eq!(stats.prepared_targets, 1);
+        assert_eq!(stats.opened_surfaces, 1);
+
+        drop(target);
+        drop(copy);
+        assert_eq!(
+            bridge.cache_stats().map_err(|error| error.to_string())?,
+            hypercolor_windows_gpu_interop::ScreenInteropCacheStats::default(),
+        );
+    }
     Ok(())
 }
 
 fn publish_fixture(
     adapter_luid: hypercolor_windows_capture::GpuAdapterLuid,
     descriptor: &GpuSurfaceDescriptor,
+    plan_generation: GpuSurfacePlanGeneration,
     source_id: &'static str,
     duplication_generation: u64,
     pixel: [u8; 4],
@@ -97,7 +174,7 @@ fn publish_fixture(
     let bgra = pixel.repeat(4 * 3);
     publish_gpu_surface(GpuSurfaceFixtureConfig {
         adapter_luid,
-        plan_generation: fixture_plan_generation(),
+        plan_generation,
         source_id: Arc::from(source_id),
         topology_generation: 3,
         duplication_generation,
@@ -109,8 +186,10 @@ fn publish_fixture(
     .map_err(|error| error.to_string())
 }
 
-fn fixture_plan_generation() -> GpuSurfacePlanGeneration {
-    GpuSurfacePlanGeneration::new(NonZeroU64::new(11).expect("fixture plan generation is non-zero"))
+fn fixture_plan_generation(value: u64) -> Result<GpuSurfacePlanGeneration, String> {
+    let value = NonZeroU64::new(value)
+        .ok_or_else(|| "fixture plan generation must be non-zero".to_owned())?;
+    Ok(GpuSurfacePlanGeneration::new(value))
 }
 
 fn fixture_descriptor(id: u64, width: u32, height: u32) -> Result<GpuSurfaceDescriptor, String> {
