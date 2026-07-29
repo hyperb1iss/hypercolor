@@ -22,7 +22,7 @@
 //! deltas rather than from differencing the sampled cursor, because that is
 //! sub-frame accurate and survives the cursor hitting a screen edge.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -76,10 +76,10 @@ struct AbsoluteBaseline {
 
 #[derive(Default)]
 struct SharedState {
-    events: Vec<TimedInputEvent>,
+    events: VecDeque<TimedInputEvent>,
     dropped: u32,
     pressed_keys: BTreeMap<String, BTreeSet<String>>,
-    recent_keys: Vec<String>,
+    recent_keys: VecDeque<String>,
     held_buttons: BTreeMap<String, BTreeSet<String>>,
     motion: MotionAggregate,
     cursor: Option<RawCursor>,
@@ -332,7 +332,7 @@ impl WindowsHostInput {
         let Ok(mut guard) = shared.lock() else {
             return (InteractionData::default(), Vec::new());
         };
-        let events = std::mem::take(&mut guard.events);
+        let events = drain_events(&mut guard.events);
         let snapshot = self.build_snapshot(&mut guard);
         (snapshot, events)
     }
@@ -340,7 +340,7 @@ impl WindowsHostInput {
     fn build_snapshot(&mut self, guard: &mut SharedState) -> InteractionData {
         let mut data = InteractionData::default();
         data.keyboard.pressed_keys = guard.union_pressed();
-        data.keyboard.recent_keys = std::mem::take(&mut guard.recent_keys);
+        data.keyboard.recent_keys = guard.recent_keys.drain(..).collect();
         data.mouse.buttons = guard.union_buttons();
         data.mouse.down = !data.mouse.buttons.is_empty();
 
@@ -622,7 +622,7 @@ impl InputSource for WindowsHostInput {
         };
         // One lock for both: an edge can never land in the frame's event batch
         // while missing from the same frame's held-state snapshot.
-        let events = std::mem::take(&mut guard.events);
+        let events = drain_events(&mut guard.events);
         let snapshot = self.build_snapshot(&mut guard);
         (Ok(InputData::Interaction(snapshot)), events)
     }
@@ -698,7 +698,7 @@ impl InputSource for WindowsHostInput {
             return Vec::new();
         }
         if let Ok(mut guard) = self.shared.lock() {
-            return std::mem::take(&mut guard.events);
+            return drain_events(&mut guard.events);
         }
         Vec::new()
     }
@@ -833,7 +833,7 @@ fn fold_event(state: &mut SharedState, event: &RawInputEvent, at_ms: u64, event_
             );
             state.motion.dx += delta_x;
             state.motion.dy += delta_y;
-            state.motion.distance += delta_x.abs() + delta_y.abs();
+            state.motion.distance += delta_x.hypot(delta_y);
         }
         RawInputEvent::MotionAbsolute {
             device,
@@ -920,11 +920,8 @@ fn fold_key(
                 .entry(source_id.to_owned())
                 .or_default()
                 .insert(key.clone());
-            state.recent_keys.push(key.clone());
-            if state.recent_keys.len() > event_limit {
-                let overflow = state.recent_keys.len() - event_limit;
-                state.recent_keys.drain(..overflow);
-            }
+            state.recent_keys.push_back(key.clone());
+            cap_recent(&mut state.recent_keys, event_limit);
             InputButtonState::Pressed
         }
     } else {
@@ -1020,20 +1017,35 @@ fn fold_absolute(
         let delta_y = norm_y - previous.norm_y;
         state.motion.dx += delta_x;
         state.motion.dy += delta_y;
-        state.motion.distance += delta_x.abs() + delta_y.abs();
+        state.motion.distance += delta_x.hypot(delta_y);
     }
     // No previous baseline, or a changed space: emit no delta.
 }
 
 fn push_event(state: &mut SharedState, event: TimedInputEvent, limit: usize) {
-    state.events.push(event);
-    if state.events.len() > limit {
-        let overflow = state.events.len() - limit;
-        state.events.drain(..overflow);
+    if limit == 0 {
         state.dropped = state
             .dropped
-            .saturating_add(u32::try_from(overflow).unwrap_or(u32::MAX));
+            .saturating_add(u32::try_from(state.events.len()).unwrap_or(u32::MAX))
+            .saturating_add(1);
+        state.events.clear();
+        return;
     }
+    while state.events.len() >= limit {
+        state.events.pop_front();
+        state.dropped = state.dropped.saturating_add(1);
+    }
+    state.events.push_back(event);
+}
+
+fn cap_recent(recent: &mut VecDeque<String>, limit: usize) {
+    while recent.len() > limit {
+        recent.pop_front();
+    }
+}
+
+fn drain_events(events: &mut VecDeque<TimedInputEvent>) -> Vec<TimedInputEvent> {
+    events.drain(..).collect()
 }
 
 /// Emit release edges for everything a source held, so nothing ever sticks.

@@ -440,6 +440,45 @@ fn relative_motion_sums_and_accumulates_path_length() {
 }
 
 #[test]
+fn relative_diagonal_motion_uses_euclidean_path_length() {
+    let mut input = WindowsHostInput::new(true, true);
+    let (data, _) = fold(
+        &mut input,
+        &[RawInputEvent::MotionRelative {
+            device: device(MOUSE, RawDeviceKind::Mouse),
+            dx: 3_600,
+            dy: 4_800,
+        }],
+    );
+
+    assert!((data.batch.motion.distance - 5.0).abs() < 1e-6);
+}
+
+#[test]
+fn opposing_diagonal_motion_preserves_total_path_length() {
+    let mut input = WindowsHostInput::new(true, true);
+    let (data, _) = fold(
+        &mut input,
+        &[
+            RawInputEvent::MotionRelative {
+                device: device(MOUSE, RawDeviceKind::Mouse),
+                dx: 360,
+                dy: 480,
+            },
+            RawInputEvent::MotionRelative {
+                device: device(MOUSE, RawDeviceKind::Mouse),
+                dx: -360,
+                dy: -480,
+            },
+        ],
+    );
+
+    assert!(data.batch.motion.dx.abs() < 1e-6);
+    assert!(data.batch.motion.dy.abs() < 1e-6);
+    assert!((data.batch.motion.distance - 1.0).abs() < 1e-6);
+}
+
+#[test]
 fn the_first_absolute_report_after_a_reset_emits_no_delta() {
     // A tablet appearing at the far corner has not swept across the desk.
     let mut input = WindowsHostInput::new(true, true);
@@ -474,6 +513,15 @@ fn absolute_motion_differences_successive_positions() {
     let (data, _) = fold(&mut input, &[absolute(MOUSE, 0.75, 0.25)]);
     assert!((data.batch.motion.dx - 0.5).abs() < 1e-6);
     assert!(data.batch.motion.dy.abs() < 1e-6);
+}
+
+#[test]
+fn absolute_diagonal_motion_uses_euclidean_path_length() {
+    let mut input = WindowsHostInput::new(true, true);
+    fold(&mut input, &[absolute(MOUSE, 0.1, 0.1)]);
+    let (data, _) = fold(&mut input, &[absolute(MOUSE, 0.4, 0.5)]);
+
+    assert!((data.batch.motion.distance - 0.5).abs() < 1e-6);
 }
 
 #[test]
@@ -591,18 +639,36 @@ fn a_batch_at_the_live_epoch_is_applied() {
 #[test]
 fn the_event_queue_drops_oldest_and_counts_what_it_dropped() {
     let mut input = WindowsHostInput::new(true, true);
+    let events = (0..600)
+        .map(|delta_hi_res| RawInputEvent::Wheel {
+            device: device(MOUSE, RawDeviceKind::Mouse),
+            delta_hi_res,
+        })
+        .collect::<Vec<_>>();
+    let (data, drained) = fold(&mut input, &events);
+
+    assert_eq!(drained.len(), 256, "bounded at the event limit");
+    assert_eq!(data.batch.dropped_events, 344);
+    assert!(drained.iter().enumerate().all(|(index, timed)| {
+        let expected = i32::try_from(index).expect("index fits") + 344;
+        matches!(
+            &timed.event,
+            InputEvent::MouseWheel { delta_hi_res, .. } if *delta_hi_res == expected
+        )
+    }));
+}
+
+#[test]
+fn the_recent_key_queue_keeps_the_newest_bounded_presses() {
+    let mut input = WindowsHostInput::new(true, true);
     let mut events = Vec::new();
     for _ in 0..300 {
         events.push(key(KBD_A, 0x1E, true));
         events.push(key(KBD_A, 0x1E, false));
     }
-    let (data, drained) = fold(&mut input, &events);
+    let (data, _) = fold(&mut input, &events);
 
-    assert_eq!(drained.len(), 256, "bounded at the event limit");
-    assert!(
-        data.batch.dropped_events > 0,
-        "and the loss is reported rather than hidden"
-    );
+    assert_eq!(data.keyboard.recent_keys, vec!["a".to_owned(); 256]);
 }
 
 #[test]
