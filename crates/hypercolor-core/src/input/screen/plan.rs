@@ -15,6 +15,7 @@ use super::reducer::branch_requires_materialization;
 use super::{
     CaptureSourceId, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
     ScreenPhysicalReductionDescriptor, ScreenPublicationKind, ScreenPublicationResidency,
+    ScreenResourceApi,
 };
 
 const TARGET_PIXEL_BYTES: u64 = 4;
@@ -2404,11 +2405,10 @@ fn required_source_minimums(
     for (index, reduction) in candidate.physical_reductions().iter().enumerate() {
         let owner = candidate.branches()[reduction.branch_indices()[0]].descriptor();
         let active_reduction = physical_reduction(active, reduction.descriptor());
-        if reduction_retains_physical_plane(candidate, reduction)
-            && active_reduction.is_none_or(|active_reduction| {
-                !reduction_retains_physical_plane(active, active_reduction)
-            })
-        {
+        let candidate_planes = reduction_cpu_plane_count(candidate, reduction);
+        let active_planes =
+            active_reduction.map_or(0, |reduction| reduction_cpu_plane_count(active, reduction));
+        if candidate_planes > active_planes {
             let extent = reduction.descriptor().reduction_extent();
             let stride = checked_product(
                 owner,
@@ -2416,11 +2416,17 @@ fn required_source_minimums(
                 u64::from(extent.width()),
                 TARGET_PIXEL_BYTES,
             )?;
-            let plane_bytes = checked_product(
+            let single_plane_bytes = checked_product(
                 owner,
                 ScreenResourceKind::PhysicalPlane,
                 stride,
                 u64::from(extent.height()),
+            )?;
+            let plane_bytes = checked_product(
+                owner,
+                ScreenResourceKind::PhysicalPlane,
+                single_plane_bytes,
+                candidate_planes - active_planes,
             )?;
             push_required_minimum(
                 &mut contracts,
@@ -2679,7 +2685,7 @@ fn full_plan_ledger(plan: &ScreenCapturePlan) -> Result<ScreenResourceLedger, Sc
             &mut ledger,
             reduction.descriptor(),
             owner,
-            reduction_retains_physical_plane(plan, reduction),
+            reduction_cpu_plane_count(plan, reduction),
         )?;
     }
     Ok(ledger)
@@ -2693,17 +2699,22 @@ fn staged_plan_ledger(
     for reduction in candidate.physical_reductions() {
         let owner = &candidate.branches()[reduction.branch_indices()[0]].descriptor;
         if let Some(active_reduction) = physical_reduction(active, reduction.descriptor()) {
-            if reduction_retains_physical_plane(candidate, reduction)
-                && !reduction_retains_physical_plane(active, active_reduction)
-            {
-                add_physical_plane_usage(&mut ledger, reduction.descriptor(), owner)?;
+            let candidate_planes = reduction_cpu_plane_count(candidate, reduction);
+            let active_planes = reduction_cpu_plane_count(active, active_reduction);
+            if candidate_planes > active_planes {
+                add_physical_plane_usage(
+                    &mut ledger,
+                    reduction.descriptor(),
+                    owner,
+                    candidate_planes - active_planes,
+                )?;
             }
         } else {
             add_physical_usage(
                 &mut ledger,
                 reduction.descriptor(),
                 owner,
-                reduction_retains_physical_plane(candidate, reduction),
+                reduction_cpu_plane_count(candidate, reduction),
             )?;
         }
     }
@@ -2798,7 +2809,7 @@ fn add_physical_usage(
     ledger: &mut ScreenResourceLedger,
     descriptor: &ScreenPhysicalReductionDescriptor,
     owner: &ResolvedScreenPublicationDescriptor,
-    retains_plane: bool,
+    retained_plane_count: u64,
 ) -> Result<(), ScreenPlanError> {
     let extent = descriptor.reduction_extent();
     let pixels = checked_product(
@@ -2825,8 +2836,8 @@ fn add_physical_usage(
         owner,
         ScreenResourceKind::PhysicalRowStride,
     )?;
-    if retains_plane {
-        add_physical_plane_usage(ledger, descriptor, owner)?;
+    if retained_plane_count > 0 {
+        add_physical_plane_usage(ledger, descriptor, owner, retained_plane_count)?;
     }
     Ok(())
 }
@@ -2835,6 +2846,7 @@ fn add_physical_plane_usage(
     ledger: &mut ScreenResourceLedger,
     descriptor: &ScreenPhysicalReductionDescriptor,
     owner: &ResolvedScreenPublicationDescriptor,
+    plane_count: u64,
 ) -> Result<(), ScreenPlanError> {
     let extent = descriptor.reduction_extent();
     let stride = checked_product(
@@ -2843,11 +2855,17 @@ fn add_physical_plane_usage(
         u64::from(extent.width()),
         TARGET_PIXEL_BYTES,
     )?;
-    let plane_bytes = checked_product(
+    let single_plane_bytes = checked_product(
         owner,
         ScreenResourceKind::PhysicalPlane,
         stride,
         u64::from(extent.height()),
+    )?;
+    let plane_bytes = checked_product(
+        owner,
+        ScreenResourceKind::PhysicalPlane,
+        single_plane_bytes,
+        plane_count,
     )?;
     checked_add_assign(
         &mut ledger.physical_plane_bytes,
@@ -2863,15 +2881,22 @@ fn add_physical_plane_usage(
     )
 }
 
-fn reduction_retains_physical_plane(
+fn reduction_cpu_plane_count(
     plan: &ScreenCapturePlan,
     reduction: &ScreenPhysicalReductionDemand,
-) -> bool {
-    reduction.branch_indices().iter().any(|branch_index| {
+) -> u64 {
+    if !matches!(
+        reduction.descriptor().source().resources().api(),
+        ScreenResourceApi::Cpu
+    ) {
+        return 0;
+    }
+    let materialized = reduction.branch_indices().iter().any(|branch_index| {
         plan.branches()
             .get(*branch_index)
             .is_some_and(|branch| branch_requires_materialization(branch.descriptor()))
-    })
+    });
+    if materialized { 2 } else { 0 }
 }
 
 fn physical_reduction<'a>(
@@ -2889,7 +2914,7 @@ fn plan_retains_physical_plane(
     descriptor: &ScreenPhysicalReductionDescriptor,
 ) -> bool {
     physical_reduction(plan, descriptor)
-        .is_some_and(|reduction| reduction_retains_physical_plane(plan, reduction))
+        .is_some_and(|reduction| reduction_cpu_plane_count(plan, reduction) > 0)
 }
 
 fn merge_ledgers(
