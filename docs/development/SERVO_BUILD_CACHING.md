@@ -58,11 +58,66 @@ The shared wrapper configures:
 
 - `CARGO_TARGET_DIR=<repo>/target` (unless already set)
 - `MOZBUILD_STATE_PATH=$HOME/.cache/hypercolor/mozbuild` (unless already set)
-- Cargo incremental compilation for local dev and preview-style builds
-- `sccache` as `RUSTC_WRAPPER` for release/bench builds, or whenever
-  `HYPERCOLOR_FORCE_SCCACHE=1`
+- `sccache` as `RUSTC_WRAPPER` for whole-tree codegen commands
+  (`cargo build`, `test`, `bench`, and anything release/bench-profiled)
+  when installed, with a bounded on-disk cache (default `75G`, override
+  with `HYPERCOLOR_SCCACHE_SIZE`). sccache and incremental compilation are
+  mutually exclusive, so these commands run with `CARGO_INCREMENTAL=0`.
+- Cargo incremental compilation for iteration and metadata commands:
+  `cargo run` (the edit-run loop; a measured hypercolor-core edit-rebuild
+  is ~45s non-incremental vs ~11s incremental), `cargo check`, and
+  `clippy` (sccache cannot cache `--emit=metadata` units). The
+  iteration-shaped recipes (`just test-crate`, `test-one`, `app`, and the
+  Windows `just dev` daemon build) pin incremental via
+  `HYPERCOLOR_ITERATE=1`.
+- Opt-outs: `HYPERCOLOR_NO_SCCACHE=1` disables sccache for the session;
+  `HYPERCOLOR_ITERATE=1` does the same per invocation when you want
+  incremental rebuilds in a tight edit loop; a pre-set non-zero
+  `CARGO_INCREMENTAL` always wins. Alternating the same profile tree
+  between the two modes rebuilds only workspace crates (~50s measured),
+  never dependencies.
+- `rust-lld` as the linker on `x86_64-pc-windows-msvc`
+  (`HYPERCOLOR_NO_FAST_LINK=1` to opt out)
 - `clang` + `ld.lld` for faster link steps on `x86_64-unknown-linux-gnu` when available
-- `ccache` for `CC`/`CXX` when installed, otherwise `sccache` if available
+- C/C++ caching for `cc`- and CMake-driven native deps (mozangle/ANGLE,
+  turbojpeg): `ccache` or `sccache` on Unix, `sccache` around `cl.exe` on
+  Windows
+
+## Cross-Worktree Topology
+
+Multiple worktrees (and multiple agents) build this repo concurrently. The
+sharing layer is the compile cache, not the target dir:
+
+- **Per-worktree `target/`** stays the default. Cargo's target lock is
+  coarse; a shared target dir would serialize parallel builds across
+  worktrees and thrash on feature-shape differences.
+- **Shared, bounded caches** live under `$HOME/.cache/hypercolor`
+  (`HYPERCOLOR_CACHE_DIR` to relocate): `sccache/` for compiled units,
+  `mozbuild/` for SpiderMonkey build state. A second worktree's cold build
+  becomes mostly cache hits without any cross-worktree locking.
+- **Incompatible feature shapes get isolated lanes**: `just e2e-build-cpu`
+  builds into `target/cpu-smoke` so the `--no-default-features` unification
+  never churns the daily tree.
+- **`mozjs_sys` uses prebuilt SpiderMonkey archives by default.** It falls
+  back to a source build silently, e.g. when a package profile override
+  drops `mozjs_sys` below `-O3`; keep the `opt-level = 3` overrides in
+  `Cargo.toml` intact.
+
+## Disk Bounds
+
+Target dirs grow without bound as toolchains, lockfiles, and feature shapes
+churn — Cargo never garbage-collects them. Bound them with:
+
+```bash
+just disk          # per-profile + shared-cache usage report
+just gc            # sweep orphaned-toolchain and >14-day artifacts here
+just gc-worktrees  # the same sweep across every worktree lane
+just gc-deep       # additionally drop incremental state + the cpu-smoke lane
+```
+
+`sccache` trims itself to `SCCACHE_CACHE_SIZE`; the cache size only applies
+when the server starts, so after changing it run `sccache --stop-server`
+first.
 
 ## Verify Cache Hits
 

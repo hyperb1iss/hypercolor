@@ -339,6 +339,9 @@ $ui = $null
 try {
     Write-Host '[dev] building daemon'
     Write-Host "[dev] CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
+    # This is the edit-run loop: keep incremental rebuilds instead of the
+    # wrapper's sccache mode for `cargo build`.
+    $env:HYPERCOLOR_ITERATE = '1'
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $cargoCacheBuild cargo @cargoBuildArguments
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
