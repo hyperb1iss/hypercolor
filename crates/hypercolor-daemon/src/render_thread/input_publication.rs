@@ -7,8 +7,9 @@ use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
 use hypercolor_core::input::screen::{
     InputPublicationDemandRevision, PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy,
-    ScreenCaptureDemand, ScreenExtentRequest, ScreenProcessingProfile, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenCaptureDemand, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenProcessingProfile,
+    ScreenPublicationDemandSnapshot, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
@@ -234,6 +235,8 @@ struct InputPublicationDemandSnapshot {
     cadence: InputPublicationCadence,
     screen_branches: Arc<[RegisteredScreenBranchDemand]>,
     compatibility_screen_extent: Option<PixelExtent>,
+    compatibility_surface: Option<RegisteredScreenBranchDemand>,
+    compatibility_zones: Option<RegisteredScreenBranchDemand>,
     revision: InputPublicationDemandRevision,
 }
 
@@ -248,6 +251,8 @@ impl InputPublicationDemandSnapshot {
             &InputPublicationDemandEntry,
             &InputScreenBranchDemand,
         )> = None;
+        let mut compatibility_surface = None;
+        let mut compatibility_zones = None;
         for entry in &entries {
             cadence.merge_demand(&entry.demand);
             for screen in entry.demand.screen.iter() {
@@ -265,15 +270,38 @@ impl InputPublicationDemandSnapshot {
                 {
                     compatibility_screen = Some((entry, screen));
                 }
+                let selected = match screen.branch.request().kind() {
+                    ScreenPublicationKind::Surface => &mut compatibility_surface,
+                    ScreenPublicationKind::Zones { .. } => &mut compatibility_zones,
+                };
+                if selected.as_ref().is_none_or(
+                    |(selected_entry, selected_screen): &(
+                        &InputPublicationDemandEntry,
+                        &InputScreenBranchDemand,
+                    )| {
+                        compatibility_screen_precedes(
+                            entry,
+                            screen,
+                            selected_entry,
+                            selected_screen,
+                        )
+                    },
+                ) {
+                    *selected = Some((entry, screen));
+                }
             }
         }
         let compatibility_screen_extent =
             compatibility_screen.map(|(_, screen)| screen.legacy_extent);
+        let compatibility_surface = compatibility_surface.map(|(_, screen)| screen.branch.clone());
+        let compatibility_zones = compatibility_zones.map(|(_, screen)| screen.branch.clone());
         Self {
             entries: entries.into(),
             cadence,
             screen_branches: screen_branches.into(),
             compatibility_screen_extent,
+            compatibility_surface,
+            compatibility_zones,
             revision,
         }
     }
@@ -306,6 +334,17 @@ impl InputPublicationDemandSnapshot {
 
     const fn revision(&self) -> InputPublicationDemandRevision {
         self.revision
+    }
+
+    fn exact_screen_demand(&self, graph_generation: u64) -> ScreenPublicationDemandSnapshot {
+        ScreenPublicationDemandSnapshot::try_new(
+            self.revision,
+            ScreenInputGraphGeneration::new(graph_generation),
+            Arc::clone(&self.screen_branches),
+            self.compatibility_surface.clone(),
+            self.compatibility_zones.clone(),
+        )
+        .expect("compatibility branches originate from the exact demand snapshot")
     }
 }
 
@@ -765,6 +804,7 @@ async fn run_pump(
 
     let mut schedule = InputPublicationSchedule::default();
     let mut capture_demand = CaptureDemandState::default();
+    let mut applied_exact_screen = None;
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
     let mut graph_changes = reader.graph.subscribe_generation();
     let mut demand_changes = demands.subscribe_revision();
@@ -788,6 +828,36 @@ async fn run_pump(
             graph = reader.graph_snapshot();
         }
         let lifecycle_current = capture_demand.is_current(graph.generation(), desired_capture);
+        let exact_screen_key = (demand.revision(), graph.generation());
+        if applied_exact_screen != Some(exact_screen_key) {
+            let manager_lock = manager.lock();
+            tokio::pin!(manager_lock);
+            let mut input_manager = tokio::select! {
+                () = cancel.cancelled() => break,
+                _ = demand_changes.changed() => continue,
+                _ = graph_changes.changed() => continue,
+                manager = &mut manager_lock => manager,
+            };
+            if demands.snapshot().revision() != demand.revision()
+                || reader.graph_snapshot().generation() != graph.generation()
+            {
+                continue;
+            }
+            if let Err(error) = input_manager
+                .set_screen_publication_demand(demand.exact_screen_demand(graph.generation()))
+            {
+                tracing::warn!(%error, "exact screen publication demand was rejected");
+                drop(input_manager);
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = demand_changes.changed() => {}
+                    _ = graph_changes.changed() => {}
+                    () = tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL) => {}
+                }
+                continue;
+            }
+            applied_exact_screen = Some(exact_screen_key);
+        }
         let active_demand = demand_for_active_sources(&graph, &demand);
         let now = Instant::now();
         schedule.synchronize(&active_demand, now);

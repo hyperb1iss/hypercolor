@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
     PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenCaptureDemand,
-    ScreenExtentRequest, ScreenProcessingProfile, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenExtentRequest, ScreenProcessingProfile, ScreenPublicationDemandSnapshot,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
 use tokio::sync::Mutex;
@@ -30,6 +30,7 @@ struct CountingSource {
 struct ScreenDemandSource {
     demand: ScreenCaptureDemand,
     transitions: Arc<StdMutex<Vec<ScreenCaptureDemand>>>,
+    exact_transitions: Option<Arc<StdMutex<Vec<ScreenPublicationDemandSnapshot>>>>,
     running: bool,
 }
 
@@ -38,6 +39,19 @@ impl ScreenDemandSource {
         Self {
             demand: ScreenCaptureDemand::Inactive,
             transitions,
+            exact_transitions: None,
+            running: false,
+        }
+    }
+
+    fn with_exact_transitions(
+        transitions: Arc<StdMutex<Vec<ScreenCaptureDemand>>>,
+        exact_transitions: Arc<StdMutex<Vec<ScreenPublicationDemandSnapshot>>>,
+    ) -> Self {
+        Self {
+            demand: ScreenCaptureDemand::Inactive,
+            transitions,
+            exact_transitions: Some(exact_transitions),
             running: false,
         }
     }
@@ -79,6 +93,19 @@ impl InputSource for ScreenDemandSource {
             .lock()
             .expect("screen demand transition lock")
             .push(demand);
+        Ok(())
+    }
+
+    fn set_screen_publication_demand(
+        &mut self,
+        demand: ScreenPublicationDemandSnapshot,
+    ) -> anyhow::Result<()> {
+        if let Some(transitions) = &self.exact_transitions {
+            transitions
+                .lock()
+                .expect("exact screen demand transition lock")
+                .push(demand);
+        }
         Ok(())
     }
 }
@@ -380,6 +407,26 @@ fn one_registration_preserves_every_screen_request_shape() {
         demands.snapshot().compatibility_screen_extent,
         Some(extent(7_680, 4_320))
     );
+    let exact = demands.snapshot().exact_screen_demand(91);
+    assert_eq!(exact.graph_generation().get(), 91);
+    assert_eq!(exact.branches().len(), 4);
+    assert!(matches!(
+        exact
+            .compatibility_surface()
+            .expect("a Surface compatibility branch is selected")
+            .request()
+            .extent()
+            .bounded_extent(),
+        Some(_)
+    ));
+    assert!(matches!(
+        exact
+            .compatibility_zones()
+            .expect("a Zones compatibility branch is selected")
+            .request()
+            .kind(),
+        ScreenPublicationKind::Zones { .. }
+    ));
 }
 
 #[test]
@@ -671,6 +718,52 @@ async fn pump_propagates_screen_extent_changes_even_while_cadence_stays_active()
 
     drop(registration);
     wait_for_screen_demand(&transitions, ScreenCaptureDemand::Inactive).await;
+    pump.shutdown().await.expect("publication pump stops");
+}
+
+#[tokio::test]
+async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let exact_transitions = Arc::new(StdMutex::new(Vec::new()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(ScreenDemandSource::with_exact_transitions(
+        Arc::clone(&transitions),
+        Arc::clone(&exact_transitions),
+    )));
+    manager.start_all().expect("screen source starts");
+    let manager = Arc::new(Mutex::new(manager));
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+        .await
+        .expect("publication pump starts");
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(144, extent(7_680, 4_320)),
+    );
+
+    let exact = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if let Some(exact) = exact_transitions
+                .lock()
+                .expect("exact screen demand transition lock")
+                .iter()
+                .find(|demand| !demand.is_empty())
+                .cloned()
+            {
+                break exact;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("exact screen demand should propagate");
+
+    assert_eq!(exact.revision(), demands.revision());
+    assert!(exact.graph_generation().get() > 0);
+    assert_eq!(exact.branches(), &demands.screen_branches());
+    assert!(exact.compatibility_surface().is_some());
+
+    drop(registration);
     pump.shutdown().await.expect("publication pump stops");
 }
 
