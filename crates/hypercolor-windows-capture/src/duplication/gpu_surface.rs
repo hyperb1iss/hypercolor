@@ -157,6 +157,7 @@ pub struct GpuSurfaceTargetPreparation {
     source_id: Arc<str>,
     topology_generation: u64,
     duplication_generation: u64,
+    allocation_byte_len: u64,
     slots: Box<[GpuSurfaceTargetPreparationSlot]>,
 }
 
@@ -170,6 +171,7 @@ impl std::fmt::Debug for GpuSurfaceTargetPreparation {
             .field("source_id", &self.source_id)
             .field("topology_generation", &self.topology_generation)
             .field("duplication_generation", &self.duplication_generation)
+            .field("allocation_byte_len", &self.allocation_byte_len)
             .field("slot_count", &self.slots.len())
             .finish_non_exhaustive()
     }
@@ -210,6 +212,12 @@ impl GpuSurfaceTargetPreparation {
     #[must_use]
     pub const fn duplication_generation(&self) -> u64 {
         self.duplication_generation
+    }
+
+    /// Checked texture bytes retained by this route's reusable slots.
+    #[must_use]
+    pub const fn allocation_byte_len(&self) -> u64 {
+        self.allocation_byte_len
     }
 
     /// Stable ordered native slots prepared for this exact route.
@@ -497,7 +505,9 @@ struct SurfaceSlot {
 struct SurfaceRoute {
     descriptor: Arc<GpuSurfaceDescriptor>,
     slots: Vec<SurfaceSlot>,
+    allocation_byte_len: u64,
     write_index: usize,
+    selected_for_next_acquisition: bool,
     pending: PendingRouteOutcome,
     pending_source_sequence: Option<u64>,
 }
@@ -601,6 +611,8 @@ pub struct PreparedGpuSurfacePlan {
     params: ID3D11Buffer,
     pointer: Option<PointerResource>,
     routes: Vec<SurfaceRoute>,
+    selection_controlled: bool,
+    shared_allocation_byte_len: u64,
     texture_budget: u64,
     allocation_byte_len: u64,
     #[cfg(test)]
@@ -621,6 +633,10 @@ impl std::fmt::Debug for PreparedGpuSurfacePlan {
             .field("source_rotation", &self.source_rotation)
             .field("source_color_space", &self.source_color_space)
             .field("descriptor_count", &self.routes.len())
+            .field(
+                "shared_allocation_byte_len",
+                &self.shared_allocation_byte_len,
+            )
             .field("allocation_byte_len", &self.allocation_byte_len)
             .finish_non_exhaustive()
     }
@@ -644,6 +660,7 @@ impl PreparedGpuSurfacePlan {
         admission: GpuSurfaceAdmission,
     ) -> CaptureResult<Self> {
         let allocation_byte_len = admission.admit(logical_source_extent, descriptors)?;
+        let shared_allocation_byte_len = checked_gpu_surface_bytes(logical_source_extent)?;
         for descriptor in descriptors {
             if descriptor.source_rotation() != source_rotation {
                 return Err(CaptureError::GpuSurfaceRotationMismatch {
@@ -703,6 +720,8 @@ impl PreparedGpuSurfacePlan {
             params,
             pointer: None,
             routes,
+            selection_controlled: false,
+            shared_allocation_byte_len,
             texture_budget: admission.max_texture_bytes(),
             allocation_byte_len,
             #[cfg(test)]
@@ -720,6 +739,30 @@ impl PreparedGpuSurfacePlan {
     #[must_use]
     pub fn descriptors(&self) -> impl ExactSizeIterator<Item = &GpuSurfaceDescriptor> {
         self.routes.iter().map(|route| route.descriptor.as_ref())
+    }
+
+    /// Select exact routes eligible for the next native acquisition.
+    ///
+    /// Once called, selection remains caller-controlled. A route still
+    /// pending from an occupied slot remains eligible so latest-value retry
+    /// semantics cannot be disabled accidentally.
+    pub fn select_routes_for_next_acquisition<F>(&mut self, mut select: F)
+    where
+        F: FnMut(&GpuSurfaceDescriptor) -> bool,
+    {
+        self.selection_controlled = true;
+        for route in &mut self.routes {
+            route.selected_for_next_acquisition = select(&route.descriptor);
+        }
+    }
+
+    /// Whether a native acquisition can advance at least one exact route.
+    #[must_use]
+    pub fn has_selected_routes(&self) -> bool {
+        !self.selection_controlled
+            || self.routes.iter().any(|route| {
+                route.selected_for_next_acquisition || route.pending_source_sequence.is_some()
+            })
     }
 
     /// Retain every native slot required to prepare one exact renderer route.
@@ -769,6 +812,7 @@ impl PreparedGpuSurfacePlan {
             source_id: Arc::clone(&self.source_id),
             topology_generation: self.topology_generation,
             duplication_generation: self.duplication_generation,
+            allocation_byte_len: route.allocation_byte_len,
             slots: slots.into_boxed_slice(),
         })
     }
@@ -777,6 +821,12 @@ impl PreparedGpuSurfacePlan {
     #[must_use]
     pub const fn allocation_byte_len(&self) -> u64 {
         self.allocation_byte_len
+    }
+
+    /// Checked texture bytes retained only by the plan, not route manifests.
+    #[must_use]
+    pub const fn shared_allocation_byte_len(&self) -> u64 {
+        self.shared_allocation_byte_len
     }
 
     /// GPU Surface publication performs no staging readback.
@@ -872,22 +922,31 @@ impl PreparedGpuSurfacePlan {
             metadata.rotation,
             metadata.source_color_space,
         )?;
-        for route in &self.routes {
+        self.validate_clean(clean)?;
+        for route in &mut self.routes {
+            if !self.selection_controlled
+                || route.selected_for_next_acquisition
+                || route.pending_source_sequence.is_some()
+            {
+                route.pending_source_sequence = Some(metadata.sequence);
+            }
+            route.selected_for_next_acquisition = false;
+        }
+        for route in self
+            .routes
+            .iter()
+            .filter(|route| route.pending_source_sequence == Some(metadata.sequence))
+        {
             metadata
                 .captured_at
                 .checked_add(route.descriptor.freshness())
                 .ok_or(CaptureError::GpuSurfaceFreshnessOverflow)?;
         }
-        self.validate_clean(clean)?;
-        for route in &mut self.routes {
-            route.pending_source_sequence = Some(metadata.sequence);
-        }
         self.validate_cursor_shape(metadata)?;
-        if self
-            .routes
-            .iter()
-            .any(|route| route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include)
-        {
+        if self.routes.iter().any(|route| {
+            route.pending_source_sequence == Some(metadata.sequence)
+                && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
+        }) {
             self.ensure_pointer(&metadata.pointer)?;
         }
         self.fanout_pending(clean, emit)
@@ -904,11 +963,10 @@ impl PreparedGpuSurfacePlan {
         let metadata = &clean.metadata;
         self.validate_clean(clean)?;
         self.validate_cursor_shape(metadata)?;
-        if self
-            .routes
-            .iter()
-            .any(|route| route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include)
-        {
+        if self.routes.iter().any(|route| {
+            route.pending_source_sequence == Some(metadata.sequence)
+                && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
+        }) {
             self.ensure_pointer(&metadata.pointer)?;
         }
         self.fanout_pending(clean, &mut emit)
@@ -917,10 +975,10 @@ impl PreparedGpuSurfacePlan {
     fn validate_cursor_shape(&self, metadata: &CaptureMetadata) -> CaptureResult<()> {
         if metadata.pointer.visible
             && metadata.pointer.shape.is_none()
-            && let Some(route) = self
-                .routes
-                .iter()
-                .find(|route| route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include)
+            && let Some(route) = self.routes.iter().find(|route| {
+                route.pending_source_sequence == Some(metadata.sequence)
+                    && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
+            })
         {
             return Err(CaptureError::GpuSurfaceCursorShapeUnavailable {
                 descriptor_id: route.descriptor.id(),
@@ -1211,6 +1269,15 @@ impl PreparedGpuSurfacePlan {
             byte_len,
             srv,
         });
+        self.shared_allocation_byte_len = self
+            .shared_allocation_byte_len
+            .checked_sub(previous)
+            .and_then(|bytes| bytes.checked_add(byte_len))
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "account shared GPU Surface plan",
+                width: shape.width,
+                height,
+            })?;
         self.allocation_byte_len = replacement_total;
         Ok(())
     }
@@ -1419,6 +1486,13 @@ fn create_route(
     next_slot_id: &mut u64,
 ) -> CaptureResult<SurfaceRoute> {
     let descriptor = Arc::new(descriptor.clone());
+    let allocation_byte_len = checked_gpu_surface_bytes(descriptor.output_extent())?
+        .checked_mul(u64::from(slot_count))
+        .ok_or(CaptureError::GeometryOverflow {
+            operation: "account GPU Surface route slots",
+            width: descriptor.output_extent().width(),
+            height: descriptor.output_extent().height(),
+        })?;
     let mut slots = Vec::new();
     let slot_count = usize::try_from(slot_count).map_err(|_| CaptureError::ResourceExhausted {
         operation: "allocate GPU Surface slots",
@@ -1448,7 +1522,9 @@ fn create_route(
     Ok(SurfaceRoute {
         descriptor,
         slots,
+        allocation_byte_len,
         write_index: 0,
+        selected_for_next_acquisition: true,
         pending: PendingRouteOutcome::None,
         pending_source_sequence: None,
     })

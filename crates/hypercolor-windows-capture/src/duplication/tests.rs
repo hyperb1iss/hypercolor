@@ -276,6 +276,117 @@ fn exact_gpu_surfaces_fan_out_incompatible_descriptors_from_one_source() {
 }
 
 #[test]
+fn exact_gpu_route_selection_is_allocation_free_and_consumed_per_acquisition() {
+    let descriptors = [
+        super::gpu_surface::fixture::descriptor(
+            3,
+            CaptureRegion::full(1, 1),
+            CaptureExtent::try_new(1, 1).expect("first extent is valid"),
+        ),
+        super::gpu_surface::fixture::descriptor(
+            4,
+            CaptureRegion::full(1, 1),
+            CaptureExtent::try_new(1, 1).expect("second extent is valid"),
+        ),
+        super::gpu_surface::fixture::descriptor(
+            5,
+            CaptureRegion::full(1, 1),
+            CaptureExtent::try_new(1, 1).expect("third extent is valid"),
+        ),
+    ];
+    let mut fixture = super::gpu_surface::fixture::publish(&[1, 2, 3, 0xFF], 1, 1, &descriptors)
+        .expect("initial exact fanout succeeds");
+    let route_bytes = descriptors.iter().try_fold(0_u64, |total, descriptor| {
+        let preparation = fixture
+            .plan
+            .target_preparation(descriptor.id())
+            .expect("route preparation exists");
+        total.checked_add(preparation.allocation_byte_len())
+    });
+    assert_eq!(
+        route_bytes.and_then(|bytes| bytes.checked_add(fixture.plan.shared_allocation_byte_len())),
+        Some(fixture.plan.allocation_byte_len())
+    );
+    for outcome in std::mem::take(&mut fixture.outcomes) {
+        let crate::GpuSurfacePublishOutcome::Published(publication) = outcome else {
+            panic!("initial exact route unexpectedly busy");
+        };
+        super::gpu_surface::fixture::release_on_producer_device(&fixture.plan, &publication)
+            .expect("initial route releases");
+    }
+
+    let selected_id = descriptors[1].id();
+    fixture
+        .plan
+        .select_routes_for_next_acquisition(|descriptor| descriptor.id() == selected_id);
+    assert!(fixture.plan.has_selected_routes());
+    let selected = super::gpu_surface::fixture::republish(&mut fixture, 42)
+        .expect("selected exact route publishes");
+    assert_eq!(selected.len(), 1);
+    let crate::GpuSurfacePublishOutcome::Published(publication) = &selected[0] else {
+        panic!("selected exact route unexpectedly busy");
+    };
+    assert_eq!(publication.provenance().descriptor.id(), selected_id);
+    super::gpu_surface::fixture::release_on_producer_device(&fixture.plan, publication)
+        .expect("selected route releases");
+    drop(selected);
+
+    assert!(!fixture.plan.has_selected_routes());
+    let skipped = super::gpu_surface::fixture::republish(&mut fixture, 43)
+        .expect("an empty exact selection remains healthy");
+    assert!(skipped.is_empty());
+}
+
+#[test]
+fn deselected_busy_gpu_route_still_retries_its_latest_acquisition() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        6,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("first exact publication succeeds");
+    let first = fixture.outcomes.remove(0);
+    let second = super::gpu_surface::fixture::republish(&mut fixture, 42)
+        .expect("second native slot publishes")
+        .remove(0);
+
+    fixture
+        .plan
+        .select_routes_for_next_acquisition(|route| route.id() == descriptor.id());
+    let busy = super::gpu_surface::fixture::republish(&mut fixture, 43)
+        .expect("latest acquisition remains pending while both slots are retained");
+    assert!(matches!(
+        busy.as_slice(),
+        [crate::GpuSurfacePublishOutcome::Busy(id)] if *id == descriptor.id()
+    ));
+
+    fixture.plan.select_routes_for_next_acquisition(|_| false);
+    assert!(fixture.plan.has_selected_routes());
+    drop(first);
+    let retried = (0..64)
+        .find_map(|_| {
+            let outcomes = super::gpu_surface::fixture::retry_pending(&mut fixture)
+                .expect("deselected pending route remains retryable");
+            outcomes.into_iter().find_map(|outcome| match outcome {
+                crate::GpuSurfacePublishOutcome::Published(publication) => Some(publication),
+                crate::GpuSurfacePublishOutcome::Busy(_) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                    None
+                }
+            })
+        })
+        .expect("pending route publishes after its native slot is released");
+    assert_eq!(retried.provenance().source_sequence, 43);
+    drop((second, retried));
+}
+
+#[test]
 fn exact_gpu_surfaces_normalize_every_display_rotation() {
     let bgra = [
         0, 0, 1, 0xFF, 0, 0, 2, 0xFF, 0, 0, 3, 0xFF, 0, 0, 4, 0xFF, 0, 0, 5, 0xFF, 0, 0, 6, 0xFF,

@@ -162,6 +162,12 @@ impl GpuSurfaceTargetPreparation {
         match self.never {}
     }
 
+    /// No route allocation exists on this platform.
+    #[must_use]
+    pub fn allocation_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
     /// No native slots exist on this platform.
     #[must_use]
     pub fn slots(&self) -> &[GpuSurfaceTargetPreparationSlot] {
@@ -231,6 +237,12 @@ impl PreparedCpuDesktopReadback {
         match self.never {}
     }
 
+    /// No shared D3D11 plan allocation exists on this platform.
+    #[must_use]
+    pub fn shared_allocation_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
     /// No native staging surface can be mapped on this platform.
     #[must_use]
     pub fn mapped_byte_len(&self) -> u64 {
@@ -296,6 +308,20 @@ impl PreparedGpuSurfacePlan {
 
     /// No D3D11 descriptors exist on this platform.
     pub fn descriptors(&self) -> std::iter::Empty<&GpuSurfaceDescriptor> {
+        match self.never {}
+    }
+
+    /// No native routes exist to select on this platform.
+    pub fn select_routes_for_next_acquisition<F>(&mut self, _select: F)
+    where
+        F: FnMut(&GpuSurfaceDescriptor) -> bool,
+    {
+        match self.never {}
+    }
+
+    /// No native acquisition can advance on this platform.
+    #[must_use]
+    pub fn has_selected_routes(&self) -> bool {
         match self.never {}
     }
 

@@ -33,8 +33,8 @@ use windows::core::{HRESULT, Interface, PCWSTR};
 use crate::shared::{
     CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
     CursorInfo, DisplayRotation, Frame, GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceDescriptor,
-    GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo,
-    MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride_within, subsampled_extent,
+    GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo, MonitorSelector,
+    ReductionPath, ReductionTelemetry, subsample_stride_within, subsampled_extent,
 };
 
 mod cpu_readback;
@@ -2229,8 +2229,6 @@ pub mod fixtures {
     use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
     use super::*;
-    use crate::GpuSurfaceDescriptorId;
-
     /// Inputs for one deterministic exact GPU publication fixture.
     pub struct GpuSurfaceFixtureConfig {
         /// Renderer adapter on which the capture device must be created.
@@ -2276,7 +2274,7 @@ pub mod fixtures {
         /// Request a target-preparation manifest from the fixture's live plan.
         pub fn target_preparation_for(
             &self,
-            descriptor_id: GpuSurfaceDescriptorId,
+            descriptor_id: crate::GpuSurfaceDescriptorId,
         ) -> CaptureResult<GpuSurfaceTargetPreparation> {
             self._plan.target_preparation(descriptor_id)
         }
