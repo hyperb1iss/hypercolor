@@ -17,6 +17,9 @@
 #[cfg(target_os = "windows")]
 mod duplication;
 
+#[cfg(all(target_os = "windows", feature = "capture-fixtures"))]
+#[doc(hidden)]
+pub use duplication::fixtures;
 #[cfg(target_os = "windows")]
 pub use duplication::{
     DesktopDuplicator, GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication,

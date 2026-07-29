@@ -10,6 +10,11 @@ description = "Windows D3D11/Vulkan texture import boundary for Hypercolor"
 
 [features]
 default = []
+screen-capture = ["dep:hypercolor-windows-capture", "wgpu-hal/dx12"]
+screen-capture-fixtures = [
+  "screen-capture",
+  "hypercolor-windows-capture/capture-fixtures",
+]
 servo-context = [
   "dep:dpi",
   "dep:euclid",
@@ -25,11 +30,16 @@ servo-context = [
 ]
 
 [dependencies]
+hypercolor-windows-capture = { path = "../hypercolor-windows-capture", optional = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
 
 [dev-dependencies]
 pollster = { workspace = true }
+
+[[test]]
+name = "d3d11on12_screen_copy_tests"
+required-features = ["screen-capture-fixtures"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu-hal = { workspace = true, features = ["vulkan"] }
@@ -37,6 +47,8 @@ windows = { version = "0.62", default-features = false, features = [
   "Win32_Foundation",
   "Win32_Graphics_Direct3D",
   "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Direct3D11on12",
+  "Win32_Graphics_Direct3D12",
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
   "Win32_System_LibraryLoader",

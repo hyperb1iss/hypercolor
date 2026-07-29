@@ -11,8 +11,32 @@ pub struct WgpuFixture {
 
 impl WgpuFixture {
     pub fn new(label: &str) -> Result<Self, String> {
+        Self::new_for_backend(
+            label,
+            wgpu::Backends::VULKAN,
+            wgpu::Backend::Vulkan,
+            wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn new_dx12(label: &str) -> Result<Self, String> {
+        Self::new_for_backend(
+            label,
+            wgpu::Backends::DX12,
+            wgpu::Backend::Dx12,
+            wgpu::Features::empty(),
+        )
+    }
+
+    fn new_for_backend(
+        label: &str,
+        backends: wgpu::Backends,
+        expected_backend: wgpu::Backend,
+        required_features: wgpu::Features,
+    ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -22,15 +46,16 @@ impl WgpuFixture {
         }))
         .map_err(|error| format!("could not create wgpu adapter: {error}"))?;
         let adapter_info = adapter.get_info();
-        if adapter_info.backend != wgpu::Backend::Vulkan {
+        if adapter_info.backend != expected_backend {
             return Err(format!(
-                "requires Vulkan wgpu backend, got {:?}",
-                adapter_info.backend
+                "requires {expected_backend:?} wgpu backend, got {:?}",
+                adapter_info.backend,
             ));
         }
-        let required_features = wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32;
         if !adapter.features().contains(required_features) {
-            return Err("wgpu adapter is missing VULKAN_EXTERNAL_MEMORY_WIN32".to_owned());
+            return Err(format!(
+                "wgpu adapter is missing required features {required_features:?}"
+            ));
         }
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {

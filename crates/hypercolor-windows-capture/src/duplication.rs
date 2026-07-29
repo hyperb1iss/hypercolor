@@ -1916,6 +1916,203 @@ impl Drop for DesktopDuplicator {
     }
 }
 
+#[cfg(feature = "capture-fixtures")]
+#[doc(hidden)]
+pub mod fixtures {
+    use std::num::NonZeroU32;
+
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+
+    use super::*;
+
+    /// Inputs for one deterministic exact GPU publication fixture.
+    pub struct GpuSurfaceFixtureConfig {
+        /// Renderer adapter on which the capture device must be created.
+        pub adapter_luid: GpuAdapterLuid,
+        /// Source-local plan generation stamped into the publication.
+        pub plan_generation: GpuSurfacePlanGeneration,
+        /// Stable display source identity.
+        pub source_id: Arc<str>,
+        /// Attached-output topology generation.
+        pub topology_generation: u64,
+        /// Capture-session incarnation.
+        pub duplication_generation: u64,
+        /// Exact publication descriptor.
+        pub descriptor: GpuSurfaceDescriptor,
+        /// Tightly packed BGRA source pixels.
+        pub bgra: Vec<u8>,
+        /// Source width.
+        pub width: u32,
+        /// Source height.
+        pub height: u32,
+    }
+
+    /// Live producer resources and the exact publication they emitted.
+    pub struct GpuSurfaceFixture {
+        publication: Arc<GpuSurfacePublication>,
+        _plan: PreparedGpuSurfacePlan,
+    }
+
+    impl GpuSurfaceFixture {
+        /// Borrow the live exact publication.
+        #[must_use]
+        pub fn publication(&self) -> &Arc<GpuSurfacePublication> {
+            &self.publication
+        }
+    }
+
+    /// Publish deterministic BGRA pixels through the real exact GPU producer.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed capture failures for adapter lookup, resource creation,
+    /// exact plan preparation, and publication.
+    pub fn publish_gpu_surface(
+        config: GpuSurfaceFixtureConfig,
+    ) -> CaptureResult<GpuSurfaceFixture> {
+        let adapter = find_adapter(config.adapter_luid)?;
+        let (device, context) = create_device(&adapter)?;
+        let source_extent = CaptureExtent::try_new(config.width, config.height)?;
+        let expected_len = checked_rgba_bytes(config.width, config.height)?;
+        if config.bgra.len() != expected_len {
+            return Err(CaptureError::InvalidBufferGeometry {
+                operation: "validate GPU Surface fixture pixels",
+                width: config.width,
+                height: config.height,
+                row_pitch: config.bgra.len(),
+            });
+        }
+        let row_pitch = config.width.checked_mul(BYTES_PER_PIXEL as u32).ok_or(
+            CaptureError::GeometryOverflow {
+                operation: "calculate GPU Surface fixture row pitch",
+                width: config.width,
+                height: config.height,
+            },
+        )?;
+        let source_desc = D3D11_TEXTURE2D_DESC {
+            Width: config.width,
+            Height: config.height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: 0,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let initial = D3D11_SUBRESOURCE_DATA {
+            pSysMem: config.bgra.as_ptr().cast(),
+            SysMemPitch: row_pitch,
+            SysMemSlicePitch: 0,
+        };
+        let source = gpu_reduction::create_texture(&device, &source_desc, Some(&initial))
+            .map_err(|error| CaptureError::windows("create GPU Surface fixture texture", error))?;
+        let admission = GpuSurfaceAdmission::new(
+            u64::MAX,
+            NonZeroU32::new(2).expect("two is a non-zero fixture slot count"),
+        );
+        let mut plan = PreparedGpuSurfacePlan::prepare(
+            &device,
+            &context,
+            config.plan_generation,
+            Arc::clone(&config.source_id),
+            config.topology_generation,
+            config.duplication_generation,
+            config.adapter_luid,
+            source_extent,
+            source_extent,
+            DisplayRotation::Identity,
+            GpuSurfaceSourceColorSpace::RgbFullG22P709,
+            std::slice::from_ref(&config.descriptor),
+            admission,
+        )?;
+        let metadata = CaptureMetadata {
+            source_id: config.source_id,
+            topology_generation: config.topology_generation,
+            sequence: 1,
+            captured_at: Instant::now(),
+            cursor: CursorInfo::default(),
+            pointer: Arc::new(PointerState::default()),
+            source_width: config.width,
+            source_height: config.height,
+            origin_x: 0,
+            origin_y: 0,
+            rotation: DisplayRotation::Identity,
+            source_color_space: GpuSurfaceSourceColorSpace::RgbFullG22P709,
+            region: CaptureRegion::full(config.width, config.height),
+        };
+        let mut publication = None;
+        plan.publish(
+            Some(&source),
+            metadata,
+            config.duplication_generation,
+            |outcome| {
+                if let GpuSurfacePublishOutcome::Published(published) = outcome {
+                    publication = Some(published);
+                }
+            },
+        )?;
+        let publication = publication.ok_or_else(|| {
+            CaptureError::windows(
+                "publish GPU Surface fixture",
+                "the exact producer emitted no publication",
+            )
+        })?;
+        Ok(GpuSurfaceFixture {
+            publication,
+            _plan: plan,
+        })
+    }
+
+    fn find_adapter(requested: GpuAdapterLuid) -> CaptureResult<IDXGIAdapter1> {
+        // SAFETY: CreateDXGIFactory1 has no borrowed inputs or out-pointers.
+        let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }
+            .map_err(|error| CaptureError::windows("create GPU fixture DXGI factory", error))?;
+        for index in 0.. {
+            // SAFETY: EnumAdapters1 returns owned COM interfaces and uses
+            // DXGI_ERROR_NOT_FOUND as its documented loop terminator.
+            match unsafe { factory.EnumAdapters1(index) } {
+                Ok(adapter) if adapter_luid(&adapter)? == requested => return Ok(adapter),
+                Ok(_) => {}
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => {
+                    return Err(CaptureError::windows(
+                        "enumerate GPU fixture adapters",
+                        error,
+                    ));
+                }
+            }
+        }
+        Err(CaptureError::windows(
+            "find GPU fixture adapter",
+            "renderer adapter was not enumerated by DXGI",
+        ))
+    }
+
+    fn checked_rgba_bytes(width: u32, height: u32) -> CaptureResult<usize> {
+        let bytes = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL as u64))
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "calculate GPU Surface fixture bytes",
+                width,
+                height,
+            })?;
+        usize::try_from(bytes).map_err(|_| CaptureError::GeometryOverflow {
+            operation: "represent GPU Surface fixture bytes",
+            width,
+            height,
+        })
+    }
+}
+
 /// Create a D3D11 device on `adapter`.
 fn create_device(adapter: &IDXGIAdapter1) -> CaptureResult<(ID3D11Device, ID3D11DeviceContext)> {
     let mut device: Option<ID3D11Device> = None;

@@ -10,6 +10,7 @@ rust-version.workspace = true
 
 [features]
 capture-bench = []
+capture-fixtures = []
 
 [lints.rust]
 unsafe_code = "allow"
