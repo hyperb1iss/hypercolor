@@ -686,6 +686,120 @@ fn executable_fanout_preserves_branch_cadence_pressure_and_authority() {
 }
 
 #[test]
+fn masked_native_and_prereduced_routes_share_one_sequence_without_duplicates() {
+    let executor = executor();
+    let source = source(extent(17, 11));
+    let first = demand(
+        &source,
+        extent(9, 5),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let second = demand(
+        &source,
+        extent(5, 9),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [first, second]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("mixed physical batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("mixed physical workspace prepares");
+    let candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+        &executor, &batch, workspace, &plan,
+    )
+    .expect("mixed executable fanout prepares");
+    let mut fanout = candidate
+        .bind(builder.committed_state(), &binding)
+        .expect("mixed executable fanout binds");
+    assert_eq!(fanout.len(), 2);
+
+    let now = Instant::now();
+    assert!(matches!(
+        fanout.publish_due_masked(&hub, None, now, ScreenPublicationHealth::Healthy, &[true],),
+        Err(
+            hypercolor_core::input::screen::CpuPublicationFanoutError::PhysicalMaskLengthMismatch {
+                expected: 2,
+                actual: 1,
+            }
+        )
+    ));
+    assert!(
+        fanout
+            .publish_due_masked(
+                &hub,
+                None,
+                now,
+                ScreenPublicationHealth::Healthy,
+                &[false, true],
+            )
+            .expect("selected fallback route records source demand")
+            .needs_source()
+    );
+    assert!(fanout.physical_pending(0));
+    assert!(fanout.physical_pending(1));
+
+    let reduced_descriptor = fanout
+        .physical_descriptor(1)
+        .expect("selected reduced descriptor exists");
+    let reduced_len = usize::try_from(reduced_descriptor.reduction_extent().width())
+        .expect("width fits usize")
+        .checked_mul(
+            usize::try_from(reduced_descriptor.reduction_extent().height())
+                .expect("height fits usize"),
+        )
+        .and_then(|pixels| pixels.checked_mul(4))
+        .expect("fixture byte length fits usize");
+    let reduced = vec![0x42; reduced_len];
+    let reduced_report = fanout
+        .publish_prereduced_physical(
+            &hub,
+            1,
+            &reduced,
+            1,
+            now,
+            now,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("GPU-reduced physical route publishes directly");
+    assert_eq!(reduced_report.published(), 1);
+    assert!(!fanout.physical_pending(1));
+    assert!(fanout.physical_pending(0));
+
+    let native = frame_with_sequence(&source, 1);
+    let native_now = Instant::now();
+    let native_report = fanout
+        .publish_due_masked(
+            &hub,
+            Some(&native),
+            native_now,
+            ScreenPublicationHealth::Healthy,
+            &[true, false],
+        )
+        .expect("native fallback publishes only its selected physical route");
+    assert_eq!(native_report.published(), 1);
+    assert!(!fanout.physical_pending(0));
+
+    for physical in fanout.physical() {
+        for branch in physical.branches() {
+            assert_eq!(
+                hub.lease(branch.descriptor())
+                    .expect("mixed branch lease exists")
+                    .read()
+                    .expect("mixed branch publication is live")
+                    .native_sequence(),
+                NonZeroU64::MIN,
+            );
+        }
+    }
+}
+
+#[test]
 fn fanout_finalize_failure_is_atomic_and_discards_every_staged_branch() {
     let executor = executor();
     let source = source(extent(11, 11));

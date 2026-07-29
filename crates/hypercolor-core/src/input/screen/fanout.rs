@@ -567,14 +567,66 @@ impl PreparedCpuPublicationFanout {
         now: Instant,
         health: ScreenPublicationHealth,
     ) -> Result<CpuPublicationFanoutReport, CpuPublicationFanoutError> {
+        self.observe_deadlines(now)?;
+        self.publish_due_inner(hub, frame, now, health, None)
+    }
+
+    /// Publish only physical routes selected by an immutable preparation mask.
+    ///
+    /// Deadlines still advance for every logical branch so GPU-reduced routes
+    /// and native fallback routes share one coherent scheduler. The returned
+    /// source demand reflects only selected routes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mask with another plan shape and preserves every error from
+    /// [`Self::publish_due`].
+    pub fn publish_due_masked(
+        &mut self,
+        hub: &ScreenPublicationHub,
+        frame: Option<&CaptureFrame<RawCaptureSurface>>,
+        now: Instant,
+        health: ScreenPublicationHealth,
+        physical_mask: &[bool],
+    ) -> Result<CpuPublicationFanoutReport, CpuPublicationFanoutError> {
+        if physical_mask.len() != self.physical.len() {
+            return Err(CpuPublicationFanoutError::PhysicalMaskLengthMismatch {
+                expected: self.physical.len(),
+                actual: physical_mask.len(),
+            });
+        }
+        self.observe_deadlines(now)?;
+        self.publish_due_inner(hub, frame, now, health, Some(physical_mask))
+    }
+
+    /// Whether one physical route has a due logical consumer awaiting bytes.
+    #[must_use]
+    pub fn physical_pending(&self, physical_index: usize) -> bool {
+        self.physical
+            .get(physical_index)
+            .is_some_and(|physical| physical.branches.iter().any(|branch| branch.pending_due))
+    }
+
+    fn observe_deadlines(&mut self, now: Instant) -> Result<(), CpuPublicationFanoutError> {
         for physical in &mut self.physical {
             for branch in &mut physical.branches {
                 branch.observe_deadline(now)?;
             }
         }
+        Ok(())
+    }
+
+    fn publish_due_inner(
+        &mut self,
+        hub: &ScreenPublicationHub,
+        frame: Option<&CaptureFrame<RawCaptureSurface>>,
+        now: Instant,
+        health: ScreenPublicationHealth,
+        physical_mask: Option<&[bool]>,
+    ) -> Result<CpuPublicationFanoutReport, CpuPublicationFanoutError> {
         let Some(frame) = frame else {
             return Ok(CpuPublicationFanoutReport {
-                needs_source: self.any_pending(),
+                needs_source: self.any_pending(physical_mask),
                 ..CpuPublicationFanoutReport::default()
             });
         };
@@ -603,6 +655,9 @@ impl PreparedCpuPublicationFanout {
         self.publications.clear();
         self.direct_batch_indices.clear();
         for (physical_index, physical) in self.physical.iter_mut().enumerate() {
+            if physical_mask.is_some_and(|mask| !mask[physical_index]) {
+                continue;
+            }
             for (branch_index, branch) in physical.branches.iter_mut().enumerate() {
                 if !branch.accepts_sequence(sequence) {
                     if branch.pending_due {
@@ -767,14 +822,176 @@ impl PreparedCpuPublicationFanout {
             &mut self.publications,
             &mut self.direct_batch_indices,
         );
-        report.needs_source |= self.any_pending();
+        report.needs_source |= self.any_pending(physical_mask);
         Ok(report)
     }
 
-    fn any_pending(&self) -> bool {
+    /// Publish one already-reduced physical RGBA plane to its due logical
+    /// consumers without re-running the native CPU reducer.
+    ///
+    /// The physical index belongs to this immutable fanout generation. Hub
+    /// reservations, branch-local staging, and finalization remain atomic.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale authority, invalid route identity, malformed bytes,
+    /// zero or stale sequences, publication pressure failures, and branch
+    /// materialization failures.
+    pub fn publish_prereduced_physical(
+        &mut self,
+        hub: &ScreenPublicationHub,
+        physical_index: usize,
+        pixels: &[u8],
+        source_sequence: u64,
+        captured_at: Instant,
+        now: Instant,
+        health: ScreenPublicationHealth,
+    ) -> Result<CpuPublicationFanoutReport, CpuPublicationFanoutError> {
+        let descriptor = self.physical_descriptor(physical_index).cloned().ok_or(
+            CpuPublicationFanoutError::PhysicalIndexOutOfRange {
+                index: physical_index,
+                len: self.physical.len(),
+            },
+        )?;
+        let expected = u64::from(descriptor.reduction_extent().width())
+            .checked_mul(u64::from(descriptor.reduction_extent().height()))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or(CpuPublicationFanoutError::PhysicalByteLengthOverflow)?;
+        if pixels.len() != expected {
+            return Err(CpuPublicationFanoutError::PhysicalByteLengthMismatch {
+                expected,
+                actual: pixels.len(),
+            });
+        }
+        let native_sequence = NonZeroU64::new(source_sequence)
+            .ok_or(CpuPublicationFanoutError::NativeSequenceZero)?;
+        let current_authority = hub.committed_state();
+        if !Arc::ptr_eq(&current_authority, &self.authority) {
+            return Err(ScreenPublicationHubError::PublisherStale {
+                expected: current_authority.plan().generation(),
+                observed: self.authority.plan().generation(),
+            }
+            .into());
+        }
+
+        let plan_generation = self.authority.plan().generation();
+        let mut report = CpuPublicationFanoutReport::default();
+        self.reservations.clear();
+        self.publications.clear();
+        self.direct_batch_indices.clear();
+        let physical = &mut self.physical[physical_index];
+        for (branch_index, branch) in physical.branches.iter_mut().enumerate() {
+            if !branch.accepts_sequence(source_sequence) {
+                if branch.pending_due {
+                    report.needs_source = true;
+                }
+                continue;
+            }
+            if now > branch.cadence.freshness_deadline(captured_at)? {
+                report.needs_source = true;
+                continue;
+            }
+            let metadata = ScreenPublicationMetadata::try_intent(
+                branch.descriptor.source_epoch().clone(),
+                plan_generation,
+                native_sequence,
+                captured_at,
+                branch.cadence.freshness_deadline(captured_at)?,
+            )?;
+            let payload_kind = match branch.kind {
+                PreparedCpuLogicalFanoutKind::DirectSurface
+                | PreparedCpuLogicalFanoutKind::MaterializedSurface => ScreenPayloadKind::Surface,
+                PreparedCpuLogicalFanoutKind::Zones => ScreenPayloadKind::Zones,
+            };
+            match hub.prepare_writable_publication(branch.publisher(), payload_kind, &metadata) {
+                Ok(publication) => {
+                    self.reservations.push(CpuPendingPublication {
+                        physical_index,
+                        branch_index,
+                    });
+                    self.publications.push(publication);
+                }
+                Err(ScreenPublicationHubError::PublicationPressure { .. }) => {
+                    branch.pending_due = false;
+                    report.pressured += 1;
+                }
+                Err(error) => {
+                    clear_pending_publications(
+                        &mut self.reservations,
+                        &mut self.publications,
+                        &mut self.direct_batch_indices,
+                    );
+                    return Err(error.into());
+                }
+            }
+        }
+
+        for reservation_index in 0..self.reservations.len() {
+            let branch_index = self.reservations[reservation_index].branch_index;
+            let branch = &mut self.physical[physical_index].branches[branch_index];
+            if let Err(error) = stage_prereduced_publication(
+                branch,
+                &descriptor,
+                pixels,
+                captured_at,
+                plan_generation,
+                &mut self.publications[reservation_index],
+            ) {
+                discard_all_stages(&mut self.physical, &self.reservations, plan_generation);
+                clear_pending_publications(
+                    &mut self.reservations,
+                    &mut self.publications,
+                    &mut self.direct_batch_indices,
+                );
+                return Err(error);
+            }
+        }
+        for pending in &self.reservations {
+            let branch = &self.physical[pending.physical_index].branches[pending.branch_index];
+            if let Err(error) = validate_branch_stage(branch, plan_generation) {
+                discard_all_stages(&mut self.physical, &self.reservations, plan_generation);
+                clear_pending_publications(
+                    &mut self.reservations,
+                    &mut self.publications,
+                    &mut self.direct_batch_indices,
+                );
+                return Err(error);
+            }
+        }
+        if let Err(error) = hub.finalize_writable_publications(&mut self.publications, now, health)
+        {
+            discard_all_stages(&mut self.physical, &self.reservations, plan_generation);
+            clear_pending_publications(
+                &mut self.reservations,
+                &mut self.publications,
+                &mut self.direct_batch_indices,
+            );
+            return Err(error.into());
+        }
+        for pending in &self.reservations {
+            let branch = &mut self.physical[pending.physical_index].branches[pending.branch_index];
+            commit_branch_stage(branch, plan_generation)
+                .expect("validated pre-reduced branch stage commits after atomic publication");
+            branch.pending_due = false;
+            branch.last_accepted_sequence = Some(source_sequence);
+            report.published += 1;
+        }
+        clear_pending_publications(
+            &mut self.reservations,
+            &mut self.publications,
+            &mut self.direct_batch_indices,
+        );
+        report.needs_source |= self.physical_pending(physical_index);
+        Ok(report)
+    }
+
+    fn any_pending(&self, physical_mask: Option<&[bool]>) -> bool {
         self.physical
             .iter()
-            .flat_map(|physical| physical.branches.iter())
+            .enumerate()
+            .filter(|(index, _)| physical_mask.is_none_or(|mask| mask[*index]))
+            .flat_map(|(_, physical)| physical.branches.iter())
             .any(|branch| branch.pending_due)
     }
 }
@@ -847,6 +1064,62 @@ fn stage_workspace_publication(
                     physical_descriptor,
                     physical_pixels,
                     frame.metadata().captured_at,
+                    publication,
+                )?;
+            let columns = std::num::NonZeroU32::new(staged.columns())
+                .ok_or(CpuPublicationFanoutError::InvalidEffectiveZoneShape)?;
+            let rows = std::num::NonZeroU32::new(staged.rows())
+                .ok_or(CpuPublicationFanoutError::InvalidEffectiveZoneShape)?;
+            publication.set_effective_zone_shape(columns, rows)?;
+        }
+    }
+    Ok(())
+}
+
+fn stage_prereduced_publication(
+    branch: &mut PreparedCpuLogicalFanout,
+    physical_descriptor: &ScreenPhysicalReductionDescriptor,
+    physical_pixels: &[u8],
+    captured_at: Instant,
+    plan_generation: ScreenPlanGeneration,
+    publication: &mut PreparedScreenPublication,
+) -> Result<(), CpuPublicationFanoutError> {
+    match branch.kind {
+        PreparedCpuLogicalFanoutKind::DirectSurface => {
+            let output = publication
+                .surface_pixels_mut()
+                .map_err(CpuPublicationFanoutError::Publisher)?;
+            if output.len() != physical_pixels.len() {
+                return Err(CpuPublicationFanoutError::DirectSurfaceLengthMismatch {
+                    expected: physical_pixels.len(),
+                    actual: output.len(),
+                });
+            }
+            output.copy_from_slice(physical_pixels);
+        }
+        PreparedCpuLogicalFanoutKind::MaterializedSurface => {
+            branch
+                .surface_materializer
+                .as_mut()
+                .expect("materialized Surface routes own a processor")
+                .stage(
+                    plan_generation,
+                    physical_descriptor,
+                    physical_pixels,
+                    captured_at,
+                    publication,
+                )?;
+        }
+        PreparedCpuLogicalFanoutKind::Zones => {
+            let staged = branch
+                .zone_materializer
+                .as_mut()
+                .expect("Zones routes own a processor")
+                .stage(
+                    plan_generation,
+                    physical_descriptor,
+                    physical_pixels,
+                    captured_at,
                     publication,
                 )?;
             let columns = std::num::NonZeroU32::new(staged.columns())
@@ -986,6 +1259,18 @@ pub enum CpuPublicationFanoutError {
     /// Hub metadata requires positive native sequence identity.
     #[error("CPU publication fanout received native sequence zero")]
     NativeSequenceZero,
+    /// A runtime physical selection mask belongs to another prepared shape.
+    #[error("CPU fanout physical mask has {actual} entries; expected {expected}")]
+    PhysicalMaskLengthMismatch { expected: usize, actual: usize },
+    /// A pre-reduced result names no route in this immutable generation.
+    #[error("CPU fanout physical index {index} is outside {len} prepared routes")]
+    PhysicalIndexOutOfRange { index: usize, len: usize },
+    /// A physical output plane cannot be addressed by this process.
+    #[error("CPU fanout physical output byte length exceeds usize")]
+    PhysicalByteLengthOverflow,
+    /// A pre-reduced plane does not match its exact physical descriptor.
+    #[error("pre-reduced physical plane has {actual} bytes; expected {expected}")]
+    PhysicalByteLengthMismatch { expected: usize, actual: usize },
     /// A scheduled retained plane did not contain completed physical bytes.
     #[error("CPU publication workspace plane {workspace_index} is unavailable")]
     WorkspacePublicationUnavailable { workspace_index: usize },
