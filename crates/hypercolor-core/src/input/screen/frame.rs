@@ -11,6 +11,8 @@ use std::time::Instant;
 
 use thiserror::Error;
 
+use super::plan::ScreenResourceLifetime;
+
 /// Stable logical identity of one capture source.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CaptureSourceId(Arc<str>);
@@ -1166,6 +1168,8 @@ pub struct PlatformGpuSurface {
     extent: PixelExtent,
     format: CapturePixelFormat,
     owner: Arc<dyn Any + Send + Sync>,
+    retained_owner: Option<Arc<dyn Any + Send + Sync>>,
+    resource_lifetime: Option<ScreenResourceLifetime>,
 }
 
 impl PlatformGpuSurface {
@@ -1194,7 +1198,19 @@ impl PlatformGpuSurface {
             extent,
             format,
             owner,
+            retained_owner: None,
+            resource_lifetime: None,
         })
+    }
+
+    pub(crate) fn with_native_target_owners(
+        mut self,
+        retained_owner: Arc<dyn Any + Send + Sync>,
+        resource_lifetime: ScreenResourceLifetime,
+    ) -> Self {
+        self.retained_owner = Some(retained_owner);
+        self.resource_lifetime = Some(resource_lifetime);
+        self
     }
 
     /// GPU API family without exposing a native handle type.
@@ -1235,6 +1251,23 @@ impl PlatformGpuSurface {
         T: Any + Send + Sync,
     {
         Arc::clone(&self.owner).downcast().ok()
+    }
+
+    /// Recover a typed secondary owner retained for renderer-target lifetime.
+    #[must_use]
+    pub fn retained_owner<T>(&self) -> Option<Arc<T>>
+    where
+        T: Any + Send + Sync,
+    {
+        self.retained_owner
+            .as_ref()
+            .and_then(|owner| Arc::clone(owner).downcast().ok())
+    }
+
+    /// Exact worker allocation lifetime retained with this GPU surface.
+    #[must_use]
+    pub const fn resource_lifetime(&self) -> Option<&ScreenResourceLifetime> {
+        self.resource_lifetime.as_ref()
     }
 }
 

@@ -127,6 +127,62 @@ impl ScreenWorkerExactLedgerBuilder {
         Ok(())
     }
 
+    /// Report one renderer preparation through its target-bound ledger entry.
+    ///
+    /// # Errors
+    ///
+    /// Rejects generic worker resources, unknown or non-runtime scopes,
+    /// repeated names, and allocation failure while retaining prior reports.
+    pub fn report_native_target(
+        &mut self,
+        resource: ScreenExactResource,
+    ) -> Result<(), ScreenWorkerLedgerBuildError> {
+        if resource.native_binding().is_none() {
+            return Err(ScreenWorkerLedgerBuildError::UnboundNativeTargetResource {
+                name: Arc::clone(resource.name()),
+            });
+        }
+        let scope_index = self
+            .ticket
+            .required_minimums()
+            .binary_search_by(|minimum| {
+                minimum
+                    .name()
+                    .as_ref()
+                    .cmp(resource.accounting_scope().as_ref())
+            })
+            .map_err(|_| ScreenWorkerLedgerBuildError::UnknownResourceScope {
+                name: Arc::clone(resource.name()),
+                scope: Arc::clone(resource.accounting_scope()),
+            })?;
+        let scope = &self.ticket.required_minimums()[scope_index];
+        if scope.resource() != super::ScreenResourceKind::WorkerAdditional {
+            return Err(ScreenWorkerLedgerBuildError::InvalidNativeTargetScope {
+                name: Arc::clone(resource.name()),
+                scope: Arc::clone(resource.accounting_scope()),
+            });
+        }
+        let duplicate_required = self
+            .ticket
+            .required_minimums()
+            .binary_search_by(|minimum| minimum.name().as_ref().cmp(resource.name().as_ref()))
+            .is_ok();
+        let duplicate_additional = self
+            .additional_resources
+            .iter()
+            .any(|retained| retained.name() == resource.name());
+        if duplicate_required || duplicate_additional {
+            return Err(ScreenWorkerLedgerBuildError::DuplicateResource {
+                name: Arc::clone(resource.name()),
+            });
+        }
+        self.additional_resources
+            .try_reserve(1)
+            .map_err(|_| ScreenWorkerLedgerBuildError::AllocationFailed)?;
+        self.additional_resources.push(resource);
+        Ok(())
+    }
+
     /// Bind every reported allocation lifetime and produce its prepared token.
     ///
     /// # Errors
@@ -219,6 +275,12 @@ pub enum ScreenWorkerLedgerBuildError {
     /// An additional allocation named no required accounting scope.
     #[error("exact worker resource {name} references unknown accounting scope {scope}")]
     UnknownResourceScope { name: Arc<str>, scope: Arc<str> },
+    /// A generic worker entry was presented as a renderer-bound allocation.
+    #[error("exact worker resource {name} is not bound to a native target")]
+    UnboundNativeTargetResource { name: Arc<str> },
+    /// Native renderer allocations must belong to the runtime accounting scope.
+    #[error("native target resource {name} references non-runtime accounting scope {scope}")]
+    InvalidNativeTargetScope { name: Arc<str>, scope: Arc<str> },
     /// Caller reported one required allocation scope twice.
     #[error("duplicate exact worker resource scope {name}")]
     DuplicateResource { name: Arc<str> },

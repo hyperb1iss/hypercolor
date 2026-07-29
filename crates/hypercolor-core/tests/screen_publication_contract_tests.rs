@@ -16,6 +16,9 @@ use hypercolor_core::input::screen::{
     ScreenSourceSelector, ScreenTargetColorimetry, SourceScale,
 };
 
+#[path = "support/native_target.rs"]
+mod native_target_support;
+
 fn source(capabilities: ScreenCursorCapabilities) -> ResolvedScreenSource {
     let source_id =
         CaptureSourceId::new("synthetic:cursor-contract").expect("test source id is non-empty");
@@ -73,6 +76,7 @@ fn native_target() -> ScreenNativeExecutionTarget {
             high_part: 0,
         },
         NonZeroU32::new(16_384).expect("test texture limit is non-zero"),
+        native_target_support::preparer(),
     )
 }
 

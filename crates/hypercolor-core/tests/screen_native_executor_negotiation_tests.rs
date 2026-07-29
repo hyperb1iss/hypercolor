@@ -1,5 +1,6 @@
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hypercolor_core::input::screen::{
     CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
@@ -9,12 +10,17 @@ use hypercolor_core::input::screen::{
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
     ScreenCursorCapabilities, ScreenExecutorColorCapabilities, ScreenExtentRequest,
     ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenNativePreparationPayload, ScreenNativeTargetPreparation,
+    ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
     ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationExecutor,
     ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
     ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency, ScreenResourceApi,
     ScreenSourceReflection, ScreenSourceSelector, SourceScale,
 };
+
+#[path = "support/native_target.rs"]
+mod native_target_support;
 
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is non-empty")
@@ -44,7 +50,101 @@ fn target(
         accepted_api,
         device,
         non_zero_u32(max_texture_dimension),
+        native_target_support::preparer(),
     )
+}
+
+struct CountingPreparer {
+    calls: Arc<AtomicUsize>,
+}
+
+impl ScreenNativeTargetPreparer for CountingPreparer {
+    fn prepare(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(ScreenNativeTargetPreparation::new(platform.clone(), 1))
+    }
+}
+
+fn counting_target(
+    id: u64,
+    device: ScreenPhysicalGpuDeviceIdentity,
+    calls: Arc<AtomicUsize>,
+) -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(id).expect("test target identity is non-zero"),
+        ),
+        PlatformGpuApi::Direct3d11,
+        device,
+        non_zero_u32(16_384),
+        Arc::new(CountingPreparer { calls }),
+    )
+}
+
+#[test]
+fn native_target_identity_ignores_preparer_object_identity() {
+    assert_eq!(
+        target(7, PlatformGpuApi::Direct3d11, gpu_device(3), 16_384),
+        target(7, PlatformGpuApi::Direct3d11, gpu_device(3), 16_384),
+    );
+}
+
+#[test]
+fn native_target_rejects_cpu_and_foreign_descriptors_before_preparer_dispatch() {
+    let device = gpu_device(4);
+    let source = source(
+        extent(1920, 1080),
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        Some(device.clone()),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first = counting_target(1, device.clone(), Arc::clone(&calls));
+    let second = counting_target(2, device, Arc::clone(&calls));
+    let platform = ScreenNativePreparationPayload::new(Arc::new(()));
+    let cpu = resolve_exact(&source, ScreenPublicationExecutorRequest::Cpu);
+    let cpu_error = first
+        .prepare(cpu.descriptor(), &platform)
+        .expect_err("CPU descriptor is rejected before renderer dispatch");
+    assert_eq!(
+        cpu_error.downcast_ref::<ScreenNativeTargetPreparationError>(),
+        Some(&ScreenNativeTargetPreparationError::CpuDescriptor)
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+    let first_native = resolve_exact(
+        &source,
+        ScreenPublicationExecutorRequest::SourceNative(first),
+    );
+    let target_error = second
+        .prepare(first_native.descriptor(), &platform)
+        .expect_err("foreign native descriptor is rejected before renderer dispatch");
+    assert_eq!(
+        target_error.downcast_ref::<ScreenNativeTargetPreparationError>(),
+        Some(&ScreenNativeTargetPreparationError::TargetMismatch)
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+    let reused_id = ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(NonZeroU64::MIN),
+        PlatformGpuApi::Direct3d11,
+        gpu_device(4),
+        non_zero_u32(8_192),
+        Arc::new(CountingPreparer {
+            calls: Arc::clone(&calls),
+        }),
+    );
+    let reused_id_error = reused_id
+        .prepare(first_native.descriptor(), &platform)
+        .expect_err("same identity with different target metadata is rejected");
+    assert_eq!(
+        reused_id_error.downcast_ref::<ScreenNativeTargetPreparationError>(),
+        Some(&ScreenNativeTargetPreparationError::TargetMismatch)
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
 }
 
 fn source(

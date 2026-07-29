@@ -527,6 +527,29 @@ pub struct ScreenExactResource {
     accounting_scope: Arc<str>,
     resource: ScreenResourceKind,
     bytes: u64,
+    native_binding: Option<ScreenNativeResourceBindingKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScreenNativeResourceBindingKey {
+    target_id: NonZeroU64,
+    descriptor: Arc<ResolvedScreenPublicationDescriptor>,
+}
+
+impl ScreenNativeResourceBindingKey {
+    pub(crate) fn new(
+        target_id: NonZeroU64,
+        descriptor: Arc<ResolvedScreenPublicationDescriptor>,
+    ) -> Self {
+        Self {
+            target_id,
+            descriptor,
+        }
+    }
+
+    pub(crate) const fn target_id(&self) -> NonZeroU64 {
+        self.target_id
+    }
 }
 
 impl ScreenExactResource {
@@ -575,7 +598,24 @@ impl ScreenExactResource {
             accounting_scope,
             resource,
             bytes,
+            native_binding: None,
         })
+    }
+
+    pub(crate) fn try_new_native_target(
+        name: impl Into<Arc<str>>,
+        accounting_scope: impl Into<Arc<str>>,
+        bytes: u64,
+        native_binding: ScreenNativeResourceBindingKey,
+    ) -> Result<Self, ScreenPlanError> {
+        let mut resource = Self::try_new_scoped(
+            name,
+            accounting_scope,
+            ScreenResourceKind::WorkerAdditional,
+            bytes,
+        )?;
+        resource.native_binding = Some(native_binding);
+        Ok(resource)
     }
 
     /// Opaque worker resource name.
@@ -600,6 +640,10 @@ impl ScreenExactResource {
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    pub(crate) const fn native_binding(&self) -> Option<&ScreenNativeResourceBindingKey> {
+        self.native_binding.as_ref()
     }
 }
 

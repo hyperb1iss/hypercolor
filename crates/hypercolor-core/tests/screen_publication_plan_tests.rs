@@ -30,6 +30,9 @@ use hypercolor_core::input::screen::{
     ScreenWorkerPreparationTicket, ScreenZonesPayload, SourceScale,
 };
 
+#[path = "support/native_target.rs"]
+mod native_target_support;
+
 fn non_zero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("test values are non-zero")
 }
@@ -49,6 +52,7 @@ fn native_target(id: u64) -> ScreenNativeExecutionTarget {
         PlatformGpuApi::Direct3d11,
         gpu_device(),
         non_zero(16_384),
+        native_target_support::preparer(),
     )
 }
 

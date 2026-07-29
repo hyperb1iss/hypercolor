@@ -1,17 +1,21 @@
 //! Immutable screen-publication requests and independently resolved descriptors.
 
+use std::any::Any;
 use std::cmp::Ordering;
+use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 use std::time::Duration;
 
 use thiserror::Error;
 
+use super::plan::ScreenNativeResourceBindingKey;
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
     CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CaptureRotation,
     CaptureSourceId, CaptureTransferFunction, KnownCaptureColorimetry, PixelExtent, PixelRect,
-    PlatformGpuApi,
+    PlatformGpuApi, PlatformGpuSurface, ScreenExactResource, ScreenPlanError, ScreenResourceKind,
+    ScreenResourceLifetime,
 };
 
 /// Selector used by a consumer before capture-source resolution.
@@ -480,29 +484,284 @@ impl ScreenNativeExecutionTargetId {
     }
 }
 
+/// Type-erased source-native data supplied to a renderer target preparer.
+#[derive(Clone)]
+pub struct ScreenNativePreparationPayload {
+    inner: Arc<dyn Any + Send + Sync>,
+}
+
+impl ScreenNativePreparationPayload {
+    /// Erase one platform-specific preparation input behind the core contract.
+    #[must_use]
+    pub fn new<T>(payload: Arc<T>) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        let inner: Arc<dyn Any + Send + Sync> = payload;
+        Self { inner }
+    }
+
+    /// Recover a typed platform preparation input.
+    #[must_use]
+    pub fn downcast<T>(&self) -> Option<Arc<T>>
+    where
+        T: Any + Send + Sync,
+    {
+        Arc::clone(&self.inner).downcast().ok()
+    }
+}
+
+impl fmt::Debug for ScreenNativePreparationPayload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScreenNativePreparationPayload")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Renderer allocation bound to the exact worker accounting lifetime.
+#[derive(Clone, Debug)]
+pub struct ScreenNativeTargetAllocation {
+    retained_bytes: u64,
+    lifetime: ScreenResourceLifetime,
+}
+
+impl ScreenNativeTargetAllocation {
+    fn new(retained_bytes: u64, lifetime: ScreenResourceLifetime) -> Self {
+        Self {
+            retained_bytes,
+            lifetime,
+        }
+    }
+
+    /// Renderer bytes retained until every runtime and publication releases this lease.
+    #[must_use]
+    pub const fn retained_bytes(&self) -> u64 {
+        self.retained_bytes
+    }
+
+    /// Exact ledger lifetime paired with this renderer allocation.
+    #[must_use]
+    pub const fn lifetime(&self) -> &ScreenResourceLifetime {
+        &self.lifetime
+    }
+}
+
+/// Unbound renderer preparation that cannot enter a publication.
+#[derive(Debug)]
+pub struct ScreenNativeTargetPreparation {
+    binding: Option<ScreenNativeResourceBindingKey>,
+    platform: ScreenNativePreparationPayload,
+    retained_bytes: u64,
+}
+
+impl ScreenNativeTargetPreparation {
+    /// Pair renderer-specific prepared data with its exact retained byte count.
+    #[must_use]
+    pub fn new(platform: ScreenNativePreparationPayload, retained_bytes: u64) -> Self {
+        Self {
+            binding: None,
+            platform,
+            retained_bytes,
+        }
+    }
+
+    /// Renderer bytes that must be reported before binding this preparation.
+    #[must_use]
+    pub const fn retained_bytes(&self) -> u64 {
+        self.retained_bytes
+    }
+
+    /// Construct the exact ledger entry that may bind this preparation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects preparations not stamped by a live target and invalid resource
+    /// names or accounting scopes.
+    pub fn exact_resource(
+        &self,
+        name: impl Into<Arc<str>>,
+        accounting_scope: impl Into<Arc<str>>,
+    ) -> Result<ScreenExactResource, ScreenNativeTargetResourceError> {
+        let binding = self
+            .binding
+            .clone()
+            .ok_or(ScreenNativeTargetResourceError::TargetIdentityMissing)?;
+        Ok(ScreenExactResource::try_new_native_target(
+            name,
+            accounting_scope,
+            self.retained_bytes,
+            binding,
+        )?)
+    }
+
+    /// Consume this preparation and bind its allocation to one exact ledger lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-worker accounting, mismatched retained bytes, another
+    /// target or descriptor's resource, or an unstamped preparation.
+    pub fn bind(
+        self,
+        lifetime: ScreenResourceLifetime,
+    ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
+        let binding = self
+            .binding
+            .ok_or(ScreenNativeTargetBindingError::TargetIdentityMissing)?;
+        BoundScreenNativeTargetPreparation::try_new(
+            binding,
+            self.platform,
+            self.retained_bytes,
+            lifetime,
+        )
+    }
+}
+
+/// Renderer preparation whose allocation and ledger lifetime cannot diverge.
+#[derive(Clone, Debug)]
+pub struct BoundScreenNativeTargetPreparation {
+    target_id: ScreenNativeExecutionTargetId,
+    platform: ScreenNativePreparationPayload,
+    allocation: ScreenNativeTargetAllocation,
+}
+
+impl BoundScreenNativeTargetPreparation {
+    fn try_new(
+        binding: ScreenNativeResourceBindingKey,
+        platform: ScreenNativePreparationPayload,
+        retained_bytes: u64,
+        lifetime: ScreenResourceLifetime,
+    ) -> Result<Self, ScreenNativeTargetBindingError> {
+        let resource = lifetime.resource();
+        if resource.resource() != ScreenResourceKind::WorkerAdditional {
+            return Err(ScreenNativeTargetBindingError::ResourceKindMismatch {
+                observed: resource.resource(),
+            });
+        }
+        if resource.bytes() != retained_bytes {
+            return Err(ScreenNativeTargetBindingError::RetainedBytesMismatch {
+                expected: retained_bytes,
+                observed: resource.bytes(),
+            });
+        }
+        if resource.native_binding() != Some(&binding) {
+            return Err(ScreenNativeTargetBindingError::NativeBindingMismatch);
+        }
+        Ok(Self {
+            target_id: ScreenNativeExecutionTargetId::new(binding.target_id()),
+            platform,
+            allocation: ScreenNativeTargetAllocation::new(retained_bytes, lifetime),
+        })
+    }
+
+    /// Exact renderer capability that produced this preparation.
+    #[must_use]
+    pub const fn target_id(&self) -> ScreenNativeExecutionTargetId {
+        self.target_id
+    }
+
+    /// Renderer-specific prepared data for delivery setup.
+    #[must_use]
+    pub const fn platform(&self) -> &ScreenNativePreparationPayload {
+        &self.platform
+    }
+
+    /// Exact allocation and worker-ledger lifetime.
+    #[must_use]
+    pub const fn allocation(&self) -> &ScreenNativeTargetAllocation {
+        &self.allocation
+    }
+
+    /// Attach platform access and exact accounting lifetime to one surface.
+    #[must_use]
+    pub fn retain_on_surface(&self, surface: PlatformGpuSurface) -> PlatformGpuSurface {
+        surface.with_native_target_owners(
+            Arc::clone(&self.platform.inner),
+            self.allocation.lifetime.clone(),
+        )
+    }
+}
+
+/// Failure to construct the target-bound exact ledger entry.
+#[derive(Debug, Error)]
+pub enum ScreenNativeTargetResourceError {
+    /// Only a live execution target can stamp preparation identity.
+    #[error("native target preparation is missing execution-target identity")]
+    TargetIdentityMissing,
+    /// The exact resource name or scope is invalid.
+    #[error(transparent)]
+    Plan(#[from] ScreenPlanError),
+}
+
+/// Failure to pair one renderer preparation with exact worker accounting.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum ScreenNativeTargetBindingError {
+    /// Only a live execution target can stamp preparation identity.
+    #[error("native target preparation is missing execution-target identity")]
+    TargetIdentityMissing,
+    /// Renderer allocations must use the worker-additional accounting category.
+    #[error("native target allocation requires worker-additional accounting, got {observed:?}")]
+    ResourceKindMismatch { observed: ScreenResourceKind },
+    /// The exact ledger and renderer reported different retained bytes.
+    #[error("native target allocation bytes differ: expected {expected}, observed {observed}")]
+    RetainedBytesMismatch { expected: u64, observed: u64 },
+    /// The ledger entry belongs to another target or resolved route.
+    #[error("native target allocation belongs to another execution target or descriptor")]
+    NativeBindingMismatch,
+}
+
+/// Failure to dispatch a resolved descriptor to a native target.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum ScreenNativeTargetPreparationError {
+    /// CPU-resolved descriptors cannot enter native preparation.
+    #[error("CPU-resolved screen descriptors cannot use native target preparation")]
+    CpuDescriptor,
+    /// The resolved descriptor belongs to another native target.
+    #[error("resolved screen descriptor belongs to another native execution target")]
+    TargetMismatch,
+}
+
+/// Live renderer capability that prepares one exact source-native branch.
+pub trait ScreenNativeTargetPreparer: Send + Sync {
+    /// Prepare renderer-owned resources without changing active delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the renderer disappeared or cannot realize the
+    /// exact resolved descriptor and platform input transactionally.
+    fn prepare(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation>;
+}
+
 /// Renderer-owned native execution contract for one GPU context.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct ScreenNativeExecutionTarget {
     id: ScreenNativeExecutionTargetId,
     accepted_api: PlatformGpuApi,
     physical_gpu_device: ScreenPhysicalGpuDeviceIdentity,
     max_texture_dimension: NonZeroU32,
+    preparer: Arc<dyn ScreenNativeTargetPreparer>,
 }
 
 impl ScreenNativeExecutionTarget {
     /// Construct one exact native execution target.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         id: ScreenNativeExecutionTargetId,
         accepted_api: PlatformGpuApi,
         physical_gpu_device: ScreenPhysicalGpuDeviceIdentity,
         max_texture_dimension: NonZeroU32,
+        preparer: Arc<dyn ScreenNativeTargetPreparer>,
     ) -> Self {
         Self {
             id,
             accepted_api,
             physical_gpu_device,
             max_texture_dimension,
+            preparer,
         }
     }
 
@@ -529,7 +788,57 @@ impl ScreenNativeExecutionTarget {
     pub const fn max_texture_dimension(&self) -> NonZeroU32 {
         self.max_texture_dimension
     }
+
+    /// Prepare this exact renderer capability for one resolved native branch.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transactional preparation failure from the live renderer.
+    pub fn prepare(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        match descriptor.executor() {
+            ScreenPublicationExecutor::Cpu => {
+                return Err(ScreenNativeTargetPreparationError::CpuDescriptor.into());
+            }
+            ScreenPublicationExecutor::SourceNative(target) if target != self => {
+                return Err(ScreenNativeTargetPreparationError::TargetMismatch.into());
+            }
+            ScreenPublicationExecutor::SourceNative(_) => {}
+        }
+        let mut preparation = self.preparer.prepare(descriptor, platform)?;
+        preparation.binding = Some(ScreenNativeResourceBindingKey::new(
+            self.id.get(),
+            Arc::new(descriptor.clone()),
+        ));
+        Ok(preparation)
+    }
 }
+
+impl fmt::Debug for ScreenNativeExecutionTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScreenNativeExecutionTarget")
+            .field("id", &self.id)
+            .field("accepted_api", &self.accepted_api)
+            .field("physical_gpu_device", &self.physical_gpu_device)
+            .field("max_texture_dimension", &self.max_texture_dimension)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ScreenNativeExecutionTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.accepted_api == other.accepted_api
+            && self.physical_gpu_device == other.physical_gpu_device
+            && self.max_texture_dimension == other.max_texture_dimension
+    }
+}
+
+impl Eq for ScreenNativeExecutionTarget {}
 
 impl Ord for ScreenNativeExecutionTarget {
     fn cmp(&self, other: &Self) -> Ordering {

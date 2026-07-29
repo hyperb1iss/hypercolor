@@ -23,6 +23,9 @@ use hypercolor_core::input::screen::{
     ScreenUpscalePolicy, SourceScale,
 };
 
+#[path = "support/native_target.rs"]
+mod native_target_support;
+
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is non-empty")
 }
@@ -44,6 +47,7 @@ fn native_target() -> ScreenNativeExecutionTarget {
         PlatformGpuApi::Direct3d11,
         gpu_device(),
         non_zero(16_384),
+        native_target_support::preparer(),
     )
 }
 
