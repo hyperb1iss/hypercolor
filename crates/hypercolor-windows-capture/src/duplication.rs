@@ -2272,7 +2272,7 @@ pub mod fixtures {
                 Quality: 0,
             },
             Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: 0,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
             CPUAccessFlags: 0,
             MiscFlags: 0,
         };
@@ -2317,17 +2317,18 @@ pub mod fixtures {
             source_color_space: GpuSurfaceSourceColorSpace::RgbFullG22P709,
             region: CaptureRegion::full(config.width, config.height),
         };
-        let mut publication = None;
-        plan.publish(
-            Some(&source),
+        let clean = RetainedDesktop {
+            srv: gpu_reduction::create_srv(&device, &source)
+                .map_err(|error| CaptureError::windows("create GPU Surface fixture view", error))?,
+            texture: source,
             metadata,
-            config.duplication_generation,
-            |outcome| {
-                if let GpuSurfacePublishOutcome::Published(published) = outcome {
-                    publication = Some(published);
-                }
-            },
-        )?;
+        };
+        let mut publication = None;
+        plan.publish(&clean, config.duplication_generation, |outcome| {
+            if let GpuSurfacePublishOutcome::Published(published) = outcome {
+                publication = Some(published);
+            }
+        })?;
         let publication = publication.ok_or_else(|| {
             CaptureError::windows(
                 "publish GPU Surface fixture",
