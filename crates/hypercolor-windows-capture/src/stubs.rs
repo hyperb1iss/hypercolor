@@ -1,12 +1,14 @@
 //! Non-Windows stand-in so downstream crates compile unconditionally.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::shared::{
-    CaptureError, CaptureExtent, CaptureRegion, CaptureResult, Frame, GpuSharedHandle,
-    GpuSurfaceAdmission, GpuSurfaceDescriptor, GpuSurfaceDescriptorId, GpuSurfacePlanGeneration,
-    GpuSurfaceProvenance, GpuSurfaceSynchronization, MonitorSelector, ReductionTelemetry,
+    CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
+    DisplayRotation, Frame, GpuAdapterLuid, GpuSharedHandle, GpuSurfaceAdmission,
+    GpuSurfaceDescriptor, GpuSurfaceDescriptorId, GpuSurfacePlanGeneration, GpuSurfaceProvenance,
+    GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization, MonitorSelector, ReductionTelemetry,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -121,6 +123,81 @@ pub struct PreparedGpuSurfacePlan {
     never: Never,
 }
 
+/// Uninhabited non-Windows stand-in for native D3D11 CPU readback.
+#[derive(Debug)]
+pub struct PreparedCpuDesktopReadback {
+    never: Never,
+}
+
+impl PreparedCpuDesktopReadback {
+    /// No native readback slots exist on this platform.
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        match self.never {}
+    }
+
+    /// No native readback allocation exists on this platform.
+    #[must_use]
+    pub fn allocation_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No native staging surface can be mapped on this platform.
+    #[must_use]
+    pub fn mapped_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+}
+
+/// Requested consumers for one unsupported capture pump cycle.
+pub struct CapturePumpRequest<'a> {
+    gpu: Option<&'a mut PreparedGpuSurfacePlan>,
+    cpu: Option<&'a mut PreparedCpuDesktopReadback>,
+}
+
+impl<'a> CapturePumpRequest<'a> {
+    /// Request any combination of exact GPU and native CPU outputs.
+    #[must_use]
+    pub const fn new(
+        gpu: Option<&'a mut PreparedGpuSurfacePlan>,
+        cpu: Option<&'a mut PreparedCpuDesktopReadback>,
+    ) -> Self {
+        Self { gpu, cpu }
+    }
+
+    /// Request only exact GPU publications.
+    #[must_use]
+    pub const fn gpu(plan: &'a mut PreparedGpuSurfacePlan) -> Self {
+        Self::new(Some(plan), None)
+    }
+
+    /// Request only an exact native CPU frame.
+    #[must_use]
+    pub const fn cpu(readback: &'a mut PreparedCpuDesktopReadback) -> Self {
+        Self::new(None, Some(readback))
+    }
+
+    /// Request exact GPU publications and native CPU readback together.
+    #[must_use]
+    pub const fn hybrid(
+        plan: &'a mut PreparedGpuSurfacePlan,
+        readback: &'a mut PreparedCpuDesktopReadback,
+    ) -> Self {
+        Self::new(Some(plan), Some(readback))
+    }
+}
+
+/// Independent results for one unsupported capture pump cycle.
+#[derive(Debug)]
+pub struct CapturePumpReport {
+    /// Always false on unsupported platforms.
+    pub acquired: bool,
+    /// Exact GPU lane outcome.
+    pub gpu: CaptureLane<GpuSurfaceBatchInfo>,
+    /// Native CPU lane outcome.
+    pub cpu: CaptureLane<CpuDesktopFrame>,
+}
+
 impl PreparedGpuSurfacePlan {
     /// No committed D3D11 plan generation exists on this platform.
     #[must_use]
@@ -196,6 +273,12 @@ impl DesktopDuplicator {
         ""
     }
 
+    /// False because no output is bound.
+    #[must_use]
+    pub const fn is_primary(&self) -> bool {
+        false
+    }
+
     /// Zero because no platform topology exists.
     #[must_use]
     pub const fn topology_generation(&self) -> u64 {
@@ -218,6 +301,30 @@ impl DesktopDuplicator {
     #[must_use]
     pub const fn duplication_generation(&self) -> u64 {
         0
+    }
+
+    /// Empty adapter identity because no D3D11 session exists.
+    #[must_use]
+    pub const fn adapter_luid(&self) -> GpuAdapterLuid {
+        GpuAdapterLuid::new(0, 0)
+    }
+
+    /// Empty virtual-desktop origin.
+    #[must_use]
+    pub const fn origin(&self) -> (i32, i32) {
+        (0, 0)
+    }
+
+    /// Identity because no native pixels exist.
+    #[must_use]
+    pub const fn rotation(&self) -> DisplayRotation {
+        DisplayRotation::Identity
+    }
+
+    /// Unknown because no DXGI output exists.
+    #[must_use]
+    pub const fn source_color_space(&self) -> GpuSurfaceSourceColorSpace {
+        GpuSurfaceSourceColorSpace::Unknown
     }
 
     /// A stub has no live capture request.
@@ -262,6 +369,37 @@ impl DesktopDuplicator {
         _descriptors: &[GpuSurfaceDescriptor],
         _admission: GpuSurfaceAdmission,
     ) -> CaptureResult<PreparedGpuSurfacePlan> {
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
+    /// Always fails: native D3D11 CPU readback is Windows-only.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub const fn prepare_cpu_desktop_readback(
+        &self,
+        _slot_count: NonZeroU32,
+    ) -> CaptureResult<PreparedCpuDesktopReadback> {
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
+    /// Always fails: Desktop Duplication is Windows-only.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub fn pump<F>(
+        &mut self,
+        request: CapturePumpRequest<'_>,
+        _timeout: Duration,
+        _emit: F,
+    ) -> CaptureResult<CapturePumpReport>
+    where
+        F: FnMut(GpuSurfacePublishOutcome),
+    {
+        let CapturePumpRequest { gpu, cpu } = request;
+        drop((gpu, cpu));
         Err(CaptureError::UnsupportedPlatform)
     }
 

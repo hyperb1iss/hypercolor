@@ -164,6 +164,39 @@ fn gpu_readback_ring_coalesces_pressure_at_fixed_capacity() {
 }
 
 #[test]
+fn native_cpu_readback_preserves_arbitrary_tightly_packed_bgra_extents() {
+    let width = 17;
+    let height = 9;
+    let mut pixels = Vec::with_capacity(width * height * 4);
+    for index in 0..width * height {
+        let value = index as u8;
+        pixels.extend_from_slice(&[value, value.wrapping_add(31), value.wrapping_add(97), 0xFF]);
+    }
+
+    let frame = super::cpu_readback::packed_readback_for_test(&pixels, width as u32, height as u32)
+        .expect("WARP native CPU readback succeeds");
+
+    assert_eq!(frame.width(), width as u32);
+    assert_eq!(frame.height(), height as u32);
+    assert_eq!(frame.row_stride_bytes(), width * 4);
+    assert_eq!(frame.format(), crate::GpuSurfaceFormat::Bgra8Unorm);
+    assert_eq!(frame.as_bytes(), pixels);
+    assert_eq!(frame.duplication_generation(), 5);
+    assert_eq!((frame.origin_x(), frame.origin_y()), (-17, 23));
+}
+
+#[test]
+fn native_cpu_readback_never_maps_without_a_free_bounded_output() {
+    let (busy, mapped_while_busy, final_mapped) =
+        super::cpu_readback::retained_frame_exhausts_bounded_pool_for_test()
+            .expect("WARP bounded native CPU readback remains healthy");
+
+    assert!(busy);
+    assert_eq!(mapped_while_busy, 0);
+    assert_eq!(final_mapped, 5 * 3 * 4 * 2);
+}
+
+#[test]
 fn exact_gpu_surfaces_fan_out_incompatible_descriptors_from_one_source() {
     let bgra = [
         1, 2, 3, 0xFF, 11, 12, 13, 0xFF, 21, 22, 23, 0xFF, 31, 32, 33, 0xFF, 101, 102, 103, 0xFF,

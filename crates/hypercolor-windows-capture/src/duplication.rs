@@ -1,5 +1,6 @@
 //! DXGI Desktop Duplication capture loop.
 
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -30,19 +31,70 @@ use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
 use windows::core::{HRESULT, Interface, PCWSTR};
 
 use crate::shared::{
-    CaptureError, CaptureExtent, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame,
-    GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceDescriptor, GpuSurfacePlanGeneration,
-    GpuSurfaceSourceColorSpace, MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry,
-    subsample_stride_within, subsampled_extent,
+    CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
+    CursorInfo, DisplayRotation, Frame, GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceDescriptor,
+    GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo, MonitorSelector,
+    ReductionPath, ReductionTelemetry, subsample_stride_within, subsampled_extent,
 };
 
+mod cpu_readback;
 pub(crate) mod gpu_reduction;
 mod gpu_surface;
 
+pub use cpu_readback::PreparedCpuDesktopReadback;
 pub use gpu_surface::{
     GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication, GpuSurfacePublishOutcome,
     PreparedGpuSurfacePlan,
 };
+
+/// Requested consumers for one Desktop Duplication acquisition cycle.
+pub struct CapturePumpRequest<'a> {
+    gpu: Option<&'a mut PreparedGpuSurfacePlan>,
+    cpu: Option<&'a mut PreparedCpuDesktopReadback>,
+}
+
+impl<'a> CapturePumpRequest<'a> {
+    /// Request any combination of exact GPU and native CPU outputs.
+    #[must_use]
+    pub const fn new(
+        gpu: Option<&'a mut PreparedGpuSurfacePlan>,
+        cpu: Option<&'a mut PreparedCpuDesktopReadback>,
+    ) -> Self {
+        Self { gpu, cpu }
+    }
+
+    /// Request only exact GPU publications.
+    #[must_use]
+    pub const fn gpu(plan: &'a mut PreparedGpuSurfacePlan) -> Self {
+        Self::new(Some(plan), None)
+    }
+
+    /// Request only an exact native CPU frame.
+    #[must_use]
+    pub const fn cpu(readback: &'a mut PreparedCpuDesktopReadback) -> Self {
+        Self::new(None, Some(readback))
+    }
+
+    /// Request exact GPU publications and native CPU readback together.
+    #[must_use]
+    pub const fn hybrid(
+        plan: &'a mut PreparedGpuSurfacePlan,
+        readback: &'a mut PreparedCpuDesktopReadback,
+    ) -> Self {
+        Self::new(Some(plan), Some(readback))
+    }
+}
+
+/// Independent results produced by one capture pump cycle.
+#[derive(Debug)]
+pub struct CapturePumpReport {
+    /// Whether Desktop Duplication delivered a desktop or cursor update.
+    pub acquired: bool,
+    /// Exact shareable GPU publication lane.
+    pub gpu: CaptureLane<GpuSurfaceBatchInfo>,
+    /// Exact tightly packed native BGRA readback lane.
+    pub cpu: CaptureLane<CpuDesktopFrame>,
+}
 
 use gpu_reduction::{GpuReducer, ReducedFrame, SubmitOutcome};
 
@@ -747,6 +799,7 @@ pub struct DesktopDuplicator {
     selector: MonitorSelector,
     monitor: usize,
     source_id: Arc<str>,
+    primary: bool,
     topology_generation: u64,
     duplication_generation: u64,
     adapter_luid: GpuAdapterLuid,
@@ -845,6 +898,7 @@ impl DesktopDuplicator {
             selector,
             monitor: monitor.index,
             source_id: Arc::from(monitor.id),
+            primary: monitor.primary,
             topology_generation: monitor.topology_generation,
             duplication_generation: 1,
             adapter_luid,
@@ -888,6 +942,12 @@ impl DesktopDuplicator {
         &self.source_id
     }
 
+    /// Whether this session is bound to the current primary output.
+    #[must_use]
+    pub const fn is_primary(&self) -> bool {
+        self.primary
+    }
+
     /// Monotonic generation of the topology used to open this output.
     #[must_use]
     pub const fn topology_generation(&self) -> u64 {
@@ -916,6 +976,24 @@ impl DesktopDuplicator {
     #[must_use]
     pub const fn adapter_luid(&self) -> GpuAdapterLuid {
         self.adapter_luid
+    }
+
+    /// Virtual-desktop origin of the captured output.
+    #[must_use]
+    pub const fn origin(&self) -> (i32, i32) {
+        (self.origin_x, self.origin_y)
+    }
+
+    /// Display transform still pending on native scanout pixels.
+    #[must_use]
+    pub const fn rotation(&self) -> DisplayRotation {
+        self.rotation
+    }
+
+    /// DXGI color space attached to native scanout pixels.
+    #[must_use]
+    pub const fn source_color_space(&self) -> GpuSurfaceSourceColorSpace {
+        self.source_color_space
     }
 
     /// Requested reduction extent for subsequent frames.
@@ -1118,6 +1196,157 @@ impl DesktopDuplicator {
         )
     }
 
+    /// Allocate a fixed-capacity asynchronous native BGRA readback lane.
+    ///
+    /// The slot count controls in-flight ownership, not source resolution.
+    /// Each slot retains one GPU staging texture and one pooled CPU plane.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed geometry or allocation failures without reducing the
+    /// requested native extent.
+    pub fn prepare_cpu_desktop_readback(
+        &self,
+        slot_count: NonZeroU32,
+    ) -> CaptureResult<PreparedCpuDesktopReadback> {
+        PreparedCpuDesktopReadback::prepare(
+            &self.device,
+            &self.context,
+            Arc::clone(&self.source_id),
+            self.topology_generation,
+            self.duplication_generation,
+            self.adapter_luid,
+            CaptureExtent::try_new(self.native_width, self.native_height)?,
+            self.rotation,
+            self.source_color_space,
+            slot_count,
+        )
+    }
+
+    /// Acquire once and independently advance exact GPU and native CPU lanes.
+    ///
+    /// CPU staging is never created, copied, queried, or mapped unless the
+    /// request contains a CPU lane. A lane failure is returned in that lane so
+    /// the healthy sibling can still publish from the same acquisition.
+    ///
+    /// # Errors
+    ///
+    /// Returns only acquisition or session failures. Consumer validation,
+    /// resource pressure, and execution failures remain lane-local.
+    pub fn pump<F>(
+        &mut self,
+        mut request: CapturePumpRequest<'_>,
+        timeout: Duration,
+        mut emit: F,
+    ) -> CaptureResult<CapturePumpReport>
+    where
+        F: FnMut(GpuSurfacePublishOutcome),
+    {
+        self.release_frame();
+
+        let mut gpu = request.gpu.take();
+        let mut gpu_lane = if gpu.is_some() {
+            CaptureLane::Idle
+        } else {
+            CaptureLane::NotRequested
+        };
+        if let Some(plan) = gpu.as_deref_mut()
+            && let Err(error) = self.validate_gpu_surface_plan(plan)
+        {
+            gpu_lane = CaptureLane::Failed(error);
+            gpu = None;
+        }
+
+        let mut cpu = request.cpu.take();
+        let mut cpu_lane = if let Some(readback) = cpu.as_deref_mut() {
+            if self.validate_cpu_readback(readback) {
+                readback.poll()
+            } else {
+                cpu = None;
+                CaptureLane::Failed(CaptureError::GpuSurfacePlanInvalidated)
+            }
+        } else {
+            CaptureLane::NotRequested
+        };
+        if matches!(cpu_lane, CaptureLane::Failed(_)) {
+            cpu = None;
+        }
+
+        if gpu.is_none() && cpu.is_none() {
+            return Ok(CapturePumpReport {
+                acquired: false,
+                gpu: gpu_lane,
+                cpu: cpu_lane,
+            });
+        }
+
+        let gpu_pending = gpu
+            .as_deref()
+            .is_some_and(PreparedGpuSurfacePlan::has_pending_routes);
+        let cpu_pending = cpu
+            .as_deref()
+            .is_some_and(PreparedCpuDesktopReadback::has_pending);
+        let return_ready = matches!(cpu_lane, CaptureLane::Ready(_) | CaptureLane::Busy);
+        let acquire_timeout =
+            gpu_surface_acquire_timeout(timeout, gpu_pending || cpu_pending || return_ready);
+        let update = self.acquire_native_update(acquire_timeout)?;
+        self.release_frame();
+        let acquired = update.is_some();
+
+        if let Some(plan) = gpu.as_deref_mut()
+            && let Err(error) = self.validate_gpu_surface_plan(plan)
+        {
+            gpu_lane = CaptureLane::Failed(error);
+            gpu = None;
+        }
+        if let Some(readback) = cpu.as_deref_mut()
+            && !self.validate_cpu_readback(readback)
+        {
+            cpu_lane = CaptureLane::Failed(CaptureError::GpuSurfacePlanInvalidated);
+            cpu = None;
+        }
+
+        let clean = self.clean_desktop.clone();
+        if acquired {
+            let clean = clean.as_ref().ok_or_else(|| {
+                CaptureError::windows(
+                    "fan out desktop capture",
+                    "acquisition produced no retained clean desktop",
+                )
+            })?;
+            if let Some(plan) = gpu.as_deref_mut() {
+                gpu_lane = match plan.publish(clean, self.duplication_generation, &mut emit) {
+                    Ok(info) => CaptureLane::Ready(info),
+                    Err(error) => CaptureLane::Failed(error),
+                };
+            }
+        } else if let (Some(plan), Some(clean)) = (gpu, clean.as_ref())
+            && plan.has_pending_routes()
+        {
+            gpu_lane = match plan.retry_pending(clean, &mut emit) {
+                Ok(info) => CaptureLane::Ready(info),
+                Err(error) => CaptureLane::Failed(error),
+            };
+        }
+
+        if let (Some(readback), Some(clean)) = (cpu.as_mut(), clean.as_ref())
+            && matches!(cpu_lane, CaptureLane::Idle)
+            && readback.should_submit(clean)
+        {
+            cpu_lane = match readback.submit(clean) {
+                Ok(true) => readback.poll(),
+                Ok(false) => CaptureLane::Busy,
+                Err(error) => CaptureLane::Failed(error),
+            };
+        }
+
+        Ok(CapturePumpReport {
+            acquired,
+            gpu: gpu_lane,
+            cpu: cpu_lane,
+        })
+    }
+
     /// Acquire one native desktop update and fan it out into every exact GPU
     /// Surface descriptor without staging any result through CPU memory.
     ///
@@ -1142,35 +1371,12 @@ impl DesktopDuplicator {
     where
         F: FnMut(GpuSurfacePublishOutcome),
     {
-        self.validate_gpu_surface_plan(plan)?;
-        self.release_frame();
-        let acquire_timeout = gpu_surface_acquire_timeout(timeout, plan.has_pending_routes());
-        let update = self.acquire_native_update(acquire_timeout)?;
-        if let Err(error) = self.validate_gpu_surface_plan(plan) {
-            self.release_frame();
-            return Err(error);
+        let report = self.pump(CapturePumpRequest::gpu(plan), timeout, emit)?;
+        match report.gpu {
+            CaptureLane::Ready(info) => Ok(Some(info)),
+            CaptureLane::Idle | CaptureLane::Busy | CaptureLane::NotRequested => Ok(None),
+            CaptureLane::Failed(error) => Err(error),
         }
-        let result = if update.is_some() {
-            let clean = self.clean_desktop.as_ref().ok_or_else(|| {
-                CaptureError::windows(
-                    "publish exact GPU Surface",
-                    "no retained clean desktop is available",
-                )
-            })?;
-            plan.publish(clean, self.duplication_generation, emit)
-        } else if plan.has_pending_routes() {
-            let clean = self.clean_desktop.as_ref().ok_or_else(|| {
-                CaptureError::windows(
-                    "retry exact GPU Surface",
-                    "no retained clean desktop is available",
-                )
-            })?;
-            plan.retry_pending(clean, emit)
-        } else {
-            return Ok(None);
-        };
-        self.release_frame();
-        result.map(Some)
     }
 
     fn validate_gpu_surface_plan(&self, plan: &PreparedGpuSurfacePlan) -> CaptureResult<()> {
@@ -1184,6 +1390,20 @@ impl DesktopDuplicator {
             self.rotation,
             self.source_color_space,
         )
+    }
+
+    fn validate_cpu_readback(&self, readback: &PreparedCpuDesktopReadback) -> bool {
+        CaptureExtent::try_new(self.native_width, self.native_height).is_ok_and(|source_extent| {
+            readback.matches_source(
+                &self.source_id,
+                self.topology_generation,
+                self.duplication_generation,
+                self.adapter_luid,
+                source_extent,
+                self.rotation,
+                self.source_color_space,
+            )
+        })
     }
 
     fn acquire_native_update(
@@ -1288,6 +1508,7 @@ impl DesktopDuplicator {
         }
         let metadata = self.new_capture_metadata(captured_at);
         self.latest_capture = Some(metadata.clone());
+        self.analysis_pending = true;
         let texture = match desktop_frame_source(desktop_updated, self.clean_desktop.is_some()) {
             DesktopFrameSource::AcquiredResource => {
                 let Some(resource) = resource else {
@@ -1768,6 +1989,7 @@ impl DesktopDuplicator {
         self.cpu_staging = None;
         self.monitor = entry.monitor.index;
         self.source_id = Arc::from(entry.monitor.id);
+        self.primary = entry.monitor.primary;
         self.topology_generation = entry.monitor.topology_generation;
         self.duplication_generation = self.duplication_generation.wrapping_add(1).max(1);
         self.adapter_luid = adapter_luid;

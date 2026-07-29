@@ -10,6 +10,21 @@ use thiserror::Error;
 /// Screen capture result type.
 pub type CaptureResult<T> = Result<T, CaptureError>;
 
+/// Independent outcome for one requested lane in a hybrid capture pump.
+#[derive(Debug)]
+pub enum CaptureLane<T> {
+    /// The caller did not request this lane.
+    NotRequested,
+    /// The lane is healthy but produced no result in this pump cycle.
+    Idle,
+    /// Every bounded slot or output allocation is still owned in flight.
+    Busy,
+    /// The lane produced one result.
+    Ready(T),
+    /// This lane failed without suppressing work in the sibling lane.
+    Failed(CaptureError),
+}
+
 /// Exact algorithm revision implemented by the D3D11 Surface shader.
 pub const GPU_SURFACE_ALGORITHM_REVISION: NonZeroU32 = NonZeroU32::MIN;
 
@@ -1017,6 +1032,175 @@ pub struct CursorInfo {
 }
 
 type FramePool = Arc<Mutex<Vec<Vec<u8>>>>;
+
+/// Owned, tightly packed native BGRA desktop produced by async readback.
+///
+/// The frame excludes the separately reported cursor. Its allocation returns
+/// to the prepared readback's fixed pool when the frame drops.
+#[derive(Debug)]
+pub struct CpuDesktopFrame {
+    source_id: Arc<str>,
+    topology_generation: u64,
+    duplication_generation: u64,
+    sequence: u64,
+    captured_at: Instant,
+    cursor: CursorInfo,
+    width: u32,
+    height: u32,
+    origin_x: i32,
+    origin_y: i32,
+    rotation: DisplayRotation,
+    source_color_space: GpuSurfaceSourceColorSpace,
+    bgra: Vec<u8>,
+    pool: FramePool,
+}
+
+#[cfg(target_os = "windows")]
+impl CpuDesktopFrame {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        source_id: Arc<str>,
+        topology_generation: u64,
+        duplication_generation: u64,
+        sequence: u64,
+        captured_at: Instant,
+        cursor: CursorInfo,
+        width: u32,
+        height: u32,
+        origin_x: i32,
+        origin_y: i32,
+        rotation: DisplayRotation,
+        source_color_space: GpuSurfaceSourceColorSpace,
+        bgra: Vec<u8>,
+        pool: FramePool,
+    ) -> Self {
+        Self {
+            source_id,
+            topology_generation,
+            duplication_generation,
+            sequence,
+            captured_at,
+            cursor,
+            width,
+            height,
+            origin_x,
+            origin_y,
+            rotation,
+            source_color_space,
+            bgra,
+            pool,
+        }
+    }
+}
+
+impl CpuDesktopFrame {
+    /// Stable display id that produced this frame.
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    /// Attached-output topology generation at acquisition.
+    #[must_use]
+    pub const fn topology_generation(&self) -> u64 {
+        self.topology_generation
+    }
+
+    /// Desktop Duplication session generation at acquisition.
+    #[must_use]
+    pub const fn duplication_generation(&self) -> u64 {
+        self.duplication_generation
+    }
+
+    /// Monotonic source sequence assigned at acquisition.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Acquisition timestamp before asynchronous readback.
+    #[must_use]
+    pub const fn captured_at(&self) -> Instant {
+        self.captured_at
+    }
+
+    /// Separately reported cursor state. The returned pixels exclude it.
+    #[must_use]
+    pub const fn cursor(&self) -> CursorInfo {
+        self.cursor
+    }
+
+    /// Native scanout width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Native scanout height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Tight row stride in bytes.
+    #[must_use]
+    pub const fn row_stride_bytes(&self) -> usize {
+        self.width as usize * 4
+    }
+
+    /// Native BGRA storage format.
+    #[must_use]
+    pub const fn format(&self) -> GpuSurfaceFormat {
+        GpuSurfaceFormat::Bgra8Unorm
+    }
+
+    /// Horizontal origin in virtual-desktop coordinates.
+    #[must_use]
+    pub const fn origin_x(&self) -> i32 {
+        self.origin_x
+    }
+
+    /// Vertical origin in virtual-desktop coordinates.
+    #[must_use]
+    pub const fn origin_y(&self) -> i32 {
+        self.origin_y
+    }
+
+    /// Display transform still pending on the native pixels.
+    #[must_use]
+    pub const fn rotation(&self) -> DisplayRotation {
+        self.rotation
+    }
+
+    /// DXGI color space attached to the native samples.
+    #[must_use]
+    pub const fn source_color_space(&self) -> GpuSurfaceSourceColorSpace {
+        self.source_color_space
+    }
+
+    /// Tightly packed native BGRA bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bgra
+    }
+}
+
+impl AsRef<[u8]> for CpuDesktopFrame {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl Drop for CpuDesktopFrame {
+    fn drop(&mut self) {
+        let mut bgra = std::mem::take(&mut self.bgra);
+        bgra.clear();
+        self.pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(bgra);
+    }
+}
 
 /// Owned RGBA frame produced by the capture backend.
 ///

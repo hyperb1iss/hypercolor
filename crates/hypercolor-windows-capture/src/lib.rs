@@ -22,8 +22,9 @@ mod duplication;
 pub use duplication::fixtures;
 #[cfg(target_os = "windows")]
 pub use duplication::{
-    DesktopDuplicator, GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication,
-    GpuSurfacePublishOutcome, PreparedGpuSurfacePlan,
+    CapturePumpReport, CapturePumpRequest, DesktopDuplicator, GpuSurfaceBatchInfo, GpuSurfaceLease,
+    GpuSurfacePublication, GpuSurfacePublishOutcome, PreparedCpuDesktopReadback,
+    PreparedGpuSurfacePlan,
 };
 
 #[cfg(all(target_os = "windows", feature = "capture-bench"))]
@@ -36,14 +37,15 @@ pub use duplication::gpu_reduction::{
 mod shared;
 
 pub use shared::{
-    CaptureError, CaptureExtent, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame,
-    GPU_SURFACE_ALGORITHM_REVISION, GpuAdapterLuid, GpuSharedHandle, GpuSurfaceAdmission,
-    GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy,
-    GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter,
-    GpuSurfaceFormat, GpuSurfacePlanGeneration, GpuSurfaceProvenance, GpuSurfaceSlotId,
-    GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization, GpuSurfaceUnsupportedReason,
-    MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry, list_monitors, monitor_count,
-    subsample_stride, subsample_stride_within, subsampled_extent, width_target_within,
+    CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
+    CursorInfo, DisplayRotation, Frame, GPU_SURFACE_ALGORITHM_REVISION, GpuAdapterLuid,
+    GpuSharedHandle, GpuSurfaceAdmission, GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace,
+    GpuSurfaceCursorPolicy, GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig,
+    GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat, GpuSurfacePlanGeneration,
+    GpuSurfaceProvenance, GpuSurfaceSlotId, GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization,
+    GpuSurfaceUnsupportedReason, MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry,
+    list_monitors, monitor_count, subsample_stride, subsample_stride_within, subsampled_extent,
+    width_target_within,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -51,6 +53,7 @@ mod stubs;
 
 #[cfg(not(target_os = "windows"))]
 pub use stubs::{
-    DesktopDuplicator, GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication,
-    GpuSurfacePublishOutcome, PreparedGpuSurfacePlan,
+    CapturePumpReport, CapturePumpRequest, DesktopDuplicator, GpuSurfaceBatchInfo, GpuSurfaceLease,
+    GpuSurfacePublication, GpuSurfacePublishOutcome, PreparedCpuDesktopReadback,
+    PreparedGpuSurfacePlan,
 };
