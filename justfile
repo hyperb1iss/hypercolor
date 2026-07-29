@@ -150,8 +150,8 @@ alloc-contracts:
 
 [windows]
 alloc-contracts:
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
+    HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+    HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
 
 # Run tests for a specific crate (iteration-shaped: keeps incremental rebuilds)
 [unix]
