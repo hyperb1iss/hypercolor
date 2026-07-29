@@ -23,8 +23,8 @@ pub use duplication::fixtures;
 #[cfg(target_os = "windows")]
 pub use duplication::{
     CapturePumpReport, CapturePumpRequest, DesktopDuplicator, GpuSurfaceBatchInfo, GpuSurfaceLease,
-    GpuSurfacePublication, GpuSurfacePublishOutcome, PreparedCpuDesktopReadback,
-    PreparedGpuSurfacePlan,
+    GpuSurfacePublication, GpuSurfacePublishOutcome, GpuSurfaceTargetPreparation,
+    GpuSurfaceTargetPreparationSlot, PreparedCpuDesktopReadback, PreparedGpuSurfacePlan,
 };
 
 #[cfg(all(target_os = "windows", feature = "capture-bench"))]
@@ -54,6 +54,6 @@ mod stubs;
 #[cfg(not(target_os = "windows"))]
 pub use stubs::{
     CapturePumpReport, CapturePumpRequest, DesktopDuplicator, GpuSurfaceBatchInfo, GpuSurfaceLease,
-    GpuSurfacePublication, GpuSurfacePublishOutcome, PreparedCpuDesktopReadback,
-    PreparedGpuSurfacePlan,
+    GpuSurfacePublication, GpuSurfacePublishOutcome, GpuSurfaceTargetPreparation,
+    GpuSurfaceTargetPreparationSlot, PreparedCpuDesktopReadback, PreparedGpuSurfacePlan,
 };

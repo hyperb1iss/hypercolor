@@ -33,8 +33,8 @@ use windows::core::{HRESULT, Interface, PCWSTR};
 use crate::shared::{
     CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
     CursorInfo, DisplayRotation, Frame, GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceDescriptor,
-    GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo, MonitorSelector,
-    ReductionPath, ReductionTelemetry, subsample_stride_within, subsampled_extent,
+    GpuSurfaceDescriptorId, GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo,
+    MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride_within, subsampled_extent,
 };
 
 mod cpu_readback;
@@ -44,7 +44,7 @@ mod gpu_surface;
 pub use cpu_readback::PreparedCpuDesktopReadback;
 pub use gpu_surface::{
     GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication, GpuSurfacePublishOutcome,
-    PreparedGpuSurfacePlan,
+    GpuSurfaceTargetPreparation, GpuSurfaceTargetPreparationSlot, PreparedGpuSurfacePlan,
 };
 
 /// Requested consumers for one Desktop Duplication acquisition cycle.
@@ -2255,6 +2255,7 @@ pub mod fixtures {
     /// Live producer resources and the exact publication they emitted.
     pub struct GpuSurfaceFixture {
         publication: Arc<GpuSurfacePublication>,
+        target_preparation: GpuSurfaceTargetPreparation,
         _plan: PreparedGpuSurfacePlan,
     }
 
@@ -2263,6 +2264,20 @@ pub mod fixtures {
         #[must_use]
         pub fn publication(&self) -> &Arc<GpuSurfacePublication> {
             &self.publication
+        }
+
+        /// Borrow the owned native target-preparation manifest.
+        #[must_use]
+        pub fn target_preparation(&self) -> &GpuSurfaceTargetPreparation {
+            &self.target_preparation
+        }
+
+        /// Request a target-preparation manifest from the fixture's live plan.
+        pub fn target_preparation_for(
+            &self,
+            descriptor_id: GpuSurfaceDescriptorId,
+        ) -> CaptureResult<GpuSurfaceTargetPreparation> {
+            self._plan.target_preparation(descriptor_id)
         }
     }
 
@@ -2335,6 +2350,7 @@ pub mod fixtures {
             std::slice::from_ref(&config.descriptor),
             admission,
         )?;
+        let target_preparation = plan.target_preparation(config.descriptor.id())?;
         let metadata = CaptureMetadata {
             source_id: config.source_id,
             topology_generation: config.topology_generation,
@@ -2370,6 +2386,7 @@ pub mod fixtures {
         })?;
         Ok(GpuSurfaceFixture {
             publication,
+            target_preparation,
             _plan: plan,
         })
     }

@@ -39,8 +39,16 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
         7,
         [10, 20, 30, 255],
     )?;
+    let wrong_fixture = publish_fixture(
+        bridge.adapter_luid(),
+        &descriptor,
+        fixture_plan_generation(12)?,
+        "fixture:left",
+        7,
+        [11, 21, 31, 255],
+    )?;
     let wrong_target = bridge
-        .prepare_target(fixture_plan_generation(12)?, &descriptor)
+        .prepare_target(wrong_fixture.target_preparation())
         .map_err(|error| error.to_string())?;
     assert!(matches!(
         bridge.copy_publication(&wrong_target, first.publication()),
@@ -50,11 +58,21 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
     ));
     drop(wrong_target);
     let target = bridge
-        .prepare_target(plan, &descriptor)
+        .prepare_target(first.target_preparation())
         .map_err(|error| error.to_string())?;
+    assert_eq!(
+        first.publication().opaque_handle_id(),
+        first.target_preparation().slots()[0].opaque_handle_id(),
+    );
+    let before_first_copy = bridge.cache_stats().map_err(|error| error.to_string())?;
     let first_copy = bridge
         .copy_publication(&target, first.publication())
         .map_err(|error| error.to_string())?;
+    assert_eq!(
+        bridge.cache_stats().map_err(|error| error.to_string())?,
+        before_first_copy,
+        "first delivery must not open resources or mutate target caches",
+    );
     assert_pixels(&wgpu, &first_copy, [30, 20, 10, 255])?;
     let duplicate = bridge
         .copy_publication(&target, first.publication())
@@ -69,8 +87,15 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
         7,
         [40, 50, 60, 255],
     )?;
+    assert!(matches!(
+        bridge.copy_publication(&target, second_source.publication()),
+        Err(D3d11On12ScreenInteropError::PreparedTargetMismatch { field: "source_id" })
+    ));
+    let second_target = bridge
+        .prepare_target(second_source.target_preparation())
+        .map_err(|error| error.to_string())?;
     let second_copy = bridge
-        .copy_publication(&target, second_source.publication())
+        .copy_publication(&second_target, second_source.publication())
         .map_err(|error| error.to_string())?;
     assert!(second_copy.content_generation > first_copy.content_generation);
     assert_pixels(&wgpu, &second_copy, [60, 50, 40, 255])?;
@@ -83,17 +108,14 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
         8,
         [70, 80, 90, 255],
     )?;
+    let restarted_target = bridge
+        .prepare_target(restarted.target_preparation())
+        .map_err(|error| error.to_string())?;
     let restarted_copy = bridge
-        .copy_publication(&target, restarted.publication())
+        .copy_publication(&restarted_target, restarted.publication())
         .map_err(|error| error.to_string())?;
     assert!(restarted_copy.content_generation > second_copy.content_generation);
     assert_pixels(&wgpu, &restarted_copy, [90, 80, 70, 255])?;
-
-    bridge.retire_source("fixture:right", 3, plan);
-    assert!(matches!(
-        bridge.copy_publication(&target, restarted.publication()),
-        Err(D3d11On12ScreenInteropError::Capture(_))
-    ));
 
     let storage_id = target.storage_id();
     drop(target);
@@ -102,22 +124,24 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
             .cache_stats()
             .map_err(|error| error.to_string())?
             .prepared_targets,
-        1,
-        "texture readers must retain their prepared target",
+        3,
+        "texture readers must retain each exact prepared target",
     );
     let retained_by_readers = bridge
-        .prepare_target(plan, &descriptor)
+        .prepare_target(first.target_preparation())
         .map_err(|error| error.to_string())?;
     assert_eq!(retained_by_readers.storage_id(), storage_id);
     drop(retained_by_readers);
+    drop(restarted_target);
+    drop(second_target);
     drop(restarted_copy);
     drop(second_copy);
     drop(duplicate);
     drop(first_copy);
-    assert_eq!(
-        bridge.cache_stats().map_err(|error| error.to_string())?,
-        hypercolor_windows_gpu_interop::ScreenInteropCacheStats::default(),
-    );
+    let final_stats = bridge.cache_stats().map_err(|error| error.to_string())?;
+    assert_eq!(final_stats.prepared_targets, 0);
+    assert_eq!(final_stats.opened_surfaces, 0);
+    assert_eq!(final_stats.retained_target_bytes, 0);
     Ok(())
 }
 
@@ -144,21 +168,21 @@ fn sequential_plan_turnover_keeps_target_and_surface_caches_bounded() -> Result<
             [generation as u8, 90, 140, 255],
         )?;
         let target = bridge
-            .prepare_target(plan, &descriptor)
+            .prepare_target(fixture.target_preparation())
             .map_err(|error| error.to_string())?;
         let copy = bridge
             .copy_publication(&target, fixture.publication())
             .map_err(|error| error.to_string())?;
         let stats = bridge.cache_stats().map_err(|error| error.to_string())?;
         assert_eq!(stats.prepared_targets, 1);
-        assert_eq!(stats.opened_surfaces, 1);
+        assert_eq!(stats.opened_surfaces, 2);
 
         drop(target);
         drop(copy);
-        assert_eq!(
-            bridge.cache_stats().map_err(|error| error.to_string())?,
-            hypercolor_windows_gpu_interop::ScreenInteropCacheStats::default(),
-        );
+        let retired = bridge.cache_stats().map_err(|error| error.to_string())?;
+        assert_eq!(retired.prepared_targets, 0);
+        assert_eq!(retired.opened_surfaces, 0);
+        assert_eq!(retired.retained_target_bytes, 0);
     }
     Ok(())
 }

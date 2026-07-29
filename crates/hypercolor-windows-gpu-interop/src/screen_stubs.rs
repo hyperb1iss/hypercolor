@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use hypercolor_windows_capture::{
-    GpuAdapterLuid, GpuSurfaceDescriptor, GpuSurfacePlanGeneration, GpuSurfacePublication,
+    GpuAdapterLuid, GpuSurfacePublication, GpuSurfaceTargetPreparation,
 };
 use thiserror::Error;
 
@@ -54,6 +54,8 @@ pub struct ScreenInteropCacheStats {
     pub prepared_targets: usize,
     /// Native capture surfaces opened for live prepared targets.
     pub opened_surfaces: usize,
+    /// Cumulative native surface opens performed during target preparation.
+    pub native_surface_opens: u64,
     /// Exact physical bytes retained by live renderer targets.
     pub retained_target_bytes: u64,
 }
@@ -130,8 +132,7 @@ impl D3d11On12ScreenBridge {
     /// Always returns [`D3d11On12ScreenInteropError::UnsupportedPlatform`].
     pub fn prepare_target(
         &self,
-        _plan_generation: GpuSurfacePlanGeneration,
-        _descriptor: &GpuSurfaceDescriptor,
+        _preparation: &GpuSurfaceTargetPreparation,
     ) -> ScreenInteropResult<PreparedScreenCopyTarget> {
         Err(D3d11On12ScreenInteropError::UnsupportedPlatform)
     }
@@ -156,15 +157,6 @@ impl D3d11On12ScreenBridge {
         _publication: &Arc<GpuSurfacePublication>,
     ) -> ScreenInteropResult<ScreenTextureCopy> {
         Err(D3d11On12ScreenInteropError::UnsupportedPlatform)
-    }
-
-    /// No-op outside Windows.
-    pub fn retire_source(
-        &self,
-        _source_id: &str,
-        _topology_generation: u64,
-        _plan_generation: GpuSurfacePlanGeneration,
-    ) {
     }
 }
 

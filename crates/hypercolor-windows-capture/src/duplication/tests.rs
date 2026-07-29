@@ -695,6 +695,104 @@ fn exact_gpu_surface_lease_keeps_handles_alive_after_plan_retirement() {
 }
 
 #[test]
+fn target_preparation_retains_slots_without_blocking_publication_reuse() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        6,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("first WARP exact Surface publication succeeds");
+    let before = super::gpu_surface::fixture::slot_diagnostics(&fixture.plan);
+    let preparation = fixture
+        .plan
+        .target_preparation(descriptor.id())
+        .expect("exact route exposes its native preparation manifest");
+    assert_eq!(
+        super::gpu_surface::fixture::slot_diagnostics(&fixture.plan),
+        before,
+        "retaining native slots must not retain publication objects",
+    );
+    let second_preparation = fixture
+        .plan
+        .target_preparation(descriptor.id())
+        .expect("repeated preparation lookup stays stable");
+    let opaque_ids = preparation
+        .slots()
+        .iter()
+        .map(crate::GpuSurfaceTargetPreparationSlot::opaque_handle_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        opaque_ids,
+        second_preparation
+            .slots()
+            .iter()
+            .map(crate::GpuSurfaceTargetPreparationSlot::opaque_handle_id)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(opaque_ids.len(), 2);
+    assert_ne!(opaque_ids[0], opaque_ids[1]);
+
+    let crate::GpuSurfacePublishOutcome::Published(first) = fixture.outcomes.remove(0) else {
+        panic!("first descriptor unexpectedly busy");
+    };
+    assert_eq!(first.opaque_handle_id(), opaque_ids[0]);
+    super::gpu_surface::fixture::release_on_producer_device(&fixture.plan, &first)
+        .expect("first native slot releases");
+    drop(first);
+    let mut second = super::gpu_surface::fixture::republish(&mut fixture, 42)
+        .expect("manifest does not block the sibling slot");
+    let crate::GpuSurfacePublishOutcome::Published(second) = second.remove(0) else {
+        panic!("second descriptor unexpectedly busy");
+    };
+    super::gpu_surface::fixture::release_on_producer_device(&fixture.plan, &second)
+        .expect("second native slot releases");
+    drop(second);
+    let third = (0..64)
+        .find_map(|_| {
+            let outcomes = super::gpu_surface::fixture::republish(&mut fixture, 43)
+                .expect("manifest does not block reuse of a released slot");
+            let publication = outcomes.into_iter().find_map(|outcome| match outcome {
+                crate::GpuSurfacePublishOutcome::Published(publication) => Some(publication),
+                crate::GpuSurfacePublishOutcome::Busy(_) => None,
+            });
+            if publication.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            publication
+        })
+        .expect("released slots become reusable while the manifest remains live");
+    super::gpu_surface::fixture::release_on_producer_device(&fixture.plan, &third)
+        .expect("reused native slot releases");
+}
+
+#[test]
+fn target_preparation_keeps_handles_alive_after_plan_retirement() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        7,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("WARP exact Surface publication succeeds");
+
+    assert!(
+        super::gpu_surface::fixture::target_preparation_handles_survive_plan_drop(fixture)
+            .expect("preparation-owned shared handles remain open")
+    );
+}
+
+#[test]
 fn exact_gpu_surface_routing_skips_a_busy_slot_when_a_sibling_is_released() {
     let descriptor = super::gpu_surface::fixture::descriptor(
         19,

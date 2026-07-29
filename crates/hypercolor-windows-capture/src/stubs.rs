@@ -1,6 +1,6 @@
 //! Non-Windows stand-in so downstream crates compile unconditionally.
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +8,8 @@ use crate::shared::{
     CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
     DisplayRotation, Frame, GpuAdapterLuid, GpuSharedHandle, GpuSurfaceAdmission,
     GpuSurfaceDescriptor, GpuSurfaceDescriptorId, GpuSurfacePlanGeneration, GpuSurfaceProvenance,
-    GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization, MonitorSelector, ReductionTelemetry,
+    GpuSurfaceSlotId, GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization, MonitorSelector,
+    ReductionTelemetry,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -74,8 +75,96 @@ impl GpuSurfacePublication {
         match self.never {}
     }
 
+    /// No native texture identity exists on this platform.
+    #[must_use]
+    pub fn opaque_handle_id(&self) -> NonZeroU64 {
+        match self.never {}
+    }
+
     /// No GPU lease exists on this platform.
     pub fn claim(self: &Arc<Self>) -> CaptureResult<GpuSurfaceLease> {
+        match self.never {}
+    }
+}
+
+/// Uninhabited non-Windows stand-in for one native preparation slot.
+#[derive(Clone, Debug)]
+pub struct GpuSurfaceTargetPreparationSlot {
+    never: Never,
+}
+
+impl GpuSurfaceTargetPreparationSlot {
+    /// No native texture identity exists on this platform.
+    #[must_use]
+    pub fn opaque_handle_id(&self) -> NonZeroU64 {
+        match self.never {}
+    }
+
+    /// No native slot identity exists on this platform.
+    #[must_use]
+    pub fn slot_id(&self) -> GpuSurfaceSlotId {
+        match self.never {}
+    }
+
+    /// No borrowed D3D11 texture handle exists on this platform.
+    #[must_use]
+    pub fn texture_handle(&self) -> GpuSharedHandle<'_> {
+        match self.never {}
+    }
+
+    /// No borrowed D3D11 fence handle exists on this platform.
+    #[must_use]
+    pub fn fence_handle(&self) -> GpuSharedHandle<'_> {
+        match self.never {}
+    }
+}
+
+/// Uninhabited non-Windows stand-in for a native preparation manifest.
+#[derive(Clone, Debug)]
+pub struct GpuSurfaceTargetPreparation {
+    never: Never,
+}
+
+impl GpuSurfaceTargetPreparation {
+    /// No committed plan generation exists on this platform.
+    #[must_use]
+    pub fn plan_generation(&self) -> GpuSurfacePlanGeneration {
+        match self.never {}
+    }
+
+    /// No exact descriptor exists on this platform.
+    #[must_use]
+    pub fn descriptor(&self) -> &GpuSurfaceDescriptor {
+        match self.never {}
+    }
+
+    /// No renderer adapter exists on this platform.
+    #[must_use]
+    pub fn adapter_luid(&self) -> GpuAdapterLuid {
+        match self.never {}
+    }
+
+    /// No display source exists on this platform.
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        match self.never {}
+    }
+
+    /// No output topology exists on this platform.
+    #[must_use]
+    pub fn topology_generation(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No duplication session exists on this platform.
+    #[must_use]
+    pub fn duplication_generation(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No native slots exist on this platform.
+    #[must_use]
+    pub fn slots(&self) -> &[GpuSurfaceTargetPreparationSlot] {
         match self.never {}
     }
 }
@@ -207,6 +296,14 @@ impl PreparedGpuSurfacePlan {
 
     /// No D3D11 descriptors exist on this platform.
     pub fn descriptors(&self) -> std::iter::Empty<&GpuSurfaceDescriptor> {
+        match self.never {}
+    }
+
+    /// No native target can be prepared on this platform.
+    pub fn target_preparation(
+        &self,
+        _descriptor_id: GpuSurfaceDescriptorId,
+    ) -> CaptureResult<GpuSurfaceTargetPreparation> {
         match self.never {}
     }
 

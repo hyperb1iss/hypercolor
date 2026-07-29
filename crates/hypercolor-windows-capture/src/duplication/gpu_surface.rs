@@ -1,6 +1,7 @@
 use std::mem::size_of;
+use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
 use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE, WAIT_ABANDONED, WAIT_TIMEOUT};
@@ -36,6 +37,7 @@ use crate::{
 };
 
 const THREAD_GROUP: u32 = 8;
+static NEXT_SHARED_SURFACE_HANDLE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -93,11 +95,128 @@ impl Drop for OwnedHandle {
 }
 
 struct SharedSurfaceSlot {
+    opaque_handle_id: NonZeroU64,
     _texture: ID3D11Texture2D,
     keyed_mutex: IDXGIKeyedMutex,
     fence: ID3D11Fence,
     texture_handle: OwnedHandle,
     fence_handle: OwnedHandle,
+}
+
+/// One stable native slot retained for renderer-target preparation.
+#[derive(Clone)]
+pub struct GpuSurfaceTargetPreparationSlot {
+    slot_id: GpuSurfaceSlotId,
+    shared: Arc<SharedSurfaceSlot>,
+}
+
+impl std::fmt::Debug for GpuSurfaceTargetPreparationSlot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GpuSurfaceTargetPreparationSlot")
+            .field("slot_id", &self.slot_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl GpuSurfaceTargetPreparationSlot {
+    /// Process-unique opaque identity of the retained native texture slot.
+    #[must_use]
+    pub fn opaque_handle_id(&self) -> NonZeroU64 {
+        self.shared.opaque_handle_id
+    }
+
+    /// Stable physical slot identity within the committed plan generation.
+    #[must_use]
+    pub const fn slot_id(&self) -> GpuSurfaceSlotId {
+        self.slot_id
+    }
+
+    /// Borrowed NT handle for the shareable texture.
+    #[must_use]
+    pub fn texture_handle(&self) -> GpuSharedHandle<'_> {
+        self.shared.texture_handle.borrowed()
+    }
+
+    /// Borrowed NT handle for the shared D3D11 fence.
+    #[must_use]
+    pub fn fence_handle(&self) -> GpuSharedHandle<'_> {
+        self.shared.fence_handle.borrowed()
+    }
+}
+
+/// Owned native preparation manifest for one exact descriptor route.
+///
+/// The manifest retains every reusable slot without retaining publication
+/// objects, so producer-side uniqueness and reclamation checks remain exact.
+#[derive(Clone)]
+pub struct GpuSurfaceTargetPreparation {
+    plan_generation: GpuSurfacePlanGeneration,
+    descriptor: Arc<GpuSurfaceDescriptor>,
+    adapter_luid: GpuAdapterLuid,
+    source_id: Arc<str>,
+    topology_generation: u64,
+    duplication_generation: u64,
+    slots: Box<[GpuSurfaceTargetPreparationSlot]>,
+}
+
+impl std::fmt::Debug for GpuSurfaceTargetPreparation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GpuSurfaceTargetPreparation")
+            .field("plan_generation", &self.plan_generation)
+            .field("descriptor", &self.descriptor)
+            .field("adapter_luid", &self.adapter_luid)
+            .field("source_id", &self.source_id)
+            .field("topology_generation", &self.topology_generation)
+            .field("duplication_generation", &self.duplication_generation)
+            .field("slot_count", &self.slots.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl GpuSurfaceTargetPreparation {
+    /// Committed capture plan generation owning these slots.
+    #[must_use]
+    pub const fn plan_generation(&self) -> GpuSurfacePlanGeneration {
+        self.plan_generation
+    }
+
+    /// Complete exact descriptor represented by the target.
+    #[must_use]
+    pub fn descriptor(&self) -> &GpuSurfaceDescriptor {
+        &self.descriptor
+    }
+
+    /// DXGI adapter that owns every shared slot.
+    #[must_use]
+    pub const fn adapter_luid(&self) -> GpuAdapterLuid {
+        self.adapter_luid
+    }
+
+    /// Stable display source identity.
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    /// Attached-output topology generation.
+    #[must_use]
+    pub const fn topology_generation(&self) -> u64 {
+        self.topology_generation
+    }
+
+    /// Desktop Duplication session generation.
+    #[must_use]
+    pub const fn duplication_generation(&self) -> u64 {
+        self.duplication_generation
+    }
+
+    /// Stable ordered native slots prepared for this exact route.
+    #[must_use]
+    pub fn slots(&self) -> &[GpuSurfaceTargetPreparationSlot] {
+        &self.slots
+    }
 }
 
 const USE_IDLE: u8 = 0;
@@ -264,7 +383,7 @@ impl Drop for GpuSurfaceLease {
 /// One exact GPU Surface result with production-time provenance.
 pub struct GpuSurfacePublication {
     provenance: Option<GpuSurfaceProvenance>,
-    shared: SharedSurfaceSlot,
+    shared: Arc<SharedSurfaceSlot>,
     synchronization: GpuSurfaceSynchronization,
     slot_id: GpuSurfaceSlotId,
     use_id: u64,
@@ -290,6 +409,12 @@ impl GpuSurfacePublication {
         self.provenance
             .as_ref()
             .expect("only initialized publications leave the native plan")
+    }
+
+    /// Process-unique opaque identity of the retained native texture slot.
+    #[must_use]
+    pub fn opaque_handle_id(&self) -> NonZeroU64 {
+        self.shared.opaque_handle_id
     }
 
     /// Claim the sole native hand-off for a D3D11On12 bridge copy.
@@ -595,6 +720,57 @@ impl PreparedGpuSurfacePlan {
     #[must_use]
     pub fn descriptors(&self) -> impl ExactSizeIterator<Item = &GpuSurfaceDescriptor> {
         self.routes.iter().map(|route| route.descriptor.as_ref())
+    }
+
+    /// Retain every native slot required to prepare one exact renderer route.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the descriptor is absent or ambiguous, or
+    /// when the owned slot manifest cannot reserve its metadata.
+    pub fn target_preparation(
+        &self,
+        descriptor_id: GpuSurfaceDescriptorId,
+    ) -> CaptureResult<GpuSurfaceTargetPreparation> {
+        let mut matching_routes = self
+            .routes
+            .iter()
+            .filter(|route| route.descriptor.id() == descriptor_id);
+        let route = matching_routes
+            .next()
+            .ok_or(CaptureError::GpuSurfaceDescriptorNotPrepared { descriptor_id })?;
+        if matching_routes.next().is_some() {
+            return Err(CaptureError::DuplicateGpuSurfaceDescriptor { descriptor_id });
+        }
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(route.slots.len()).map_err(|_| {
+            CaptureError::ResourceExhausted {
+                operation: "retain GPU Surface target preparation slots",
+                requested_bytes: route
+                    .slots
+                    .len()
+                    .saturating_mul(size_of::<GpuSurfaceTargetPreparationSlot>()),
+            }
+        })?;
+        slots.extend(
+            route
+                .slots
+                .iter()
+                .map(|slot| GpuSurfaceTargetPreparationSlot {
+                    slot_id: slot.publication.slot_id,
+                    shared: Arc::clone(&slot.publication.shared),
+                }),
+        );
+        slots.sort_unstable_by_key(GpuSurfaceTargetPreparationSlot::slot_id);
+        Ok(GpuSurfaceTargetPreparation {
+            plan_generation: self.plan_generation,
+            descriptor: Arc::clone(&route.descriptor),
+            adapter_luid: self.adapter_luid,
+            source_id: Arc::clone(&self.source_id),
+            topology_generation: self.topology_generation,
+            duplication_generation: self.duplication_generation,
+            slots: slots.into_boxed_slice(),
+        })
     }
 
     /// Checked texture bytes retained by the prepared plan.
@@ -1284,6 +1460,7 @@ fn create_surface_slot(
     extent: CaptureExtent,
     slot_id: GpuSurfaceSlotId,
 ) -> CaptureResult<SurfaceSlot> {
+    let opaque_handle_id = next_shared_surface_handle_id()?;
     let desc = texture_desc(
         extent,
         DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -1334,13 +1511,14 @@ fn create_surface_slot(
     Ok(SurfaceSlot {
         publication: Arc::new(GpuSurfacePublication {
             provenance: None,
-            shared: SharedSurfaceSlot {
+            shared: Arc::new(SharedSurfaceSlot {
+                opaque_handle_id,
                 _texture: texture,
                 keyed_mutex,
                 fence,
                 texture_handle,
                 fence_handle,
-            },
+            }),
             synchronization: GpuSurfaceSynchronization {
                 producer_acquire_key: 0,
                 producer_release_key: 1,
@@ -1358,6 +1536,15 @@ fn create_surface_slot(
         next_use_id: 0,
         required_release_value: None,
     })
+}
+
+fn next_shared_surface_handle_id() -> CaptureResult<NonZeroU64> {
+    let value = NEXT_SHARED_SURFACE_HANDLE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| CaptureError::GpuSurfaceSynchronizationExhausted)?;
+    NonZeroU64::new(value).ok_or(CaptureError::GpuSurfaceSynchronizationExhausted)
 }
 
 fn texture_desc(
@@ -2370,5 +2557,48 @@ pub(super) mod fixture {
         }
         .map_err(|error| CaptureError::windows("open retained GPU Surface fence", error))?;
         Ok(fence.is_some())
+    }
+
+    pub(crate) fn target_preparation_handles_survive_plan_drop(
+        fixture: PublishedFixture,
+    ) -> CaptureResult<bool> {
+        let device = fixture.plan.device.clone();
+        let descriptor_id = fixture
+            .plan
+            .descriptors()
+            .next()
+            .ok_or_else(|| {
+                CaptureError::windows("inspect fixture GPU Surface plan", "no descriptor exists")
+            })?
+            .id();
+        let preparation = fixture.plan.target_preparation(descriptor_id)?;
+        drop(fixture);
+
+        let device1 = device
+            .cast::<ID3D11Device1>()
+            .map_err(|error| CaptureError::windows("query fixture shared-resource API", error))?;
+        let device5 = device
+            .cast::<ID3D11Device5>()
+            .map_err(|error| CaptureError::windows("query fixture shared-fence API", error))?;
+        for slot in preparation.slots() {
+            // SAFETY: the preparation manifest retains the borrowed handle.
+            let _texture: ID3D11Texture2D = unsafe {
+                device1.OpenSharedResource1(HANDLE(slot.texture_handle().as_raw() as *mut _))
+            }
+            .map_err(|error| CaptureError::windows("open prepared GPU Surface texture", error))?;
+            let mut fence = None;
+            // SAFETY: the preparation manifest retains the borrowed handle.
+            unsafe {
+                device5.OpenSharedFence::<ID3D11Fence>(
+                    HANDLE(slot.fence_handle().as_raw() as *mut _),
+                    &mut fence,
+                )
+            }
+            .map_err(|error| CaptureError::windows("open prepared GPU Surface fence", error))?;
+            if fence.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }

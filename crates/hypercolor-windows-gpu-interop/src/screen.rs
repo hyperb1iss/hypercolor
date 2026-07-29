@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use hypercolor_windows_capture::{
     CaptureError, DisplayRotation, GpuAdapterLuid, GpuSurfaceColorPipeline,
     GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy, GpuSurfaceDescriptor,
     GpuSurfaceDescriptorId, GpuSurfaceFormat, GpuSurfaceLease, GpuSurfacePlanGeneration,
-    GpuSurfaceProvenance, GpuSurfacePublication, GpuSurfaceSlotId,
+    GpuSurfaceProvenance, GpuSurfacePublication, GpuSurfaceSlotId, GpuSurfaceTargetPreparation,
+    GpuSurfaceTargetPreparationSlot,
 };
 use thiserror::Error;
 use windows::Win32::Foundation::{HANDLE, S_OK, WAIT_ABANDONED, WAIT_TIMEOUT};
@@ -119,6 +122,12 @@ pub enum D3d11On12ScreenInteropError {
         /// Contradictory identity field.
         field: &'static str,
     },
+    /// A publication references a slot absent from its prepared target.
+    #[error("native screen slot {slot_id:?} was not opened during target preparation")]
+    NativeSurfaceNotPrepared {
+        /// Exact capture slot missing from the prepared target.
+        slot_id: GpuSurfaceSlotId,
+    },
     /// Internal bridge state was poisoned by a panicking caller.
     #[error("screen interop {state} state is poisoned")]
     PoisonedState {
@@ -216,25 +225,36 @@ pub struct ScreenInteropCacheStats {
     pub prepared_targets: usize,
     /// Native capture surfaces opened for live prepared targets.
     pub opened_surfaces: usize,
+    /// Cumulative native surface opens performed during target preparation.
+    pub native_surface_opens: u64,
     /// Exact physical bytes retained by live renderer targets.
     pub retained_target_bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ScreenCopyTargetKey {
     plan_generation: GpuSurfacePlanGeneration,
     descriptor_id: GpuSurfaceDescriptorId,
     width: u32,
     height: u32,
+    adapter_luid: GpuAdapterLuid,
+    source_id: Arc<str>,
+    topology_generation: u64,
+    duplication_generation: u64,
 }
 
 impl ScreenCopyTargetKey {
-    fn new(plan_generation: GpuSurfacePlanGeneration, descriptor: &GpuSurfaceDescriptor) -> Self {
+    fn new(preparation: &GpuSurfaceTargetPreparation) -> Self {
+        let descriptor = preparation.descriptor();
         Self {
-            plan_generation,
+            plan_generation: preparation.plan_generation(),
             descriptor_id: descriptor.id(),
             width: descriptor.output_extent().width(),
             height: descriptor.output_extent().height(),
+            adapter_luid: preparation.adapter_luid(),
+            source_id: Arc::from(preparation.source_id()),
+            topology_generation: preparation.topology_generation(),
+            duplication_generation: preparation.duplication_generation(),
         }
     }
 }
@@ -247,20 +267,21 @@ struct NativeSurfaceKey {
     topology_generation: u64,
     duplication_generation: u64,
     slot_id: GpuSurfaceSlotId,
+    opaque_handle_id: NonZeroU64,
     use_id: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct OpenedSurfaceKey {
-    target: ScreenCopyTargetKey,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreparedNativeIdentity {
     adapter_luid: GpuAdapterLuid,
     source_id: Arc<str>,
     topology_generation: u64,
     duplication_generation: u64,
-    slot_id: GpuSurfaceSlotId,
 }
 
 struct OpenedSurface {
+    slot_id: GpuSurfaceSlotId,
+    opaque_handle_id: NonZeroU64,
     resource: ID3D11Resource,
     keyed_mutex: IDXGIKeyedMutex,
     fence: ID3D11Fence,
@@ -277,14 +298,16 @@ struct ScreenCopyTarget {
 struct PreparedScreenCopyTargetInner {
     bridge: Weak<D3d11On12ScreenBridgeInner>,
     key: ScreenCopyTargetKey,
+    native_identity: PreparedNativeIdentity,
+    opened_surfaces: Box<[OpenedSurface]>,
     allocation: ScreenCopyTargetAllocation,
     target: Mutex<ScreenCopyTarget>,
 }
 
 /// Cloneable lease retaining one exact renderer-owned screen-copy target.
 ///
-/// The final lease or texture-reader drop releases the target and its matching
-/// native surface cache without retaining the renderer bridge itself.
+/// The final lease or texture-reader drop releases the renderer target and
+/// every native surface opened during preparation.
 #[derive(Clone)]
 pub struct PreparedScreenCopyTarget {
     inner: Arc<PreparedScreenCopyTargetInner>,
@@ -354,18 +377,14 @@ impl Drop for PreparedScreenCopyTargetInner {
             .is_some_and(|target| std::ptr::eq(target.as_ptr(), std::ptr::from_ref(self)));
         if is_current {
             state.targets.remove(&self.key);
-            state
-                .opened_surfaces
-                .retain(|key, _| key.target != self.key);
         }
     }
 }
 
 struct D3d11On12ScreenBridgeState {
-    opened_surfaces: HashMap<OpenedSurfaceKey, OpenedSurface>,
     targets: HashMap<ScreenCopyTargetKey, Weak<PreparedScreenCopyTargetInner>>,
     next_storage_id: u64,
-    next_content_generation: u64,
+    native_surface_opens: u64,
 }
 
 struct D3d11On12ScreenBridgeInner {
@@ -373,6 +392,8 @@ struct D3d11On12ScreenBridgeInner {
     queue: wgpu::Queue,
     interop: D3d11On12ScreenDevice,
     state: Mutex<D3d11On12ScreenBridgeState>,
+    context_gate: Mutex<()>,
+    next_content_generation: AtomicU64,
 }
 
 /// Copy bridge from exact D3D11 capture publications into ordinary wgpu textures.
@@ -400,11 +421,12 @@ impl D3d11On12ScreenBridge {
                 queue,
                 interop,
                 state: Mutex::new(D3d11On12ScreenBridgeState {
-                    opened_surfaces: HashMap::new(),
                     targets: HashMap::new(),
                     next_storage_id: 0,
-                    next_content_generation: 0,
+                    native_surface_opens: 0,
                 }),
+                context_gate: Mutex::new(()),
+                next_content_generation: AtomicU64::new(1),
             }),
         })
     }
@@ -426,11 +448,30 @@ impl D3d11On12ScreenBridge {
     /// overflow, allocation metadata exhaustion, and native wrapping errors.
     pub fn prepare_target(
         &self,
-        plan_generation: GpuSurfacePlanGeneration,
-        descriptor: &GpuSurfaceDescriptor,
+        preparation: &GpuSurfaceTargetPreparation,
     ) -> ScreenInteropResult<PreparedScreenCopyTarget> {
+        let descriptor = preparation.descriptor();
         validate_descriptor_contract(descriptor, self.inner.device.limits())?;
-        let key = ScreenCopyTargetKey::new(plan_generation, descriptor);
+        if preparation.adapter_luid() != self.adapter_luid() {
+            return Err(D3d11On12ScreenInteropError::AdapterMismatch {
+                publication: preparation.adapter_luid(),
+                renderer: self.adapter_luid(),
+            });
+        }
+        if preparation.slots().is_empty() {
+            return Err(
+                D3d11On12ScreenInteropError::UnsupportedPublicationContract {
+                    field: "preparation.slots",
+                },
+            );
+        }
+        let key = ScreenCopyTargetKey::new(preparation);
+        let native_identity = PreparedNativeIdentity {
+            adapter_luid: preparation.adapter_luid(),
+            source_id: Arc::clone(&key.source_id),
+            topology_generation: preparation.topology_generation(),
+            duplication_generation: preparation.duplication_generation(),
+        };
         let retained_bytes = checked_target_bytes(key.width, key.height)?;
         let storage_id = {
             let mut state = self
@@ -439,6 +480,7 @@ impl D3d11On12ScreenBridge {
                 .lock()
                 .map_err(|_| D3d11On12ScreenInteropError::PoisonedState { state: "bridge" })?;
             if let Some(target) = state.targets.get(&key).and_then(Weak::upgrade) {
+                validate_matching_preparation(&target, &native_identity, preparation.slots())?;
                 return Ok(PreparedScreenCopyTarget { inner: target });
             }
             state.targets.remove(&key);
@@ -453,6 +495,24 @@ impl D3d11On12ScreenBridge {
             state.next_storage_id = storage_id;
             storage_id
         };
+        let mut opened_surfaces = Vec::new();
+        opened_surfaces
+            .try_reserve_exact(preparation.slots().len())
+            .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
+        for slot in preparation.slots() {
+            opened_surfaces.push(open_surface(&self.inner.interop, slot, descriptor)?);
+        }
+        opened_surfaces.sort_unstable_by_key(|surface| surface.slot_id);
+        if opened_surfaces
+            .windows(2)
+            .any(|slots| slots[0].slot_id == slots[1].slot_id)
+        {
+            return Err(
+                D3d11On12ScreenInteropError::UnsupportedPublicationContract {
+                    field: "preparation.slot_id",
+                },
+            );
+        }
         let target = create_target(
             &self.inner.device,
             &self.inner.queue,
@@ -462,7 +522,9 @@ impl D3d11On12ScreenBridge {
         )?;
         let target = Arc::new(PreparedScreenCopyTargetInner {
             bridge: Arc::downgrade(&self.inner),
-            key,
+            key: key.clone(),
+            native_identity,
+            opened_surfaces: opened_surfaces.into_boxed_slice(),
             allocation: ScreenCopyTargetAllocation {
                 storage_id,
                 width: key.width,
@@ -476,12 +538,24 @@ impl D3d11On12ScreenBridge {
             .state
             .lock()
             .map_err(|_| D3d11On12ScreenInteropError::PoisonedState { state: "bridge" })?;
+        state.native_surface_opens = state
+            .native_surface_opens
+            .checked_add(
+                u64::try_from(target.opened_surfaces.len())
+                    .map_err(|_| D3d11On12ScreenInteropError::IdentityExhausted)?,
+            )
+            .ok_or(D3d11On12ScreenInteropError::IdentityExhausted)?;
         // Independent extents allocate in parallel. If the same key raced us,
         // discard this candidate and share the winner's exact lease.
         if let Some(existing) = state.targets.get(&key).and_then(Weak::upgrade) {
+            validate_matching_preparation(&existing, &target.native_identity, preparation.slots())?;
             drop(state);
             return Ok(PreparedScreenCopyTarget { inner: existing });
         }
+        state
+            .targets
+            .try_reserve(1)
+            .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
         state.targets.insert(key, Arc::downgrade(&target));
         Ok(PreparedScreenCopyTarget { inner: target })
     }
@@ -497,7 +571,7 @@ impl D3d11On12ScreenBridge {
             .state
             .lock()
             .map_err(|_| D3d11On12ScreenInteropError::PoisonedState { state: "bridge" })?;
-        let opened_surfaces = state.opened_surfaces.len();
+        let native_surface_opens = state.native_surface_opens;
         let targets = state
             .targets
             .values()
@@ -505,11 +579,14 @@ impl D3d11On12ScreenBridge {
             .collect::<Vec<_>>();
         drop(state);
         let mut stats = ScreenInteropCacheStats {
-            opened_surfaces,
+            native_surface_opens,
             ..ScreenInteropCacheStats::default()
         };
         for target in targets {
             stats.prepared_targets += 1;
+            stats.opened_surfaces = stats
+                .opened_surfaces
+                .saturating_add(target.opened_surfaces.len());
             stats.retained_target_bytes = stats
                 .retained_target_bytes
                 .saturating_add(target.allocation.retained_bytes);
@@ -534,33 +611,17 @@ impl D3d11On12ScreenBridge {
         let provenance = publication.provenance();
         validate_publication_contract(provenance, self.adapter_luid(), self.inner.device.limits())?;
         self.validate_prepared_target(prepared, provenance)?;
-        let target_key = prepared.inner.key;
+        let target_key = prepared.inner.key.clone();
         let native_key = NativeSurfaceKey {
-            target: target_key,
+            target: target_key.clone(),
             adapter_luid: provenance.adapter_luid,
             source_id: Arc::clone(&provenance.source_id),
             topology_generation: provenance.topology_generation,
             duplication_generation: provenance.duplication_generation,
             slot_id: provenance.slot_id,
+            opaque_handle_id: publication.opaque_handle_id(),
             use_id: provenance.use_id,
         };
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .map_err(|_| D3d11On12ScreenInteropError::PoisonedState { state: "bridge" })?;
-        if !state
-            .targets
-            .get(&target_key)
-            .is_some_and(|target| std::ptr::eq(target.as_ptr(), Arc::as_ptr(&prepared.inner)))
-        {
-            return Err(D3d11On12ScreenInteropError::TargetNotPrepared {
-                plan_generation: target_key.plan_generation,
-                descriptor_id: target_key.descriptor_id,
-                width: target_key.width,
-                height: target_key.height,
-            });
-        }
         let mut target = prepared.inner.target.lock().map_err(|_| {
             D3d11On12ScreenInteropError::PoisonedState {
                 state: "prepared target",
@@ -569,43 +630,36 @@ impl D3d11On12ScreenBridge {
         if target.last_native_surface.as_ref() == Some(&native_key) {
             return Ok(Self::texture_copy(&target, prepared));
         }
-
-        let content_generation = state
-            .next_content_generation
-            .checked_add(1)
-            .ok_or(D3d11On12ScreenInteropError::IdentityExhausted)?;
-
-        self.transition_target_to_copy_destination(&target);
         let mut lease = publication.claim()?;
-        let opened_key = OpenedSurfaceKey {
-            target: target_key,
-            adapter_luid: provenance.adapter_luid,
-            source_id: Arc::clone(&provenance.source_id),
-            topology_generation: provenance.topology_generation,
-            duplication_generation: provenance.duplication_generation,
-            slot_id: provenance.slot_id,
+        let opened = prepared
+            .inner
+            .opened_surfaces
+            .binary_search_by_key(&provenance.slot_id, |surface| surface.slot_id)
+            .ok()
+            .and_then(|index| prepared.inner.opened_surfaces.get(index))
+            .filter(|surface| surface.opaque_handle_id == publication.opaque_handle_id());
+        let Some(opened) = opened else {
+            return Err(abandon_before_acquire(
+                lease,
+                D3d11On12ScreenInteropError::NativeSurfaceNotPrepared {
+                    slot_id: provenance.slot_id,
+                },
+            ));
         };
-        if !state.opened_surfaces.contains_key(&opened_key) {
-            let opened = match open_surface(&self.inner.interop, &lease, provenance) {
-                Ok(opened) => opened,
-                Err(error) => return Err(abandon_before_acquire(lease, error)),
-            };
-            if state.opened_surfaces.try_reserve(1).is_err() {
-                return Err(abandon_before_acquire(
-                    lease,
-                    D3d11On12ScreenInteropError::CacheAllocationFailed,
-                ));
-            }
-            state.opened_surfaces.retain(|key, _| {
-                key.target != opened_key.target
-                    || key.source_id != opened_key.source_id
-                    || key.slot_id != opened_key.slot_id
-                    || *key == opened_key
-            });
-            state.opened_surfaces.insert(opened_key.clone(), opened);
-        }
+        let content_generation = self
+            .inner
+            .next_content_generation
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+                generation.checked_add(1)
+            })
+            .map_err(|_| D3d11On12ScreenInteropError::IdentityExhausted)?;
+        self.transition_target_to_copy_destination(&target);
         let synchronization = lease.synchronization();
-        let opened = &state.opened_surfaces[&opened_key];
+        let _context_guard = self.inner.context_gate.lock().map_err(|_| {
+            D3d11On12ScreenInteropError::PoisonedState {
+                state: "D3D11 immediate context",
+            }
+        })?;
         // SAFETY: the shared fence was opened from the claimed publication,
         // and its ready value was emitted with this exact slot use.
         if let Err(error) = unsafe {
@@ -692,45 +746,7 @@ impl D3d11On12ScreenBridge {
 
         target.last_native_surface = Some(native_key);
         target.content_generation = content_generation;
-        state.next_content_generation = content_generation;
         Ok(Self::texture_copy(&target, prepared))
-    }
-
-    /// Drop cached native interfaces for one source-local retired plan.
-    pub fn retire_source(
-        &self,
-        source_id: &str,
-        topology_generation: u64,
-        plan_generation: GpuSurfacePlanGeneration,
-    ) {
-        let Ok(mut state) = self.inner.state.lock() else {
-            return;
-        };
-        state.opened_surfaces.retain(|key, _| {
-            key.source_id.as_ref() != source_id
-                || key.topology_generation != topology_generation
-                || key.target.plan_generation != plan_generation
-        });
-        let targets = state
-            .targets
-            .values()
-            .filter_map(Weak::upgrade)
-            .collect::<Vec<_>>();
-        drop(state);
-        for target in targets {
-            if target.key.plan_generation != plan_generation {
-                continue;
-            }
-            let Ok(mut target) = target.target.lock() else {
-                continue;
-            };
-            if target.last_native_surface.as_ref().is_some_and(|native| {
-                native.source_id.as_ref() == source_id
-                    && native.topology_generation == topology_generation
-            }) {
-                target.last_native_surface = None;
-            }
-        }
     }
 
     fn validate_prepared_target(
@@ -741,7 +757,7 @@ impl D3d11On12ScreenBridge {
         if !Weak::ptr_eq(&prepared.inner.bridge, &Arc::downgrade(&self.inner)) {
             return Err(D3d11On12ScreenInteropError::ForeignPreparedTarget);
         }
-        let key = prepared.inner.key;
+        let key = &prepared.inner.key;
         if key.plan_generation != provenance.plan_generation {
             return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
                 field: "plan_generation",
@@ -759,10 +775,32 @@ impl D3d11On12ScreenBridge {
                 field: "output_extent",
             });
         }
+        let identity = &prepared.inner.native_identity;
+        if identity.adapter_luid != provenance.adapter_luid {
+            return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
+                field: "adapter_luid",
+            });
+        }
+        if identity.source_id != provenance.source_id {
+            return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch { field: "source_id" });
+        }
+        if identity.topology_generation != provenance.topology_generation {
+            return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
+                field: "topology_generation",
+            });
+        }
+        if identity.duplication_generation != provenance.duplication_generation {
+            return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
+                field: "duplication_generation",
+            });
+        }
         Ok(())
     }
 
     fn transition_target_to_copy_destination(&self, target: &ScreenCopyTarget) {
+        // Readers may leave this public texture in any declared wgpu usage.
+        // Recording the transition through wgpu keeps its tracker synchronized
+        // before D3D11On12 accesses the underlying resource externally.
         let mut encoder =
             self.inner
                 .device
@@ -1003,22 +1041,49 @@ fn checked_target_bytes(width: u32, height: u32) -> ScreenInteropResult<u64> {
         .ok_or(D3d11On12ScreenInteropError::TargetByteLengthOverflow { width, height })
 }
 
+fn validate_matching_preparation(
+    target: &PreparedScreenCopyTargetInner,
+    identity: &PreparedNativeIdentity,
+    slots: &[GpuSurfaceTargetPreparationSlot],
+) -> ScreenInteropResult<()> {
+    if target.native_identity != *identity {
+        return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
+            field: "preparation.native_identity",
+        });
+    }
+    if target.opened_surfaces.len() != slots.len()
+        || target
+            .opened_surfaces
+            .iter()
+            .zip(slots)
+            .any(|(opened, slot)| {
+                opened.slot_id != slot.slot_id()
+                    || opened.opaque_handle_id != slot.opaque_handle_id()
+            })
+    {
+        return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
+            field: "preparation.slots",
+        });
+    }
+    Ok(())
+}
+
 fn open_surface(
     interop: &D3d11On12ScreenDevice,
-    lease: &GpuSurfaceLease,
-    provenance: &GpuSurfaceProvenance,
+    slot: &GpuSurfaceTargetPreparationSlot,
+    descriptor: &GpuSurfaceDescriptor,
 ) -> ScreenInteropResult<OpenedSurface> {
-    let texture_handle = HANDLE(lease.texture_handle().as_raw() as *mut _);
-    // SAFETY: the claimed lease keeps its borrowed NT handle alive through
+    let texture_handle = HANDLE(slot.texture_handle().as_raw() as *mut _);
+    // SAFETY: the preparation manifest keeps its borrowed NT handle alive through
     // OpenSharedResource1 and the returned COM resource owns its reference.
     let texture: ID3D11Texture2D =
         unsafe { interop.device1.OpenSharedResource1(texture_handle) }
             .map_err(|error| windows_error("open capture shared texture", error))?;
-    validate_opened_texture(&texture, provenance)?;
+    validate_opened_texture(&texture, descriptor)?;
     let resource = cast_interface(&texture, "ID3D11Resource capture texture")?;
     let keyed_mutex = cast_interface(&texture, "IDXGIKeyedMutex capture texture")?;
 
-    let fence_handle = HANDLE(lease.fence_handle().as_raw() as *mut _);
+    let fence_handle = HANDLE(slot.fence_handle().as_raw() as *mut _);
     let mut fence = None;
     // SAFETY: the claimed lease keeps its borrowed fence handle alive through
     // OpenSharedFence and the returned COM fence owns its reference.
@@ -1033,6 +1098,8 @@ fn open_surface(
         resource: "ID3D11Fence",
     })?;
     Ok(OpenedSurface {
+        slot_id: slot.slot_id(),
+        opaque_handle_id: slot.opaque_handle_id(),
         resource,
         keyed_mutex,
         fence,
@@ -1041,12 +1108,12 @@ fn open_surface(
 
 fn validate_opened_texture(
     texture: &ID3D11Texture2D,
-    provenance: &GpuSurfaceProvenance,
+    descriptor: &GpuSurfaceDescriptor,
 ) -> ScreenInteropResult<()> {
     let mut observed = D3D11_TEXTURE2D_DESC::default();
     // SAFETY: GetDesc fills caller-owned storage and cannot fail.
     unsafe { texture.GetDesc(&mut observed) };
-    let expected = provenance.output_extent;
+    let expected = descriptor.output_extent();
     let invalid_field = if observed.Width != expected.width() {
         Some("native_texture.width")
     } else if observed.Height != expected.height() {

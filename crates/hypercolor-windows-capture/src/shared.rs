@@ -322,6 +322,13 @@ pub enum CaptureError {
         descriptor_id: GpuSurfaceDescriptorId,
     },
 
+    /// A prepared plan does not contain the requested descriptor identity.
+    #[error("GPU Surface descriptor identity {descriptor_id:?} is not prepared")]
+    GpuSurfaceDescriptorNotPrepared {
+        /// Descriptor absent from the prepared native plan.
+        descriptor_id: GpuSurfaceDescriptorId,
+    },
+
     /// A descriptor source rectangle escapes its declared coordinate space.
     #[error(
         "GPU Surface descriptor {descriptor_id:?} region is outside source {source_width}x{source_height}"
@@ -859,7 +866,7 @@ pub(crate) fn checked_gpu_surface_bytes(extent: CaptureExtent) -> CaptureResult<
         })
 }
 
-/// Borrowed Windows handle value kept alive by a [`crate::GpuSurfaceLease`].
+/// Borrowed Windows handle value kept alive by its native resource owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuSharedHandle<'lease> {
     raw: isize,

@@ -1,9 +1,10 @@
-#![cfg(all(target_os = "windows", feature = "screen-capture"))]
+#![cfg(all(target_os = "windows", feature = "screen-capture-fixtures"))]
 #![allow(
     dead_code,
     reason = "shared fixture support is compiled independently by each integration test"
 )]
 
+use hypercolor_windows_capture::fixtures::{GpuSurfaceFixtureConfig, publish_gpu_surface};
 use hypercolor_windows_capture::{
     CaptureExtent, CaptureRegion, DisplayRotation, GPU_SURFACE_ALGORITHM_REVISION,
     GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy,
@@ -56,12 +57,13 @@ fn prepares_and_reuses_exact_renderer_target() -> Result<(), String> {
         D3d11On12ScreenBridge::new(wgpu.device, wgpu.queue).map_err(|error| error.to_string())?;
     let descriptor = fixture_descriptor(17, 641, 359)?;
     let plan = fixture_plan_generation(11)?;
+    let fixture = publish_fixture(bridge.adapter_luid(), &descriptor, plan, "fixture:reuse", 1)?;
 
     let first = bridge
-        .prepare_target(plan, &descriptor)
+        .prepare_target(fixture.target_preparation())
         .map_err(|error| error.to_string())?;
     let reused = bridge
-        .prepare_target(plan, &descriptor)
+        .prepare_target(fixture.target_preparation())
         .map_err(|error| error.to_string())?;
 
     assert_eq!(first, reused);
@@ -90,8 +92,9 @@ fn aborted_preparation_releases_its_target() -> Result<(), String> {
         D3d11On12ScreenBridge::new(wgpu.device, wgpu.queue).map_err(|error| error.to_string())?;
     let descriptor = fixture_descriptor(18, 320, 180)?;
     let plan = fixture_plan_generation(12)?;
+    let fixture = publish_fixture(bridge.adapter_luid(), &descriptor, plan, "fixture:abort", 1)?;
     let aborted = bridge
-        .prepare_target(plan, &descriptor)
+        .prepare_target(fixture.target_preparation())
         .map_err(|error| error.to_string())?;
     let aborted_storage = aborted.storage_id();
     drop(aborted);
@@ -104,7 +107,7 @@ fn aborted_preparation_releases_its_target() -> Result<(), String> {
         0
     );
     let retried = bridge
-        .prepare_target(plan, &descriptor)
+        .prepare_target(fixture.target_preparation())
         .map_err(|error| error.to_string())?;
     assert_ne!(retried.storage_id(), aborted_storage);
     Ok(())
@@ -121,11 +124,25 @@ fn overlapping_plan_generations_keep_exact_targets_independent() -> Result<(), S
     let bridge =
         D3d11On12ScreenBridge::new(wgpu.device, wgpu.queue).map_err(|error| error.to_string())?;
     let descriptor = fixture_descriptor(19, 800, 450)?;
+    let active_fixture = publish_fixture(
+        bridge.adapter_luid(),
+        &descriptor,
+        fixture_plan_generation(13)?,
+        "fixture:overlap",
+        1,
+    )?;
+    let candidate_fixture = publish_fixture(
+        bridge.adapter_luid(),
+        &descriptor,
+        fixture_plan_generation(14)?,
+        "fixture:overlap",
+        1,
+    )?;
     let active = bridge
-        .prepare_target(fixture_plan_generation(13)?, &descriptor)
+        .prepare_target(active_fixture.target_preparation())
         .map_err(|error| error.to_string())?;
     let candidate = bridge
-        .prepare_target(fixture_plan_generation(14)?, &descriptor)
+        .prepare_target(candidate_fixture.target_preparation())
         .map_err(|error| error.to_string())?;
 
     assert_ne!(active.storage_id(), candidate.storage_id());
@@ -155,9 +172,17 @@ fn cloned_bridges_coalesce_concurrent_exact_preparations() -> Result<(), String>
         D3d11On12ScreenBridge::new(wgpu.device, wgpu.queue).map_err(|error| error.to_string())?;
     let descriptor = fixture_descriptor(20, 512, 288)?;
     let plan = fixture_plan_generation(15)?;
+    let fixture = publish_fixture(
+        bridge.adapter_luid(),
+        &descriptor,
+        plan,
+        "fixture:concurrent",
+        1,
+    )?;
+    let preparation = fixture.target_preparation().clone();
     let barrier = Arc::new(Barrier::new(2));
     let left_bridge = bridge.clone();
-    let left_descriptor = descriptor.clone();
+    let left_preparation = preparation.clone();
     let left_barrier = Arc::clone(&barrier);
     let right_bridge = bridge.clone();
     let right_barrier = Arc::clone(&barrier);
@@ -166,13 +191,13 @@ fn cloned_bridges_coalesce_concurrent_exact_preparations() -> Result<(), String>
         let left = scope.spawn(move || {
             left_barrier.wait();
             left_bridge
-                .prepare_target(plan, &left_descriptor)
+                .prepare_target(&left_preparation)
                 .map_err(|error| error.to_string())
         });
         let right = scope.spawn(move || {
             right_barrier.wait();
             right_bridge
-                .prepare_target(plan, &descriptor)
+                .prepare_target(&preparation)
                 .map_err(|error| error.to_string())
         });
         (
@@ -197,6 +222,39 @@ fn cloned_bridges_coalesce_concurrent_exact_preparations() -> Result<(), String>
 }
 
 #[test]
+fn same_plan_and_descriptor_ids_across_sources_keep_independent_targets() -> Result<(), String> {
+    if std::env::var(RUN_FIXTURE_ENV).as_deref() != Ok("1") {
+        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the D3D11On12 fixture");
+        return Ok(());
+    }
+
+    let wgpu = WgpuFixture::new_dx12("hypercolor D3D11On12 source identity fixture")?;
+    let bridge =
+        D3d11On12ScreenBridge::new(wgpu.device, wgpu.queue).map_err(|error| error.to_string())?;
+    let descriptor = fixture_descriptor(21, 64, 36)?;
+    let plan = fixture_plan_generation(16)?;
+    let left = publish_fixture(bridge.adapter_luid(), &descriptor, plan, "fixture:left", 1)?;
+    let right = publish_fixture(bridge.adapter_luid(), &descriptor, plan, "fixture:right", 1)?;
+
+    let left_target = bridge
+        .prepare_target(left.target_preparation())
+        .map_err(|error| error.to_string())?;
+    let right_target = bridge
+        .prepare_target(right.target_preparation())
+        .map_err(|error| error.to_string())?;
+
+    assert_ne!(left_target.storage_id(), right_target.storage_id());
+    assert_eq!(
+        bridge
+            .cache_stats()
+            .map_err(|error| error.to_string())?
+            .prepared_targets,
+        2,
+    );
+    Ok(())
+}
+
+#[test]
 fn bridge_and_prepared_handles_are_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -208,6 +266,30 @@ fn fixture_plan_generation(value: u64) -> Result<GpuSurfacePlanGeneration, Strin
     let value = NonZeroU64::new(value)
         .ok_or_else(|| "fixture plan generation must be non-zero".to_owned())?;
     Ok(GpuSurfacePlanGeneration::new(value))
+}
+
+fn publish_fixture(
+    adapter_luid: hypercolor_windows_capture::GpuAdapterLuid,
+    descriptor: &GpuSurfaceDescriptor,
+    plan_generation: GpuSurfacePlanGeneration,
+    source_id: &'static str,
+    duplication_generation: u64,
+) -> Result<hypercolor_windows_capture::fixtures::GpuSurfaceFixture, String> {
+    let extent = descriptor.output_extent();
+    let pixel_count = usize::try_from(u64::from(extent.width()) * u64::from(extent.height()))
+        .map_err(|_| "fixture pixel count exceeds usize".to_owned())?;
+    publish_gpu_surface(GpuSurfaceFixtureConfig {
+        adapter_luid,
+        plan_generation,
+        source_id: Arc::from(source_id),
+        topology_generation: 3,
+        duplication_generation,
+        descriptor: descriptor.clone(),
+        bgra: [10, 20, 30, 255].repeat(pixel_count),
+        width: extent.width(),
+        height: extent.height(),
+    })
+    .map_err(|error| error.to_string())
 }
 
 fn fixture_descriptor(id: u64, width: u32, height: u32) -> Result<GpuSurfaceDescriptor, String> {
