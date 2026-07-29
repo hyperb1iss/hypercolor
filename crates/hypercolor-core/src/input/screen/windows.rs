@@ -2180,6 +2180,7 @@ fn capture_issue(error: &CaptureError) -> SourceIssue {
         ),
         CaptureError::UnsupportedGpuSurface { .. }
         | CaptureError::DuplicateGpuSurfaceDescriptor { .. }
+        | CaptureError::GpuSurfaceDescriptorNotPrepared { .. }
         | CaptureError::GpuSurfaceRegionOutOfBounds { .. }
         | CaptureError::GpuSurfaceRotationMismatch { .. }
         | CaptureError::GpuSurfaceInFlightDepthTooSmall { .. } => SourceIssue::new(
