@@ -110,6 +110,15 @@ pub enum D3d11On12ScreenInteropError {
         #[source]
         source: wgpu::Error,
     },
+    /// A native copy mutated the target before its ownership release failed.
+    #[error("screen target contents became uncertain during {operation}: {source}")]
+    TargetContentUncertain {
+        /// Post-copy operation that failed.
+        operation: &'static str,
+        /// Underlying interop or capture lifecycle failure.
+        #[source]
+        source: Box<D3d11On12ScreenInteropError>,
+    },
     /// A copy arrived before its renderer target was transactionally prepared.
     #[error(
         "screen target for plan {plan_generation:?}, descriptor {descriptor_id:?} was not prepared at {width}x{height}"
@@ -740,7 +749,12 @@ impl D3d11On12ScreenBridge {
                 .keyed_mutex
                 .ReleaseSync(synchronization.consumer_release_key)
         }
-        .map_err(|error| windows_error("release capture keyed mutex", error))?;
+        .map_err(|error| {
+            target_content_uncertain(
+                "release capture keyed mutex",
+                windows_error("release capture keyed mutex", error),
+            )
+        })?;
         // SAFETY: the release fence is queued after the final copy and keyed
         // mutex release on the same D3D11On12 immediate context.
         unsafe {
@@ -749,11 +763,21 @@ impl D3d11On12ScreenBridge {
                 .context4
                 .Signal(&opened.fence, synchronization.consumer_release_value)
         }
-        .map_err(|error| windows_error("signal capture release fence", error))?;
+        .map_err(|error| {
+            target_content_uncertain(
+                "signal capture release fence",
+                windows_error("signal capture release fence", error),
+            )
+        })?;
         // SAFETY: Flush submits the already ordered D3D11On12 wait/copy/release
         // work to the renderer's exact D3D12 command queue.
         unsafe { self.inner.interop.context.Flush() };
-        lease.mark_release_queued()?;
+        lease.mark_release_queued().map_err(|error| {
+            target_content_uncertain(
+                "finalize capture publication release",
+                D3d11On12ScreenInteropError::Capture(error),
+            )
+        })?;
 
         target.last_native_surface = Some(native_key);
         target.content_generation = content_generation;
@@ -1258,6 +1282,16 @@ fn windows_error(
     D3d11On12ScreenInteropError::WindowsOperation {
         operation,
         hresult: error.code().0,
+    }
+}
+
+fn target_content_uncertain(
+    operation: &'static str,
+    source: D3d11On12ScreenInteropError,
+) -> D3d11On12ScreenInteropError {
+    D3d11On12ScreenInteropError::TargetContentUncertain {
+        operation,
+        source: Box::new(source),
     }
 }
 
