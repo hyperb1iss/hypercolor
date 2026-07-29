@@ -677,6 +677,10 @@ impl ScreenResourceLifetime {
         &self.inner.resource
     }
 
+    pub(crate) fn plan_generation(&self) -> ScreenPlanGeneration {
+        self.inner.plan_generation
+    }
+
     pub(crate) fn is_same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }

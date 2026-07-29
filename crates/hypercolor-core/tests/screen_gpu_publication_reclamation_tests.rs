@@ -26,6 +26,8 @@ use hypercolor_core::input::screen::{
 #[path = "support/native_target.rs"]
 mod native_target_support;
 
+const CAPTURE_PLAN_RETAINED_BYTES: u64 = 37;
+
 fn non_zero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("test values are non-zero")
 }
@@ -180,9 +182,19 @@ fn exact_ledger(
         };
         let preparation = target.prepare(
             descriptor,
-            &ScreenNativePreparationPayload::new(Arc::new(RendererTargetPayload)),
+            &ScreenNativePreparationPayload::new(
+                descriptor,
+                ticket.plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
         )?;
         resources.push(preparation.exact_resource("native-target-test", "worker-runtime-total")?);
+        resources.push(ScreenExactResource::try_new_scoped(
+            "capture-plan-test",
+            "worker-runtime-total",
+            ScreenResourceKind::WorkerAdditional,
+            CAPTURE_PLAN_RETAINED_BYTES,
+        )?);
     }
     let lifetimes = resources
         .iter()
@@ -258,18 +270,27 @@ fn worker_ticket_for(
 fn commit_initial(
     builder: &mut ScreenPlanBuilder,
     demand: ResolvedScreenBranchDemand,
-) -> (ScreenCapturePlan, ScreenResourceLifetime) {
+) -> (
+    ScreenCapturePlan,
+    ScreenResourceLifetime,
+    ScreenResourceLifetime,
+) {
     let (committed, worker_lifetimes) = commit_candidate(builder, [demand]);
+    let worker_lifetimes = worker_lifetimes.into_iter().flatten().collect::<Vec<_>>();
     let target_lifetime = worker_lifetimes
-        .into_iter()
-        .flatten()
+        .iter()
         .find(|lifetime| lifetime.resource().name().as_ref() == "native-target-test")
+        .cloned()
         .expect("initial native target has an exact lifetime");
+    let capture_lifetime = worker_lifetimes
+        .into_iter()
+        .find(|lifetime| lifetime.resource().name().as_ref() == "capture-plan-test")
+        .expect("initial capture plan has an exact lifetime");
     let (plan, retirement) = committed.into_parts();
     retirement
         .try_reclaim()
         .expect("empty predecessor retires immediately");
-    (plan, target_lifetime)
+    (plan, target_lifetime, capture_lifetime)
 }
 
 fn binding(builder: &ScreenPlanBuilder) -> ScreenWorkerBinding {
@@ -346,6 +367,7 @@ struct Fixture {
     hub: Arc<ScreenPublicationHub>,
     descriptor: ResolvedScreenPublicationDescriptor,
     target_lifetime: Option<ScreenResourceLifetime>,
+    capture_lifetime: Option<ScreenResourceLifetime>,
 }
 
 impl Fixture {
@@ -355,12 +377,13 @@ impl Fixture {
         let descriptor = demand.descriptor().clone();
         let mut builder = ScreenPlanBuilder::with_publication_slots(slot_policy);
         let hub = builder.publication_hub();
-        let (_, target_lifetime) = commit_initial(&mut builder, demand);
+        let (_, target_lifetime, capture_lifetime) = commit_initial(&mut builder, demand);
         Self {
             builder,
             hub,
             descriptor,
             target_lifetime: Some(target_lifetime),
+            capture_lifetime: Some(capture_lifetime),
         }
     }
 
@@ -611,7 +634,11 @@ fn native_target_bindings_reject_unbound_mismatched_and_swapped_allocations() {
     let first_descriptor = first_demand.descriptor().clone();
     let second_descriptor = second_demand.descriptor().clone();
     let ticket = worker_ticket_for([first_demand, second_demand]);
-    let platform = ScreenNativePreparationPayload::new(Arc::new(RendererTargetPayload));
+    let platform = ScreenNativePreparationPayload::new(
+        &first_descriptor,
+        ticket.plan_generation(),
+        Arc::new(RendererTargetPayload),
+    );
 
     let unbound =
         ScreenNativeTargetPreparation::new(platform.clone(), native_target_support::RETAINED_BYTES);
@@ -688,7 +715,14 @@ fn native_target_bindings_reject_unbound_mismatched_and_swapped_allocations() {
         .bind_resource_lifetime(&first_resource)
         .expect("first route lifetime binds");
     let second_preparation = second_target
-        .prepare(&second_descriptor, &platform)
+        .prepare(
+            &second_descriptor,
+            &ScreenNativePreparationPayload::new(
+                &second_descriptor,
+                ticket.plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
+        )
         .expect("second route prepares");
     let second_resource = second_preparation
         .exact_resource("native-route-second", "worker-runtime-total")
@@ -732,7 +766,14 @@ fn native_target_bindings_reject_unbound_mismatched_and_swapped_allocations() {
         .bind_resource_lifetime(&native_resource)
         .expect("native-size route lifetime binds");
     let compact_preparation = first_target
-        .prepare(&compact_descriptor, &platform)
+        .prepare(
+            &compact_descriptor,
+            &ScreenNativePreparationPayload::new(
+                &compact_descriptor,
+                descriptor_ticket.plan_generation(),
+                Arc::new(RendererTargetPayload),
+            ),
+        )
         .expect("compact route prepares");
     let compact_resource = compact_preparation
         .exact_resource("compact-route", "worker-runtime-total")
@@ -752,7 +793,7 @@ fn native_target_bindings_reject_unbound_mismatched_and_swapped_allocations() {
 }
 
 #[test]
-fn reader_held_gpu_surface_retains_renderer_bytes_after_plan_retirement() {
+fn reader_held_gpu_surface_retains_capture_and_renderer_bytes_after_plan_retirement() {
     let mut fixture = Fixture::new(ScreenPublicationSlotPolicy::default());
     let publisher = fixture.publisher();
     let branch_lease = fixture
@@ -764,7 +805,11 @@ fn reader_held_gpu_surface_retains_renderer_bytes_after_plan_retirement() {
     };
     let renderer_payload = Arc::new(RendererTargetPayload);
     let renderer_payload_weak = Arc::downgrade(&renderer_payload);
-    let platform = ScreenNativePreparationPayload::new(renderer_payload);
+    let platform = ScreenNativePreparationPayload::new(
+        &fixture.descriptor,
+        fixture.hub.committed_state().plan().generation(),
+        renderer_payload,
+    );
     let preparation = target
         .prepare(&fixture.descriptor, &platform)
         .expect("test renderer prepares the target")
@@ -777,7 +822,16 @@ fn reader_held_gpu_surface_retains_renderer_bytes_after_plan_retirement() {
         )
         .expect("renderer bytes bind to their exact lifetime");
     let (surface, owner) = gpu_surface(1);
-    let surface = preparation.retain_on_surface(surface);
+    let surface = preparation
+        .retain_on_surface_with_capture_allocation(
+            surface,
+            fixture
+                .capture_lifetime
+                .as_ref()
+                .expect("fixture retains capture-plan accounting")
+                .clone(),
+        )
+        .expect("capture and target allocations belong to one worker");
     let receipt = fixture
         .hub
         .publish(
@@ -797,13 +851,14 @@ fn reader_held_gpu_surface_retains_renderer_bytes_after_plan_retirement() {
     let (committed, _) = commit_candidate(&mut fixture.builder, std::iter::empty());
     let (_, retirement) = committed.into_parts();
     drop(fixture.target_lifetime.take());
+    drop(fixture.capture_lifetime.take());
     drop((publisher, branch_lease));
     let retirement = retirement
         .try_reclaim()
         .expect_err("reader-held publication defers exact retirement");
     assert_eq!(
         retirement.pending_bytes(),
-        native_target_support::RETAINED_BYTES
+        native_target_support::RETAINED_BYTES + CAPTURE_PLAN_RETAINED_BYTES
     );
     assert_eq!(
         fixture.hub.pending_retired_bytes(),
@@ -827,6 +882,15 @@ fn reader_held_gpu_surface_retains_renderer_bytes_after_plan_retirement() {
             .bytes(),
         native_target_support::RETAINED_BYTES
     );
+    assert_eq!(
+        payload
+            .surface()
+            .capture_resource_lifetime()
+            .expect("surface retains capture-plan accounting")
+            .resource()
+            .bytes(),
+        CAPTURE_PLAN_RETAINED_BYTES
+    );
     assert!(owner.upgrade().is_some());
     assert!(renderer_payload_weak.upgrade().is_some());
 
@@ -849,6 +913,7 @@ fn retirement_releases_unread_latest_gpu_payload_before_stale_publisher_drops() 
     let (committed, _) = commit_candidate(&mut fixture.builder, std::iter::empty());
     let (_, retirement) = committed.into_parts();
     drop(fixture.target_lifetime.take());
+    drop(fixture.capture_lifetime.take());
     assert!(fixture.hub.lease(&fixture.descriptor).is_err());
     assert!(owner.upgrade().is_none());
     let retirement = retirement

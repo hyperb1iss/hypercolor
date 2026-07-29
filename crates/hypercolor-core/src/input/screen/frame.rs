@@ -1169,7 +1169,8 @@ pub struct PlatformGpuSurface {
     format: CapturePixelFormat,
     owner: Arc<dyn Any + Send + Sync>,
     retained_owner: Option<Arc<dyn Any + Send + Sync>>,
-    resource_lifetime: Option<ScreenResourceLifetime>,
+    target_resource_lifetime: Option<ScreenResourceLifetime>,
+    capture_resource_lifetime: Option<ScreenResourceLifetime>,
 }
 
 impl PlatformGpuSurface {
@@ -1199,17 +1200,20 @@ impl PlatformGpuSurface {
             format,
             owner,
             retained_owner: None,
-            resource_lifetime: None,
+            target_resource_lifetime: None,
+            capture_resource_lifetime: None,
         })
     }
 
     pub(crate) fn with_native_target_owners(
         mut self,
         retained_owner: Arc<dyn Any + Send + Sync>,
-        resource_lifetime: ScreenResourceLifetime,
+        target_resource_lifetime: ScreenResourceLifetime,
+        capture_resource_lifetime: Option<ScreenResourceLifetime>,
     ) -> Self {
         self.retained_owner = Some(retained_owner);
-        self.resource_lifetime = Some(resource_lifetime);
+        self.target_resource_lifetime = Some(target_resource_lifetime);
+        self.capture_resource_lifetime = capture_resource_lifetime;
         self
     }
 
@@ -1264,10 +1268,16 @@ impl PlatformGpuSurface {
             .and_then(|owner| Arc::clone(owner).downcast().ok())
     }
 
-    /// Exact worker allocation lifetime retained with this GPU surface.
+    /// Exact renderer-target allocation lifetime retained with this GPU surface.
     #[must_use]
     pub const fn resource_lifetime(&self) -> Option<&ScreenResourceLifetime> {
-        self.resource_lifetime.as_ref()
+        self.target_resource_lifetime.as_ref()
+    }
+
+    /// Exact capture-plan allocation lifetime retained with this GPU surface.
+    #[must_use]
+    pub const fn capture_resource_lifetime(&self) -> Option<&ScreenResourceLifetime> {
+        self.capture_resource_lifetime.as_ref()
     }
 }
 

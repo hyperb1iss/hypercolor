@@ -14,8 +14,8 @@ use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
     CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CaptureRotation,
     CaptureSourceId, CaptureTransferFunction, KnownCaptureColorimetry, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, ScreenExactResource, ScreenPlanError, ScreenResourceKind,
-    ScreenResourceLifetime,
+    PlatformGpuApi, PlatformGpuSurface, ScreenExactResource, ScreenPlanError, ScreenPlanGeneration,
+    ScreenResourceKind, ScreenResourceLifetime,
 };
 
 /// Selector used by a consumer before capture-source resolution.
@@ -487,18 +487,40 @@ impl ScreenNativeExecutionTargetId {
 /// Type-erased source-native data supplied to a renderer target preparer.
 #[derive(Clone)]
 pub struct ScreenNativePreparationPayload {
+    descriptor: Arc<ResolvedScreenPublicationDescriptor>,
+    plan_generation: ScreenPlanGeneration,
     inner: Arc<dyn Any + Send + Sync>,
 }
 
 impl ScreenNativePreparationPayload {
     /// Erase one platform-specific preparation input behind the core contract.
     #[must_use]
-    pub fn new<T>(payload: Arc<T>) -> Self
+    pub fn new<T>(
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        plan_generation: ScreenPlanGeneration,
+        payload: Arc<T>,
+    ) -> Self
     where
         T: Any + Send + Sync,
     {
         let inner: Arc<dyn Any + Send + Sync> = payload;
-        Self { inner }
+        Self {
+            descriptor: Arc::new(descriptor.clone()),
+            plan_generation,
+            inner,
+        }
+    }
+
+    /// Exact resolved branch identity represented by the platform payload.
+    #[must_use]
+    pub fn descriptor(&self) -> &ResolvedScreenPublicationDescriptor {
+        &self.descriptor
+    }
+
+    /// Candidate screen plan generation that authorized this preparation.
+    #[must_use]
+    pub const fn plan_generation(&self) -> ScreenPlanGeneration {
+        self.plan_generation
     }
 
     /// Recover a typed platform preparation input.
@@ -515,6 +537,8 @@ impl fmt::Debug for ScreenNativePreparationPayload {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ScreenNativePreparationPayload")
+            .field("descriptor", &self.descriptor)
+            .field("plan_generation", &self.plan_generation)
             .finish_non_exhaustive()
     }
 }
@@ -647,6 +671,9 @@ impl BoundScreenNativeTargetPreparation {
         if resource.native_binding() != Some(&binding) {
             return Err(ScreenNativeTargetBindingError::NativeBindingMismatch);
         }
+        if lifetime.plan_generation() != platform.plan_generation() {
+            return Err(ScreenNativeTargetBindingError::PlanGenerationMismatch);
+        }
         Ok(Self {
             target_id: ScreenNativeExecutionTargetId::new(binding.target_id()),
             platform,
@@ -678,7 +705,32 @@ impl BoundScreenNativeTargetPreparation {
         surface.with_native_target_owners(
             Arc::clone(&self.platform.inner),
             self.allocation.lifetime.clone(),
+            None,
         )
+    }
+
+    /// Attach renderer and capture-plan allocation lifetimes to one surface.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a capture allocation from another source worker or candidate.
+    pub fn retain_on_surface_with_capture_allocation(
+        &self,
+        surface: PlatformGpuSurface,
+        capture_lifetime: ScreenResourceLifetime,
+    ) -> Result<PlatformGpuSurface, ScreenNativeTargetBindingError> {
+        if !self
+            .allocation
+            .lifetime
+            .belongs_to_same_worker(&capture_lifetime)
+        {
+            return Err(ScreenNativeTargetBindingError::CaptureAllocationWorkerMismatch);
+        }
+        Ok(surface.with_native_target_owners(
+            Arc::clone(&self.platform.inner),
+            self.allocation.lifetime.clone(),
+            Some(capture_lifetime),
+        ))
     }
 }
 
@@ -708,6 +760,12 @@ pub enum ScreenNativeTargetBindingError {
     /// The ledger entry belongs to another target or resolved route.
     #[error("native target allocation belongs to another execution target or descriptor")]
     NativeBindingMismatch,
+    /// The capture allocation belongs to another exact worker authority.
+    #[error("native capture allocation belongs to another source worker or candidate")]
+    CaptureAllocationWorkerMismatch,
+    /// The target payload belongs to another candidate plan generation.
+    #[error("native target preparation belongs to another candidate plan generation")]
+    PlanGenerationMismatch,
 }
 
 /// Failure to dispatch a resolved descriptor to a native target.
@@ -719,6 +777,12 @@ pub enum ScreenNativeTargetPreparationError {
     /// The resolved descriptor belongs to another native target.
     #[error("resolved screen descriptor belongs to another native execution target")]
     TargetMismatch,
+    /// The platform payload was constructed for another exact descriptor.
+    #[error("native preparation payload belongs to another resolved screen descriptor")]
+    PayloadDescriptorMismatch,
+    /// The renderer returned preparation state for another descriptor or plan.
+    #[error("native target returned preparation state for another descriptor or plan")]
+    PreparedPayloadMismatch,
 }
 
 /// Live renderer capability that prepares one exact source-native branch.
@@ -808,7 +872,15 @@ impl ScreenNativeExecutionTarget {
             }
             ScreenPublicationExecutor::SourceNative(_) => {}
         }
+        if platform.descriptor() != descriptor {
+            return Err(ScreenNativeTargetPreparationError::PayloadDescriptorMismatch.into());
+        }
         let mut preparation = self.preparer.prepare(descriptor, platform)?;
+        if preparation.platform.descriptor() != platform.descriptor()
+            || preparation.platform.plan_generation() != platform.plan_generation()
+        {
+            return Err(ScreenNativeTargetPreparationError::PreparedPayloadMismatch.into());
+        }
         preparation.binding = Some(ScreenNativeResourceBindingKey::new(
             self.id.get(),
             Arc::new(descriptor.clone()),

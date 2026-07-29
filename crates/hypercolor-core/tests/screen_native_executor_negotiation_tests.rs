@@ -12,11 +12,12 @@ use hypercolor_core::input::screen::{
     ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
     ScreenNativePreparationPayload, ScreenNativeTargetPreparation,
     ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationExecutor,
-    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, SourceScale,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanGeneration,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationError,
+    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
+    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenPublicationResidency, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
+    SourceScale,
 };
 
 #[path = "support/native_target.rs"]
@@ -69,6 +70,22 @@ impl ScreenNativeTargetPreparer for CountingPreparer {
     }
 }
 
+struct WrongOutputPreparer {
+    calls: Arc<AtomicUsize>,
+    output: ScreenNativePreparationPayload,
+}
+
+impl ScreenNativeTargetPreparer for WrongOutputPreparer {
+    fn prepare(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(ScreenNativeTargetPreparation::new(self.output.clone(), 1))
+    }
+}
+
 fn counting_target(
     id: u64,
     device: ScreenPhysicalGpuDeviceIdentity,
@@ -96,7 +113,7 @@ fn native_target_identity_ignores_preparer_object_identity() {
 #[test]
 fn native_target_rejects_cpu_and_foreign_descriptors_before_preparer_dispatch() {
     let device = gpu_device(4);
-    let source = source(
+    let resolved_source = source(
         extent(1920, 1080),
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         Some(device.clone()),
@@ -104,8 +121,16 @@ fn native_target_rejects_cpu_and_foreign_descriptors_before_preparer_dispatch() 
     let calls = Arc::new(AtomicUsize::new(0));
     let first = counting_target(1, device.clone(), Arc::clone(&calls));
     let second = counting_target(2, device, Arc::clone(&calls));
-    let platform = ScreenNativePreparationPayload::new(Arc::new(()));
-    let cpu = resolve_exact(&source, ScreenPublicationExecutorRequest::Cpu);
+    let cpu = resolve_exact(&resolved_source, ScreenPublicationExecutorRequest::Cpu);
+    let first_native = resolve_exact(
+        &resolved_source,
+        ScreenPublicationExecutorRequest::SourceNative(first.clone()),
+    );
+    let platform = ScreenNativePreparationPayload::new(
+        first_native.descriptor(),
+        ScreenPlanGeneration::default(),
+        Arc::new(()),
+    );
     let cpu_error = first
         .prepare(cpu.descriptor(), &platform)
         .expect_err("CPU descriptor is rejected before renderer dispatch");
@@ -115,10 +140,6 @@ fn native_target_rejects_cpu_and_foreign_descriptors_before_preparer_dispatch() 
     );
     assert_eq!(calls.load(Ordering::Relaxed), 0);
 
-    let first_native = resolve_exact(
-        &source,
-        ScreenPublicationExecutorRequest::SourceNative(first),
-    );
     let target_error = second
         .prepare(first_native.descriptor(), &platform)
         .expect_err("foreign native descriptor is rejected before renderer dispatch");
@@ -145,6 +166,75 @@ fn native_target_rejects_cpu_and_foreign_descriptors_before_preparer_dispatch() 
         Some(&ScreenNativeTargetPreparationError::TargetMismatch)
     );
     assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+    let other_source = source(
+        extent(1280, 720),
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        Some(gpu_device(4)),
+    );
+    let other_native = resolve_exact(
+        &other_source,
+        ScreenPublicationExecutorRequest::SourceNative(first.clone()),
+    );
+    let payload_error = first
+        .prepare(other_native.descriptor(), &platform)
+        .expect_err("substituted platform payload is rejected before renderer dispatch");
+    assert_eq!(
+        payload_error.downcast_ref::<ScreenNativeTargetPreparationError>(),
+        Some(&ScreenNativeTargetPreparationError::PayloadDescriptorMismatch)
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn native_target_rejects_substituted_preparer_output_before_binding() {
+    let device = gpu_device(5);
+    let resolved_source = source(
+        extent(1920, 1080),
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        Some(device.clone()),
+    );
+    let foreign_target = counting_target(40, device.clone(), Arc::new(AtomicUsize::new(0)));
+    let foreign = resolve_exact(
+        &resolved_source,
+        ScreenPublicationExecutorRequest::SourceNative(foreign_target),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let target = ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(41).expect("test target identity is non-zero"),
+        ),
+        PlatformGpuApi::Direct3d11,
+        device,
+        non_zero_u32(16_384),
+        Arc::new(WrongOutputPreparer {
+            calls: Arc::clone(&calls),
+            output: ScreenNativePreparationPayload::new(
+                foreign.descriptor(),
+                ScreenPlanGeneration::default(),
+                Arc::new(()),
+            ),
+        }),
+    );
+    let expected = resolve_exact(
+        &resolved_source,
+        ScreenPublicationExecutorRequest::SourceNative(target.clone()),
+    );
+    let input = ScreenNativePreparationPayload::new(
+        expected.descriptor(),
+        ScreenPlanGeneration::default(),
+        Arc::new(()),
+    );
+
+    let error = target
+        .prepare(expected.descriptor(), &input)
+        .expect_err("substituted target output is rejected before binding");
+
+    assert_eq!(
+        error.downcast_ref::<ScreenNativeTargetPreparationError>(),
+        Some(&ScreenNativeTargetPreparationError::PreparedPayloadMismatch)
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
 
 fn source(
