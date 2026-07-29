@@ -22,11 +22,12 @@ pub(super) fn spawn_interactive_preview_relay(
     preview_id: String,
     publication_id: BrowserInputPublicationId,
     mut frames: watch::Receiver<Option<Arc<InteractivePreviewFrame>>>,
+    spec_generation: watch::Receiver<u64>,
+    workers: crate::interactive_preview::PreviewWorkerPool,
     outbound: PreviewOutboundSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut raw_encoder = PreviewRawEncoder::new();
-        let mut jpeg_encoder = None;
+        let mut encoder = Some(InteractivePreviewEncoder::new());
         while frames.changed().await.is_ok() {
             let Some(frame) = frames.borrow_and_update().clone() else {
                 continue;
@@ -40,14 +41,37 @@ pub(super) fn spawn_interactive_preview_relay(
                 );
                 continue;
             }
-            let bytes = match encode_frame(&preview_id, &frame, &mut raw_encoder, &mut jpeg_encoder)
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+            let worker_frame = Arc::clone(&frame);
+            let worker_preview_id = preview_id.clone();
+            let mut worker_encoder = encoder
+                .take()
+                .expect("interactive preview encoder must return before redispatch");
+            if workers
+                .execute(move || {
+                    let result = worker_encoder.encode(&worker_preview_id, &worker_frame);
+                    let _ = result_tx.send((worker_encoder, result));
+                })
+                .is_err()
             {
+                warn!(preview_id, "Interactive preview encoder pool closed");
+                break;
+            }
+            let Ok((returned_encoder, encoded)) = result_rx.await else {
+                warn!(preview_id, "Interactive preview encoder worker stopped");
+                break;
+            };
+            encoder = Some(returned_encoder);
+            let bytes = match encoded {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     warn!(preview_id, %error, "Failed to encode interactive preview frame");
                     continue;
                 }
             };
+            if frame.spec_generation != *spec_generation.borrow() {
+                continue;
+            }
             if let Err(error) = outbound.publish(
                 PreviewStreamId::Interactive(preview_id.clone()),
                 bytes,
@@ -57,6 +81,24 @@ pub(super) fn spawn_interactive_preview_relay(
             }
         }
     })
+}
+
+struct InteractivePreviewEncoder {
+    raw: PreviewRawEncoder,
+    jpeg: Option<PreviewJpegEncoder>,
+}
+
+impl InteractivePreviewEncoder {
+    fn new() -> Self {
+        Self {
+            raw: PreviewRawEncoder::new(),
+            jpeg: None,
+        }
+    }
+
+    fn encode(&mut self, preview_id: &str, frame: &InteractivePreviewFrame) -> Result<Bytes> {
+        encode_frame(preview_id, frame, &mut self.raw, &mut self.jpeg)
+    }
 }
 
 fn encode_frame(

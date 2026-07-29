@@ -812,10 +812,14 @@ impl BrowserPreviewSession {
             }
         };
         let publication_id = attachment.publication_id().get();
+        let spec_generation = lane.spec_generation_receiver();
+        let encode_workers = lane.encode_workers();
         let relay = spawn_interactive_preview_relay(
             preview_id.clone(),
             attachment.publication_id(),
             lane.frame_receiver(),
+            spec_generation,
+            encode_workers,
             self.outbound.clone(),
         );
         self.previews.insert(

@@ -145,6 +145,7 @@ impl DaemonState {
                 #[cfg(feature = "wgpu")]
                 self.render_acceleration.gpu_render_device.clone(),
             ),
+            resource_capacity_bytes: config.web.interactive_preview_resource_bytes,
         })
         .await
         .context("failed to start interactive preview executor")?;

@@ -36,6 +36,7 @@ fn web_defaults_match_spec() {
     assert!(!w.open_browser);
     assert!(w.cors_origins.is_empty());
     assert_eq!(w.websocket_fps, 30);
+    assert_eq!(w.interactive_preview_resource_bytes, 1024 * 1024 * 1024);
 }
 
 #[test]

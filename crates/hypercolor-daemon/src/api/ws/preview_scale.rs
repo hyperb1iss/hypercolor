@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use anyhow::{Context, Result, bail};
 use fast_image_resize as fr;
 
@@ -18,63 +16,21 @@ impl PreviewScaleFormat {
     }
 }
 
-thread_local! {
-    /// Per-worker-thread resizer + RGBA scratch buffer. `fr::Resizer` holds
-    /// pixel-type-indexed internal buffers, so keeping it alive across calls
-    /// skips re-initialization on every encode. The RGBA scratch absorbs
-    /// resize output when the caller wants RGB-packed bytes out — we still
-    /// have to ask `fast_image_resize` for U8x4, then strip alpha during the
-    /// brightness post-pass.
-    static PREVIEW_RESIZER_STATE: RefCell<PreviewResizerState> = RefCell::new(PreviewResizerState::new());
-}
-
-struct PreviewResizerState {
+pub(super) struct PreviewScaleWorkspace {
     resizer: fr::Resizer,
     rgba_scratch: Vec<u8>,
 }
 
-impl PreviewResizerState {
-    fn new() -> Self {
+impl PreviewScaleWorkspace {
+    pub(super) fn new() -> Self {
         Self {
             resizer: fr::Resizer::new(),
             rgba_scratch: Vec::new(),
         }
     }
-}
 
-/// Bilinear-scale an RGBA source into the target buffer, optionally applying
-/// a 256-entry brightness LUT to R/G/B (alpha untouched) and packing the
-/// output as RGB or RGBA. Internally dispatches to `fast_image_resize`
-/// (AVX2 when present) via a thread-local resizer; the scalar fallback is
-/// only used for the identity and invalid-input cases.
-pub(super) fn scale_rgba_bilinear(
-    rgba: &[u8],
-    source_width: u32,
-    source_height: u32,
-    target_width: u32,
-    target_height: u32,
-    brightness_lut: Option<&[u8; 256]>,
-    format: PreviewScaleFormat,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    PREVIEW_RESIZER_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        state.scale(
-            rgba,
-            source_width,
-            source_height,
-            target_width,
-            target_height,
-            brightness_lut,
-            format,
-            out,
-        )
-    })
-}
-
-impl PreviewResizerState {
     #[allow(clippy::too_many_arguments, clippy::as_conversions)]
-    fn scale(
+    pub(super) fn scale_rgba_bilinear(
         &mut self,
         rgba: &[u8],
         source_width: u32,
@@ -238,6 +194,30 @@ fn copy_rgba_to_rgb_with_brightness(
 
 fn apply_brightness(channel: u8, brightness_lut: Option<&[u8; 256]>) -> u8 {
     brightness_lut.map_or(channel, |lut| lut[usize::from(channel)])
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn scale_rgba_bilinear(
+    rgba: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+    brightness_lut: Option<&[u8; 256]>,
+    format: PreviewScaleFormat,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    PreviewScaleWorkspace::new().scale_rgba_bilinear(
+        rgba,
+        source_width,
+        source_height,
+        target_width,
+        target_height,
+        brightness_lut,
+        format,
+        out,
+    )
 }
 
 #[cfg(test)]

@@ -3032,6 +3032,7 @@ async fn browser_preview_test_executor(
             canvas_width: 64,
             canvas_height: 64,
             acceleration: InteractivePreviewAcceleration::cpu(),
+            resource_capacity_bytes: 64 * 1024 * 1024,
         })
         .await
         .expect("CPU interactive preview executor should start"),

@@ -11,7 +11,7 @@ use hypercolor_leptos_ext::ws::{
 };
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
-use super::preview_scale::{PreviewScaleFormat, scale_rgba_bilinear};
+use super::preview_scale::{PreviewScaleFormat, PreviewScaleWorkspace};
 use super::protocol::{
     CanvasFormat, validate_preview_surface_bytes, validate_preview_surface_resource,
 };
@@ -21,6 +21,7 @@ const PREVIEW_JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
 
 pub(super) struct PreviewRawEncoder {
     body_buffer: Vec<u8>,
+    scale_workspace: PreviewScaleWorkspace,
     brightness_bits: u32,
     brightness_lut: [u8; 256],
 }
@@ -29,6 +30,7 @@ impl PreviewRawEncoder {
     pub(super) fn new() -> Self {
         Self {
             body_buffer: Vec::new(),
+            scale_workspace: PreviewScaleWorkspace::new(),
             brightness_bits: 1.0_f32.to_bits(),
             brightness_lut: identity_brightness_lut(),
         }
@@ -80,7 +82,7 @@ impl PreviewRawEncoder {
                 CanvasFormat::Jpeg => unreachable!("JPEG preview bodies use the JPEG encoder"),
             }
         } else {
-            scale_rgba_bilinear(
+            self.scale_workspace.scale_rgba_bilinear(
                 frame.rgba_bytes(),
                 frame.width,
                 frame.height,
@@ -100,6 +102,7 @@ pub(super) struct PreviewJpegEncoder {
     rgb_buffer: Vec<u8>,
     jpeg_buffer: Vec<u8>,
     jpeg_compressor: TurboJpegCompressor,
+    scale_workspace: PreviewScaleWorkspace,
     brightness_bits: u32,
     brightness_lut: [u8; 256],
 }
@@ -119,6 +122,7 @@ impl PreviewJpegEncoder {
             rgb_buffer: Vec::new(),
             jpeg_buffer: Vec::new(),
             jpeg_compressor,
+            scale_workspace: PreviewScaleWorkspace::new(),
             brightness_bits: 1.0_f32.to_bits(),
             brightness_lut: identity_brightness_lut(),
         })
@@ -231,7 +235,7 @@ impl PreviewJpegEncoder {
             return Ok(());
         }
 
-        scale_rgba_bilinear(
+        self.scale_workspace.scale_rgba_bilinear(
             frame.rgba_bytes(),
             frame.width,
             frame.height,

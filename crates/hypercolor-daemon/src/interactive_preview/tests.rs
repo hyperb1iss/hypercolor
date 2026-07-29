@@ -21,7 +21,8 @@ use tokio::time::timeout;
 use super::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
     InteractivePreviewFrame, InteractivePreviewSpec, InteractivePreviewTarget, PreviewLaneId,
-    ResolvedPreviewScene, advance_deadline, duration_millis_u32, preview_input_demand,
+    PreviewResourceLedger, ResolvedPreviewScene, advance_deadline, duration_millis_u32,
+    preview_input_demand,
 };
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::preview_runtime::PreviewPixelFormat;
@@ -36,6 +37,10 @@ struct PreviewTestRig {
 
 impl PreviewTestRig {
     async fn new(color: [f32; 4]) -> Self {
+        Self::with_capacity(color, 64 * 1024 * 1024).await
+    }
+
+    async fn with_capacity(color: [f32; 4], resource_capacity_bytes: u64) -> Self {
         let mut browser = BrowserInputSource::new();
         browser.start().expect("browser input should start");
         let browser_handle = browser.handle();
@@ -58,6 +63,7 @@ impl PreviewTestRig {
             canvas_width: 8,
             canvas_height: 6,
             acceleration: InteractivePreviewAcceleration::cpu(),
+            resource_capacity_bytes,
         })
         .await
         .expect("preview executor should start");
@@ -77,6 +83,13 @@ impl PreviewTestRig {
             ))
             .expect("browser preview should attach")
     }
+}
+
+fn lane_resource_bytes(spec: InteractivePreviewSpec) -> u64 {
+    PreviewResourceLedger::for_lane(spec, 8, 6, false, "preview".len())
+        .expect("test resource geometry should fit")
+        .total_bytes()
+        .expect("test resource total should fit")
 }
 
 fn scene_manager(color: [f32; 4]) -> SceneManager {
@@ -317,6 +330,85 @@ async fn lanes_render_concurrently_and_own_independent_demand_lifetimes() {
     let _ = next_frame(&mut second_receiver).await;
     drop(second);
     wait_for_preview_demands(&rig.demands, 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn executor_admits_many_small_lanes_without_spawning_per_lane_workers() {
+    let rig = PreviewTestRig::new([0.2, 0.4, 0.8, 1.0]).await;
+    let render_workers = rig.executor.render_worker_count();
+    let encode_workers = rig.executor.encode_worker_count();
+    let mut lanes = Vec::new();
+    let mut attachments = Vec::new();
+
+    for index in 0..80_u64 {
+        let attachment = rig.attach(index + 1, &format!("lane-{index}"));
+        lanes.push(
+            rig.executor
+                .open(&attachment, spec(1, 1))
+                .await
+                .expect("small lane should fit the aggregate byte ledger"),
+        );
+        attachments.push(attachment);
+    }
+
+    assert_eq!(rig.executor.lane_count(), 80);
+    assert_eq!(rig.executor.render_worker_count(), render_workers);
+    assert_eq!(rig.executor.encode_worker_count(), encode_workers);
+    assert!(render_workers >= 1);
+    assert!(encode_workers >= 1);
+    drop(lanes);
+    drop(attachments);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resource_exhaustion_rejects_only_candidate_and_preserves_active_lane() {
+    let requested_spec = spec(4, 3);
+    let one_lane_bytes = lane_resource_bytes(requested_spec);
+    let rig =
+        PreviewTestRig::with_capacity([0.6, 0.3, 0.1, 1.0], one_lane_bytes + one_lane_bytes / 2)
+            .await;
+    let first_attachment = rig.attach(1, "preview");
+    let first = rig
+        .executor
+        .open(&first_attachment, requested_spec)
+        .await
+        .expect("first lane should fit");
+    let used_before = rig.executor.resource_snapshot().used;
+    let second_attachment = rig.attach(2, "preview");
+
+    let error = match rig.executor.open(&second_attachment, requested_spec).await {
+        Ok(_) => panic!("second lane should exceed aggregate bytes"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, super::InteractivePreviewError::Capacity(_)));
+    assert_eq!(rig.executor.lane_count(), 1);
+    assert_eq!(rig.executor.resource_snapshot().used, used_before);
+    assert!(first.snapshot().active);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_resize_keeps_original_spec_and_resource_reservation() {
+    let original = spec(2, 2);
+    let large = spec(512, 512);
+    let capacity = lane_resource_bytes(original) + lane_resource_bytes(large) / 2;
+    let rig = PreviewTestRig::with_capacity([0.3, 0.7, 0.2, 1.0], capacity).await;
+    let attachment = rig.attach(1, "preview");
+    let lane = rig
+        .executor
+        .open(&attachment, original)
+        .await
+        .expect("original lane should fit");
+    let resources_before = rig.executor.resource_snapshot().used;
+
+    let error = lane
+        .resize_or_retarget(large)
+        .await
+        .expect_err("candidate resize should exceed overlap capacity");
+
+    assert!(matches!(error, super::InteractivePreviewError::Capacity(_)));
+    assert_eq!(lane.snapshot().spec, original);
+    assert_eq!(rig.executor.resource_snapshot().used, resources_before);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

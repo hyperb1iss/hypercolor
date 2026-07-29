@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
-use std::thread;
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -28,7 +27,7 @@ use hypercolor_types::event::{HypercolorEvent, ZoneColors};
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
-use tokio::sync::{RwLock, oneshot, watch};
+use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -42,6 +41,13 @@ use crate::render_thread::{
     InputPublicationDemandRegistration, InteractivePreviewZoneRuntime, ProducerFrame,
     RenderSceneContext, SceneDependencyKey, ZoneFrameInputs,
 };
+
+mod executor;
+mod resources;
+
+pub(crate) use executor::PreviewWorkerPool;
+use resources::{PreviewCapacityLedger, PreviewResourceLease};
+pub use resources::{PreviewCapacitySnapshot, PreviewResourceLedger};
 
 const MAX_PREVIEW_FPS: u32 = 60;
 static NEXT_CONSUMER_INCARNATION: AtomicU64 = AtomicU64::new(1);
@@ -85,6 +91,7 @@ pub enum InteractivePreviewBackend {
 #[derive(Clone, Debug)]
 pub struct InteractivePreviewFrame {
     pub publication_id: BrowserInputPublicationId,
+    pub spec_generation: u64,
     pub frame_number: u32,
     pub timestamp_ms: u32,
     pub width: u32,
@@ -102,6 +109,7 @@ pub struct InteractivePreviewLaneSnapshot {
     pub spec: InteractivePreviewSpec,
     pub frames_published: u64,
     pub last_frame_number: u32,
+    pub spec_generation: u64,
     pub route_generation: u64,
     pub selected_sources: Arc<[Arc<str>]>,
     pub last_error: Option<Arc<str>>,
@@ -121,11 +129,14 @@ pub enum InteractivePreviewError {
     Initialization(String),
     #[error("interactive preview worker rejected an update: {0}")]
     Update(String),
+    #[error(transparent)]
+    Capacity(#[from] resources::PreviewCapacityError),
 }
 
 #[derive(Clone)]
 pub struct InteractivePreviewAcceleration {
     mode: RenderAccelerationMode,
+    gpu_requested: bool,
     #[cfg(feature = "wgpu")]
     render_device: Option<GpuRenderDevice>,
 }
@@ -135,6 +146,7 @@ impl InteractivePreviewAcceleration {
     pub fn cpu() -> Self {
         Self {
             mode: RenderAccelerationMode::Cpu,
+            gpu_requested: false,
             #[cfg(feature = "wgpu")]
             render_device: None,
         }
@@ -147,9 +159,33 @@ impl InteractivePreviewAcceleration {
     ) -> Self {
         Self {
             mode,
+            gpu_requested: mode == RenderAccelerationMode::Gpu,
             #[cfg(feature = "wgpu")]
             render_device,
         }
+    }
+
+    #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
+    fn prepare(mut self) -> Self {
+        if self.mode != RenderAccelerationMode::Gpu {
+            return self;
+        }
+        #[cfg(feature = "wgpu")]
+        {
+            self.render_device = self.render_device.as_ref().and_then(|authoritative| {
+                authoritative
+                    .independent_device("interactive preview executor")
+                    .ok()
+            });
+            if self.render_device.is_none() {
+                self.mode = RenderAccelerationMode::Cpu;
+            }
+        }
+        self
+    }
+
+    fn uses_gpu(&self) -> bool {
+        self.mode == RenderAccelerationMode::Gpu
     }
 }
 
@@ -165,6 +201,7 @@ pub struct InteractivePreviewContext {
     pub canvas_width: u32,
     pub canvas_height: u32,
     pub acceleration: InteractivePreviewAcceleration,
+    pub resource_capacity_bytes: u64,
 }
 
 #[derive(Clone)]
@@ -181,13 +218,16 @@ struct InteractivePreviewExecutorInner {
     input_demands: InputPublicationDemandHandle,
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     acceleration: InteractivePreviewAcceleration,
+    render_workers: PreviewWorkerPool,
+    encode_workers: PreviewWorkerPool,
+    resources: PreviewCapacityLedger,
     catalog_cancel: CancellationToken,
     catalog_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 struct PreviewLaneEntry {
     publication_id: BrowserInputPublicationId,
-    commands: mpsc::Sender<PreviewLaneCommand>,
+    commands: mpsc::UnboundedSender<PreviewLaneCommand>,
     telemetry: Arc<PreviewLaneTelemetry>,
 }
 
@@ -196,6 +236,8 @@ pub struct InteractivePreviewLaneLease {
     publication_id: BrowserInputPublicationId,
     executor: Weak<InteractivePreviewExecutorInner>,
     frames: watch::Receiver<Option<Arc<InteractivePreviewFrame>>>,
+    spec_generation: watch::Receiver<u64>,
+    encode_workers: PreviewWorkerPool,
     telemetry: Arc<PreviewLaneTelemetry>,
     closed: bool,
 }
@@ -208,6 +250,7 @@ struct PreviewLaneTelemetry {
     spec: ArcSwap<InteractivePreviewSpec>,
     frames_published: AtomicU64,
     last_frame_number: AtomicU32,
+    spec_generation: AtomicU64,
     route_diagnostics: ArcSwap<InteractionRouteDiagnostics>,
     last_error: ArcSwap<Option<Arc<str>>>,
 }
@@ -215,6 +258,7 @@ struct PreviewLaneTelemetry {
 enum PreviewLaneCommand {
     Update {
         spec: InteractivePreviewSpec,
+        resources: PreviewResourceLease,
         response: oneshot::Sender<Result<(), String>>,
     },
     Close,
@@ -257,14 +301,19 @@ struct PreviewLane {
     consumer: ConsumerIncarnation,
     spec: InteractivePreviewSpec,
     catalog: PreviewSceneCatalogSource,
+    asset_library: Option<Arc<RwLock<AssetLibrary>>>,
+    acceleration: InteractivePreviewAcceleration,
     zone_runtime: InteractivePreviewZoneRuntime,
     sparkleflinger: SparkleFlinger,
+    resources: PreviewResourceLease,
     input: PreviewLaneInput,
     demand: InputPublicationDemandRegistration,
     current_demand: InputPublicationDemand,
     frame_tx: watch::Sender<Option<Arc<InteractivePreviewFrame>>>,
+    spec_generation_tx: watch::Sender<u64>,
     telemetry: Arc<PreviewLaneTelemetry>,
     frame_number: u32,
+    spec_generation: u64,
     started: Instant,
     last_tick: Instant,
     retained_frame: Option<Arc<InteractivePreviewFrame>>,
@@ -338,6 +387,12 @@ impl InteractivePreviewExecutor {
             context.canvas_height,
             catalog_cancel.clone(),
         );
+        let worker_count = std::thread::available_parallelism().map_or(1, usize::from);
+        let render_workers = PreviewWorkerPool::new("preview-render", worker_count)
+            .map_err(|error| InteractivePreviewError::Initialization(error.to_string()))?;
+        let encode_workers = PreviewWorkerPool::new("preview-encode", worker_count)
+            .map_err(|error| InteractivePreviewError::Initialization(error.to_string()))?;
+        let acceleration = context.acceleration.prepare();
         Ok(Self {
             inner: Arc::new(InteractivePreviewExecutorInner {
                 lanes: Mutex::new(HashMap::new()),
@@ -347,7 +402,10 @@ impl InteractivePreviewExecutor {
                 sensor_snapshots: context.sensor_snapshots,
                 input_demands: context.input_demands,
                 asset_library: context.asset_library,
-                acceleration: context.acceleration,
+                acceleration,
+                render_workers,
+                encode_workers,
+                resources: PreviewCapacityLedger::new(context.resource_capacity_bytes),
                 catalog_cancel,
                 catalog_task: Mutex::new(Some(task)),
             }),
@@ -367,9 +425,21 @@ impl InteractivePreviewExecutor {
         spec: InteractivePreviewSpec,
     ) -> Result<InteractivePreviewLaneLease, InteractivePreviewError> {
         let spec = spec.validate()?;
-        if self.inner.catalog.snapshot().resolve(spec.target).is_none() {
-            return Err(InteractivePreviewError::TargetUnavailable);
-        }
+        let scene = self
+            .inner
+            .catalog
+            .snapshot()
+            .resolve(spec.target)
+            .ok_or(InteractivePreviewError::TargetUnavailable)?;
+        let resource_ledger = PreviewResourceLedger::for_lane(
+            spec,
+            scene.canvas_width,
+            scene.canvas_height,
+            self.inner.acceleration.uses_gpu(),
+            attachment.key().preview_id().as_str().len(),
+        )
+        .map_err(|error| InteractivePreviewError::InvalidSpec(error.to_string()))?;
+        let resources = self.inner.resources.try_reserve(resource_ledger)?;
 
         let consumer_value = NEXT_CONSUMER_INCARNATION
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -391,17 +461,49 @@ impl InteractivePreviewExecutor {
             spec: ArcSwap::from_pointee(spec),
             frames_published: AtomicU64::new(0),
             last_frame_number: AtomicU32::new(0),
+            spec_generation: AtomicU64::new(1),
             route_diagnostics: ArcSwap::from(initial_diagnostics),
             last_error: ArcSwap::from_pointee(None),
         });
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (frame_tx, frame_rx) = watch::channel(None);
-        let (ready_tx, ready_rx) = oneshot::channel();
-        let (start_tx, start_rx) = mpsc::channel();
+        let (spec_generation_tx, spec_generation_rx) = watch::channel(1);
         let id = PreviewLaneId {
             key: attachment.key().clone(),
             publication_id: attachment.publication_id(),
         };
+
+        let weak_executor = Arc::downgrade(&self.inner);
+        let lane_context = PreviewLaneContext {
+            id: id.clone(),
+            consumer,
+            spec,
+            catalog: self.inner.catalog.clone(),
+            graph: self.inner.input_graph.clone(),
+            sensor_snapshots: self.inner.sensor_snapshots.clone(),
+            routing: self.inner.interaction_routing.clone(),
+            demands: self.inner.input_demands.clone(),
+            asset_library: self.inner.asset_library.clone(),
+            acceleration: self.inner.acceleration.clone(),
+            resources,
+            frame_tx,
+            spec_generation_tx,
+            telemetry: Arc::clone(&telemetry),
+        };
+        let (ready_tx, ready_rx) = oneshot::channel();
+        self.inner
+            .render_workers
+            .execute(move || {
+                let _ = ready_tx.send(PreviewLane::new(lane_context));
+            })
+            .map_err(|_| InteractivePreviewError::WorkerClosed)?;
+        let (lane, backend) = ready_rx
+            .await
+            .map_err(|_| InteractivePreviewError::WorkerClosed)?
+            .map_err(InteractivePreviewError::Initialization)?;
+        telemetry
+            .backend
+            .store(backend_to_u8(backend), Ordering::Release);
 
         {
             let mut lanes = lock(&self.inner.lanes);
@@ -417,56 +519,21 @@ impl InteractivePreviewExecutor {
                 },
             );
         }
-
-        let weak_executor = Arc::downgrade(&self.inner);
-        let lane_context = PreviewLaneThreadContext {
-            id: id.clone(),
-            consumer,
-            spec,
-            catalog: self.inner.catalog.clone(),
-            graph: self.inner.input_graph.clone(),
-            sensor_snapshots: self.inner.sensor_snapshots.clone(),
-            routing: self.inner.interaction_routing.clone(),
-            demands: self.inner.input_demands.clone(),
-            asset_library: self.inner.asset_library.clone(),
-            acceleration: self.inner.acceleration.clone(),
-            frame_tx,
-            telemetry: Arc::clone(&telemetry),
-        };
-        let spawn = thread::Builder::new()
-            .name(format!("hypercolor-preview-{consumer_value}"))
-            .spawn(move || {
-                run_preview_lane(lane_context, command_rx, start_rx, ready_tx, weak_executor);
-            });
-        if let Err(error) = spawn {
-            self.inner.close_exact(&id);
-            return Err(InteractivePreviewError::Initialization(error.to_string()));
-        }
-
-        match ready_rx.await {
-            Ok(Ok(backend)) => {
-                telemetry
-                    .backend
-                    .store(backend_to_u8(backend), Ordering::Release);
-            }
-            Ok(Err(error)) => {
-                self.inner.close_exact(&id);
-                return Err(InteractivePreviewError::Initialization(error));
-            }
-            Err(_) => {
-                self.inner.close_exact(&id);
-                return Err(InteractivePreviewError::WorkerClosed);
-            }
-        }
-        start_tx
-            .send(())
-            .map_err(|_| InteractivePreviewError::WorkerClosed)?;
+        let render_workers = self.inner.render_workers.clone();
+        tokio::spawn(run_preview_lane(
+            lane,
+            command_rx,
+            weak_executor,
+            render_workers,
+        ));
 
         Ok(InteractivePreviewLaneLease {
             key: id.key,
             publication_id: id.publication_id,
             executor: Arc::downgrade(&self.inner),
             frames: frame_rx,
+            spec_generation: spec_generation_rx,
+            encode_workers: self.inner.encode_workers.clone(),
             telemetry,
             closed: false,
         })
@@ -475,6 +542,21 @@ impl InteractivePreviewExecutor {
     #[must_use]
     pub fn lane_count(&self) -> usize {
         lock(&self.inner.lanes).len()
+    }
+
+    #[must_use]
+    pub fn resource_snapshot(&self) -> PreviewCapacitySnapshot {
+        self.inner.resources.snapshot()
+    }
+
+    #[must_use]
+    pub fn render_worker_count(&self) -> usize {
+        self.inner.render_workers.worker_count()
+    }
+
+    #[must_use]
+    pub fn encode_worker_count(&self) -> usize {
+        self.inner.encode_workers.worker_count()
     }
 
     #[must_use]
@@ -513,6 +595,14 @@ impl InteractivePreviewLaneLease {
         self.frames.clone()
     }
 
+    pub(crate) fn spec_generation_receiver(&self) -> watch::Receiver<u64> {
+        self.spec_generation.clone()
+    }
+
+    pub(crate) fn encode_workers(&self) -> PreviewWorkerPool {
+        self.encode_workers.clone()
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> InteractivePreviewLaneSnapshot {
         self.telemetry.snapshot()
@@ -529,6 +619,20 @@ impl InteractivePreviewLaneLease {
         if executor.catalog.snapshot().resolve(spec.target).is_none() {
             return Err(InteractivePreviewError::TargetUnavailable);
         }
+        let scene = executor
+            .catalog
+            .snapshot()
+            .resolve(spec.target)
+            .ok_or(InteractivePreviewError::TargetUnavailable)?;
+        let ledger = PreviewResourceLedger::for_lane(
+            spec,
+            scene.canvas_width,
+            scene.canvas_height,
+            executor.acceleration.uses_gpu(),
+            self.key.preview_id().as_str().len(),
+        )
+        .map_err(|error| InteractivePreviewError::InvalidSpec(error.to_string()))?;
+        let resources = executor.resources.try_reserve(ledger)?;
         let commands = executor
             .commands_exact(&PreviewLaneId {
                 key: self.key.clone(),
@@ -539,6 +643,7 @@ impl InteractivePreviewLaneLease {
         commands
             .send(PreviewLaneCommand::Update {
                 spec,
+                resources,
                 response: response_tx,
             })
             .map_err(|_| InteractivePreviewError::WorkerClosed)?;
@@ -569,7 +674,10 @@ impl Drop for InteractivePreviewLaneLease {
 }
 
 impl InteractivePreviewExecutorInner {
-    fn commands_exact(&self, id: &PreviewLaneId) -> Option<mpsc::Sender<PreviewLaneCommand>> {
+    fn commands_exact(
+        &self,
+        id: &PreviewLaneId,
+    ) -> Option<mpsc::UnboundedSender<PreviewLaneCommand>> {
         lock(&self.lanes).get(&id.key).and_then(|entry| {
             (entry.publication_id == id.publication_id).then(|| entry.commands.clone())
         })
@@ -634,6 +742,7 @@ impl PreviewLaneTelemetry {
             spec: **self.spec.load(),
             frames_published: self.frames_published.load(Ordering::Relaxed),
             last_frame_number: self.last_frame_number.load(Ordering::Relaxed),
+            spec_generation: self.spec_generation.load(Ordering::Acquire),
             route_generation: diagnostics.route_generation,
             selected_sources: diagnostics
                 .selected
@@ -654,7 +763,7 @@ impl PreviewLaneTelemetry {
     }
 }
 
-struct PreviewLaneThreadContext {
+struct PreviewLaneContext {
     id: PreviewLaneId,
     consumer: ConsumerIncarnation,
     spec: InteractivePreviewSpec,
@@ -665,91 +774,105 @@ struct PreviewLaneThreadContext {
     demands: InputPublicationDemandHandle,
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     acceleration: InteractivePreviewAcceleration,
+    resources: PreviewResourceLease,
     frame_tx: watch::Sender<Option<Arc<InteractivePreviewFrame>>>,
+    spec_generation_tx: watch::Sender<u64>,
     telemetry: Arc<PreviewLaneTelemetry>,
 }
 
-fn run_preview_lane(
-    context: PreviewLaneThreadContext,
-    commands: mpsc::Receiver<PreviewLaneCommand>,
-    start: mpsc::Receiver<()>,
-    ready: oneshot::Sender<Result<InteractivePreviewBackend, String>>,
+async fn run_preview_lane(
+    lane: PreviewLane,
+    mut commands: mpsc::UnboundedReceiver<PreviewLaneCommand>,
     executor: Weak<InteractivePreviewExecutorInner>,
+    workers: PreviewWorkerPool,
 ) {
-    let id = context.id.clone();
-    let initialized = PreviewLane::new(context);
-    let mut lane = match initialized {
-        Ok((lane, backend)) => {
-            let _ = ready.send(Ok(backend));
-            lane
-        }
-        Err(error) => {
-            let _ = ready.send(Err(error));
-            if let Some(executor) = executor.upgrade() {
-                executor.retire_exact(&id);
-            }
-            return;
-        }
-    };
-    if start.recv().is_err() {
-        if let Some(executor) = executor.upgrade() {
-            executor.retire_exact(&id);
-        }
-        return;
-    }
-
+    let id = lane.id.clone();
+    let mut lane = Some(lane);
     let mut next_frame = Instant::now();
     'run: loop {
-        while let Ok(command) = commands.try_recv() {
-            if !lane.apply_command(command, &mut next_frame) {
-                break 'run;
-            }
+        let deadline = tokio::time::Instant::from_std(next_frame);
+        let action = tokio::select! {
+            command = commands.recv() => match command {
+                Some(command) => PreviewLaneAction::Command(command),
+                None => PreviewLaneAction::Stop,
+            },
+            () = tokio::time::sleep_until(deadline) => PreviewLaneAction::Render(Instant::now()),
+        };
+        if matches!(action, PreviewLaneAction::Stop) {
+            break;
         }
-        let now = Instant::now();
-        if now >= next_frame {
-            lane.render(now);
-            next_frame = advance_deadline(next_frame, preview_interval(lane.spec.fps), now);
-            continue;
+        let mut dispatched_lane = lane
+            .take()
+            .expect("preview lane must return before another action is dispatched");
+        let (result_tx, result_rx) = oneshot::channel();
+        if workers
+            .execute(move || {
+                let outcome = match action {
+                    PreviewLaneAction::Command(command) => {
+                        let keep_running = dispatched_lane.apply_command(command, &mut next_frame);
+                        (dispatched_lane, next_frame, keep_running)
+                    }
+                    PreviewLaneAction::Render(now) => {
+                        dispatched_lane.render(now);
+                        let next = advance_deadline(
+                            next_frame,
+                            preview_interval(dispatched_lane.spec.fps),
+                            now,
+                        );
+                        (dispatched_lane, next, true)
+                    }
+                    PreviewLaneAction::Stop => {
+                        unreachable!("stop actions are handled before dispatch")
+                    }
+                };
+                let _ = result_tx.send(outcome);
+            })
+            .is_err()
+        {
+            break;
         }
-        match commands.recv_timeout(next_frame.saturating_duration_since(now)) {
-            Ok(command) => {
-                if !lane.apply_command(command, &mut next_frame) {
-                    break;
+        match result_rx.await {
+            Ok((returned_lane, returned_deadline, keep_running)) => {
+                lane = Some(returned_lane);
+                next_frame = returned_deadline;
+                if !keep_running {
+                    break 'run;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(_) => break,
         }
     }
 
-    lane.telemetry.active.store(false, Ordering::Release);
-    let _ = lane
-        .input
-        .router
-        .remove_consumer(lane.consumer, input_mono_ms());
+    if let Some(mut lane) = lane {
+        lane.telemetry.active.store(false, Ordering::Release);
+        let _ = lane
+            .input
+            .router
+            .remove_consumer(lane.consumer, input_mono_ms());
+    }
     if let Some(executor) = executor.upgrade() {
         executor.retire_exact(&id);
     }
 }
 
+enum PreviewLaneAction {
+    Command(PreviewLaneCommand),
+    Render(Instant),
+    Stop,
+}
+
 impl PreviewLane {
-    fn new(context: PreviewLaneThreadContext) -> Result<(Self, InteractivePreviewBackend), String> {
+    fn new(context: PreviewLaneContext) -> Result<(Self, InteractivePreviewBackend), String> {
         let catalog = context.catalog.snapshot();
         let resolved = catalog
             .resolve(context.spec.target)
             .ok_or_else(|| "preview target disappeared during open".to_owned())?;
         let (sparkleflinger, backend) = create_preview_compositor(&context.acceleration);
-        let zone_runtime = match context.asset_library {
-            Some(library) => InteractivePreviewZoneRuntime::with_asset_library(
-                resolved.canvas_width,
-                resolved.canvas_height,
-                library,
-            ),
-            None => {
-                InteractivePreviewZoneRuntime::new(resolved.canvas_width, resolved.canvas_height)
-            }
-        }
-        .map_err(|error| error.to_string())?;
+        let zone_runtime = preview_zone_runtime(
+            resolved.canvas_width,
+            resolved.canvas_height,
+            context.asset_library.clone(),
+        )?;
         let current_demand = preview_input_demand(&resolved, context.spec.fps);
         let demand = context
             .demands
@@ -768,14 +891,19 @@ impl PreviewLane {
                 consumer: context.consumer,
                 spec: context.spec,
                 catalog: context.catalog,
+                asset_library: context.asset_library,
+                acceleration: context.acceleration,
                 zone_runtime,
                 sparkleflinger,
+                resources: context.resources,
                 input,
                 demand,
                 current_demand,
                 frame_tx: context.frame_tx,
+                spec_generation_tx: context.spec_generation_tx,
                 telemetry: context.telemetry,
                 frame_number: 0,
+                spec_generation: 1,
                 started: now,
                 last_tick: now,
                 retained_frame: None,
@@ -788,15 +916,15 @@ impl PreviewLane {
 
     fn apply_command(&mut self, command: PreviewLaneCommand, next_frame: &mut Instant) -> bool {
         match command {
-            PreviewLaneCommand::Update { spec, response } => {
-                let result = if self.catalog.snapshot().resolve(spec.target).is_some() {
-                    self.spec = spec;
-                    self.telemetry.spec.store(Arc::new(spec));
+            PreviewLaneCommand::Update {
+                spec,
+                resources,
+                response,
+            } => {
+                let result = self.apply_update(spec, resources, Instant::now());
+                if result.is_ok() {
                     *next_frame = Instant::now();
-                    Ok(())
-                } else {
-                    Err("preview target is unavailable".to_owned())
-                };
+                }
                 let _ = response.send(result);
                 true
             }
@@ -831,69 +959,185 @@ impl PreviewLane {
             .store(Arc::clone(&self.input.routed.diagnostics));
         let delta_secs = now.saturating_duration_since(self.last_tick).as_secs_f32();
         self.last_tick = now;
-        let context = RenderSceneContext {
-            groups: &scene.groups,
-            active_scene_id: scene.scene_id,
-            dependency_key: SceneDependencyKey::new(
-                scene.groups_revision,
-                scene.catalog_generation,
-            ),
-            elapsed_ms: duration_millis_u64(self.started.elapsed()),
-            display_group_target_fps: &HashMap::new(),
-            display_group_descriptors: &self.display_descriptors,
-            registry: &scene.registry,
-            inputs: ZoneFrameInputs {
-                delta_secs,
-                audio: self.input.audio(),
-                interaction: &self.input.routed.interaction,
-                screen: self.input.screen(),
-                sensors: self.input.sensors(),
-                input_availability: self.input.interaction_availability(),
-                media: self.input.media(),
-                net: self.input.network(),
-                lighting: None,
-            },
-        };
-        let result = self
-            .zone_runtime
-            .render_scene(context, &mut self.sparkleflinger, &mut self.zones)
-            .map_err(|error| error.to_string())
-            .and_then(|rendered| {
-                preview_surface(
-                    &mut self.sparkleflinger,
-                    rendered,
-                    self.spec.width,
-                    self.spec.height,
-                )
-                .ok_or_else(|| {
-                    "preview frame could not be materialized on its isolated device".to_owned()
-                })
-            });
+        let result = render_preview_scene(
+            &mut self.zone_runtime,
+            &mut self.sparkleflinger,
+            &mut self.zones,
+            &self.display_descriptors,
+            &scene,
+            &self.input,
+            self.spec,
+            duration_millis_u64(self.started.elapsed()),
+            delta_secs,
+        );
         match result {
-            Ok(surface) => {
-                let frame = Arc::new(InteractivePreviewFrame {
-                    publication_id: self.id.publication_id,
-                    frame_number: self.frame_number,
-                    timestamp_ms: duration_millis_u32(self.started.elapsed()),
-                    width: surface.width(),
-                    height: surface.height(),
-                    format: self.spec.format,
-                    surface,
-                });
-                self.frame_tx.send_replace(Some(Arc::clone(&frame)));
-                self.retained_frame = Some(frame);
-                self.telemetry
-                    .frames_published
-                    .fetch_add(1, Ordering::Relaxed);
-                self.telemetry
-                    .last_frame_number
-                    .store(self.frame_number, Ordering::Relaxed);
-                self.telemetry.clear_error();
-                self.frame_number = self.frame_number.wrapping_add(1);
-            }
+            Ok(surface) => self.publish_surface(surface),
             Err(error) => self.telemetry.publish_error(error),
         }
     }
+
+    fn apply_update(
+        &mut self,
+        spec: InteractivePreviewSpec,
+        resources: PreviewResourceLease,
+        now: Instant,
+    ) -> Result<(), String> {
+        let scene = self
+            .catalog
+            .snapshot()
+            .resolve(spec.target)
+            .ok_or_else(|| "preview target is unavailable".to_owned())?;
+        let mut candidate = PreviewLaneCandidate::new(
+            &scene,
+            self.asset_library.clone(),
+            &self.acceleration,
+            resources,
+        )?;
+        let surface = render_preview_scene(
+            &mut candidate.zone_runtime,
+            &mut candidate.sparkleflinger,
+            &mut candidate.zones,
+            &candidate.display_descriptors,
+            &scene,
+            &self.input,
+            spec,
+            duration_millis_u64(self.started.elapsed()),
+            now.saturating_duration_since(self.last_tick).as_secs_f32(),
+        )?;
+        let demand = preview_input_demand(&scene, spec.fps);
+        if demand != self.current_demand {
+            self.demand.update(demand.clone());
+            self.current_demand = demand;
+        }
+        self.spec = spec;
+        self.zone_runtime = candidate.zone_runtime;
+        self.sparkleflinger = candidate.sparkleflinger;
+        self.resources = candidate.resources;
+        self.zones = candidate.zones;
+        self.display_descriptors = candidate.display_descriptors;
+        self.last_tick = now;
+        self.spec_generation = self
+            .spec_generation
+            .checked_add(1)
+            .expect("interactive preview spec generation exhausted");
+        self.telemetry.spec.store(Arc::new(spec));
+        self.telemetry
+            .backend
+            .store(backend_to_u8(candidate.backend), Ordering::Release);
+        self.telemetry
+            .spec_generation
+            .store(self.spec_generation, Ordering::Release);
+        self.spec_generation_tx.send_replace(self.spec_generation);
+        self.publish_surface(surface);
+        Ok(())
+    }
+
+    fn publish_surface(&mut self, surface: PublishedSurface) {
+        let frame = Arc::new(InteractivePreviewFrame {
+            publication_id: self.id.publication_id,
+            spec_generation: self.spec_generation,
+            frame_number: self.frame_number,
+            timestamp_ms: duration_millis_u32(self.started.elapsed()),
+            width: surface.width(),
+            height: surface.height(),
+            format: self.spec.format,
+            surface,
+        });
+        self.frame_tx.send_replace(Some(Arc::clone(&frame)));
+        self.retained_frame = Some(frame);
+        self.telemetry
+            .frames_published
+            .fetch_add(1, Ordering::Relaxed);
+        self.telemetry
+            .last_frame_number
+            .store(self.frame_number, Ordering::Relaxed);
+        self.telemetry.clear_error();
+        self.frame_number = self.frame_number.wrapping_add(1);
+    }
+}
+
+struct PreviewLaneCandidate {
+    zone_runtime: InteractivePreviewZoneRuntime,
+    sparkleflinger: SparkleFlinger,
+    resources: PreviewResourceLease,
+    backend: InteractivePreviewBackend,
+    zones: Vec<ZoneColors>,
+    display_descriptors: HashMap<ZoneId, DisplayDescriptor>,
+}
+
+impl PreviewLaneCandidate {
+    fn new(
+        scene: &ResolvedPreviewScene,
+        asset_library: Option<Arc<RwLock<AssetLibrary>>>,
+        acceleration: &InteractivePreviewAcceleration,
+        resources: PreviewResourceLease,
+    ) -> Result<Self, String> {
+        let zone_runtime =
+            preview_zone_runtime(scene.canvas_width, scene.canvas_height, asset_library)?;
+        let (sparkleflinger, backend) = create_preview_compositor(acceleration);
+        Ok(Self {
+            zone_runtime,
+            sparkleflinger,
+            resources,
+            backend,
+            zones: Vec::new(),
+            display_descriptors: HashMap::new(),
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_preview_scene(
+    zone_runtime: &mut InteractivePreviewZoneRuntime,
+    sparkleflinger: &mut SparkleFlinger,
+    zones: &mut Vec<ZoneColors>,
+    display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
+    scene: &ResolvedPreviewScene,
+    input: &PreviewLaneInput,
+    spec: InteractivePreviewSpec,
+    elapsed_ms: u64,
+    delta_secs: f32,
+) -> Result<PublishedSurface, String> {
+    let context = RenderSceneContext {
+        groups: &scene.groups,
+        active_scene_id: scene.scene_id,
+        dependency_key: SceneDependencyKey::new(scene.groups_revision, scene.catalog_generation),
+        elapsed_ms,
+        display_group_target_fps: &HashMap::new(),
+        display_group_descriptors: display_descriptors,
+        registry: &scene.registry,
+        inputs: ZoneFrameInputs {
+            delta_secs,
+            audio: input.audio(),
+            interaction: &input.routed.interaction,
+            screen: input.screen(),
+            sensors: input.sensors(),
+            input_availability: input.interaction_availability(),
+            media: input.media(),
+            net: input.network(),
+            lighting: None,
+        },
+    };
+    zone_runtime
+        .render_scene(context, sparkleflinger, zones)
+        .map_err(|error| error.to_string())
+        .and_then(|rendered| {
+            preview_surface(sparkleflinger, rendered, spec.width, spec.height).ok_or_else(|| {
+                "preview frame could not be materialized on its isolated device".to_owned()
+            })
+        })
+}
+
+fn preview_zone_runtime(
+    width: u32,
+    height: u32,
+    asset_library: Option<Arc<RwLock<AssetLibrary>>>,
+) -> Result<InteractivePreviewZoneRuntime, String> {
+    match asset_library {
+        Some(library) => InteractivePreviewZoneRuntime::with_asset_library(width, height, library),
+        None => InteractivePreviewZoneRuntime::new(width, height),
+    }
+    .map_err(|error| error.to_string())
 }
 
 impl PreviewLaneInput {
@@ -1298,11 +1542,15 @@ fn create_preview_compositor(
     acceleration: &InteractivePreviewAcceleration,
 ) -> (SparkleFlinger, InteractivePreviewBackend) {
     if acceleration.mode != RenderAccelerationMode::Gpu {
-        return (SparkleFlinger::cpu(), InteractivePreviewBackend::Cpu);
+        let backend = if acceleration.gpu_requested {
+            InteractivePreviewBackend::CpuAfterGpuFailure
+        } else {
+            InteractivePreviewBackend::Cpu
+        };
+        return (SparkleFlinger::cpu(), backend);
     }
     #[cfg(feature = "wgpu")]
-    if let Some(authoritative) = acceleration.render_device.as_ref()
-        && let Ok(device) = authoritative.independent_device("interactive preview compositor")
+    if let Some(device) = acceleration.render_device.clone()
         && let Ok(compositor) =
             SparkleFlinger::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(device))
     {

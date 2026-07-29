@@ -59,6 +59,9 @@ mod defaults {
     pub fn websocket_fps() -> u32 {
         30
     }
+    pub const fn interactive_preview_resource_bytes() -> u64 {
+        1024 * 1024 * 1024
+    }
 
     // MCP
     pub fn mcp_base_path() -> String {
@@ -438,6 +441,9 @@ pub struct WebConfig {
 
     #[serde(default = "defaults::websocket_fps")]
     pub websocket_fps: u32,
+
+    #[serde(default = "defaults::interactive_preview_resource_bytes")]
+    pub interactive_preview_resource_bytes: u64,
 }
 
 impl Default for WebConfig {
@@ -447,6 +453,7 @@ impl Default for WebConfig {
             open_browser: false,
             cors_origins: Vec::new(),
             websocket_fps: defaults::websocket_fps(),
+            interactive_preview_resource_bytes: defaults::interactive_preview_resource_bytes(),
         }
     }
 }
