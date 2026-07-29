@@ -109,6 +109,17 @@ fn demand_for_kind(
     profile: ScreenProcessingProfileConfig,
     executor: &CpuReductionExecutor,
 ) -> ResolvedScreenBranchDemand {
+    demand_for_kind_at_hz(source, output_extent, kind, profile, executor, 60)
+}
+
+fn demand_for_kind_at_hz(
+    source: &ResolvedScreenSource,
+    output_extent: PixelExtent,
+    kind: ScreenPublicationKind,
+    profile: ScreenProcessingProfileConfig,
+    executor: &CpuReductionExecutor,
+    requested_hz: u32,
+) -> ResolvedScreenBranchDemand {
     RegisteredScreenBranchDemand::new(
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
@@ -122,7 +133,7 @@ fn demand_for_kind(
             ScreenAspectPolicy::Cover,
             Arc::new(ScreenProcessingProfile::new(profile)),
         ),
-        non_zero(60),
+        non_zero(requested_hz),
     )
     .resolve_with_color_capabilities(source, executor.capabilities())
     .expect("test demand resolves")
@@ -528,6 +539,150 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     assert_eq!(zones.rows(), non_zero(23));
     assert_eq!(zones.colors().len(), 29 * 23);
     assert!(zones.colors().iter().any(|color| *color != [0, 0, 0]));
+}
+
+#[test]
+fn executable_fanout_preserves_branch_cadence_pressure_and_authority() {
+    let executor = executor();
+    let source = source(extent(17, 11));
+    let profile = ScreenProcessingProfileConfig::default();
+    let surface = demand_for_kind_at_hz(
+        &source,
+        extent(17, 11),
+        ScreenPublicationKind::Surface,
+        profile.clone(),
+        &executor,
+        60,
+    );
+    let zones = demand_for_kind_at_hz(
+        &source,
+        extent(17, 11),
+        ScreenPublicationKind::Zones {
+            columns: non_zero(5),
+            rows: non_zero(3),
+        },
+        profile,
+        &executor,
+        30,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [surface.clone(), zones.clone()]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("shared batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("multi-branch key retains one physical plane");
+    assert_eq!(workspace.len(), 1);
+    let candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+        &executor, &batch, workspace, &plan,
+    )
+    .expect("executable fanout prepares");
+    let mut fanout = candidate
+        .bind(builder.committed_state(), &binding)
+        .expect("executable fanout binds");
+    let first = frame_with_sequence(&source, 1);
+    let initial = Instant::now();
+    let report = fanout
+        .publish_due(
+            &hub,
+            Some(&first),
+            initial,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("initial branches publish");
+    assert_eq!((report.published(), report.pressured()), (2, 0));
+
+    let surface_due = fanout.next_due_at().expect("next branch deadline exists");
+    let second = frame_with_sequence(&source, 2);
+    let report = fanout
+        .publish_due(
+            &hub,
+            Some(&second),
+            surface_due,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("fast Surface cadence publishes");
+    assert_eq!(report.published(), 1);
+    let shared_due = surface_due + Duration::from_millis(20);
+    let report = fanout
+        .publish_due(
+            &hub,
+            Some(&second),
+            shared_due,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("slow Zones cadence reuses retained static frame");
+    assert_eq!(report.published(), 1);
+    assert!(report.needs_source());
+
+    let physical = batch.descriptor(0).expect("shared physical key exists");
+    let surface_descriptor = surface_branch(&plan, physical);
+    let surface_publisher = hub
+        .publisher(surface_descriptor, &binding)
+        .expect("surface publisher remains committed");
+    fanout
+        .publish_due(
+            &hub,
+            None,
+            shared_due + Duration::from_millis(40),
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("later cadence marks both branches pending");
+    let third = frame_with_sequence(&source, 3);
+    let pressure_intent = intent(surface_descriptor, &binding, &third);
+    let mut held = Vec::new();
+    loop {
+        match hub.prepare_writable_publication(
+            &surface_publisher,
+            ScreenPayloadKind::Surface,
+            &pressure_intent,
+        ) {
+            Ok(publication) => held.push(publication),
+            Err(
+                hypercolor_core::input::screen::ScreenPublicationHubError::PublicationPressure {
+                    ..
+                },
+            ) => break,
+            Err(error) => panic!("unexpected pressure preparation error: {error}"),
+        }
+    }
+    let report = fanout
+        .publish_due(
+            &hub,
+            Some(&third),
+            third.metadata().captured_at,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("pressure remains branch-local");
+    assert_eq!((report.published(), report.pressured()), (1, 1));
+    drop(held);
+
+    let stale_now = Instant::now();
+    fanout
+        .publish_due(
+            &hub,
+            None,
+            stale_now + Duration::from_secs(1),
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("old fanout records pending work before authority changes");
+    let (_replacement, _replacement_binding) = commit(&mut builder, [surface, zones]);
+    let fourth = frame_with_sequence(&source, 4);
+    assert!(matches!(
+        fanout.publish_due(
+            &hub,
+            Some(&fourth),
+            fourth.metadata().captured_at,
+            ScreenPublicationHealth::Healthy,
+        ),
+        Err(
+            hypercolor_core::input::screen::CpuPublicationFanoutError::Publisher(
+                hypercolor_core::input::screen::ScreenPublicationHubError::PublisherStale { .. }
+            )
+        )
+    ));
 }
 
 #[test]

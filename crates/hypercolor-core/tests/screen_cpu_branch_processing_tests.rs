@@ -9,19 +9,20 @@ use hypercolor_core::input::screen::smooth::PreparedTemporalSmoother;
 use hypercolor_core::input::screen::{
     CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch, CaptureGeometry,
     CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
-    CommittedScreenPlan, CpuReductionExecutor, CpuZoneMaterializationError,
-    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PreparedCpuZoneMaterializer,
-    PreparedScreenPublication, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenCapturePlan, ScreenContentBarsPolicy, ScreenExactResource,
-    ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration,
-    ScreenLetterboxFill, ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError,
-    ScreenPlanGeneration, ScreenProcessingProfile, ScreenProcessingProfileConfig,
-    ScreenProfileScalar, ScreenPublicationExecutorRequest, ScreenPublicationHub,
-    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest, ScreenResourceApi,
-    ScreenResourceLifetime, ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy, ScreenWorkerBinding,
+    CommittedScreenPlan, CpuReductionExecutor, CpuSurfaceMaterializationError,
+    CpuZoneMaterializationError, KnownCaptureColorimetry, PhysicalOrigin, PixelExtent,
+    PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer, PreparedScreenPublication,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCapturePlan,
+    ScreenContentBarsPolicy, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
+    ScreenGridPolicy, ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPayloadKind,
+    ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenPlanGeneration,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenResourceApi, ScreenResourceLifetime,
+    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenTargetColorimetry, ScreenUpscalePolicy, ScreenWorkerBinding,
     ScreenWorkerPreparationTicket, SourceScale,
 };
 use hypercolor_types::canvas::SurfaceResourceError;
@@ -243,6 +244,78 @@ impl ZoneFixture {
     }
 }
 
+struct SurfaceFixture {
+    hub: Arc<ScreenPublicationHub>,
+    descriptor: ResolvedScreenPublicationDescriptor,
+    physical: ScreenPhysicalReductionDescriptor,
+    generation: ScreenPlanGeneration,
+    binding: ScreenWorkerBinding,
+}
+
+impl SurfaceFixture {
+    fn new(
+        source_width: u32,
+        source_height: u32,
+        output_width: u32,
+        output_height: u32,
+        aspect: ScreenAspectPolicy,
+        profile: ScreenProcessingProfileConfig,
+    ) -> Self {
+        let source = source(
+            extent(source_width, source_height),
+            CaptureColorimetry::SRGB,
+        );
+        let executor = executor();
+        let demand = RegisteredScreenBranchDemand::new(
+            ScreenPublicationRequest::new(
+                ScreenSourceSelector::Configured,
+                ScreenPublicationKind::Surface,
+                ScreenPublicationExecutorRequest::Cpu,
+                ScreenExtentRequest::bounded(
+                    Some(non_zero(output_width)),
+                    Some(non_zero(output_height)),
+                    ScreenUpscalePolicy::Allow,
+                ),
+                aspect,
+                Arc::new(ScreenProcessingProfile::new(profile)),
+            ),
+            non_zero(60),
+        )
+        .resolve_with_color_capabilities(&source, executor.capabilities())
+        .expect("test Surface demand resolves");
+        let mut builder = ScreenPlanBuilder::new();
+        let hub = builder.publication_hub();
+        let (plan, binding) = commit(&mut builder, demand);
+        let descriptor = plan.branches()[0].descriptor().clone();
+        let physical = descriptor.physical().clone();
+        Self {
+            hub,
+            descriptor,
+            physical,
+            generation: plan.generation(),
+            binding,
+        }
+    }
+
+    fn publication(&self, sequence: u64, captured_at: Instant) -> PreparedScreenPublication {
+        let publisher = self
+            .hub
+            .publisher(&self.descriptor, &self.binding)
+            .expect("test Surface publisher is committed");
+        let metadata = ScreenPublicationMetadata::try_intent(
+            self.descriptor.source_epoch().clone(),
+            self.generation,
+            NonZeroU64::new(sequence).expect("test sequence is non-zero"),
+            captured_at,
+            captured_at + Duration::from_secs(2),
+        )
+        .expect("test Surface intent is valid");
+        self.hub
+            .prepare_writable_publication(&publisher, ScreenPayloadKind::Surface, &metadata)
+            .expect("test Surface slot reserves")
+    }
+}
+
 fn point_profile() -> ScreenProcessingProfileConfig {
     ScreenProcessingProfileConfig {
         grid: ScreenGridPolicy::PointSample,
@@ -255,6 +328,288 @@ fn rgba_grid(colors: &[[u8; 3]]) -> Vec<u8> {
         .iter()
         .flat_map(|color| [color[0], color[1], color[2], u8::MAX])
         .collect()
+}
+
+fn rgba_row(color: [u8; 4], count: usize) -> Vec<u8> {
+    std::iter::repeat_n(color, count).flatten().collect()
+}
+
+#[test]
+fn contain_geometry_keeps_explicit_odd_output_placement() {
+    let fixture = SurfaceFixture::new(
+        4,
+        2,
+        5,
+        5,
+        ScreenAspectPolicy::Contain,
+        ScreenProcessingProfileConfig::default(),
+    );
+    let geometry = fixture.descriptor.geometry();
+    assert_eq!(geometry.output_extent(), extent(5, 5));
+    assert_eq!(geometry.content_extent(), extent(5, 2));
+    assert_eq!((geometry.content_x(), geometry.content_y()), (0, 1));
+    assert_eq!(fixture.physical.reduction_extent(), extent(5, 2));
+    assert!(!geometry.content_fills_output());
+
+    let cover = SurfaceFixture::new(
+        4,
+        2,
+        5,
+        5,
+        ScreenAspectPolicy::Cover,
+        ScreenProcessingProfileConfig::default(),
+    );
+    assert!(cover.descriptor.geometry().content_fills_output());
+    assert_eq!(cover.physical.reduction_extent(), extent(5, 5));
+}
+
+#[test]
+fn surface_letterbox_fill_modes_preserve_content_and_alpha() {
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 128];
+    for (fill, expected_top, expected_bottom) in [
+        (ScreenLetterboxFill::Transparent, [0, 0, 0, 0], [0, 0, 0, 0]),
+        (
+            ScreenLetterboxFill::Solid([1, 2, 3, 4]),
+            [1, 2, 3, 4],
+            [1, 2, 3, 4],
+        ),
+        (ScreenLetterboxFill::EdgeExtend, red, blue),
+    ] {
+        let fixture = SurfaceFixture::new(
+            4,
+            2,
+            5,
+            5,
+            ScreenAspectPolicy::Contain,
+            ScreenProcessingProfileConfig {
+                letterbox_fill: fill,
+                ..ScreenProcessingProfileConfig::default()
+            },
+        );
+        let mut materializer = PreparedCpuSurfaceMaterializer::prepare_stateful(
+            &fixture.descriptor,
+            fixture.generation,
+        )
+        .expect("Surface materializer prepares");
+        let mut physical = rgba_row(red, 5);
+        physical.extend(rgba_row(blue, 5));
+        let now = Instant::now();
+        let mut publication = fixture.publication(1, now);
+        materializer
+            .stage(
+                fixture.generation,
+                &fixture.physical,
+                &physical,
+                now,
+                &mut publication,
+            )
+            .expect("Surface fill stages");
+        let pixels = publication
+            .surface_pixels_mut()
+            .expect("Surface output stays writable");
+        assert!(
+            pixels[..20]
+                .chunks_exact(4)
+                .all(|pixel| pixel == expected_top)
+        );
+        assert!(pixels[20..40].chunks_exact(4).all(|pixel| pixel == red));
+        assert!(pixels[40..60].chunks_exact(4).all(|pixel| pixel == blue));
+        assert!(
+            pixels[60..]
+                .chunks_exact(4)
+                .all(|pixel| pixel == expected_bottom)
+        );
+        materializer
+            .discard_staged(fixture.generation)
+            .expect("unpublished fill state discards");
+    }
+}
+
+#[test]
+fn detected_bars_reflow_without_stretching_content_aspect() {
+    let fixture = SurfaceFixture::new(
+        7,
+        5,
+        7,
+        5,
+        ScreenAspectPolicy::Contain,
+        ScreenProcessingProfileConfig {
+            content_bars: ScreenContentBarsPolicy::DetectAndCrop {
+                luminance_threshold: scalar(0.02),
+            },
+            letterbox_fill: ScreenLetterboxFill::Transparent,
+            ..ScreenProcessingProfileConfig::default()
+        },
+    );
+    let mut materializer =
+        PreparedCpuSurfaceMaterializer::prepare_stateful(&fixture.descriptor, fixture.generation)
+            .expect("dynamic Surface materializer prepares");
+    let mut physical = rgba_row([0, 0, 0, 255], 7);
+    physical.extend(rgba_row([255, 0, 0, 255], 7));
+    physical.extend(rgba_row([0, 255, 0, 255], 7));
+    physical.extend(rgba_row([0, 0, 255, 255], 7));
+    physical.extend(rgba_row([0, 0, 0, 255], 7));
+    let now = Instant::now();
+    let mut publication = fixture.publication(1, now);
+    materializer
+        .stage(
+            fixture.generation,
+            &fixture.physical,
+            &physical,
+            now,
+            &mut publication,
+        )
+        .expect("detected content stages");
+    let pixels = publication
+        .surface_pixels_mut()
+        .expect("dynamic output stays writable");
+    assert!(
+        pixels[..28]
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0, 0, 0, 0])
+    );
+    assert!(
+        pixels[28..56]
+            .chunks_exact(4)
+            .all(|pixel| pixel == [255, 0, 0, 255])
+    );
+    assert!(
+        pixels[56..84]
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0, 255, 0, 255])
+    );
+    assert!(
+        pixels[84..112]
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0, 0, 255, 255])
+    );
+    assert!(
+        pixels[112..]
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0, 0, 0, 0])
+    );
+    materializer
+        .discard_staged(fixture.generation)
+        .expect("dynamic state discards");
+}
+
+#[test]
+fn surface_materializer_rejects_substituted_physical_storage_transactionally() {
+    let fixture = SurfaceFixture::new(
+        4,
+        2,
+        5,
+        5,
+        ScreenAspectPolicy::Contain,
+        ScreenProcessingProfileConfig::default(),
+    );
+    let mut materializer =
+        PreparedCpuSurfaceMaterializer::prepare_stateful(&fixture.descriptor, fixture.generation)
+            .expect("Surface materializer prepares");
+    let now = Instant::now();
+    let mut publication = fixture.publication(1, now);
+    assert_eq!(
+        materializer.stage(
+            fixture.generation,
+            &fixture.physical,
+            &[0; 4],
+            now,
+            &mut publication,
+        ),
+        Err(CpuSurfaceMaterializationError::PhysicalByteLengthMismatch {
+            expected: 40,
+            actual: 4,
+        })
+    );
+}
+
+#[test]
+fn rejected_moving_bars_preserve_committed_surface_history() {
+    let fixture = SurfaceFixture::new(
+        5,
+        5,
+        5,
+        5,
+        ScreenAspectPolicy::Contain,
+        ScreenProcessingProfileConfig {
+            content_bars: ScreenContentBarsPolicy::DetectAndCrop {
+                luminance_threshold: scalar(0.02),
+            },
+            smoothing: ScreenSmoothingPolicy::Exponential {
+                time_constant: Duration::from_millis(100),
+                scene_cut: ScreenSceneCutPolicy::Disabled,
+            },
+            ..ScreenProcessingProfileConfig::default()
+        },
+    );
+    let mut materializer =
+        PreparedCpuSurfaceMaterializer::prepare_stateful(&fixture.descriptor, fixture.generation)
+            .expect("smoothed Surface materializer prepares");
+    let black = [0, 0, 0, 255];
+    let mut horizontal = rgba_row(black, 5);
+    horizontal.extend(rgba_row([255, 0, 0, 255], 15));
+    horizontal.extend(rgba_row(black, 5));
+    let start = Instant::now();
+    let mut first = fixture.publication(1, start);
+    materializer
+        .stage(
+            fixture.generation,
+            &fixture.physical,
+            &horizontal,
+            start,
+            &mut first,
+        )
+        .expect("first bar state stages");
+    materializer
+        .commit_staged(fixture.generation)
+        .expect("first bar state commits");
+    drop(first);
+
+    let mut vertical = Vec::new();
+    for _ in 0..5 {
+        vertical.extend_from_slice(&black);
+        vertical.extend(rgba_row([0, 0, 255, 255], 3));
+        vertical.extend_from_slice(&black);
+    }
+    let mut rejected = fixture.publication(2, start + Duration::from_millis(16));
+    materializer
+        .stage(
+            fixture.generation,
+            &fixture.physical,
+            &vertical,
+            start + Duration::from_millis(16),
+            &mut rejected,
+        )
+        .expect("moving bars stage");
+    materializer
+        .discard_staged(fixture.generation)
+        .expect("moving bars rollback");
+    drop(rejected);
+
+    let mut restored = rgba_row(black, 5);
+    restored.extend(rgba_row([0, 255, 0, 255], 15));
+    restored.extend(rgba_row(black, 5));
+    let mut third = fixture.publication(3, start + Duration::from_millis(32));
+    materializer
+        .stage(
+            fixture.generation,
+            &fixture.physical,
+            &restored,
+            start + Duration::from_millis(32),
+            &mut third,
+        )
+        .expect("restored bars stage from committed history");
+    let pixels = third
+        .surface_pixels_mut()
+        .expect("smoothed Surface remains writable");
+    let center = &pixels[(2 * 5 + 2) * 4..(2 * 5 + 2) * 4 + 4];
+    assert!(center[0] > 0, "red committed history must survive rollback");
+    assert!(center[1] > 0, "green incoming content must contribute");
+    assert_ne!(center, [0, 255, 0, 255]);
+    materializer
+        .discard_staged(fixture.generation)
+        .expect("final staged state discards");
 }
 
 #[test]

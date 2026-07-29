@@ -22,10 +22,9 @@ use super::{
     CpuCaptureStorage, PixelExtent, PlatformGpuApi, PreparedScreenPublication, RawCaptureSurface,
     ResolvedScreenColorPipeline, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenColorTuning,
-    ScreenContentBarsPolicy, ScreenCursorPolicy, ScreenLetterboxFill,
-    ScreenPhysicalReductionDescriptor, ScreenPlanGeneration, ScreenPublicationExecutor,
-    ScreenPublicationKind, ScreenReductionFilter, ScreenSmoothingPolicy, ScreenSourceReflection,
-    ScreenSubpixelRect,
+    ScreenContentBarsPolicy, ScreenCursorPolicy, ScreenPhysicalReductionDescriptor,
+    ScreenPlanGeneration, ScreenPublicationExecutor, ScreenPublicationKind, ScreenReductionFilter,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSubpixelRect,
 };
 
 const CHANNELS_PER_PIXEL: u64 = 4;
@@ -544,8 +543,8 @@ pub(super) fn branch_requires_materialization(
         return true;
     }
     let profile = descriptor.processing_profile();
-    profile.content_bars() != ScreenContentBarsPolicy::Disabled
-        || profile.letterbox_fill() != ScreenLetterboxFill::default()
+    !descriptor.geometry().content_fills_output()
+        || profile.content_bars() != ScreenContentBarsPolicy::Disabled
         || profile.smoothing() != ScreenSmoothingPolicy::Disabled
         || profile.tuning() != ScreenColorTuning::default()
 }
@@ -559,10 +558,9 @@ fn physical_requires_materialization(
         .physical_reductions()
         .binary_search_by(|demand| demand.descriptor().cmp(&reduction.descriptor))
         .map_err(|_| CpuReductionError::WorkspacePhysicalPlanMismatch { batch_index })?;
-    Ok(plan.physical_reductions()[plan_index]
-        .branch_indices()
-        .iter()
-        .any(|branch_index| {
+    let branch_indices = plan.physical_reductions()[plan_index].branch_indices();
+    Ok(branch_indices.len() > 1
+        || branch_indices.iter().any(|branch_index| {
             plan.branches()
                 .get(*branch_index)
                 .is_some_and(|branch| branch_requires_materialization(branch.descriptor()))

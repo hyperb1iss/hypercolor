@@ -2,15 +2,18 @@ use std::alloc::System;
 use std::hint::black_box;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CpuReductionExecutor, InputPublicationDemandRevision, PhysicalOrigin,
-    PixelExtent, PreparedCpuPublicationFanout, RegisteredScreenBranchDemand, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenExactResource,
-    ScreenExactResourceLedger, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest,
+    CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
+    CaptureStorage, CpuCaptureStorage, CpuReductionExecutor, InputPublicationDemandRevision,
+    PhysicalOrigin, PixelExtent, PreparedCpuPublicationFanout, RawCaptureSurface,
+    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenCaptureBackend, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
+    ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
     ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection,
     ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
 };
@@ -60,6 +63,37 @@ fn source() -> ResolvedScreenSource {
             ),
         ),
     )
+}
+
+fn frame(source: &ResolvedScreenSource, sequence: u64) -> CaptureFrame<RawCaptureSurface> {
+    let captured_at = Instant::now();
+    let extent = source.config().geometry().storage_extent();
+    let pixels = vec![
+        127;
+        usize::try_from(u64::from(extent.width()) * u64::from(extent.height()) * 4)
+            .expect("test frame is addressable")
+    ];
+    CaptureFrame::new(
+        CaptureFrameMetadata {
+            source_id: source.epoch().source_id.clone(),
+            topology_generation: source.epoch().topology_generation,
+            session_generation: source.epoch().session_generation,
+            sequence,
+            captured_at,
+            fresh_until: captured_at + Duration::from_secs(2),
+            geometry: source.config().geometry(),
+            colorimetry: source.config().colorimetry(),
+            cursor: CaptureCursor::default(),
+        },
+        CaptureStorage::Cpu(CpuCaptureStorage::new(
+            Arc::from(pixels),
+            source.config().pixel_format(),
+            i64::from(extent.width()) * 4,
+            0,
+        )),
+        CaptureDamage::default(),
+    )
+    .expect("test frame is valid")
 }
 
 #[test]
@@ -175,4 +209,65 @@ fn authority_binding_performs_no_heap_allocation() {
     assert_eq!(fanout.branch_count(), 1);
     assert!(workspace.is_empty());
     assert_eq!(workspace.allocation_byte_len(), 0);
+
+    let executable_workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("executable workspace prepares");
+    let executable = PreparedCpuPublicationFanout::prepare_executable_candidate(
+        &executor,
+        &batch,
+        executable_workspace,
+        &plan,
+    )
+    .expect("executable fanout prepares");
+    let mut executable = executable
+        .bind(builder.committed_state(), &binding)
+        .expect("executable fanout binds");
+    let first = frame(&source, 1);
+    let warm_now = Instant::now();
+    assert_eq!(
+        executable
+            .publish_due(
+                &builder.publication_hub(),
+                Some(&first),
+                warm_now,
+                ScreenPublicationHealth::Healthy,
+            )
+            .expect("warm publication succeeds")
+            .published(),
+        1
+    );
+    let next_due = executable
+        .next_due_at()
+        .expect("bound branch has a next deadline");
+    assert!(
+        executable
+            .publish_due(
+                &builder.publication_hub(),
+                None,
+                next_due,
+                ScreenPublicationHealth::Healthy,
+            )
+            .expect("missing frame records pending demand")
+            .needs_source()
+    );
+    let second = frame(&source, 2);
+    let mut publish_region = Region::new(GLOBAL);
+    publish_region.reset();
+
+    let report = executable
+        .publish_due(
+            black_box(&builder.publication_hub()),
+            Some(black_box(&second)),
+            black_box(next_due),
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("warmed publication succeeds");
+    black_box(report);
+    let publish_change = publish_region.change();
+
+    assert_eq!(report.published(), 1);
+    assert_eq!(publish_change.allocations, 0);
+    assert_eq!(publish_change.reallocations, 0);
+    assert_eq!(publish_change.bytes_allocated, 0);
 }

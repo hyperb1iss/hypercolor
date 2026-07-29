@@ -1,16 +1,22 @@
 //! Immutable CPU publication routing prepared from one committed authority.
 
 use std::mem::size_of;
+use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::time::Instant;
 
 use thiserror::Error;
 
 use super::reducer::branch_requires_materialization;
 use super::{
+    CaptureCadence, CaptureCadenceError, CaptureFrame, CapturePacer, CpuReductionError,
+    CpuReductionExecutor, CpuSurfaceMaterializationError, CpuSurfaceReductionJob,
     CpuZoneMaterializationError, PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
-    PreparedCpuZoneMaterializer, ResolvedScreenPublicationDescriptor, ScreenBranchPublisher,
-    ScreenCapturePlan, ScreenCommittedState, ScreenPhysicalReductionDescriptor,
-    ScreenPlanGeneration, ScreenPublicationHubError, ScreenPublicationKind, ScreenWorkerBinding,
+    PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer, PreparedScreenPublication,
+    RawCaptureSurface, ResolvedScreenPublicationDescriptor, ScreenBranchPublisher,
+    ScreenCapturePlan, ScreenCommittedState, ScreenPayloadKind, ScreenPhysicalReductionDescriptor,
+    ScreenPlanGeneration, ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenWorkerBinding,
 };
 
 /// Plan-time routing class for one exact logical branch.
@@ -30,7 +36,13 @@ pub struct PreparedCpuLogicalFanout {
     kind: PreparedCpuLogicalFanoutKind,
     descriptor: ResolvedScreenPublicationDescriptor,
     publisher: Option<ScreenBranchPublisher>,
+    surface_materializer: Option<PreparedCpuSurfaceMaterializer>,
     zone_materializer: Option<PreparedCpuZoneMaterializer>,
+    cadence: CaptureCadence,
+    pacer: CapturePacer,
+    next_due_at: Option<Instant>,
+    pending_due: bool,
+    last_accepted_sequence: Option<u64>,
 }
 
 impl PreparedCpuLogicalFanout {
@@ -60,10 +72,69 @@ impl PreparedCpuLogicalFanout {
         self.zone_materializer.as_ref()
     }
 
+    /// Prepared Surface processor when this route changes physical bytes.
+    #[must_use]
+    pub const fn surface_materializer(&self) -> Option<&PreparedCpuSurfaceMaterializer> {
+        self.surface_materializer.as_ref()
+    }
+
+    /// Mutable plan-lifetime state for staging one Surface publication.
+    #[must_use]
+    pub fn surface_materializer_mut(&mut self) -> Option<&mut PreparedCpuSurfaceMaterializer> {
+        self.surface_materializer.as_mut()
+    }
+
     /// Mutable plan-lifetime state for staging one Zones publication.
     #[must_use]
     pub fn zone_materializer_mut(&mut self) -> Option<&mut PreparedCpuZoneMaterializer> {
         self.zone_materializer.as_mut()
+    }
+
+    fn observe_deadline(&mut self, now: Instant) -> Result<(), CaptureCadenceError> {
+        let Some(deadline) = self.next_due_at else {
+            self.next_due_at = Some(now);
+            return Ok(());
+        };
+        if now >= deadline {
+            self.pending_due = true;
+            self.next_due_at = Some(self.pacer.advance_deadline(deadline, now)?);
+        }
+        Ok(())
+    }
+
+    fn accepts_sequence(&self, sequence: u64) -> bool {
+        self.pending_due
+            && self
+                .last_accepted_sequence
+                .is_none_or(|previous| sequence > previous)
+    }
+}
+
+/// Outcome of one allocation-free CPU fanout scheduling pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuPublicationFanoutReport {
+    published: usize,
+    pressured: usize,
+    needs_source: bool,
+}
+
+impl CpuPublicationFanoutReport {
+    /// Logical branches accepted by the hub.
+    #[must_use]
+    pub const fn published(self) -> usize {
+        self.published
+    }
+
+    /// Branch attempts skipped because every admitted slot was retained.
+    #[must_use]
+    pub const fn pressured(self) -> usize {
+        self.pressured
+    }
+
+    /// Whether at least one due branch still needs a newer native frame.
+    #[must_use]
+    pub const fn needs_source(self) -> bool {
+        self.needs_source
     }
 }
 
@@ -72,7 +143,18 @@ impl PreparedCpuLogicalFanout {
 pub struct PreparedCpuPublicationFanoutCandidate {
     batch: PreparedCpuReductionBatch,
     physical: Vec<PreparedCpuPhysicalFanout>,
+    executor: Option<CpuReductionExecutor>,
+    workspace: Option<PreparedCpuMaterializationWorkspace>,
+    workspace_schedule: Vec<usize>,
+    reservations: Vec<CpuPendingPublication>,
     allocation_byte_len: u64,
+}
+
+#[derive(Debug)]
+struct CpuPendingPublication {
+    physical_index: usize,
+    branch_index: usize,
+    publication: PreparedScreenPublication,
 }
 
 impl PreparedCpuPublicationFanoutCandidate {
@@ -131,7 +213,7 @@ impl PreparedCpuPublicationFanoutCandidate {
             branches
                 .try_reserve_exact(demand.branch_indices().len())
                 .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
-            let mut requires_workspace = false;
+            let mut requires_workspace = demand.branch_indices().len() > 1;
             for &branch_index in demand.branch_indices() {
                 let branch = plan.branches().get(branch_index).ok_or(
                     CpuPublicationFanoutError::BranchIndexOutOfBounds {
@@ -140,23 +222,33 @@ impl PreparedCpuPublicationFanoutCandidate {
                     },
                 )?;
                 let branch_descriptor = branch.descriptor();
+                let cadence = CaptureCadence::new(branch.requested_hz().get())?;
                 if branch_descriptor.physical() != descriptor {
                     return Err(CpuPublicationFanoutError::BranchPhysicalMismatch { branch_index });
                 }
-                let (kind, zone_materializer) = match branch_descriptor.kind() {
+                let (kind, surface_materializer, zone_materializer) = match branch_descriptor.kind()
+                {
                     ScreenPublicationKind::Surface
                         if branch_requires_materialization(branch_descriptor) =>
                     {
                         requires_workspace = true;
-                        (PreparedCpuLogicalFanoutKind::MaterializedSurface, None)
+                        (
+                            PreparedCpuLogicalFanoutKind::MaterializedSurface,
+                            Some(PreparedCpuSurfaceMaterializer::prepare_stateful(
+                                branch_descriptor,
+                                batch.plan_generation(),
+                            )?),
+                            None,
+                        )
                     }
                     ScreenPublicationKind::Surface => {
-                        (PreparedCpuLogicalFanoutKind::DirectSurface, None)
+                        (PreparedCpuLogicalFanoutKind::DirectSurface, None, None)
                     }
                     ScreenPublicationKind::Zones { .. } => {
                         requires_workspace = true;
                         (
                             PreparedCpuLogicalFanoutKind::Zones,
+                            None,
                             Some(PreparedCpuZoneMaterializer::prepare_stateful(
                                 branch_descriptor,
                                 batch.plan_generation(),
@@ -168,7 +260,13 @@ impl PreparedCpuPublicationFanoutCandidate {
                     kind,
                     descriptor: branch_descriptor.clone(),
                     publisher: None,
+                    surface_materializer,
                     zone_materializer,
+                    cadence,
+                    pacer: cadence.pacer(),
+                    next_due_at: None,
+                    pending_due: false,
+                    last_accepted_sequence: None,
                 });
             }
             if requires_workspace != workspace_index.is_some() {
@@ -186,12 +284,42 @@ impl PreparedCpuPublicationFanoutCandidate {
         if workspace_cursor != workspace.len() {
             return Err(CpuPublicationFanoutError::WorkspaceOrderMismatch);
         }
-        let allocation_byte_len = allocation_byte_len(&physical, physical.capacity())?;
+        let mut workspace_schedule = Vec::new();
+        workspace_schedule
+            .try_reserve_exact(physical.len())
+            .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
+        let branch_count = physical.iter().map(|route| route.branches.len()).sum();
+        let mut reservations = Vec::new();
+        reservations
+            .try_reserve_exact(branch_count)
+            .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
+        let allocation_byte_len = allocation_byte_len(&physical, physical.capacity())?
+            .checked_add(checked_bytes::<usize>(workspace_schedule.capacity())?)
+            .and_then(|bytes| {
+                checked_bytes::<CpuPendingPublication>(reservations.capacity())
+                    .ok()
+                    .and_then(|reservation_bytes| bytes.checked_add(reservation_bytes))
+            })
+            .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
         Ok(Self {
             batch: batch.clone(),
             physical,
+            executor: None,
+            workspace: None,
+            workspace_schedule,
+            reservations,
             allocation_byte_len,
         })
+    }
+
+    fn attach_execution(
+        mut self,
+        executor: CpuReductionExecutor,
+        workspace: PreparedCpuMaterializationWorkspace,
+    ) -> Self {
+        self.executor = Some(executor);
+        self.workspace = Some(workspace);
+        self
     }
 
     /// Heap bytes retained by unpublished routing metadata and kernels.
@@ -232,12 +360,17 @@ impl PreparedCpuPublicationFanoutCandidate {
         for route in &mut self.physical {
             for branch in &mut route.branches {
                 branch.publisher = Some(authority.publisher(&branch.descriptor, binding)?);
+                branch.next_due_at = Some(Instant::now());
             }
         }
         Ok(PreparedCpuPublicationFanout {
             authority,
             batch: self.batch,
             physical: self.physical,
+            executor: self.executor,
+            workspace: self.workspace,
+            workspace_schedule: self.workspace_schedule,
+            reservations: self.reservations,
             allocation_byte_len: self.allocation_byte_len,
         })
     }
@@ -283,6 +416,10 @@ pub struct PreparedCpuPublicationFanout {
     authority: Arc<ScreenCommittedState>,
     batch: PreparedCpuReductionBatch,
     physical: Vec<PreparedCpuPhysicalFanout>,
+    executor: Option<CpuReductionExecutor>,
+    workspace: Option<PreparedCpuMaterializationWorkspace>,
+    workspace_schedule: Vec<usize>,
+    reservations: Vec<CpuPendingPublication>,
     allocation_byte_len: u64,
 }
 
@@ -299,6 +436,21 @@ impl PreparedCpuPublicationFanout {
         plan: &ScreenCapturePlan,
     ) -> Result<PreparedCpuPublicationFanoutCandidate, CpuPublicationFanoutError> {
         PreparedCpuPublicationFanoutCandidate::prepare(batch, workspace, plan)
+    }
+
+    /// Prepare a self-contained execution candidate with owned physical planes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation failures as [`Self::prepare_candidate`].
+    pub fn prepare_executable_candidate(
+        executor: &CpuReductionExecutor,
+        batch: &PreparedCpuReductionBatch,
+        workspace: PreparedCpuMaterializationWorkspace,
+        plan: &ScreenCapturePlan,
+    ) -> Result<PreparedCpuPublicationFanoutCandidate, CpuPublicationFanoutError> {
+        let candidate = PreparedCpuPublicationFanoutCandidate::prepare(batch, &workspace, plan)?;
+        Ok(candidate.attach_execution(executor.clone(), workspace))
     }
 
     /// Exact committed plan generation retained by this routing snapshot.
@@ -362,6 +514,310 @@ impl PreparedCpuPublicationFanout {
     pub const fn allocation_byte_len(&self) -> u64 {
         self.allocation_byte_len
     }
+
+    /// Earliest branch deadline after the most recent scheduling pass.
+    #[must_use]
+    pub fn next_due_at(&self) -> Option<Instant> {
+        self.physical
+            .iter()
+            .flat_map(|physical| physical.branches.iter())
+            .filter_map(|branch| branch.next_due_at)
+            .min()
+    }
+
+    /// Publish every independently due logical branch from one optional frame.
+    ///
+    /// Deadlines advance on attempts rather than successful delivery. Missing
+    /// or stale native frames leave demand pending, while branch-local pressure
+    /// consumes that cadence tick and preserves the previous publication.
+    ///
+    /// # Errors
+    ///
+    /// Rejects metadata-only fanouts, stale frames, reducer failures,
+    /// substituted hub authority, and branch-processing failures.
+    pub fn publish_due(
+        &mut self,
+        hub: &ScreenPublicationHub,
+        frame: Option<&CaptureFrame<RawCaptureSurface>>,
+        now: Instant,
+        health: ScreenPublicationHealth,
+    ) -> Result<CpuPublicationFanoutReport, CpuPublicationFanoutError> {
+        for physical in &mut self.physical {
+            for branch in &mut physical.branches {
+                branch.observe_deadline(now)?;
+            }
+        }
+        let Some(frame) = frame else {
+            return Ok(CpuPublicationFanoutReport {
+                needs_source: self.any_pending(),
+                ..CpuPublicationFanoutReport::default()
+            });
+        };
+        let sequence = frame.metadata().sequence;
+        let native_sequence =
+            NonZeroU64::new(sequence).ok_or(CpuPublicationFanoutError::NativeSequenceZero)?;
+        let current_authority = hub.committed_state();
+        if !Arc::ptr_eq(&current_authority, &self.authority) {
+            return Err(ScreenPublicationHubError::PublisherStale {
+                expected: current_authority.plan().generation(),
+                observed: self.authority.plan().generation(),
+            }
+            .into());
+        }
+        let executor = self
+            .executor
+            .as_ref()
+            .ok_or(CpuPublicationFanoutError::ExecutionNotAttached)?;
+        let workspace = self
+            .workspace
+            .as_mut()
+            .ok_or(CpuPublicationFanoutError::ExecutionNotAttached)?;
+        let mut report = CpuPublicationFanoutReport::default();
+        let plan_generation = self.authority.plan().generation();
+        self.reservations.clear();
+        for (physical_index, physical) in self.physical.iter_mut().enumerate() {
+            for (branch_index, branch) in physical.branches.iter_mut().enumerate() {
+                if !branch.accepts_sequence(sequence) {
+                    if branch.pending_due {
+                        report.needs_source = true;
+                    }
+                    continue;
+                }
+                if now
+                    > branch
+                        .cadence
+                        .freshness_deadline(frame.metadata().captured_at)?
+                {
+                    report.needs_source = true;
+                    continue;
+                }
+                let metadata = publication_intent(branch, frame, native_sequence, plan_generation)?;
+                let payload_kind = match branch.kind {
+                    PreparedCpuLogicalFanoutKind::DirectSurface
+                    | PreparedCpuLogicalFanoutKind::MaterializedSurface => {
+                        ScreenPayloadKind::Surface
+                    }
+                    PreparedCpuLogicalFanoutKind::Zones => ScreenPayloadKind::Zones,
+                };
+                match hub.prepare_writable_publication(branch.publisher(), payload_kind, &metadata)
+                {
+                    Ok(publication) => self.reservations.push(CpuPendingPublication {
+                        physical_index,
+                        branch_index,
+                        publication,
+                    }),
+                    Err(ScreenPublicationHubError::PublicationPressure { .. }) => {
+                        branch.pending_due = false;
+                        report.pressured += 1;
+                    }
+                    Err(error) => {
+                        self.reservations.clear();
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+
+        self.workspace_schedule.clear();
+        for pending in &self.reservations {
+            let physical = &self.physical[pending.physical_index];
+            let Some(workspace_index) = physical.workspace_index else {
+                continue;
+            };
+            if self.workspace_schedule.last() != Some(&workspace_index)
+                && workspace.completed_source_sequence(workspace_index) != Some(sequence)
+            {
+                self.workspace_schedule.push(workspace_index);
+            }
+        }
+        executor.execute_scheduled_publications(
+            &self.batch,
+            frame,
+            workspace,
+            &self.workspace_schedule,
+            &mut [],
+        )?;
+
+        for pending in &mut self.reservations {
+            let physical = &self.physical[pending.physical_index];
+            if physical.workspace_index.is_some() {
+                continue;
+            }
+            let mut jobs = [CpuSurfaceReductionJob::new(
+                physical.batch_index,
+                &mut pending.publication,
+            )];
+            executor.execute_scheduled_publications(
+                &self.batch,
+                frame,
+                workspace,
+                &[],
+                &mut jobs,
+            )?;
+        }
+
+        let (physical_routes, reservations) = (&mut self.physical, &mut self.reservations);
+        for pending in reservations.iter_mut() {
+            let physical = &mut physical_routes[pending.physical_index];
+            let Some(workspace_index) = physical.workspace_index else {
+                continue;
+            };
+            let pixels = workspace.pixels(workspace_index).ok_or(
+                CpuPublicationFanoutError::WorkspacePublicationUnavailable { workspace_index },
+            )?;
+            let descriptor = self
+                .batch
+                .descriptor(physical.batch_index)
+                .expect("prepared fanout batch index is valid");
+            let branch = &mut physical.branches[pending.branch_index];
+            stage_workspace_publication(
+                branch,
+                descriptor,
+                pixels,
+                frame,
+                plan_generation,
+                &mut pending.publication,
+            )?;
+        }
+
+        while let Some(pending) = self.reservations.pop() {
+            let branch = &mut self.physical[pending.physical_index].branches[pending.branch_index];
+            match hub.finalize_writable_publication(pending.publication, now, health) {
+                Ok(_) => commit_branch_stage(branch, plan_generation)?,
+                Err(error) => {
+                    discard_branch_stage(branch, plan_generation)?;
+                    return Err(error.into());
+                }
+            }
+            branch.pending_due = false;
+            branch.last_accepted_sequence = Some(sequence);
+            report.published += 1;
+        }
+        report.needs_source |= self.any_pending();
+        Ok(report)
+    }
+
+    fn any_pending(&self) -> bool {
+        self.physical
+            .iter()
+            .flat_map(|physical| physical.branches.iter())
+            .any(|branch| branch.pending_due)
+    }
+}
+
+fn stage_workspace_publication(
+    branch: &mut PreparedCpuLogicalFanout,
+    physical_descriptor: &ScreenPhysicalReductionDescriptor,
+    physical_pixels: &[u8],
+    frame: &CaptureFrame<RawCaptureSurface>,
+    plan_generation: ScreenPlanGeneration,
+    publication: &mut PreparedScreenPublication,
+) -> Result<(), CpuPublicationFanoutError> {
+    match branch.kind {
+        PreparedCpuLogicalFanoutKind::DirectSurface => {
+            let output = publication
+                .surface_pixels_mut()
+                .map_err(CpuPublicationFanoutError::Publisher)?;
+            if output.len() != physical_pixels.len() {
+                return Err(CpuPublicationFanoutError::DirectSurfaceLengthMismatch {
+                    expected: physical_pixels.len(),
+                    actual: output.len(),
+                });
+            }
+            output.copy_from_slice(physical_pixels);
+        }
+        PreparedCpuLogicalFanoutKind::MaterializedSurface => {
+            branch
+                .surface_materializer
+                .as_mut()
+                .expect("materialized Surface routes own a processor")
+                .stage(
+                    plan_generation,
+                    physical_descriptor,
+                    physical_pixels,
+                    frame.metadata().captured_at,
+                    publication,
+                )?;
+        }
+        PreparedCpuLogicalFanoutKind::Zones => {
+            let staged = branch
+                .zone_materializer
+                .as_mut()
+                .expect("Zones routes own a processor")
+                .stage(
+                    plan_generation,
+                    physical_descriptor,
+                    physical_pixels,
+                    frame.metadata().captured_at,
+                    publication,
+                )?;
+            let columns = std::num::NonZeroU32::new(staged.columns())
+                .ok_or(CpuPublicationFanoutError::InvalidEffectiveZoneShape)?;
+            let rows = std::num::NonZeroU32::new(staged.rows())
+                .ok_or(CpuPublicationFanoutError::InvalidEffectiveZoneShape)?;
+            publication.set_effective_zone_shape(columns, rows)?;
+        }
+    }
+    Ok(())
+}
+
+fn commit_branch_stage(
+    branch: &mut PreparedCpuLogicalFanout,
+    plan_generation: ScreenPlanGeneration,
+) -> Result<(), CpuPublicationFanoutError> {
+    match branch.kind {
+        PreparedCpuLogicalFanoutKind::DirectSurface => Ok(()),
+        PreparedCpuLogicalFanoutKind::MaterializedSurface => branch
+            .surface_materializer
+            .as_mut()
+            .expect("materialized Surface routes own a processor")
+            .commit_staged(plan_generation)
+            .map_err(Into::into),
+        PreparedCpuLogicalFanoutKind::Zones => branch
+            .zone_materializer
+            .as_mut()
+            .expect("Zones routes own a processor")
+            .commit_staged(plan_generation)
+            .map_err(Into::into),
+    }
+}
+
+fn discard_branch_stage(
+    branch: &mut PreparedCpuLogicalFanout,
+    plan_generation: ScreenPlanGeneration,
+) -> Result<(), CpuPublicationFanoutError> {
+    match branch.kind {
+        PreparedCpuLogicalFanoutKind::DirectSurface => Ok(()),
+        PreparedCpuLogicalFanoutKind::MaterializedSurface => branch
+            .surface_materializer
+            .as_mut()
+            .expect("materialized Surface routes own a processor")
+            .discard_staged(plan_generation)
+            .map_err(Into::into),
+        PreparedCpuLogicalFanoutKind::Zones => branch
+            .zone_materializer
+            .as_mut()
+            .expect("Zones routes own a processor")
+            .discard_staged(plan_generation)
+            .map_err(Into::into),
+    }
+}
+
+fn publication_intent(
+    branch: &PreparedCpuLogicalFanout,
+    frame: &CaptureFrame<RawCaptureSurface>,
+    native_sequence: NonZeroU64,
+    plan_generation: ScreenPlanGeneration,
+) -> Result<ScreenPublicationMetadata, CpuPublicationFanoutError> {
+    Ok(ScreenPublicationMetadata::try_intent(
+        branch.descriptor.source_epoch().clone(),
+        plan_generation,
+        native_sequence,
+        frame.metadata().captured_at,
+        branch
+            .cadence
+            .freshness_deadline(frame.metadata().captured_at)?,
+    )?)
 }
 
 fn allocation_byte_len(
@@ -376,6 +832,11 @@ fn allocation_byte_len(
             )?)
             .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
         for branch in &route.branches {
+            if let Some(materializer) = &branch.surface_materializer {
+                total = total
+                    .checked_add(materializer.precomputed_byte_len())
+                    .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
+            }
             if let Some(materializer) = &branch.zone_materializer {
                 total = total
                     .checked_add(materializer.precomputed_byte_len())
@@ -400,6 +861,21 @@ fn checked_bytes<T>(count: usize) -> Result<u64, CpuPublicationFanoutError> {
 /// Preparation failure for immutable CPU publication fanout.
 #[derive(Debug, Error)]
 pub enum CpuPublicationFanoutError {
+    /// Metadata-only fanout preparation omitted owned execution resources.
+    #[error("CPU publication fanout has no attached executor or workspace")]
+    ExecutionNotAttached,
+    /// Hub metadata requires positive native sequence identity.
+    #[error("CPU publication fanout received native sequence zero")]
+    NativeSequenceZero,
+    /// A scheduled retained plane did not contain completed physical bytes.
+    #[error("CPU publication workspace plane {workspace_index} is unavailable")]
+    WorkspacePublicationUnavailable { workspace_index: usize },
+    /// A direct logical Surface slot differs from its shared physical plane.
+    #[error("direct CPU Surface has {actual} bytes; expected {expected}")]
+    DirectSurfaceLengthMismatch { expected: usize, actual: usize },
+    /// Stateful zone processing produced a zero effective dimension.
+    #[error("CPU publication fanout produced an invalid effective zone shape")]
+    InvalidEffectiveZoneShape,
     /// Prepared physical work and the unpublished candidate name different generations.
     #[error("CPU fanout batch generation {batch:?} does not match candidate {candidate:?}")]
     CandidatePlanGenerationMismatch {
@@ -448,9 +924,18 @@ pub enum CpuPublicationFanoutError {
     /// Publisher authority could not bind one committed branch.
     #[error(transparent)]
     Publisher(#[from] ScreenPublicationHubError),
+    /// CPU physical reduction failed.
+    #[error(transparent)]
+    Reduction(#[from] CpuReductionError),
+    /// Branch cadence could not advance or represent freshness.
+    #[error(transparent)]
+    Cadence(#[from] CaptureCadenceError),
     /// A Zones branch could not prepare its exact sampling kernel.
     #[error(transparent)]
     ZoneMaterializer(#[from] CpuZoneMaterializationError),
+    /// A Surface branch could not prepare its exact processor.
+    #[error(transparent)]
+    SurfaceMaterializer(#[from] CpuSurfaceMaterializationError),
     /// Plan-lifetime fanout metadata could not be reserved.
     #[error("failed to allocate CPU publication fanout metadata")]
     AllocationFailed,

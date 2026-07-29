@@ -47,8 +47,9 @@ pub use coordinator::{
 };
 pub use demand::{ScreenPublicationDemandError, ScreenPublicationDemandSnapshot};
 pub use fanout::{
-    CpuPublicationFanoutError, PreparedCpuLogicalFanout, PreparedCpuLogicalFanoutKind,
-    PreparedCpuPhysicalFanout, PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate,
+    CpuPublicationFanoutError, CpuPublicationFanoutReport, PreparedCpuLogicalFanout,
+    PreparedCpuLogicalFanoutKind, PreparedCpuPhysicalFanout, PreparedCpuPublicationFanout,
+    PreparedCpuPublicationFanoutCandidate,
 };
 pub use frame::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureCursor,
@@ -75,7 +76,8 @@ pub use ledger::{
     ScreenWorkerExactLedger, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError,
 };
 pub use materialize::{
-    CpuZoneMaterializationError, PreparedCpuZoneMaterializer, StagedCpuZonePublication,
+    CpuSurfaceMaterializationError, CpuZoneMaterializationError, PreparedCpuSurfaceMaterializer,
+    PreparedCpuZoneMaterializer, StagedCpuZonePublication,
 };
 pub use plan::{
     ArmedScreenPlan, AwaitingBackendScreenPlan, CommittedScreenPlan,

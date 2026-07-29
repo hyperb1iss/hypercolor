@@ -8,9 +8,9 @@ use thiserror::Error;
 use hypercolor_types::canvas::{SurfaceResourceError, linear_to_srgb_u8, srgb_u8_to_linear};
 
 use super::{
-    CapturePixelFormat, CaptureTransferFunction, PreparedScreenPublication,
-    ResolvedScreenPublicationDescriptor, ScreenContentBarsPolicy, ScreenGridPolicy,
-    ScreenLetterboxFill, ScreenPhysicalReductionDescriptor, ScreenPlanGeneration,
+    CapturePixelFormat, CaptureTransferFunction, PreparedScreenPublication, ResolvedScreenGeometry,
+    ResolvedScreenPublicationDescriptor, ScreenAspectPolicy, ScreenContentBarsPolicy,
+    ScreenGridPolicy, ScreenLetterboxFill, ScreenPhysicalReductionDescriptor, ScreenPlanGeneration,
     ScreenPublicationKind, ScreenSmoothingPolicy,
     sector::{LetterboxBars, LetterboxDetectionError, PreparedLetterboxDetector},
     smooth::{PreparedTemporalSmoother, PreparedTemporalSmoothingError},
@@ -19,6 +19,616 @@ use super::{
 
 const BYTES_PER_PIXEL: usize = 4;
 const BYTES_PER_PIXEL_U64: u64 = 4;
+
+/// Transactional logical Surface processor over one shared physical CPU plane.
+#[derive(Clone, Debug)]
+pub struct PreparedCpuSurfaceMaterializer {
+    descriptor: ResolvedScreenPublicationDescriptor,
+    physical_byte_len: usize,
+    output_byte_len: usize,
+    pixel_format: CapturePixelFormat,
+    transfer: CaptureTransferFunction,
+    tuning: PreparedLinearColorTuning,
+    plan_generation: ScreenPlanGeneration,
+    detection_pixels: Box<[[u8; 3]]>,
+    content_detector: Option<PreparedLetterboxDetector>,
+    smoothing_pixels: Box<[[u8; 3]]>,
+    smoother: Option<PreparedTemporalSmoother>,
+    committed_capture_at: Option<Instant>,
+    committed_bars: Option<LetterboxBars>,
+    staged_capture_at: Option<Instant>,
+    staged_bars: Option<LetterboxBars>,
+    precomputed_byte_len: u64,
+}
+
+fn checked_surface_byte_len(
+    extent: super::PixelExtent,
+) -> Result<usize, CpuSurfaceMaterializationError> {
+    checked_surface_pixel_count(extent)?
+        .checked_mul(BYTES_PER_PIXEL)
+        .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)
+}
+
+fn checked_surface_pixel_count(
+    extent: super::PixelExtent,
+) -> Result<usize, CpuSurfaceMaterializationError> {
+    usize::try_from(extent.width())
+        .ok()
+        .and_then(|width| {
+            usize::try_from(extent.height())
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)
+}
+
+fn checked_surface_allocation_byte_len<T>(
+    count: usize,
+) -> Result<u64, CpuSurfaceMaterializationError> {
+    u64::try_from(count)
+        .ok()
+        .and_then(|count| {
+            u64::try_from(size_of::<T>())
+                .ok()
+                .and_then(|item_size| count.checked_mul(item_size))
+        })
+        .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DynamicSurfaceLayout {
+    source_x: u32,
+    source_y: u32,
+    source_width: u32,
+    source_height: u32,
+    output_x: u32,
+    output_y: u32,
+    output_width: u32,
+    output_height: u32,
+}
+
+fn resolve_dynamic_surface_layout(
+    physical: super::PixelExtent,
+    bars: LetterboxBars,
+    geometry: ResolvedScreenGeometry,
+    aspect: ScreenAspectPolicy,
+    dynamic: bool,
+) -> Result<DynamicSurfaceLayout, CpuSurfaceMaterializationError> {
+    let source_width = physical
+        .width()
+        .checked_sub(bars.left.saturating_add(bars.right))
+        .ok_or(CpuSurfaceMaterializationError::InvalidDetectedContentRegion)?;
+    let source_height = physical
+        .height()
+        .checked_sub(bars.top.saturating_add(bars.bottom))
+        .ok_or(CpuSurfaceMaterializationError::InvalidDetectedContentRegion)?;
+    if source_width == 0 || source_height == 0 {
+        return Err(CpuSurfaceMaterializationError::InvalidDetectedContentRegion);
+    }
+    if !dynamic {
+        let content = geometry.content_extent();
+        return Ok(DynamicSurfaceLayout {
+            source_x: 0,
+            source_y: 0,
+            source_width,
+            source_height,
+            output_x: geometry.content_x(),
+            output_y: geometry.content_y(),
+            output_width: content.width(),
+            output_height: content.height(),
+        });
+    }
+    let output = geometry.output_extent();
+    if aspect == ScreenAspectPolicy::Contain {
+        let width_limited = u64::from(output.width()) * u64::from(source_height)
+            <= u64::from(output.height()) * u64::from(source_width);
+        let (output_width, output_height) = if width_limited {
+            (
+                output.width(),
+                u32::try_from(
+                    (u64::from(source_height) * u64::from(output.width())
+                        / u64::from(source_width))
+                    .max(1),
+                )
+                .map_err(|_| CpuSurfaceMaterializationError::GeometryOverflow)?,
+            )
+        } else {
+            (
+                u32::try_from(
+                    (u64::from(source_width) * u64::from(output.height())
+                        / u64::from(source_height))
+                    .max(1),
+                )
+                .map_err(|_| CpuSurfaceMaterializationError::GeometryOverflow)?,
+                output.height(),
+            )
+        };
+        return Ok(DynamicSurfaceLayout {
+            source_x: bars.left,
+            source_y: bars.top,
+            source_width,
+            source_height,
+            output_x: (output.width() - output_width) / 2,
+            output_y: (output.height() - output_height) / 2,
+            output_width,
+            output_height,
+        });
+    }
+    let source_is_wider = u64::from(source_width) * u64::from(output.height())
+        > u64::from(source_height) * u64::from(output.width());
+    let (source_x, source_y, source_width, source_height) = if source_is_wider {
+        let cropped_width = u32::try_from(
+            (u64::from(source_height) * u64::from(output.width()) / u64::from(output.height()))
+                .max(1),
+        )
+        .map_err(|_| CpuSurfaceMaterializationError::GeometryOverflow)?;
+        (
+            bars.left + (source_width - cropped_width) / 2,
+            bars.top,
+            cropped_width,
+            source_height,
+        )
+    } else {
+        let cropped_height = u32::try_from(
+            (u64::from(source_width) * u64::from(output.height()) / u64::from(output.width()))
+                .max(1),
+        )
+        .map_err(|_| CpuSurfaceMaterializationError::GeometryOverflow)?;
+        (
+            bars.left,
+            bars.top + (source_height - cropped_height) / 2,
+            source_width,
+            cropped_height,
+        )
+    };
+    Ok(DynamicSurfaceLayout {
+        source_x,
+        source_y,
+        source_width,
+        source_height,
+        output_x: 0,
+        output_y: 0,
+        output_width: output.width(),
+        output_height: output.height(),
+    })
+}
+
+fn materialize_surface_pixels(
+    physical_pixels: &[u8],
+    physical_extent: super::PixelExtent,
+    geometry: ResolvedScreenGeometry,
+    layout: DynamicSurfaceLayout,
+    fill: ScreenLetterboxFill,
+    pixel_format: CapturePixelFormat,
+    output: &mut [u8],
+) -> Result<(), CpuSurfaceMaterializationError> {
+    match fill {
+        ScreenLetterboxFill::Transparent => {
+            for pixel in output.chunks_exact_mut(BYTES_PER_PIXEL) {
+                pixel.copy_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+        ScreenLetterboxFill::Solid(color) => {
+            for pixel in output.chunks_exact_mut(BYTES_PER_PIXEL) {
+                pixel.copy_from_slice(&color);
+            }
+        }
+        ScreenLetterboxFill::EdgeExtend => {}
+    }
+    let output_extent = geometry.output_extent();
+    for output_y in 0..output_extent.height() {
+        for output_x in 0..output_extent.width() {
+            let in_content = output_x >= layout.output_x
+                && output_y >= layout.output_y
+                && output_x < layout.output_x + layout.output_width
+                && output_y < layout.output_y + layout.output_height;
+            if !in_content && fill != ScreenLetterboxFill::EdgeExtend {
+                continue;
+            }
+            let content_x = output_x
+                .saturating_sub(layout.output_x)
+                .min(layout.output_width - 1);
+            let content_y = output_y
+                .saturating_sub(layout.output_y)
+                .min(layout.output_height - 1);
+            let source_x = layout.source_x
+                + u32::try_from(
+                    (u64::from(content_x) * u64::from(layout.source_width))
+                        / u64::from(layout.output_width),
+                )
+                .expect("scaled source x remains within u32");
+            let source_y = layout.source_y
+                + u32::try_from(
+                    (u64::from(content_y) * u64::from(layout.source_height))
+                        / u64::from(layout.output_height),
+                )
+                .expect("scaled source y remains within u32");
+            let source_offset = pixel_offset(physical_extent.width(), source_x, source_y)?;
+            let output_offset = pixel_offset(output_extent.width(), output_x, output_y)?;
+            let source = &physical_pixels[source_offset..source_offset + BYTES_PER_PIXEL];
+            output[output_offset..output_offset + BYTES_PER_PIXEL].copy_from_slice(source);
+        }
+    }
+    if pixel_format == CapturePixelFormat::Bgra8
+        && let ScreenLetterboxFill::Solid([red, green, blue, alpha]) = fill
+    {
+        for output_y in 0..output_extent.height() {
+            for output_x in 0..output_extent.width() {
+                if output_x >= layout.output_x
+                    && output_y >= layout.output_y
+                    && output_x < layout.output_x + layout.output_width
+                    && output_y < layout.output_y + layout.output_height
+                {
+                    continue;
+                }
+                let offset = pixel_offset(output_extent.width(), output_x, output_y)?;
+                output[offset..offset + BYTES_PER_PIXEL]
+                    .copy_from_slice(&[blue, green, red, alpha]);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn pixel_offset(width: u32, x: u32, y: u32) -> Result<usize, CpuSurfaceMaterializationError> {
+    usize::try_from(u64::from(y) * u64::from(width) + u64::from(x))
+        .ok()
+        .and_then(|pixel| pixel.checked_mul(BYTES_PER_PIXEL))
+        .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)
+}
+
+fn apply_surface_tuning(
+    tuning: PreparedLinearColorTuning,
+    transfer: CaptureTransferFunction,
+    pixel_format: CapturePixelFormat,
+    pixels: &mut [u8],
+) {
+    if tuning.is_neutral() {
+        return;
+    }
+    for pixel in pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
+        let mut linear = read_surface_rgb(pixel, pixel_format).map(|channel| match transfer {
+            CaptureTransferFunction::Srgb => srgb_u8_to_linear(channel),
+            CaptureTransferFunction::Linear => f32::from(channel) / 255.0,
+            _ => unreachable!("unsupported transfer rejected during preparation"),
+        });
+        tuning.apply(&mut linear);
+        let encoded = linear.map(|channel| match transfer {
+            CaptureTransferFunction::Srgb => linear_to_srgb_u8(channel.clamp(0.0, 1.0)),
+            CaptureTransferFunction::Linear => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::as_conversions,
+                    reason = "rounded channel is clamped to u8"
+                )]
+                {
+                    (channel.clamp(0.0, 1.0) * 255.0).round() as u8
+                }
+            }
+            _ => unreachable!("unsupported transfer rejected during preparation"),
+        });
+        write_surface_rgb(pixel, pixel_format, encoded);
+    }
+}
+
+fn read_surface_rgb(pixel: &[u8], pixel_format: CapturePixelFormat) -> [u8; 3] {
+    match pixel_format {
+        CapturePixelFormat::Rgba8 => [pixel[0], pixel[1], pixel[2]],
+        CapturePixelFormat::Bgra8 => [pixel[2], pixel[1], pixel[0]],
+    }
+}
+
+fn write_surface_rgb(pixel: &mut [u8], pixel_format: CapturePixelFormat, color: [u8; 3]) {
+    match pixel_format {
+        CapturePixelFormat::Rgba8 => pixel[..3].copy_from_slice(&color),
+        CapturePixelFormat::Bgra8 => {
+            pixel[0] = color[2];
+            pixel[1] = color[1];
+            pixel[2] = color[0];
+        }
+    }
+}
+
+impl PreparedCpuSurfaceMaterializer {
+    /// Prepare exact Surface policy and all frame-time scratch.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-Surface descriptors, unsupported transfer functions,
+    /// unaddressable geometry, and failed plan-lifetime reservations.
+    pub fn prepare_stateful(
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<Self, CpuSurfaceMaterializationError> {
+        if descriptor.kind() != ScreenPublicationKind::Surface {
+            return Err(CpuSurfaceMaterializationError::BranchNotSurface);
+        }
+        let physical = descriptor.physical();
+        let physical_extent = physical.reduction_extent();
+        let output_extent = descriptor.geometry().output_extent();
+        let physical_byte_len = checked_surface_byte_len(physical_extent)?;
+        let output_byte_len = checked_surface_byte_len(output_extent)?;
+        let transfer = physical.color_pipeline().output().transfer_function();
+        if !matches!(
+            transfer,
+            CaptureTransferFunction::Srgb | CaptureTransferFunction::Linear
+        ) {
+            return Err(CpuSurfaceMaterializationError::UnsupportedTransferFunction(
+                transfer,
+            ));
+        }
+        let smoothing = descriptor.processing_profile().smoothing();
+        let (detection_pixels, content_detector) =
+            match descriptor.processing_profile().content_bars() {
+                ScreenContentBarsPolicy::Disabled => (Vec::new().into_boxed_slice(), None),
+                ScreenContentBarsPolicy::DetectAndCrop { .. } => {
+                    let pixel_count = checked_surface_pixel_count(physical_extent)?;
+                    let mut pixels = Vec::new();
+                    pixels.try_reserve_exact(pixel_count).map_err(|_| {
+                        CpuSurfaceMaterializationError::ScratchAllocationFailed { pixel_count }
+                    })?;
+                    pixels.resize(pixel_count, [0, 0, 0]);
+                    (
+                        pixels.into_boxed_slice(),
+                        Some(PreparedLetterboxDetector::try_new(
+                            physical_extent.width(),
+                            physical_extent.height(),
+                        )?),
+                    )
+                }
+            };
+        let (smoothing_pixels, smoother) = if smoothing == ScreenSmoothingPolicy::Disabled {
+            (Vec::new().into_boxed_slice(), None)
+        } else {
+            let pixel_count = checked_surface_pixel_count(output_extent)?;
+            let mut pixels = Vec::new();
+            pixels.try_reserve_exact(pixel_count).map_err(|_| {
+                CpuSurfaceMaterializationError::ScratchAllocationFailed { pixel_count }
+            })?;
+            pixels.resize(pixel_count, [0, 0, 0]);
+            (
+                pixels.into_boxed_slice(),
+                Some(PreparedTemporalSmoother::try_new(
+                    smoothing,
+                    output_extent.width(),
+                    output_extent.height(),
+                )?),
+            )
+        };
+        let precomputed_byte_len =
+            checked_surface_allocation_byte_len::<[u8; 3]>(smoothing_pixels.len())?
+                .checked_add(checked_surface_allocation_byte_len::<[u8; 3]>(
+                    detection_pixels.len(),
+                )?)
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        content_detector
+                            .as_ref()
+                            .map_or(0, PreparedLetterboxDetector::retained_byte_len),
+                    )
+                })
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        smoother
+                            .as_ref()
+                            .map_or(0, PreparedTemporalSmoother::retained_byte_len),
+                    )
+                })
+                .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)?;
+        let tuning = descriptor.processing_profile().tuning();
+        Ok(Self {
+            descriptor: descriptor.clone(),
+            physical_byte_len,
+            output_byte_len,
+            pixel_format: physical.target_pixel_format(),
+            transfer,
+            tuning: PreparedLinearColorTuning::new(
+                tuning.saturation(),
+                tuning.brightness(),
+                tuning.gamma(),
+            ),
+            plan_generation,
+            detection_pixels,
+            content_detector,
+            smoothing_pixels,
+            smoother,
+            committed_capture_at: None,
+            committed_bars: None,
+            staged_capture_at: None,
+            staged_bars: None,
+            precomputed_byte_len,
+        })
+    }
+
+    /// Exact logical descriptor produced by this processor.
+    #[must_use]
+    pub const fn descriptor(&self) -> &ResolvedScreenPublicationDescriptor {
+        &self.descriptor
+    }
+
+    /// Shared physical descriptor consumed by this processor.
+    #[must_use]
+    pub const fn physical_descriptor(&self) -> &ScreenPhysicalReductionDescriptor {
+        self.descriptor.physical()
+    }
+
+    /// Plan-lifetime scratch and temporal-history bytes.
+    #[must_use]
+    pub const fn precomputed_byte_len(&self) -> u64 {
+        self.precomputed_byte_len
+    }
+
+    /// Stage one logical Surface without committing temporal history.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale generations, pending stages, substituted descriptors,
+    /// malformed storage, regressed timestamps, and processing failures.
+    pub fn stage(
+        &mut self,
+        plan_generation: ScreenPlanGeneration,
+        physical_descriptor: &ScreenPhysicalReductionDescriptor,
+        physical_pixels: &[u8],
+        captured_at: Instant,
+        publication: &mut PreparedScreenPublication,
+    ) -> Result<(), CpuSurfaceMaterializationError> {
+        self.validate_generation(plan_generation)?;
+        if publication.worker_plan_generation() != plan_generation {
+            return Err(CpuSurfaceMaterializationError::PublicationPlanGenerationMismatch);
+        }
+        if self.staged_capture_at.is_some() {
+            return Err(CpuSurfaceMaterializationError::PublicationStagePending);
+        }
+        if self
+            .committed_capture_at
+            .is_some_and(|committed| captured_at < committed)
+        {
+            return Err(CpuSurfaceMaterializationError::CaptureTimestampRegressed);
+        }
+        if physical_descriptor != self.physical_descriptor() {
+            return Err(CpuSurfaceMaterializationError::PhysicalDescriptorMismatch);
+        }
+        if physical_pixels.len() != self.physical_byte_len {
+            return Err(CpuSurfaceMaterializationError::PhysicalByteLengthMismatch {
+                expected: self.physical_byte_len,
+                actual: physical_pixels.len(),
+            });
+        }
+        if publication.descriptor() != &self.descriptor {
+            return Err(CpuSurfaceMaterializationError::PublicationDescriptorMismatch);
+        }
+        let output = publication
+            .surface_pixels_mut()
+            .map_err(|_| CpuSurfaceMaterializationError::PublicationReservationUnavailable)?;
+        if output.len() != self.output_byte_len {
+            return Err(CpuSurfaceMaterializationError::OutputByteLengthMismatch {
+                expected: self.output_byte_len,
+                actual: output.len(),
+            });
+        }
+        let geometry = self.descriptor.geometry();
+        let physical_extent = self.physical_descriptor().reduction_extent();
+        let bars = match self.descriptor.processing_profile().content_bars() {
+            ScreenContentBarsPolicy::Disabled => LetterboxBars::default(),
+            ScreenContentBarsPolicy::DetectAndCrop {
+                luminance_threshold,
+            } => {
+                for (pixel, color) in physical_pixels
+                    .chunks_exact(BYTES_PER_PIXEL)
+                    .zip(self.detection_pixels.iter_mut())
+                {
+                    *color = read_surface_rgb(pixel, self.pixel_format);
+                }
+                self.content_detector
+                    .as_mut()
+                    .expect("content-bar policy prepares a detector")
+                    .detect(
+                        &self.detection_pixels,
+                        self.transfer,
+                        luminance_threshold.value(),
+                    )?
+            }
+        };
+        let dynamic_layout = resolve_dynamic_surface_layout(
+            physical_extent,
+            bars,
+            geometry,
+            self.descriptor.aspect(),
+            self.content_detector.is_some(),
+        )?;
+        materialize_surface_pixels(
+            physical_pixels,
+            physical_extent,
+            geometry,
+            dynamic_layout,
+            self.descriptor.processing_profile().letterbox_fill(),
+            self.pixel_format,
+            output,
+        )?;
+        apply_surface_tuning(self.tuning, self.transfer, self.pixel_format, output);
+        if let Some(smoother) = &mut self.smoother {
+            for (pixel, color) in output
+                .chunks_exact(BYTES_PER_PIXEL)
+                .zip(self.smoothing_pixels.iter_mut())
+            {
+                *color = read_surface_rgb(pixel, self.pixel_format);
+            }
+            let elapsed = self
+                .committed_capture_at
+                .and_then(|committed| captured_at.checked_duration_since(committed))
+                .unwrap_or(Duration::ZERO);
+            smoother.stage(
+                &mut self.smoothing_pixels,
+                geometry.output_extent().width(),
+                geometry.output_extent().height(),
+                self.transfer,
+                elapsed,
+                self.committed_bars
+                    .is_some_and(|committed| committed != bars),
+            )?;
+            for (pixel, color) in output
+                .chunks_exact_mut(BYTES_PER_PIXEL)
+                .zip(self.smoothing_pixels.iter().copied())
+            {
+                write_surface_rgb(pixel, self.pixel_format, color);
+            }
+        }
+        self.staged_capture_at = Some(captured_at);
+        self.staged_bars = Some(bars);
+        Ok(())
+    }
+
+    /// Commit staged temporal state after hub acceptance.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale generation or a call without a staged Surface.
+    pub fn commit_staged(
+        &mut self,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<(), CpuSurfaceMaterializationError> {
+        self.validate_generation(plan_generation)?;
+        let captured_at = self
+            .staged_capture_at
+            .take()
+            .ok_or(CpuSurfaceMaterializationError::NoStagedPublication)?;
+        if let Some(smoother) = &mut self.smoother {
+            smoother.commit_staged();
+        }
+        self.committed_capture_at = Some(captured_at);
+        self.committed_bars = self.staged_bars.take();
+        Ok(())
+    }
+
+    /// Discard staged state after hub rejection.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another plan generation.
+    pub fn discard_staged(
+        &mut self,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<(), CpuSurfaceMaterializationError> {
+        self.validate_generation(plan_generation)?;
+        self.staged_capture_at = None;
+        self.staged_bars = None;
+        if let Some(smoother) = &mut self.smoother {
+            smoother.discard_staged();
+        }
+        Ok(())
+    }
+
+    fn validate_generation(
+        &self,
+        actual: ScreenPlanGeneration,
+    ) -> Result<(), CpuSurfaceMaterializationError> {
+        if actual == self.plan_generation {
+            Ok(())
+        } else {
+            Err(CpuSurfaceMaterializationError::PlanGenerationMismatch)
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum PreparedCpuZoneGrid {
@@ -912,6 +1522,65 @@ fn compact_zone_grid(
         output.copy_within(source_start..source_end, destination_start);
     }
     Ok(color_count)
+}
+
+/// Preparation or execution failure for exact CPU Surface materialization.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum CpuSurfaceMaterializationError {
+    /// Only logical Surface branches use this materializer.
+    #[error("CPU surface materialization requires a Surface descriptor")]
+    BranchNotSurface,
+    /// The prepared and attempted plan generations differ.
+    #[error("CPU surface materializer plan generation mismatch")]
+    PlanGenerationMismatch,
+    /// The writable reservation belongs to another worker generation.
+    #[error("CPU surface publication belongs to another plan generation")]
+    PublicationPlanGenerationMismatch,
+    /// A caller tried to stage another frame before resolving the first.
+    #[error("CPU surface materializer already has a staged publication")]
+    PublicationStagePending,
+    /// A commit was requested without a successfully staged Surface.
+    #[error("CPU surface materializer has no staged publication")]
+    NoStagedPublication,
+    /// Capture timestamps must not regress within one branch history.
+    #[error("CPU surface capture timestamp regressed")]
+    CaptureTimestampRegressed,
+    /// The caller substituted another physical key.
+    #[error("CPU surface physical descriptor mismatch")]
+    PhysicalDescriptorMismatch,
+    /// The physical plane length differs from the exact prepared layout.
+    #[error("CPU surface physical bytes have length {actual}; expected {expected}")]
+    PhysicalByteLengthMismatch { expected: usize, actual: usize },
+    /// The caller substituted another logical descriptor.
+    #[error("CPU surface publication descriptor mismatch")]
+    PublicationDescriptorMismatch,
+    /// The writable Surface reservation could not expose unique storage.
+    #[error("CPU surface publication reservation is unavailable")]
+    PublicationReservationUnavailable,
+    /// The destination slot length differs from exact output geometry.
+    #[error("CPU surface output bytes have length {actual}; expected {expected}")]
+    OutputByteLengthMismatch { expected: usize, actual: usize },
+    /// Dynamic bars produced an empty or invalid content region.
+    #[error("CPU surface detected an invalid content region")]
+    InvalidDetectedContentRegion,
+    /// Current prepared processing supports only sRGB and linear bytes.
+    #[error("unsupported CPU surface transfer function: {0:?}")]
+    UnsupportedTransferFunction(CaptureTransferFunction),
+    /// Exact geometry or allocation accounting overflowed.
+    #[error("CPU surface geometry overflowed")]
+    GeometryOverflow,
+    /// Stateful smoothing scratch could not be reserved.
+    #[error("failed to allocate CPU surface scratch for {pixel_count} pixels")]
+    ScratchAllocationFailed { pixel_count: usize },
+    /// Prepared content-bar detection rejected the frame or allocation.
+    #[error(transparent)]
+    ContentDetection(#[from] LetterboxDetectionError),
+    /// Prepared temporal smoothing rejected the frame.
+    #[error(transparent)]
+    TemporalSmoothing(#[from] PreparedTemporalSmoothingError),
+    /// Prepared temporal history could not be allocated.
+    #[error(transparent)]
+    TemporalStatePreparation(#[from] SurfaceResourceError),
 }
 
 /// Preparation or execution failure for exact CPU zone materialization.

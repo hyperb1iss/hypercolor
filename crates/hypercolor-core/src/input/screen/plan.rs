@@ -681,6 +681,14 @@ impl ScreenResourceLifetime {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    pub(crate) fn belongs_to_same_worker(&self, other: &Self) -> bool {
+        self.inner.source_id == other.inner.source_id
+            && self.inner.plan_generation == other.inner.plan_generation
+            && self.inner.demand_revision == other.inner.demand_revision
+            && self.inner.transaction_id == other.inner.transaction_id
+            && self.inner.worker_nonce == other.inner.worker_nonce
+    }
+
     pub(crate) fn is_final_owner(&self) -> bool {
         Arc::strong_count(&self.inner) == 1
     }
@@ -3200,12 +3208,14 @@ fn reduction_cpu_plane_count(
     ) {
         return 0;
     }
-    let materialized = reduction.branch_indices().iter().any(|branch_index| {
-        plan.branches()
-            .get(*branch_index)
-            .is_some_and(|branch| branch_requires_materialization(branch.descriptor()))
-    });
-    if materialized { 2 } else { 0 }
+    let branch_indices = reduction.branch_indices();
+    let retains_shared_plane = branch_indices.len() > 1
+        || branch_indices.iter().any(|branch_index| {
+            plan.branches()
+                .get(*branch_index)
+                .is_some_and(|branch| branch_requires_materialization(branch.descriptor()))
+        });
+    if retains_shared_plane { 2 } else { 0 }
 }
 
 fn physical_reduction<'a>(

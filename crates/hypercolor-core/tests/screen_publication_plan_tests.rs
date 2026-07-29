@@ -627,7 +627,7 @@ fn native_and_bounded_resolution_handle_each_axis_and_explicit_upscale() {
                 ScreenUpscalePolicy::Never,
             ),
             ScreenAspectPolicy::Contain,
-            pixel_extent(1000, 562),
+            pixel_extent(1000, 1000),
         ),
         (
             ScreenExtentRequest::bounded(
@@ -1276,7 +1276,8 @@ fn complete_source_and_output_fields_prevent_false_sharing() {
     }));
     assert!(plan.branches().iter().any(|branch| {
         branch.descriptor().aspect() == ScreenAspectPolicy::Contain
-            && output_extent(branch.descriptor()) == pixel_extent(640, 360)
+            && output_extent(branch.descriptor()) == pixel_extent(640, 480)
+            && branch.descriptor().geometry().content_extent() == pixel_extent(640, 360)
     }));
 }
 

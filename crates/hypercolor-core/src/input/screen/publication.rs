@@ -1812,13 +1812,14 @@ impl ScreenPublicationRequest {
                 source: source.config.clone(),
                 executor: execution.executor,
                 source_region: geometry.source_region,
-                reduction_extent: geometry.output_extent,
+                reduction_extent: geometry.content_extent,
                 cursor: self.processing_profile.cursor,
                 reduction_filter: self.processing_profile.reduction_filter,
                 algorithm_revision: self.processing_profile.algorithm_revision,
                 target_pixel_format: self.processing_profile.target_pixel_format,
                 color_pipeline,
             },
+            geometry,
             residency: execution.residency,
             requested_executor: self.executor.clone(),
             executor_fallback: execution.fallback,
@@ -2004,6 +2005,9 @@ impl ScreenSubpixelRect {
 pub struct ResolvedScreenGeometry {
     source_region: ScreenSubpixelRect,
     output_extent: PixelExtent,
+    content_x: u32,
+    content_y: u32,
+    content_extent: PixelExtent,
 }
 
 impl ResolvedScreenGeometry {
@@ -2020,6 +2024,33 @@ impl ResolvedScreenGeometry {
     #[must_use]
     pub const fn output_extent(self) -> PixelExtent {
         self.output_extent
+    }
+
+    /// Horizontal output-space origin of the fitted source content.
+    #[must_use]
+    pub const fn content_x(self) -> u32 {
+        self.content_x
+    }
+
+    /// Vertical output-space origin of the fitted source content.
+    #[must_use]
+    pub const fn content_y(self) -> u32 {
+        self.content_y
+    }
+
+    /// Exact output-space extent occupied by fitted source content.
+    #[must_use]
+    pub const fn content_extent(self) -> PixelExtent {
+        self.content_extent
+    }
+
+    /// Whether source content occupies the complete logical output raster.
+    #[must_use]
+    pub const fn content_fills_output(self) -> bool {
+        self.content_x == 0
+            && self.content_y == 0
+            && self.content_extent.width() == self.output_extent.width()
+            && self.content_extent.height() == self.output_extent.height()
     }
 }
 
@@ -2133,6 +2164,7 @@ impl PartialOrd for ScreenPhysicalReductionDescriptor {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedScreenPublicationDescriptor {
     physical: ScreenPhysicalReductionDescriptor,
+    geometry: ResolvedScreenGeometry,
     residency: ScreenPublicationResidency,
     requested_executor: ScreenPublicationExecutorRequest,
     executor_fallback: Option<ScreenPublicationExecutorFallbackReason>,
@@ -2175,10 +2207,7 @@ impl ResolvedScreenPublicationDescriptor {
     /// Independently resolved crop and output raster.
     #[must_use]
     pub const fn geometry(&self) -> ResolvedScreenGeometry {
-        ResolvedScreenGeometry {
-            source_region: self.physical.source_region,
-            output_extent: self.physical.reduction_extent,
-        }
+        self.geometry
     }
 
     /// Complete physical-reduction sharing descriptor.
@@ -2234,6 +2263,7 @@ impl Ord for ResolvedScreenPublicationDescriptor {
     fn cmp(&self, other: &Self) -> Ordering {
         self.physical
             .cmp(&other.physical)
+            .then_with(|| geometry_key(self.geometry).cmp(&geometry_key(other.geometry)))
             .then_with(|| self.residency.cmp(&other.residency))
             .then_with(|| self.requested_executor.cmp(&other.requested_executor))
             .then_with(|| self.executor_fallback.cmp(&other.executor_fallback))
@@ -2673,6 +2703,7 @@ fn byte_preserving_surface_processing(
         && source.reflection() == ScreenSourceReflection::None
         && geometry.source_region == full_source_region(source_extent)
         && geometry.output_extent == source_extent
+        && geometry.content_fills_output()
         && profile.content_bars == ScreenContentBarsPolicy::Disabled
         && profile.smoothing == ScreenSmoothingPolicy::Disabled
         && profile.tuning == ScreenColorTuning::default()
@@ -2691,6 +2722,9 @@ fn resolve_geometry(
         return Ok(ResolvedScreenGeometry {
             source_region: full_source,
             output_extent: source,
+            content_x: 0,
+            content_y: 0,
+            content_extent: source,
         });
     };
     let max_width = bounds.max_width;
@@ -2702,18 +2736,28 @@ fn resolve_geometry(
         return Ok(ResolvedScreenGeometry {
             source_region: full_source,
             output_extent,
+            content_x: 0,
+            content_y: 0,
+            content_extent: output_extent,
         });
     };
 
     if aspect == ScreenAspectPolicy::Contain {
+        let content_extent =
+            contain_source_aspect(source, Some(max_width), Some(max_height), upscale)?;
+        let output_extent = match upscale {
+            ScreenUpscalePolicy::Allow => extent(max_width.get(), max_height.get())?,
+            ScreenUpscalePolicy::Never => extent(
+                max_width.get().min(source.width()),
+                max_height.get().min(source.height()),
+            )?,
+        };
         return Ok(ResolvedScreenGeometry {
             source_region: full_source,
-            output_extent: contain_source_aspect(
-                source,
-                Some(max_width),
-                Some(max_height),
-                upscale,
-            )?,
+            output_extent,
+            content_x: (output_extent.width() - content_extent.width()) / 2,
+            content_y: (output_extent.height() - content_extent.height()) / 2,
+            content_extent,
         });
     }
 
@@ -2725,6 +2769,9 @@ fn resolve_geometry(
     Ok(ResolvedScreenGeometry {
         source_region: centered_cover_region(source, output_extent)?,
         output_extent,
+        content_x: 0,
+        content_y: 0,
+        content_extent: output_extent,
     })
 }
 
@@ -2844,6 +2891,17 @@ const fn full_source_region(source: PixelExtent) -> ScreenSubpixelRect {
 
 const fn extent_key(extent: PixelExtent) -> (u32, u32) {
     (extent.width(), extent.height())
+}
+
+const fn geometry_key(geometry: ResolvedScreenGeometry) -> (u32, u32, u32, u32, u32, u32) {
+    (
+        geometry.output_extent.width(),
+        geometry.output_extent.height(),
+        geometry.content_x,
+        geometry.content_y,
+        geometry.content_extent.width(),
+        geometry.content_extent.height(),
+    )
 }
 
 const fn greatest_common_divisor(mut left: u64, mut right: u64) -> u64 {
