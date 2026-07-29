@@ -219,11 +219,13 @@ impl ScreenPublicationAwaitGuard {
     fn into_prepared(
         mut self,
         demand: ScreenPublicationDemandSnapshot,
+        source_resolution_revision: u64,
     ) -> PreparedScreenPublicationPlan {
         debug_assert!(self.completions.is_empty());
         PreparedScreenPublicationPlan {
             preparing: self.preparing.take(),
             demand,
+            source_resolution_revision,
             worker_aborts: std::mem::take(&mut self.worker_aborts),
         }
     }
@@ -243,6 +245,7 @@ pub struct ScreenPublicationPreparation {
     preparing: Option<PreparingScreenPlan>,
     workers: Vec<PendingScreenWorkerPreparation>,
     demand: ScreenPublicationDemandSnapshot,
+    source_resolution_revision: u64,
 }
 
 impl ScreenPublicationPreparation {
@@ -250,11 +253,13 @@ impl ScreenPublicationPreparation {
         preparing: PreparingScreenPlan,
         workers: Vec<PendingScreenWorkerPreparation>,
         demand: ScreenPublicationDemandSnapshot,
+        source_resolution_revision: u64,
     ) -> Self {
         Self {
             preparing: Some(preparing),
             workers,
             demand,
+            source_resolution_revision,
         }
     }
 
@@ -298,7 +303,7 @@ impl ScreenPublicationPreparation {
                 ));
             }
         }
-        Ok(awaiting.into_prepared(self.demand.clone()))
+        Ok(awaiting.into_prepared(self.demand.clone(), self.source_resolution_revision))
     }
 
     /// Explicitly abandon all started worker preparations.
@@ -334,6 +339,7 @@ impl std::fmt::Debug for ScreenPublicationPreparation {
 pub struct PreparedScreenPublicationPlan {
     preparing: Option<PreparingScreenPlan>,
     demand: ScreenPublicationDemandSnapshot,
+    source_resolution_revision: u64,
     worker_aborts: Vec<ScreenWorkerAbort>,
 }
 
@@ -346,6 +352,10 @@ impl PreparedScreenPublicationPlan {
 
     pub(crate) fn demand(&self) -> &ScreenPublicationDemandSnapshot {
         &self.demand
+    }
+
+    pub(crate) const fn source_resolution_revision(&self) -> u64 {
+        self.source_resolution_revision
     }
 
     pub(crate) fn disarm_worker_aborts(&mut self) {
@@ -454,6 +464,14 @@ pub enum ScreenPublicationTransitionError {
         branch_index: usize,
         /// Source-owned diagnostic.
         message: Arc<str>,
+    },
+    /// Source metadata changed while native resources were prepared out of lock.
+    #[error("screen source resolution revision changed: expected {expected}, observed {observed}")]
+    SourceResolutionRevisionConflict {
+        /// Aggregate source revision captured before branch resolution.
+        expected: u64,
+        /// Aggregate source revision observed immediately before commit.
+        observed: u64,
     },
     /// No live source owns a ticket that introduces candidate resources.
     #[error("no live screen source owns preparation ticket for {source_id:?}")]

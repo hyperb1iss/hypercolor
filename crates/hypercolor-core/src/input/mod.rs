@@ -246,6 +246,9 @@ pub struct InputManager {
     audio_capture_active: Option<bool>,
     screen_capture_demand: Option<ScreenCaptureDemand>,
     screen_publication_demand: Option<ScreenPublicationDemandSnapshot>,
+    screen_publication_source_snapshot: Vec<(u64, u64)>,
+    screen_publication_resolution_revision: u64,
+    committed_screen_publication_resolution_revision: Option<u64>,
     screen_plan_builder: screen::ScreenPlanBuilder,
     screen_publication_capacity: screen::ScreenAdmissionCapacity,
     interaction_capture_active: Option<bool>,
@@ -466,6 +469,9 @@ impl InputManager {
             audio_capture_active: None,
             screen_capture_demand: None,
             screen_publication_demand: None,
+            screen_publication_source_snapshot: Vec::new(),
+            screen_publication_resolution_revision: 0,
+            committed_screen_publication_resolution_revision: None,
             screen_plan_builder: screen::ScreenPlanBuilder::new(),
             screen_publication_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
             interaction_capture_active: None,
@@ -967,6 +973,55 @@ impl InputManager {
         self.screen_publication_capacity = capacity;
     }
 
+    /// Refresh the process-wide revision of exact screen source metadata.
+    ///
+    /// The returned revision changes only when a screen source is replaced or
+    /// advances its own publication-resolution revision. Comparing the full
+    /// ordered source snapshot avoids lossy hashing while structural graph
+    /// generation fences make source order and slot identity stable.
+    #[must_use]
+    pub fn screen_publication_resolution_revision(&mut self) -> u64 {
+        let source_count = self
+            .sources
+            .iter()
+            .filter(|source| source.is_screen_source())
+            .count();
+        let changed = source_count != self.screen_publication_source_snapshot.len()
+            || self
+                .sources
+                .iter()
+                .filter(|source| source.is_screen_source())
+                .zip(&self.screen_publication_source_snapshot)
+                .any(|(source, observed)| {
+                    *observed
+                        != (
+                            source.slot.id(),
+                            source.screen_publication_resolution_revision(),
+                        )
+                });
+        if changed {
+            self.screen_publication_source_snapshot.clear();
+            self.screen_publication_source_snapshot
+                .reserve(source_count);
+            self.screen_publication_source_snapshot.extend(
+                self.sources
+                    .iter()
+                    .filter(|source| source.is_screen_source())
+                    .map(|source| {
+                        (
+                            source.slot.id(),
+                            source.screen_publication_resolution_revision(),
+                        )
+                    }),
+            );
+            self.screen_publication_resolution_revision = self
+                .screen_publication_resolution_revision
+                .checked_add(1)
+                .expect("screen publication resolution revision exhausted");
+        }
+        self.screen_publication_resolution_revision
+    }
+
     /// Resolve and start one exact screen-plan preparation transaction.
     ///
     /// Source methods may only enqueue worker-owned work here. Awaiting real
@@ -993,7 +1048,11 @@ impl InputManager {
                 },
             );
         }
-        if self.screen_publication_demand.as_ref() == Some(&demand) {
+        let source_resolution_revision = self.screen_publication_resolution_revision();
+        if self.screen_publication_demand.as_ref() == Some(&demand)
+            && self.committed_screen_publication_resolution_revision
+                == Some(source_resolution_revision)
+        {
             return Ok(None);
         }
 
@@ -1136,7 +1195,10 @@ impl InputManager {
         }
 
         Ok(Some(screen::ScreenPublicationPreparation::new(
-            preparing, workers, demand,
+            preparing,
+            workers,
+            demand,
+            source_resolution_revision,
         )))
     }
 
@@ -1158,6 +1220,18 @@ impl InputManager {
         screen::ScreenPublicationTransitionFailure,
     > {
         let demand = prepared.demand().clone();
+        let expected_source_resolution_revision = prepared.source_resolution_revision();
+        let observed_source_resolution_revision = self.screen_publication_resolution_revision();
+        if expected_source_resolution_revision != observed_source_resolution_revision {
+            let abort = prepared.take_preparing().abort();
+            return Err(screen::ScreenPublicationTransitionFailure::new(
+                screen::ScreenPublicationTransitionError::SourceResolutionRevisionConflict {
+                    expected: expected_source_resolution_revision,
+                    observed: observed_source_resolution_revision,
+                },
+                abort,
+            ));
+        }
         let preparing = prepared.take_preparing();
         let graph_generation =
             screen::ScreenInputGraphGeneration::new(self.source_graph_generation);
@@ -1186,6 +1260,8 @@ impl InputManager {
             })?;
         prepared.disarm_worker_aborts();
         self.screen_publication_demand = Some(demand);
+        self.committed_screen_publication_resolution_revision =
+            Some(observed_source_resolution_revision);
         let worker_retirements = self
             .sources
             .iter_mut()
@@ -1650,6 +1726,7 @@ impl InputManager {
         if domains.1 {
             self.screen_capture_demand = None;
             self.screen_publication_demand = None;
+            self.committed_screen_publication_resolution_revision = None;
         }
         if domains.2 {
             self.interaction_capture_active = None;

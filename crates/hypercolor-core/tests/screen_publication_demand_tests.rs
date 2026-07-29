@@ -1,5 +1,5 @@
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hypercolor_core::input::screen::{
@@ -119,6 +119,8 @@ struct RuntimeAllocation {
 
 #[derive(Default)]
 struct ExactWorkerState {
+    resolution_revision: AtomicU64,
+    resolutions: AtomicUsize,
     preparations: AtomicUsize,
     aborts: AtomicUsize,
     retirements: AtomicUsize,
@@ -243,10 +245,15 @@ impl InputSource for ExactDemandProbe {
         *self.hub.lock().expect("probe hub mutex is healthy") = Some(hub);
     }
 
+    fn screen_publication_resolution_revision(&self) -> u64 {
+        self.worker.resolution_revision.load(Ordering::Acquire)
+    }
+
     fn resolve_screen_publication_branch(
         &self,
         demand: &RegisteredScreenBranchDemand,
     ) -> anyhow::Result<Option<hypercolor_core::input::screen::ResolvedScreenBranchDemand>> {
+        self.worker.resolutions.fetch_add(1, Ordering::AcqRel);
         if demand.request().selector() != self.source.selector() {
             return Ok(None);
         }
@@ -441,6 +448,58 @@ async fn manager_commits_exact_plan_once_through_detached_worker_preparation() {
 }
 
 #[tokio::test]
+async fn unchanged_demand_replans_once_after_source_revision_advances() {
+    let (mut manager, _, worker) = manager_fixture();
+    let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
+    let prepared = manager
+        .begin_screen_publication_transition(demand.clone())
+        .expect("exact plan resolves")
+        .expect("new exact plan prepares")
+        .await_workers()
+        .await
+        .expect("worker acknowledges exact resources");
+    let committed = manager
+        .commit_screen_publication_transition(prepared, demand.revision())
+        .expect("initial exact plan commits");
+    let committed = finish_retirements(committed).await;
+    let (_, retirement) = committed.into_parts();
+    retirement
+        .try_reclaim()
+        .expect("initial plan has no retained readers");
+    assert!(
+        manager
+            .begin_screen_publication_transition(demand.clone())
+            .expect("equal demand remains valid")
+            .is_none()
+    );
+
+    worker.resolution_revision.fetch_add(1, Ordering::AcqRel);
+    let prepared = manager
+        .begin_screen_publication_transition(demand.clone())
+        .expect("advanced source revision resolves")
+        .expect("advanced source revision forces one replan")
+        .await_workers()
+        .await
+        .expect("replacement exact resources prepare");
+    let committed = manager
+        .commit_screen_publication_transition(prepared, demand.revision())
+        .expect("replacement exact plan commits");
+    let committed = finish_retirements(committed).await;
+    let (_, retirement) = committed.into_parts();
+    retirement
+        .try_reclaim()
+        .expect("replacement plan has no retained readers");
+    assert!(
+        manager
+            .begin_screen_publication_transition(demand)
+            .expect("unchanged replacement remains valid")
+            .is_none()
+    );
+    assert_eq!(worker.resolutions.load(Ordering::Acquire), 2);
+    assert_eq!(worker.preparations.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
 async fn independent_source_workers_prepare_concurrently() {
     let first_id = CaptureSourceId::new("synthetic:first").expect("test source id is non-empty");
     let second_id = CaptureSourceId::new("synthetic:second").expect("test source id is non-empty");
@@ -554,6 +613,56 @@ async fn graph_race_aborts_candidate_and_preserves_committed_authority() {
         ScreenPublicationTransitionError::Plan(
             hypercolor_core::input::screen::ScreenPlanError::BaseGraphGenerationConflict { .. }
         )
+    ));
+    assert!(Arc::ptr_eq(&before, &hub.committed_state()));
+    drop(failure);
+    assert_eq!(worker.aborts.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn source_revision_race_aborts_detached_preparation() {
+    let attached_hub = Arc::new(Mutex::new(None));
+    let worker = Arc::new(ExactWorkerState::default());
+    let pause = WorkerPreparationPause {
+        reached: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+    let mut manager = InputManager::new();
+    let hub = manager.screen_publication_hub();
+    manager.add_source(Box::new(
+        ExactDemandProbe::new(Arc::clone(&attached_hub), Arc::clone(&worker))
+            .with_completion_pause(pause.clone()),
+    ));
+    let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
+    let before = hub.committed_state();
+    let preparation = manager
+        .begin_screen_publication_transition(demand.clone())
+        .expect("exact plan resolves")
+        .expect("new exact plan prepares");
+    let awaiting = tokio::spawn(preparation.await_workers());
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        pause.reached.notified(),
+    )
+    .await
+    .expect("worker should reach detached preparation gate");
+    worker.resolution_revision.fetch_add(1, Ordering::AcqRel);
+    pause.release.notify_one();
+    let prepared = awaiting
+        .await
+        .expect("worker preparation task remains live")
+        .expect("worker acknowledges its superseded resources");
+    let failure = manager
+        .commit_screen_publication_transition(prepared, demand.revision())
+        .expect_err("new source revision rejects stale preparation");
+
+    assert!(matches!(
+        failure.error(),
+        ScreenPublicationTransitionError::SourceResolutionRevisionConflict {
+            expected: 1,
+            observed: 2,
+        }
     ));
     assert!(Arc::ptr_eq(&before, &hub.committed_state()));
     drop(failure);

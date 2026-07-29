@@ -652,6 +652,17 @@ pub trait InputSource: Send {
     ) {
     }
 
+    /// Monotonic revision of metadata used to resolve exact screen branches.
+    ///
+    /// Sources advance this whenever an unchanged logical demand could resolve
+    /// to a different source epoch, geometry, format, color contract, or native
+    /// resource identity. The input manager fences detached preparation against
+    /// this value so a superseded capture incarnation can never commit.
+    #[must_use]
+    fn screen_publication_resolution_revision(&self) -> u64 {
+        0
+    }
+
     /// Resolve one exact logical branch against this source's current epoch.
     ///
     /// # Errors
