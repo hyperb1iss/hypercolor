@@ -694,7 +694,7 @@ fn writable_zone_slots_publish_only_the_effective_compacted_prefix() {
 }
 
 #[test]
-fn writable_finalize_rejects_stale_worker_and_returns_slot() {
+fn writable_finalize_preserves_retained_worker_across_cadence_update() {
     let policy = ScreenPublicationSlotPolicy::default();
     let mut fixture = Fixture::new(2, 2, ScreenPublicationKind::Surface, policy, 30);
     let old_binding = binding(&fixture.builder);
@@ -719,41 +719,49 @@ fn writable_finalize_rejects_stale_worker_and_returns_slot() {
         &mut fixture.builder,
         [demand(&fixture.source, ScreenPublicationKind::Surface, 60)],
     );
-    assert!(matches!(
-        finalize(&fixture.hub, prepared),
-        Err(ScreenPublicationHubError::PublisherStale { .. })
-    ));
+    finalize(&fixture.hub, prepared).expect("retained worker finalizes its reserved slot");
     let lease = fixture
         .hub
         .lease(&fixture.descriptor)
-        .expect("rebound branch remains active");
-    assert!(lease.read().is_none());
+        .expect("retained branch remains active");
+    assert_eq!(
+        lease
+            .read()
+            .expect("pre-commit reservation becomes last-good")
+            .native_sequence()
+            .get(),
+        1
+    );
 
-    let new_binding = binding(&fixture.builder);
-    let new_publisher = fixture
+    let retained_binding = binding(&fixture.builder);
+    assert_eq!(
+        retained_binding.transaction_id(),
+        old_binding.transaction_id()
+    );
+    let retained_publisher = fixture
         .hub
-        .publisher(&fixture.descriptor, &new_binding)
-        .expect("replacement worker owns the branch");
+        .publisher(&fixture.descriptor, &retained_binding)
+        .expect("retained worker still owns the branch");
     let mut replacement = fixture
         .hub
         .prepare_writable_publication(
-            &new_publisher,
+            &retained_publisher,
             ScreenPayloadKind::Surface,
-            &intent(&fixture.descriptor, &new_binding, 1),
+            &intent(&fixture.descriptor, &retained_binding, 2),
         )
-        .expect("stale finalize returned its slot");
+        .expect("retained worker reserves the next slot");
     replacement
         .surface_pixels_mut()
         .expect("replacement surface is writable")
         .fill(0x66);
-    finalize(&fixture.hub, replacement).expect("replacement worker publishes");
+    finalize(&fixture.hub, replacement).expect("retained worker publishes again");
     assert_eq!(
         lease
             .read()
             .expect("replacement becomes last-good")
             .native_sequence()
             .get(),
-        1
+        2
     );
 }
 

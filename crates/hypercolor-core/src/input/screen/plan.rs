@@ -149,6 +149,67 @@ impl ScreenPhysicalReductionDemand {
     }
 }
 
+/// Exact per-source work required to transition between two screen plans.
+///
+/// Retained demands carry their candidate cadence so workers can rebuild
+/// scheduling metadata without reconstructing or replacing unchanged runtime
+/// resources. Removed demands retain their last active cadence for retirement
+/// diagnostics only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenSourcePlanDelta {
+    source_id: CaptureSourceId,
+    added_physical_reductions: Arc<Vec<ScreenPhysicalReductionDemand>>,
+    retained_physical_reductions: Arc<Vec<ScreenPhysicalReductionDemand>>,
+    removed_physical_reductions: Arc<Vec<ScreenPhysicalReductionDemand>>,
+    added_branches: Arc<Vec<ScreenBranchDemand>>,
+    retained_branches: Arc<Vec<ScreenBranchDemand>>,
+    removed_branches: Arc<Vec<ScreenBranchDemand>>,
+}
+
+impl ScreenSourcePlanDelta {
+    /// Stable source whose runtime owns this transition.
+    #[must_use]
+    pub const fn source_id(&self) -> &CaptureSourceId {
+        &self.source_id
+    }
+
+    /// Physical reductions absent from the active plan.
+    #[must_use]
+    pub fn added_physical_reductions(&self) -> &[ScreenPhysicalReductionDemand] {
+        self.added_physical_reductions.as_slice()
+    }
+
+    /// Physical reductions retained by identity, at candidate cadence.
+    #[must_use]
+    pub fn retained_physical_reductions(&self) -> &[ScreenPhysicalReductionDemand] {
+        self.retained_physical_reductions.as_slice()
+    }
+
+    /// Physical reductions absent from the candidate plan.
+    #[must_use]
+    pub fn removed_physical_reductions(&self) -> &[ScreenPhysicalReductionDemand] {
+        self.removed_physical_reductions.as_slice()
+    }
+
+    /// Logical branches absent from the active plan.
+    #[must_use]
+    pub fn added_branches(&self) -> &[ScreenBranchDemand] {
+        self.added_branches.as_slice()
+    }
+
+    /// Logical branches retained by identity, at candidate cadence.
+    #[must_use]
+    pub fn retained_branches(&self) -> &[ScreenBranchDemand] {
+        self.retained_branches.as_slice()
+    }
+
+    /// Logical branches absent from the candidate plan.
+    #[must_use]
+    pub fn removed_branches(&self) -> &[ScreenBranchDemand] {
+        self.removed_branches.as_slice()
+    }
+}
+
 /// Ordinary compatibility outputs selected from the canonical branch plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenCompatibilitySelection {
@@ -653,11 +714,41 @@ pub struct ScreenRequiredResourceMinimum {
     retention: ScreenResourceRetentionKey,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ScreenResourceRetentionKey {
+    Source(CaptureSourceId),
     Physical(ScreenPhysicalReductionDescriptor),
     PhysicalPlane(ScreenPhysicalReductionDescriptor),
     Branch(ResolvedScreenPublicationDescriptor),
+}
+
+impl Ord for ScreenResourceRetentionKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        retention_key_rank(self)
+            .cmp(&retention_key_rank(other))
+            .then_with(|| match (self, other) {
+                (Self::Source(left), Self::Source(right)) => left.as_str().cmp(right.as_str()),
+                (Self::Physical(left), Self::Physical(right))
+                | (Self::PhysicalPlane(left), Self::PhysicalPlane(right)) => left.cmp(right),
+                (Self::Branch(left), Self::Branch(right)) => left.cmp(right),
+                _ => std::cmp::Ordering::Equal,
+            })
+    }
+}
+
+impl PartialOrd for ScreenResourceRetentionKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+const fn retention_key_rank(key: &ScreenResourceRetentionKey) -> u8 {
+    match key {
+        ScreenResourceRetentionKey::Source(_) => 0,
+        ScreenResourceRetentionKey::Physical(_) => 1,
+        ScreenResourceRetentionKey::PhysicalPlane(_) => 2,
+        ScreenResourceRetentionKey::Branch(_) => 3,
+    }
 }
 
 impl ScreenRequiredResourceMinimum {
@@ -841,6 +932,7 @@ pub struct ScreenWorkerPreparationTicket {
     worker_nonce: NonZeroU64,
     activation: Arc<ScreenWorkerActivationLatch>,
     candidate: Arc<ScreenCapturePlan>,
+    source_delta: Arc<ScreenSourcePlanDelta>,
     required_minimums: Arc<Vec<ScreenRequiredResourceMinimum>>,
     pending_retired_bytes: Arc<AtomicU64>,
     next_allocation_nonce: AtomicU64,
@@ -875,6 +967,12 @@ impl ScreenWorkerPreparationTicket {
     #[must_use]
     pub const fn worker_nonce(&self) -> NonZeroU64 {
         self.worker_nonce
+    }
+
+    /// Exact added, retained, and removed work for this source.
+    #[must_use]
+    pub fn source_delta(&self) -> &ScreenSourcePlanDelta {
+        self.source_delta.as_ref()
     }
 
     /// Complete deterministic resource contract for this source delta.
@@ -1041,6 +1139,7 @@ pub struct PreparingScreenPlan {
 #[derive(Debug)]
 struct ScreenSourceResourceContract {
     source_id: CaptureSourceId,
+    source_delta: Arc<ScreenSourcePlanDelta>,
     required_minimums: Arc<Vec<ScreenRequiredResourceMinimum>>,
 }
 
@@ -1166,6 +1265,7 @@ impl PreparingScreenPlan {
                 source_id: source_id.clone(),
             })?;
         let required_minimums = Arc::clone(&contract.required_minimums);
+        let source_delta = Arc::clone(&contract.source_delta);
         if self.issued_tickets.contains_key(source_id) {
             return Err(ScreenPlanError::WorkerTicketAlreadyIssued {
                 source_id: source_id.clone(),
@@ -1186,6 +1286,7 @@ impl PreparingScreenPlan {
             worker_nonce,
             activation: Arc::clone(&self.activation),
             candidate: Arc::clone(&self.candidate),
+            source_delta,
             required_minimums,
             pending_retired_bytes: self.base_state.pending_retirement_counter(),
             next_allocation_nonce: AtomicU64::new(0),
@@ -1644,8 +1745,8 @@ impl ScreenPlanBuilder {
         capacity: ScreenAdmissionCapacity,
     ) -> Result<PreparingScreenPlan, ScreenPlanError> {
         let base_state = self.publication_hub.committed_state();
-        if demand_revision <= base_state.plan().demand_revision {
-            return Err(ScreenPlanError::DemandRevisionNotMonotonic {
+        if demand_revision < base_state.plan().demand_revision {
+            return Err(ScreenPlanError::DemandRevisionRegressed {
                 committed: base_state.plan().demand_revision,
                 candidate: demand_revision,
             });
@@ -1758,10 +1859,13 @@ impl ScreenPlanBuilder {
             .publication_hub
             .commit(Arc::clone(&candidate_state), commit_activation)
         {
-            Ok(retirement) => Ok(CommittedScreenPlan {
-                plan: candidate_plan,
-                retirement,
-            }),
+            Ok(retirement) => {
+                drop((base_state, prepared_tokens));
+                Ok(CommittedScreenPlan {
+                    plan: candidate_plan,
+                    retirement,
+                })
+            }
             Err((error, commit_activation)) => Err(ScreenPlanCommitFailure {
                 error,
                 armed: Box::new(ArmedScreenPlan {
@@ -1830,11 +1934,11 @@ pub enum ScreenPlanError {
     /// Compatibility zones selection named a non-zones branch.
     #[error("compatibility zones selection must name an ordinary Zones branch")]
     CompatibilityZonesKindMismatch,
-    /// A candidate did not advance beyond the committed demand revision.
+    /// A candidate predates the committed demand revision.
     #[error(
-        "input publication demand revision must advance: committed {committed:?}, candidate {candidate:?}"
+        "input publication demand revision regressed: committed {committed:?}, candidate {candidate:?}"
     )]
-    DemandRevisionNotMonotonic {
+    DemandRevisionRegressed {
         /// Current committed revision.
         committed: InputPublicationDemandRevision,
         /// Rejected candidate revision.
@@ -2302,6 +2406,11 @@ fn bind_retained_resources(
                 name: Arc::clone(&resource.name),
                 scope: Arc::clone(&resource.accounting_scope),
             })?;
+        if resource.bytes == 0
+            && matches!(requirement.retention, ScreenResourceRetentionKey::Source(_))
+        {
+            continue;
+        }
         entries.push(ScreenRetainedResourceEntry {
             name: Arc::clone(&resource.name),
             retention: requirement.retention.clone(),
@@ -2336,6 +2445,15 @@ fn candidate_retained_resources(
         .try_reserve_exact(maximum_count)
         .map_err(|_| ScreenPlanError::AllocationFailed)?;
     for entry in base.entries.iter().filter(|entry| match &entry.retention {
+        ScreenResourceRetentionKey::Source(source_id) => {
+            candidate
+                .branches()
+                .iter()
+                .any(|branch| branch.descriptor().source_epoch().source_id == *source_id)
+                && !prepared_tokens
+                    .iter()
+                    .any(|token| token.source_id == *source_id)
+        }
         ScreenResourceRetentionKey::Physical(descriptor) => candidate.contains_physical(descriptor),
         ScreenResourceRetentionKey::PhysicalPlane(descriptor) => {
             plan_retains_physical_plane(candidate, descriptor)
@@ -2404,10 +2522,26 @@ fn required_source_minimums(
     let source_ids = required_source_ids(active, candidate)?;
     let mut contracts = Vec::new();
     for source_id in source_ids {
+        let source_delta = Arc::new(source_plan_delta(active, candidate, &source_id)?);
+        let mut required_minimums = Vec::new();
+        if let Some(owner) = candidate
+            .branches()
+            .iter()
+            .find(|branch| branch.descriptor().source_epoch().source_id == source_id)
+        {
+            required_minimums.push(ScreenRequiredResourceMinimum {
+                name: Arc::from("worker-runtime-total"),
+                resource: ScreenResourceKind::WorkerAdditional,
+                descriptor: Arc::new(owner.descriptor().clone()),
+                minimum_bytes: 0,
+                retention: ScreenResourceRetentionKey::Source(source_id.clone()),
+            });
+        }
         reserve_one(&mut contracts)?;
         contracts.push(ScreenSourceResourceContract {
             source_id,
-            required_minimums: Arc::new(Vec::new()),
+            source_delta,
+            required_minimums: Arc::new(required_minimums),
         });
     }
 
@@ -2498,6 +2632,122 @@ fn required_source_minimums(
             .sort_unstable_by(|left, right| left.name.cmp(&right.name));
     }
     Ok(contracts)
+}
+
+fn source_plan_delta(
+    active: &ScreenCapturePlan,
+    candidate: &ScreenCapturePlan,
+    source_id: &CaptureSourceId,
+) -> Result<ScreenSourcePlanDelta, ScreenPlanError> {
+    let mut active_physical = Vec::new();
+    for demand in active
+        .physical_reductions()
+        .iter()
+        .filter(|demand| demand.descriptor().source_epoch().source_id == *source_id)
+    {
+        reserve_one(&mut active_physical)?;
+        active_physical.push(demand);
+    }
+    let mut candidate_physical = Vec::new();
+    for demand in candidate
+        .physical_reductions()
+        .iter()
+        .filter(|demand| demand.descriptor().source_epoch().source_id == *source_id)
+    {
+        reserve_one(&mut candidate_physical)?;
+        candidate_physical.push(demand);
+    }
+    let physical = partition_plan_demands(&active_physical, &candidate_physical, |left, right| {
+        left.descriptor().cmp(right.descriptor())
+    })?;
+
+    let mut active_branches = Vec::new();
+    for demand in active
+        .branches()
+        .iter()
+        .filter(|demand| demand.descriptor().source_epoch().source_id == *source_id)
+    {
+        reserve_one(&mut active_branches)?;
+        active_branches.push(demand);
+    }
+    let mut candidate_branches = Vec::new();
+    for demand in candidate
+        .branches()
+        .iter()
+        .filter(|demand| demand.descriptor().source_epoch().source_id == *source_id)
+    {
+        reserve_one(&mut candidate_branches)?;
+        candidate_branches.push(demand);
+    }
+    let branches = partition_plan_demands(&active_branches, &candidate_branches, |left, right| {
+        left.descriptor().cmp(right.descriptor())
+    })?;
+
+    Ok(ScreenSourcePlanDelta {
+        source_id: source_id.clone(),
+        added_physical_reductions: Arc::new(physical.added),
+        retained_physical_reductions: Arc::new(physical.retained),
+        removed_physical_reductions: Arc::new(physical.removed),
+        added_branches: Arc::new(branches.added),
+        retained_branches: Arc::new(branches.retained),
+        removed_branches: Arc::new(branches.removed),
+    })
+}
+
+struct PlanDeltaBuckets<T> {
+    added: Vec<T>,
+    retained: Vec<T>,
+    removed: Vec<T>,
+}
+
+fn partition_plan_demands<T: Clone>(
+    active: &[&T],
+    candidate: &[&T],
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
+) -> Result<PlanDeltaBuckets<T>, ScreenPlanError> {
+    let mut added = Vec::new();
+    let mut retained = Vec::new();
+    let mut removed = Vec::new();
+    let mut active_index = 0;
+    let mut candidate_index = 0;
+    while active_index < active.len() || candidate_index < candidate.len() {
+        match (active.get(active_index), candidate.get(candidate_index)) {
+            (Some(active), Some(candidate)) => match compare(active, candidate) {
+                std::cmp::Ordering::Less => {
+                    reserve_one(&mut removed)?;
+                    removed.push((*active).clone());
+                    active_index += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    reserve_one(&mut added)?;
+                    added.push((*candidate).clone());
+                    candidate_index += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    reserve_one(&mut retained)?;
+                    retained.push((*candidate).clone());
+                    active_index += 1;
+                    candidate_index += 1;
+                }
+            },
+            (Some(active), None) => {
+                reserve_one(&mut removed)?;
+                removed.push((*active).clone());
+                active_index += 1;
+            }
+            (None, Some(candidate)) => {
+                reserve_one(&mut added)?;
+                added.push((*candidate).clone());
+                candidate_index += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(PlanDeltaBuckets {
+        added,
+        retained,
+        removed,
+    })
 }
 
 fn push_required_minimum(

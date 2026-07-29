@@ -288,6 +288,19 @@ fn binding_for(builder: &ScreenPlanBuilder, source: &CaptureSourceId) -> ScreenW
         .expect("committed source has a worker binding")
 }
 
+fn binding_for_descriptor(
+    builder: &ScreenPlanBuilder,
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> ScreenWorkerBinding {
+    let state = builder.committed_state();
+    state
+        .worker_bindings()
+        .iter()
+        .find(|binding| state.publisher(descriptor, binding).is_ok())
+        .cloned()
+        .expect("committed branch has exact worker authority")
+}
+
 fn descriptor_colorimetry(
     descriptor: &ResolvedScreenPublicationDescriptor,
 ) -> ScreenPublicationColorimetry {
@@ -1585,6 +1598,116 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
 }
 
 #[test]
+fn equal_demand_revision_allows_source_epoch_reconciliation() {
+    let source_v1 = resolved_source_with_config(
+        ScreenSourceSelector::Configured,
+        "display-a",
+        1,
+        1,
+        source_config_parts(4, 3),
+    );
+    let request = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        60,
+    );
+    let surface_v1 = resolve(&request, &source_v1);
+    let mut builder = ScreenPlanBuilder::new();
+    commit_demands(&mut builder, [surface_v1], None).expect("initial source epoch commits");
+    let revision = builder.current().demand_revision();
+    let generation = builder.current().generation();
+
+    let source_v2 = resolved_source_with_config(
+        ScreenSourceSelector::Configured,
+        "display-a",
+        1,
+        2,
+        source_config_parts(4, 3),
+    );
+    let surface_v2 = resolve(&request, &source_v2);
+    let graph = ScreenInputGraphGeneration::new(2);
+    let mut preparing = builder
+        .prepare(
+            [surface_v2.clone()],
+            None,
+            revision,
+            graph,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("equal registry revision accepts a newer resolved source epoch");
+    let ticket = preparing
+        .worker_ticket(&source_id("display-a"))
+        .expect("source epoch replacement requires worker preparation");
+    assert_eq!(ticket.source_delta().added_branches().len(), 1);
+    assert_eq!(ticket.source_delta().removed_branches().len(), 1);
+    assert!(ticket.source_delta().retained_branches().is_empty());
+    let token = exact_resources(&ticket)
+        .expect("epoch replacement resources bind")
+        .acknowledge(&ticket)
+        .expect("epoch replacement resources are exact");
+    preparing
+        .acknowledge(token)
+        .expect("epoch replacement token is accepted");
+    let armed = preparing
+        .arm(generation, revision, graph)
+        .expect("equal-revision epoch replacement arms");
+    builder
+        .commit(armed, revision, graph)
+        .expect("equal-revision epoch replacement commits")
+        .into_parts()
+        .1
+        .try_reclaim()
+        .expect("unobserved old epoch resources reclaim");
+    assert_eq!(builder.current().generation().get(), generation.get() + 1);
+    assert_eq!(
+        builder.current().branches()[0]
+            .descriptor()
+            .source_epoch()
+            .session_generation,
+        2
+    );
+
+    let generation = builder.current().generation();
+    let preparing = builder
+        .prepare(
+            [surface_v2.clone()],
+            None,
+            revision,
+            graph,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("an exact equal-revision candidate is a valid coordinator no-op");
+    assert!(preparing.required_sources().is_empty());
+    assert_eq!(preparing.candidate_plan().generation(), generation);
+    let armed = preparing
+        .arm(generation, revision, graph)
+        .expect("equal-revision no-op arms without worker tickets");
+    let committed = builder
+        .commit(armed, revision, graph)
+        .expect("equal-revision no-op commits");
+    assert_eq!(committed.plan().generation(), generation);
+    committed
+        .into_parts()
+        .1
+        .try_reclaim()
+        .expect("equal-revision no-op retires nothing");
+
+    assert!(matches!(
+        builder.prepare(
+            [surface_v2],
+            None,
+            InputPublicationDemandRevision::default(),
+            graph,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        ),
+        Err(ScreenPlanError::DemandRevisionRegressed { .. })
+    ));
+}
+
+#[test]
 fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
     let surface = resolve(
@@ -1931,11 +2054,14 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
         .expect("worker ticket is issued");
     let backend_scope = required_scope(&ticket, ScreenResourceKind::BackendAllocation);
     let profile_scope = required_scope(&ticket, ScreenResourceKind::ProcessingProfileState);
-    assert_eq!(ticket.required_minimums().len(), 4);
+    let runtime_scope = required_scope(&ticket, ScreenResourceKind::WorkerAdditional);
+    assert_eq!(runtime_scope.as_ref(), "worker-runtime-total");
+    assert_eq!(ticket.required_minimums().len(), 5);
     for required_kind in [
         ScreenResourceKind::BackendAllocation,
         ScreenResourceKind::ApiAllocation,
         ScreenResourceKind::ProcessingProfileState,
+        ScreenResourceKind::WorkerAdditional,
     ] {
         assert!(
             ticket
@@ -1972,6 +2098,7 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
         ScreenResourceKind::BackendAllocation,
         ScreenResourceKind::ApiAllocation,
         ScreenResourceKind::ProcessingProfileState,
+        ScreenResourceKind::WorkerAdditional,
     ] {
         let omitted_domain = ScreenExactResourceLedger::try_new(
             ticket
@@ -2086,6 +2213,13 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
                     5,
                 )
                 .expect("profile extra name is valid"),
+                ScreenExactResource::try_new_scoped(
+                    "source-runtime-routing",
+                    Arc::clone(&runtime_scope),
+                    ScreenResourceKind::WorkerAdditional,
+                    11,
+                )
+                .expect("source runtime extra name is valid"),
             ]),
     )
     .expect("complete ledger with disjoint extras is representable");
@@ -2105,7 +2239,7 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
     );
     assert_eq!(
         with_extras.exact_ledger().total_bytes(),
-        staged_worker_bytes + 12
+        staged_worker_bytes + 23
     );
 
     let wrong_kind =
@@ -2507,7 +2641,11 @@ fn same_scope_worker_allocations_retire_independently_by_identity() {
             ]),
     )
     .expect("same-scope worker allocations bind");
-    let allocation_count = bound.lifetimes.len();
+    let allocation_count = bound
+        .lifetimes
+        .iter()
+        .filter(|lifetime| lifetime.resource().name().as_ref() != "worker-runtime-total")
+        .count();
     let stale_lifetime = bound
         .lifetimes
         .iter()
@@ -2863,24 +3001,20 @@ fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
     let overlap = commit_demands(&mut builder, [old_demand, new_demand.clone()], None)
         .expect("overlap plan contains old and new");
     assert_eq!(hub.generation(), overlap.generation());
-    let stale_pixels = [5_u8; 48];
-    assert!(matches!(
-        hub.publish(
-            &old_publisher,
-            surface_payload(&old, &stale_pixels),
-            &old_metadata,
-        ),
-        Err(ScreenPublicationHubError::PublisherStale { .. })
-    ));
+    assert_eq!(old_binding.state(), ScreenWorkerBindingState::Active);
     assert!(matches!(
         hub.continuity_lease(&new),
         Err(ScreenPublicationHubError::BranchPending { .. })
     ));
 
-    let overlap_binding = binding_for(&builder, &source_id("display-a"));
+    let overlap_binding = binding_for_descriptor(&builder, &old);
+    assert_eq!(
+        overlap_binding.transaction_id(),
+        old_binding.transaction_id()
+    );
     let old_overlap_publisher = hub
         .publisher(&old, &overlap_binding)
-        .expect("overlap generation issues an old publisher");
+        .expect("overlap plan retains the old publisher");
     let overlap_pixels = [9_u8; 48];
     let overlap_metadata = publication_metadata(
         &old,
@@ -2930,13 +3064,15 @@ fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
     let retirement_lease = hub
         .continuity_lease(&old)
         .expect("second old lease retains real storage through retirement");
+    let new_binding = binding_for_descriptor(&builder, &new);
+    assert_ne!(new_binding.transaction_id(), old_binding.transaction_id());
     let new_publisher = hub
-        .publisher(&new, &overlap_binding)
+        .publisher(&new, &new_binding)
         .expect("new publisher is issued");
     let first_zone_colors = [[13_u8, 14, 15]; 4];
     let first_zone_metadata = publication_metadata(
         &new,
-        &overlap_binding,
+        &new_binding,
         1,
         now,
         now,
@@ -2953,7 +3089,7 @@ fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
     let second_zone_colors = [[16_u8, 17, 18]; 4];
     let second_zone_metadata = publication_metadata(
         &new,
-        &overlap_binding,
+        &new_binding,
         2,
         now,
         now,
@@ -3085,7 +3221,7 @@ fn continuity_rejects_a_staged_branch_committed_away_before_activation() {
 
     commit_demands(&mut builder, [active_demand.clone(), staged_demand], None)
         .expect("overlap snapshot commits");
-    let overlap_binding = binding_for(&builder, &source_id("display-a"));
+    let overlap_binding = binding_for_descriptor(&builder, &staged_descriptor);
     let staged_publisher = hub
         .publisher(&staged_descriptor, &overlap_binding)
         .expect("staged publisher is issued");
@@ -3146,7 +3282,186 @@ fn continuity_rejects_a_staged_branch_committed_away_before_activation() {
 }
 
 #[test]
-fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
+fn sibling_delta_preserves_unchanged_entry_and_binding_identity() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
+    let surface = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            30,
+        ),
+        &source,
+    );
+    let zones = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Zones {
+                columns: non_zero(2),
+                rows: non_zero(2),
+            },
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            20,
+        ),
+        &source,
+    );
+    let surface_descriptor = surface.descriptor().clone();
+    let zones_descriptor = zones.descriptor().clone();
+    let source_id = source_id("display-a");
+    let graph = ScreenInputGraphGeneration::new(29);
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    commit_demands(&mut builder, [surface.clone()], None).expect("surface commits");
+    let surface_binding = binding_for_descriptor(&builder, &surface_descriptor);
+    let surface_publisher = hub
+        .publisher(&surface_descriptor, &surface_binding)
+        .expect("surface publisher is issued");
+    let surface_lease = hub
+        .lease(&surface_descriptor)
+        .expect("surface lease is issued");
+    let now = Instant::now();
+    let pixels = [19_u8; 48];
+    let surface_receipt = hub
+        .publish(
+            &surface_publisher,
+            surface_payload(&surface_descriptor, &pixels),
+            &publication_metadata(
+                &surface_descriptor,
+                &surface_binding,
+                1,
+                now,
+                now,
+                now + Duration::from_secs(1),
+                ScreenPublicationHealth::Healthy,
+            ),
+        )
+        .expect("surface becomes live");
+
+    let revision = next_demand_revision(&builder);
+    let mut preparing = builder
+        .prepare(
+            [surface.clone(), zones],
+            None,
+            revision,
+            graph,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("sibling addition prepares");
+    let ticket = preparing
+        .worker_ticket(&source_id)
+        .expect("changed source receives one delta ticket");
+    let delta = ticket.source_delta();
+    assert_eq!(delta.added_branches().len(), 1);
+    assert_eq!(delta.added_branches()[0].descriptor(), &zones_descriptor);
+    assert_eq!(delta.retained_branches().len(), 1);
+    assert_eq!(
+        delta.retained_branches()[0].descriptor(),
+        &surface_descriptor
+    );
+    assert!(delta.removed_branches().is_empty());
+    assert!(delta.added_physical_reductions().is_empty());
+    assert_eq!(delta.retained_physical_reductions().len(), 1);
+    assert_eq!(
+        delta.retained_physical_reductions()[0].requested_hz(),
+        non_zero(30)
+    );
+    assert!(delta.removed_physical_reductions().is_empty());
+    let token = exact_resources(&ticket)
+        .expect("sibling resources bind")
+        .acknowledge(&ticket)
+        .expect("sibling resources are exact");
+    let sibling_binding = token.binding().clone();
+    preparing
+        .acknowledge(token)
+        .expect("sibling token is accepted");
+    let armed = preparing
+        .arm(builder.current().generation(), revision, graph)
+        .expect("sibling addition arms");
+    assert!(
+        armed
+            .candidate_state()
+            .publisher(&surface_descriptor, &surface_binding)
+            .is_ok()
+    );
+    assert!(
+        armed
+            .candidate_state()
+            .publisher(&zones_descriptor, &sibling_binding)
+            .is_ok()
+    );
+    builder
+        .commit(armed, revision, graph)
+        .expect("sibling addition commits")
+        .into_parts()
+        .1
+        .try_reclaim()
+        .expect("addition retires no externally owned storage");
+    assert_eq!(surface_binding.state(), ScreenWorkerBindingState::Active);
+    assert_eq!(sibling_binding.state(), ScreenWorkerBindingState::Active);
+    assert!(Arc::ptr_eq(
+        &surface_lease
+            .read()
+            .expect("surface publication survives add"),
+        surface_receipt.publication()
+    ));
+
+    let revision = next_demand_revision(&builder);
+    let mut preparing = builder
+        .prepare(
+            [surface],
+            None,
+            revision,
+            graph,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("sibling removal prepares");
+    let ticket = preparing
+        .worker_ticket(&source_id)
+        .expect("sibling removal receives one delta ticket");
+    let delta = ticket.source_delta();
+    assert!(delta.added_branches().is_empty());
+    assert_eq!(delta.retained_branches().len(), 1);
+    assert_eq!(delta.removed_branches().len(), 1);
+    assert_eq!(delta.removed_branches()[0].descriptor(), &zones_descriptor);
+    assert!(delta.added_physical_reductions().is_empty());
+    assert_eq!(delta.retained_physical_reductions().len(), 1);
+    assert!(delta.removed_physical_reductions().is_empty());
+    let token = exact_resources(&ticket)
+        .expect("removal resources bind")
+        .acknowledge(&ticket)
+        .expect("removal resources are exact");
+    let removal_binding = token.binding().clone();
+    preparing
+        .acknowledge(token)
+        .expect("removal token is accepted");
+    let armed = preparing
+        .arm(builder.current().generation(), revision, graph)
+        .expect("sibling removal arms");
+    let committed = builder
+        .commit(armed, revision, graph)
+        .expect("sibling removal commits");
+    let (_, retirement) = committed.into_parts();
+    assert_eq!(surface_binding.state(), ScreenWorkerBindingState::Active);
+    assert_eq!(sibling_binding.state(), ScreenWorkerBindingState::Retired);
+    assert_eq!(removal_binding.state(), ScreenWorkerBindingState::Retired);
+    assert!(Arc::ptr_eq(
+        &surface_lease
+            .read()
+            .expect("surface publication survives removal"),
+        surface_receipt.publication()
+    ));
+    drop((surface_publisher, surface_receipt, surface_lease));
+    retirement
+        .try_reclaim()
+        .expect("removed sibling storage reclaims after observers release");
+}
+
+#[test]
+fn cadence_update_retains_exact_authority_and_source_removal_retires_it() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
     let surface_30 = resolve(
         &registered(
@@ -3192,6 +3507,25 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
         lease.delivery_state(Instant::now()).lifecycle(),
         ScreenBranchDeliveryLifecycle::Pending
     );
+    let now = Instant::now();
+    let pixels = [7_u8; 48];
+    let initial_metadata = publication_metadata(
+        &descriptor,
+        &old_binding,
+        1,
+        now,
+        now,
+        now + Duration::from_secs(1),
+        ScreenPublicationHealth::Healthy,
+    );
+    let initial_receipt = hub
+        .publish(
+            &old_publisher,
+            surface_payload(&descriptor, &pixels),
+            &initial_metadata,
+        )
+        .expect("initial worker publishes before the cadence transition");
+    let initial_publication = Arc::clone(initial_receipt.publication());
 
     let revision = next_demand_revision(&builder);
     let mut preparing = builder
@@ -3207,11 +3541,44 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
     let ticket = preparing
         .worker_ticket(&source)
         .expect("cadence-only change requires fresh worker authority");
-    assert!(ticket.required_minimums().is_empty());
-    let token = exact_resources(&ticket)
-        .expect("empty delta ledger is exact")
-        .acknowledge(&ticket)
-        .expect("cadence worker attests its empty allocation delta");
+    let delta = ticket.source_delta();
+    assert_eq!(delta.source_id(), &source);
+    assert!(delta.added_branches().is_empty());
+    assert_eq!(delta.retained_branches().len(), 1);
+    assert_eq!(delta.retained_branches()[0].requested_hz(), non_zero(60));
+    assert!(delta.removed_branches().is_empty());
+    assert!(delta.added_physical_reductions().is_empty());
+    assert_eq!(delta.retained_physical_reductions().len(), 1);
+    assert_eq!(
+        delta.retained_physical_reductions()[0].requested_hz(),
+        non_zero(60)
+    );
+    assert!(delta.removed_physical_reductions().is_empty());
+    let runtime_scope = required_scope(&ticket, ScreenResourceKind::WorkerAdditional);
+    let token = bind_resources(
+        &ticket,
+        ticket
+            .required_minimums()
+            .iter()
+            .map(|minimum| {
+                ScreenExactResource::try_new(
+                    Arc::clone(minimum.name()),
+                    minimum.resource(),
+                    minimum.minimum_bytes(),
+                )
+                .expect("ticket resource is valid")
+            })
+            .chain([ScreenExactResource::try_new_scoped(
+                "cadence-runtime-routing",
+                runtime_scope,
+                ScreenResourceKind::WorkerAdditional,
+                7,
+            )
+            .expect("runtime resource is valid")]),
+    )
+    .expect("cadence resources bind")
+    .acknowledge(&ticket)
+    .expect("cadence worker attests its exact allocation delta");
     let candidate_binding = token.binding().clone();
     assert_eq!(
         candidate_binding.state(),
@@ -3233,75 +3600,62 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
         candidate_state.plan().demand_revision(),
         candidate_binding.demand_revision()
     );
+    assert_eq!(candidate_state.worker_bindings().len(), 1);
     assert_eq!(
         candidate_state.worker_bindings()[0].transaction_id(),
-        candidate_binding.transaction_id()
+        old_binding.transaction_id()
     );
     assert_eq!(
         candidate_state.worker_bindings()[0].state(),
-        ScreenWorkerBindingState::Armed,
-        "an unreachable candidate is ready but has not received commit notification"
+        ScreenWorkerBindingState::Active,
+        "unchanged branches retain their already-active worker authority"
     );
     assert!(Arc::ptr_eq(&builder.committed_state(), &old_state));
     assert_eq!(hub.generation(), old_state.plan().generation());
     let committed = builder
         .commit(armed, revision, graph)
         .expect("cadence candidate commits atomically");
-    let (_, retirement) = committed.into_parts();
-    assert_eq!(retirement.branch_count(), 0);
-    assert_eq!(retirement.resource_count(), 0);
-    retirement
+    let (_, cadence_retirement) = committed.into_parts();
+    assert_eq!(cadence_retirement.branch_count(), 0);
+    assert_eq!(cadence_retirement.resource_count(), 0);
+    cadence_retirement
         .try_reclaim()
-        .expect("cadence rebind preserves every allocation identity");
+        .expect("zero-byte runtime scope creates no retired allocation");
     let committed_state = builder.committed_state();
     assert!(Arc::ptr_eq(&committed_state, &candidate_state));
     assert_eq!(hub.generation(), candidate_state.plan().generation());
     assert_eq!(
         committed_state.worker_bindings()[0].transaction_id(),
-        candidate_binding.transaction_id()
+        old_binding.transaction_id()
     );
-    assert_eq!(candidate_binding.state(), ScreenWorkerBindingState::Active);
+    assert_eq!(candidate_binding.state(), ScreenWorkerBindingState::Retired);
     assert_eq!(
         committed_state.worker_bindings()[0].state(),
         ScreenWorkerBindingState::Active,
-        "the committed snapshot is visible before worker activation is reported"
+        "the retained worker remains authoritative after the atomic swap"
     );
-    assert_eq!(old_binding.state(), ScreenWorkerBindingState::Retired);
+    assert_eq!(old_binding.state(), ScreenWorkerBindingState::Active);
+    assert!(Arc::ptr_eq(
+        &lease.read().expect("retained branch remains live"),
+        &initial_publication
+    ));
 
-    let now = Instant::now();
-    let pixels = [7_u8; 48];
-    let old_metadata = publication_metadata(
+    let retained_metadata = publication_metadata(
         &descriptor,
         &old_binding,
-        1,
-        now,
-        now,
-        now + Duration::from_secs(1),
-        ScreenPublicationHealth::Healthy,
-    );
-    assert!(matches!(
-        hub.publish(
-            &old_publisher,
-            surface_payload(&descriptor, &pixels),
-            &old_metadata,
-        ),
-        Err(ScreenPublicationHubError::PublisherStale { .. })
-    ));
-    let publisher = hub
-        .publisher(&descriptor, &candidate_binding)
-        .expect("new cadence worker owns the same durable branch");
-    let metadata = publication_metadata(
-        &descriptor,
-        &candidate_binding,
-        1,
+        2,
         now,
         now,
         now + Duration::from_secs(1),
         ScreenPublicationHealth::Healthy,
     );
     let live_receipt = hub
-        .publish(&publisher, surface_payload(&descriptor, &pixels), &metadata)
-        .expect("new worker publishes through retained branch storage");
+        .publish(
+            &old_publisher,
+            surface_payload(&descriptor, &pixels),
+            &retained_metadata,
+        )
+        .expect("retained worker publishes through retained branch storage");
     let weak_publication = Arc::downgrade(live_receipt.publication());
     assert!(lease.read().is_some());
 
@@ -3320,6 +3674,14 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
     let ticket = preparing
         .worker_ticket(&source)
         .expect("source removal still requires an exact worker handoff");
+    assert!(ticket.required_minimums().is_empty());
+    let delta = ticket.source_delta();
+    assert!(delta.added_branches().is_empty());
+    assert!(delta.retained_branches().is_empty());
+    assert_eq!(delta.removed_branches().len(), 1);
+    assert!(delta.added_physical_reductions().is_empty());
+    assert!(delta.retained_physical_reductions().is_empty());
+    assert_eq!(delta.removed_physical_reductions().len(), 1);
     let token = exact_resources(&ticket)
         .expect("removal ledger is exact")
         .acknowledge(&ticket)
@@ -3337,7 +3699,7 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
         .expect("empty authority commits");
     let (_, retirement) = committed.into_parts();
     assert_eq!(builder.committed_state().branch_count(), 0);
-    assert_eq!(candidate_binding.state(), ScreenWorkerBindingState::Retired);
+    assert_eq!(old_binding.state(), ScreenWorkerBindingState::Retired);
     assert_eq!(removal_binding.state(), ScreenWorkerBindingState::Retired);
     assert!(lease.read().is_none());
     assert_eq!(
@@ -3371,11 +3733,12 @@ fn cadence_rebind_and_source_removal_switch_one_atomic_authority() {
     ));
     drop((
         lease,
-        publisher,
         old_publisher,
         committed_state,
         candidate_state,
         old_state,
+        initial_receipt,
+        initial_publication,
         live_receipt,
     ));
     assert!(weak_publication.upgrade().is_none());
@@ -3714,7 +4077,7 @@ fn typed_publication_validation_and_fixed_slots_preserve_last_good() {
 }
 
 #[test]
-fn copied_old_generation_slot_cannot_finalize_after_cadence_rebind() {
+fn copied_retained_slot_can_finalize_after_cadence_update() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
     let surface_30 = resolve(
         &registered(
@@ -3767,43 +4130,18 @@ fn copied_old_generation_slot_cannot_finalize_after_cadence_rebind() {
         .expect("old generation reserves and copies outside the commit barrier");
     assert!(lease.read().is_none());
 
-    commit_demands(&mut builder, [surface_60], None).expect("cadence rebind commits");
-    assert_eq!(old_binding.state(), ScreenWorkerBindingState::Retired);
-    assert!(matches!(
-        hub.finalize_publication(prepared),
-        Err(ScreenPublicationHubError::PublisherStale { .. })
-    ));
-    assert!(lease.read().is_none());
-    assert_eq!(
-        lease.delivery_state(now).lifecycle(),
-        ScreenBranchDeliveryLifecycle::Pending
-    );
-    assert!(matches!(
-        hub.report_delivery_health(&old_publisher, ScreenPublicationHealth::Failed),
-        Err(ScreenPublicationHubError::PublisherStale { .. })
-    ));
-
-    let binding = binding_for(&builder, &source_id("display-a"));
-    let publisher = hub
-        .publisher(&descriptor, &binding)
-        .expect("new cadence worker owns the branch");
-    let metadata = publication_metadata(
-        &descriptor,
-        &binding,
-        1,
-        now,
-        now,
-        now + Duration::from_secs(1),
-        ScreenPublicationHealth::Healthy,
-    );
-    hub.publish(&publisher, surface_payload(&descriptor, &pixels), &metadata)
-        .expect("stale reservation returned its slot without advancing sequence");
+    commit_demands(&mut builder, [surface_60], None).expect("cadence update commits");
+    assert_eq!(old_binding.state(), ScreenWorkerBindingState::Active);
+    hub.finalize_publication(prepared)
+        .expect("retained branch accepts its pre-commit reservation");
+    hub.report_delivery_health(&old_publisher, ScreenPublicationHealth::Healthy)
+        .expect("retained publisher remains authoritative");
     assert_eq!(
         lease
             .read()
-            .expect("new generation becomes live")
-            .plan_generation(),
-        builder.current().generation()
+            .expect("retained generation remains live")
+            .worker_plan_generation(),
+        old_binding.plan_generation()
     );
 }
 

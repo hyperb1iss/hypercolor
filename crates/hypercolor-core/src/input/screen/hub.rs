@@ -1101,16 +1101,20 @@ impl ScreenCommittedState {
             .map_err(|_| ScreenPlanError::AllocationFailed)?;
         for demand in plan.branches() {
             let descriptor = demand.descriptor();
-            let binding = new_bindings
-                .binary_search_by(|binding| {
-                    binding
-                        .source_id()
-                        .as_str()
-                        .cmp(descriptor.source_epoch().source_id.as_str())
+            let binding = base
+                .branch(descriptor)
+                .map(|branch| branch.binding.clone())
+                .or_else(|| {
+                    new_bindings
+                        .binary_search_by(|binding| {
+                            binding
+                                .source_id()
+                                .as_str()
+                                .cmp(descriptor.source_epoch().source_id.as_str())
+                        })
+                        .ok()
+                        .and_then(|index| new_bindings.get(index).cloned())
                 })
-                .ok()
-                .and_then(|index| new_bindings.get(index).cloned())
-                .or_else(|| base.branch(descriptor).map(|branch| branch.binding.clone()))
                 .ok_or_else(|| ScreenPlanError::MissingWorkerAcknowledgement {
                     source_id: descriptor.source_epoch().source_id.clone(),
                 })?;
