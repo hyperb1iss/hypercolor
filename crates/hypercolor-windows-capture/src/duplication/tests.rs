@@ -1,14 +1,14 @@
 use super::{
     CaptureMetadata, DesktopFrameSource, PointerShape, PointerShapeKind, PointerState,
     TopologyEntry, TopologyState, average_channel, capture_region_origin, classify_hresult,
-    desktop_frame_source, logical_to_scanout, native_scanout_extent, pointer_scanout_geometry,
-    prepare_duplication, scanout_to_logical, session_rebuild_error,
+    desktop_frame_source, gpu_surface_acquire_timeout, logical_to_scanout, native_scanout_extent,
+    pointer_scanout_geometry, prepare_duplication, scanout_to_logical, session_rebuild_error,
 };
 use crate::{CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, ReductionPath};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{E_ACCESSDENIED, E_FAIL};
 use windows::Win32::Graphics::Direct3D11::D3D11_ASYNC_GETDATA_DONOTFLUSH;
 use windows::Win32::Graphics::Dxgi::{
@@ -804,6 +804,46 @@ fn static_retry_publishes_only_routes_that_missed_the_latest_clean_frame() {
         .expect("route A retries from retained clean content after reclaim");
     assert_eq!(retried.provenance().source_sequence, 43);
     drop(second_a);
+}
+
+#[test]
+fn pending_surface_retry_never_spends_the_callers_native_wait_budget() {
+    let requested = Duration::from_secs(2);
+
+    assert_eq!(gpu_surface_acquire_timeout(requested, true), Duration::ZERO);
+    assert_eq!(gpu_surface_acquire_timeout(requested, false), requested);
+}
+
+#[test]
+fn duplication_epoch_change_rejects_retained_pending_surface_retry() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        37,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("first WARP exact Surface publication succeeds");
+    let first = fixture.outcomes.remove(0);
+    let second = super::gpu_surface::fixture::republish(&mut fixture.plan, 42)
+        .expect("second native slot publishes")
+        .remove(0);
+    let latest = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+        .expect("latest source remains pending while both slots are retained");
+    assert!(matches!(
+        latest.as_slice(),
+        [crate::GpuSurfacePublishOutcome::Busy(id)] if *id == descriptor.id()
+    ));
+
+    assert!(matches!(
+        super::gpu_surface::fixture::retry_pending_for_duplication_epoch(&mut fixture.plan, 6),
+        Err(CaptureError::GpuSurfacePlanInvalidated)
+    ));
+    drop((first, second));
 }
 
 #[test]

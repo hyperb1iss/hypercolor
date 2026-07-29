@@ -652,6 +652,34 @@ impl PreparedGpuSurfacePlan {
             && self.source_color_space == source_color_space
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn validate_source(
+        &self,
+        source_id: &str,
+        topology_generation: u64,
+        duplication_generation: u64,
+        adapter_luid: GpuAdapterLuid,
+        native_source_extent: CaptureExtent,
+        logical_source_extent: CaptureExtent,
+        source_rotation: crate::DisplayRotation,
+        source_color_space: GpuSurfaceSourceColorSpace,
+    ) -> CaptureResult<()> {
+        if self.matches_source(
+            source_id,
+            topology_generation,
+            duplication_generation,
+            adapter_luid,
+            native_source_extent,
+            logical_source_extent,
+            source_rotation,
+            source_color_space,
+        ) {
+            Ok(())
+        } else {
+            Err(CaptureError::GpuSurfacePlanInvalidated)
+        }
+    }
+
     pub(super) fn has_clean_desktop(&self) -> bool {
         self.clean_metadata.is_some()
     }
@@ -677,7 +705,7 @@ impl PreparedGpuSurfacePlan {
             metadata.source_height,
             metadata.rotation,
         )?;
-        if !self.matches_source(
+        self.validate_source(
             &metadata.source_id,
             metadata.topology_generation,
             duplication_generation,
@@ -686,9 +714,7 @@ impl PreparedGpuSurfacePlan {
             logical_source_extent,
             metadata.rotation,
             metadata.source_color_space,
-        ) {
-            return Err(CaptureError::GpuSurfacePlanInvalidated);
-        }
+        )?;
         for route in &self.routes {
             metadata
                 .captured_at
@@ -2129,6 +2155,23 @@ pub(super) mod fixture {
         let mut outcomes = Vec::new();
         plan.retry_pending(|outcome| outcomes.push(outcome))?;
         Ok(outcomes)
+    }
+
+    pub(crate) fn retry_pending_for_duplication_epoch(
+        plan: &mut PreparedGpuSurfacePlan,
+        duplication_generation: u64,
+    ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
+        plan.validate_source(
+            &plan.source_id,
+            plan.topology_generation,
+            duplication_generation,
+            plan.adapter_luid,
+            plan.native_source_extent,
+            plan.logical_source_extent,
+            plan.source_rotation,
+            plan.source_color_space,
+        )?;
+        retry_pending(plan)
     }
 
     pub(crate) fn republish_with_fault(

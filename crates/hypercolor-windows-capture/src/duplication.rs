@@ -206,6 +206,14 @@ fn session_rebuild_error(error: CaptureError) -> CaptureError {
     }
 }
 
+fn gpu_surface_acquire_timeout(requested: Duration, has_pending_routes: bool) -> Duration {
+    if has_pending_routes {
+        Duration::ZERO
+    } else {
+        requested
+    }
+}
+
 const fn desktop_frame_source(
     desktop_updated: bool,
     staging_available: bool,
@@ -1128,20 +1136,14 @@ impl DesktopDuplicator {
     where
         F: FnMut(GpuSurfacePublishOutcome),
     {
-        if !plan.matches_source(
-            &self.source_id,
-            self.topology_generation,
-            self.duplication_generation,
-            self.adapter_luid,
-            CaptureExtent::try_new(self.native_width, self.native_height)?,
-            CaptureExtent::try_new(self.logical_width, self.logical_height)?,
-            self.rotation,
-            self.source_color_space,
-        ) {
-            return Err(CaptureError::GpuSurfacePlanInvalidated);
-        }
+        self.validate_gpu_surface_plan(plan)?;
         self.release_frame();
-        let update = self.acquire_native_update(timeout, plan.has_clean_desktop())?;
+        let acquire_timeout = gpu_surface_acquire_timeout(timeout, plan.has_pending_routes());
+        let update = self.acquire_native_update(acquire_timeout, plan.has_clean_desktop())?;
+        if let Err(error) = self.validate_gpu_surface_plan(plan) {
+            self.release_frame();
+            return Err(error);
+        }
         let result = if let Some(update) = update {
             plan.publish(
                 update.texture.as_ref(),
@@ -1156,6 +1158,19 @@ impl DesktopDuplicator {
         };
         self.release_frame();
         result.map(Some)
+    }
+
+    fn validate_gpu_surface_plan(&self, plan: &PreparedGpuSurfacePlan) -> CaptureResult<()> {
+        plan.validate_source(
+            &self.source_id,
+            self.topology_generation,
+            self.duplication_generation,
+            self.adapter_luid,
+            CaptureExtent::try_new(self.native_width, self.native_height)?,
+            CaptureExtent::try_new(self.logical_width, self.logical_height)?,
+            self.rotation,
+            self.source_color_space,
+        )
     }
 
     fn acquire_native_update(
