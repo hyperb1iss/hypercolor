@@ -975,6 +975,12 @@ impl ScreenWorkerPreparationTicket {
         self.source_delta.as_ref()
     }
 
+    /// Immutable candidate plan whose resources this ticket must realize.
+    #[must_use]
+    pub fn candidate_plan(&self) -> &ScreenCapturePlan {
+        self.candidate.as_ref()
+    }
+
     /// Complete deterministic resource contract for this source delta.
     #[must_use]
     pub fn required_minimums(&self) -> &[ScreenRequiredResourceMinimum] {
