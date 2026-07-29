@@ -1,16 +1,20 @@
 //! Allocation-free logical publications from prepared CPU reduction planes.
 
 use std::mem::size_of;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_types::canvas::{SurfaceResourceError, linear_to_srgb_u8, srgb_u8_to_linear};
 
 use super::{
     CapturePixelFormat, CaptureTransferFunction, PreparedScreenPublication,
     ResolvedScreenPublicationDescriptor, ScreenContentBarsPolicy, ScreenGridPolicy,
-    ScreenLetterboxFill, ScreenPhysicalReductionDescriptor, ScreenPublicationKind,
-    ScreenSmoothingPolicy, tune::PreparedLinearColorTuning,
+    ScreenLetterboxFill, ScreenPhysicalReductionDescriptor, ScreenPlanGeneration,
+    ScreenPublicationKind, ScreenSmoothingPolicy,
+    sector::{LetterboxBars, LetterboxDetectionError, PreparedLetterboxDetector},
+    smooth::{PreparedTemporalSmoother, PreparedTemporalSmoothingError},
+    tune::PreparedLinearColorTuning,
 };
 
 const BYTES_PER_PIXEL: usize = 4;
@@ -95,6 +99,53 @@ pub struct PreparedCpuZoneMaterializer {
     grid: PreparedCpuZoneGrid,
     tuning: PreparedLinearColorTuning,
     precomputed_byte_len: u64,
+    plan_generation: Option<ScreenPlanGeneration>,
+    content_detector: Option<PreparedLetterboxDetector>,
+    smoother: Option<PreparedTemporalSmoother>,
+    committed_bars: Option<LetterboxBars>,
+    committed_capture_at: Option<Instant>,
+    staged: Option<StagedZoneState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StagedZoneState {
+    bars: LetterboxBars,
+    captured_at: Instant,
+}
+
+/// Effective row-major grid staged by a stateful CPU Zones branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StagedCpuZonePublication {
+    columns: u32,
+    rows: u32,
+    color_count: usize,
+    bars: LetterboxBars,
+}
+
+impl StagedCpuZonePublication {
+    /// Effective columns after dynamic content-bar cropping.
+    #[must_use]
+    pub const fn columns(self) -> u32 {
+        self.columns
+    }
+
+    /// Effective rows after dynamic content-bar cropping.
+    #[must_use]
+    pub const fn rows(self) -> u32 {
+        self.rows
+    }
+
+    /// Exact prefix of publication storage containing effective colors.
+    #[must_use]
+    pub const fn color_count(self) -> usize {
+        self.color_count
+    }
+
+    /// Bars removed from the requested grid.
+    #[must_use]
+    pub const fn bars(self) -> LetterboxBars {
+        self.bars
+    }
 }
 
 impl PreparedCpuZoneMaterializer {
@@ -108,9 +159,9 @@ impl PreparedCpuZoneMaterializer {
     pub fn prepare(
         descriptor: &ResolvedScreenPublicationDescriptor,
     ) -> Result<Self, CpuZoneMaterializationError> {
-        let ScreenPublicationKind::Zones { columns, rows } = descriptor.kind() else {
+        if !matches!(descriptor.kind(), ScreenPublicationKind::Zones { .. }) {
             return Err(CpuZoneMaterializationError::BranchNotZones);
-        };
+        }
         let profile = descriptor.processing_profile();
         if profile.content_bars() != ScreenContentBarsPolicy::Disabled {
             return Err(CpuZoneMaterializationError::ContentBarsRequireDynamicMaterialization);
@@ -120,6 +171,37 @@ impl PreparedCpuZoneMaterializer {
         }
         if profile.smoothing() != ScreenSmoothingPolicy::Disabled {
             return Err(CpuZoneMaterializationError::SmoothingRequiresState);
+        }
+        Self::prepare_inner(descriptor, None)
+    }
+
+    /// Prepare one generation-bound stateful Zones branch.
+    ///
+    /// Dynamic content-bar scratch and both transactional smoothing histories
+    /// are allocated once at exact requested grid size. Frame processing does
+    /// not grow them and state commits only through [`Self::commit_staged`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-zone branches, Surface-only fill policies, unsupported
+    /// transfers, unaddressable geometry, and failed exact reservations.
+    pub fn prepare_stateful(
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<Self, CpuZoneMaterializationError> {
+        Self::prepare_inner(descriptor, Some(plan_generation))
+    }
+
+    fn prepare_inner(
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        plan_generation: Option<ScreenPlanGeneration>,
+    ) -> Result<Self, CpuZoneMaterializationError> {
+        let ScreenPublicationKind::Zones { columns, rows } = descriptor.kind() else {
+            return Err(CpuZoneMaterializationError::BranchNotZones);
+        };
+        let profile = descriptor.processing_profile();
+        if profile.letterbox_fill() != ScreenLetterboxFill::default() {
+            return Err(CpuZoneMaterializationError::LetterboxFillRequiresMaterialization);
         }
         let physical = descriptor.physical();
         let extent = physical.reduction_extent();
@@ -151,7 +233,38 @@ impl PreparedCpuZoneMaterializer {
                 vertical_offsets: prepare_point_axis(extent.height(), rows.get(), row_byte_len)?,
             },
         };
-        let precomputed_byte_len = grid.byte_len()?;
+        let content_detector = match (plan_generation, profile.content_bars()) {
+            (
+                Some(_),
+                ScreenContentBarsPolicy::DetectAndCrop {
+                    luminance_threshold: _,
+                },
+            ) => Some(PreparedLetterboxDetector::try_new(
+                columns.get(),
+                rows.get(),
+            )?),
+            _ => None,
+        };
+        let smoother = plan_generation
+            .map(|_| {
+                PreparedTemporalSmoother::try_new(profile.smoothing(), columns.get(), rows.get())
+            })
+            .transpose()?;
+        let precomputed_byte_len = grid
+            .byte_len()?
+            .checked_add(
+                content_detector
+                    .as_ref()
+                    .map_or(0, PreparedLetterboxDetector::retained_byte_len),
+            )
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    smoother
+                        .as_ref()
+                        .map_or(0, PreparedTemporalSmoother::retained_byte_len),
+                )
+            })
+            .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
         let tuning = profile.tuning();
         Ok(Self {
             descriptor: descriptor.clone(),
@@ -166,6 +279,12 @@ impl PreparedCpuZoneMaterializer {
                 tuning.gamma(),
             ),
             precomputed_byte_len,
+            plan_generation,
+            content_detector,
+            smoother,
+            committed_bars: None,
+            committed_capture_at: None,
+            staged: None,
         })
     }
 
@@ -187,10 +306,170 @@ impl PreparedCpuZoneMaterializer {
         self.zone_count
     }
 
-    /// Plan-lifetime bytes retained by precomputed sampling kernels.
+    /// Plan-lifetime bytes retained by kernels, scratch, and temporal history.
     #[must_use]
     pub const fn precomputed_byte_len(&self) -> u64 {
         self.precomputed_byte_len
+    }
+
+    /// Plan generation bound to stateful history, or `None` for legacy stateless use.
+    #[must_use]
+    pub const fn plan_generation(&self) -> Option<ScreenPlanGeneration> {
+        self.plan_generation
+    }
+
+    /// Stage one stateful logical grid into a caller-owned writable slot.
+    ///
+    /// The effective cropped grid is compacted into the front of the slot and
+    /// returned explicitly. Remaining storage is cleared and is not part of the
+    /// logical publication. Tuning and smoothing operate only on that prefix.
+    /// No state becomes visible until [`Self::commit_staged`] is called after
+    /// the hub accepts the publication.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale generations, pending transactions, regressed capture time,
+    /// substituted descriptors or storage, and prepared processing failures.
+    pub fn stage(
+        &mut self,
+        plan_generation: ScreenPlanGeneration,
+        physical_descriptor: &ScreenPhysicalReductionDescriptor,
+        physical_pixels: &[u8],
+        captured_at: Instant,
+        publication: &mut PreparedScreenPublication,
+    ) -> Result<StagedCpuZonePublication, CpuZoneMaterializationError> {
+        self.validate_generation(plan_generation)?;
+        if publication.worker_plan_generation() != plan_generation {
+            return Err(
+                CpuZoneMaterializationError::PublicationPlanGenerationMismatch {
+                    expected: plan_generation.get(),
+                    actual: publication.worker_plan_generation().get(),
+                },
+            );
+        }
+        if self.staged.is_some() {
+            return Err(CpuZoneMaterializationError::PublicationStagePending);
+        }
+        if self
+            .committed_capture_at
+            .is_some_and(|committed| captured_at < committed)
+        {
+            return Err(CpuZoneMaterializationError::CaptureTimestampRegressed);
+        }
+        self.validate_frame_inputs(physical_descriptor, physical_pixels, publication)?;
+        let output = publication
+            .zone_colors_mut()
+            .map_err(|_| CpuZoneMaterializationError::PublicationReservationUnavailable)?;
+        if output.len() != self.zone_count {
+            return Err(CpuZoneMaterializationError::ZoneCountMismatch {
+                expected: self.zone_count,
+                actual: output.len(),
+            });
+        }
+        self.materialize_encoded(physical_pixels, output, false);
+
+        let bars = match self.descriptor.processing_profile().content_bars() {
+            ScreenContentBarsPolicy::Disabled => LetterboxBars::default(),
+            ScreenContentBarsPolicy::DetectAndCrop {
+                luminance_threshold,
+            } => self
+                .content_detector
+                .as_mut()
+                .ok_or(CpuZoneMaterializationError::StatefulMaterializerNotPrepared)?
+                .detect(output, self.transfer, luminance_threshold.value())?,
+        };
+        let (columns, rows) = effective_grid_shape(self.descriptor.kind(), bars)?;
+        let color_count = compact_zone_grid(output, self.descriptor.kind(), bars)?;
+        self.apply_tuning(&mut output[..color_count]);
+
+        let reset_history = self.committed_bars.is_some_and(|previous| previous != bars);
+        let elapsed = self
+            .committed_capture_at
+            .and_then(|committed| captured_at.checked_duration_since(committed))
+            .unwrap_or(Duration::ZERO);
+        self.smoother
+            .as_mut()
+            .ok_or(CpuZoneMaterializationError::StatefulMaterializerNotPrepared)?
+            .stage(
+                &mut output[..color_count],
+                columns,
+                rows,
+                self.transfer,
+                elapsed,
+                reset_history,
+            )?;
+        output[color_count..].fill([0, 0, 0]);
+        self.staged = Some(StagedZoneState { bars, captured_at });
+        Ok(StagedCpuZonePublication {
+            columns,
+            rows,
+            color_count,
+            bars,
+        })
+    }
+
+    /// Commit staged temporal and content-region state after hub acceptance.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another plan generation or a call without a staged frame.
+    pub fn commit_staged(
+        &mut self,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<(), CpuZoneMaterializationError> {
+        self.validate_generation(plan_generation)?;
+        let staged = self
+            .staged
+            .take()
+            .ok_or(CpuZoneMaterializationError::NoStagedPublication)?;
+        if let Some(smoother) = &mut self.smoother {
+            smoother.commit_staged();
+        }
+        self.committed_bars = Some(staged.bars);
+        self.committed_capture_at = Some(staged.captured_at);
+        Ok(())
+    }
+
+    /// Discard staged state after hub rejection while preserving history.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another plan generation.
+    pub fn discard_staged(
+        &mut self,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<(), CpuZoneMaterializationError> {
+        self.validate_generation(plan_generation)?;
+        self.staged = None;
+        if let Some(smoother) = &mut self.smoother {
+            smoother.discard_staged();
+        }
+        Ok(())
+    }
+
+    /// Rebind retained allocations to a new plan generation with empty state.
+    ///
+    /// The immutable descriptor and exact allocations remain unchanged. This is
+    /// a deterministic reset boundary and rejects stateless materializers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this instance was not prepared for stateful use.
+    pub fn reset_for_plan_generation(
+        &mut self,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<(), CpuZoneMaterializationError> {
+        if self.plan_generation.is_none() {
+            return Err(CpuZoneMaterializationError::StatefulMaterializerNotPrepared);
+        }
+        self.plan_generation = Some(plan_generation);
+        self.committed_bars = None;
+        self.committed_capture_at = None;
+        self.staged = None;
+        if let Some(smoother) = &mut self.smoother {
+            smoother.reset();
+        }
+        Ok(())
     }
 
     /// Materialize one shared physical plane directly into a writable zone slot.
@@ -209,6 +488,45 @@ impl PreparedCpuZoneMaterializer {
         physical_pixels: &[u8],
         publication: &mut PreparedScreenPublication,
     ) -> Result<(), CpuZoneMaterializationError> {
+        if self.plan_generation.is_some() {
+            return Err(CpuZoneMaterializationError::StatefulMaterializerRequiresStaging);
+        }
+        self.validate_frame_inputs(physical_descriptor, physical_pixels, publication)?;
+        let output = publication
+            .zone_colors_mut()
+            .map_err(|_| CpuZoneMaterializationError::PublicationReservationUnavailable)?;
+        if output.len() != self.zone_count {
+            return Err(CpuZoneMaterializationError::ZoneCountMismatch {
+                expected: self.zone_count,
+                actual: output.len(),
+            });
+        }
+        self.materialize_encoded(physical_pixels, output, true);
+        Ok(())
+    }
+
+    fn validate_generation(
+        &self,
+        actual: ScreenPlanGeneration,
+    ) -> Result<(), CpuZoneMaterializationError> {
+        let expected = self
+            .plan_generation
+            .ok_or(CpuZoneMaterializationError::StatefulMaterializerNotPrepared)?;
+        if actual != expected {
+            return Err(CpuZoneMaterializationError::PlanGenerationMismatch {
+                expected: expected.get(),
+                actual: actual.get(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_frame_inputs(
+        &self,
+        physical_descriptor: &ScreenPhysicalReductionDescriptor,
+        physical_pixels: &[u8],
+        publication: &PreparedScreenPublication,
+    ) -> Result<(), CpuZoneMaterializationError> {
         if physical_descriptor != self.physical_descriptor() {
             return Err(CpuZoneMaterializationError::PhysicalDescriptorMismatch);
         }
@@ -221,15 +539,15 @@ impl PreparedCpuZoneMaterializer {
         if publication.descriptor() != &self.descriptor {
             return Err(CpuZoneMaterializationError::PublicationDescriptorMismatch);
         }
-        let output = publication
-            .zone_colors_mut()
-            .map_err(|_| CpuZoneMaterializationError::PublicationReservationUnavailable)?;
-        if output.len() != self.zone_count {
-            return Err(CpuZoneMaterializationError::ZoneCountMismatch {
-                expected: self.zone_count,
-                actual: output.len(),
-            });
-        }
+        Ok(())
+    }
+
+    fn materialize_encoded(
+        &self,
+        physical_pixels: &[u8],
+        output: &mut [[u8; 3]],
+        apply_tuning: bool,
+    ) {
         match &self.grid {
             PreparedCpuZoneGrid::AreaWeighted {
                 horizontal,
@@ -241,6 +559,7 @@ impl PreparedCpuZoneMaterializer {
                 horizontal,
                 vertical,
                 *normalization,
+                apply_tuning,
             ),
             PreparedCpuZoneGrid::PointSample {
                 horizontal_offsets,
@@ -250,9 +569,20 @@ impl PreparedCpuZoneMaterializer {
                 output,
                 horizontal_offsets,
                 vertical_offsets,
+                apply_tuning,
             ),
         }
-        Ok(())
+    }
+
+    fn apply_tuning(&self, output: &mut [[u8; 3]]) {
+        if self.tuning.is_neutral() {
+            return;
+        }
+        for color in output {
+            let mut decoded = self.decode(*color).map(unit_f64_to_f32);
+            self.tuning.apply(&mut decoded);
+            *color = self.encode(decoded);
+        }
     }
 
     fn materialize_area(
@@ -262,6 +592,7 @@ impl PreparedCpuZoneMaterializer {
         horizontal: &PreparedAreaAxis,
         vertical: &PreparedAreaAxis,
         normalization: f64,
+        apply_tuning: bool,
     ) {
         let mut output = output.iter_mut();
         for &vertical_span in &vertical.spans {
@@ -281,7 +612,9 @@ impl PreparedCpuZoneMaterializer {
                     }
                 }
                 let mut color = sums.map(|sum| unit_f64_to_f32(sum * normalization));
-                self.tuning.apply(&mut color);
+                if apply_tuning {
+                    self.tuning.apply(&mut color);
+                }
                 *output
                     .next()
                     .expect("prepared zone count matches row-major iteration") = self.encode(color);
@@ -295,6 +628,7 @@ impl PreparedCpuZoneMaterializer {
         output: &mut [[u8; 3]],
         horizontal_offsets: &[usize],
         vertical_offsets: &[usize],
+        apply_tuning: bool,
     ) {
         let mut output = output.iter_mut();
         for &vertical_offset in vertical_offsets {
@@ -302,7 +636,9 @@ impl PreparedCpuZoneMaterializer {
                 let mut color = self
                     .decode(self.read_rgb(pixels, vertical_offset + horizontal_offset))
                     .map(unit_f64_to_f32);
-                self.tuning.apply(&mut color);
+                if apply_tuning {
+                    self.tuning.apply(&mut color);
+                }
                 *output
                     .next()
                     .expect("prepared zone count matches row-major iteration") = self.encode(color);
@@ -510,6 +846,74 @@ fn point_sample(index: u32, source: u32, divisions: u32) -> u32 {
     u32::try_from(sample).expect("point sample is bounded by source extent")
 }
 
+fn effective_grid_shape(
+    kind: ScreenPublicationKind,
+    bars: LetterboxBars,
+) -> Result<(u32, u32), CpuZoneMaterializationError> {
+    let ScreenPublicationKind::Zones { columns, rows } = kind else {
+        return Err(CpuZoneMaterializationError::BranchNotZones);
+    };
+    let columns = columns
+        .get()
+        .checked_sub(bars.left.saturating_add(bars.right))
+        .ok_or(CpuZoneMaterializationError::InvalidDetectedContentRegion)?;
+    let rows = rows
+        .get()
+        .checked_sub(bars.top.saturating_add(bars.bottom))
+        .ok_or(CpuZoneMaterializationError::InvalidDetectedContentRegion)?;
+    if columns == 0 || rows == 0 {
+        return Err(CpuZoneMaterializationError::InvalidDetectedContentRegion);
+    }
+    Ok((columns, rows))
+}
+
+fn compact_zone_grid(
+    output: &mut [[u8; 3]],
+    kind: ScreenPublicationKind,
+    bars: LetterboxBars,
+) -> Result<usize, CpuZoneMaterializationError> {
+    let ScreenPublicationKind::Zones { columns, .. } = kind else {
+        return Err(CpuZoneMaterializationError::BranchNotZones);
+    };
+    let source_columns = usize::try_from(columns.get())
+        .map_err(|_| CpuZoneMaterializationError::GeometryOverflow)?;
+    let (effective_columns, effective_rows) = effective_grid_shape(kind, bars)?;
+    let effective_columns = usize::try_from(effective_columns)
+        .map_err(|_| CpuZoneMaterializationError::GeometryOverflow)?;
+    let effective_rows = usize::try_from(effective_rows)
+        .map_err(|_| CpuZoneMaterializationError::GeometryOverflow)?;
+    let left =
+        usize::try_from(bars.left).map_err(|_| CpuZoneMaterializationError::GeometryOverflow)?;
+    let top =
+        usize::try_from(bars.top).map_err(|_| CpuZoneMaterializationError::GeometryOverflow)?;
+    let color_count = effective_columns
+        .checked_mul(effective_rows)
+        .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    for destination_row in 0..effective_rows {
+        let source_row = top
+            .checked_add(destination_row)
+            .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+        let source_start = source_row
+            .checked_mul(source_columns)
+            .and_then(|offset| offset.checked_add(left))
+            .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+        let source_end = source_start
+            .checked_add(effective_columns)
+            .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+        let destination_start = destination_row
+            .checked_mul(effective_columns)
+            .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+        let destination_end = destination_start
+            .checked_add(effective_columns)
+            .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+        if source_end > output.len() || destination_end > output.len() {
+            return Err(CpuZoneMaterializationError::InvalidDetectedContentRegion);
+        }
+        output.copy_within(source_start..source_end, destination_start);
+    }
+    Ok(color_count)
+}
+
 /// Preparation or execution failure for exact CPU zone materialization.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum CpuZoneMaterializationError {
@@ -525,6 +929,39 @@ pub enum CpuZoneMaterializationError {
     /// Temporal smoothing requires transactional per-branch history.
     #[error("screen smoothing requires stateful branch materialization")]
     SmoothingRequiresState,
+    /// Stateful processing was requested from a legacy stateless preparation.
+    #[error("CPU zone materializer was not prepared with state")]
+    StatefulMaterializerNotPrepared,
+    /// Stateful preparations must use the transactional staging API.
+    #[error("stateful CPU zone materialization requires transactional staging")]
+    StatefulMaterializerRequiresStaging,
+    /// A caller tried to stage another frame before resolving the first.
+    #[error("CPU zone materializer already has a staged publication")]
+    PublicationStagePending,
+    /// A commit was requested without a successfully staged publication.
+    #[error("CPU zone materializer has no staged publication")]
+    NoStagedPublication,
+    /// Stateful branch history cannot cross plan generations.
+    #[error("CPU zone plan generation is {actual}; expected {expected}")]
+    PlanGenerationMismatch { expected: u64, actual: u64 },
+    /// The writable slot belongs to another committed plan generation.
+    #[error("CPU zone publication generation is {actual}; expected {expected}")]
+    PublicationPlanGenerationMismatch { expected: u64, actual: u64 },
+    /// Capture timestamps must not move behind the last accepted frame.
+    #[error("CPU zone capture timestamp regressed behind committed history")]
+    CaptureTimestampRegressed,
+    /// Detector output must retain at least one row and one column.
+    #[error("CPU zone content-bar detection produced an invalid empty region")]
+    InvalidDetectedContentRegion,
+    /// Exact transactional history could not be prepared.
+    #[error(transparent)]
+    TemporalStatePreparation(#[from] SurfaceResourceError),
+    /// Dynamic content-bar scratch or frame validation failed.
+    #[error(transparent)]
+    LetterboxDetection(#[from] LetterboxDetectionError),
+    /// Frame-time smoothing validation failed.
+    #[error(transparent)]
+    TemporalSmoothing(#[from] PreparedTemporalSmoothingError),
     /// The zone path currently supports byte-addressable sRGB and linear output.
     #[error("unsupported CPU zone transfer function: {0:?}")]
     UnsupportedTransferFunction(CaptureTransferFunction),

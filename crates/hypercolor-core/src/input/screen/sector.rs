@@ -6,6 +6,244 @@
 //! backend dependency.
 
 use crate::types::canvas::{Rgb, linear_to_srgb_u8, srgb_u8_to_linear};
+use thiserror::Error;
+
+use super::CaptureTransferFunction;
+
+/// Preallocated row/column luminance scratch for dynamic content-bar detection.
+#[derive(Clone, Debug)]
+pub struct PreparedLetterboxDetector {
+    columns: u32,
+    rows: u32,
+    row_luminance: Vec<f32>,
+    column_luminance: Vec<f32>,
+    retained_byte_len: u64,
+}
+
+impl PreparedLetterboxDetector {
+    /// Reserve the exact scratch required for one maximum grid shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure for empty or unaddressable geometry and failed
+    /// plan-lifetime allocation. No fixed resolution or zone-count cap applies.
+    pub fn try_new(columns: u32, rows: u32) -> Result<Self, LetterboxDetectionError> {
+        if columns == 0 || rows == 0 {
+            return Err(LetterboxDetectionError::EmptyGrid { columns, rows });
+        }
+        let column_count = usize::try_from(columns)
+            .map_err(|_| LetterboxDetectionError::GeometryOverflow { columns, rows })?;
+        let row_count = usize::try_from(rows)
+            .map_err(|_| LetterboxDetectionError::GeometryOverflow { columns, rows })?;
+        let scratch_count = column_count
+            .checked_add(row_count)
+            .ok_or(LetterboxDetectionError::GeometryOverflow { columns, rows })?;
+        let requested_byte_len = u64::try_from(scratch_count)
+            .ok()
+            .and_then(|count| {
+                u64::try_from(std::mem::size_of::<f32>())
+                    .ok()
+                    .and_then(|item_size| count.checked_mul(item_size))
+            })
+            .ok_or(LetterboxDetectionError::GeometryOverflow { columns, rows })?;
+        let requested_byte_len_usize = usize::try_from(requested_byte_len)
+            .map_err(|_| LetterboxDetectionError::GeometryOverflow { columns, rows })?;
+        let mut row_luminance = Vec::new();
+        row_luminance.try_reserve_exact(row_count).map_err(|_| {
+            LetterboxDetectionError::AllocationFailed {
+                columns,
+                rows,
+                byte_len: requested_byte_len_usize,
+            }
+        })?;
+        row_luminance.resize(row_count, 0.0);
+        let mut column_luminance = Vec::new();
+        column_luminance
+            .try_reserve_exact(column_count)
+            .map_err(|_| LetterboxDetectionError::AllocationFailed {
+                columns,
+                rows,
+                byte_len: requested_byte_len_usize,
+            })?;
+        column_luminance.resize(column_count, 0.0);
+        let retained_byte_len = u64::try_from(
+            row_luminance
+                .capacity()
+                .checked_add(column_luminance.capacity())
+                .ok_or(LetterboxDetectionError::GeometryOverflow { columns, rows })?,
+        )
+        .ok()
+        .and_then(|count| {
+            u64::try_from(std::mem::size_of::<f32>())
+                .ok()
+                .and_then(|item_size| count.checked_mul(item_size))
+        })
+        .ok_or(LetterboxDetectionError::GeometryOverflow { columns, rows })?;
+        Ok(Self {
+            columns,
+            rows,
+            row_luminance,
+            column_luminance,
+            retained_byte_len,
+        })
+    }
+
+    /// Exact shape accepted by this detector.
+    #[must_use]
+    pub const fn shape(&self) -> (u32, u32) {
+        (self.columns, self.rows)
+    }
+
+    /// Exact retained heap-byte ledger for row and column scratch.
+    #[must_use]
+    pub const fn retained_byte_len(&self) -> u64 {
+        self.retained_byte_len
+    }
+
+    /// Reserved element capacities, useful for proving frame-time reuse.
+    #[must_use]
+    pub fn capacities(&self) -> (usize, usize) {
+        (
+            self.row_luminance.capacity(),
+            self.column_luminance.capacity(),
+        )
+    }
+
+    /// Detect edge bars from one exact encoded-color grid.
+    ///
+    /// Scratch is cleared and reused in place. Luminance is evaluated in linear
+    /// light for both sRGB and linear encoded publications.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mismatched grid or unsupported transfer function.
+    pub fn detect(
+        &mut self,
+        colors: &[[u8; 3]],
+        transfer: CaptureTransferFunction,
+        black_threshold: f32,
+    ) -> Result<LetterboxBars, LetterboxDetectionError> {
+        let expected = usize::try_from(self.columns)
+            .ok()
+            .and_then(|columns| {
+                usize::try_from(self.rows)
+                    .ok()
+                    .and_then(|rows| columns.checked_mul(rows))
+            })
+            .ok_or(LetterboxDetectionError::GeometryOverflow {
+                columns: self.columns,
+                rows: self.rows,
+            })?;
+        if colors.len() != expected {
+            return Err(LetterboxDetectionError::ColorCountMismatch {
+                expected,
+                actual: colors.len(),
+            });
+        }
+        if !matches!(
+            transfer,
+            CaptureTransferFunction::Srgb | CaptureTransferFunction::Linear
+        ) {
+            return Err(LetterboxDetectionError::UnsupportedTransferFunction(
+                transfer,
+            ));
+        }
+
+        self.row_luminance.fill(0.0);
+        self.column_luminance.fill(0.0);
+        let columns = usize::try_from(self.columns)
+            .expect("prepared column count fits the process address space");
+        for (index, color) in colors.iter().copied().enumerate() {
+            let row = index / columns;
+            let column = index % columns;
+            let luminance = encoded_luminance(color, transfer);
+            self.row_luminance[row] += luminance;
+            self.column_luminance[column] += luminance;
+        }
+        let row_normalization = 1.0 / self.columns as f32;
+        let column_normalization = 1.0 / self.rows as f32;
+        for luminance in &mut self.row_luminance {
+            *luminance *= row_normalization;
+        }
+        for luminance in &mut self.column_luminance {
+            *luminance *= column_normalization;
+        }
+
+        let threshold = black_threshold.clamp(0.0, 1.0);
+        let mut top = count_dark_prefix(&self.row_luminance, threshold);
+        let mut bottom = count_dark_suffix(&self.row_luminance, threshold);
+        let mut left = count_dark_prefix(&self.column_luminance, threshold);
+        let mut right = count_dark_suffix(&self.column_luminance, threshold);
+        if top.saturating_add(bottom) >= self.rows {
+            top = 0;
+            bottom = 0;
+        }
+        if left.saturating_add(right) >= self.columns {
+            left = 0;
+            right = 0;
+        }
+        Ok(LetterboxBars {
+            top,
+            bottom,
+            left,
+            right,
+        })
+    }
+}
+
+/// Preparation or frame validation failure for dynamic content-bar detection.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum LetterboxDetectionError {
+    /// Both grid axes must be non-zero.
+    #[error("letterbox detector requires a non-empty grid, got {columns}x{rows}")]
+    EmptyGrid { columns: u32, rows: u32 },
+    /// Checked scratch or grid arithmetic overflowed.
+    #[error("letterbox detector geometry overflows for {columns}x{rows}")]
+    GeometryOverflow { columns: u32, rows: u32 },
+    /// Exact scratch storage could not be reserved.
+    #[error("could not reserve {byte_len} bytes for a {columns}x{rows} detector")]
+    AllocationFailed {
+        columns: u32,
+        rows: u32,
+        byte_len: usize,
+    },
+    /// Caller supplied a slice different from the prepared shape.
+    #[error("letterbox grid has {actual} colors; expected exactly {expected}")]
+    ColorCountMismatch { expected: usize, actual: usize },
+    /// Only byte-addressable sRGB and linear output are supported.
+    #[error("unsupported letterbox detection transfer function: {0:?}")]
+    UnsupportedTransferFunction(CaptureTransferFunction),
+}
+
+fn count_dark_prefix(values: &[f32], threshold: f32) -> u32 {
+    u32::try_from(
+        values
+            .iter()
+            .take_while(|value| **value < threshold)
+            .count(),
+    )
+    .expect("prepared scratch length originates from u32 geometry")
+}
+
+fn count_dark_suffix(values: &[f32], threshold: f32) -> u32 {
+    u32::try_from(
+        values
+            .iter()
+            .rev()
+            .take_while(|value| **value < threshold)
+            .count(),
+    )
+    .expect("prepared scratch length originates from u32 geometry")
+}
+
+fn encoded_luminance(color: [u8; 3], transfer: CaptureTransferFunction) -> f32 {
+    let decode = |channel| match transfer {
+        CaptureTransferFunction::Srgb => srgb_u8_to_linear(channel),
+        CaptureTransferFunction::Linear => f32::from(channel) / 255.0,
+        _ => unreachable!("unsupported transfers are rejected before decoding"),
+    };
+    0.2126 * decode(color[0]) + 0.7152 * decode(color[1]) + 0.0722 * decode(color[2])
+}
 
 // ── SectorGrid ────────────────────────────────────────────────────────────
 
