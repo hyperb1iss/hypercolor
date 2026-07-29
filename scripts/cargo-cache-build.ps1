@@ -89,7 +89,9 @@ function Initialize-HypercolorCargoCache {
         if ($arg -eq '--release') {
             $usesReleaseLikeProfile = $true
         } elseif ($arg -eq '--profile' -and ($i + 1) -lt $CommandArgs.Count) {
-            $usesReleaseLikeProfile = $CommandArgs[$i + 1] -in @('release', 'bench')
+            if ($CommandArgs[$i + 1] -in @('release', 'bench')) {
+                $usesReleaseLikeProfile = $true
+            }
         } elseif ($arg -match '^--profile=(release|bench)$') {
             $usesReleaseLikeProfile = $true
         }
@@ -115,7 +117,7 @@ function Initialize-HypercolorCargoCache {
     # `run` stays incremental: it is the edit-run iteration loop, and a
     # measured edit-rebuild of hypercolor-core is ~45s non-incremental vs
     # ~11s incremental. Whole-tree ops win with sccache instead.
-    $sccacheSubcommands = @('build', 'test', 'bench')
+    $sccacheSubcommands = @('build', 'test', 'bench', 'nextest')
     $forceSccache = $env:HYPERCOLOR_FORCE_SCCACHE -in @('1', 'true', 'TRUE')
     $wantsSccache = $forceSccache -or $usesReleaseLikeProfile -or ($cargoSubcommand -in $sccacheSubcommands)
 
@@ -157,6 +159,12 @@ function Initialize-HypercolorCargoCache {
         Write-Host "[cargo-cache] sccache mode: Rust + C/C++ cached, incremental off (cap $env:SCCACHE_CACHE_SIZE)"
         Write-Host "[cargo-cache] SCCACHE_DIR=$env:SCCACHE_DIR (HYPERCOLOR_NO_SCCACHE=1 or HYPERCOLOR_ITERATE=1 to disable)"
     } else {
+        # An ambient sccache RUSTC_WRAPPER combined with incremental
+        # hard-fails every compile; drop it rather than let the build die.
+        if ($env:RUSTC_WRAPPER -and (Split-Path -Leaf $env:RUSTC_WRAPPER) -like 'sccache*') {
+            Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+            Write-Host "[cargo-cache] unset ambient sccache RUSTC_WRAPPER for incremental mode"
+        }
         if (-not $env:CARGO_INCREMENTAL) {
             $env:CARGO_INCREMENTAL = '1'
         }
@@ -167,10 +175,14 @@ function Initialize-HypercolorCargoCache {
     }
 
     # rust-lld ships with the toolchain and links large statically-linked
-    # binaries (daemon + Servo + mozjs) far faster than link.exe. Local-only:
-    # the shared .cargo/config.toml stays portable for CI and release.
+    # binaries (daemon + Servo + mozjs) far faster than link.exe. Dev-loop
+    # only: release-like builds keep link.exe so shipped artifacts (CI
+    # sidecars, the installer, app bundles built outside this wrapper) all
+    # come off the same linker.
     $disableFastLink = $env:HYPERCOLOR_NO_FAST_LINK -in @('1', 'true', 'TRUE')
-    if (-not $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER -and -not $disableFastLink) {
+    if (-not $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER -and
+        -not $disableFastLink -and
+        -not $usesReleaseLikeProfile) {
         $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = 'rust-lld'
         Write-Host "[cargo-cache] linker: rust-lld (HYPERCOLOR_NO_FAST_LINK=1 to disable)"
     }
