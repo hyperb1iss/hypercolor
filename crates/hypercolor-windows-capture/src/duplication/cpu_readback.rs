@@ -541,7 +541,10 @@ pub(super) fn hybrid_sequence_proof_for_test() -> CaptureResult<HybridSequencePr
         cpu: CaptureLane::Idle,
     };
     let mut publication = None;
+    let mut gpu_pointer = None;
     super::publish_acquired_clean(
+        &device,
+        &mut gpu_pointer,
         &clean,
         duplication_generation,
         Some(&mut gpu),
@@ -551,6 +554,7 @@ pub(super) fn hybrid_sequence_proof_for_test() -> CaptureResult<HybridSequencePr
             if let GpuSurfacePublishOutcome::Published(published) = outcome {
                 publication = Some(published);
             }
+            super::GpuSurfacePublicationDisposition::Accepted
         },
     );
     let publication = publication.ok_or_else(|| {
