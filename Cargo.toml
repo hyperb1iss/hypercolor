@@ -141,6 +141,7 @@ hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
 hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
+hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture" }
 hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }
 hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", default-features = false }

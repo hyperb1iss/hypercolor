@@ -473,32 +473,63 @@ impl ComposeContext<'_> {
     }
 
     fn latch_screen_frame(&mut self) -> Option<ProducedFrame> {
-        if let Some(screen_surface) = self
-            .inputs
-            .screen_data
-            .as_ref()
-            .and_then(|data| data.canvas_downscale.as_ref())
-            && screen_surface.width() == self.state.canvas_dims.width()
-            && screen_surface.height() == self.state.canvas_dims.height()
-        {
-            let _ = self
-                .compose
-                .screen_queue
-                .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
-        } else {
-            match self.inputs.screen_surface_for_frame(
-                self.state.canvas_dims.width(),
-                self.state.canvas_dims.height(),
-            ) {
-                Ok(Some(screen_surface)) => {
-                    let _ = self
+        let native_submitted = {
+            #[cfg(all(feature = "wgpu", target_os = "windows"))]
+            {
+                self.inputs.screen_publication.as_ref().is_some_and(
+                    |publication| match self
                         .compose
-                        .screen_queue
-                        .submit_latest(ProducerFrame::Surface(screen_surface));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    warn!(%error, "Screen surface allocation failed; retaining the last frame");
+                        .sparkleflinger
+                        .copy_screen_publication(publication)
+                    {
+                        Ok(Some(frame)) => {
+                            let _ = self
+                                .compose
+                                .screen_queue
+                                .submit_latest(ProducerFrame::GpuTexture(frame));
+                            true
+                        }
+                        Ok(None) => false,
+                        Err(error) => {
+                            warn!(%error, "Native screen copy failed; retaining the last frame");
+                            true
+                        }
+                    },
+                )
+            }
+            #[cfg(not(all(feature = "wgpu", target_os = "windows")))]
+            {
+                false
+            }
+        };
+        if !native_submitted {
+            if let Some(screen_surface) = self
+                .inputs
+                .screen_data
+                .as_ref()
+                .and_then(|data| data.canvas_downscale.as_ref())
+                && screen_surface.width() == self.state.canvas_dims.width()
+                && screen_surface.height() == self.state.canvas_dims.height()
+            {
+                let _ = self
+                    .compose
+                    .screen_queue
+                    .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
+            } else {
+                match self.inputs.screen_surface_for_frame(
+                    self.state.canvas_dims.width(),
+                    self.state.canvas_dims.height(),
+                ) {
+                    Ok(Some(screen_surface)) => {
+                        let _ = self
+                            .compose
+                            .screen_queue
+                            .submit_latest(ProducerFrame::Surface(screen_surface));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        warn!(%error, "Screen surface allocation failed; retaining the last frame");
+                    }
                 }
             }
         }

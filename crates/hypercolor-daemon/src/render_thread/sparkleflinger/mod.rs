@@ -9,6 +9,9 @@ mod transform;
 use anyhow::{Result, bail};
 #[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayYuv420Frame;
+#[cfg(all(feature = "wgpu", target_os = "windows"))]
+use hypercolor_core::input::screen::ScreenBranchPublication;
+use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
 use hypercolor_core::spatial::PreparedZonePlan;
 #[cfg(feature = "wgpu")]
 use hypercolor_core::types::canvas::Rgba;
@@ -487,6 +490,25 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
+        #[cfg(all(feature = "wgpu", target_os = "windows"))]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+            return gpu.screen_native_execution_target();
+        }
+        None
+    }
+
+    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    pub(crate) fn copy_screen_publication(
+        &mut self,
+        publication: &std::sync::Arc<ScreenBranchPublication>,
+    ) -> Result<Option<GpuTextureFrame>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.copy_screen_publication(publication),
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+        }
+    }
+
     pub(crate) fn surface_pool_counts(&mut self) -> SparkleFlingerSurfacePoolCounts {
         let preview = self.preview_surface_pool.slot_counts();
         let composition = self.composition_surface_pool.slot_counts();

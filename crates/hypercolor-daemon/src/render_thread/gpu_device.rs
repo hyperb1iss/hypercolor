@@ -9,7 +9,7 @@ pub struct GpuRenderDevice {
 
 #[derive(Debug)]
 struct GpuRenderDeviceInner {
-    _instance: wgpu::Instance,
+    instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -114,7 +114,7 @@ impl GpuRenderDevice {
 
         Ok(Self {
             inner: Arc::new(GpuRenderDeviceInner {
-                _instance: instance,
+                instance,
                 adapter,
                 device,
                 queue,
@@ -124,7 +124,7 @@ impl GpuRenderDevice {
     }
 
     pub(crate) fn independent_device(&self, label: &'static str) -> Result<Self> {
-        let instance = self.inner._instance.clone();
+        let instance = self.inner.instance.clone();
         let adapter = self.inner.adapter.clone();
         let required_features = self.inner.device.features();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -154,7 +154,7 @@ impl GpuRenderDevice {
 
         Ok(Self {
             inner: Arc::new(GpuRenderDeviceInner {
-                _instance: instance,
+                instance,
                 adapter,
                 device,
                 queue,

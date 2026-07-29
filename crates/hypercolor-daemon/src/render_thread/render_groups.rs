@@ -111,7 +111,7 @@ pub(crate) struct ZoneRuntime {
 }
 
 impl ZoneRuntime {
-    #[cfg(any(test, feature = "wgpu"))]
+    #[cfg(test)]
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
         Self::try_new(scene_width, scene_height)
             .expect("default scene dimensions must fit available memory")

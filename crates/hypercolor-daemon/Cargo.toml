@@ -19,7 +19,12 @@ workspace = true
 builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/default"]
 media-lottie = ["hypercolor-core/media-lottie"]
 media-video = ["hypercolor-core/media-video"]
-wgpu = ["dep:wgpu", "dep:pollster"]
+wgpu = [
+    "dep:wgpu",
+    "dep:pollster",
+    "dep:hypercolor-windows-capture",
+    "dep:hypercolor-windows-gpu-interop",
+]
 servo-gpu-import = ["servo", "wgpu", "hypercolor-core/servo-gpu-import"]
 default = ["builtin-drivers", "wgpu", "servo", "servo-gpu-import"]
 servo = ["hypercolor-core/servo"]
@@ -70,6 +75,8 @@ pollster = { workspace = true, optional = true }
 sd-notify = "0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+hypercolor-windows-capture = { workspace = true, optional = true }
+hypercolor-windows-gpu-interop = { workspace = true, features = ["screen-capture"], optional = true }
 thread-priority = "3.0.0"
 windows-service = "0.8.0"
 

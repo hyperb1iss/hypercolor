@@ -15,7 +15,10 @@ use hypercolor_core::input::routing::{
     ConsumerIncarnation, InteractionRouteContext, InteractionRouteRequest, InteractionRouteSource,
     InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
 };
-use hypercolor_core::input::screen::PixelExtent;
+use hypercolor_core::input::screen::{
+    PixelExtent, ScreenBranchPublication, ScreenNativeExecutionTarget,
+    ScreenPublicationExecutorRequest,
+};
 use hypercolor_core::input::{
     InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
     SourceFreshness, SourceKind, SourceState, SourceStatusAvailability, SourceStatusHandle,
@@ -79,6 +82,7 @@ pub(crate) struct FrameInputs {
     pub(crate) audio_was_published: bool,
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
+    pub(crate) screen_publication: Option<Arc<ScreenBranchPublication>>,
     pub(crate) sensors: Arc<SystemSnapshot>,
     pub(crate) input_availability: InputSourceAvailability,
     empty_sensors: Arc<SystemSnapshot>,
@@ -146,10 +150,12 @@ impl InputReuseState {
         &'a mut self,
         state: &RenderThreadState,
         skip_decision: SkipDecision,
+        screen_target: Option<&ScreenNativeExecutionTarget>,
         _delta_secs: f32,
     ) -> &'a mut FrameInputs {
         if matches!(skip_decision, SkipDecision::None) {
-            self.routes.read_into(state, &mut self.cached_inputs);
+            self.routes
+                .read_into(state, &mut self.cached_inputs, screen_target);
         } else {
             self.cached_inputs.clear_transient_interaction();
             self.cached_inputs.input_availability = self.routes.refresh_interaction_availability();
@@ -227,7 +233,12 @@ impl InputRouteCache {
         }
     }
 
-    fn read_into(&mut self, state: &RenderThreadState, inputs: &mut FrameInputs) {
+    fn read_into(
+        &mut self,
+        state: &RenderThreadState,
+        inputs: &mut FrameInputs,
+        screen_target: Option<&ScreenNativeExecutionTarget>,
+    ) {
         let sensors = self.reader.latest_sensor_snapshot();
         let graph = self.reader.graph_snapshot();
         let graph_changed = self.graph_generation != Some(graph.generation());
@@ -242,6 +253,13 @@ impl InputRouteCache {
 
         inputs.prepare_for_sample(sensors);
         self.route_latest_into(inputs);
+        inputs.screen_publication = screen_target.and_then(|target| {
+            self.reader.latest_native_screen_publication(
+                target,
+                PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
+                    .expect("render canvas dimensions are non-empty"),
+            )
+        });
         self.route_interaction_into(&state.event_bus, &graph, &browser_registry, inputs);
     }
 
@@ -558,6 +576,7 @@ impl FrameInputs {
         self.media = None;
         self.net = None;
         self.lighting = None;
+        self.screen_publication = None;
         self.screen_surface = None;
         self.screen_sector_grid.clear();
     }
@@ -577,6 +596,7 @@ impl FrameInputs {
             audio_was_published: false,
             interaction: InteractionData::default(),
             screen_data: None,
+            screen_publication: None,
             sensors: Arc::clone(&empty_sensors),
             input_availability: InputSourceAvailability::default(),
             empty_sensors,
@@ -1186,8 +1206,10 @@ impl FrameLoopState {
         effect_demand: EffectDemand,
         requested_hz: u32,
         screen_extent: PixelExtent,
+        screen_target: Option<&ScreenNativeExecutionTarget>,
     ) {
-        let authoritative = authoritative_input_demand(effect_demand, requested_hz, screen_extent);
+        let authoritative =
+            authoritative_input_demand(effect_demand, requested_hz, screen_extent, screen_target);
         self.authoritative_input_demand.publish(authoritative);
     }
 
@@ -1208,13 +1230,20 @@ fn authoritative_input_demand(
     effect_demand: EffectDemand,
     requested_hz: u32,
     screen_extent: PixelExtent,
+    screen_target: Option<&ScreenNativeExecutionTarget>,
 ) -> InputPublicationDemand {
     let mut demand = InputPublicationDemand::default();
     if effect_demand.audio_capture_active {
         demand = demand.with_source(SourceKind::Audio, requested_hz);
     }
     if effect_demand.screen_capture_active {
-        demand = demand.with_screen(requested_hz, screen_extent);
+        demand = demand.with_screen_executor(
+            requested_hz,
+            screen_extent,
+            screen_target.map_or(ScreenPublicationExecutorRequest::Cpu, |target| {
+                ScreenPublicationExecutorRequest::SourceNative(target.clone())
+            }),
+        );
     }
     if effect_demand.interaction_capture_active {
         demand = demand.with_source(SourceKind::Interaction, requested_hz);
@@ -1927,6 +1956,7 @@ impl PipelineRuntime {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::num::{NonZeroU32, NonZeroU64};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -1936,7 +1966,10 @@ mod tests {
         BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserInputSource,
         BrowserPreviewId,
     };
-    use hypercolor_core::input::screen::PixelExtent;
+    use hypercolor_core::input::screen::{
+        PixelExtent, PlatformGpuApi, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+        ScreenPhysicalGpuDeviceIdentity, ScreenPublicationExecutorRequest,
+    };
     use hypercolor_core::input::{
         InputData, InputGraphSnapshot, InputManager, InputSource, InteractionData, SourceIssue,
         SourceKind, SourceStatusWriter,
@@ -2491,13 +2524,45 @@ mod tests {
 
         let screen_extent = PixelExtent::new(5_120, 2_160)
             .expect("test screen publication extent should be non-empty");
-        let demand = authoritative_input_demand(effect_demand, 60, screen_extent);
+        let demand = authoritative_input_demand(effect_demand, 60, screen_extent, None);
         let expected = InputPublicationDemand::default()
             .with_source(SourceKind::Audio, 60)
             .with_screen(60, screen_extent)
             .with_source(SourceKind::Interaction, 60)
             .with_source(SourceKind::Media, 1)
             .with_source(SourceKind::Network, 1);
+
+        assert_eq!(demand, expected);
+    }
+
+    #[test]
+    fn authoritative_screen_demand_binds_the_renderer_target() {
+        let effect_demand = EffectDemand {
+            effect_running: true,
+            audio_capture_active: false,
+            screen_capture_active: true,
+            interaction_capture_active: false,
+            media_input_active: false,
+            network_input_active: false,
+        };
+        let screen_extent = PixelExtent::new(7_680, 4_320)
+            .expect("test screen publication extent should be non-empty");
+        let target = ScreenNativeExecutionTarget::new(
+            ScreenNativeExecutionTargetId::new(NonZeroU64::MIN),
+            PlatformGpuApi::Direct3d11,
+            ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+                low_part: 7,
+                high_part: 11,
+            },
+            NonZeroU32::new(16_384).expect("test texture limit is non-zero"),
+        );
+
+        let demand = authoritative_input_demand(effect_demand, 144, screen_extent, Some(&target));
+        let expected = InputPublicationDemand::default().with_screen_executor(
+            144,
+            screen_extent,
+            ScreenPublicationExecutorRequest::SourceNative(target),
+        );
 
         assert_eq!(demand, expected);
     }

@@ -8,8 +8,9 @@ use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
 use hypercolor_core::input::screen::{
     CommittedScreenPublicationTransition, InputPublicationDemandRevision, PixelExtent,
-    RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenCaptureDemand, ScreenExtentRequest,
-    ScreenInputGraphGeneration, ScreenProcessingProfile, ScreenPublicationDemandSnapshot,
+    RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenBranchPublication, ScreenCaptureDemand,
+    ScreenExtentRequest, ScreenInputGraphGeneration, ScreenNativeExecutionTarget,
+    ScreenProcessingProfile, ScreenPublicationDemandSnapshot, ScreenPublicationExecutor,
     ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
     ScreenPublicationRequest, ScreenPublicationRetirement, ScreenSourceSelector,
     ScreenUpscalePolicy,
@@ -87,7 +88,11 @@ impl InputScreenBranchDemand {
         self.legacy_extent
     }
 
-    fn surface(requested_hz: u32, requested_extent: PixelExtent) -> Option<Self> {
+    fn surface(
+        requested_hz: u32,
+        requested_extent: PixelExtent,
+        executor: ScreenPublicationExecutorRequest,
+    ) -> Option<Self> {
         let requested_hz = NonZeroU32::new(requested_hz)?;
         let extent = ScreenExtentRequest::bounded(
             NonZeroU32::new(requested_extent.width()),
@@ -97,7 +102,7 @@ impl InputScreenBranchDemand {
         let request = ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
-            ScreenPublicationExecutorRequest::Cpu,
+            executor,
             extent,
             ScreenAspectPolicy::Contain,
             Arc::new(ScreenProcessingProfile::default()),
@@ -119,10 +124,14 @@ impl InputPublicationDemand {
     pub fn all_sources(requested_hz: u32, screen_extent: PixelExtent) -> Self {
         Self {
             audio: requested_hz,
-            screen: InputScreenBranchDemand::surface(requested_hz, screen_extent)
-                .into_iter()
-                .collect::<Vec<_>>()
-                .into(),
+            screen: InputScreenBranchDemand::surface(
+                requested_hz,
+                screen_extent,
+                ScreenPublicationExecutorRequest::Cpu,
+            )
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into(),
             interaction: requested_hz,
             media: requested_hz,
             network: requested_hz,
@@ -159,7 +168,26 @@ impl InputPublicationDemand {
     /// Set screen publication cadence and extent together.
     #[must_use]
     pub fn with_screen(mut self, requested_hz: u32, requested_extent: PixelExtent) -> Self {
-        self.screen = InputScreenBranchDemand::surface(requested_hz, requested_extent)
+        self.screen = InputScreenBranchDemand::surface(
+            requested_hz,
+            requested_extent,
+            ScreenPublicationExecutorRequest::Cpu,
+        )
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into();
+        self
+    }
+
+    /// Set screen cadence, extent, and one renderer-bound execution request.
+    #[must_use]
+    pub fn with_screen_executor(
+        mut self,
+        requested_hz: u32,
+        requested_extent: PixelExtent,
+        executor: ScreenPublicationExecutorRequest,
+    ) -> Self {
+        self.screen = InputScreenBranchDemand::surface(requested_hz, requested_extent, executor)
             .into_iter()
             .collect::<Vec<_>>()
             .into();
@@ -709,6 +737,28 @@ impl InputPublicationReader {
     )]
     pub(crate) fn screen_publications(&self) -> Arc<ScreenPublicationHub> {
         Arc::clone(&self.screen_publications)
+    }
+
+    pub(crate) fn latest_native_screen_publication(
+        &self,
+        target: &ScreenNativeExecutionTarget,
+        extent: PixelExtent,
+    ) -> Option<Arc<ScreenBranchPublication>> {
+        let state = self.screen_publications.committed_state();
+        let branch = state.plan().branches().iter().find(|branch| {
+            let descriptor = branch.descriptor();
+            descriptor.kind() == ScreenPublicationKind::Surface
+                && descriptor.geometry().output_extent() == extent
+                && matches!(
+                    descriptor.executor(),
+                    ScreenPublicationExecutor::SourceNative(selected)
+                        if selected.id() == target.id()
+                )
+        })?;
+        self.screen_publications
+            .lease(branch.descriptor())
+            .ok()?
+            .read()
     }
 }
 

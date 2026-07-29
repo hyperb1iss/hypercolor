@@ -4768,6 +4768,8 @@ dependencies = [
  "hypercolor-leptos-ext",
  "hypercolor-network",
  "hypercolor-types",
+ "hypercolor-windows-capture",
+ "hypercolor-windows-gpu-interop",
  "hypercolor-windows-input",
  "if-addrs",
  "image",

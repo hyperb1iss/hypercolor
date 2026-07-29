@@ -386,6 +386,28 @@ fn gpu_compositor_probe_reports_a_texture_format() {
     assert!(!probe.texture_format.is_empty());
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn dx12_compositor_exposes_one_renderer_bound_screen_target() {
+    let compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let info = compositor._render_device.info();
+
+    if matches!(info.backend, wgpu::Backend::Dx12) {
+        let target = compositor
+            .screen_native_execution_target()
+            .expect("DX12 compositor should expose a D3D11On12 target");
+        assert_eq!(
+            target.max_texture_dimension().get(),
+            info.max_texture_dimension_2d
+        );
+    } else {
+        assert!(compositor.screen_native_execution_target().is_none());
+    }
+}
+
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 #[test]
 fn gpu_macos_imported_frame_composes_without_cpu_readback() {

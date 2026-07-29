@@ -97,7 +97,12 @@ pub(crate) async fn execute_frame(
     )
     .await;
     let output_power = scene_snapshot.output_power;
-    publish_input_demands(frame_loop, scene_snapshot.effect_demand, state);
+    publish_input_demands(
+        frame_loop,
+        scene_snapshot.effect_demand,
+        state,
+        render.sparkleflinger.screen_native_execution_target(),
+    );
     let mut screen_input_active = frame_loop.has_screen_input_demand();
     scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
@@ -148,7 +153,12 @@ pub(crate) async fn execute_frame(
     .await
     {
         let refreshed_demand = scene_snapshot.effect_demand;
-        publish_input_demands(frame_loop, refreshed_demand, state);
+        publish_input_demands(
+            frame_loop,
+            refreshed_demand,
+            state,
+            render.sparkleflinger.screen_native_execution_target(),
+        );
         screen_input_active = frame_loop.has_screen_input_demand();
     }
     scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
@@ -166,9 +176,12 @@ pub(crate) async fn execute_frame(
     }
 
     let input_start = Instant::now();
-    let inputs = frame_loop
-        .inputs
-        .inputs_for_frame(state, skip_decision, delta_secs);
+    let inputs = frame_loop.inputs.inputs_for_frame(
+        state,
+        skip_decision,
+        render.sparkleflinger.screen_native_execution_target(),
+        delta_secs,
+    );
     frame_loop
         .publication_cadence
         .observe_audio_publication(inputs.audio_was_published);
@@ -571,6 +584,7 @@ fn publish_input_demands(
     frame_loop: &mut super::pipeline_runtime::FrameLoopState,
     effect_demand: super::scene_snapshot::EffectDemand,
     state: &RenderThreadState,
+    screen_target: Option<&hypercolor_core::input::screen::ScreenNativeExecutionTarget>,
 ) {
     let screen_extent = PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
         .expect("render canvas dimensions are non-empty");
@@ -578,6 +592,7 @@ fn publish_input_demands(
         effect_demand,
         state.configured_max_fps_tier.get().fps(),
         screen_extent,
+        screen_target,
     );
 }
 

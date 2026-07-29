@@ -1,14 +1,27 @@
 use std::collections::HashMap;
 use std::fmt;
+#[cfg(target_os = "windows")]
+use std::num::{NonZeroU32, NonZeroU64};
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 #[cfg(test)]
 use hypercolor_core::bus::DisplayYuv420Frame;
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::{
+    PlatformGpuApi, ScreenBranchPayload, ScreenBranchPublication, ScreenNativeExecutionTarget,
+    ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity,
+};
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{
     BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
 };
+#[cfg(target_os = "windows")]
+use hypercolor_windows_capture::GpuSurfacePublication;
+#[cfg(target_os = "windows")]
+use hypercolor_windows_gpu_interop::D3d11On12ScreenBridge;
 
 use super::{
     CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
@@ -71,6 +84,49 @@ const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 static NEXT_GPU_TEXTURE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+#[cfg(target_os = "windows")]
+static NEXT_SCREEN_TARGET_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(target_os = "windows")]
+fn create_screen_bridge(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    max_texture_dimension: u32,
+) -> (
+    Option<D3d11On12ScreenBridge>,
+    Option<ScreenNativeExecutionTarget>,
+) {
+    let bridge = match D3d11On12ScreenBridge::new(device.clone(), queue.clone()) {
+        Ok(bridge) => bridge,
+        Err(error) => {
+            tracing::debug!(%error, "renderer does not expose a DX12 screen-copy target");
+            return (None, None);
+        }
+    };
+    let Ok(target_id) =
+        NEXT_SCREEN_TARGET_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+    else {
+        tracing::warn!("screen target identity space is exhausted");
+        return (None, None);
+    };
+    let target_id = ScreenNativeExecutionTargetId::new(
+        NonZeroU64::new(target_id).expect("screen target identities start at one"),
+    );
+    let adapter_luid = bridge.adapter_luid();
+    let target = ScreenNativeExecutionTarget::new(
+        target_id,
+        PlatformGpuApi::Direct3d11,
+        ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+            low_part: adapter_luid.low_part(),
+            high_part: adapter_luid.high_part(),
+        },
+        NonZeroU32::new(max_texture_dimension)
+            .expect("wgpu devices expose a non-zero texture dimension limit"),
+    );
+    (Some(bridge), Some(target))
+}
 
 pub(crate) struct GpuSparkleFlinger {
     _render_device: GpuRenderDevice,
@@ -96,6 +152,12 @@ pub(crate) struct GpuSparkleFlinger {
     output_generation: u64,
     producer_content_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
+    #[cfg(target_os = "windows")]
+    screen_bridge: Option<D3d11On12ScreenBridge>,
+    #[cfg(target_os = "windows")]
+    screen_target: Option<ScreenNativeExecutionTarget>,
+    #[cfg(target_os = "windows")]
+    screen_storage_ids: HashMap<u64, u64>,
     #[cfg(test)]
     superseded_frame_count: usize,
     #[cfg(test)]
@@ -410,6 +472,9 @@ impl GpuSparkleFlinger {
 
         let pipeline = GpuCompositorPipeline::new(&device);
         let spatial_sampler = GpuSpatialSampler::new(&device);
+        #[cfg(target_os = "windows")]
+        let (screen_bridge, screen_target) =
+            create_screen_bridge(&device, &queue, probe.max_texture_dimension_2d);
 
         Ok(Self {
             _render_device: render_device,
@@ -435,6 +500,12 @@ impl GpuSparkleFlinger {
             output_generation: 0,
             producer_content_generation: 0,
             cached_sample_result: None,
+            #[cfg(target_os = "windows")]
+            screen_bridge,
+            #[cfg(target_os = "windows")]
+            screen_target,
+            #[cfg(target_os = "windows")]
+            screen_storage_ids: HashMap::new(),
             #[cfg(test)]
             superseded_frame_count: 0,
             #[cfg(test)]
@@ -454,6 +525,47 @@ impl GpuSparkleFlinger {
                 gpu_source_frame(&layer.frame).is_some()
                     || layer.frame_matches_size(plan.width, plan.height)
             })
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
+        self.screen_target.as_ref()
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn copy_screen_publication(
+        &mut self,
+        publication: &Arc<ScreenBranchPublication>,
+    ) -> Result<Option<GpuTextureFrame>> {
+        let Some(bridge) = self.screen_bridge.as_mut() else {
+            return Ok(None);
+        };
+        let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
+            return Ok(None);
+        };
+        let native = payload
+            .surface()
+            .owner::<GpuSurfacePublication>()
+            .context("native screen publication has an unknown platform owner")?;
+        bridge
+            .prepare_target(&native.provenance().descriptor)
+            .context("failed to prepare the renderer screen-copy target")?;
+        let copy = bridge
+            .copy_publication(&native)
+            .context("failed to copy the native screen publication")?;
+        let storage_id = *self
+            .screen_storage_ids
+            .entry(copy.storage_id)
+            .or_insert_with(|| NEXT_GPU_TEXTURE_STORAGE_ID.fetch_add(1, Ordering::Relaxed));
+        Ok(Some(GpuTextureFrame {
+            width: copy.width,
+            height: copy.height,
+            storage_id,
+            content_generation: copy.content_generation,
+            origin: GpuTextureFrameOrigin::ProducerTexture,
+            texture: copy.texture.as_ref().clone(),
+            view: copy.view.as_ref().clone(),
+        }))
     }
 
     pub(crate) fn can_sample_zone_plan(&self, prepared_zones: &[PreparedZonePlan]) -> bool {
