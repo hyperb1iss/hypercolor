@@ -334,7 +334,7 @@ fn exact_gpu_route_selection_is_allocation_free_and_consumed_per_acquisition() {
 }
 
 #[test]
-fn deselected_busy_gpu_route_still_retries_its_latest_acquisition() {
+fn deselected_busy_gpu_route_remains_retryable_at_its_next_selection() {
     let descriptor = super::gpu_surface::fixture::descriptor(
         6,
         CaptureRegion::full(1, 1),
@@ -363,12 +363,15 @@ fn deselected_busy_gpu_route_still_retries_its_latest_acquisition() {
     ));
 
     fixture.plan.select_routes_for_next_acquisition(|_| false);
-    assert!(fixture.plan.has_selected_routes());
+    assert!(!fixture.plan.has_selected_routes());
     drop(first);
     let retried = (0..64)
         .find_map(|_| {
+            fixture
+                .plan
+                .select_routes_for_next_acquisition(|route| route.id() == descriptor.id());
             let outcomes = super::gpu_surface::fixture::retry_pending(&mut fixture)
-                .expect("deselected pending route remains retryable");
+                .expect("pending route remains retryable when selected again");
             outcomes.into_iter().find_map(|outcome| match outcome {
                 crate::GpuSurfacePublishOutcome::Published(publication) => Some(publication),
                 crate::GpuSurfacePublishOutcome::Busy(_) => {

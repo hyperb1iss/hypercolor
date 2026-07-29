@@ -742,9 +742,8 @@ impl PreparedGpuSurfacePlan {
 
     /// Select exact routes eligible for the next native acquisition.
     ///
-    /// Once called, selection remains caller-controlled. A route still
-    /// pending from an occupied slot remains eligible so latest-value retry
-    /// semantics cannot be disabled accidentally.
+    /// Once called, selection remains caller-controlled. Pending content is
+    /// retained across deselection and retried when that route is selected.
     pub fn select_routes_for_next_acquisition<F>(&mut self, mut select: F)
     where
         F: FnMut(&GpuSurfaceDescriptor) -> bool,
@@ -759,16 +758,15 @@ impl PreparedGpuSurfacePlan {
     #[must_use]
     pub fn has_selected_routes(&self) -> bool {
         !self.selection_controlled
-            || self.routes.iter().any(|route| {
-                route.selected_for_next_acquisition || route.pending_source_sequence.is_some()
-            })
+            || self
+                .routes
+                .iter()
+                .any(|route| route.selected_for_next_acquisition)
     }
 
     pub(super) fn requires_pointer_for_next_publication(&self) -> bool {
         self.routes.iter().any(|route| {
-            (!self.selection_controlled
-                || route.selected_for_next_acquisition
-                || route.pending_source_sequence.is_some())
+            (!self.selection_controlled || route.selected_for_next_acquisition)
                 && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
         })
     }
@@ -926,28 +924,30 @@ impl PreparedGpuSurfacePlan {
             metadata.source_color_space,
         )?;
         self.validate_clean(clean)?;
-        for route in &mut self.routes {
-            if !self.selection_controlled
-                || route.selected_for_next_acquisition
-                || route.pending_source_sequence.is_some()
-            {
-                route.pending_source_sequence = Some(metadata.sequence);
+        let result = (|| {
+            for route in &mut self.routes {
+                if !self.selection_controlled
+                    || route.selected_for_next_acquisition
+                    || route.pending_source_sequence.is_some()
+                {
+                    route.pending_source_sequence = Some(metadata.sequence);
+                }
             }
-            route.selected_for_next_acquisition = false;
-        }
-        for route in self
-            .routes
-            .iter()
-            .filter(|route| route.pending_source_sequence == Some(metadata.sequence))
-        {
-            metadata
-                .captured_at
-                .checked_add(route.descriptor.freshness())
-                .ok_or(CaptureError::GpuSurfaceFreshnessOverflow)?;
-        }
-        self.validate_cursor_shape(metadata)?;
-        self.validate_pointer_resource(metadata, pointer_resource)?;
-        self.fanout_pending(clean, pointer_resource, emit)
+            for route in self.routes.iter().filter(|route| {
+                (!self.selection_controlled || route.selected_for_next_acquisition)
+                    && route.pending_source_sequence == Some(metadata.sequence)
+            }) {
+                metadata
+                    .captured_at
+                    .checked_add(route.descriptor.freshness())
+                    .ok_or(CaptureError::GpuSurfaceFreshnessOverflow)?;
+            }
+            self.validate_cursor_shape(metadata)?;
+            self.validate_pointer_resource(metadata, pointer_resource)?;
+            self.fanout_pending(clean, pointer_resource, emit)
+        })();
+        self.clear_route_selection();
+        result
     }
 
     pub(super) fn retry_pending_with_feedback<F>(
@@ -960,17 +960,28 @@ impl PreparedGpuSurfacePlan {
         F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
     {
         let metadata = &clean.metadata;
-        self.validate_clean(clean)?;
-        self.validate_cursor_shape(metadata)?;
-        self.validate_pointer_resource(metadata, pointer_resource)?;
-        self.fanout_pending(clean, pointer_resource, &mut emit)
+        let result = (|| {
+            self.validate_clean(clean)?;
+            self.validate_cursor_shape(metadata)?;
+            self.validate_pointer_resource(metadata, pointer_resource)?;
+            self.fanout_pending(clean, pointer_resource, &mut emit)
+        })();
+        self.clear_route_selection();
+        result
+    }
+
+    fn clear_route_selection(&mut self) {
+        for route in &mut self.routes {
+            route.selected_for_next_acquisition = false;
+        }
     }
 
     fn validate_cursor_shape(&self, metadata: &CaptureMetadata) -> CaptureResult<()> {
         if metadata.pointer.visible
             && metadata.pointer.shape.is_none()
             && let Some(route) = self.routes.iter().find(|route| {
-                route.pending_source_sequence == Some(metadata.sequence)
+                (!self.selection_controlled || route.selected_for_next_acquisition)
+                    && route.pending_source_sequence == Some(metadata.sequence)
                     && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
             })
         {
@@ -996,7 +1007,8 @@ impl PreparedGpuSurfacePlan {
             return Ok(());
         };
         let needs_pointer = self.routes.iter().any(|route| {
-            route.pending_source_sequence == Some(metadata.sequence)
+            (!self.selection_controlled || route.selected_for_next_acquisition)
+                && route.pending_source_sequence == Some(metadata.sequence)
                 && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
         });
         if needs_pointer
@@ -1010,7 +1022,8 @@ impl PreparedGpuSurfacePlan {
                 .routes
                 .iter()
                 .find(|route| {
-                    route.pending_source_sequence == Some(metadata.sequence)
+                    (!self.selection_controlled || route.selected_for_next_acquisition)
+                        && route.pending_source_sequence == Some(metadata.sequence)
                         && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
                 })
                 .expect("a pointer-requiring route exists")
@@ -1042,6 +1055,10 @@ impl PreparedGpuSurfacePlan {
         let mut busy = 0;
         let mut publish_error = None;
         for route_index in 0..self.routes.len() {
+            if self.selection_controlled && !self.routes[route_index].selected_for_next_acquisition
+            {
+                continue;
+            }
             if self.routes[route_index].pending_source_sequence != Some(metadata.sequence) {
                 continue;
             }
