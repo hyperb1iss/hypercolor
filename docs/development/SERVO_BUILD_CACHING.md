@@ -67,21 +67,23 @@ The shared wrapper configures:
   `cargo run` (the edit-run loop; a measured hypercolor-core edit-rebuild
   is ~45s non-incremental vs ~11s incremental), `cargo check`, and
   `clippy` (sccache cannot cache `--emit=metadata` units). The
-  iteration-shaped recipes (`just test-crate`, `test-one`, `app`, and the
-  Windows `just dev` daemon build) pin incremental via
-  `HYPERCOLOR_ITERATE=1`.
+  iteration-shaped recipes (`just test-crate`, `test-one`, the Unix `app`
+  build, and the Windows `just dev` daemon build) pin incremental via
+  `HYPERCOLOR_ITERATE=1`; the Windows `app` recipe uses `cargo run` and
+  lands there by subcommand.
 - Opt-outs: `HYPERCOLOR_NO_SCCACHE=1` disables sccache for the session;
   `HYPERCOLOR_ITERATE=1` does the same per invocation when you want
   incremental rebuilds in a tight edit loop; a pre-set non-zero
   `CARGO_INCREMENTAL` always wins. Alternating the same profile tree
   between the two modes rebuilds only workspace crates (~50s measured),
   never dependencies.
-- `rust-lld` as the linker on `x86_64-pc-windows-msvc`
-  (`HYPERCOLOR_NO_FAST_LINK=1` to opt out)
+- `rust-lld` as the linker on `x86_64-pc-windows-msvc` for non-release
+  builds (`HYPERCOLOR_NO_FAST_LINK=1` to opt out); release-like builds
+  keep `link.exe` so shipped artifacts all come off the same linker
 - `clang` + `ld.lld` for faster link steps on `x86_64-unknown-linux-gnu` when available
 - C/C++ caching for `cc`- and CMake-driven native deps (mozangle/ANGLE,
-  turbojpeg): `ccache` or `sccache` on Unix, `sccache` around `cl.exe` on
-  Windows
+  turbojpeg): `ccache` or `sccache` on Unix (both modes), `sccache` around
+  `cl.exe` on Windows (sccache mode only)
 
 ## Cross-Worktree Topology
 
@@ -133,26 +135,22 @@ Look for increasing cache hit counts after the first Servo build.
 The reusable action `.github/actions/rust-build-cache` configures GitHub
 Actions builds with:
 
-- `mozilla-actions/sccache-action` using GitHub's sccache backend
-- `HYPERCOLOR_FORCE_SCCACHE=1`
-- `CARGO_INCREMENTAL=0`
 - `Swatinem/rust-cache` for Cargo and extra cache directories
+- `CARGO_INCREMENTAL=0` (set workflow-wide)
 - `.cache/hypercolor/target` for CI-selected Cargo target shards
 - `.cache/hypercolor/mozbuild`
 - `.cache/hypercolor/toolchain`
 - `.cache/hypercolor/ccache`
 
-The manual `.github/workflows/servo-cache-warm.yml` workflow warms three
-compatible shapes when a maintainer deliberately refreshes Servo caches:
+CI does not run sccache today: hosted runners do not preinstall it and the
+workflows do not set it up. The wrappers honor `HYPERCOLOR_FORCE_SCCACHE=1`
+and a pre-set `CARGO_INCREMENTAL=0`, so a future CI sccache lane only needs
+to install the binary and set the flag.
 
-| Suite        | Shared Key     | Extra Key    | Purpose                                          |
-| ------------ | -------------- | ------------ | ------------------------------------------------ |
-| Core Servo   | `servo-core`   | empty        | core Servo check, test, and clippy artifacts     |
-| Daemon Servo | `servo-daemon` | empty        | daemon Servo check, test, and clippy artifacts   |
-| E2E Servo    | `servo-daemon` | `e2e-dev-v1` | daemon and CLI binaries for the normal E2E stack |
-
-The main CI workflow reuses those same shared keys in the explicit Servo check,
-test, and E2E build lanes. Pull requests keep the separate Servo check/test
+The manual `.github/workflows/servo-cache-warm.yml` workflow warms the
+`servo` shared cache key when a maintainer deliberately refreshes Servo
+caches; the main CI workflow reuses that key in its Servo check, test, and
+E2E build lanes. Pull requests keep the separate Servo check/test
 lanes out of the default path and rely on the normal Servo E2E stack for HTML
 renderer coverage. Pushes to `main`, tags, and manual CI dispatches still run
 the full Servo check/test gates.

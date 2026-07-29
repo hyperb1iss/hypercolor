@@ -818,51 +818,37 @@ udev-install:
 clean:
     ./scripts/cargo-cache-build.sh cargo clean
 
+# Plain sh lines, no shebang blocks: shebang recipes resolve `bash` from
+# PATH, which on Windows can be WSL bash that cannot read the temp script
+# path. `sh -cu` lines are the pattern every [windows] recipe already
+# proves.
+
 # Report build artifact and shared cache disk usage for this checkout
 disk:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cache_root="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
-    target="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"
-    echo "── target profiles ──"
-    [ -d "$target" ] && du -sh "$target"/* 2>/dev/null | sort -rh | head -15
-    echo "── shared caches ($cache_root) ──"
-    [ -d "$cache_root" ] && du -sh "$cache_root"/* 2>/dev/null | sort -rh
-    if command -v sccache >/dev/null 2>&1; then
-        echo "── sccache ──"
-        sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true
-    fi
+    @echo '── target profiles ──'
+    @if [ -d "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}" ]; then du -sh "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/* 2>/dev/null | sort -rh | head -15 || true; else echo '(no target dir)'; fi
+    @echo "── shared caches (${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}) ──"
+    @if [ -d "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}" ]; then du -sh "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"/* 2>/dev/null | sort -rh || true; else echo '(no cache dir)'; fi
+    @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi
 
 # Sweep stale build artifacts (orphaned toolchains, then >14 days old) from this checkout
 gc:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
+    @command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
     cargo sweep --installed
     cargo sweep --time 14
-    echo '🧹 stale artifacts swept'
+    @echo '🧹 stale artifacts swept'
 
 # Sweep every worktree of this repo (run after merges or when disk runs hot)
 gc-worktrees:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
+    @command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
     git worktree prune
-    git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do
-        [ -d "$wt/target" ] || continue
-        echo "── sweeping $wt"
-        cargo sweep --installed "$wt" || true
-        cargo sweep --time 14 "$wt" || true
-    done
-    echo '🧹 all worktree lanes swept'
+    git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do [ -d "$wt/target" ] || continue; echo "── sweeping $wt"; cargo sweep --installed "$wt" || true; cargo sweep --time 14 "$wt" || true; done
+    @echo '🧹 all worktree lanes swept'
 
 # Deep clean: sweep, then drop incremental state and the CPU-smoke lane
 gc-deep: gc
-    #!/usr/bin/env bash
-    set -euo pipefail
-    target="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"
-    rm -rf "$target"/*/incremental "$target/cpu-smoke"
-    echo '🧹 incremental state and cpu-smoke lane dropped'
+    rm -rf "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/*/incremental "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/cpu-smoke"
+    @echo '🧹 incremental state and cpu-smoke lane dropped'
 
 # Show workspace dependency tree
 deps:

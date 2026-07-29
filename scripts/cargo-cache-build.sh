@@ -48,6 +48,13 @@ if [ "$HOST_TRIPLE" = "x86_64-pc-windows-msvc" ]; then
   exec powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_WRAPPER" "$@"
 fi
 
+# Default the bare invocation before mode detection so it routes like an
+# explicit `cargo build --workspace` instead of falling through to
+# incremental mode.
+if [ "$#" -eq 0 ]; then
+  set -- cargo build --workspace
+fi
+
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"
 DISABLE_SCCACHE="${HYPERCOLOR_NO_SCCACHE:-0}"
@@ -107,7 +114,7 @@ ITERATE="${HYPERCOLOR_ITERATE:-0}"
 # incremental. Whole-tree ops win with sccache instead.
 WANTS_SCCACHE=0
 case "$CARGO_SUBCOMMAND" in
-  build | test | bench) WANTS_SCCACHE=1 ;;
+  build | test | bench | nextest) WANTS_SCCACHE=1 ;;
 esac
 if [ "$RELEASE_LIKE_PROFILE" -eq 1 ] || [ "$FORCE_SCCACHE" = "1" ] || [ "$FORCE_SCCACHE" = "true" ]; then
   WANTS_SCCACHE=1
@@ -127,6 +134,14 @@ if [ -n "$SCCACHE_BIN" ] && [ "$WANTS_SCCACHE" -eq 1 ]; then
   echo "[cargo-cache] sccache mode: Rust cached, incremental off (cap $SCCACHE_CACHE_SIZE)"
   echo "[cargo-cache] SCCACHE_DIR=$SCCACHE_DIR (HYPERCOLOR_NO_SCCACHE=1 or HYPERCOLOR_ITERATE=1 to disable)"
 else
+  # An ambient sccache RUSTC_WRAPPER combined with incremental hard-fails
+  # every compile; drop it rather than let the build die.
+  case "$(basename "${RUSTC_WRAPPER:-}")" in
+    sccache*)
+      unset RUSTC_WRAPPER
+      echo "[cargo-cache] unset ambient sccache RUSTC_WRAPPER for incremental mode"
+      ;;
+  esac
   export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
   if [ -z "$SCCACHE_BIN" ]; then
     echo "[cargo-cache] sccache not found; run 'cargo install --locked sccache' for shared build caching"
@@ -228,10 +243,6 @@ done
 
 echo "[cargo-cache] CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
 echo "[cargo-cache] MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH"
-
-if [ "$#" -eq 0 ]; then
-  set -- cargo build --workspace
-fi
 
 echo "[cargo-cache] running: $*"
 exec "$@"
