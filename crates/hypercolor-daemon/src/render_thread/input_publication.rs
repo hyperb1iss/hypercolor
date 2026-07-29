@@ -378,6 +378,20 @@ impl InputPublicationDemandSnapshot {
         )
         .expect("compatibility branches originate from the exact demand snapshot")
     }
+
+    fn exact_screen_retirement_demand(
+        &self,
+        graph_generation: u64,
+    ) -> ScreenPublicationDemandSnapshot {
+        ScreenPublicationDemandSnapshot::try_new(
+            self.revision,
+            ScreenInputGraphGeneration::new(graph_generation),
+            Arc::default(),
+            None,
+            None,
+        )
+        .expect("an empty exact screen demand has no compatibility branches")
+    }
 }
 
 fn compatibility_screen_precedes(
@@ -959,8 +973,27 @@ impl<T> Drop for AbortOnDropTask<T> {
 
 type ExactScreenTransitionKey = (InputPublicationDemandRevision, u64);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExactScreenTransitionPurpose {
+    ApplyDemand,
+    RetireForRetry,
+}
+
+fn exact_screen_failure_retry_at(
+    purpose: ExactScreenTransitionPurpose,
+    committed_plan_is_empty: bool,
+    now: Instant,
+) -> Instant {
+    if purpose == ExactScreenTransitionPurpose::ApplyDemand && !committed_plan_is_empty {
+        now
+    } else {
+        now + LIFECYCLE_PROBE_INTERVAL
+    }
+}
+
 struct ExactScreenTransitionTask {
     key: ExactScreenTransitionKey,
+    purpose: ExactScreenTransitionPurpose,
     task: AbortOnDropTask<Result<Option<CommittedScreenPublicationTransition>>>,
 }
 
@@ -970,12 +1003,13 @@ impl ExactScreenTransitionTask {
         reader: InputPublicationReader,
         demands: InputPublicationDemandHandle,
         demand: ScreenPublicationDemandSnapshot,
+        purpose: ExactScreenTransitionPurpose,
     ) -> Self {
         let key = (demand.revision(), demand.graph_generation().get());
         let task = AbortOnDropTask::new(tokio::spawn(run_exact_screen_transition(
             manager, reader, demands, demand,
         )));
-        Self { key, task }
+        Self { key, purpose, task }
     }
 
     fn is_finished(&self) -> bool {
@@ -1055,6 +1089,7 @@ async fn run_pump(
     let mut capture_demand = CaptureDemandState::default();
     let mut applied_exact_screen = None;
     let mut exact_screen_retry = None;
+    let mut exact_screen_recovery = None;
     let mut exact_screen_transition: Option<ExactScreenTransitionTask> = None;
     let mut publication_retirements = VecDeque::new();
     let mut worker_retirement_tasks = JoinSet::new();
@@ -1076,6 +1111,7 @@ async fn run_pump(
                 .take()
                 .expect("finished exact screen transition remains present");
             let transition_key = transition.key;
+            let transition_purpose = transition.purpose;
             let current_key = (
                 demands.snapshot().revision(),
                 reader.graph_snapshot().generation(),
@@ -1083,8 +1119,18 @@ async fn run_pump(
             match transition.join().await {
                 Ok(Ok(committed)) => {
                     if transition_key == current_key {
-                        applied_exact_screen = Some(transition_key);
-                        exact_screen_retry = None;
+                        match transition_purpose {
+                            ExactScreenTransitionPurpose::ApplyDemand => {
+                                applied_exact_screen = Some(transition_key);
+                                exact_screen_retry = None;
+                                exact_screen_recovery = None;
+                            }
+                            ExactScreenTransitionPurpose::RetireForRetry => {
+                                applied_exact_screen = None;
+                                exact_screen_retry = Some((transition_key, Instant::now()));
+                                exact_screen_recovery = Some(transition_key);
+                            }
+                        }
                     }
                     if let Some(committed) = committed {
                         let (committed, worker_retirements) = committed.into_parts();
@@ -1103,15 +1149,33 @@ async fn run_pump(
                 Ok(Err(error)) => {
                     tracing::warn!(%error, "exact screen publication transition failed");
                     if transition_key == current_key {
-                        exact_screen_retry =
-                            Some((transition_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
+                        applied_exact_screen = None;
+                        exact_screen_recovery = Some(transition_key);
+                        let committed_plan_is_empty =
+                            reader.screen_publications.committed_state().branch_count() == 0;
+                        let retry_at = exact_screen_failure_retry_at(
+                            transition_purpose,
+                            committed_plan_is_empty,
+                            Instant::now(),
+                        );
+                        exact_screen_retry = Some((transition_key, retry_at));
                     }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "exact screen publication transition task terminated");
                     if transition_key == current_key {
-                        exact_screen_retry =
-                            Some((transition_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
+                        applied_exact_screen = None;
+                        exact_screen_recovery = Some(transition_key);
+                        let committed_plan_is_empty =
+                            reader.screen_publications.committed_state().branch_count() == 0;
+                        exact_screen_retry = Some((
+                            transition_key,
+                            exact_screen_failure_retry_at(
+                                transition_purpose,
+                                committed_plan_is_empty,
+                                Instant::now(),
+                            ),
+                        ));
                     }
                 }
             }
@@ -1146,15 +1210,36 @@ async fn run_pump(
             exact_screen_retry.is_none_or(|(retry_key, retry_at): (_, Instant)| {
                 retry_key != exact_screen_key || Instant::now() >= retry_at
             });
+        let recovery_active = exact_screen_recovery.is_some();
+        let committed_exact_plan_is_empty =
+            reader.screen_publications.committed_state().branch_count() == 0;
+        let recovery_waits_for_retirement = recovery_active
+            && committed_exact_plan_is_empty
+            && (!publication_retirements.is_empty() || !worker_retirement_tasks.is_empty());
         if applied_exact_screen != Some(exact_screen_key)
             && exact_screen_retry_due
+            && !recovery_waits_for_retirement
             && exact_screen_transition.is_none()
         {
+            let purpose = if recovery_active && !committed_exact_plan_is_empty {
+                ExactScreenTransitionPurpose::RetireForRetry
+            } else {
+                ExactScreenTransitionPurpose::ApplyDemand
+            };
+            let exact_demand = match purpose {
+                ExactScreenTransitionPurpose::ApplyDemand => {
+                    demand.exact_screen_demand(graph.generation())
+                }
+                ExactScreenTransitionPurpose::RetireForRetry => {
+                    demand.exact_screen_retirement_demand(graph.generation())
+                }
+            };
             exact_screen_transition = Some(ExactScreenTransitionTask::spawn(
                 Arc::clone(&manager),
                 reader.clone(),
                 demands.clone(),
-                demand.exact_screen_demand(graph.generation()),
+                exact_demand,
+                purpose,
             ));
         }
         let active_demand = demand_for_active_sources(&graph, &demand);

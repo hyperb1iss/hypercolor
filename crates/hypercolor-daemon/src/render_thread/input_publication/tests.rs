@@ -18,10 +18,11 @@ use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
 use tokio::sync::{Mutex, Notify};
 
 use super::{
-    InputPublicationCadence, InputPublicationConsumer, InputPublicationDemand,
-    InputPublicationDemandHandle, InputPublicationPump, InputPublicationReader,
-    InputPublicationSchedule, InputPublicationStatus, InputScreenBranchDemand, cadence_interval,
-    run_exact_screen_transition,
+    ExactScreenTransitionPurpose, InputPublicationCadence, InputPublicationConsumer,
+    InputPublicationDemand, InputPublicationDemandHandle, InputPublicationPump,
+    InputPublicationReader, InputPublicationSchedule, InputPublicationStatus,
+    InputScreenBranchDemand, LIFECYCLE_PROBE_INTERVAL, cadence_interval,
+    exact_screen_failure_retry_at, run_exact_screen_transition,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -41,6 +42,9 @@ struct ScreenDemandSource {
     runtime: Arc<StdMutex<Vec<ScreenRuntimeAllocation>>>,
     preparation_started: Option<Arc<Notify>>,
     preparation_release: Option<Arc<Notify>>,
+    preparation_failures: Option<Arc<AtomicUsize>>,
+    retirement_started: Option<Arc<Notify>>,
+    retirement_release: Option<Arc<Notify>>,
     running: bool,
 }
 
@@ -89,6 +93,9 @@ impl ScreenDemandSource {
             runtime: Arc::new(StdMutex::new(Vec::new())),
             preparation_started: None,
             preparation_release: None,
+            preparation_failures: None,
+            retirement_started: None,
+            retirement_release: None,
             running: false,
         }
     }
@@ -96,6 +103,18 @@ impl ScreenDemandSource {
     fn with_preparation_gate(mut self, started: Arc<Notify>, release: Arc<Notify>) -> Self {
         self.preparation_started = Some(started);
         self.preparation_release = Some(release);
+        self
+    }
+
+    fn with_recovery_gates(
+        mut self,
+        preparation_failures: Arc<AtomicUsize>,
+        retirement_started: Arc<Notify>,
+        retirement_release: Arc<Notify>,
+    ) -> Self {
+        self.preparation_failures = Some(preparation_failures);
+        self.retirement_started = Some(retirement_started);
+        self.retirement_release = Some(retirement_release);
         self
     }
 }
@@ -166,6 +185,7 @@ impl InputSource for ScreenDemandSource {
         let abort_runtime = Arc::clone(&self.runtime);
         let preparation_started = self.preparation_started.clone();
         let preparation_release = self.preparation_release.clone();
+        let preparation_failures = self.preparation_failures.clone();
         Ok(ScreenWorkerPreparation::with_abort(
             async move {
                 if let Some(started) = preparation_started {
@@ -173,6 +193,15 @@ impl InputSource for ScreenDemandSource {
                 }
                 if let Some(release) = preparation_release {
                     release.notified().await;
+                }
+                if preparation_failures.as_ref().is_some_and(|failures| {
+                    failures
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                            remaining.checked_sub(1)
+                        })
+                        .is_ok()
+                }) {
+                    anyhow::bail!("injected exact screen preparation failure");
                 }
                 let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
                 let reports = ledger
@@ -209,7 +238,22 @@ impl InputSource for ScreenDemandSource {
 
     fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
         let runtime = Arc::clone(&self.runtime);
+        let should_block = runtime
+            .lock()
+            .expect("screen runtime lock is healthy")
+            .iter()
+            .any(|allocation| allocation.binding.state() == ScreenWorkerBindingState::Retired);
+        let retirement_started = self.retirement_started.clone();
+        let retirement_release = self.retirement_release.clone();
         Some(ScreenWorkerRetirement::new(async move {
+            if should_block {
+                if let Some(started) = retirement_started {
+                    started.notify_one();
+                }
+                if let Some(release) = retirement_release {
+                    release.notified().await;
+                }
+            }
             runtime
                 .lock()
                 .expect("screen runtime lock is healthy")
@@ -373,6 +417,23 @@ fn demand_revision_advances_on_register_update_and_release() {
     drop(registration);
     let released = demands.snapshot().revision();
     assert!(released > updated);
+}
+
+#[test]
+fn exact_screen_failure_retries_retirement_immediately_but_backs_off_when_empty() {
+    let now = Instant::now();
+    assert_eq!(
+        exact_screen_failure_retry_at(ExactScreenTransitionPurpose::ApplyDemand, false, now),
+        now
+    );
+    assert_eq!(
+        exact_screen_failure_retry_at(ExactScreenTransitionPurpose::ApplyDemand, true, now),
+        now + LIFECYCLE_PROBE_INTERVAL
+    );
+    assert_eq!(
+        exact_screen_failure_retry_at(ExactScreenTransitionPurpose::RetireForRetry, false, now),
+        now + LIFECYCLE_PROBE_INTERVAL
+    );
 }
 
 #[tokio::test]
@@ -894,6 +955,99 @@ async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
 }
 
 #[tokio::test]
+async fn failed_exact_replacement_preserves_retirement_barrier_across_demand_changes() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let preparation_failures = Arc::new(AtomicUsize::new(0));
+    let retirement_started = Arc::new(Notify::new());
+    let retirement_release = Arc::new(Notify::new());
+    let source = ScreenDemandSource::new(Arc::clone(&transitions)).with_recovery_gates(
+        Arc::clone(&preparation_failures),
+        Arc::clone(&retirement_started),
+        Arc::clone(&retirement_release),
+    );
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(source));
+    manager.start_all().expect("screen source starts");
+    let manager = Arc::new(Mutex::new(manager));
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+        .await
+        .expect("publication pump starts");
+    let publications = pump.reader().screen_publications();
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+    );
+
+    wait_for_exact_extent(&publications, extent(1_920, 1_080)).await;
+    preparation_failures.store(1, Ordering::Release);
+    registration.update(InputPublicationDemand::default().with_screen(60, extent(3_840, 2_160)));
+
+    tokio::time::timeout(Duration::from_millis(500), retirement_started.notified())
+        .await
+        .expect("failed replacement should commit retirement");
+    assert_eq!(publications.committed_state().branch_count(), 0);
+    assert_eq!(
+        publications.committed_state().plan().demand_revision(),
+        demands.revision()
+    );
+    assert_eq!(
+        transitions
+            .lock()
+            .expect("screen demand transitions remain readable")
+            .last(),
+        Some(&ScreenCaptureDemand::active(extent(3_840, 2_160)))
+    );
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    assert_eq!(publications.committed_state().branch_count(), 0);
+
+    registration.update(InputPublicationDemand::default().with_screen(60, extent(5_120, 2_160)));
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    assert_eq!(publications.committed_state().branch_count(), 0);
+
+    retirement_release.notify_one();
+    wait_for_exact_extent(&publications, extent(5_120, 2_160)).await;
+
+    drop(registration);
+    pump.shutdown().await.expect("publication pump stops");
+}
+
+#[tokio::test]
+async fn persistent_exact_failure_uses_bounded_retry_cadence_after_retirement() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let preparation_failures = Arc::new(AtomicUsize::new(3));
+    let source = ScreenDemandSource::new(Arc::clone(&transitions)).with_recovery_gates(
+        Arc::clone(&preparation_failures),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    );
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(source));
+    manager.start_all().expect("screen source starts");
+    let manager = Arc::new(Mutex::new(manager));
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
+        .await
+        .expect("publication pump starts");
+    let _registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+    );
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while preparation_failures.load(Ordering::Acquire) == 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first exact preparation should fail");
+    tokio::time::sleep(LIFECYCLE_PROBE_INTERVAL / 2).await;
+    assert_eq!(preparation_failures.load(Ordering::Acquire), 2);
+
+    pump.shutdown().await.expect("publication pump stops");
+}
+
+#[tokio::test]
 async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let samples = Arc::new(AtomicUsize::new(0));
@@ -1051,6 +1205,26 @@ async fn wait_for_screen_demand(
     })
     .await
     .expect("screen demand transition should propagate");
+}
+
+async fn wait_for_exact_extent(publications: &ScreenPublicationHub, expected: PixelExtent) {
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            let committed = publications.committed_state();
+            if committed.branch_count() == 1
+                && committed.plan().branches()[0]
+                    .descriptor()
+                    .geometry()
+                    .output_extent()
+                    == expected
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("exact screen extent should commit");
 }
 
 async fn wait_for_interaction_demand(
