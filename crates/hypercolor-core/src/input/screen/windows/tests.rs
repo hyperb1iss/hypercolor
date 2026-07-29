@@ -5,15 +5,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use hypercolor_windows_capture::{
-    CaptureError, DisplayRotation, GpuAdapterLuid, GpuSurfaceSourceColorSpace, ReductionPath,
-    ReductionTelemetry,
+    CaptureError, DisplayRotation, GpuAdapterLuid, GpuSurfaceDescriptorId,
+    GpuSurfaceSourceColorSpace, ReductionPath, ReductionTelemetry,
 };
 
 use super::{
     ActiveCaptureEpoch, CapturePublication, CaptureWorker, WindowsPublicationSource,
     WindowsScreenCaptureInput, WorkerCaptureSchedule, WorkerCommand, capture_epoch,
-    capture_geometry, capture_issue, record_capture_health, resolve_windows_publication_branch,
-    settle_inactive_capture,
+    capture_freshness, capture_geometry, capture_gpu_descriptor, capture_issue,
+    native_capture_extent, record_capture_health, resolve_windows_publication_branch,
+    settle_inactive_capture, windows_gpu_attempt_at, windows_gpu_candidate_admission,
+    windows_gpu_retry_at,
 };
 use crate::input::screen::{
     CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
@@ -21,6 +23,7 @@ use crate::input::screen::{
     CaptureStorage, CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent,
     RawCaptureSurface, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenCaptureDemand,
     ScreenExtentRequest, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
     ScreenPhysicalGpuDeviceIdentity, ScreenProcessingProfile, ScreenProcessingProfileConfig,
     ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
@@ -193,7 +196,20 @@ fn native_target() -> ScreenNativeExecutionTarget {
             high_part: -3,
         },
         NonZeroU32::new(16_384).expect("test texture limit is non-zero"),
+        Arc::new(TestNativeTargetPreparer),
     )
+}
+
+struct TestNativeTargetPreparer;
+
+impl ScreenNativeTargetPreparer for TestNativeTargetPreparer {
+    fn prepare(
+        &self,
+        _descriptor: &crate::input::screen::ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        Ok(ScreenNativeTargetPreparation::new(platform.clone(), 0))
+    }
 }
 
 #[test]
@@ -225,6 +241,52 @@ fn exact_native_surface_resolves_to_canonical_gpu_storage() {
         resolved.descriptor().geometry().output_extent(),
         extent(3840, 2160)
     );
+}
+
+#[test]
+fn native_candidate_reserves_capture_and_renderer_textures_from_live_headroom() {
+    let source = publication_source();
+    let demand = publication_demand(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationExecutorRequest::SourceNative(native_target()),
+        ScreenReductionFilter::Nearest,
+    );
+    let resolved = resolve_windows_publication_branch(&source, &demand)
+        .expect("native branch resolves")
+        .expect("configured source owns the branch");
+    let descriptor = capture_gpu_descriptor(
+        resolved.descriptor(),
+        &source,
+        GpuSurfaceDescriptorId::new(NonZeroU64::MIN),
+        capture_freshness(resolved.requested_hz()),
+    )
+    .expect("native descriptor is exact");
+    let slots = NonZeroU32::new(3).expect("three slots are non-zero");
+    let texture_bytes = u64::from(descriptor.output_extent().width())
+        * u64::from(descriptor.output_extent().height())
+        * 4;
+    let required = texture_bytes * 4;
+
+    assert!(matches!(
+        windows_gpu_candidate_admission(
+            native_capture_extent(source.logical_extent),
+            std::slice::from_ref(&descriptor),
+            slots,
+            required - 1,
+        ),
+        Err(CaptureError::GpuSurfaceBudgetExceeded {
+            requested_bytes,
+            budget_bytes,
+        }) if requested_bytes == required && budget_bytes == required - 1
+    ));
+    let admission = windows_gpu_candidate_admission(
+        native_capture_extent(source.logical_extent),
+        std::slice::from_ref(&descriptor),
+        slots,
+        required,
+    )
+    .expect("exact live headroom admits the full candidate");
+    assert_eq!(admission.max_texture_bytes(), texture_bytes * 3);
 }
 
 #[test]
@@ -349,6 +411,43 @@ fn worker_schedule_gates_analysis_and_never_catches_up_in_a_burst() {
     assert!(
         schedule.wait_duration(late).is_some(),
         "lateness must schedule a future interval instead of an immediate burst"
+    );
+}
+
+#[test]
+fn exact_route_deadlines_are_independent_of_the_legacy_analysis_cadence() {
+    let started_at = Instant::now();
+    let mut legacy = WorkerCaptureSchedule::new(
+        CaptureCadence::new(30).expect("30 FPS is representable"),
+        started_at,
+    );
+    legacy
+        .record_frame(started_at, started_at)
+        .expect("legacy deadline fits Instant");
+    let legacy_deadline = started_at
+        + legacy
+            .wait_duration(started_at)
+            .expect("legacy cadence has a future deadline");
+    let exact_144 = windows_gpu_retry_at(
+        CaptureCadence::new(144)
+            .expect("144 FPS is representable")
+            .pacer(),
+        started_at,
+    )
+    .expect("exact route deadline fits Instant");
+    let exact_60 = windows_gpu_retry_at(
+        CaptureCadence::new(60)
+            .expect("60 FPS is representable")
+            .pacer(),
+        started_at,
+    )
+    .expect("exact route deadline fits Instant");
+
+    assert!(exact_144 < exact_60);
+    assert!(exact_60 < legacy_deadline);
+    assert_eq!(
+        windows_gpu_attempt_at(started_at, Some(exact_144)),
+        exact_144
     );
 }
 

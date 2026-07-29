@@ -12,7 +12,7 @@
 //! per process, and other ambient-lighting tools want the same interface, so
 //! holding it while no effect needs it would be antisocial.
 
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -20,28 +20,39 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use hypercolor_windows_capture::{
-    CaptureError, CaptureExtent as NativeCaptureExtent, CaptureRegion, DesktopDuplicator,
-    DisplayRotation, Frame as NativeCaptureFrame, GpuAdapterLuid, GpuSurfaceColorPipeline,
+    CaptureError, CaptureExtent as NativeCaptureExtent, CaptureLane, CapturePumpRequest,
+    CaptureRegion, CpuDesktopFrame, DesktopDuplicator, DisplayRotation,
+    Frame as NativeCaptureFrame, GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceColorPipeline,
     GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy, GpuSurfaceDescriptor,
     GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat,
-    GpuSurfaceSourceColorSpace, ReductionTelemetry,
+    GpuSurfacePlanGeneration, GpuSurfacePublicationDisposition, GpuSurfacePublishOutcome,
+    GpuSurfaceSourceColorSpace, PreparedCpuDesktopReadback, PreparedGpuSurfacePlan,
+    ReductionTelemetry,
 };
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureCadence, CaptureCadenceError, CaptureColorSpace,
-    CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureDynamicRange,
-    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePacer,
-    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction,
-    CpuCaptureStorage, PhysicalOrigin, PixelExtent, PlatformGpuApi, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorTransform,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
-    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExecutorColorCapabilities, ScreenPhysicalGpuDeviceIdentity, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
-    ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    SourceScale, analyze_screen_frame,
+    AnalyzedScreenSnapshot, BoundScreenNativeTargetPreparation, CaptureCadence,
+    CaptureCadenceError, CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureCursor,
+    CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
+    CaptureGeometry, CapturePacer, CapturePixelFormat, CaptureRotation, CaptureSourceId,
+    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, CpuReductionExecutor,
+    PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
+    PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenBackendResourceIdentity,
+    ScreenBranchPayload, ScreenBranchPublisher, ScreenCaptureBackend, ScreenCaptureDemand,
+    ScreenCaptureInput, ScreenColorTransformCapabilities, ScreenCursorCapabilities,
+    ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
+    ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPreparedWorkerToken, ScreenPublicationColorimetry, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter, ScreenResourceApi,
+    ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder,
+    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
+    analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
@@ -59,6 +70,7 @@ use crate::types::canvas::SurfaceResourceError;
 /// Bounded well under a second so a stop or deactivate lands promptly even
 /// while the desktop is perfectly static and producing no frames at all.
 const FRAME_WAIT: Duration = Duration::from_millis(100);
+const READBACK_POLL_WAIT: Duration = Duration::from_millis(1);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -263,8 +275,10 @@ impl WindowsPublicationSource {
 #[derive(Default)]
 struct ExactPublicationShared {
     source: Mutex<Option<WindowsPublicationSource>>,
+    owned_sources: Mutex<Vec<CaptureSourceId>>,
     hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
     resolution_revision: AtomicU64,
+    next_descriptor_id: AtomicU64,
 }
 
 impl ExactPublicationShared {
@@ -289,6 +303,42 @@ impl ExactPublicationShared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    fn hub(&self) -> Option<Arc<ScreenPublicationHub>> {
+        self.hub
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn owns_source(&self, source_id: &CaptureSourceId) -> bool {
+        self.source()
+            .is_some_and(|source| &source.epoch.source_id == source_id)
+            || self
+                .owned_sources
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(source_id)
+    }
+
+    fn replace_owned_sources(&self, sources: Vec<CaptureSourceId>) {
+        *self
+            .owned_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sources;
+    }
+
+    fn next_gpu_descriptor_id(&self) -> anyhow::Result<GpuSurfaceDescriptorId> {
+        let previous = self
+            .next_descriptor_id
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .map_err(|_| anyhow!("Windows GPU descriptor identity exhausted"))?;
+        let id = previous
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .ok_or_else(|| anyhow!("Windows GPU descriptor identity exhausted"))?;
+        Ok(GpuSurfaceDescriptorId::new(id))
     }
 }
 
@@ -501,6 +551,95 @@ struct CaptureWorker {
     processed_activity_generation: Arc<AtomicU64>,
 }
 
+struct WindowsGpuRoute {
+    id: GpuSurfaceDescriptorId,
+    native: Arc<GpuSurfaceDescriptor>,
+    descriptor: ResolvedScreenPublicationDescriptor,
+    target: BoundScreenNativeTargetPreparation,
+    capture_lifetime: ScreenResourceLifetime,
+    pacer: CapturePacer,
+    next_publish_at: Instant,
+    retry_not_before: Option<Instant>,
+    last_accepted_sequence: Option<u64>,
+    publisher: Option<ScreenBranchPublisher>,
+}
+
+struct WindowsGpuRuntime {
+    plan: PreparedGpuSurfacePlan,
+    routes: Vec<WindowsGpuRoute>,
+}
+
+struct PendingWindowsGpuRoute {
+    id: GpuSurfaceDescriptorId,
+    native: Arc<GpuSurfaceDescriptor>,
+    descriptor: ResolvedScreenPublicationDescriptor,
+    target: ScreenNativeTargetPreparation,
+    capture_resource_name: Arc<str>,
+    capture_allocation_byte_len: u64,
+    requested_hz: NonZeroU32,
+}
+
+struct PendingWindowsGpuRuntime {
+    plan: PreparedGpuSurfacePlan,
+    routes: Vec<PendingWindowsGpuRoute>,
+}
+
+struct WindowsCpuRuntime {
+    readback: PreparedCpuDesktopReadback,
+    workspace_allocation_byte_len: u64,
+    fanout_candidate: Option<PreparedCpuPublicationFanoutCandidate>,
+    fanout: Option<PreparedCpuPublicationFanout>,
+    latest_frame: Option<CaptureFrame<RawCaptureSurface>>,
+}
+
+struct WindowsExactRuntime {
+    source: WindowsPublicationSource,
+    binding: ScreenWorkerBinding,
+    _lifetimes: Vec<ScreenResourceLifetime>,
+    gpu: Option<WindowsGpuRuntime>,
+    cpu: Option<WindowsCpuRuntime>,
+}
+
+impl WindowsExactRuntime {
+    fn bind_if_active(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
+        if self.binding.state() != ScreenWorkerBindingState::Active {
+            return Ok(());
+        }
+        let authority = hub.committed_state();
+        if authority.plan().generation() != self.binding.plan_generation()
+            || authority.plan().demand_revision() != self.binding.demand_revision()
+        {
+            anyhow::bail!("Windows exact runtime authority does not match its worker binding");
+        }
+        if let Some(gpu) = &mut self.gpu {
+            for route in &mut gpu.routes {
+                if route.publisher.is_none() {
+                    route.publisher = Some(authority.publisher(&route.descriptor, &self.binding)?);
+                }
+            }
+        }
+        if let Some(cpu) = &mut self.cpu
+            && cpu.fanout.is_none()
+        {
+            let candidate = cpu
+                .fanout_candidate
+                .take()
+                .ok_or_else(|| anyhow!("Windows CPU fanout candidate was already consumed"))?;
+            cpu.fanout = Some(candidate.bind(authority, &self.binding)?);
+        }
+        Ok(())
+    }
+
+    fn is_bound(&self) -> bool {
+        self.binding.state() == ScreenWorkerBindingState::Active
+            && self
+                .gpu
+                .as_ref()
+                .is_none_or(|gpu| gpu.routes.iter().all(|route| route.publisher.is_some()))
+            && self.cpu.as_ref().is_none_or(|cpu| cpu.fanout.is_some())
+    }
+}
+
 impl Drop for CaptureWorker {
     fn drop(&mut self) {
         let Some(join_handle) = self.join_handle.take() else {
@@ -527,6 +666,14 @@ enum WorkerCommand {
         ready: mpsc::SyncSender<()>,
         decision: mpsc::Receiver<SettingsDecision>,
         done: mpsc::SyncSender<()>,
+    },
+    PrepareExact {
+        ticket: ScreenWorkerPreparationTicket,
+        cancelled: Arc<AtomicBool>,
+        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
+    },
+    ReapExact {
+        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
     },
     Stop,
 }
@@ -1208,9 +1355,63 @@ impl InputSource for WindowsScreenCaptureInput {
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.exact
-            .source()
-            .is_some_and(|source| &source.epoch.source_id == source_id)
+        self.exact.owns_source(source_id)
+    }
+
+    fn begin_screen_publication_preparation(
+        &mut self,
+        ticket: ScreenWorkerPreparationTicket,
+    ) -> anyhow::Result<ScreenWorkerPreparation> {
+        let worker = self.worker.as_ref().ok_or_else(|| {
+            anyhow!("Windows capture worker is unavailable for exact publication preparation")
+        })?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (completion_tx, completion_rx) = oneshot::channel();
+        worker
+            .command_tx
+            .send(WorkerCommand::PrepareExact {
+                ticket,
+                cancelled: Arc::clone(&cancelled),
+                completion: completion_tx,
+            })
+            .map_err(|_| {
+                anyhow!("Windows capture worker rejected exact publication preparation")
+            })?;
+        let abort_tx = worker.command_tx.clone();
+        Ok(ScreenWorkerPreparation::with_abort(
+            async move {
+                completion_rx.await.map_err(|_| {
+                    anyhow!("Windows capture worker exited during exact publication preparation")
+                })?
+            },
+            move || {
+                cancelled.store(true, Ordering::Release);
+                let _ = abort_tx.send(WorkerCommand::ReapExact { completion: None });
+            },
+        ))
+    }
+
+    fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
+        let worker = self.worker.as_ref()?;
+        let (completion_tx, completion_rx) = oneshot::channel();
+        if worker
+            .command_tx
+            .send(WorkerCommand::ReapExact {
+                completion: Some(completion_tx),
+            })
+            .is_err()
+        {
+            return Some(ScreenWorkerRetirement::new(async {
+                Err(anyhow!(
+                    "Windows capture worker rejected exact publication retirement"
+                ))
+            }));
+        }
+        Some(ScreenWorkerRetirement::new(async move {
+            completion_rx.await.map_err(|_| {
+                anyhow!("Windows capture worker exited during exact publication retirement")
+            })?
+        }))
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
@@ -1436,6 +1637,771 @@ fn build_worker_analyzer(
     ScreenCaptureInput::with_requested_extent(config.clone(), requested_extent)
 }
 
+fn prepare_windows_exact_runtime(
+    ticket: ScreenWorkerPreparationTicket,
+    duplicator: Option<&DesktopDuplicator>,
+    source: Option<&WindowsPublicationSource>,
+    exact: &ExactPublicationShared,
+    hub: &ScreenPublicationHub,
+) -> anyhow::Result<(ScreenPreparedWorkerToken, Option<WindowsExactRuntime>)> {
+    let candidate = ticket.candidate_plan();
+    let source_branches = candidate
+        .branches()
+        .iter()
+        .filter(|branch| branch.descriptor().source_epoch().source_id == *ticket.source_id())
+        .collect::<Vec<_>>();
+    if source_branches.is_empty() {
+        let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
+        let reports = ledger
+            .ticket()
+            .required_minimums()
+            .iter()
+            .map(|minimum| (Arc::clone(minimum.name()), minimum.minimum_bytes()))
+            .collect::<Vec<_>>();
+        for (name, bytes) in reports {
+            ledger.report(&name, bytes)?;
+        }
+        let (token, _) = ledger.finish()?.into_parts();
+        return Ok((token, None));
+    }
+
+    let source = source
+        .filter(|source| &source.epoch.source_id == ticket.source_id())
+        .ok_or_else(|| anyhow!("Windows exact publication source changed before preparation"))?;
+    let duplicator = duplicator
+        .ok_or_else(|| anyhow!("Windows duplication session is unavailable for preparation"))?;
+    let slot_count = NonZeroU32::new(hub.committed_state().slot_policy().total_slots())
+        .ok_or_else(|| anyhow!("Windows exact publication slot count must be nonzero"))?;
+
+    let gpu_branches = source_branches
+        .iter()
+        .copied()
+        .filter(|branch| {
+            matches!(
+                branch.descriptor().executor(),
+                ScreenPublicationExecutor::SourceNative(_)
+            )
+        })
+        .collect::<Vec<_>>();
+    let gpu = if gpu_branches.is_empty() {
+        None
+    } else {
+        let plan_generation = NonZeroU64::new(ticket.plan_generation().get())
+            .map(GpuSurfacePlanGeneration::new)
+            .ok_or_else(|| {
+                anyhow!("Windows native publication requires a nonzero plan generation")
+            })?;
+        let mut descriptors = Vec::new();
+        let mut pending_routes = Vec::new();
+        descriptors.try_reserve_exact(gpu_branches.len())?;
+        pending_routes.try_reserve_exact(gpu_branches.len())?;
+        for branch in &gpu_branches {
+            let id = exact.next_gpu_descriptor_id()?;
+            let native = Arc::new(capture_gpu_descriptor(
+                branch.descriptor(),
+                source,
+                id,
+                capture_freshness(branch.requested_hz()),
+            )?);
+            descriptors.push(native.as_ref().clone());
+            pending_routes.push((id, native, *branch));
+        }
+        let available_gpu_bytes = duplicator.available_gpu_memory_bytes()?;
+        let admission = windows_gpu_candidate_admission(
+            native_capture_extent(source.logical_extent),
+            &descriptors,
+            slot_count,
+            available_gpu_bytes,
+        )?;
+        let plan = duplicator.prepare_gpu_surface_plan(plan_generation, &descriptors, admission)?;
+        let mut routes = Vec::new();
+        routes.try_reserve_exact(pending_routes.len())?;
+        for (id, native, branch) in pending_routes {
+            let ScreenPublicationExecutor::SourceNative(target) = branch.descriptor().executor()
+            else {
+                anyhow::bail!("Windows GPU route lost source-native target identity");
+            };
+            let manifest = Arc::new(plan.target_preparation(id)?);
+            let capture_allocation_byte_len = manifest.allocation_byte_len();
+            let platform = ScreenNativePreparationPayload::new(
+                branch.descriptor(),
+                ticket.plan_generation(),
+                manifest,
+            );
+            let target = target.prepare(branch.descriptor(), &platform)?;
+            routes.push(PendingWindowsGpuRoute {
+                id,
+                native,
+                descriptor: branch.descriptor().clone(),
+                target,
+                capture_resource_name: Arc::from(format!("windows-gpu-route-{}-slots", id.get())),
+                capture_allocation_byte_len,
+                requested_hz: branch.requested_hz(),
+            });
+        }
+        Some(PendingWindowsGpuRuntime { plan, routes })
+    };
+
+    let cpu_branch = source_branches.iter().copied().find(|branch| {
+        matches!(
+            branch.descriptor().executor(),
+            ScreenPublicationExecutor::Cpu
+        )
+    });
+    let cpu = if let Some(cpu_branch) = cpu_branch {
+        let resolved_source = ResolvedScreenSource::new(
+            ScreenSourceSelector::Exact(source.epoch.source_id.clone()),
+            source.epoch.clone(),
+            cpu_branch.descriptor().source().clone(),
+        );
+        let executor = CpuReductionExecutor::new(
+            thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+            NonZeroU32::new(16).expect("CPU reduction tile height is nonzero"),
+        )?;
+        let batch = executor.prepare_batch(&resolved_source, candidate)?;
+        let workspace = batch.prepare_materialization_workspace(candidate)?;
+        let workspace_allocation_byte_len = workspace.allocation_byte_len();
+        let fanout_candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+            &executor, &batch, workspace, candidate,
+        )?;
+        let readback = duplicator.prepare_cpu_desktop_readback(slot_count)?;
+        Some(WindowsCpuRuntime {
+            readback,
+            workspace_allocation_byte_len,
+            fanout_candidate: Some(fanout_candidate),
+            fanout: None,
+            latest_frame: None,
+        })
+    } else {
+        None
+    };
+
+    let cpu_api_bytes = cpu
+        .as_ref()
+        .map_or(0, |runtime| runtime.readback.allocation_byte_len());
+    let workspace_bytes = cpu
+        .as_ref()
+        .map_or(0, |runtime| runtime.workspace_allocation_byte_len);
+    let fanout_bytes = cpu.as_ref().map_or(0, |runtime| {
+        runtime.fanout_candidate.as_ref().map_or(
+            0,
+            PreparedCpuPublicationFanoutCandidate::allocation_byte_len,
+        )
+    });
+    let plane_minimum_bytes = ticket
+        .required_minimums()
+        .iter()
+        .filter(|minimum| minimum.resource() == ScreenResourceKind::PhysicalPlane)
+        .try_fold(0_u64, |total, minimum| {
+            total
+                .checked_add(minimum.minimum_bytes())
+                .ok_or_else(|| anyhow!("Windows exact physical-plane accounting overflow"))
+        })?;
+    let reports = ticket
+        .required_minimums()
+        .iter()
+        .map(|minimum| {
+            (
+                Arc::clone(minimum.name()),
+                minimum.resource(),
+                minimum.minimum_bytes(),
+                matches!(
+                    minimum.descriptor().executor(),
+                    ScreenPublicationExecutor::SourceNative(_)
+                ),
+                Arc::clone(minimum.descriptor()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let cpu_api_scope = reports
+        .iter()
+        .find(|(_, resource, _, native, _)| {
+            *resource == ScreenResourceKind::ApiAllocation && !*native
+        })
+        .map(|(name, _, _, _, _)| Arc::clone(name));
+    let processing_scope = reports
+        .iter()
+        .find(|(_, resource, _, _, _)| *resource == ScreenResourceKind::ProcessingProfileState)
+        .map(|(name, _, _, _, _)| Arc::clone(name));
+    let worker_metadata_bytes = workspace_bytes
+        .saturating_sub(plane_minimum_bytes)
+        .checked_add(u64::try_from(std::mem::size_of::<WindowsExactRuntime>()).unwrap_or(u64::MAX))
+        .and_then(|bytes| {
+            bytes.checked_add(
+                u64::try_from(
+                    gpu.as_ref()
+                        .map_or(0, |runtime| runtime.routes.capacity())
+                        .saturating_mul(std::mem::size_of::<WindowsGpuRoute>()),
+                )
+                .unwrap_or(u64::MAX),
+            )
+        })
+        .ok_or_else(|| anyhow!("Windows exact worker allocation accounting overflow"))?;
+
+    let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
+    for (name, resource, minimum, _native, _descriptor) in &reports {
+        let actual = match resource {
+            ScreenResourceKind::ApiAllocation if cpu_api_scope.as_ref() == Some(name) => {
+                cpu_api_bytes.max(*minimum)
+            }
+            ScreenResourceKind::ProcessingProfileState
+                if processing_scope.as_ref() == Some(name) =>
+            {
+                fanout_bytes.max(*minimum)
+            }
+            ScreenResourceKind::WorkerAdditional => worker_metadata_bytes.max(*minimum),
+            _ => *minimum,
+        };
+        ledger.report(name, actual)?;
+    }
+    if cpu_api_bytes > 0 && cpu_api_scope.is_none() {
+        ledger.report_scoped(
+            "windows-cpu-readback",
+            "worker-runtime-total",
+            cpu_api_bytes,
+        )?;
+    }
+    if fanout_bytes > 0 && processing_scope.is_none() {
+        ledger.report_scoped("windows-cpu-fanout", "worker-runtime-total", fanout_bytes)?;
+    }
+    if let Some(gpu) = &gpu {
+        for route in &gpu.routes {
+            let allocation_scope = reports
+                .iter()
+                .find(|(_, resource, _, native, descriptor)| {
+                    *resource == ScreenResourceKind::ApiAllocation
+                        && *native
+                        && descriptor.as_ref() == &route.descriptor
+                })
+                .map_or("worker-runtime-total", |(name, _, _, _, _)| name.as_ref());
+            ledger.report_scoped(
+                &route.capture_resource_name,
+                allocation_scope,
+                route.capture_allocation_byte_len,
+            )?;
+            let resource = route.target.exact_resource(
+                format!("native-target-{}", route.id.get()),
+                "worker-runtime-total",
+            )?;
+            ledger.report_native_target(resource)?;
+        }
+    }
+    let exact_ledger = ledger.finish()?;
+    let binding = exact_ledger.token().binding().clone();
+    let (token, lifetimes) = exact_ledger.into_parts();
+    let gpu = gpu
+        .map(|pending| {
+            let mut routes = Vec::new();
+            routes.try_reserve_exact(pending.routes.len())?;
+            for route in pending.routes {
+                let resource_name = format!("native-target-{}", route.id.get());
+                let lifetime = lifetimes
+                    .iter()
+                    .find(|lifetime| lifetime.resource().name().as_ref() == resource_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow!("Windows native target lifetime is missing from exact ledger")
+                    })?;
+                let capture_lifetime = lifetimes
+                    .iter()
+                    .find(|lifetime| lifetime.resource().name() == &route.capture_resource_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow!("Windows GPU route lifetime is missing from exact ledger")
+                    })?;
+                let cadence = CaptureCadence::new(route.requested_hz.get())?;
+                routes.push(WindowsGpuRoute {
+                    id: route.id,
+                    native: route.native,
+                    descriptor: route.descriptor,
+                    target: route.target.bind(lifetime)?,
+                    capture_lifetime,
+                    pacer: cadence.pacer(),
+                    next_publish_at: Instant::now(),
+                    retry_not_before: None,
+                    last_accepted_sequence: None,
+                    publisher: None,
+                });
+            }
+            Ok::<_, anyhow::Error>(WindowsGpuRuntime {
+                plan: pending.plan,
+                routes,
+            })
+        })
+        .transpose()?;
+    Ok((
+        token,
+        Some(WindowsExactRuntime {
+            source: source.clone(),
+            binding,
+            _lifetimes: lifetimes,
+            gpu,
+            cpu,
+        }),
+    ))
+}
+
+fn windows_gpu_candidate_admission(
+    source_extent: NativeCaptureExtent,
+    descriptors: &[GpuSurfaceDescriptor],
+    slot_count: NonZeroU32,
+    available_gpu_bytes: u64,
+) -> Result<GpuSurfaceAdmission, CaptureError> {
+    let capture_admission = GpuSurfaceAdmission::new(u64::MAX, slot_count);
+    let capture_slot_bytes = capture_admission.admit(source_extent, descriptors)?;
+    let renderer_target_bytes = descriptors.iter().try_fold(0_u64, |total, descriptor| {
+        let extent = descriptor.output_extent();
+        let bytes = u64::from(extent.width())
+            .checked_mul(u64::from(extent.height()))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "account Windows native renderer target",
+                width: extent.width(),
+                height: extent.height(),
+            })?;
+        total
+            .checked_add(bytes)
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "account Windows native renderer targets",
+                width: extent.width(),
+                height: extent.height(),
+            })
+    })?;
+    let required_gpu_bytes = capture_slot_bytes
+        .checked_add(renderer_target_bytes)
+        .ok_or(CaptureError::GeometryOverflow {
+            operation: "account Windows exact GPU candidate",
+            width: source_extent.width(),
+            height: source_extent.height(),
+        })?;
+    if required_gpu_bytes > available_gpu_bytes {
+        return Err(CaptureError::GpuSurfaceBudgetExceeded {
+            requested_bytes: required_gpu_bytes,
+            budget_bytes: available_gpu_bytes,
+        });
+    }
+    Ok(GpuSurfaceAdmission::new(
+        available_gpu_bytes - renderer_target_bytes,
+        slot_count,
+    ))
+}
+
+fn prepare_exact_command(
+    ticket: ScreenWorkerPreparationTicket,
+    cancelled: Arc<AtomicBool>,
+    completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
+    duplicator: Option<&DesktopDuplicator>,
+    exact: &ExactPublicationShared,
+    runtimes: &mut Vec<WindowsExactRuntime>,
+) {
+    let result = exact
+        .hub
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .ok_or_else(|| anyhow!("Windows exact publication hub is unavailable"))
+        .and_then(|hub| {
+            let source = exact.source();
+            prepare_windows_exact_runtime(ticket, duplicator, source.as_ref(), exact, hub.as_ref())
+        });
+    match result {
+        Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
+            if let Some(runtime) = runtime {
+                runtimes.push(runtime);
+                refresh_exact_runtime_ownership(runtimes, exact);
+            }
+            if completion.send(Ok(token)).is_err() {
+                reap_exact_runtimes(runtimes, exact);
+            }
+        }
+        Ok((_token, _runtime)) => {
+            let _ = completion.send(Err(anyhow!(
+                "Windows exact publication preparation was cancelled"
+            )));
+        }
+        Err(error) => {
+            let _ = completion.send(Err(error));
+        }
+    }
+}
+
+fn reap_exact_runtimes(runtimes: &mut Vec<WindowsExactRuntime>, exact: &ExactPublicationShared) {
+    runtimes.retain(|runtime| runtime.binding.state() == ScreenWorkerBindingState::Active);
+    refresh_exact_runtime_ownership(runtimes, exact);
+}
+
+fn refresh_exact_runtime_ownership(
+    runtimes: &[WindowsExactRuntime],
+    exact: &ExactPublicationShared,
+) {
+    let mut sources = runtimes
+        .iter()
+        .map(|runtime| runtime.source.epoch.source_id.clone())
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    sources.dedup();
+    exact.replace_owned_sources(sources);
+}
+
+fn bind_current_exact_runtime<'a>(
+    runtimes: &'a mut [WindowsExactRuntime],
+    source: &WindowsPublicationSource,
+    hub: &ScreenPublicationHub,
+) -> anyhow::Result<Option<&'a mut WindowsExactRuntime>> {
+    let mut selected = None;
+    let mut selected_generation = None;
+    for (index, runtime) in runtimes.iter_mut().enumerate() {
+        if runtime.source != *source {
+            continue;
+        }
+        runtime.bind_if_active(hub)?;
+        let generation = runtime.binding.plan_generation();
+        if runtime.is_bound() && selected_generation.is_none_or(|current| current < generation) {
+            selected = Some(index);
+            selected_generation = Some(generation);
+        }
+    }
+    Ok(selected.map(|index| &mut runtimes[index]))
+}
+
+fn publish_windows_gpu_outcome(
+    routes: &mut [WindowsGpuRoute],
+    source: &WindowsPublicationSource,
+    hub: &ScreenPublicationHub,
+    outcome: GpuSurfacePublishOutcome,
+) -> anyhow::Result<GpuSurfacePublicationDisposition> {
+    let publication = match outcome {
+        GpuSurfacePublishOutcome::Published(publication) => publication,
+        GpuSurfacePublishOutcome::Busy(descriptor_id) => {
+            let route = routes
+                .iter_mut()
+                .find(|route| route.id == descriptor_id)
+                .ok_or_else(|| anyhow!("Windows GPU pressure named an unknown exact route"))?;
+            defer_windows_gpu_route_retry(route, Instant::now())?;
+            return Ok(GpuSurfacePublicationDisposition::Retry);
+        }
+    };
+    let provenance = publication.provenance();
+    let route = routes
+        .iter_mut()
+        .find(|route| route.id == provenance.descriptor.id())
+        .ok_or_else(|| anyhow!("Windows GPU publication named an unknown exact route"))?;
+    let publisher = route
+        .publisher
+        .as_ref()
+        .ok_or_else(|| anyhow!("Windows GPU route has no committed publisher"))?;
+    let source_id = capture_source_id(&provenance.source_id)?;
+    let output_extent = PixelExtent::new(
+        provenance.output_extent.width(),
+        provenance.output_extent.height(),
+    )?;
+    let valid = provenance.descriptor.as_ref() == route.native.as_ref()
+        && provenance.plan_generation.get() == publisher.plan_generation().get()
+        && source_id == source.epoch.source_id
+        && provenance.topology_generation == source.epoch.topology_generation
+        && provenance.duplication_generation == source.duplication_generation
+        && provenance.adapter_luid == source.adapter_luid
+        && provenance.native_source_extent.width() == source.native_extent.width()
+        && provenance.native_source_extent.height() == source.native_extent.height()
+        && provenance.logical_source_extent.width() == source.logical_extent.width()
+        && provenance.logical_source_extent.height() == source.logical_extent.height()
+        && output_extent == route.descriptor.geometry().output_extent()
+        && provenance.coordinate_space == GpuSurfaceCoordinateSpace::LogicalDisplay
+        && provenance.source_color_space == source.source_color_space
+        && provenance.output_format == GpuSurfaceFormat::Rgba8Unorm
+        && provenance.color_pipeline == GpuSurfaceColorPipeline::PreserveEncoded
+        && provenance.pending_rotation == DisplayRotation::Identity;
+    if !valid {
+        anyhow::bail!("Windows GPU publication provenance violated its exact route contract");
+    }
+    let native_sequence = NonZeroU64::new(provenance.source_sequence)
+        .ok_or_else(|| anyhow!("Windows GPU publication sequence must be nonzero"))?;
+    if route
+        .last_accepted_sequence
+        .is_some_and(|accepted| provenance.source_sequence <= accepted)
+    {
+        return Ok(GpuSurfacePublicationDisposition::Accepted);
+    }
+    let surface = PlatformGpuSurface::new(
+        PlatformGpuApi::Direct3d11,
+        publication.opaque_handle_id().get(),
+        output_extent,
+        CapturePixelFormat::Rgba8,
+        Arc::clone(&publication),
+    )?;
+    let surface = route
+        .target
+        .retain_on_surface_with_capture_allocation(surface, route.capture_lifetime.clone())?;
+    let published_at = Instant::now();
+    let metadata = ScreenPublicationMetadata::try_new(
+        source.epoch.clone(),
+        publisher.plan_generation(),
+        native_sequence,
+        provenance.captured_at,
+        published_at,
+        provenance.freshness_deadline,
+        ScreenPublicationHealth::Healthy,
+    )?;
+    let payload = ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(
+        ScreenPublicationColorimetry::new(route.descriptor.physical().color_pipeline().output()),
+        &surface,
+    ));
+    match hub.publish(publisher, payload, &metadata) {
+        Ok(_) => {
+            route.last_accepted_sequence = Some(provenance.source_sequence);
+            route.retry_not_before = None;
+            route.next_publish_at = route
+                .pacer
+                .advance_deadline(route.next_publish_at, published_at)?;
+            Ok(GpuSurfacePublicationDisposition::Accepted)
+        }
+        Err(super::ScreenPublicationHubError::PublicationPressure { .. }) => {
+            defer_windows_gpu_route_retry(route, published_at)?;
+            Ok(GpuSurfacePublicationDisposition::Retry)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn defer_windows_gpu_route_retry(
+    route: &mut WindowsGpuRoute,
+    now: Instant,
+) -> Result<(), CaptureCadenceError> {
+    route.retry_not_before = Some(windows_gpu_retry_at(route.pacer, now)?);
+    Ok(())
+}
+
+fn windows_gpu_route_attempt_at(route: &WindowsGpuRoute) -> Instant {
+    windows_gpu_attempt_at(route.next_publish_at, route.retry_not_before)
+}
+
+fn windows_gpu_retry_at(pacer: CapturePacer, now: Instant) -> Result<Instant, CaptureCadenceError> {
+    let mut retry_pacer = pacer;
+    retry_pacer.advance_deadline(now, now)
+}
+
+fn windows_gpu_attempt_at(next_publish_at: Instant, retry_not_before: Option<Instant>) -> Instant {
+    retry_not_before.map_or(next_publish_at, |retry| retry.max(next_publish_at))
+}
+
+fn build_exact_cpu_frame(
+    frame: CpuDesktopFrame,
+    source: &WindowsPublicationSource,
+) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
+    let frame_source_id = capture_source_id(frame.source_id())?;
+    if frame_source_id != source.epoch.source_id
+        || frame.topology_generation() != source.epoch.topology_generation
+        || frame.duplication_generation() != source.duplication_generation
+        || frame.source_color_space() != source.source_color_space
+    {
+        anyhow::bail!("Windows CPU readback provenance violated its exact source contract");
+    }
+    let native_extent = PixelExtent::new(frame.width(), frame.height())?;
+    let geometry = capture_geometry(
+        native_extent,
+        native_extent,
+        PhysicalOrigin {
+            x: frame.origin_x(),
+            y: frame.origin_y(),
+        },
+        frame.rotation(),
+    )?;
+    let cursor = frame.cursor();
+    let cursor = CaptureCursor {
+        visible: cursor.visible,
+        position: cursor.visible.then_some(PhysicalOrigin {
+            x: cursor.position_x,
+            y: cursor.position_y,
+        }),
+        hotspot: cursor.visible.then_some(PhysicalOrigin {
+            x: cursor.hotspot_x,
+            y: cursor.hotspot_y,
+        }),
+        shape_extent: (cursor.width > 0 && cursor.height > 0)
+            .then(|| PixelExtent::new(cursor.width, cursor.height))
+            .transpose()?,
+        shape_generation: (cursor.shape_generation > 0).then_some(cursor.shape_generation),
+        content: if cursor.visible {
+            super::CaptureCursorContent::Absent
+        } else {
+            super::CaptureCursorContent::Hidden
+        },
+    };
+    let captured_at = frame.captured_at();
+    let sequence = frame.sequence();
+    let row_stride = i64::try_from(frame.row_stride_bytes())?;
+    CaptureFrame::new(
+        CaptureFrameMetadata {
+            source_id: source.epoch.source_id.clone(),
+            topology_generation: source.epoch.topology_generation,
+            session_generation: source.epoch.session_generation,
+            sequence,
+            captured_at,
+            fresh_until: captured_at,
+            geometry,
+            colorimetry: source.colorimetry,
+            cursor,
+        },
+        CaptureStorage::Cpu(CpuCaptureStorage::from_owner(
+            frame,
+            CapturePixelFormat::Bgra8,
+            row_stride,
+            0,
+        )),
+        CaptureDamage::default(),
+    )
+    .map_err(anyhow::Error::from)
+}
+
+fn exact_runtime_wait(runtime: &WindowsExactRuntime, now: Instant) -> Duration {
+    let gpu_due = runtime
+        .gpu
+        .as_ref()
+        .and_then(|gpu| gpu.routes.iter().map(windows_gpu_route_attempt_at).min());
+    let cpu_due = runtime
+        .cpu
+        .as_ref()
+        .and_then(|cpu| cpu.fanout.as_ref())
+        .and_then(PreparedCpuPublicationFanout::next_due_at);
+    gpu_due
+        .into_iter()
+        .chain(cpu_due)
+        .map(|deadline| deadline.saturating_duration_since(now))
+        .min()
+        .unwrap_or(FRAME_WAIT)
+        .min(FRAME_WAIT)
+}
+
+fn pump_windows_exact_runtime(
+    session: &mut DesktopDuplicator,
+    runtime: &mut WindowsExactRuntime,
+    hub: &ScreenPublicationHub,
+) -> anyhow::Result<Duration> {
+    let now = Instant::now();
+    let mut cpu_needs_source = false;
+    if let Some(cpu) = &mut runtime.cpu {
+        let fanout = cpu
+            .fanout
+            .as_mut()
+            .ok_or_else(|| anyhow!("Windows CPU fanout is not bound"))?;
+        cpu_needs_source = fanout
+            .publish_due(
+                hub,
+                cpu.latest_frame.as_ref(),
+                now,
+                ScreenPublicationHealth::Healthy,
+            )?
+            .needs_source()
+            || cpu.readback.has_pending();
+    }
+
+    let mut gpu_requested = false;
+    if let Some(gpu) = &mut runtime.gpu {
+        for route in &gpu.routes {
+            if let Some(publisher) = &route.publisher {
+                publisher.reap_releasable_gpu_payloads();
+            }
+        }
+        gpu.plan.select_routes_for_next_acquisition(|descriptor| {
+            gpu.routes
+                .iter()
+                .find(|route| route.id == descriptor.id())
+                .is_some_and(|route| now >= windows_gpu_route_attempt_at(route))
+        });
+        gpu_requested = gpu.plan.has_selected_routes();
+    }
+    if !gpu_requested && !cpu_needs_source {
+        return Ok(exact_runtime_wait(runtime, now));
+    }
+
+    let source = runtime.source.clone();
+    let mut gpu_error = None;
+    let report = match (&mut runtime.gpu, &mut runtime.cpu) {
+        (Some(gpu), Some(cpu)) if gpu_requested && cpu_needs_source => {
+            let routes = &mut gpu.routes;
+            session.pump_with_feedback(
+                CapturePumpRequest::hybrid(&mut gpu.plan, &mut cpu.readback),
+                FRAME_WAIT,
+                |outcome| match publish_windows_gpu_outcome(routes, &source, hub, outcome) {
+                    Ok(disposition) => disposition,
+                    Err(error) => {
+                        if gpu_error.is_none() {
+                            gpu_error = Some(error);
+                        }
+                        GpuSurfacePublicationDisposition::Retry
+                    }
+                },
+            )?
+        }
+        (Some(gpu), _) if gpu_requested => {
+            let routes = &mut gpu.routes;
+            session.pump_with_feedback(
+                CapturePumpRequest::gpu(&mut gpu.plan),
+                FRAME_WAIT,
+                |outcome| match publish_windows_gpu_outcome(routes, &source, hub, outcome) {
+                    Ok(disposition) => disposition,
+                    Err(error) => {
+                        if gpu_error.is_none() {
+                            gpu_error = Some(error);
+                        }
+                        GpuSurfacePublicationDisposition::Retry
+                    }
+                },
+            )?
+        }
+        (_, Some(cpu)) if cpu_needs_source => session.pump_with_feedback(
+            CapturePumpRequest::cpu(&mut cpu.readback),
+            FRAME_WAIT,
+            |_| GpuSurfacePublicationDisposition::Accepted,
+        )?,
+        _ => return Ok(exact_runtime_wait(runtime, now)),
+    };
+    if let Some(error) = gpu_error {
+        return Err(error);
+    }
+    if let CaptureLane::Failed(error) = report.gpu {
+        return Err(error.into());
+    }
+    match report.cpu {
+        CaptureLane::Failed(error) => return Err(error.into()),
+        CaptureLane::Ready(frame) => {
+            let frame = build_exact_cpu_frame(frame, &source)?;
+            let cpu = runtime
+                .cpu
+                .as_mut()
+                .ok_or_else(|| anyhow!("Windows CPU readback completed without a runtime"))?;
+            cpu.fanout
+                .as_mut()
+                .ok_or_else(|| anyhow!("Windows CPU fanout is not bound"))?
+                .publish_due(
+                    hub,
+                    Some(&frame),
+                    Instant::now(),
+                    ScreenPublicationHealth::Healthy,
+                )?;
+            cpu.latest_frame = Some(frame);
+        }
+        CaptureLane::Busy => return Ok(READBACK_POLL_WAIT),
+        CaptureLane::NotRequested | CaptureLane::Idle => {}
+    }
+    Ok(Duration::ZERO)
+}
+
+fn pump_current_windows_exact_runtime(
+    session: &mut DesktopDuplicator,
+    runtimes: &mut [WindowsExactRuntime],
+    source: &WindowsPublicationSource,
+    exact: &ExactPublicationShared,
+) -> anyhow::Result<Option<Duration>> {
+    let Some(hub) = exact.hub() else {
+        return Ok(None);
+    };
+    let Some(runtime) = bind_current_exact_runtime(runtimes, source, &hub)? else {
+        return Ok(None);
+    };
+    pump_windows_exact_runtime(session, runtime, &hub).map(Some)
+}
+
 /// Worker loop: own the duplication session, analyze frames, publish results.
 fn run_worker(
     settings: &Arc<SharedSettings>,
@@ -1489,6 +2455,7 @@ fn run_worker(
     let mut analysis_failure_latched = false;
     let mut failed_settings_generation = None;
     let mut settings_retry_at = Instant::now();
+    let mut exact_runtimes = Vec::new();
 
     loop {
         if cancel.load(Ordering::Acquire) {
@@ -1508,6 +2475,8 @@ fn run_worker(
             &mut generation,
             &mut analyzer,
             &mut duplicator,
+            exact,
+            &mut exact_runtimes,
         ) {
             ControlFlow::Stop => break,
             ControlFlow::Continue => {}
@@ -1552,6 +2521,24 @@ fn run_worker(
                     decision,
                     done,
                 ),
+                Ok(WorkerCommand::PrepareExact {
+                    ticket,
+                    cancelled,
+                    completion,
+                }) => prepare_exact_command(
+                    ticket,
+                    cancelled,
+                    completion,
+                    duplicator.as_ref(),
+                    exact,
+                    &mut exact_runtimes,
+                ),
+                Ok(WorkerCommand::ReapExact { completion }) => {
+                    reap_exact_runtimes(&mut exact_runtimes, exact);
+                    if let Some(completion) = completion {
+                        let _ = completion.send(Ok(()));
+                    }
+                }
                 Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -1684,6 +2671,24 @@ fn run_worker(
                             decision,
                             done,
                         ),
+                        Ok(WorkerCommand::PrepareExact {
+                            ticket,
+                            cancelled,
+                            completion,
+                        }) => prepare_exact_command(
+                            ticket,
+                            cancelled,
+                            completion,
+                            duplicator.as_ref(),
+                            exact,
+                            &mut exact_runtimes,
+                        ),
+                        Ok(WorkerCommand::ReapExact { completion }) => {
+                            reap_exact_runtimes(&mut exact_runtimes, exact);
+                            if let Some(completion) = completion {
+                                let _ = completion.send(Ok(()));
+                            }
+                        }
                         Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             break;
                         }
@@ -1705,7 +2710,47 @@ fn run_worker(
                 continue;
             }
         };
-        exact.replace_source(Some(exact_source));
+        exact.replace_source(Some(exact_source.clone()));
+
+        match pump_current_windows_exact_runtime(session, &mut exact_runtimes, &exact_source, exact)
+        {
+            Ok(Some(wait)) => {
+                resource_failure_logged = false;
+                if !wait.is_zero() {
+                    thread::sleep(wait);
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let capture_error = error.downcast_ref::<CaptureError>();
+                if !resource_failure_logged {
+                    warn!(%error, "Windows exact publication failed; retaining its last good publications");
+                    if let Some(status) = status_session.load() {
+                        let issue = capture_error.map_or_else(
+                            || {
+                                SourceIssue::new(
+                                    "windows_exact_publication_failed",
+                                    error.to_string(),
+                                    true,
+                                )
+                            },
+                            capture_issue,
+                        );
+                        status.degraded(issue);
+                    }
+                    resource_failure_logged = true;
+                }
+                if capture_error.is_some_and(capture_frame_failure_invalidates_session) {
+                    clear_capture_publication(publication);
+                    exact.replace_source(None);
+                    duplicator = None;
+                } else {
+                    thread::sleep(FRAME_WAIT);
+                }
+                continue;
+            }
+        }
 
         let active_epoch = match active_capture_epoch(
             session,
@@ -1865,6 +2910,24 @@ fn run_worker(
                         decision,
                         done,
                     ),
+                    Ok(WorkerCommand::PrepareExact {
+                        ticket,
+                        cancelled,
+                        completion,
+                    }) => prepare_exact_command(
+                        ticket,
+                        cancelled,
+                        completion,
+                        duplicator.as_ref(),
+                        exact,
+                        &mut exact_runtimes,
+                    ),
+                    Ok(WorkerCommand::ReapExact { completion }) => {
+                        reap_exact_runtimes(&mut exact_runtimes, exact);
+                        if let Some(completion) = completion {
+                            let _ = completion.send(Ok(()));
+                        }
+                    }
                     Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
@@ -1874,6 +2937,7 @@ fn run_worker(
 
     clear_capture_publication(publication);
     exact.replace_source(None);
+    exact.replace_owned_sources(Vec::new());
     debug!("Windows screen capture worker stopped");
 }
 
@@ -2032,6 +3096,8 @@ fn drain_commands(
     generation: &mut u64,
     analyzer: &mut ScreenCaptureInput,
     duplicator: &mut Option<DesktopDuplicator>,
+    exact: &ExactPublicationShared,
+    exact_runtimes: &mut Vec<WindowsExactRuntime>,
 ) -> ControlFlow {
     loop {
         match command_rx.try_recv() {
@@ -2062,6 +3128,24 @@ fn drain_commands(
                 decision,
                 done,
             ),
+            Ok(WorkerCommand::PrepareExact {
+                ticket,
+                cancelled,
+                completion,
+            }) => prepare_exact_command(
+                ticket,
+                cancelled,
+                completion,
+                duplicator.as_ref(),
+                exact,
+                exact_runtimes,
+            ),
+            Ok(WorkerCommand::ReapExact { completion }) => {
+                reap_exact_runtimes(exact_runtimes, exact);
+                if let Some(completion) = completion {
+                    let _ = completion.send(Ok(()));
+                }
+            }
             Ok(WorkerCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 return ControlFlow::Stop;
             }
