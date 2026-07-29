@@ -13,11 +13,11 @@ use hypercolor_core::input::screen::{
     ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExactResource,
     ScreenExactResourceLedger, ScreenExtentRequest, ScreenGpuSurfacePayload,
     ScreenInputGraphGeneration, ScreenLiveBranchReceipt, ScreenPlanBuilder, ScreenPlanError,
-    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationHealth,
-    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationSlotPolicy,
-    ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenWorkerBinding, SourceScale,
+    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationExecutorRequest,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenWorkerBinding, SourceScale,
 };
 
 fn non_zero(value: u32) -> NonZeroU32 {
@@ -72,6 +72,7 @@ fn demand(source: &ResolvedScreenSource) -> ResolvedScreenBranchDemand {
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::SourceNative,
             ScreenExtentRequest::Native,
             ScreenAspectPolicy::Contain,
             Arc::new(ScreenProcessingProfile::default()),

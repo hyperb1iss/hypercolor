@@ -7,9 +7,9 @@ use hypercolor_core::input::screen::{
     RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
     ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
     ScreenCaptureBackend, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
-    ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
+    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenUpscalePolicy, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
 };
 
 fn non_zero(value: u32) -> NonZeroU32 {
@@ -68,6 +68,7 @@ fn prepared() -> (
                 columns: non_zero(13),
                 rows: non_zero(7),
             },
+            ScreenPublicationExecutorRequest::Cpu,
             ScreenExtentRequest::bounded(
                 Some(non_zero(17)),
                 Some(non_zero(11)),
