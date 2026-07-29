@@ -357,6 +357,15 @@ pub enum ScreenPublicationKind {
     },
 }
 
+/// Storage residency required by one exact publication descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScreenPublicationResidency {
+    /// Host-addressable storage.
+    Cpu,
+    /// Opaque platform GPU storage retained by its native owner.
+    PlatformGpu(PlatformGpuApi),
+}
+
 /// Canonical finite scalar used by byte-changing processing controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScreenProfileScalar(u32);
@@ -1532,6 +1541,20 @@ impl ResolvedScreenPublicationDescriptor {
     #[must_use]
     pub const fn kind(&self) -> ScreenPublicationKind {
         self.kind
+    }
+
+    /// Storage residency required by the source API and publication kind.
+    #[must_use]
+    pub fn required_residency(&self) -> ScreenPublicationResidency {
+        match self.kind {
+            ScreenPublicationKind::Zones { .. } => ScreenPublicationResidency::Cpu,
+            ScreenPublicationKind::Surface => match self.source().resources().api() {
+                ScreenResourceApi::Cpu => ScreenPublicationResidency::Cpu,
+                ScreenResourceApi::PlatformGpu(api) => {
+                    ScreenPublicationResidency::PlatformGpu(api.clone())
+                }
+            },
+        }
     }
 
     /// Geometric policy retained in the complete output contract.

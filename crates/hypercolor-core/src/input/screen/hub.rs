@@ -16,8 +16,8 @@ use super::plan::{
 };
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat,
-    CaptureTransferFunction, PixelExtent, ResolvedScreenPublicationDescriptor,
-    ScreenPublicationKind,
+    CaptureTransferFunction, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
+    ResolvedScreenPublicationDescriptor, ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const SURFACE_PIXEL_BYTES: u64 = 4;
@@ -177,6 +177,39 @@ impl ScreenPublicationColorimetry {
     }
 }
 
+/// Typed GPU surface publication borrowed only for the publish call.
+#[derive(Clone, Copy, Debug)]
+pub struct ScreenGpuSurfacePayload<'a> {
+    colorimetry: ScreenPublicationColorimetry,
+    surface: &'a PlatformGpuSurface,
+}
+
+impl<'a> ScreenGpuSurfacePayload<'a> {
+    /// Construct a lifetime-retaining opaque GPU publication.
+    #[must_use]
+    pub const fn new(
+        colorimetry: ScreenPublicationColorimetry,
+        surface: &'a PlatformGpuSurface,
+    ) -> Self {
+        Self {
+            colorimetry,
+            surface,
+        }
+    }
+
+    /// Exact target primaries and transfer contract.
+    #[must_use]
+    pub const fn colorimetry(self) -> ScreenPublicationColorimetry {
+        self.colorimetry
+    }
+
+    /// Opaque GPU surface and its erased lifetime owner.
+    #[must_use]
+    pub const fn surface(self) -> &'a PlatformGpuSurface {
+        self.surface
+    }
+}
+
 /// Typed zone publication input borrowed only for the publish call.
 #[derive(Clone, Copy, Debug)]
 pub struct ScreenZonesPayload<'a> {
@@ -241,8 +274,10 @@ impl<'a> ScreenZonesPayload<'a> {
 /// Descriptor-validated publication payload.
 #[derive(Clone, Copy, Debug)]
 pub enum ScreenBranchPayload<'a> {
-    /// Logical four-channel surface.
+    /// Logical four-channel CPU surface.
     Surface(ScreenSurfacePayload<'a>),
+    /// Logical four-channel platform GPU surface.
+    GpuSurface(ScreenGpuSurfacePayload<'a>),
     /// Logical RGB zone grid.
     Zones(ScreenZonesPayload<'a>),
 }
@@ -252,8 +287,19 @@ impl ScreenBranchPayload<'_> {
     #[must_use]
     pub const fn kind(self) -> ScreenPayloadKind {
         match self {
-            Self::Surface(_) => ScreenPayloadKind::Surface,
+            Self::Surface(_) | Self::GpuSurface(_) => ScreenPayloadKind::Surface,
             Self::Zones(_) => ScreenPayloadKind::Zones,
+        }
+    }
+
+    /// Concrete storage residency of this payload.
+    #[must_use]
+    pub fn residency(self) -> ScreenPublicationResidency {
+        match self {
+            Self::Surface(_) | Self::Zones(_) => ScreenPublicationResidency::Cpu,
+            Self::GpuSurface(payload) => {
+                ScreenPublicationResidency::PlatformGpu(payload.surface().api().clone())
+            }
         }
     }
 }
@@ -468,11 +514,16 @@ impl ScreenPublicationMetadata {
 
 #[derive(Debug)]
 enum ScreenPublicationStorage {
-    Surface {
+    CpuSurface {
         extent: PixelExtent,
         pixel_format: CapturePixelFormat,
         colorimetry: ScreenPublicationColorimetry,
         pixels: Box<[u8]>,
+    },
+    GpuSurface {
+        api: PlatformGpuApi,
+        colorimetry: ScreenPublicationColorimetry,
+        surface: Option<PlatformGpuSurface>,
     },
     Zones {
         columns: NonZeroU32,
@@ -485,14 +536,30 @@ enum ScreenPublicationStorage {
 impl ScreenPublicationStorage {
     fn try_new(descriptor: &ResolvedScreenPublicationDescriptor) -> Result<Self, ScreenPlanError> {
         match descriptor.kind() {
-            ScreenPublicationKind::Surface => {
+            ScreenPublicationKind::Surface
+                if matches!(
+                    descriptor.required_residency(),
+                    ScreenPublicationResidency::Cpu
+                ) =>
+            {
                 let extent = descriptor.geometry().output_extent();
                 let len = checked_surface_byte_len(extent)?;
-                Ok(Self::Surface {
+                Ok(Self::CpuSurface {
                     extent,
                     pixel_format: descriptor.physical().target_pixel_format(),
                     colorimetry: descriptor_colorimetry(descriptor),
                     pixels: try_zeroed_slice(len)?,
+                })
+            }
+            ScreenPublicationKind::Surface => {
+                let ScreenPublicationResidency::PlatformGpu(api) = descriptor.required_residency()
+                else {
+                    unreachable!("CPU surface descriptors are handled above");
+                };
+                Ok(Self::GpuSurface {
+                    api,
+                    colorimetry: descriptor_colorimetry(descriptor),
+                    surface: None,
                 })
             }
             ScreenPublicationKind::Zones { columns, rows } => {
@@ -509,8 +576,11 @@ impl ScreenPublicationStorage {
 
     fn copy_from(&mut self, payload: ScreenBranchPayload<'_>) {
         match (self, payload) {
-            (Self::Surface { pixels, .. }, ScreenBranchPayload::Surface(payload)) => {
+            (Self::CpuSurface { pixels, .. }, ScreenBranchPayload::Surface(payload)) => {
                 pixels.copy_from_slice(payload.pixels());
+            }
+            (Self::GpuSurface { surface, .. }, ScreenBranchPayload::GpuSurface(payload)) => {
+                *surface = Some(payload.surface().clone());
             }
             (Self::Zones { colors, .. }, ScreenBranchPayload::Zones(payload)) => {
                 colors.copy_from_slice(payload.colors());
@@ -521,21 +591,28 @@ impl ScreenPublicationStorage {
 
     fn surface_pixels_mut(&mut self) -> Option<&mut [u8]> {
         match self {
-            Self::Surface { pixels, .. } => Some(pixels),
-            Self::Zones { .. } => None,
+            Self::CpuSurface { pixels, .. } => Some(pixels),
+            Self::GpuSurface { .. } | Self::Zones { .. } => None,
         }
     }
 
     fn zone_colors_mut(&mut self) -> Option<&mut [[u8; 3]]> {
         match self {
-            Self::Surface { .. } => None,
+            Self::CpuSurface { .. } | Self::GpuSurface { .. } => None,
             Self::Zones { colors, .. } => Some(colors),
+        }
+    }
+
+    fn residency(&self) -> ScreenPublicationResidency {
+        match self {
+            Self::CpuSurface { .. } | Self::Zones { .. } => ScreenPublicationResidency::Cpu,
+            Self::GpuSurface { api, .. } => ScreenPublicationResidency::PlatformGpu(api.clone()),
         }
     }
 
     fn view(&self) -> ScreenBranchPayload<'_> {
         match self {
-            Self::Surface {
+            Self::CpuSurface {
                 extent,
                 pixel_format,
                 colorimetry,
@@ -545,6 +622,16 @@ impl ScreenPublicationStorage {
                 pixel_format: *pixel_format,
                 colorimetry: *colorimetry,
                 pixels,
+            }),
+            Self::GpuSurface {
+                colorimetry,
+                surface,
+                ..
+            } => ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload {
+                colorimetry: *colorimetry,
+                surface: surface
+                    .as_ref()
+                    .expect("published GPU slots always contain a surface"),
             }),
             Self::Zones {
                 columns,
@@ -693,6 +780,12 @@ impl ScreenBranchPublication {
     #[must_use]
     pub const fn health(&self) -> ScreenPublicationHealth {
         self.health
+    }
+
+    /// Concrete storage residency retained by this publication.
+    #[must_use]
+    pub fn residency(&self) -> ScreenPublicationResidency {
+        self.storage.residency()
     }
 
     /// Freshness evaluated without mutating the retained publication.
@@ -1391,6 +1484,13 @@ impl ScreenPublicationHub {
         metadata: &ScreenPublicationMetadata,
     ) -> Result<PreparedScreenPublication, ScreenPublicationHubError> {
         validate_payload_kind(&publisher.branch.descriptor, expected_kind)?;
+        let residency = publisher.branch.descriptor.required_residency();
+        if residency != ScreenPublicationResidency::Cpu {
+            return Err(ScreenPublicationHubError::ResidencyMismatch {
+                expected: residency,
+                observed: ScreenPublicationResidency::Cpu,
+            });
+        }
         validate_publication_intent(&publisher.branch, &publisher.binding, metadata)?;
         if metadata.completion.is_some() {
             return Err(ScreenPublicationHubError::PublicationCompletionAlreadySet);
@@ -2184,6 +2284,14 @@ pub enum ScreenPublicationHubError {
         /// Submitted kind.
         observed: ScreenPayloadKind,
     },
+    /// Submitted storage residency differs from the committed descriptor.
+    #[error("publication residency mismatch: expected {expected:?}, observed {observed:?}")]
+    ResidencyMismatch {
+        /// Residency required by the committed source and branch kind.
+        expected: ScreenPublicationResidency,
+        /// Residency supplied by the worker.
+        observed: ScreenPublicationResidency,
+    },
     /// Surface extent differs from the committed descriptor.
     #[error("surface extent mismatch: expected {expected:?}, observed {observed:?}")]
     SurfaceExtentMismatch {
@@ -2290,6 +2398,14 @@ fn validate_payload(
     descriptor: &ResolvedScreenPublicationDescriptor,
     payload: ScreenBranchPayload<'_>,
 ) -> Result<(), ScreenPublicationHubError> {
+    let expected_residency = descriptor.required_residency();
+    let observed_residency = payload.residency();
+    if expected_residency != observed_residency {
+        return Err(ScreenPublicationHubError::ResidencyMismatch {
+            expected: expected_residency,
+            observed: observed_residency,
+        });
+    }
     match (descriptor.kind(), payload) {
         (ScreenPublicationKind::Surface, ScreenBranchPayload::Surface(surface)) => {
             let expected = descriptor.geometry().output_extent();
@@ -2304,6 +2420,23 @@ fn validate_payload(
                 return Err(ScreenPublicationHubError::SurfacePixelFormatMismatch {
                     expected: expected_format,
                     observed: surface.pixel_format(),
+                });
+            }
+            validate_colorimetry(descriptor, surface.colorimetry())?;
+        }
+        (ScreenPublicationKind::Surface, ScreenBranchPayload::GpuSurface(surface)) => {
+            let expected = descriptor.geometry().output_extent();
+            if surface.surface().extent() != expected {
+                return Err(ScreenPublicationHubError::SurfaceExtentMismatch {
+                    expected,
+                    observed: surface.surface().extent(),
+                });
+            }
+            let expected_format = descriptor.physical().target_pixel_format();
+            if surface.surface().format() != expected_format {
+                return Err(ScreenPublicationHubError::SurfacePixelFormatMismatch {
+                    expected: expected_format,
+                    observed: surface.surface().format(),
                 });
             }
             validate_colorimetry(descriptor, surface.colorimetry())?;
@@ -2442,9 +2575,15 @@ fn descriptor_payload_bytes(
     descriptor: &ResolvedScreenPublicationDescriptor,
 ) -> Result<u64, ScreenPlanError> {
     let bytes = match descriptor.kind() {
-        ScreenPublicationKind::Surface => {
+        ScreenPublicationKind::Surface
+            if matches!(
+                descriptor.required_residency(),
+                ScreenPublicationResidency::Cpu
+            ) =>
+        {
             checked_surface_byte_len(descriptor.geometry().output_extent())?
         }
+        ScreenPublicationKind::Surface => 0,
         ScreenPublicationKind::Zones { columns, rows } => checked_zone_count(columns, rows)?
             .checked_mul(ZONE_COLOR_BYTES as usize)
             .ok_or(ScreenPlanError::AllocationFailed)?,

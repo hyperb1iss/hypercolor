@@ -6,18 +6,19 @@ use std::time::{Duration, Instant};
 use hypercolor_core::input::screen::{
     CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
     CaptureSourceId, CommittedScreenPlan, InputPublicationDemandRevision, PhysicalOrigin,
-    PixelExtent, PlatformGpuApi, PreparedScreenPublication, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedScreenPublication,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
     ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExactResource,
-    ScreenExactResourceLedger, ScreenExtentRequest, ScreenInputGraphGeneration,
-    ScreenLiveBranchReceipt, ScreenPayloadKind, ScreenPlanBuilder, ScreenPlanError,
-    ScreenProcessingProfile, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
-    ScreenPublicationRequest, ScreenPublicationSlotPolicy, ScreenResourceApi,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
-    SourceScale,
+    ScreenExactResourceLedger, ScreenExtentRequest, ScreenGpuSurfacePayload,
+    ScreenInputGraphGeneration, ScreenLiveBranchReceipt, ScreenPayloadKind, ScreenPlanBuilder,
+    ScreenPlanError, ScreenProcessingProfile, ScreenPublicationColorimetry,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenResourceApi,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenSurfacePayload,
+    ScreenWorkerBinding, SourceScale,
 };
 
 fn non_zero(value: u32) -> NonZeroU32 {
@@ -33,6 +34,42 @@ fn source_id() -> CaptureSourceId {
 }
 
 fn source(width: u32, height: u32) -> ResolvedScreenSource {
+    let extent = pixel_extent(width, height);
+    let geometry = CaptureGeometry::new(
+        PhysicalOrigin::default(),
+        extent,
+        extent,
+        CaptureRotation::Identity,
+        None,
+        SourceScale::ONE,
+    )
+    .expect("test geometry is valid");
+    let config = ResolvedScreenSourceConfig::new_with_cursor_capabilities(
+        geometry,
+        extent,
+        ScreenSourceReflection::None,
+        CapturePixelFormat::Rgba8,
+        CaptureColorimetry::SRGB,
+        ScreenCursorCapabilities::clean_with_separate_cursor(),
+        ScreenBackendResourceIdentity::new(
+            ScreenCaptureBackend::Synthetic,
+            ScreenResourceApi::Cpu,
+            1,
+            1,
+        ),
+    );
+    ResolvedScreenSource::new(
+        ScreenSourceSelector::Configured,
+        CaptureEpoch {
+            source_id: source_id(),
+            topology_generation: 1,
+            session_generation: 1,
+        },
+        config,
+    )
+}
+
+fn gpu_source(width: u32, height: u32) -> ResolvedScreenSource {
     let extent = pixel_extent(width, height);
     let geometry = CaptureGeometry::new(
         PhysicalOrigin::default(),
@@ -341,6 +378,116 @@ fn writable_surface_slots_preserve_last_good_and_reuse_exact_bytes() {
         panic!("surface branch publishes surface payloads");
     };
     assert_eq!(surface.pixels(), &[0x44; 16]);
+}
+
+#[test]
+fn gpu_surface_publications_retain_native_ownership_and_reject_cpu_substitution() {
+    let source = gpu_source(2, 2);
+    let resolved = demand(&source, ScreenPublicationKind::Surface, 60);
+    let descriptor = resolved.descriptor().clone();
+    let mut builder = ScreenPlanBuilder::default();
+    let hub = builder.publication_hub();
+    commit(&mut builder, [resolved]);
+    let binding = binding(&builder);
+    let publisher = hub
+        .publisher(&descriptor, &binding)
+        .expect("GPU worker owns the exact branch");
+    let colorimetry =
+        ScreenPublicationColorimetry::new(descriptor.physical().color_pipeline().output());
+    let surface = PlatformGpuSurface::new(
+        PlatformGpuApi::Direct3d11,
+        41,
+        pixel_extent(2, 2),
+        CapturePixelFormat::Rgba8,
+        Arc::new(String::from("shared-d3d11-texture")),
+    )
+    .expect("test GPU surface has a stable non-zero identity");
+    let now = Instant::now();
+    let metadata = ScreenPublicationMetadata::try_new(
+        descriptor.source_epoch().clone(),
+        binding.plan_generation(),
+        NonZeroU64::MIN,
+        now,
+        now,
+        now + Duration::from_secs(1),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("test timeline is valid");
+    hub.publish(
+        &publisher,
+        ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(colorimetry, &surface)),
+        &metadata,
+    )
+    .expect("native GPU surface publishes without readback");
+
+    let publication = hub
+        .lease(&descriptor)
+        .expect("GPU branch remains committed")
+        .read()
+        .expect("GPU branch has a last-good publication");
+    assert_eq!(
+        publication.residency(),
+        ScreenPublicationResidency::PlatformGpu(PlatformGpuApi::Direct3d11)
+    );
+    let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
+        panic!("GPU source Surface branches retain opaque GPU payloads");
+    };
+    assert_eq!(payload.surface().handle_id(), 41);
+    assert_eq!(
+        payload
+            .surface()
+            .owner::<String>()
+            .expect("native owner type remains recoverable")
+            .as_str(),
+        "shared-d3d11-texture"
+    );
+
+    assert!(matches!(
+        hub.prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Surface,
+            &intent(&descriptor, &binding, 2),
+        ),
+        Err(ScreenPublicationHubError::ResidencyMismatch {
+            expected: ScreenPublicationResidency::PlatformGpu(PlatformGpuApi::Direct3d11),
+            observed: ScreenPublicationResidency::Cpu,
+        })
+    ));
+    let cpu_pixels = [0_u8; 16];
+    let cpu_payload = ScreenBranchPayload::Surface(
+        ScreenSurfacePayload::try_new(
+            pixel_extent(2, 2),
+            CapturePixelFormat::Rgba8,
+            colorimetry,
+            &cpu_pixels,
+        )
+        .expect("CPU payload is shape-valid"),
+    );
+    assert!(matches!(
+        hub.publish(
+            &publisher,
+            cpu_payload,
+            &ScreenPublicationMetadata::try_new(
+                descriptor.source_epoch().clone(),
+                binding.plan_generation(),
+                NonZeroU64::new(2).expect("test sequence is non-zero"),
+                now,
+                now,
+                now + Duration::from_secs(1),
+                ScreenPublicationHealth::Degraded,
+            )
+            .expect("fallback timeline is valid"),
+        ),
+        Err(ScreenPublicationHubError::ResidencyMismatch { .. })
+    ));
+    assert_eq!(
+        hub.lease(&descriptor)
+            .expect("GPU branch remains committed")
+            .read()
+            .expect("rejected CPU substitution preserves last-good")
+            .native_sequence(),
+        NonZeroU64::MIN
+    );
 }
 
 #[test]

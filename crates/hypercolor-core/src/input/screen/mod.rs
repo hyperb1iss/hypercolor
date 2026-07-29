@@ -54,11 +54,12 @@ pub use hub::{
     PreparedScreenPublication, ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState,
     ScreenBranchLease, ScreenBranchPayload, ScreenBranchPublication, ScreenBranchPublisher,
     ScreenCommittedState, ScreenContinuityActivationFailure, ScreenContinuityError,
-    ScreenContinuityLease, ScreenContinuityStageFailure, ScreenLiveBranchReceipt,
-    ScreenPayloadKind, ScreenPublicationColorimetry, ScreenPublicationFreshness,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationMetadata, ScreenPublicationRetirement, ScreenPublicationSlotPolicy,
-    ScreenSurfacePayload, ScreenTwoPlanContinuityLease, ScreenZonesPayload,
+    ScreenContinuityLease, ScreenContinuityStageFailure, ScreenGpuSurfacePayload,
+    ScreenLiveBranchReceipt, ScreenPayloadKind, ScreenPublicationColorimetry,
+    ScreenPublicationFreshness, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRetirement,
+    ScreenPublicationSlotPolicy, ScreenSurfacePayload, ScreenTwoPlanContinuityLease,
+    ScreenZonesPayload,
 };
 pub use materialize::{CpuZoneMaterializationError, PreparedCpuZoneMaterializer};
 pub use plan::{
@@ -83,10 +84,10 @@ pub use publication::{
     ScreenGridPolicy, ScreenHdrPolicy, ScreenLetterboxFill, ScreenPhysicalReductionDescriptor,
     ScreenPhysicalReductionKey, ScreenProcessingProfile, ScreenProcessingProfileConfig,
     ScreenProfileScalar, ScreenPublicationError, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenRational, ScreenReductionFilter, ScreenResourceApi, ScreenSceneCutPolicy,
-    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSubpixelRect,
-    ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
-    ScreenUpscalePolicy,
+    ScreenPublicationResidency, ScreenRational, ScreenReductionFilter, ScreenResourceApi,
+    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenSubpixelRect, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
+    ScreenUnknownColorPolicy, ScreenUpscalePolicy,
 };
 pub use reducer::{
     CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError, CpuReductionExecutor,

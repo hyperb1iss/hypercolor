@@ -13,7 +13,7 @@ use super::hub::{
 };
 use super::{
     CaptureSourceId, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ScreenPhysicalReductionDescriptor, ScreenPublicationKind,
+    ScreenPhysicalReductionDescriptor, ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const TARGET_PIXEL_BYTES: u64 = 4;
@@ -2688,7 +2688,12 @@ fn add_publication_slot_usage<'a>(
     for branch in branches {
         let descriptor = branch.descriptor();
         let payload_bytes = match descriptor.kind() {
-            ScreenPublicationKind::Surface => {
+            ScreenPublicationKind::Surface
+                if matches!(
+                    descriptor.required_residency(),
+                    ScreenPublicationResidency::Cpu
+                ) =>
+            {
                 let extent = descriptor.geometry().output_extent();
                 let pixels = checked_product(
                     descriptor,
@@ -2703,6 +2708,7 @@ fn add_publication_slot_usage<'a>(
                     TARGET_PIXEL_BYTES,
                 )?
             }
+            ScreenPublicationKind::Surface => 0,
             ScreenPublicationKind::Zones { columns, rows } => {
                 let cells = checked_product(
                     descriptor,

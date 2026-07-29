@@ -128,8 +128,8 @@ fn source_config_parts(width: u32, height: u32) -> SourceConfigParts {
         color_space: CaptureColorSpace::Srgb,
         transfer_function: CaptureTransferFunction::Srgb,
         resources: ScreenBackendResourceIdentity::new(
-            ScreenCaptureBackend::WindowsDesktopDuplication,
-            ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+            ScreenCaptureBackend::Synthetic,
+            ScreenResourceApi::Cpu,
             1,
             1,
         ),
@@ -1445,6 +1445,55 @@ fn admission_counts_shared_physical_work_and_writable_publication_slots() {
     assert_eq!(preparing.admission().active().total_bytes(), 0);
     assert_eq!(preparing.admission().staged(), ledger);
     assert_eq!(preparing.admission().overlap(), ledger);
+}
+
+#[test]
+fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
+    let mut config = source_config_parts(7680, 4320);
+    config.resources = ScreenBackendResourceIdentity::new(
+        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        9,
+        17,
+    );
+    let source = resolved_source_with_config(
+        ScreenSourceSelector::Configured,
+        "gpu-display",
+        3,
+        5,
+        config,
+    );
+    let surface = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            60,
+        ),
+        &source,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let revision = next_demand_revision(&builder);
+    let preparing = builder
+        .prepare(
+            [surface],
+            None,
+            revision,
+            ScreenInputGraphGeneration::new(11),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("8K GPU publication is admitted by checked resources");
+    let ledger = preparing.admission().candidate();
+
+    assert_eq!(ledger.publication_retention_bytes(), 0);
+    assert_eq!(ledger.publication_subscriber_slot_bytes(), 0);
+    assert_eq!(ledger.total_bytes(), ledger.physical_plane_bytes());
+    assert_eq!(
+        ledger.physical_plane_bytes(),
+        u64::from(7680_u32) * u64::from(4320_u32) * 4
+    );
 }
 
 #[test]
