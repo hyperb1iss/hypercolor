@@ -661,6 +661,13 @@ impl ScreenPublicationStorage {
         Ok(())
     }
 
+    fn take_gpu_surface(&mut self) -> Option<PlatformGpuSurface> {
+        let Self::GpuSurface { surface, .. } = self else {
+            return None;
+        };
+        surface.take()
+    }
+
     fn residency(&self) -> ScreenPublicationResidency {
         match self {
             Self::CpuSurface { .. } | Self::Zones { .. } => ScreenPublicationResidency::Cpu,
@@ -935,6 +942,7 @@ impl ScreenBranchEntry {
 
     fn retire(&self) {
         self.retired.store(true, Ordering::Release);
+        self.latest.store(None);
     }
 
     fn is_retired(&self) -> bool {
@@ -1015,6 +1023,32 @@ impl ScreenBranchEntry {
     fn report_health(&self, health: ScreenPublicationHealth) {
         self.delivery_health
             .store(health.encode(), Ordering::Release);
+    }
+
+    fn reap_releasable_gpu_payloads(&self) -> usize {
+        let mut reaped = 0;
+        loop {
+            let surface = {
+                let mut runtime = self.lock_runtime();
+                let latest = self.latest.load();
+                runtime.slots.iter_mut().find_map(|slot| {
+                    let publication = slot.as_mut()?;
+                    if latest
+                        .as_ref()
+                        .is_some_and(|latest| Arc::ptr_eq(latest, publication))
+                    {
+                        return None;
+                    }
+                    Arc::get_mut(publication)
+                        .and_then(|publication| publication.storage.take_gpu_surface())
+                })
+            };
+            let Some(surface) = surface else {
+                return reaped;
+            };
+            drop(surface);
+            reaped += 1;
+        }
     }
 
     fn publications_are_pool_owned(&self) -> bool {
@@ -1394,6 +1428,7 @@ impl ScreenPublicationRetirement {
     pub fn try_reclaim(mut self) -> Result<(), Self> {
         let mut blocked_bytes = 0_u64;
         self.entries.retain(|entry| {
+            entry.reap_releasable_gpu_payloads();
             let ready = Arc::strong_count(entry) == 1
                 && Arc::weak_count(entry) == 0
                 && entry.publications_are_pool_owned();
@@ -1872,6 +1907,9 @@ impl ScreenPublicationHub {
         }
         activation.activation.activate();
         drop(guards);
+        for entry in &activation.retired_entries {
+            entry.reap_releasable_gpu_payloads();
+        }
         let ScreenCommitActivation {
             activation: _,
             barrier_entries: _,
@@ -1975,6 +2013,16 @@ impl ScreenBranchPublisher {
     #[must_use]
     pub fn binding(&self) -> &ScreenWorkerBinding {
         &self.binding
+    }
+
+    /// Release superseded GPU payloads no reader still retains.
+    ///
+    /// The current last-good publication is never cleared. Reader-held slots
+    /// remain untouched until a later pass observes unique pool ownership.
+    ///
+    /// Returns the number of native surface owners released by this pass.
+    pub fn reap_releasable_gpu_payloads(&self) -> usize {
+        self.branch.reap_releasable_gpu_payloads()
     }
 }
 
@@ -2102,9 +2150,12 @@ impl fmt::Debug for PreparedScreenPublication {
 
 impl Drop for PreparedScreenPublication {
     fn drop(&mut self) {
-        let Some(publication) = self.publication.take() else {
+        let Some(mut publication) = self.publication.take() else {
             return;
         };
+        if let Some(publication) = Arc::get_mut(&mut publication) {
+            drop(publication.storage.take_gpu_surface());
+        }
         let mut runtime = self.branch.lock_runtime();
         if let Some(slot) = runtime.slots.get_mut(self.slot_index)
             && slot.is_none()
