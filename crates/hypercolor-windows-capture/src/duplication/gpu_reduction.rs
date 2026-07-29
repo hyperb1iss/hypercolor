@@ -124,7 +124,7 @@ impl GpuReductionError {
     }
 }
 
-fn checked_rgba_len(
+pub(super) fn checked_rgba_len(
     width: u32,
     height: u32,
     context: &'static str,
@@ -144,7 +144,7 @@ fn checked_rgba_len(
         })
 }
 
-fn checked_rgba_row_pitch(
+pub(super) fn checked_rgba_row_pitch(
     width: u32,
     height: u32,
     context: &'static str,
@@ -178,6 +178,7 @@ fn public_capture_error(error: GpuReductionError) -> CaptureError {
 
 struct ShaderBytecode {
     reduce: Vec<u8>,
+    publish_surface: Vec<u8>,
 }
 
 static SHADER_BYTECODE: OnceLock<Result<ShaderBytecode, String>> = OnceLock::new();
@@ -208,6 +209,7 @@ fn compiled_shaders() -> Result<&'static ShaderBytecode, GpuReductionError> {
             let compile: D3DCompileFn = unsafe { transmute(entry) };
             Ok(ShaderBytecode {
                 reduce: compile_entry(compile, c"reduce_desktop")?,
+                publish_surface: compile_entry(compile, c"publish_surface_exact")?,
             })
         })
         .as_ref()
@@ -888,7 +890,15 @@ fn create_compute_shader(
     shader.ok_or_else(|| GpuReductionError::operation("compute shader creation returned no shader"))
 }
 
-fn create_constant_buffer(device: &ID3D11Device) -> Result<ID3D11Buffer, GpuReductionError> {
+pub(super) fn create_surface_compute_shader(
+    device: &ID3D11Device,
+) -> Result<ID3D11ComputeShader, GpuReductionError> {
+    create_compute_shader(device, &compiled_shaders()?.publish_surface)
+}
+
+pub(super) fn create_constant_buffer(
+    device: &ID3D11Device,
+) -> Result<ID3D11Buffer, GpuReductionError> {
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: u32::try_from(size_of::<ShaderParams>()).unwrap_or(u32::MAX),
         Usage: D3D11_USAGE_DEFAULT,
@@ -906,7 +916,7 @@ fn create_constant_buffer(device: &ID3D11Device) -> Result<ID3D11Buffer, GpuRedu
         .ok_or_else(|| GpuReductionError::operation("constant buffer creation returned no buffer"))
 }
 
-fn create_texture(
+pub(super) fn create_texture(
     device: &ID3D11Device,
     desc: &D3D11_TEXTURE2D_DESC,
     initial: Option<&D3D11_SUBRESOURCE_DATA>,
@@ -931,7 +941,7 @@ fn create_texture(
     texture.ok_or_else(|| GpuReductionError::operation("texture creation returned no texture"))
 }
 
-fn create_srv(
+pub(super) fn create_srv(
     device: &ID3D11Device,
     texture: &ID3D11Texture2D,
 ) -> Result<ID3D11ShaderResourceView, GpuReductionError> {
@@ -945,7 +955,7 @@ fn create_srv(
     view.ok_or_else(|| GpuReductionError::operation("SRV creation returned no view"))
 }
 
-fn create_uav(
+pub(super) fn create_uav(
     device: &ID3D11Device,
     texture: &ID3D11Texture2D,
 ) -> Result<ID3D11UnorderedAccessView, GpuReductionError> {
@@ -1012,7 +1022,9 @@ pub fn classify_allocation_pressure_for_test(
     .expect("E_OUTOFMEMORY always maps to a typed capture error")
 }
 
-fn normalized_pointer(shape: &super::PointerShape) -> Result<Vec<u8>, GpuReductionError> {
+pub(super) fn normalized_pointer(
+    shape: &super::PointerShape,
+) -> Result<Vec<u8>, GpuReductionError> {
     let output_len = checked_rgba_len(
         shape.width,
         shape.visible_height(),
@@ -1053,7 +1065,7 @@ fn normalized_pointer(shape: &super::PointerShape) -> Result<Vec<u8>, GpuReducti
     Ok(pixels)
 }
 
-const fn pointer_kind_code(kind: PointerShapeKind) -> u32 {
+pub(super) const fn pointer_kind_code(kind: PointerShapeKind) -> u32 {
     match kind {
         PointerShapeKind::Color => 0,
         PointerShapeKind::MaskedColor => 1,
@@ -1061,7 +1073,7 @@ const fn pointer_kind_code(kind: PointerShapeKind) -> u32 {
     }
 }
 
-const fn rotation_code(rotation: DisplayRotation) -> u32 {
+pub(super) const fn rotation_code(rotation: DisplayRotation) -> u32 {
     match rotation {
         DisplayRotation::Identity => 0,
         DisplayRotation::Clockwise90 => 1,
@@ -1418,6 +1430,7 @@ fn synthetic_metadata(
         origin_x: 0,
         origin_y: 0,
         rotation,
+        source_color_space: crate::GpuSurfaceSourceColorSpace::RgbFullG22P709,
         region,
     }
 }
@@ -1670,7 +1683,7 @@ pub(super) fn reduce_pointer_sequence(
 }
 
 #[cfg(test)]
-fn test_device() -> Result<(ID3D11Device, ID3D11DeviceContext), GpuReductionError> {
+pub(super) fn test_device() -> Result<(ID3D11Device, ID3D11DeviceContext), GpuReductionError> {
     use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
     use windows::Win32::Graphics::Direct3D11::{
         D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice,
@@ -1702,7 +1715,7 @@ fn test_device() -> Result<(ID3D11Device, ID3D11DeviceContext), GpuReductionErro
 }
 
 #[cfg(test)]
-fn test_source(
+pub(super) fn test_source(
     device: &ID3D11Device,
     bgra: &[u8],
     width: u32,

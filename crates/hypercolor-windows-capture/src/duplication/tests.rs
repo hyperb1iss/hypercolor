@@ -28,6 +28,12 @@ fn topology_entry(id: &str, origin_x: i32) -> TopologyEntry {
     }
 }
 
+#[test]
+fn d3d11on12_bridges_a_keyed_surface_into_d3d12() {
+    super::gpu_surface::fixture::d3d11on12_bridges_a_keyed_surface_into_d3d12()
+        .expect("D3D11On12 should bridge the shared capture Surface into D3D12");
+}
+
 #[derive(Debug)]
 struct DropSignal(Rc<Cell<u32>>);
 
@@ -155,6 +161,575 @@ fn gpu_readback_ring_coalesces_pressure_at_fixed_capacity() {
 
     assert_eq!(pending, 3);
     assert!(busy);
+}
+
+#[test]
+fn exact_gpu_surfaces_fan_out_incompatible_descriptors_from_one_source() {
+    let bgra = [
+        1, 2, 3, 0xFF, 11, 12, 13, 0xFF, 21, 22, 23, 0xFF, 31, 32, 33, 0xFF, 101, 102, 103, 0xFF,
+        111, 112, 113, 0xFF, 121, 122, 123, 0xFF, 131, 132, 133, 0xFF,
+    ];
+    let region = CaptureRegion::full(4, 2);
+    let descriptors = [
+        super::gpu_surface::fixture::descriptor(
+            1,
+            region,
+            CaptureExtent::try_new(3, 1).expect("landscape extent is valid"),
+        ),
+        super::gpu_surface::fixture::descriptor(
+            2,
+            region,
+            CaptureExtent::try_new(2, 3).expect("portrait extent is valid"),
+        ),
+    ];
+    let fixture = super::gpu_surface::fixture::publish(&bgra, 4, 2, &descriptors)
+        .expect("WARP exact Surface fanout succeeds");
+
+    assert_eq!(fixture.info.source_sequence(), 41);
+    assert_eq!(fixture.info.published(), 2);
+    assert_eq!(fixture.outcomes.len(), 2);
+    assert_eq!(fixture.plan.descriptors().count(), 2);
+    assert_eq!(fixture.plan.readback_byte_len(), 0);
+    assert_eq!(fixture.plan.publication_buffer_byte_len(), 0);
+    let publications = fixture
+        .outcomes
+        .iter()
+        .map(|outcome| match outcome {
+            crate::GpuSurfacePublishOutcome::Published(publication) => publication.clone(),
+            crate::GpuSurfacePublishOutcome::Busy(id) => {
+                panic!("fresh descriptor {} unexpectedly busy", id.get())
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(
+        super::gpu_surface::fixture::texture_handle(&publications[0]),
+        super::gpu_surface::fixture::texture_handle(&publications[1]),
+        "incompatible descriptors own independent resources"
+    );
+
+    let landscape =
+        super::gpu_surface::fixture::readback_and_release(&fixture.plan, &publications[0])
+            .expect("landscape Surface reads back after its ready fence");
+    let portrait =
+        super::gpu_surface::fixture::readback_and_release(&fixture.plan, &publications[1])
+            .expect("portrait Surface reads back after its ready fence");
+    assert_eq!(
+        landscape,
+        [
+            103, 102, 101, 0xFF, 123, 122, 121, 0xFF, 133, 132, 131, 0xFF,
+        ]
+    );
+    assert_eq!(
+        portrait,
+        [
+            13, 12, 11, 0xFF, 33, 32, 31, 0xFF, 113, 112, 111, 0xFF, 133, 132, 131, 0xFF, 113, 112,
+            111, 0xFF, 133, 132, 131, 0xFF,
+        ]
+    );
+}
+
+#[test]
+fn exact_gpu_surfaces_normalize_every_display_rotation() {
+    let bgra = [
+        0, 0, 1, 0xFF, 0, 0, 2, 0xFF, 0, 0, 3, 0xFF, 0, 0, 4, 0xFF, 0, 0, 5, 0xFF, 0, 0, 6, 0xFF,
+    ];
+    let cases = [
+        (DisplayRotation::Identity, 2, 3, [1, 2, 3, 4, 5, 6]),
+        (DisplayRotation::Clockwise90, 3, 2, [5, 3, 1, 6, 4, 2]),
+        (DisplayRotation::Clockwise180, 2, 3, [6, 5, 4, 3, 2, 1]),
+        (DisplayRotation::Clockwise270, 3, 2, [2, 4, 6, 1, 3, 5]),
+    ];
+
+    for (index, (rotation, logical_width, logical_height, expected_red)) in
+        cases.into_iter().enumerate()
+    {
+        let descriptor = super::gpu_surface::fixture::descriptor_for_rotation(
+            u64::try_from(index + 1).expect("fixture id fits u64"),
+            CaptureRegion::full(logical_width, logical_height),
+            CaptureExtent::try_new(logical_width, logical_height).expect("logical extent is valid"),
+            rotation,
+        );
+        let fixture = super::gpu_surface::fixture::publish_rotated(
+            &bgra,
+            2,
+            3,
+            rotation,
+            std::slice::from_ref(&descriptor),
+        )
+        .expect("WARP exact Surface rotation succeeds");
+        let crate::GpuSurfacePublishOutcome::Published(publication) = &fixture.outcomes[0] else {
+            panic!("fresh rotated descriptor unexpectedly busy");
+        };
+        assert_eq!(
+            publication.provenance().native_source_extent,
+            CaptureExtent::try_new(2, 3).expect("native extent is valid")
+        );
+        assert_eq!(
+            publication.provenance().logical_source_extent,
+            descriptor.output_extent()
+        );
+        assert_eq!(
+            publication.provenance().pending_rotation,
+            DisplayRotation::Identity
+        );
+
+        let rgba = super::gpu_surface::fixture::readback_and_release(&fixture.plan, publication)
+            .expect("rotated Surface reads back after release");
+        let observed_red = rgba
+            .chunks_exact(4)
+            .map(|pixel| pixel[0])
+            .collect::<Vec<_>>();
+        assert_eq!(observed_red, expected_red);
+    }
+}
+
+#[test]
+fn exact_gpu_surface_allows_only_one_native_claim() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        23,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("WARP exact Surface publication succeeds");
+    let crate::GpuSurfacePublishOutcome::Published(publication) = &fixture.outcomes[0] else {
+        panic!("fresh descriptor unexpectedly busy");
+    };
+    let lease = publication.claim().expect("first claim succeeds");
+
+    assert!(matches!(
+        publication.claim(),
+        Err(CaptureError::GpuSurfaceUseUnavailable {
+            descriptor_id,
+            source_sequence: 41,
+        }) if descriptor_id == descriptor.id()
+    ));
+    super::gpu_surface::fixture::release_lease_on_producer_device(&fixture.plan, lease)
+        .expect("sole claimant releases the synchronized slot");
+}
+
+#[test]
+fn release_marker_without_release_fence_cannot_unlock_a_native_slot() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        25,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("first WARP exact Surface publication succeeds");
+    let crate::GpuSurfacePublishOutcome::Published(first) = fixture.outcomes.remove(0) else {
+        panic!("fresh descriptor unexpectedly busy");
+    };
+    let first_handle = super::gpu_surface::fixture::texture_handle(&first);
+    super::gpu_surface::fixture::release_key_without_fence(&first)
+        .expect("consumer key release is recorded without a fence signal");
+    drop(first);
+
+    let mut second_outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, 42)
+        .expect("independent sibling remains publishable");
+    let crate::GpuSurfacePublishOutcome::Published(second) = second_outcomes.remove(0) else {
+        panic!("sibling descriptor unexpectedly busy");
+    };
+    assert_ne!(
+        first_handle,
+        super::gpu_surface::fixture::texture_handle(&second)
+    );
+
+    let third_outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+        .expect("unsignaled release fence remains a normal busy state");
+    assert!(matches!(
+        third_outcomes.as_slice(),
+        [crate::GpuSurfacePublishOutcome::Busy(id)] if *id == descriptor.id()
+    ));
+}
+
+#[test]
+fn expired_exact_gpu_surface_cannot_be_claimed() {
+    let descriptor = super::gpu_surface::fixture::descriptor_with_freshness(
+        24,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+        DisplayRotation::Identity,
+        std::time::Duration::ZERO,
+    );
+    let fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("WARP exact Surface publication succeeds");
+    let crate::GpuSurfacePublishOutcome::Published(publication) = &fixture.outcomes[0] else {
+        panic!("fresh descriptor unexpectedly busy");
+    };
+
+    assert!(matches!(
+        publication.claim(),
+        Err(CaptureError::GpuSurfaceUseUnavailable {
+            descriptor_id,
+            source_sequence: 41,
+        }) if descriptor_id == descriptor.id()
+    ));
+}
+
+#[test]
+fn abandoned_exact_gpu_surfaces_reclaim_under_sustained_pressure() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        29,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("first WARP exact Surface publication succeeds");
+    fixture.outcomes.clear();
+
+    for sequence in 42..74 {
+        let publication = (0..64)
+            .find_map(|_| {
+                let outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, sequence)
+                    .expect("abandoned slots remain safely reclaimable");
+                let publication = outcomes.into_iter().find_map(|outcome| match outcome {
+                    crate::GpuSurfacePublishOutcome::Published(publication) => Some(publication),
+                    crate::GpuSurfacePublishOutcome::Busy(_) => None,
+                });
+                if publication.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                publication
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "two native slots sustain no-reader publication pressure: {:?}",
+                    super::gpu_surface::fixture::slot_diagnostics(&fixture.plan)
+                )
+            });
+        drop(publication);
+    }
+}
+
+#[test]
+fn pre_acquire_abandon_returns_publication_to_unclaimed() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        31,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("WARP exact Surface publication succeeds");
+    let crate::GpuSurfacePublishOutcome::Published(publication) = &fixture.outcomes[0] else {
+        panic!("fresh descriptor unexpectedly busy");
+    };
+    publication
+        .claim()
+        .expect("publication is claimable")
+        .abandon_before_acquire()
+        .expect("unacquired reservation returns without poisoning");
+    publication
+        .claim()
+        .expect("abandoned publication remains claimable")
+        .abandon_before_acquire()
+        .expect("second reservation also abandons cleanly");
+    drop(publication.claim().expect("third reservation is claimable"));
+    publication
+        .claim()
+        .expect("dropping an unacquired reservation also restores the claim")
+        .abandon_before_acquire()
+        .expect("restored reservation abandons cleanly");
+}
+
+#[test]
+fn dropped_native_owner_poisoning_is_reported_before_slot_reuse() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        32,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("WARP exact Surface publication succeeds");
+    let crate::GpuSurfacePublishOutcome::Published(publication) = fixture.outcomes.remove(0) else {
+        panic!("fresh descriptor unexpectedly busy");
+    };
+    super::gpu_surface::fixture::acquire_without_release(&publication)
+        .expect("fixture acquires the native consumer key");
+    drop(publication);
+
+    assert!(matches!(
+        fixture.plan.reclaim_abandoned(),
+        Err(CaptureError::GpuSurfacePlanPoisoned {
+            descriptor_id,
+            use_id: 1,
+        }) if descriptor_id == descriptor.id()
+    ));
+}
+
+#[test]
+fn exact_gpu_surface_result_captures_stable_identity_and_provenance() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        77,
+        CaptureRegion::full(2, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF, 4, 5, 6, 0xFF],
+        2,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("WARP exact Surface publication succeeds");
+    let crate::GpuSurfacePublishOutcome::Published(publication) = &fixture.outcomes[0] else {
+        panic!("fresh descriptor unexpectedly busy");
+    };
+    let provenance = publication.provenance();
+
+    assert_eq!(provenance.descriptor.as_ref(), &descriptor);
+    assert_eq!(provenance.descriptor.id().get(), 77);
+    assert_eq!(provenance.plan_generation.get(), 7);
+    assert_eq!(provenance.slot_id.get(), 1);
+    assert_eq!(provenance.use_id, 1);
+    assert_ne!(
+        (
+            provenance.adapter_luid.low_part(),
+            provenance.adapter_luid.high_part()
+        ),
+        (0, 0)
+    );
+    assert_eq!(provenance.source_id.as_ref(), "fixture:display");
+    assert_eq!(provenance.topology_generation, 3);
+    assert_eq!(provenance.duplication_generation, 5);
+    assert_eq!(provenance.source_sequence, 41);
+    assert_eq!(
+        provenance.native_source_extent,
+        CaptureExtent::try_new(2, 1).expect("source extent is valid")
+    );
+    assert_eq!(
+        provenance.logical_source_extent,
+        provenance.native_source_extent
+    );
+    assert_eq!(
+        provenance.coordinate_space,
+        crate::GpuSurfaceCoordinateSpace::LogicalDisplay
+    );
+    assert_eq!(provenance.output_extent, descriptor.output_extent());
+    assert_eq!(
+        provenance.source_format,
+        crate::GpuSurfaceFormat::Bgra8Unorm
+    );
+    assert_eq!(
+        provenance.output_format,
+        crate::GpuSurfaceFormat::Rgba8Unorm
+    );
+    assert_eq!(
+        provenance.color_pipeline,
+        crate::GpuSurfaceColorPipeline::PreserveEncoded
+    );
+    assert!(provenance.published_at >= provenance.captured_at);
+    assert!(provenance.freshness_deadline > provenance.captured_at);
+    let lease = publication
+        .claim()
+        .expect("fresh publication has one claimant");
+    assert_ne!(lease.texture_handle().as_raw(), 0);
+    assert_ne!(lease.fence_handle().as_raw(), 0);
+    let synchronization = lease.synchronization();
+    assert_eq!(synchronization.producer_acquire_key, 0);
+    assert_eq!(synchronization.producer_release_key, 1);
+    assert_eq!(synchronization.consumer_acquire_key, 1);
+    assert_eq!(synchronization.consumer_release_key, 0);
+    assert_eq!(synchronization.producer_ready_value, 1);
+    assert_eq!(synchronization.consumer_release_value, 2);
+
+    super::gpu_surface::fixture::release_lease_on_producer_device(&fixture.plan, lease)
+        .expect("fixture consumer releases the synchronized slot");
+}
+
+#[test]
+fn exact_gpu_surface_lease_keeps_handles_alive_after_plan_retirement() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        5,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("WARP exact Surface publication succeeds");
+
+    assert!(
+        super::gpu_surface::fixture::handles_survive_plan_drop(fixture)
+            .expect("lease-owned shared handles remain open")
+    );
+}
+
+#[test]
+fn exact_gpu_surface_routing_skips_a_busy_slot_when_a_sibling_is_released() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        19,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("first WARP exact Surface publication succeeds");
+    let crate::GpuSurfacePublishOutcome::Published(first) = fixture.outcomes.remove(0) else {
+        panic!("first descriptor unexpectedly busy");
+    };
+    let mut second_outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, 42)
+        .expect("second exact Surface slot publishes");
+    let crate::GpuSurfacePublishOutcome::Published(second) = second_outcomes.remove(0) else {
+        panic!("second descriptor unexpectedly busy");
+    };
+    let second_handle = super::gpu_surface::fixture::texture_handle(&second);
+    let second_slot_id = second.provenance().slot_id;
+    let second_use_id = second.provenance().use_id;
+    super::gpu_surface::fixture::readback_and_release(&fixture.plan, &second)
+        .expect("second slot is released out of order");
+    drop(second);
+
+    let mut third_outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+        .expect("released sibling slot is selected");
+    let crate::GpuSurfacePublishOutcome::Published(third) = third_outcomes.remove(0) else {
+        panic!("released sibling was hidden by the busy write cursor");
+    };
+    assert_eq!(
+        second_handle,
+        super::gpu_surface::fixture::texture_handle(&third)
+    );
+    assert_eq!(third.provenance().slot_id, second_slot_id);
+    assert_eq!(third.provenance().use_id, second_use_id + 1);
+    assert_ne!(
+        super::gpu_surface::fixture::texture_handle(&first),
+        super::gpu_surface::fixture::texture_handle(&third)
+    );
+
+    super::gpu_surface::fixture::release_on_producer_device(&fixture.plan, &first)
+        .expect("first slot releases");
+    super::gpu_surface::fixture::release_on_producer_device(&fixture.plan, &third)
+        .expect("third slot releases");
+}
+
+#[test]
+fn callback_fanout_exposes_only_submitted_publications() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        33,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("first WARP exact Surface publication succeeds");
+
+    assert!(
+        super::gpu_surface::fixture::callback_observes_only_submitted_publications(
+            &mut fixture.plan,
+            42,
+        )
+        .expect("callback publication succeeds")
+    );
+}
+
+#[test]
+fn producer_acquire_timeout_is_busy_without_poisoning() {
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        34,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let mut fixture = super::gpu_surface::fixture::publish(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+    )
+    .expect("first WARP exact Surface publication succeeds");
+    let outcomes = super::gpu_surface::fixture::republish_with_fault(
+        &mut fixture.plan,
+        42,
+        super::gpu_surface::InjectedSurfaceFault::ProducerAcquireTimeout,
+    )
+    .expect("producer acquire timeout remains a normal outcome");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [crate::GpuSurfacePublishOutcome::Busy(id)] if *id == descriptor.id()
+    ));
+
+    let retry = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+        .expect("plan remains healthy after pre-acquire timeout");
+    assert!(matches!(
+        retry.as_slice(),
+        [crate::GpuSurfacePublishOutcome::Published(_)]
+    ));
+}
+
+#[test]
+fn every_injected_post_acquire_exit_poison_fences_reuse() {
+    for (offset, fault) in [
+        super::gpu_surface::InjectedSurfaceFault::AfterProducerAcquire,
+        super::gpu_surface::InjectedSurfaceFault::AfterProducerRelease,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let descriptor = super::gpu_surface::fixture::descriptor(
+            40 + u64::try_from(offset).expect("fixture offset fits u64"),
+            CaptureRegion::full(1, 1),
+            CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+        );
+        let mut fixture = super::gpu_surface::fixture::publish(
+            &[1, 2, 3, 0xFF],
+            1,
+            1,
+            std::slice::from_ref(&descriptor),
+        )
+        .expect("first WARP exact Surface publication succeeds");
+        fixture.outcomes.clear();
+
+        assert!(
+            super::gpu_surface::fixture::republish_with_fault(&mut fixture.plan, 42, fault,)
+                .is_err()
+        );
+        assert!(matches!(
+            fixture.plan.reclaim_abandoned(),
+            Err(CaptureError::GpuSurfacePlanPoisoned {
+                descriptor_id,
+                use_id: 1,
+            }) if descriptor_id == descriptor.id()
+        ));
+    }
 }
 
 #[test]
@@ -337,6 +912,7 @@ fn cropped_frame_origin_tracks_scanout_region_across_rotations() {
             origin_x: -10,
             origin_y: 20,
             rotation,
+            source_color_space: crate::GpuSurfaceSourceColorSpace::RgbFullG22P709,
             region,
         };
 

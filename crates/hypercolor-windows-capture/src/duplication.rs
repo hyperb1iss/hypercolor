@@ -12,8 +12,9 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE180,
-    DXGI_MODE_ROTATION_ROTATE270,
+    DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_ROTATE90,
+    DXGI_MODE_ROTATION_ROTATE180, DXGI_MODE_ROTATION_ROTATE270,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
@@ -21,18 +22,26 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
     DXGI_OUTDUPL_POINTER_SHAPE_INFO, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR,
     DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME,
-    IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
+    IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1, IDXGIOutput6, IDXGIOutputDuplication,
+    IDXGIResource,
 };
 use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
 use windows::core::{HRESULT, Interface, PCWSTR};
 
 use crate::shared::{
     CaptureError, CaptureExtent, CaptureRegion, CaptureResult, CursorInfo, DisplayRotation, Frame,
-    MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride_within,
-    subsampled_extent,
+    GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceDescriptor, GpuSurfacePlanGeneration,
+    GpuSurfaceSourceColorSpace, MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry,
+    subsample_stride_within, subsampled_extent,
 };
 
 pub(crate) mod gpu_reduction;
+mod gpu_surface;
+
+pub use gpu_surface::{
+    GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication, GpuSurfacePublishOutcome,
+    PreparedGpuSurfacePlan,
+};
 
 use gpu_reduction::{GpuReducer, ReducedFrame, SubmitOutcome};
 
@@ -157,7 +166,13 @@ struct CaptureMetadata {
     origin_x: i32,
     origin_y: i32,
     rotation: DisplayRotation,
+    source_color_space: GpuSurfaceSourceColorSpace,
     region: CaptureRegion,
+}
+
+struct NativeCaptureUpdate {
+    texture: Option<ID3D11Texture2D>,
+    metadata: CaptureMetadata,
 }
 
 struct RetainedDesktop {
@@ -724,7 +739,7 @@ pub struct DesktopDuplicator {
     source_id: Arc<str>,
     topology_generation: u64,
     duplication_generation: u64,
-    adapter_luid: (u32, i32),
+    adapter_luid: GpuAdapterLuid,
     last_topology_check: Instant,
     requested_extent: CaptureExtent,
     device: ID3D11Device,
@@ -745,6 +760,7 @@ pub struct DesktopDuplicator {
     origin_x: i32,
     origin_y: i32,
     rotation: DisplayRotation,
+    source_color_space: GpuSurfaceSourceColorSpace,
     pointer: Arc<PointerState>,
     region: Option<CaptureRegion>,
     capture_sequence: u64,
@@ -810,6 +826,7 @@ impl DesktopDuplicator {
         let (native_width, native_height) =
             native_scanout_extent(logical_width, logical_height, rotation);
         let (origin_x, origin_y) = output_origin(&output)?;
+        let source_color_space = output_color_space(&output);
         let (gpu_reducer, reduction_telemetry) = initialize_gpu_reduction(&device, &context)?;
 
         Ok(Self {
@@ -835,6 +852,7 @@ impl DesktopDuplicator {
             origin_x,
             origin_y,
             rotation,
+            source_color_space,
             pointer: Arc::new(PointerState::default()),
             region: None,
             capture_sequence: 0,
@@ -949,6 +967,7 @@ impl DesktopDuplicator {
             origin_x: self.origin_x,
             origin_y: self.origin_y,
             rotation: self.rotation,
+            source_color_space: self.source_color_space,
             region: self.effective_region(),
         }
     }
@@ -1054,6 +1073,209 @@ impl DesktopDuplicator {
         Ok(true)
     }
 
+    /// Prepare descriptor-keyed shareable textures without changing the active
+    /// capture or CPU readback path.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported exact semantics, duplicate identities, source-region
+    /// mismatches, byte-budget overflow, allocation failure, and devices without
+    /// explicit shared-fence synchronization.
+    pub fn prepare_gpu_surface_plan(
+        &self,
+        plan_generation: GpuSurfacePlanGeneration,
+        descriptors: &[GpuSurfaceDescriptor],
+        admission: GpuSurfaceAdmission,
+    ) -> CaptureResult<PreparedGpuSurfacePlan> {
+        PreparedGpuSurfacePlan::prepare(
+            &self.device,
+            &self.context,
+            plan_generation,
+            Arc::clone(&self.source_id),
+            self.topology_generation,
+            self.duplication_generation,
+            self.adapter_luid,
+            CaptureExtent::try_new(self.native_width, self.native_height)?,
+            CaptureExtent::try_new(self.logical_width, self.logical_height)?,
+            self.rotation,
+            self.source_color_space,
+            descriptors,
+            admission,
+        )
+    }
+
+    /// Acquire one native desktop update and fan it out into every exact GPU
+    /// Surface descriptor without staging any result through CPU memory.
+    ///
+    /// `Ok(None)` means the desktop and pointer remained static through the
+    /// timeout. Busy descriptors are reported independently in the returned
+    /// callback; healthy descriptor slots continue publishing. The callback
+    /// executes in canonical descriptor order without a per-frame batch
+    /// allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureError::GpuSurfacePlanInvalidated`] when topology or the
+    /// duplication session no longer matches the prepared plan. Other errors
+    /// preserve the same typed capture, resource, and device failures as
+    /// [`Self::next_frame`].
+    pub fn next_gpu_surfaces<F>(
+        &mut self,
+        plan: &mut PreparedGpuSurfacePlan,
+        timeout: Duration,
+        emit: F,
+    ) -> CaptureResult<Option<GpuSurfaceBatchInfo>>
+    where
+        F: FnMut(GpuSurfacePublishOutcome),
+    {
+        if !plan.matches_source(
+            &self.source_id,
+            self.topology_generation,
+            self.duplication_generation,
+            self.adapter_luid,
+            CaptureExtent::try_new(self.native_width, self.native_height)?,
+            CaptureExtent::try_new(self.logical_width, self.logical_height)?,
+            self.rotation,
+            self.source_color_space,
+        ) {
+            return Err(CaptureError::GpuSurfacePlanInvalidated);
+        }
+        self.release_frame();
+        let Some(update) = self.acquire_native_update(timeout, plan.has_clean_desktop())? else {
+            return Ok(None);
+        };
+        let result = plan.publish(
+            update.texture.as_ref(),
+            update.metadata,
+            self.duplication_generation,
+            emit,
+        );
+        self.release_frame();
+        result.map(Some)
+    }
+
+    fn acquire_native_update(
+        &mut self,
+        timeout: Duration,
+        clean_available: bool,
+    ) -> CaptureResult<Option<NativeCaptureUpdate>> {
+        if self.duplication.is_none() {
+            self.rebuild()?;
+            return Ok(None);
+        }
+
+        if self.last_topology_check.elapsed() >= TOPOLOGY_CHECK_INTERVAL {
+            self.last_topology_check = Instant::now();
+            let outputs = enumerate_outputs()?;
+            let monitors = outputs
+                .iter()
+                .map(|entry| entry.monitor.clone())
+                .collect::<Vec<_>>();
+            let selected = self.selector.resolve(&monitors)?;
+            if selected.id != self.source_id.as_ref()
+                || selected.topology_generation != self.topology_generation
+            {
+                debug!(
+                    source_id = %selected.id,
+                    topology_generation = selected.topology_generation,
+                    "desktop topology changed; rebuilding capture session"
+                );
+                self.rebuild()?;
+                return Ok(None);
+            }
+        }
+
+        let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+        let mut resource: Option<IDXGIResource> = None;
+        // SAFETY: both out-params are owned locals living past the call, and
+        // the duplication interface is kept alive by `self`.
+        let acquire = unsafe {
+            self.duplication
+                .as_ref()
+                .expect("frame acquisition requires a live duplication interface")
+                .AcquireNextFrame(timeout_ms, &mut frame_info, &mut resource)
+        };
+        if let Err(error) = acquire {
+            return match classify_windows_error("acquire duplicated frame", error) {
+                CaptureError::Timeout => Ok(None),
+                CaptureError::AccessLost => {
+                    debug!("desktop duplication access lost; rebuilding session");
+                    self.rebuild()?;
+                    Ok(None)
+                }
+                error => Err(error),
+            };
+        }
+        self.frame_held = true;
+        let captured_at = Instant::now();
+
+        let (current_width, current_height, current_rotation) = duplication_geometry(
+            self.duplication
+                .as_ref()
+                .expect("geometry checks require a live duplication interface"),
+        );
+        let (current_origin_x, current_origin_y) = match output_origin(&self.output) {
+            Ok(origin) => origin,
+            Err(error) => {
+                self.release_frame();
+                return Err(error);
+            }
+        };
+        let current_color_space = output_color_space(&self.output);
+        if current_width != self.logical_width
+            || current_height != self.logical_height
+            || current_origin_x != self.origin_x
+            || current_origin_y != self.origin_y
+            || current_rotation != self.rotation
+            || current_color_space != self.source_color_space
+        {
+            self.release_frame();
+            self.rebuild()?;
+            return Ok(None);
+        }
+
+        let pointer_updated = match self.update_pointer(&frame_info) {
+            Ok(updated) => updated,
+            Err(CaptureError::AccessLost) => {
+                debug!(
+                    operation = "pointer update",
+                    "desktop duplication access lost; rebuilding session"
+                );
+                self.rebuild()?;
+                return Ok(None);
+            }
+            Err(error) => {
+                self.release_frame();
+                return Err(error);
+            }
+        };
+        let desktop_updated = frame_info.LastPresentTime != 0;
+        if !desktop_updated && !pointer_updated {
+            self.release_frame();
+            return Ok(None);
+        }
+        let metadata = self.new_capture_metadata(captured_at);
+        self.latest_capture = Some(metadata.clone());
+        let texture = match desktop_frame_source(desktop_updated, clean_available) {
+            DesktopFrameSource::AcquiredResource => {
+                let Some(resource) = resource else {
+                    self.release_frame();
+                    return Ok(None);
+                };
+                match resource.cast::<ID3D11Texture2D>() {
+                    Ok(texture) => Some(texture),
+                    Err(source) => {
+                        self.release_frame();
+                        return Err(CaptureError::windows("query duplicated texture", source));
+                    }
+                }
+            }
+            DesktopFrameSource::RetainedStaging => None,
+        };
+        Ok(Some(NativeCaptureUpdate { texture, metadata }))
+    }
+
     /// Wait up to `timeout` for the next desktop frame.
     ///
     /// Returns `Ok(None)` when nothing new arrived, which is the common and
@@ -1082,132 +1304,20 @@ impl DesktopDuplicator {
             self.analysis_pending = false;
         }
 
-        if self.duplication.is_none() {
-            self.rebuild()?;
-            return Ok(None);
-        }
-
-        if self.last_topology_check.elapsed() >= TOPOLOGY_CHECK_INTERVAL {
-            self.last_topology_check = Instant::now();
-            let outputs = enumerate_outputs()?;
-            let monitors = outputs
-                .iter()
-                .map(|entry| entry.monitor.clone())
-                .collect::<Vec<_>>();
-            let selected = self.selector.resolve(&monitors)?;
-            if selected.id != self.source_id.as_ref()
-                || selected.topology_generation != self.topology_generation
-            {
-                debug!(
-                    source_id = %selected.id,
-                    topology_generation = selected.topology_generation,
-                    "desktop topology changed; rebuilding capture session"
-                );
-                self.rebuild()?;
-                return Ok(None);
-            }
-        }
-
-        let timeout_ms = if ready.is_some() {
-            0
-        } else {
-            u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX)
-        };
-        let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
-        let mut resource: Option<IDXGIResource> = None;
-
-        // SAFETY: both out-params are owned locals living past the call, and
-        // the duplication interface is kept alive by `self`.
-        let acquire = unsafe {
-            self.duplication
-                .as_ref()
-                .expect("frame acquisition requires a live duplication interface")
-                .AcquireNextFrame(timeout_ms, &mut frame_info, &mut resource)
-        };
-
-        if let Err(error) = acquire {
-            return match classify_windows_error("acquire duplicated frame", error) {
-                CaptureError::Timeout => Ok(ready),
-                CaptureError::AccessLost => {
-                    // Mode change, a full-screen app taking over, or the
-                    // secure desktop during a UAC prompt. All are transient
-                    // and all are fixed by re-duplicating the output.
-                    debug!("desktop duplication access lost; rebuilding session");
-                    self.rebuild()?;
-                    Ok(None)
-                }
-                error => Err(error),
-            };
-        }
-        self.frame_held = true;
-        let captured_at = Instant::now();
-
-        let (current_width, current_height, current_rotation) = duplication_geometry(
-            self.duplication
-                .as_ref()
-                .expect("geometry checks require a live duplication interface"),
-        );
-        let (current_origin_x, current_origin_y) = match output_origin(&self.output) {
-            Ok(origin) => origin,
-            Err(error) => {
-                self.release_frame();
-                return Err(error);
-            }
-        };
-        if current_width != self.logical_width
-            || current_height != self.logical_height
-            || current_origin_x != self.origin_x
-            || current_origin_y != self.origin_y
-            || current_rotation != self.rotation
-        {
-            self.release_frame();
-            self.rebuild()?;
-            return Ok(None);
-        }
-
-        let pointer_updated = match self.update_pointer(&frame_info) {
-            Ok(updated) => updated,
-            Err(CaptureError::AccessLost) => {
-                debug!(
-                    operation = "pointer update",
-                    "desktop duplication access lost; rebuilding session"
-                );
-                self.rebuild()?;
-                return Ok(None);
-            }
-            Err(error) => {
-                self.release_frame();
-                return Err(error);
-            }
-        };
-        let desktop_updated = frame_info.LastPresentTime != 0;
-        if !desktop_updated && !pointer_updated {
-            self.release_frame();
-            return Ok(ready);
-        }
-        let metadata = self.new_capture_metadata(captured_at);
-        self.latest_capture = Some(metadata.clone());
-
         let clean_available = self.staging.is_some()
             || self
                 .gpu_reducer
                 .as_ref()
                 .is_some_and(GpuReducer::has_clean_desktop);
-        let texture = match desktop_frame_source(desktop_updated, clean_available) {
-            DesktopFrameSource::AcquiredResource => {
-                let Some(resource) = resource else {
-                    self.release_frame();
-                    return Ok(None);
-                };
-                match resource.cast::<ID3D11Texture2D>() {
-                    Ok(texture) => Some(texture),
-                    Err(source) => {
-                        self.release_frame();
-                        return Err(CaptureError::windows("query duplicated texture", source));
-                    }
-                }
-            }
-            DesktopFrameSource::RetainedStaging => None,
+        let acquire_timeout = if ready.is_some() {
+            Duration::ZERO
+        } else {
+            timeout
+        };
+        let Some(NativeCaptureUpdate { texture, metadata }) =
+            self.acquire_native_update(acquire_timeout, clean_available)?
+        else {
+            return Ok(ready);
         };
 
         let mut retained = Ok(());
@@ -1589,6 +1699,7 @@ impl DesktopDuplicator {
             .cast::<IDXGIOutput1>()
             .map_err(|source| CaptureError::windows("query IDXGIOutput1", source))?;
         let (origin_x, origin_y) = output_origin(&output)?;
+        let source_color_space = output_color_space(&output);
 
         let (duplication, (logical_width, logical_height, rotation, gpu_reducer, reduction_status)) =
             prepare_duplication(
@@ -1635,6 +1746,7 @@ impl DesktopDuplicator {
         self.origin_x = origin_x;
         self.origin_y = origin_y;
         self.rotation = rotation;
+        self.source_color_space = source_color_space;
         self.region = region;
         self.latest_capture = None;
         self.gpu_reducer = gpu_reducer;
@@ -1817,12 +1929,15 @@ fn create_device(adapter: &IDXGIAdapter1) -> CaptureResult<(ID3D11Device, ID3D11
     }
 }
 
-fn adapter_luid(adapter: &IDXGIAdapter1) -> CaptureResult<(u32, i32)> {
+fn adapter_luid(adapter: &IDXGIAdapter1) -> CaptureResult<GpuAdapterLuid> {
     // SAFETY: GetDesc1 copies the live adapter descriptor into a return value
     // and does not retain caller-owned storage.
     let desc = unsafe { adapter.GetDesc1() }
         .map_err(|source| CaptureError::windows("describe DXGI adapter", source))?;
-    Ok((desc.AdapterLuid.LowPart, desc.AdapterLuid.HighPart))
+    Ok(GpuAdapterLuid::new(
+        desc.AdapterLuid.LowPart,
+        desc.AdapterLuid.HighPart,
+    ))
 }
 
 /// Open the duplication interface, mapping the two well-known refusals.
@@ -1881,6 +1996,22 @@ fn output_origin(output: &IDXGIOutput1) -> CaptureResult<(i32, i32)> {
     let desc = unsafe { output.GetDesc() }
         .map_err(|source| CaptureError::windows("describe DXGI output", source))?;
     Ok((desc.DesktopCoordinates.left, desc.DesktopCoordinates.top))
+}
+
+fn output_color_space(output: &IDXGIOutput1) -> GpuSurfaceSourceColorSpace {
+    let Ok(output6) = output.cast::<IDXGIOutput6>() else {
+        return GpuSurfaceSourceColorSpace::Unknown;
+    };
+    // SAFETY: GetDesc1 returns a value snapshot from the live output.
+    let Ok(desc) = (unsafe { output6.GetDesc1() }) else {
+        return GpuSurfaceSourceColorSpace::Unknown;
+    };
+    match desc.ColorSpace {
+        DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 => GpuSurfaceSourceColorSpace::RgbFullG22P709,
+        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 => GpuSurfaceSourceColorSpace::RgbFullLinearP709,
+        DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 => GpuSurfaceSourceColorSpace::RgbFullPqP2020,
+        _ => GpuSurfaceSourceColorSpace::Unknown,
+    }
 }
 
 #[cfg(test)]

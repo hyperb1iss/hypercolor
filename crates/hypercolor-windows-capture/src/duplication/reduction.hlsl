@@ -37,6 +37,21 @@ int2 scanout_to_logical(int2 scanout)
     return scanout;
 }
 
+int2 logical_to_scanout(int2 logical)
+{
+    if (Rotation == 1) {
+        return int2(logical.y, int(SourceHeight) - 1 - logical.x);
+    }
+    if (Rotation == 2) {
+        return int2(int(SourceWidth) - 1 - logical.x,
+                    int(SourceHeight) - 1 - logical.y);
+    }
+    if (Rotation == 3) {
+        return int2(int(SourceWidth) - 1 - logical.y, logical.x);
+    }
+    return logical;
+}
+
 float4 compose_cursor(uint2 scanout, float4 desktop_sample)
 {
     if (PointerVisible == 0) {
@@ -91,4 +106,25 @@ void reduce_desktop(uint3 thread_id : SV_DispatchThreadID)
     }
 
     Target[thread_id.xy] = float4(sum / max(samples, 1), 1.0);
+}
+
+[numthreads(8, 8, 1)]
+void publish_surface_exact(uint3 thread_id : SV_DispatchThreadID)
+{
+    if (thread_id.x >= OutputWidth || thread_id.y >= OutputHeight) {
+        return;
+    }
+
+    uint2 centered = thread_id.xy * 2 + 1;
+    uint2 numerator = centered * uint2(RegionWidth, RegionHeight);
+    uint2 denominator = uint2(OutputWidth, OutputHeight) * 2;
+    uint2 logical = uint2(RegionX, RegionY) + numerator / denominator;
+    logical = min(
+        logical,
+        uint2(RegionX + RegionWidth - 1, RegionY + RegionHeight - 1)
+    );
+    uint2 source = uint2(logical_to_scanout(int2(logical)));
+
+    float4 desktop = Desktop.Load(int3(source, 0));
+    Target[thread_id.xy] = float4(compose_cursor(source, desktop).rgb, 1.0);
 }

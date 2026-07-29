@@ -1,12 +1,17 @@
 //! Platform-neutral surface: errors, frame view, and the subsample math.
 
+use std::marker::PhantomData;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
 /// Screen capture result type.
 pub type CaptureResult<T> = Result<T, CaptureError>;
+
+/// Exact algorithm revision implemented by the D3D11 Surface shader.
+pub const GPU_SURFACE_ALGORITHM_REVISION: NonZeroU32 = NonZeroU32::MIN;
 
 /// Active Windows capture reduction implementation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -37,6 +42,212 @@ pub struct ReductionTelemetry {
     pub gpu_failures: u64,
     /// Degraded-path reason, absent while GPU reduction is healthy.
     pub issue: Option<Arc<str>>,
+}
+
+/// Stable caller-owned identity for one exact GPU Surface descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GpuSurfaceDescriptorId(NonZeroU64);
+
+impl GpuSurfaceDescriptorId {
+    /// Construct a non-zero descriptor identity.
+    #[must_use]
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    /// Numeric identity used by the publication coordinator.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Committed screen-plan generation fenced into GPU Surface results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GpuSurfacePlanGeneration(NonZeroU64);
+
+impl GpuSurfacePlanGeneration {
+    /// Construct a non-zero plan generation.
+    #[must_use]
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    /// Monotonic committed generation.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Stable identity of the DXGI adapter that owns a native GPU Surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GpuAdapterLuid {
+    low_part: u32,
+    high_part: i32,
+}
+
+impl GpuAdapterLuid {
+    /// Construct an adapter identity from the two Windows LUID components.
+    #[must_use]
+    pub const fn new(low_part: u32, high_part: i32) -> Self {
+        Self {
+            low_part,
+            high_part,
+        }
+    }
+
+    /// Unsigned low 32 bits reported by DXGI.
+    #[must_use]
+    pub const fn low_part(self) -> u32 {
+        self.low_part
+    }
+
+    /// Signed high 32 bits reported by DXGI.
+    #[must_use]
+    pub const fn high_part(self) -> i32 {
+        self.high_part
+    }
+}
+
+/// Stable native texture slot identity within one committed Surface plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GpuSurfaceSlotId(NonZeroU64);
+
+impl GpuSurfaceSlotId {
+    /// Construct a non-zero native slot identity.
+    #[must_use]
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    /// Numeric identity paired with plan generation and adapter identity.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Exact raster filter requested from the Windows GPU executor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GpuSurfaceFilter {
+    /// Center-mapped nearest-neighbor sampling.
+    #[default]
+    Nearest,
+    /// Four-tap center-mapped interpolation.
+    Bilinear,
+    /// Area-weighted source coverage.
+    Area,
+}
+
+/// Pixel storage format participating in exact GPU Surface identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GpuSurfaceFormat {
+    /// DXGI `B8G8R8A8_UNORM`, the Desktop Duplication source format.
+    Bgra8Unorm,
+    /// DXGI `R8G8B8A8_UNORM`, the shareable Surface output format.
+    #[default]
+    Rgba8Unorm,
+    /// Linear half-float RGBA storage.
+    Rgba16Float,
+}
+
+/// Exact color operation requested from the Windows GPU executor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GpuSurfaceColorPipeline {
+    /// Preserve encoded channel values while changing BGRA storage to RGBA.
+    #[default]
+    PreserveEncoded,
+    /// Decode and process SDR samples in linear light before re-encoding.
+    LinearSdr,
+    /// Tone-map HDR samples into an SDR output contract.
+    ToneMapHdrToSdr,
+}
+
+/// Coordinate system used by an exact GPU Surface descriptor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GpuSurfaceCoordinateSpace {
+    /// Upright display coordinates after applying the DXGI output rotation.
+    #[default]
+    LogicalDisplay,
+    /// Raw coordinates in the duplicated scanout texture.
+    NativeScanout,
+}
+
+/// DXGI output color space participating in exact source identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GpuSurfaceSourceColorSpace {
+    /// Full-range SDR RGB using the DXGI G22 transfer and Rec. 709 primaries.
+    RgbFullG22P709,
+    /// Full-range linear RGB using Rec. 709 primaries.
+    RgbFullLinearP709,
+    /// Full-range PQ RGB using Rec. 2020 primaries.
+    RgbFullPqP2020,
+    /// A DXGI color-space value outside this executor's declared vocabulary.
+    #[default]
+    Unknown,
+}
+
+/// Cursor treatment participating in exact GPU Surface identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GpuSurfaceCursorPolicy {
+    /// Publish the clean desktop without the separately reported pointer.
+    #[default]
+    Exclude,
+    /// Composite the current pointer before publication.
+    Include,
+}
+
+/// Typed reason an exact GPU Surface descriptor cannot execute on this backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuSurfaceUnsupportedReason {
+    /// The requested raster filter has no byte-exact shader implementation.
+    Filter(GpuSurfaceFilter),
+    /// The requested output storage has no shareable typed-UAV implementation.
+    OutputFormat(GpuSurfaceFormat),
+    /// The requested color operation has no byte-exact shader implementation.
+    ColorPipeline(GpuSurfaceColorPipeline),
+    /// The requested source coordinates are not normalized logical pixels.
+    CoordinateSpace(GpuSurfaceCoordinateSpace),
+    /// The duplicated source color space is not byte-exact for revision 1.
+    SourceColorSpace(GpuSurfaceSourceColorSpace),
+    /// The descriptor names another reduction algorithm revision.
+    AlgorithmRevision(NonZeroU32),
+    /// The duplicated source format is outside the exact shader contract.
+    SourceFormat,
+    /// The D3D11 device cannot expose shareable fence synchronization.
+    SharedFenceUnavailable,
+}
+
+impl std::fmt::Display for GpuSurfaceUnsupportedReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Filter(filter) => write!(formatter, "unsupported exact filter {filter:?}"),
+            Self::OutputFormat(format) => {
+                write!(formatter, "unsupported exact output format {format:?}")
+            }
+            Self::ColorPipeline(pipeline) => {
+                write!(formatter, "unsupported exact color pipeline {pipeline:?}")
+            }
+            Self::CoordinateSpace(coordinates) => {
+                write!(
+                    formatter,
+                    "unsupported exact coordinate space {coordinates:?}"
+                )
+            }
+            Self::SourceColorSpace(color_space) => {
+                write!(
+                    formatter,
+                    "unsupported exact source color space {color_space:?}"
+                )
+            }
+            Self::AlgorithmRevision(revision) => {
+                write!(formatter, "unsupported exact algorithm revision {revision}")
+            }
+            Self::SourceFormat => formatter.write_str("unsupported exact source format"),
+            Self::SharedFenceUnavailable => formatter.write_str("shared D3D11 fences unavailable"),
+        }
+    }
 }
 
 /// Screen capture failures.
@@ -79,6 +290,104 @@ pub enum CaptureError {
         /// Height whose byte geometry overflowed.
         height: u32,
     },
+
+    /// A descriptor requests semantics this exact GPU executor cannot reproduce.
+    #[error("GPU Surface descriptor {descriptor_id:?}: {reason}")]
+    UnsupportedGpuSurface {
+        /// Exact descriptor rejected before publication.
+        descriptor_id: GpuSurfaceDescriptorId,
+        /// Unsupported operation or backend capability.
+        reason: GpuSurfaceUnsupportedReason,
+    },
+
+    /// One candidate plan repeats a descriptor identity.
+    #[error("GPU Surface descriptor identity {descriptor_id:?} is duplicated")]
+    DuplicateGpuSurfaceDescriptor {
+        /// Repeated descriptor identity.
+        descriptor_id: GpuSurfaceDescriptorId,
+    },
+
+    /// A descriptor source rectangle escapes its declared coordinate space.
+    #[error(
+        "GPU Surface descriptor {descriptor_id:?} region is outside source {source_width}x{source_height}"
+    )]
+    GpuSurfaceRegionOutOfBounds {
+        /// Exact descriptor with invalid source geometry.
+        descriptor_id: GpuSurfaceDescriptorId,
+        /// Prepared source width in the descriptor coordinate space.
+        source_width: u32,
+        /// Prepared source height in the descriptor coordinate space.
+        source_height: u32,
+    },
+
+    /// A descriptor was prepared for another physical output orientation.
+    #[error(
+        "GPU Surface descriptor {descriptor_id:?} expects {descriptor_rotation:?} but source is {source_rotation:?}"
+    )]
+    GpuSurfaceRotationMismatch {
+        /// Exact descriptor with stale source orientation.
+        descriptor_id: GpuSurfaceDescriptorId,
+        /// Rotation encoded into the descriptor identity.
+        descriptor_rotation: DisplayRotation,
+        /// Rotation reported by the current duplication source.
+        source_rotation: DisplayRotation,
+    },
+
+    /// A native Surface publication was already claimed, expired, or superseded.
+    #[error(
+        "GPU Surface descriptor {descriptor_id:?} sequence {source_sequence} is no longer claimable"
+    )]
+    GpuSurfaceUseUnavailable {
+        /// Descriptor whose single native hand-off was requested.
+        descriptor_id: GpuSurfaceDescriptorId,
+        /// Source acquisition sequence bound to that hand-off.
+        source_sequence: u64,
+    },
+
+    /// A claimed native hand-off disappeared before queuing its release.
+    #[error(
+        "GPU Surface descriptor {descriptor_id:?} use {use_id} lost its claim guard before release"
+    )]
+    GpuSurfacePlanPoisoned {
+        /// Descriptor whose ownership can no longer be proven.
+        descriptor_id: GpuSurfaceDescriptorId,
+        /// Native slot use generation that violated the hand-off.
+        use_id: u64,
+    },
+
+    /// Exact GPU resources exceed the caller-supplied byte ledger.
+    #[error(
+        "GPU Surface plan requires {requested_bytes} bytes but its admission budget is {budget_bytes} bytes"
+    )]
+    GpuSurfaceBudgetExceeded {
+        /// Checked bytes required by clean and output textures.
+        requested_bytes: u64,
+        /// Explicit candidate-plan budget.
+        budget_bytes: u64,
+    },
+
+    /// Exact native publication needs at least two independently owned slots.
+    #[error(
+        "GPU Surface plan requested {requested} in-flight slot but requires at least {minimum}"
+    )]
+    GpuSurfaceInFlightDepthTooSmall {
+        /// Requested reusable slots per descriptor.
+        requested: u32,
+        /// Minimum required to avoid one claimant stalling acquisition.
+        minimum: u32,
+    },
+
+    /// A prepared GPU plan belongs to another capture source or device epoch.
+    #[error("GPU Surface plan no longer matches the active capture source epoch")]
+    GpuSurfacePlanInvalidated,
+
+    /// Publication timestamps cannot represent the requested freshness window.
+    #[error("GPU Surface freshness timestamp overflowed")]
+    GpuSurfaceFreshnessOverflow,
+
+    /// A per-slot shared-fence sequence cannot advance without aliasing old work.
+    #[error("GPU Surface synchronization sequence exhausted")]
+    GpuSurfaceSynchronizationExhausted,
 
     /// A mapped capture surface reported unusable row geometry.
     #[error("{operation} returned invalid {width}x{height} row geometry with pitch {row_pitch}")]
@@ -214,7 +523,7 @@ pub enum DisplayRotation {
     Clockwise270,
 }
 
-/// Native scanout rectangle selected for capture reduction.
+/// Non-empty pixel rectangle selected for capture or publication.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureRegion {
     origin_x: u32,
@@ -223,8 +532,398 @@ pub struct CaptureRegion {
     height: u32,
 }
 
+/// Complete byte-changing identity for one exact shareable GPU Surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuSurfaceDescriptor {
+    id: GpuSurfaceDescriptorId,
+    source_region: CaptureRegion,
+    coordinate_space: GpuSurfaceCoordinateSpace,
+    source_rotation: DisplayRotation,
+    source_color_space: GpuSurfaceSourceColorSpace,
+    output_extent: CaptureExtent,
+    filter: GpuSurfaceFilter,
+    format: GpuSurfaceFormat,
+    color_pipeline: GpuSurfaceColorPipeline,
+    cursor: GpuSurfaceCursorPolicy,
+    algorithm_revision: NonZeroU32,
+    freshness: Duration,
+}
+
+/// Inputs for constructing one exact GPU Surface descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuSurfaceDescriptorConfig {
+    /// Stable identity supplied by the screen publication plan.
+    pub id: GpuSurfaceDescriptorId,
+    /// Rectangle sampled in the declared source coordinate space.
+    pub source_region: CaptureRegion,
+    /// Coordinate system in which `source_region` is expressed.
+    pub coordinate_space: GpuSurfaceCoordinateSpace,
+    /// DXGI rotation normalized by this exact descriptor.
+    pub source_rotation: DisplayRotation,
+    /// DXGI color space whose encoded channel values are consumed.
+    pub source_color_space: GpuSurfaceSourceColorSpace,
+    /// Exact output raster extent.
+    pub output_extent: CaptureExtent,
+    /// Exact raster filter.
+    pub filter: GpuSurfaceFilter,
+    /// Exact output storage.
+    pub format: GpuSurfaceFormat,
+    /// Exact color operation.
+    pub color_pipeline: GpuSurfaceColorPipeline,
+    /// Exact cursor treatment.
+    pub cursor: GpuSurfaceCursorPolicy,
+    /// Revision of the complete reduction algorithm.
+    pub algorithm_revision: NonZeroU32,
+    /// Maximum age at which this publication remains deliverable.
+    pub freshness: Duration,
+}
+
+impl GpuSurfaceDescriptor {
+    /// Construct a complete exact descriptor from already validated scalar types.
+    #[must_use]
+    pub const fn new(config: GpuSurfaceDescriptorConfig) -> Self {
+        Self {
+            id: config.id,
+            source_region: config.source_region,
+            coordinate_space: config.coordinate_space,
+            source_rotation: config.source_rotation,
+            source_color_space: config.source_color_space,
+            output_extent: config.output_extent,
+            filter: config.filter,
+            format: config.format,
+            color_pipeline: config.color_pipeline,
+            cursor: config.cursor,
+            algorithm_revision: config.algorithm_revision,
+            freshness: config.freshness,
+        }
+    }
+
+    /// Stable publication-plan identity.
+    #[must_use]
+    pub const fn id(&self) -> GpuSurfaceDescriptorId {
+        self.id
+    }
+
+    /// Rectangle sampled by the shader in the declared coordinate space.
+    #[must_use]
+    pub const fn source_region(&self) -> CaptureRegion {
+        self.source_region
+    }
+
+    /// Coordinate system of the exact source rectangle.
+    #[must_use]
+    pub const fn coordinate_space(&self) -> GpuSurfaceCoordinateSpace {
+        self.coordinate_space
+    }
+
+    /// Physical DXGI output rotation normalized by the shader.
+    #[must_use]
+    pub const fn source_rotation(&self) -> DisplayRotation {
+        self.source_rotation
+    }
+
+    /// Exact DXGI source color space represented by encoded input channels.
+    #[must_use]
+    pub const fn source_color_space(&self) -> GpuSurfaceSourceColorSpace {
+        self.source_color_space
+    }
+
+    /// Exact output raster extent.
+    #[must_use]
+    pub const fn output_extent(&self) -> CaptureExtent {
+        self.output_extent
+    }
+
+    /// Exact raster filter.
+    #[must_use]
+    pub const fn filter(&self) -> GpuSurfaceFilter {
+        self.filter
+    }
+
+    /// Exact output storage.
+    #[must_use]
+    pub const fn format(&self) -> GpuSurfaceFormat {
+        self.format
+    }
+
+    /// Exact color operation.
+    #[must_use]
+    pub const fn color_pipeline(&self) -> GpuSurfaceColorPipeline {
+        self.color_pipeline
+    }
+
+    /// Exact cursor treatment.
+    #[must_use]
+    pub const fn cursor(&self) -> GpuSurfaceCursorPolicy {
+        self.cursor
+    }
+
+    /// Reduction algorithm revision.
+    #[must_use]
+    pub const fn algorithm_revision(&self) -> NonZeroU32 {
+        self.algorithm_revision
+    }
+
+    /// Maximum deliverable age for one result.
+    #[must_use]
+    pub const fn freshness(&self) -> Duration {
+        self.freshness
+    }
+
+    /// Validate the exact operations implemented by the current D3D11 shader.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed unsupported reason instead of silently substituting an
+    /// approximate filter, storage format, or color operation.
+    pub const fn validate_exact_gpu(&self) -> CaptureResult<()> {
+        if !matches!(
+            self.coordinate_space,
+            GpuSurfaceCoordinateSpace::LogicalDisplay
+        ) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::CoordinateSpace(self.coordinate_space),
+            });
+        }
+        if !matches!(self.filter, GpuSurfaceFilter::Nearest) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::Filter(self.filter),
+            });
+        }
+        if !matches!(self.format, GpuSurfaceFormat::Rgba8Unorm) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::OutputFormat(self.format),
+            });
+        }
+        if !matches!(
+            self.color_pipeline,
+            GpuSurfaceColorPipeline::PreserveEncoded
+        ) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::ColorPipeline(self.color_pipeline),
+            });
+        }
+        if !matches!(
+            self.source_color_space,
+            GpuSurfaceSourceColorSpace::RgbFullG22P709
+        ) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::SourceColorSpace(self.source_color_space),
+            });
+        }
+        if self.algorithm_revision.get() != GPU_SURFACE_ALGORITHM_REVISION.get() {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::AlgorithmRevision(self.algorithm_revision),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Caller-supplied resource ledger for one prepared GPU Surface plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuSurfaceAdmission {
+    max_texture_bytes: u64,
+    slots_per_descriptor: NonZeroU32,
+}
+
+impl GpuSurfaceAdmission {
+    /// Define the byte budget and reusable in-flight depth explicitly.
+    #[must_use]
+    pub const fn new(max_texture_bytes: u64, slots_per_descriptor: NonZeroU32) -> Self {
+        Self {
+            max_texture_bytes,
+            slots_per_descriptor,
+        }
+    }
+
+    /// Maximum admitted bytes across the clean texture and output slots.
+    #[must_use]
+    pub const fn max_texture_bytes(self) -> u64 {
+        self.max_texture_bytes
+    }
+
+    /// Number of independently synchronized reusable slots per descriptor.
+    #[must_use]
+    pub const fn slots_per_descriptor(self) -> NonZeroU32 {
+        self.slots_per_descriptor
+    }
+
+    /// Validate exact descriptors and return their checked texture ledger.
+    ///
+    /// The ledger includes one native clean-desktop texture plus every
+    /// descriptor's configured in-flight output slots. It imposes no axis or
+    /// resolution cap; actual D3D allocation remains the final admission.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported exact operations, duplicate identities, regions
+    /// outside the source, checked byte overflow, and plans over this budget.
+    pub fn admit(
+        self,
+        source_extent: CaptureExtent,
+        descriptors: &[GpuSurfaceDescriptor],
+    ) -> CaptureResult<u64> {
+        if self.slots_per_descriptor.get() < 2 {
+            return Err(CaptureError::GpuSurfaceInFlightDepthTooSmall {
+                requested: self.slots_per_descriptor.get(),
+                minimum: 2,
+            });
+        }
+        let mut bytes = checked_gpu_surface_bytes(source_extent)?;
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            descriptor.validate_exact_gpu()?;
+            if !descriptor
+                .source_region()
+                .fits_within(source_extent.width(), source_extent.height())
+            {
+                return Err(CaptureError::GpuSurfaceRegionOutOfBounds {
+                    descriptor_id: descriptor.id(),
+                    source_width: source_extent.width(),
+                    source_height: source_extent.height(),
+                });
+            }
+            if descriptors[..index]
+                .iter()
+                .any(|candidate| candidate.id() == descriptor.id())
+            {
+                return Err(CaptureError::DuplicateGpuSurfaceDescriptor {
+                    descriptor_id: descriptor.id(),
+                });
+            }
+            let route = checked_gpu_surface_bytes(descriptor.output_extent())?
+                .checked_mul(u64::from(self.slots_per_descriptor.get()))
+                .ok_or(CaptureError::GeometryOverflow {
+                    operation: "account GPU Surface slots",
+                    width: descriptor.output_extent().width(),
+                    height: descriptor.output_extent().height(),
+                })?;
+            bytes = bytes
+                .checked_add(route)
+                .ok_or(CaptureError::GeometryOverflow {
+                    operation: "account GPU Surface plan",
+                    width: descriptor.output_extent().width(),
+                    height: descriptor.output_extent().height(),
+                })?;
+        }
+        if bytes > self.max_texture_bytes {
+            return Err(CaptureError::GpuSurfaceBudgetExceeded {
+                requested_bytes: bytes,
+                budget_bytes: self.max_texture_bytes,
+            });
+        }
+        Ok(bytes)
+    }
+}
+
+pub(crate) fn checked_gpu_surface_bytes(extent: CaptureExtent) -> CaptureResult<u64> {
+    u64::from(extent.width())
+        .checked_mul(u64::from(extent.height()))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(CaptureError::GeometryOverflow {
+            operation: "account GPU Surface texture",
+            width: extent.width(),
+            height: extent.height(),
+        })
+}
+
+/// Borrowed Windows handle value kept alive by a [`crate::GpuSurfaceLease`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuSharedHandle<'lease> {
+    raw: isize,
+    lease: PhantomData<&'lease ()>,
+}
+
+impl GpuSharedHandle<'_> {
+    #[cfg(target_os = "windows")]
+    pub(crate) const fn from_raw(raw: isize) -> Self {
+        Self {
+            raw,
+            lease: PhantomData,
+        }
+    }
+
+    /// Raw NT handle value. The caller must not close this borrowed handle.
+    #[must_use]
+    pub const fn as_raw(self) -> isize {
+        self.raw
+    }
+}
+
+/// Explicit cross-API ownership transfer for one reusable Surface slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuSurfaceSynchronization {
+    /// Key the producer acquires before overwriting the reusable texture.
+    pub producer_acquire_key: u64,
+    /// Key the producer releases after queuing the exact Surface write.
+    pub producer_release_key: u64,
+    /// Key the consumer acquires before importing or copying the texture.
+    pub consumer_acquire_key: u64,
+    /// Key the consumer releases after its final texture access is queued.
+    pub consumer_release_key: u64,
+    /// Fence value the consumer waits for before reading the texture.
+    pub producer_ready_value: u64,
+    /// Fence value the consumer signals after its final GPU read completes.
+    pub consumer_release_value: u64,
+}
+
+/// Immutable provenance captured when one exact GPU Surface is produced.
+#[derive(Clone, Debug)]
+pub struct GpuSurfaceProvenance {
+    /// Complete exact descriptor represented by the bytes.
+    pub descriptor: Arc<GpuSurfaceDescriptor>,
+    /// Committed plan generation that authorized the result.
+    pub plan_generation: GpuSurfacePlanGeneration,
+    /// DXGI adapter that owns the shared texture and fence handles.
+    pub adapter_luid: GpuAdapterLuid,
+    /// Stable physical texture slot within this plan generation.
+    pub slot_id: GpuSurfaceSlotId,
+    /// Monotonic content generation for this physical slot.
+    pub use_id: u64,
+    /// Stable display source id.
+    pub source_id: Arc<str>,
+    /// Attached-output topology generation.
+    pub topology_generation: u64,
+    /// Desktop Duplication session generation.
+    pub duplication_generation: u64,
+    /// Native acquisition sequence.
+    pub source_sequence: u64,
+    /// Native acquisition time.
+    pub captured_at: Instant,
+    /// Time the GPU publication was enqueued and fenced.
+    pub published_at: Instant,
+    /// Last instant at which this result may be delivered.
+    pub freshness_deadline: Instant,
+    /// Native scanout extent feeding the publication.
+    pub native_source_extent: CaptureExtent,
+    /// Upright logical display extent represented by descriptor coordinates.
+    pub logical_source_extent: CaptureExtent,
+    /// Coordinate system represented by the published pixels.
+    pub coordinate_space: GpuSurfaceCoordinateSpace,
+    /// Exact output raster extent.
+    pub output_extent: CaptureExtent,
+    /// Duplicated source storage format.
+    pub source_format: GpuSurfaceFormat,
+    /// DXGI color space represented by duplicated source channels.
+    pub source_color_space: GpuSurfaceSourceColorSpace,
+    /// Published output storage format.
+    pub output_format: GpuSurfaceFormat,
+    /// Exact color operation represented by the output.
+    pub color_pipeline: GpuSurfaceColorPipeline,
+    /// Pending transform still represented by the published pixels.
+    pub pending_rotation: DisplayRotation,
+    /// Whether the publication shader included cursor composition.
+    pub cursor_composed: bool,
+}
+
 impl CaptureRegion {
-    /// Construct a non-empty native scanout rectangle.
+    /// Construct a non-empty pixel rectangle.
     #[must_use]
     pub const fn new(origin_x: u32, origin_y: u32, width: u32, height: u32) -> Option<Self> {
         if width == 0 || height == 0 {
@@ -238,6 +937,7 @@ impl CaptureRegion {
         })
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) const fn full(width: u32, height: u32) -> Self {
         Self {
             origin_x: 0,
@@ -247,25 +947,25 @@ impl CaptureRegion {
         }
     }
 
-    /// Horizontal origin in native scanout coordinates.
+    /// Horizontal origin in the rectangle's declared coordinate space.
     #[must_use]
     pub const fn origin_x(self) -> u32 {
         self.origin_x
     }
 
-    /// Vertical origin in native scanout coordinates.
+    /// Vertical origin in the rectangle's declared coordinate space.
     #[must_use]
     pub const fn origin_y(self) -> u32 {
         self.origin_y
     }
 
-    /// Selected width in native scanout pixels.
+    /// Selected width in the rectangle's declared coordinate space.
     #[must_use]
     pub const fn width(self) -> u32 {
         self.width
     }
 
-    /// Selected height in native scanout pixels.
+    /// Selected height in the rectangle's declared coordinate space.
     #[must_use]
     pub const fn height(self) -> u32 {
         self.height
