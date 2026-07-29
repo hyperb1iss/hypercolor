@@ -459,6 +459,132 @@ pub(super) fn retained_frame_exhausts_bounded_pool_for_test() -> CaptureResult<(
 }
 
 #[cfg(test)]
+pub(super) struct HybridSequenceProof {
+    pub(super) gpu_sequence: u64,
+    pub(super) cpu_sequence: u64,
+    pub(super) gpu_captured_at: std::time::Instant,
+    pub(super) cpu_captured_at: std::time::Instant,
+    pub(super) gpu_source_id: Arc<str>,
+    pub(super) cpu_source_id: String,
+    pub(super) gpu_duplication_generation: u64,
+    pub(super) cpu_duplication_generation: u64,
+}
+
+#[cfg(test)]
+pub(super) fn hybrid_sequence_proof_for_test() -> CaptureResult<HybridSequenceProof> {
+    use std::num::NonZeroU64;
+
+    use crate::{
+        CaptureRegion, GpuSurfaceAdmission, GpuSurfacePlanGeneration, GpuSurfacePublishOutcome,
+    };
+
+    let (device, context) = super::gpu_reduction::test_device()
+        .map_err(|error| CaptureError::windows("create hybrid pump fixture", error))?;
+    let width = 7;
+    let height = 5;
+    let pixels = [17, 83, 149, 0xFF].repeat((width * height) as usize);
+    let source = super::gpu_reduction::test_source(&device, &pixels, width, height)
+        .map_err(|error| CaptureError::windows("create hybrid pump fixture source", error))?;
+    let mut metadata = test_metadata(width, height, 71);
+    metadata.captured_at = std::time::Instant::now();
+    let clean = RetainedDesktop {
+        srv: super::gpu_reduction::create_srv(&device, &source)
+            .map_err(|error| CaptureError::windows("create hybrid pump fixture view", error))?,
+        texture: source,
+        metadata,
+    };
+    let source_extent = CaptureExtent::try_new(width, height)?;
+    let descriptor = super::gpu_surface::fixture::descriptor(
+        73,
+        CaptureRegion::full(width, height),
+        source_extent,
+    );
+    let adapter_luid = GpuAdapterLuid::new(0, 0);
+    let duplication_generation = 5;
+    let mut gpu = super::PreparedGpuSurfacePlan::prepare(
+        &device,
+        &context,
+        GpuSurfacePlanGeneration::new(
+            NonZeroU64::new(79).expect("fixture plan generation is non-zero"),
+        ),
+        Arc::clone(&clean.metadata.source_id),
+        clean.metadata.topology_generation,
+        duplication_generation,
+        adapter_luid,
+        source_extent,
+        source_extent,
+        DisplayRotation::Identity,
+        GpuSurfaceSourceColorSpace::RgbFullG22P709,
+        std::slice::from_ref(&descriptor),
+        GpuSurfaceAdmission::new(
+            u64::MAX,
+            NonZeroU32::new(2).expect("fixture GPU slot count is non-zero"),
+        ),
+    )?;
+    let mut cpu = PreparedCpuDesktopReadback::prepare(
+        &device,
+        &context,
+        Arc::clone(&clean.metadata.source_id),
+        clean.metadata.topology_generation,
+        duplication_generation,
+        adapter_luid,
+        source_extent,
+        DisplayRotation::Identity,
+        GpuSurfaceSourceColorSpace::RgbFullG22P709,
+        NonZeroU32::MIN,
+    )?;
+    let mut report = super::CapturePumpReport {
+        acquired: true,
+        gpu: CaptureLane::Idle,
+        cpu: CaptureLane::Idle,
+    };
+    let mut publication = None;
+    super::publish_acquired_clean(
+        &clean,
+        duplication_generation,
+        Some(&mut gpu),
+        Some(&mut cpu),
+        &mut report,
+        |outcome| {
+            if let GpuSurfacePublishOutcome::Published(published) = outcome {
+                publication = Some(published);
+            }
+        },
+    );
+    let publication = publication.ok_or_else(|| {
+        CaptureError::windows(
+            "publish hybrid pump fixture",
+            "GPU lane emitted no publication",
+        )
+    })?;
+    if let CaptureLane::Failed(error) = report.gpu {
+        return Err(error);
+    }
+    let frame = match report.cpu {
+        CaptureLane::Ready(frame) => frame,
+        CaptureLane::Failed(error) => return Err(error),
+        CaptureLane::Idle | CaptureLane::Busy => await_frame(&mut cpu)?,
+        CaptureLane::NotRequested => {
+            return Err(CaptureError::windows(
+                "read hybrid pump fixture",
+                "CPU lane was not requested",
+            ));
+        }
+    };
+    let provenance = publication.provenance();
+    Ok(HybridSequenceProof {
+        gpu_sequence: provenance.source_sequence,
+        cpu_sequence: frame.sequence(),
+        gpu_captured_at: provenance.captured_at,
+        cpu_captured_at: frame.captured_at(),
+        gpu_source_id: Arc::clone(&provenance.source_id),
+        cpu_source_id: frame.source_id().to_owned(),
+        gpu_duplication_generation: provenance.duplication_generation,
+        cpu_duplication_generation: frame.duplication_generation(),
+    })
+}
+
+#[cfg(test)]
 fn await_frame(readback: &mut PreparedCpuDesktopReadback) -> CaptureResult<CpuDesktopFrame> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {

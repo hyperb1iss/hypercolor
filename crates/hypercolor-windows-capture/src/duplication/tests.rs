@@ -197,6 +197,20 @@ fn native_cpu_readback_never_maps_without_a_free_bounded_output() {
 }
 
 #[test]
+fn hybrid_pump_gpu_and_cpu_outputs_share_one_native_acquisition() {
+    let proof = super::cpu_readback::hybrid_sequence_proof_for_test()
+        .expect("WARP hybrid pump fanout succeeds");
+
+    assert_eq!(proof.gpu_sequence, proof.cpu_sequence);
+    assert_eq!(proof.gpu_captured_at, proof.cpu_captured_at);
+    assert_eq!(proof.gpu_source_id.as_ref(), proof.cpu_source_id);
+    assert_eq!(
+        proof.gpu_duplication_generation,
+        proof.cpu_duplication_generation
+    );
+}
+
+#[test]
 fn exact_gpu_surfaces_fan_out_incompatible_descriptors_from_one_source() {
     let bgra = [
         1, 2, 3, 0xFF, 11, 12, 13, 0xFF, 21, 22, 23, 0xFF, 31, 32, 33, 0xFF, 101, 102, 103, 0xFF,

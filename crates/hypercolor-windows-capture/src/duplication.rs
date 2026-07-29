@@ -234,6 +234,43 @@ struct RetainedDesktop {
     metadata: CaptureMetadata,
 }
 
+fn advance_cpu_clean(
+    clean: &RetainedDesktop,
+    readback: Option<&mut PreparedCpuDesktopReadback>,
+    lane: &mut CaptureLane<CpuDesktopFrame>,
+) {
+    let Some(readback) = readback else {
+        return;
+    };
+    if !matches!(lane, CaptureLane::Idle) || !readback.should_submit(clean) {
+        return;
+    }
+    *lane = match readback.submit(clean) {
+        Ok(true) => readback.poll(),
+        Ok(false) => CaptureLane::Busy,
+        Err(error) => CaptureLane::Failed(error),
+    };
+}
+
+fn publish_acquired_clean<F>(
+    clean: &RetainedDesktop,
+    duplication_generation: u64,
+    gpu: Option<&mut PreparedGpuSurfacePlan>,
+    cpu: Option<&mut PreparedCpuDesktopReadback>,
+    report: &mut CapturePumpReport,
+    mut emit: F,
+) where
+    F: FnMut(GpuSurfacePublishOutcome),
+{
+    if let Some(plan) = gpu {
+        report.gpu = match plan.publish(clean, duplication_generation, &mut emit) {
+            Ok(info) => CaptureLane::Ready(info),
+            Err(error) => CaptureLane::Failed(error),
+        };
+    }
+    advance_cpu_clean(clean, cpu, &mut report.cpu);
+}
+
 fn prepare_duplication<D, S, A, E>(
     duplication: &mut Option<D>,
     staging: &mut Option<S>,
@@ -1307,6 +1344,11 @@ impl DesktopDuplicator {
         }
 
         let clean = self.clean_desktop.clone();
+        let mut report = CapturePumpReport {
+            acquired,
+            gpu: gpu_lane,
+            cpu: cpu_lane,
+        };
         if acquired {
             let clean = clean.as_ref().ok_or_else(|| {
                 CaptureError::windows(
@@ -1314,37 +1356,28 @@ impl DesktopDuplicator {
                     "acquisition produced no retained clean desktop",
                 )
             })?;
-            if let Some(plan) = gpu.as_deref_mut() {
-                gpu_lane = match plan.publish(clean, self.duplication_generation, &mut emit) {
-                    Ok(info) => CaptureLane::Ready(info),
-                    Err(error) => CaptureLane::Failed(error),
-                };
-            }
+            publish_acquired_clean(
+                clean,
+                self.duplication_generation,
+                gpu.as_deref_mut(),
+                cpu.as_deref_mut(),
+                &mut report,
+                &mut emit,
+            );
         } else if let (Some(plan), Some(clean)) = (gpu, clean.as_ref())
             && plan.has_pending_routes()
         {
-            gpu_lane = match plan.retry_pending(clean, &mut emit) {
+            report.gpu = match plan.retry_pending(clean, &mut emit) {
                 Ok(info) => CaptureLane::Ready(info),
                 Err(error) => CaptureLane::Failed(error),
             };
         }
 
-        if let (Some(readback), Some(clean)) = (cpu.as_mut(), clean.as_ref())
-            && matches!(cpu_lane, CaptureLane::Idle)
-            && readback.should_submit(clean)
-        {
-            cpu_lane = match readback.submit(clean) {
-                Ok(true) => readback.poll(),
-                Ok(false) => CaptureLane::Busy,
-                Err(error) => CaptureLane::Failed(error),
-            };
+        if !acquired && let Some(clean) = clean.as_ref() {
+            advance_cpu_clean(clean, cpu, &mut report.cpu);
         }
 
-        Ok(CapturePumpReport {
-            acquired,
-            gpu: gpu_lane,
-            cpu: cpu_lane,
-        })
+        Ok(report)
     }
 
     /// Acquire one native desktop update and fan it out into every exact GPU
