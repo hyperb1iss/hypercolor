@@ -645,6 +645,25 @@ pub trait InputSource: Send {
         Ok(())
     }
 
+    /// Bind this source to the process-wide exact publication authority.
+    fn set_screen_publication_hub(
+        &mut self,
+        _hub: std::sync::Arc<crate::input::screen::ScreenPublicationHub>,
+    ) {
+    }
+
+    /// Apply one immutable exact screen-publication demand snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot prepare or adopt the snapshot.
+    fn set_screen_publication_demand(
+        &mut self,
+        _demand: crate::input::screen::ScreenPublicationDemandSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Reconfigure a running screen source without rebuilding the input manager.
     ///
     /// Non-screen sources can ignore this by keeping the default implementation.

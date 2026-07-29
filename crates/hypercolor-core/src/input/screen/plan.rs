@@ -1590,6 +1590,15 @@ impl ScreenPlanBuilder {
         }
     }
 
+    /// Construct a coordinator around one stable publication authority.
+    #[must_use]
+    pub fn for_publication_hub(publication_hub: Arc<ScreenPublicationHub>) -> Self {
+        Self {
+            next_transaction_id: 0,
+            publication_hub,
+        }
+    }
+
     /// Current immutable active plan snapshot.
     #[must_use]
     pub fn current(&self) -> Arc<ScreenCapturePlan> {

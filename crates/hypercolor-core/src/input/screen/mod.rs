@@ -16,6 +16,7 @@
 //! backend-agnostic and testable with synthetic data.
 
 mod cadence;
+mod demand;
 mod fanout;
 mod frame;
 mod hub;
@@ -36,10 +37,10 @@ pub mod windows;
 pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
 };
+pub use demand::{ScreenPublicationDemandError, ScreenPublicationDemandSnapshot};
 pub use fanout::{
     CpuPublicationFanoutError, PreparedCpuLogicalFanout, PreparedCpuLogicalFanoutKind,
-    PreparedCpuPhysicalFanout, PreparedCpuPublicationFanout,
-    PreparedCpuPublicationFanoutCandidate,
+    PreparedCpuPhysicalFanout, PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate,
 };
 pub use frame::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureCursor,

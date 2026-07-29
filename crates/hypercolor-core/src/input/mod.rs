@@ -38,7 +38,7 @@ pub use graph::{
 pub use interaction::InteractionInput;
 pub use media::MediaSource;
 pub use net::NetSource;
-pub use screen::ScreenCaptureDemand;
+pub use screen::{ScreenCaptureDemand, ScreenPublicationDemandSnapshot};
 pub use sensor::SensorPoller;
 pub use status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
@@ -245,6 +245,8 @@ pub struct InputManager {
     event_scratch: Vec<TimedInputEvent>,
     audio_capture_active: Option<bool>,
     screen_capture_demand: Option<ScreenCaptureDemand>,
+    screen_publication_demand: Option<ScreenPublicationDemandSnapshot>,
+    screen_publication_hub: Arc<screen::ScreenPublicationHub>,
     interaction_capture_active: Option<bool>,
     sensor_poller: Option<SensorPoller>,
     sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
@@ -257,12 +259,20 @@ struct ManagedInputSource {
 }
 
 impl ManagedInputSource {
-    fn new(mut source: Box<dyn InputSource>, slot_id: u64, source_graph_generation: u64) -> Self {
+    fn new(
+        mut source: Box<dyn InputSource>,
+        slot_id: u64,
+        source_graph_generation: u64,
+        screen_publication_hub: Arc<screen::ScreenPublicationHub>,
+    ) -> Self {
         let declared_kind = declared_source_kind(source.as_ref());
         let interaction_origin = source
             .is_interaction_source()
             .then(|| source.interaction_source_origin());
         source.set_source_graph_generation(source_graph_generation);
+        if source.is_screen_source() {
+            source.set_screen_publication_hub(screen_publication_hub);
+        }
         let mut compatibility_status = source.source_status_handle().is_none().then(|| {
             SourceStatusReporter::new(
                 format!("compatibility:{slot_id}:{}", source.name()),
@@ -445,6 +455,7 @@ impl InputManager {
     /// Create an empty manager with no sources.
     #[must_use]
     pub fn new() -> Self {
+        let screen_publication_hub = screen::ScreenPlanBuilder::new().publication_hub();
         Self {
             sources: Vec::new(),
             source_graph_generation: 0,
@@ -454,6 +465,8 @@ impl InputManager {
             event_scratch: Vec::with_capacity(INPUT_EVENT_RING_CAPACITY),
             audio_capture_active: None,
             screen_capture_demand: None,
+            screen_publication_demand: None,
+            screen_publication_hub,
             interaction_capture_active: None,
             sensor_poller: None,
             sensor_snapshot_rx: None,
@@ -942,6 +955,24 @@ impl InputManager {
         self.transition_screen_capture_demand(demand)
     }
 
+    /// Apply exact independent screen branches without changing capture life-cycle demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a registered screen source rejects the snapshot.
+    pub fn set_screen_publication_demand(
+        &mut self,
+        demand: ScreenPublicationDemandSnapshot,
+    ) -> anyhow::Result<()> {
+        self.transition_screen_publication_demand(demand)
+    }
+
+    /// Stable lock-free publication authority shared across screen-source replacement.
+    #[must_use]
+    pub fn screen_publication_hub(&self) -> Arc<screen::ScreenPublicationHub> {
+        Arc::clone(&self.screen_publication_hub)
+    }
+
     /// Whether any registered source handles screen capture.
     #[must_use]
     pub fn has_screen_source(&self) -> bool {
@@ -1224,7 +1255,12 @@ impl InputManager {
             .next_source_slot_id
             .checked_add(1)
             .expect("input source slot identity exhausted");
-        ManagedInputSource::new(source, id, source_graph_generation)
+        ManagedInputSource::new(
+            source,
+            id,
+            source_graph_generation,
+            Arc::clone(&self.screen_publication_hub),
+        )
     }
 
     fn transition_capture_demand(
@@ -1378,12 +1414,48 @@ impl InputManager {
         Ok(())
     }
 
+    fn transition_screen_publication_demand(
+        &mut self,
+        demand: ScreenPublicationDemandSnapshot,
+    ) -> anyhow::Result<()> {
+        if self.screen_publication_demand.as_ref() == Some(&demand) {
+            return Ok(());
+        }
+
+        let previous = self.screen_publication_demand.clone().unwrap_or_default();
+        for source_index in 0..self.sources.len() {
+            if !self.sources[source_index].is_screen_source() {
+                continue;
+            }
+            if let Err(error) =
+                self.sources[source_index].set_screen_publication_demand(demand.clone())
+            {
+                for source in &mut self.sources[..source_index] {
+                    if source.is_screen_source()
+                        && let Err(rollback_error) =
+                            source.set_screen_publication_demand(previous.clone())
+                    {
+                        error!(
+                            source = source.name(),
+                            %rollback_error,
+                            "Failed to roll back exact screen publication demand"
+                        );
+                    }
+                }
+                return Err(error);
+            }
+        }
+        self.screen_publication_demand = Some(demand);
+        Ok(())
+    }
+
     fn invalidate_capture_domains(&mut self, domains: (bool, bool, bool)) {
         if domains.0 {
             self.audio_capture_active = None;
         }
         if domains.1 {
             self.screen_capture_demand = None;
+            self.screen_publication_demand = None;
         }
         if domains.2 {
             self.interaction_capture_active = None;
