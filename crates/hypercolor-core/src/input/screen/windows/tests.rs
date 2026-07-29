@@ -15,7 +15,7 @@ use super::{
     capture_freshness, capture_geometry, capture_gpu_descriptor, capture_issue,
     native_capture_extent, record_capture_health, resolve_windows_publication_branch,
     settle_inactive_capture, windows_gpu_attempt_at, windows_gpu_candidate_admission,
-    windows_gpu_retry_at,
+    windows_gpu_preparation_gate, windows_gpu_retry_at,
 };
 use crate::input::screen::{
     CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
@@ -287,6 +287,16 @@ fn native_candidate_reserves_capture_and_renderer_textures_from_live_headroom() 
     )
     .expect("exact live headroom admits the full candidate");
     assert_eq!(admission.max_texture_bytes(), texture_bytes * 3);
+}
+
+#[test]
+fn gpu_preparation_gate_is_shared_per_adapter() {
+    let first = windows_gpu_preparation_gate(GpuAdapterLuid::new(1, 2));
+    let same = windows_gpu_preparation_gate(GpuAdapterLuid::new(1, 2));
+    let other = windows_gpu_preparation_gate(GpuAdapterLuid::new(3, 4));
+
+    assert!(Arc::ptr_eq(&first, &same));
+    assert!(!Arc::ptr_eq(&first, &other));
 }
 
 #[test]

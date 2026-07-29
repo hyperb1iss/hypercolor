@@ -12,9 +12,10 @@
 //! per process, and other ambient-lighting tools want the same interface, so
 //! holding it while no effect needs it would be antisocial.
 
+use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -73,6 +74,9 @@ const FRAME_WAIT: Duration = Duration::from_millis(100);
 const READBACK_POLL_WAIT: Duration = Duration::from_millis(1);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
+
+static WINDOWS_GPU_PREPARATION_GATES: OnceLock<Mutex<HashMap<GpuAdapterLuid, Arc<Mutex<()>>>>> =
+    OnceLock::new();
 
 /// Backoff after a failed attempt to open the duplication interface.
 ///
@@ -1568,6 +1572,17 @@ fn capture_colorimetry(source: GpuSurfaceSourceColorSpace) -> anyhow::Result<Cap
     }
 }
 
+fn windows_gpu_preparation_gate(adapter_luid: GpuAdapterLuid) -> Arc<Mutex<()>> {
+    Arc::clone(
+        WINDOWS_GPU_PREPARATION_GATES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(adapter_luid)
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
+}
+
 const fn display_rotation(rotation: CaptureRotation) -> DisplayRotation {
     match rotation {
         CaptureRotation::Identity => DisplayRotation::Identity,
@@ -1686,6 +1701,10 @@ fn prepare_windows_exact_runtime(
     let gpu = if gpu_branches.is_empty() {
         None
     } else {
+        let preparation_gate = windows_gpu_preparation_gate(source.adapter_luid);
+        let _preparation_guard = preparation_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let plan_generation = NonZeroU64::new(ticket.plan_generation().get())
             .map(GpuSurfacePlanGeneration::new)
             .ok_or_else(|| {
