@@ -630,13 +630,16 @@ impl PreparedCpuPublicationFanout {
                 self.workspace_schedule.push(workspace_index);
             }
         }
-        executor.execute_scheduled_publications(
+        if let Err(error) = executor.execute_scheduled_publications(
             &self.batch,
             frame,
             workspace,
             &self.workspace_schedule,
             &mut [],
-        )?;
+        ) {
+            self.reservations.clear();
+            return Err(error.into());
+        }
 
         for pending in &mut self.reservations {
             let physical = &self.physical[pending.physical_index];
@@ -647,18 +650,23 @@ impl PreparedCpuPublicationFanout {
                 physical.batch_index,
                 &mut pending.publication,
             )];
-            executor.execute_scheduled_publications(
+            if let Err(error) = executor.execute_scheduled_publications(
                 &self.batch,
                 frame,
                 workspace,
                 &[],
                 &mut jobs,
-            )?;
+            ) {
+                self.reservations.clear();
+                return Err(error.into());
+            }
         }
 
         let (physical_routes, reservations) = (&mut self.physical, &mut self.reservations);
-        for pending in reservations.iter_mut() {
-            let physical = &mut physical_routes[pending.physical_index];
+        for reservation_index in 0..reservations.len() {
+            let physical_index = reservations[reservation_index].physical_index;
+            let branch_index = reservations[reservation_index].branch_index;
+            let physical = &mut physical_routes[physical_index];
             let Some(workspace_index) = physical.workspace_index else {
                 continue;
             };
@@ -669,15 +677,20 @@ impl PreparedCpuPublicationFanout {
                 .batch
                 .descriptor(physical.batch_index)
                 .expect("prepared fanout batch index is valid");
-            let branch = &mut physical.branches[pending.branch_index];
-            stage_workspace_publication(
+            let branch = &mut physical.branches[branch_index];
+            let result = stage_workspace_publication(
                 branch,
                 descriptor,
                 pixels,
                 frame,
                 plan_generation,
-                &mut pending.publication,
-            )?;
+                &mut reservations[reservation_index].publication,
+            );
+            if let Err(error) = result {
+                discard_all_stages(physical_routes, reservations, plan_generation);
+                reservations.clear();
+                return Err(error);
+            }
         }
 
         while let Some(pending) = self.reservations.pop() {
@@ -702,6 +715,20 @@ impl PreparedCpuPublicationFanout {
             .iter()
             .flat_map(|physical| physical.branches.iter())
             .any(|branch| branch.pending_due)
+    }
+}
+
+fn discard_all_stages(
+    physical: &mut [PreparedCpuPhysicalFanout],
+    reservations: &[CpuPendingPublication],
+    plan_generation: ScreenPlanGeneration,
+) {
+    for pending in reservations {
+        discard_branch_stage(
+            &mut physical[pending.physical_index].branches[pending.branch_index],
+            plan_generation,
+        )
+        .expect("prepared branch stage belongs to the active plan generation");
     }
 }
 
