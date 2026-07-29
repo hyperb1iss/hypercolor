@@ -20,6 +20,7 @@ mod demand;
 mod fanout;
 mod frame;
 mod hub;
+mod ledger;
 mod materialize;
 mod plan;
 mod process;
@@ -62,6 +63,9 @@ pub use hub::{
     ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRetirement,
     ScreenPublicationSlotPolicy, ScreenSurfacePayload, ScreenTwoPlanContinuityLease,
     ScreenZonesPayload,
+};
+pub use ledger::{
+    ScreenWorkerExactLedger, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError,
 };
 pub use materialize::{
     CpuZoneMaterializationError, PreparedCpuZoneMaterializer, StagedCpuZonePublication,
