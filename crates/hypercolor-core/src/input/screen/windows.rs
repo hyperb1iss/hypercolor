@@ -12,6 +12,7 @@
 //! per process, and other ambient-lighting tools want the same interface, so
 //! holding it while no effect needs it would be antisocial.
 
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -19,17 +20,28 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use hypercolor_windows_capture::{
-    CaptureError, CaptureExtent as NativeCaptureExtent, DesktopDuplicator, DisplayRotation,
-    Frame as NativeCaptureFrame, ReductionTelemetry,
+    CaptureError, CaptureExtent as NativeCaptureExtent, CaptureRegion, DesktopDuplicator,
+    DisplayRotation, Frame as NativeCaptureFrame, GpuAdapterLuid, GpuSurfaceColorPipeline,
+    GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy, GpuSurfaceDescriptor,
+    GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat,
+    GpuSurfaceSourceColorSpace, ReductionTelemetry,
 };
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureCadence, CaptureCadenceError, CaptureColorimetry, CaptureConfig,
-    CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
-    CaptureGeometry, CapturePacer, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface,
-    ScreenCaptureDemand, ScreenCaptureInput, SourceScale, analyze_screen_frame,
+    AnalyzedScreenSnapshot, CaptureCadence, CaptureCadenceError, CaptureColorSpace,
+    CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureDynamicRange,
+    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePacer,
+    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction,
+    CpuCaptureStorage, PhysicalOrigin, PixelExtent, PlatformGpuApi, RawCaptureSurface,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorTransform,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
+    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenCursorPolicy,
+    ScreenExecutorColorCapabilities, ScreenPhysicalGpuDeviceIdentity, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
+    ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
+    SourceScale, analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
@@ -138,6 +150,146 @@ struct ActiveCaptureEpoch {
     source_generation: u64,
     activity_generation: u64,
     duplication_generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsPublicationSource {
+    epoch: CaptureEpoch,
+    native_extent: PixelExtent,
+    logical_extent: PixelExtent,
+    origin: PhysicalOrigin,
+    rotation: CaptureRotation,
+    colorimetry: CaptureColorimetry,
+    source_color_space: GpuSurfaceSourceColorSpace,
+    adapter_luid: GpuAdapterLuid,
+    duplication_generation: u64,
+    is_primary: bool,
+}
+
+impl WindowsPublicationSource {
+    fn from_session(session: &DesktopDuplicator, session_generation: u64) -> anyhow::Result<Self> {
+        let (native_width, native_height) = session.native_extent();
+        let (logical_width, logical_height) = session.logical_extent();
+        let (origin_x, origin_y) = session.origin();
+        Ok(Self {
+            epoch: CaptureEpoch {
+                source_id: capture_source_id(session.source_id())?,
+                topology_generation: session.topology_generation(),
+                session_generation,
+            },
+            native_extent: PixelExtent::new(native_width, native_height)?,
+            logical_extent: PixelExtent::new(logical_width, logical_height)?,
+            origin: PhysicalOrigin {
+                x: origin_x,
+                y: origin_y,
+            },
+            rotation: capture_rotation(session.rotation()),
+            colorimetry: capture_colorimetry(session.source_color_space())?,
+            source_color_space: session.source_color_space(),
+            adapter_luid: session.adapter_luid(),
+            duplication_generation: session.duplication_generation(),
+            is_primary: session.is_primary(),
+        })
+    }
+
+    fn matches_selector(&self, selector: &ScreenSourceSelector) -> bool {
+        match selector {
+            ScreenSourceSelector::Configured => true,
+            ScreenSourceSelector::Primary => self.is_primary,
+            ScreenSourceSelector::Exact(source_id) => source_id == &self.epoch.source_id,
+        }
+    }
+
+    fn cpu_source(&self, selector: ScreenSourceSelector) -> anyhow::Result<ResolvedScreenSource> {
+        let geometry = CaptureGeometry::new(
+            self.origin,
+            self.native_extent,
+            self.native_extent,
+            self.rotation,
+            None,
+            SourceScale::ONE,
+        )?;
+        Ok(ResolvedScreenSource::new(
+            selector,
+            self.epoch.clone(),
+            ResolvedScreenSourceConfig::new_with_cursor_capabilities(
+                geometry,
+                self.logical_extent,
+                ScreenSourceReflection::None,
+                CapturePixelFormat::Bgra8,
+                self.colorimetry,
+                ScreenCursorCapabilities::clean_only(),
+                ScreenBackendResourceIdentity::new(
+                    ScreenCaptureBackend::WindowsDesktopDuplication,
+                    ScreenResourceApi::Cpu,
+                    self.epoch.session_generation,
+                    self.duplication_generation,
+                ),
+            ),
+        ))
+    }
+
+    fn gpu_source(&self, selector: ScreenSourceSelector) -> anyhow::Result<ResolvedScreenSource> {
+        let geometry = CaptureGeometry::new(
+            self.origin,
+            self.logical_extent,
+            self.logical_extent,
+            CaptureRotation::Identity,
+            None,
+            SourceScale::ONE,
+        )?;
+        Ok(ResolvedScreenSource::new(
+            selector,
+            self.epoch.clone(),
+            ResolvedScreenSourceConfig::new_with_cursor_capabilities(
+                geometry,
+                self.logical_extent,
+                ScreenSourceReflection::None,
+                CapturePixelFormat::Rgba8,
+                self.colorimetry,
+                ScreenCursorCapabilities::clean_with_separate_cursor(),
+                ScreenBackendResourceIdentity::new_with_physical_gpu_device(
+                    ScreenCaptureBackend::WindowsDesktopDuplication,
+                    ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+                    screen_gpu_identity(self.adapter_luid),
+                    self.epoch.session_generation,
+                    self.duplication_generation,
+                ),
+            ),
+        ))
+    }
+}
+
+#[derive(Default)]
+struct ExactPublicationShared {
+    source: Mutex<Option<WindowsPublicationSource>>,
+    hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
+    resolution_revision: AtomicU64,
+}
+
+impl ExactPublicationShared {
+    fn replace_source(&self, next: Option<WindowsPublicationSource>) {
+        let mut source = self
+            .source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *source == next {
+            return;
+        }
+        *source = next;
+        self.resolution_revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                revision.checked_add(1)
+            })
+            .expect("Windows screen publication resolution revision exhausted");
+    }
+
+    fn source(&self) -> Option<WindowsPublicationSource> {
+        self.source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 struct CapturePublication<T> {
@@ -250,6 +402,7 @@ pub struct WindowsScreenCaptureInput {
     running: bool,
     capture_demand: ScreenCaptureDemand,
     publication: Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
+    exact: Arc<ExactPublicationShared>,
     worker: Option<CaptureWorker>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
@@ -400,6 +553,7 @@ impl WindowsScreenCaptureInput {
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
             publication: Arc::new(Mutex::new(CapturePublication::default())),
+            exact: Arc::new(ExactPublicationShared::default()),
             worker: None,
             status: SourceStatusReporter::new(
                 "windows_screen_capture",
@@ -470,6 +624,7 @@ impl WindowsScreenCaptureInput {
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         let settings = Arc::clone(&self.settings);
         let publication = Arc::clone(&self.publication);
+        let exact = Arc::clone(&self.exact);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let worker_processed_activity_generation = Arc::new(AtomicU64::new(0));
@@ -489,6 +644,7 @@ impl WindowsScreenCaptureInput {
                 run_worker(
                     &settings,
                     &publication,
+                    &exact,
                     &command_rx,
                     &worker_cancel,
                     &worker_processed_activity_generation,
@@ -587,6 +743,7 @@ impl WindowsScreenCaptureInput {
             ));
         }
         clear_capture_publication(&self.publication);
+        self.exact.replace_source(None);
         true
     }
 
@@ -648,6 +805,7 @@ impl WindowsScreenCaptureInput {
     }
 
     fn deactivate_backend(&mut self, activity_generation: u64) {
+        self.exact.replace_source(None);
         #[cfg(feature = "windows-capture-fixtures")]
         if let Some(fixture) = self.fixture.as_ref() {
             *fixture
@@ -884,6 +1042,9 @@ impl WindowsScreenCaptureInput {
             } else {
                 self.settings.commit(&prepared);
             }
+            if snapshot.source_generation != source_generation {
+                self.exact.replace_source(None);
+            }
             return Ok(());
         }
         self.settings
@@ -944,6 +1105,7 @@ impl InputSource for WindowsScreenCaptureInput {
         }
 
         clear_capture_publication(&self.publication);
+        self.exact.replace_source(None);
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -1023,8 +1185,194 @@ impl InputSource for WindowsScreenCaptureInput {
         Ok(())
     }
 
+    fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
+        *self
+            .exact
+            .hub
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hub);
+    }
+
+    fn screen_publication_resolution_revision(&self) -> u64 {
+        self.exact.resolution_revision.load(Ordering::Acquire)
+    }
+
+    fn resolve_screen_publication_branch(
+        &self,
+        demand: &RegisteredScreenBranchDemand,
+    ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
+        let Some(source) = self.exact.source() else {
+            return Ok(None);
+        };
+        resolve_windows_publication_branch(&source, demand)
+    }
+
+    fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
+        self.exact
+            .source()
+            .is_some_and(|source| &source.epoch.source_id == source_id)
+    }
+
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
         self.reconfigure(config.clone())
+    }
+}
+
+fn resolve_windows_publication_branch(
+    source: &WindowsPublicationSource,
+    demand: &RegisteredScreenBranchDemand,
+) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
+    let selector = demand.request().selector();
+    if !source.matches_selector(selector) {
+        return Ok(None);
+    }
+    let selector = selector.clone();
+    if matches!(
+        demand.request().executor(),
+        ScreenPublicationExecutorRequest::Cpu
+    ) {
+        return Ok(Some(demand.resolve_with_color_capabilities(
+            &source.cpu_source(selector)?,
+            windows_cpu_color_capabilities(),
+        )?));
+    }
+
+    let gpu_source = source.gpu_source(selector.clone())?;
+    let gpu_resolution = demand.resolve_with_executor_capabilities(
+        &gpu_source,
+        ScreenExecutorColorCapabilities::new(
+            windows_cpu_color_capabilities(),
+            ScreenColorTransformCapabilities::NONE,
+        ),
+    );
+    if let Ok(resolved) = gpu_resolution
+        && matches!(
+            resolved.descriptor().executor(),
+            ScreenPublicationExecutor::SourceNative(_)
+        )
+        && capture_gpu_descriptor(
+            resolved.descriptor(),
+            source,
+            GpuSurfaceDescriptorId::new(NonZeroU64::MIN),
+            capture_freshness(demand.requested_hz()),
+        )
+        .is_ok()
+    {
+        return Ok(Some(resolved));
+    }
+
+    Ok(Some(demand.resolve_with_color_capabilities(
+        &source.cpu_source(selector)?,
+        windows_cpu_color_capabilities(),
+    )?))
+}
+
+const fn windows_cpu_color_capabilities() -> ScreenColorTransformCapabilities {
+    ScreenColorTransformCapabilities::new(true, false, false, NonZeroU32::MIN)
+}
+
+fn capture_gpu_descriptor(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+    source: &WindowsPublicationSource,
+    id: GpuSurfaceDescriptorId,
+    freshness: Duration,
+) -> anyhow::Result<GpuSurfaceDescriptor> {
+    if !matches!(descriptor.kind(), ScreenPublicationKind::Surface) {
+        anyhow::bail!("Windows native capture only publishes Surface branches");
+    }
+    if !matches!(
+        descriptor.executor(),
+        ScreenPublicationExecutor::SourceNative(_)
+    ) {
+        anyhow::bail!("Windows native descriptor requires source-native execution");
+    }
+    let physical = descriptor.physical();
+    let source_region = physical.source_region();
+    let region = CaptureRegion::new(
+        capture_integer_coordinate(source_region.x())?,
+        capture_integer_coordinate(source_region.y())?,
+        capture_integer_coordinate(source_region.width())?,
+        capture_integer_coordinate(source_region.height())?,
+    )
+    .ok_or_else(|| anyhow!("Windows native source region must be non-empty"))?;
+    let filter = match physical.reduction_filter() {
+        ScreenReductionFilter::Nearest => GpuSurfaceFilter::Nearest,
+        other => anyhow::bail!("Windows native capture does not implement {other:?} filtering"),
+    };
+    if physical.target_pixel_format() != CapturePixelFormat::Rgba8 {
+        anyhow::bail!("Windows native capture requires RGBA8 output");
+    }
+    if physical.color_pipeline().transform() != ResolvedScreenColorTransform::PreserveEncodedSamples
+    {
+        anyhow::bail!("Windows native capture requires encoded-sample preservation");
+    }
+    let cursor = match physical.cursor() {
+        ScreenCursorPolicy::Exclude => GpuSurfaceCursorPolicy::Exclude,
+        ScreenCursorPolicy::Include => GpuSurfaceCursorPolicy::Include,
+    };
+    let output = physical.reduction_extent();
+    let descriptor = GpuSurfaceDescriptor::new(GpuSurfaceDescriptorConfig {
+        id,
+        source_region: region,
+        coordinate_space: GpuSurfaceCoordinateSpace::LogicalDisplay,
+        source_rotation: display_rotation(source.rotation),
+        source_color_space: source.source_color_space,
+        output_extent: NativeCaptureExtent::try_new(output.width(), output.height())?,
+        filter,
+        format: GpuSurfaceFormat::Rgba8Unorm,
+        color_pipeline: GpuSurfaceColorPipeline::PreserveEncoded,
+        cursor,
+        algorithm_revision: physical.algorithm_revision(),
+        freshness,
+    });
+    descriptor.validate_exact_gpu()?;
+    Ok(descriptor)
+}
+
+fn capture_integer_coordinate(value: super::ScreenRational) -> anyhow::Result<u32> {
+    if value.denominator().get() != 1 {
+        anyhow::bail!("Windows native capture requires integer source coordinates");
+    }
+    u32::try_from(value.numerator())
+        .map_err(|_| anyhow!("Windows native source coordinate exceeds u32"))
+}
+
+fn capture_freshness(requested_hz: NonZeroU32) -> Duration {
+    Duration::from_nanos(2_000_000_000_u64.div_ceil(u64::from(requested_hz.get())))
+}
+
+const fn screen_gpu_identity(adapter: GpuAdapterLuid) -> ScreenPhysicalGpuDeviceIdentity {
+    ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+        low_part: adapter.low_part(),
+        high_part: adapter.high_part(),
+    }
+}
+
+fn capture_colorimetry(source: GpuSurfaceSourceColorSpace) -> anyhow::Result<CaptureColorimetry> {
+    match source {
+        GpuSurfaceSourceColorSpace::RgbFullG22P709 => Ok(CaptureColorimetry::SRGB),
+        GpuSurfaceSourceColorSpace::RgbFullLinearP709 => Ok(CaptureColorimetry::new(
+            CaptureColorSpace::Srgb,
+            CaptureTransferFunction::Linear,
+            Some(CaptureDynamicRange::Standard),
+            None,
+        )?),
+        GpuSurfaceSourceColorSpace::RgbFullPqP2020 => Ok(CaptureColorimetry::new(
+            CaptureColorSpace::Rec2020,
+            CaptureTransferFunction::Pq,
+            Some(CaptureDynamicRange::High),
+            None,
+        )?),
+        GpuSurfaceSourceColorSpace::Unknown => Ok(CaptureColorimetry::unknown()),
+    }
+}
+
+const fn display_rotation(rotation: CaptureRotation) -> DisplayRotation {
+    match rotation {
+        CaptureRotation::Identity => DisplayRotation::Identity,
+        CaptureRotation::Clockwise90 => DisplayRotation::Clockwise90,
+        CaptureRotation::Clockwise180 => DisplayRotation::Clockwise180,
+        CaptureRotation::Clockwise270 => DisplayRotation::Clockwise270,
     }
 }
 
@@ -1092,6 +1440,7 @@ fn build_worker_analyzer(
 fn run_worker(
     settings: &Arc<SharedSettings>,
     publication: &Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
+    exact: &Arc<ExactPublicationShared>,
     command_rx: &mpsc::Receiver<WorkerCommand>,
     cancel: &Arc<AtomicBool>,
     processed_activity_generation: &AtomicU64,
@@ -1173,6 +1522,7 @@ fn run_worker(
                 activity_generation,
             );
             clear_capture_publication(publication);
+            exact.replace_source(None);
             open_failure_logged = false;
             match command_rx.recv_timeout(FRAME_WAIT) {
                 Ok(WorkerCommand::SetActive {
@@ -1247,6 +1597,7 @@ fn run_worker(
                     if previous_source != config.source {
                         duplicator = None;
                         clear_capture_publication(publication);
+                        exact.replace_source(None);
                     } else if let Some(duplicator) = duplicator.as_mut() {
                         let requested_extent = demand
                             .requested_extent()
@@ -1297,6 +1648,7 @@ fn run_worker(
                 }
                 Err(error) => {
                     clear_capture_publication(publication);
+                    exact.replace_source(None);
                     if !open_failure_logged {
                         log_open_failure(&error);
                         open_failure_logged = true;
@@ -1342,6 +1694,19 @@ fn run_worker(
             }
         };
 
+        let exact_source = match WindowsPublicationSource::from_session(session, session_generation)
+        {
+            Ok(source) => source,
+            Err(error) => {
+                warn!(%error, "Windows screen capture source metadata is invalid; reopening session");
+                clear_capture_publication(publication);
+                exact.replace_source(None);
+                duplicator = None;
+                continue;
+            }
+        };
+        exact.replace_source(Some(exact_source));
+
         let active_epoch = match active_capture_epoch(
             session,
             session_generation,
@@ -1352,6 +1717,7 @@ fn run_worker(
             Err(error) => {
                 warn!(%error, "Windows screen capture identity is invalid; reopening session");
                 clear_capture_publication(publication);
+                exact.replace_source(None);
                 duplicator = None;
                 continue;
             }
@@ -1383,6 +1749,7 @@ fn run_worker(
                 Err(error) => {
                     warn!(%error, "Windows screen capture identity became invalid");
                     clear_capture_publication(publication);
+                    exact.replace_source(None);
                     duplicator = None;
                     continue;
                 }
@@ -1467,6 +1834,7 @@ fn run_worker(
                     status.degraded(capture_issue(&error));
                 }
                 clear_capture_publication(publication);
+                exact.replace_source(None);
                 warn!(%error, "Windows screen capture frame failed; reopening session");
                 duplicator = None;
                 match command_rx.recv_timeout(REOPEN_BACKOFF) {
@@ -1505,6 +1873,7 @@ fn run_worker(
     }
 
     clear_capture_publication(publication);
+    exact.replace_source(None);
     debug!("Windows screen capture worker stopped");
 }
 

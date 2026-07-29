@@ -1,22 +1,30 @@
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use hypercolor_windows_capture::{
-    CaptureError, DisplayRotation, ReductionPath, ReductionTelemetry,
+    CaptureError, DisplayRotation, GpuAdapterLuid, GpuSurfaceSourceColorSpace, ReductionPath,
+    ReductionTelemetry,
 };
 
 use super::{
-    ActiveCaptureEpoch, CapturePublication, CaptureWorker, WindowsScreenCaptureInput,
-    WorkerCaptureSchedule, WorkerCommand, capture_epoch, capture_geometry, capture_issue,
-    record_capture_health, settle_inactive_capture,
+    ActiveCaptureEpoch, CapturePublication, CaptureWorker, WindowsPublicationSource,
+    WindowsScreenCaptureInput, WorkerCaptureSchedule, WorkerCommand, capture_epoch,
+    capture_geometry, capture_issue, record_capture_health, resolve_windows_publication_branch,
+    settle_inactive_capture,
 };
 use crate::input::screen::{
     CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
-    CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureStorage,
-    CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent,
-    RawCaptureSurface, ScreenCaptureDemand,
+    CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureSourceId,
+    CaptureStorage, CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent,
+    RawCaptureSurface, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenCaptureDemand,
+    ScreenExtentRequest, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenPhysicalGpuDeviceIdentity, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
+    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenPublicationResidency, ScreenReductionFilter, ScreenSourceSelector,
 };
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
 use crate::input::traits::InputSource;
@@ -136,6 +144,139 @@ fn extent(width: u32, height: u32) -> PixelExtent {
 
 fn active_demand() -> ScreenCaptureDemand {
     ScreenCaptureDemand::active(extent(640, 480))
+}
+
+fn publication_source() -> WindowsPublicationSource {
+    WindowsPublicationSource {
+        epoch: capture_epoch("display:main", 3, 7).expect("test source epoch is valid"),
+        native_extent: extent(2160, 3840),
+        logical_extent: extent(3840, 2160),
+        origin: PhysicalOrigin { x: -3840, y: 120 },
+        rotation: CaptureRotation::Clockwise90,
+        colorimetry: CaptureColorimetry::SRGB,
+        source_color_space: GpuSurfaceSourceColorSpace::RgbFullG22P709,
+        adapter_luid: GpuAdapterLuid::new(41, -3),
+        duplication_generation: 11,
+        is_primary: true,
+    }
+}
+
+fn publication_demand(
+    selector: ScreenSourceSelector,
+    executor: ScreenPublicationExecutorRequest,
+    filter: ScreenReductionFilter,
+) -> RegisteredScreenBranchDemand {
+    let mut profile =
+        ScreenProcessingProfileConfig::exact_encoded_identity(CapturePixelFormat::Rgba8);
+    profile.reduction_filter = filter;
+    RegisteredScreenBranchDemand::new(
+        ScreenPublicationRequest::new(
+            selector,
+            ScreenPublicationKind::Surface,
+            executor,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            Arc::new(ScreenProcessingProfile::new(profile)),
+        ),
+        NonZeroU32::new(144).expect("test cadence is non-zero"),
+    )
+}
+
+fn native_target() -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(19).expect("test target id is non-zero"),
+        ),
+        crate::input::screen::PlatformGpuApi::Direct3d11,
+        ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+            low_part: 41,
+            high_part: -3,
+        },
+        NonZeroU32::new(16_384).expect("test texture limit is non-zero"),
+    )
+}
+
+#[test]
+fn exact_native_surface_resolves_to_canonical_gpu_storage() {
+    let source = publication_source();
+    let demand = publication_demand(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationExecutorRequest::SourceNative(native_target()),
+        ScreenReductionFilter::Nearest,
+    );
+
+    let resolved = resolve_windows_publication_branch(&source, &demand)
+        .expect("native branch resolves")
+        .expect("configured source owns the branch");
+
+    assert!(matches!(
+        resolved.descriptor().executor(),
+        ScreenPublicationExecutor::SourceNative(_)
+    ));
+    assert_eq!(
+        resolved.descriptor().required_residency(),
+        ScreenPublicationResidency::PlatformGpu(crate::input::screen::PlatformGpuApi::Direct3d11)
+    );
+    assert_eq!(
+        resolved.descriptor().source_pixel_format(),
+        CapturePixelFormat::Rgba8
+    );
+    assert_eq!(
+        resolved.descriptor().geometry().output_extent(),
+        extent(3840, 2160)
+    );
+}
+
+#[test]
+fn unsupported_native_filter_falls_back_to_exact_cpu_bgra() {
+    let source = publication_source();
+    let demand = publication_demand(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationExecutorRequest::SourceNative(native_target()),
+        ScreenReductionFilter::Area,
+    );
+
+    let resolved = resolve_windows_publication_branch(&source, &demand)
+        .expect("CPU fallback resolves")
+        .expect("configured source owns the branch");
+
+    assert_eq!(
+        resolved.descriptor().executor(),
+        &ScreenPublicationExecutor::Cpu
+    );
+    assert_eq!(
+        resolved.descriptor().executor_fallback(),
+        Some(ScreenPublicationExecutorFallbackReason::CpuSource)
+    );
+    assert_eq!(
+        resolved.descriptor().source_pixel_format(),
+        CapturePixelFormat::Bgra8
+    );
+    assert_eq!(
+        resolved.descriptor().source().geometry().native_extent(),
+        extent(2160, 3840)
+    );
+    assert_eq!(
+        resolved.descriptor().source().geometry().rotation(),
+        CaptureRotation::Clockwise90
+    );
+}
+
+#[test]
+fn selector_claims_only_the_current_windows_output() {
+    let source = publication_source();
+    let wrong = CaptureSourceId::new("windows:display:other").expect("test source id is non-empty");
+    let exact = publication_demand(
+        ScreenSourceSelector::Exact(wrong),
+        ScreenPublicationExecutorRequest::Cpu,
+        ScreenReductionFilter::Nearest,
+    );
+
+    assert!(
+        resolve_windows_publication_branch(&source, &exact)
+            .expect("unowned selector is not an error")
+            .is_none()
+    );
 }
 
 #[test]
