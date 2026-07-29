@@ -528,6 +528,7 @@ enum ScreenPublicationStorage {
     Zones {
         columns: NonZeroU32,
         rows: NonZeroU32,
+        color_count: usize,
         colorimetry: ScreenPublicationColorimetry,
         colors: Box<[[u8; 3]]>,
     },
@@ -567,6 +568,7 @@ impl ScreenPublicationStorage {
                 Ok(Self::Zones {
                     columns,
                     rows,
+                    color_count: len,
                     colorimetry: descriptor_colorimetry(descriptor),
                     colors: try_zeroed_color_slice(len)?,
                 })
@@ -582,8 +584,20 @@ impl ScreenPublicationStorage {
             (Self::GpuSurface { surface, .. }, ScreenBranchPayload::GpuSurface(payload)) => {
                 *surface = Some(payload.surface().clone());
             }
-            (Self::Zones { colors, .. }, ScreenBranchPayload::Zones(payload)) => {
-                colors.copy_from_slice(payload.colors());
+            (
+                Self::Zones {
+                    columns,
+                    rows,
+                    color_count,
+                    colors,
+                    ..
+                },
+                ScreenBranchPayload::Zones(payload),
+            ) => {
+                *columns = payload.columns();
+                *rows = payload.rows();
+                *color_count = payload.colors().len();
+                colors[..*color_count].copy_from_slice(payload.colors());
             }
             _ => unreachable!("payload is descriptor-validated before slot mutation"),
         }
@@ -601,6 +615,50 @@ impl ScreenPublicationStorage {
             Self::CpuSurface { .. } | Self::GpuSurface { .. } => None,
             Self::Zones { colors, .. } => Some(colors),
         }
+    }
+
+    fn set_effective_zone_shape(
+        &mut self,
+        columns: NonZeroU32,
+        rows: NonZeroU32,
+    ) -> Result<(), ScreenPublicationHubError> {
+        let Self::Zones {
+            columns: effective_columns,
+            rows: effective_rows,
+            color_count,
+            colors,
+            ..
+        } = self
+        else {
+            return Err(ScreenPublicationHubError::PayloadKindMismatch {
+                expected: ScreenPayloadKind::Surface,
+                observed: ScreenPayloadKind::Zones,
+            });
+        };
+        let count = zone_count(columns, rows)?;
+        if count > colors.len() {
+            return Err(
+                ScreenPublicationHubError::EffectiveZoneShapeExceedsCapacity {
+                    columns,
+                    rows,
+                    capacity: colors.len(),
+                },
+            );
+        }
+        *effective_columns = columns;
+        *effective_rows = rows;
+        *color_count = count;
+        Ok(())
+    }
+
+    fn reset_effective_shape(
+        &mut self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> Result<(), ScreenPublicationHubError> {
+        if let ScreenPublicationKind::Zones { columns, rows } = descriptor.kind() {
+            self.set_effective_zone_shape(columns, rows)?;
+        }
+        Ok(())
     }
 
     fn residency(&self) -> ScreenPublicationResidency {
@@ -636,13 +694,14 @@ impl ScreenPublicationStorage {
             Self::Zones {
                 columns,
                 rows,
+                color_count,
                 colorimetry,
                 colors,
             } => ScreenBranchPayload::Zones(ScreenZonesPayload {
                 columns: *columns,
                 rows: *rows,
                 colorimetry: *colorimetry,
-                colors,
+                colors: &colors[..*color_count],
             }),
         }
     }
@@ -1568,6 +1627,10 @@ impl ScreenPublicationHub {
                 admitted_slots: self.state.load().slot_policy.total_slots(),
             });
         }
+        Arc::get_mut(&mut publication)
+            .expect("reserved publication has unique ownership")
+            .storage
+            .reset_effective_shape(&publisher.branch.descriptor)?;
         Ok(PreparedScreenPublication {
             branch: Arc::clone(&publisher.branch),
             binding: publisher.binding.clone(),
@@ -1981,6 +2044,45 @@ impl PreparedScreenPublication {
             },
         )
     }
+
+    /// Select the compact row-major prefix published by a dynamic zone crop.
+    ///
+    /// The reserved allocation remains descriptor-sized. Only the effective
+    /// shape and its exact color prefix become visible after finalization.
+    ///
+    /// # Errors
+    ///
+    /// Rejects surface reservations, lost unique ownership, arithmetic
+    /// overflow, or a shape larger than the admitted descriptor capacity.
+    pub fn set_effective_zone_shape(
+        &mut self,
+        columns: NonZeroU32,
+        rows: NonZeroU32,
+    ) -> Result<(), ScreenPublicationHubError> {
+        let expected = descriptor_payload_kind(&self.branch.descriptor);
+        let (maximum_columns, maximum_rows) = match self.branch.descriptor.kind() {
+            ScreenPublicationKind::Zones { columns, rows } => (columns, rows),
+            ScreenPublicationKind::Surface => {
+                return Err(ScreenPublicationHubError::PayloadKindMismatch {
+                    expected,
+                    observed: ScreenPayloadKind::Zones,
+                });
+            }
+        };
+        if columns > maximum_columns || rows > maximum_rows {
+            return Err(
+                ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor {
+                    maximum_columns,
+                    maximum_rows,
+                    observed_columns: columns,
+                    observed_rows: rows,
+                },
+            );
+        }
+        self.publication_mut()?
+            .storage
+            .set_effective_zone_shape(columns, rows)
+    }
 }
 
 impl fmt::Debug for PreparedScreenPublication {
@@ -2337,6 +2439,30 @@ pub enum ScreenPublicationHubError {
         observed_columns: NonZeroU32,
         /// Submitted rows.
         observed_rows: NonZeroU32,
+    },
+    /// Dynamic crop shape exceeds the descriptor-sized zone allocation.
+    #[error(
+        "effective zone shape exceeds descriptor: maximum {maximum_columns}x{maximum_rows}, observed {observed_columns}x{observed_rows}"
+    )]
+    EffectiveZoneShapeExceedsDescriptor {
+        /// Descriptor columns.
+        maximum_columns: NonZeroU32,
+        /// Descriptor rows.
+        maximum_rows: NonZeroU32,
+        /// Requested effective columns.
+        observed_columns: NonZeroU32,
+        /// Requested effective rows.
+        observed_rows: NonZeroU32,
+    },
+    /// Dynamic crop color prefix exceeds the admitted zone allocation.
+    #[error("effective zone shape {columns}x{rows} exceeds admitted color capacity {capacity}")]
+    EffectiveZoneShapeExceedsCapacity {
+        /// Requested effective columns.
+        columns: NonZeroU32,
+        /// Requested effective rows.
+        rows: NonZeroU32,
+        /// Number of admitted row-major colors.
+        capacity: usize,
     },
     /// Zone color count differs from the submitted shape.
     #[error("zone color count mismatch: expected {expected}, observed {observed}")]

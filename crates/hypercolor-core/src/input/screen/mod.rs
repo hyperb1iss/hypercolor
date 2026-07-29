@@ -61,7 +61,9 @@ pub use hub::{
     ScreenPublicationSlotPolicy, ScreenSurfacePayload, ScreenTwoPlanContinuityLease,
     ScreenZonesPayload,
 };
-pub use materialize::{CpuZoneMaterializationError, PreparedCpuZoneMaterializer};
+pub use materialize::{
+    CpuZoneMaterializationError, PreparedCpuZoneMaterializer, StagedCpuZonePublication,
+};
 pub use plan::{
     ArmedScreenPlan, AwaitingBackendScreenPlan, CommittedScreenPlan,
     InputPublicationDemandRevision, PreparingScreenPlan, ScreenAdmissionCapacity,

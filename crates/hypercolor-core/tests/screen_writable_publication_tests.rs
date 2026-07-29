@@ -632,6 +632,68 @@ fn writable_zone_slots_have_exact_shape_and_publish_immutable_colors() {
 }
 
 #[test]
+fn writable_zone_slots_publish_only_the_effective_compacted_prefix() {
+    let fixture = Fixture::new(
+        3840,
+        2160,
+        ScreenPublicationKind::Zones {
+            columns: non_zero(7),
+            rows: non_zero(5),
+        },
+        ScreenPublicationSlotPolicy::default(),
+        60,
+    );
+    let binding = binding(&fixture.builder);
+    let publisher = fixture
+        .hub
+        .publisher(&fixture.descriptor, &binding)
+        .expect("active worker owns the zone branch");
+    let mut prepared = fixture
+        .hub
+        .prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Zones,
+            &intent(&fixture.descriptor, &binding, 1),
+        )
+        .expect("zone slot reserves");
+    assert!(matches!(
+        prepared.set_effective_zone_shape(non_zero(8), non_zero(1)),
+        Err(ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor { .. })
+    ));
+    prepared
+        .set_effective_zone_shape(non_zero(3), non_zero(2))
+        .expect("dynamic crop selects an admitted compact prefix");
+    let colors = prepared
+        .zone_colors_mut()
+        .expect("zone reservation retains descriptor-sized scratch");
+    colors.fill([0xA5; 3]);
+    colors[..6].copy_from_slice(&[
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+        [10, 11, 12],
+        [13, 14, 15],
+        [16, 17, 18],
+    ]);
+    finalize(&fixture.hub, prepared).expect("effective zone prefix publishes");
+
+    let publication = fixture
+        .hub
+        .lease(&fixture.descriptor)
+        .expect("zone branch has a lease")
+        .read()
+        .expect("zone branch is live");
+    let ScreenBranchPayload::Zones(zones) = publication.payload() else {
+        panic!("zone branch publishes zone payloads");
+    };
+    assert_eq!(zones.columns(), non_zero(3));
+    assert_eq!(zones.rows(), non_zero(2));
+    assert_eq!(zones.colors().len(), 6);
+    assert_eq!(zones.colors()[5], [16, 17, 18]);
+    assert!(!zones.colors().contains(&[0xA5; 3]));
+}
+
+#[test]
 fn writable_finalize_rejects_stale_worker_and_returns_slot() {
     let policy = ScreenPublicationSlotPolicy::default();
     let mut fixture = Fixture::new(2, 2, ScreenPublicationKind::Surface, policy, 30);
@@ -851,7 +913,7 @@ fn eight_k_slots_are_admitted_by_exact_bytes_without_resolution_caps() {
         .expect("8K exact bytes fit the admitted capacity");
     let bytes_per_slot = WIDTH * HEIGHT * PIXEL_BYTES;
     let candidate = preparing.admission().candidate();
-    assert_eq!(candidate.physical_plane_bytes(), bytes_per_slot);
+    assert_eq!(candidate.physical_plane_bytes(), 0);
     assert_eq!(candidate.publication_retention_bytes(), bytes_per_slot);
     assert_eq!(
         candidate.publication_subscriber_slot_bytes(),
@@ -863,7 +925,7 @@ fn eight_k_slots_are_admitted_by_exact_bytes_without_resolution_caps() {
     );
     assert_eq!(
         candidate.total_bytes(),
-        bytes_per_slot * (u64::from(policy.total_slots()) + 1)
+        bytes_per_slot * u64::from(policy.total_slots())
     );
     let _abort = preparing.abort();
 }
