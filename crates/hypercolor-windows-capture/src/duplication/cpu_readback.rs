@@ -541,22 +541,16 @@ pub(super) fn hybrid_sequence_proof_for_test() -> CaptureResult<HybridSequencePr
         cpu: CaptureLane::Idle,
     };
     let mut publication = None;
-    let mut gpu_pointer = None;
-    super::publish_acquired_clean(
-        &device,
-        &mut gpu_pointer,
-        &clean,
-        duplication_generation,
-        Some(&mut gpu),
-        Some(&mut cpu),
-        &mut report,
-        |outcome| {
-            if let GpuSurfacePublishOutcome::Published(published) = outcome {
-                publication = Some(published);
-            }
-            super::GpuSurfacePublicationDisposition::Accepted
-        },
-    );
+    report.gpu = match gpu.publish_with_feedback(&clean, None, duplication_generation, |outcome| {
+        if let GpuSurfacePublishOutcome::Published(published) = outcome {
+            publication = Some(published);
+        }
+        super::GpuSurfacePublicationDisposition::Accepted
+    }) {
+        Ok(info) => CaptureLane::Ready(info),
+        Err(error) => CaptureLane::Failed(error),
+    };
+    super::advance_cpu_clean(&clean, Some(&mut cpu), &mut report.cpu);
     let publication = publication.ok_or_else(|| {
         CaptureError::windows(
             "publish hybrid pump fixture",
