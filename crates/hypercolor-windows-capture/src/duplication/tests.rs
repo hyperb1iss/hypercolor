@@ -284,6 +284,66 @@ fn exact_gpu_surfaces_normalize_every_display_rotation() {
 }
 
 #[test]
+fn exact_cursor_include_rejects_visible_pointer_without_shape_pixels() {
+    let descriptor = super::gpu_surface::fixture::descriptor_with_cursor(
+        21,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+        DisplayRotation::Identity,
+        crate::GpuSurfaceCursorPolicy::Include,
+        std::time::Duration::from_secs(1),
+    );
+    let pointer = PointerState {
+        visible: true,
+        ..PointerState::default()
+    };
+
+    assert!(matches!(
+        super::gpu_surface::fixture::publish_with_pointer(
+            &[1, 2, 3, 0xFF],
+            1,
+            1,
+            std::slice::from_ref(&descriptor),
+            pointer,
+        ),
+        Err(CaptureError::GpuSurfaceCursorShapeUnavailable {
+            descriptor_id,
+            source_sequence: 41,
+        }) if descriptor_id == descriptor.id()
+    ));
+}
+
+#[test]
+fn exact_cursor_include_composes_available_shape_pixels() {
+    let descriptor = super::gpu_surface::fixture::descriptor_with_cursor(
+        22,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+        DisplayRotation::Identity,
+        crate::GpuSurfaceCursorPolicy::Include,
+        std::time::Duration::from_secs(1),
+    );
+    let pointer = pointer(PointerShapeKind::Color, vec![200, 100, 50, 0xFF]);
+    let fixture = super::gpu_surface::fixture::publish_with_pointer(
+        &[1, 2, 3, 0xFF],
+        1,
+        1,
+        std::slice::from_ref(&descriptor),
+        pointer,
+    )
+    .expect("cursor-including Surface publication succeeds");
+    let crate::GpuSurfacePublishOutcome::Published(publication) = &fixture.outcomes[0] else {
+        panic!("cursor-including descriptor unexpectedly busy");
+    };
+    assert!(publication.provenance().cursor_composed);
+    assert_eq!(
+        super::gpu_surface::fixture::readback_and_release(&fixture.plan, publication)
+            .expect("cursor-including Surface reads back"),
+        [50, 100, 200, 0xFF]
+    );
+}
+
+#[test]
 fn exact_gpu_surface_allows_only_one_native_claim() {
     let descriptor = super::gpu_surface::fixture::descriptor(
         23,
@@ -663,9 +723,14 @@ fn callback_fanout_exposes_only_submitted_publications() {
 }
 
 #[test]
-fn producer_acquire_timeout_is_busy_without_poisoning() {
-    let descriptor = super::gpu_surface::fixture::descriptor(
-        34,
+fn static_retry_publishes_only_routes_that_missed_the_latest_clean_frame() {
+    let descriptor_a = super::gpu_surface::fixture::descriptor(
+        35,
+        CaptureRegion::full(1, 1),
+        CaptureExtent::try_new(1, 1).expect("output extent is valid"),
+    );
+    let descriptor_b = super::gpu_surface::fixture::descriptor(
+        36,
         CaptureRegion::full(1, 1),
         CaptureExtent::try_new(1, 1).expect("output extent is valid"),
     );
@@ -673,26 +738,95 @@ fn producer_acquire_timeout_is_busy_without_poisoning() {
         &[1, 2, 3, 0xFF],
         1,
         1,
-        std::slice::from_ref(&descriptor),
+        &[descriptor_a.clone(), descriptor_b.clone()],
     )
     .expect("first WARP exact Surface publication succeeds");
-    let outcomes = super::gpu_surface::fixture::republish_with_fault(
-        &mut fixture.plan,
-        42,
-        super::gpu_surface::InjectedSurfaceFault::ProducerAcquireTimeout,
-    )
-    .expect("producer acquire timeout remains a normal outcome");
-    assert!(matches!(
-        outcomes.as_slice(),
-        [crate::GpuSurfacePublishOutcome::Busy(id)] if *id == descriptor.id()
-    ));
+    let mut first_a = None;
+    for outcome in std::mem::take(&mut fixture.outcomes) {
+        let crate::GpuSurfacePublishOutcome::Published(publication) = outcome else {
+            panic!("fresh route unexpectedly busy");
+        };
+        if publication.provenance().descriptor.id() == descriptor_a.id() {
+            first_a = Some(publication);
+        } else {
+            super::gpu_surface::fixture::readback_and_release(&fixture.plan, &publication)
+                .expect("first route B publication releases");
+        }
+    }
+    let first_a = first_a.expect("first source publishes route A");
+    let second = super::gpu_surface::fixture::republish(&mut fixture.plan, 42)
+        .expect("second source publishes both routes");
+    let mut second_a = None;
+    for outcome in second {
+        let crate::GpuSurfacePublishOutcome::Published(publication) = outcome else {
+            panic!("second route unexpectedly busy");
+        };
+        if publication.provenance().descriptor.id() == descriptor_a.id() {
+            second_a = Some(publication);
+        } else {
+            super::gpu_surface::fixture::readback_and_release(&fixture.plan, &publication)
+                .expect("second route B publication releases");
+        }
+    }
+    let second_a = second_a.expect("second source publishes route A");
 
-    let retry = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
-        .expect("plan remains healthy after pre-acquire timeout");
-    assert!(matches!(
-        retry.as_slice(),
-        [crate::GpuSurfacePublishOutcome::Published(_)]
+    let latest = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+        .expect("latest source reports route pressure independently");
+    assert!(latest.iter().any(
+        |outcome| matches!(outcome, crate::GpuSurfacePublishOutcome::Busy(id) if *id == descriptor_a.id())
     ));
+    assert!(latest.iter().any(|outcome| matches!(
+        outcome,
+        crate::GpuSurfacePublishOutcome::Published(publication)
+            if publication.provenance().descriptor.id() == descriptor_b.id()
+    )));
+    drop(first_a);
+
+    let retried = (0..64)
+        .find_map(|_| {
+            let outcomes = super::gpu_surface::fixture::retry_pending(&mut fixture.plan)
+                .expect("static clean-frame retry remains healthy");
+            assert!(outcomes.iter().all(|outcome| match outcome {
+                crate::GpuSurfacePublishOutcome::Busy(id) => *id == descriptor_a.id(),
+                crate::GpuSurfacePublishOutcome::Published(publication) => {
+                    publication.provenance().descriptor.id() == descriptor_a.id()
+                }
+            }));
+            let publication = outcomes.into_iter().find_map(|outcome| match outcome {
+                crate::GpuSurfacePublishOutcome::Published(publication) => Some(publication),
+                crate::GpuSurfacePublishOutcome::Busy(_) => None,
+            });
+            if publication.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            publication
+        })
+        .expect("route A retries from retained clean content after reclaim");
+    assert_eq!(retried.provenance().source_sequence, 43);
+    drop(second_a);
+}
+
+#[test]
+fn raw_keyed_mutex_contention_preserves_wait_timeout() {
+    assert!(
+        super::gpu_surface::fixture::real_keyed_mutex_contention_times_out()
+            .expect("real keyed-mutex contention probe succeeds")
+    );
+}
+
+#[test]
+fn raw_keyed_mutex_owner_loss_preserves_wait_abandoned() {
+    assert!(
+        super::gpu_surface::fixture::abandoned_keyed_mutex_owner_is_reported()
+            .expect("real keyed-mutex abandonment probe succeeds")
+    );
+}
+
+#[test]
+fn raw_keyed_mutex_classifier_rejects_negative_and_unknown_positive_statuses() {
+    assert!(
+        super::gpu_surface::fixture::keyed_mutex_status_classifier_rejects_errors_and_unknown_success()
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
-use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE, WAIT_ABANDONED, WAIT_TIMEOUT};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_UNORDERED_ACCESS, D3D11_BUFFER_DESC,
     D3D11_CPU_ACCESS_FLAG, D3D11_FENCE_FLAG_SHARED, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX,
@@ -374,6 +374,7 @@ struct SurfaceRoute {
     slots: Vec<SurfaceSlot>,
     write_index: usize,
     pending: PendingRouteOutcome,
+    pending_source_sequence: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -387,9 +388,66 @@ enum PendingRouteOutcome {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InjectedSurfaceFault {
-    ProducerAcquireTimeout,
     AfterProducerAcquire,
     AfterProducerRelease,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyedMutexAcquire {
+    Acquired,
+    Timeout,
+    Abandoned,
+}
+
+fn acquire_keyed_mutex(
+    mutex: &IDXGIKeyedMutex,
+    key: u64,
+    timeout_ms: u32,
+    context: &'static str,
+) -> CaptureResult<KeyedMutexAcquire> {
+    // SAFETY: the live COM interface and its vtable remain valid for the call.
+    // The generated wrapper discards positive wait statuses through
+    // HRESULT::ok, so this path must preserve the raw return value.
+    let status = unsafe {
+        (Interface::vtable(mutex).AcquireSync)(Interface::as_raw(mutex), key, timeout_ms)
+    };
+    classify_keyed_mutex_status(status, context)
+}
+
+fn classify_keyed_mutex_status(
+    status: windows::core::HRESULT,
+    context: &'static str,
+) -> CaptureResult<KeyedMutexAcquire> {
+    match status.0.cast_unsigned() {
+        0 => Ok(KeyedMutexAcquire::Acquired),
+        value if value == WAIT_TIMEOUT.0 => Ok(KeyedMutexAcquire::Timeout),
+        value if value == WAIT_ABANDONED.0 => Ok(KeyedMutexAcquire::Abandoned),
+        _ if status.is_err() => Err(CaptureError::windows(
+            context,
+            windows::core::Error::from_hresult(status),
+        )),
+        value => Err(CaptureError::windows(
+            context,
+            format_args!("unexpected keyed-mutex wait status {value:#x}"),
+        )),
+    }
+}
+
+#[cfg(test)]
+fn require_keyed_mutex(
+    mutex: &IDXGIKeyedMutex,
+    key: u64,
+    timeout_ms: u32,
+    context: &'static str,
+) -> CaptureResult<()> {
+    match acquire_keyed_mutex(mutex, key, timeout_ms, context)? {
+        KeyedMutexAcquire::Acquired => Ok(()),
+        KeyedMutexAcquire::Timeout => Err(CaptureError::Timeout),
+        KeyedMutexAcquire::Abandoned => Err(CaptureError::windows(
+            context,
+            "keyed-mutex ownership was abandoned",
+        )),
+    }
 }
 
 struct PointerResource {
@@ -598,12 +656,18 @@ impl PreparedGpuSurfacePlan {
         self.clean_metadata.is_some()
     }
 
+    pub(super) fn has_pending_routes(&self) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.pending_source_sequence.is_some())
+    }
+
     pub(super) fn publish<F>(
         &mut self,
         texture: Option<&ID3D11Texture2D>,
         metadata: CaptureMetadata,
         duplication_generation: u64,
-        mut emit: F,
+        emit: F,
     ) -> CaptureResult<GpuSurfaceBatchInfo>
     where
         F: FnMut(GpuSurfacePublishOutcome),
@@ -625,7 +689,6 @@ impl PreparedGpuSurfacePlan {
         ) {
             return Err(CaptureError::GpuSurfacePlanInvalidated);
         }
-        self.reclaim_abandoned()?;
         for route in &self.routes {
             metadata
                 .captured_at
@@ -633,6 +696,10 @@ impl PreparedGpuSurfacePlan {
                 .ok_or(CaptureError::GpuSurfaceFreshnessOverflow)?;
         }
         self.update_clean(texture, &metadata)?;
+        for route in &mut self.routes {
+            route.pending_source_sequence = Some(metadata.sequence);
+        }
+        self.validate_cursor_shape(&metadata)?;
         if self
             .routes
             .iter()
@@ -640,7 +707,55 @@ impl PreparedGpuSurfacePlan {
         {
             self.ensure_pointer(&metadata.pointer)?;
         }
+        self.fanout_pending(&metadata, emit)
+    }
 
+    pub(super) fn retry_pending<F>(&mut self, mut emit: F) -> CaptureResult<GpuSurfaceBatchInfo>
+    where
+        F: FnMut(GpuSurfacePublishOutcome),
+    {
+        let metadata = self.clean_metadata.clone().ok_or_else(|| {
+            CaptureError::windows(
+                "retry exact GPU Surface",
+                "no retained clean desktop is available",
+            )
+        })?;
+        self.validate_cursor_shape(&metadata)?;
+        if self
+            .routes
+            .iter()
+            .any(|route| route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include)
+        {
+            self.ensure_pointer(&metadata.pointer)?;
+        }
+        self.fanout_pending(&metadata, &mut emit)
+    }
+
+    fn validate_cursor_shape(&self, metadata: &CaptureMetadata) -> CaptureResult<()> {
+        if metadata.pointer.visible
+            && metadata.pointer.shape.is_none()
+            && let Some(route) = self
+                .routes
+                .iter()
+                .find(|route| route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include)
+        {
+            return Err(CaptureError::GpuSurfaceCursorShapeUnavailable {
+                descriptor_id: route.descriptor.id(),
+                source_sequence: metadata.sequence,
+            });
+        }
+        Ok(())
+    }
+
+    fn fanout_pending<F>(
+        &mut self,
+        metadata: &CaptureMetadata,
+        mut emit: F,
+    ) -> CaptureResult<GpuSurfaceBatchInfo>
+    where
+        F: FnMut(GpuSurfacePublishOutcome),
+    {
+        self.reclaim_abandoned()?;
         for route in &mut self.routes {
             route.pending = PendingRouteOutcome::None;
         }
@@ -648,7 +763,10 @@ impl PreparedGpuSurfacePlan {
         let mut busy = 0;
         let mut publish_error = None;
         for route_index in 0..self.routes.len() {
-            match self.publish_route(route_index, &metadata) {
+            if self.routes[route_index].pending_source_sequence != Some(metadata.sequence) {
+                continue;
+            }
+            match self.publish_route(route_index, metadata) {
                 Ok(outcome) => {
                     match outcome {
                         PendingRouteOutcome::Published(_) => published += 1,
@@ -674,15 +792,14 @@ impl PreparedGpuSurfacePlan {
         if let Some(error) = publish_error {
             return Err(error);
         }
-        for route in &self.routes {
+        for route in &mut self.routes {
             match route.pending {
-                PendingRouteOutcome::None => {
-                    unreachable!("every successful route records an outcome")
-                }
+                PendingRouteOutcome::None => {}
                 PendingRouteOutcome::Busy => {
                     emit(GpuSurfacePublishOutcome::Busy(route.descriptor.id()));
                 }
                 PendingRouteOutcome::Published(slot_index) => {
+                    route.pending_source_sequence = None;
                     emit(GpuSurfacePublishOutcome::Published(Arc::clone(
                         &route.slots[slot_index].publication,
                     )));
@@ -743,18 +860,21 @@ impl PreparedGpuSurfacePlan {
                                 use_id: slot.publication.use_id,
                             });
                         };
-                        // SAFETY: sole Arc ownership proves no consumer can
-                        // still claim this key-1 hand-off.
-                        let acquire =
-                            unsafe { slot.publication.shared.keyed_mutex.AcquireSync(1, 0) };
-                        if let Err(error) = acquire {
-                            if error.code() == windows::core::HRESULT::from_win32(258) {
-                                continue;
+                        match acquire_keyed_mutex(
+                            &slot.publication.shared.keyed_mutex,
+                            1,
+                            0,
+                            "acquire abandoned GPU Surface",
+                        )? {
+                            KeyedMutexAcquire::Acquired => {}
+                            KeyedMutexAcquire::Timeout => continue,
+                            KeyedMutexAcquire::Abandoned => {
+                                poison_surface_slot(slot);
+                                return Err(CaptureError::GpuSurfacePlanPoisoned {
+                                    descriptor_id: route.descriptor.id(),
+                                    use_id: slot.publication.use_id,
+                                });
                             }
-                            return Err(CaptureError::windows(
-                                "acquire abandoned GPU Surface",
-                                error,
-                            ));
                         }
                         // SAFETY: the successful acquire above owns key 1.
                         unsafe { slot.publication.shared.keyed_mutex.ReleaseSync(0) }.map_err(
@@ -970,25 +1090,25 @@ impl PreparedGpuSurfacePlan {
             .checked_add(descriptor.freshness())
             .ok_or(CaptureError::GpuSurfaceFreshnessOverflow)?;
 
-        #[cfg(test)]
-        if injected_fault == Some(InjectedSurfaceFault::ProducerAcquireTimeout) {
-            return Ok(PendingRouteOutcome::Busy);
-        }
         Arc::get_mut(&mut slot.publication)
             .expect("an idle native slot has no external publication owners")
             .use_id = use_id;
 
-        // SAFETY: the shared texture was created with keyed-mutex support. A
-        // completed consumer-release fence means the prior consumer queued
-        // ReleaseSync before signaling that value.
-        if let Err(error) = unsafe { slot.publication.shared.keyed_mutex.AcquireSync(0, 0) } {
-            if error.code() == windows::core::HRESULT::from_win32(258) {
-                return Ok(PendingRouteOutcome::Busy);
+        match acquire_keyed_mutex(
+            &slot.publication.shared.keyed_mutex,
+            0,
+            0,
+            "acquire GPU Surface producer key",
+        )? {
+            KeyedMutexAcquire::Acquired => {}
+            KeyedMutexAcquire::Timeout => return Ok(PendingRouteOutcome::Busy),
+            KeyedMutexAcquire::Abandoned => {
+                poison_surface_slot(slot);
+                return Err(CaptureError::GpuSurfacePlanPoisoned {
+                    descriptor_id: descriptor.id(),
+                    use_id,
+                });
             }
-            return Err(CaptureError::windows(
-                "acquire GPU Surface producer key",
-                error,
-            ));
         }
         #[cfg(test)]
         if injected_fault == Some(InjectedSurfaceFault::AfterProducerAcquire) {
@@ -1076,7 +1196,7 @@ impl PreparedGpuSurfacePlan {
         slot.required_release_value = Some(release);
         route.write_index = (slot_index + 1) % slot_count;
         let published_at = Instant::now();
-        let cursor_composed = descriptor.cursor() == GpuSurfaceCursorPolicy::Include;
+        let cursor_composed = shape.is_some();
         let provenance = GpuSurfaceProvenance {
             descriptor,
             plan_generation: self.plan_generation,
@@ -1162,6 +1282,7 @@ fn create_route(
         slots,
         write_index: 0,
         pending: PendingRouteOutcome::None,
+        pending_source_sequence: None,
     })
 }
 
@@ -1191,14 +1312,16 @@ fn create_surface_slot(
         .map_err(|error| CaptureError::windows("query shareable GPU Surface", error))?;
     // SAFETY: null security attributes and name create an unnamed NT handle
     // owned by this process with read/write sharing rights.
-    let texture_handle = unsafe {
-        resource.CreateSharedHandle(
-            None,
-            DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED_RESOURCE_WRITE.0,
-            PCWSTR::null(),
-        )
-    }
-    .map_err(|error| CaptureError::windows("create shared GPU Surface handle", error))?;
+    let texture_handle = OwnedHandle::new(
+        unsafe {
+            resource.CreateSharedHandle(
+                None,
+                DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED_RESOURCE_WRITE.0,
+                PCWSTR::null(),
+            )
+        }
+        .map_err(|error| CaptureError::windows("create shared GPU Surface handle", error))?,
+    )?;
 
     let mut fence = None;
     // SAFETY: the out-pointer is live and requests the documented shared-fence
@@ -1210,8 +1333,11 @@ fn create_surface_slot(
     })?;
     // SAFETY: null security attributes and name create one process-owned NT
     // handle for the shared fence.
-    let fence_handle = unsafe { fence.CreateSharedHandle(None, GENERIC_ALL.0, PCWSTR::null()) }
-        .map_err(|error| CaptureError::windows("create shared GPU Surface fence handle", error))?;
+    let fence_handle = OwnedHandle::new(
+        unsafe { fence.CreateSharedHandle(None, GENERIC_ALL.0, PCWSTR::null()) }.map_err(
+            |error| CaptureError::windows("create shared GPU Surface fence handle", error),
+        )?,
+    )?;
 
     Ok(SurfaceSlot {
         publication: Arc::new(GpuSurfacePublication {
@@ -1220,8 +1346,8 @@ fn create_surface_slot(
                 _texture: texture,
                 keyed_mutex,
                 fence,
-                texture_handle: OwnedHandle::new(texture_handle)?,
-                fence_handle: OwnedHandle::new(fence_handle)?,
+                texture_handle,
+                fence_handle,
             },
             synchronization: GpuSurfaceSynchronization {
                 producer_acquire_key: 0,
@@ -1404,15 +1530,12 @@ pub(super) mod fixture {
             CaptureExtent::try_new(4, 4)?,
             GpuSurfaceSlotId::new(NonZeroU64::MIN),
         )?;
-        // SAFETY: the fresh keyed texture starts at producer key 0.
-        unsafe {
-            source_slot
-                .publication
-                .shared
-                .keyed_mutex
-                .AcquireSync(0, u32::MAX)
-        }
-        .map_err(|error| CaptureError::windows("acquire capture fixture key", error))?;
+        require_keyed_mutex(
+            &source_slot.publication.shared.keyed_mutex,
+            0,
+            u32::MAX,
+            "acquire capture fixture key",
+        )?;
         // SAFETY: the fixture owns key 0 from the successful acquire.
         unsafe { source_slot.publication.shared.keyed_mutex.ReleaseSync(1) }
             .map_err(|error| CaptureError::windows("publish capture fixture key", error))?;
@@ -1541,9 +1664,12 @@ pub(super) mod fixture {
         // SAFETY: value 1 is the capture-side ready signal queued above.
         unsafe { bridge_context4.Wait(&imported_fence, 1) }
             .map_err(|error| CaptureError::windows("wait for imported source", error))?;
-        // SAFETY: the capture fixture released consumer key 1 above.
-        unsafe { imported_keyed_mutex.AcquireSync(1, u32::MAX) }
-            .map_err(|error| CaptureError::windows("acquire imported source key", error))?;
+        require_keyed_mutex(
+            &imported_keyed_mutex,
+            1,
+            u32::MAX,
+            "acquire imported source key",
+        )?;
 
         let resource_flags = D3D11_RESOURCE_FLAGS::default();
         let mut d3d11_texture = None;
@@ -1624,6 +1750,24 @@ pub(super) mod fixture {
         source_rotation: crate::DisplayRotation,
         freshness: Duration,
     ) -> GpuSurfaceDescriptor {
+        descriptor_with_cursor(
+            id,
+            source_region,
+            output_extent,
+            source_rotation,
+            GpuSurfaceCursorPolicy::Exclude,
+            freshness,
+        )
+    }
+
+    pub(crate) fn descriptor_with_cursor(
+        id: u64,
+        source_region: CaptureRegion,
+        output_extent: CaptureExtent,
+        source_rotation: crate::DisplayRotation,
+        cursor: GpuSurfaceCursorPolicy,
+        freshness: Duration,
+    ) -> GpuSurfaceDescriptor {
         GpuSurfaceDescriptor::new(GpuSurfaceDescriptorConfig {
             id: GpuSurfaceDescriptorId::new(NonZeroU64::new(id).expect("fixture id is non-zero")),
             source_region,
@@ -1634,7 +1778,7 @@ pub(super) mod fixture {
             filter: GpuSurfaceFilter::Nearest,
             format: GpuSurfaceFormat::Rgba8Unorm,
             color_pipeline: GpuSurfaceColorPipeline::PreserveEncoded,
-            cursor: GpuSurfaceCursorPolicy::Exclude,
+            cursor,
             algorithm_revision: NonZeroU32::new(1).expect("fixture revision is non-zero"),
             freshness,
         })
@@ -1662,6 +1806,41 @@ pub(super) mod fixture {
         rotation: crate::DisplayRotation,
         descriptors: &[GpuSurfaceDescriptor],
     ) -> CaptureResult<PublishedFixture> {
+        publish_rotated_with_pointer(
+            bgra,
+            width,
+            height,
+            rotation,
+            descriptors,
+            PointerState::default(),
+        )
+    }
+
+    pub(crate) fn publish_with_pointer(
+        bgra: &[u8],
+        width: u32,
+        height: u32,
+        descriptors: &[GpuSurfaceDescriptor],
+        pointer: PointerState,
+    ) -> CaptureResult<PublishedFixture> {
+        publish_rotated_with_pointer(
+            bgra,
+            width,
+            height,
+            crate::DisplayRotation::Identity,
+            descriptors,
+            pointer,
+        )
+    }
+
+    fn publish_rotated_with_pointer(
+        bgra: &[u8],
+        width: u32,
+        height: u32,
+        rotation: crate::DisplayRotation,
+        descriptors: &[GpuSurfaceDescriptor],
+        pointer: PointerState,
+    ) -> CaptureResult<PublishedFixture> {
         let (device, context) =
             super::super::gpu_reduction::test_device().map_err(capture_gpu_error)?;
         let source = super::super::gpu_reduction::test_source(&device, bgra, width, height)
@@ -1671,6 +1850,17 @@ pub(super) mod fixture {
         let admission =
             GpuSurfaceAdmission::new(u64::MAX, NonZeroU32::new(2).expect("two is non-zero"));
         let allocation = admission.admit(logical_source_extent, descriptors)?;
+        let pointer_bytes = pointer.shape.as_ref().map_or(Ok(0), |shape| {
+            checked_gpu_surface_bytes(CaptureExtent::try_new(shape.width, shape.visible_height())?)
+        })?;
+        let allocation =
+            allocation
+                .checked_add(pointer_bytes)
+                .ok_or(CaptureError::GeometryOverflow {
+                    operation: "account fixture GPU pointer texture",
+                    width,
+                    height,
+                })?;
         let adapter_luid = device_adapter_luid(&device)?;
         let mut plan = PreparedGpuSurfacePlan::prepare(
             &device,
@@ -1695,7 +1885,7 @@ pub(super) mod fixture {
             sequence: 41,
             captured_at: Instant::now(),
             cursor: crate::CursorInfo::default(),
-            pointer: Arc::new(PointerState::default()),
+            pointer: Arc::new(pointer),
             source_width: width,
             source_height: height,
             origin_x: 0,
@@ -1725,6 +1915,99 @@ pub(super) mod fixture {
             .cast::<IDXGIAdapter1>()
             .map_err(|error| CaptureError::windows("query fixture DXGI adapter 1", error))?;
         super::super::adapter_luid(&adapter)
+    }
+
+    pub(crate) fn real_keyed_mutex_contention_times_out() -> CaptureResult<bool> {
+        let (device, _context) =
+            super::super::gpu_reduction::test_device().map_err(capture_gpu_error)?;
+        let device5 = device
+            .cast::<ID3D11Device5>()
+            .map_err(|error| CaptureError::windows("query contention fixture device", error))?;
+        let slot = create_surface_slot(
+            &device,
+            &device5,
+            CaptureExtent::try_new(1, 1)?,
+            GpuSurfaceSlotId::new(NonZeroU64::MIN),
+        )?;
+        let (holder_device, _holder_context) =
+            super::super::gpu_reduction::test_device().map_err(capture_gpu_error)?;
+        let holder_device1 = holder_device
+            .cast::<ID3D11Device1>()
+            .map_err(|error| CaptureError::windows("query contention fixture sharing", error))?;
+        // SAFETY: the slot retains its NT handle for the entire fixture.
+        let holder_texture: ID3D11Texture2D =
+            unsafe { holder_device1.OpenSharedResource1(slot.publication.shared.texture_handle.0) }
+                .map_err(|error| CaptureError::windows("open contention fixture texture", error))?;
+        let holder_mutex = holder_texture
+            .cast::<IDXGIKeyedMutex>()
+            .map_err(|error| CaptureError::windows("query contention fixture mutex", error))?;
+        let first = acquire_keyed_mutex(&holder_mutex, 0, 0, "acquire contention fixture owner")?;
+        let contended = acquire_keyed_mutex(
+            &slot.publication.shared.keyed_mutex,
+            0,
+            0,
+            "probe contended fixture key",
+        )?;
+        // SAFETY: the first raw-vtable acquire above owns key 0.
+        unsafe { holder_mutex.ReleaseSync(0) }
+            .map_err(|error| CaptureError::windows("release contention fixture owner", error))?;
+        Ok(first == KeyedMutexAcquire::Acquired && contended == KeyedMutexAcquire::Timeout)
+    }
+
+    pub(crate) fn keyed_mutex_status_classifier_rejects_errors_and_unknown_success() -> bool {
+        matches!(
+            classify_keyed_mutex_status(
+                windows::core::HRESULT(0x8000_4005_u32.cast_signed()),
+                "classify fixture keyed mutex",
+            ),
+            Err(CaptureError::Windows { .. })
+        ) && matches!(
+            classify_keyed_mutex_status(windows::core::HRESULT(1), "classify fixture keyed mutex",),
+            Err(CaptureError::Windows { .. })
+        )
+    }
+
+    pub(crate) fn abandoned_keyed_mutex_owner_is_reported() -> CaptureResult<bool> {
+        let (owner_device, owner_context) =
+            super::super::gpu_reduction::test_device().map_err(capture_gpu_error)?;
+        let owner_device5 = owner_device
+            .cast::<ID3D11Device5>()
+            .map_err(|error| CaptureError::windows("query abandon fixture device", error))?;
+        let slot = create_surface_slot(
+            &owner_device,
+            &owner_device5,
+            CaptureExtent::try_new(1, 1)?,
+            GpuSurfaceSlotId::new(NonZeroU64::MIN),
+        )?;
+        let (holder_device, holder_context) =
+            super::super::gpu_reduction::test_device().map_err(capture_gpu_error)?;
+        let holder_device1 = holder_device
+            .cast::<ID3D11Device1>()
+            .map_err(|error| CaptureError::windows("query abandon fixture sharing", error))?;
+        // SAFETY: the slot retains its NT handle for the entire fixture.
+        let holder_texture: ID3D11Texture2D =
+            unsafe { holder_device1.OpenSharedResource1(slot.publication.shared.texture_handle.0) }
+                .map_err(|error| CaptureError::windows("open abandon fixture texture", error))?;
+        let holder_mutex = holder_texture
+            .cast::<IDXGIKeyedMutex>()
+            .map_err(|error| CaptureError::windows("query abandon fixture mutex", error))?;
+        let holder_status =
+            acquire_keyed_mutex(&holder_mutex, 0, 0, "acquire abandon fixture owner")?;
+        drop(holder_mutex);
+        drop(holder_texture);
+        drop(holder_device1);
+        drop(holder_context);
+        drop(holder_device);
+
+        let abandoned = acquire_keyed_mutex(
+            &slot.publication.shared.keyed_mutex,
+            0,
+            0,
+            "probe abandoned fixture key",
+        )?;
+        drop(owner_context);
+        Ok(holder_status == KeyedMutexAcquire::Acquired
+            && abandoned == KeyedMutexAcquire::Abandoned)
     }
 
     pub(crate) fn release_on_producer_device(
@@ -1764,15 +2047,12 @@ pub(super) mod fixture {
         // SAFETY: the shared values came from the publication bound to this fence.
         unsafe { context4.Wait(&fence, synchronization.producer_ready_value) }
             .map_err(|error| CaptureError::windows("wait for fixture GPU Surface", error))?;
-        // SAFETY: the producer released the published consumer key.
-        unsafe {
-            lease
-                .publication
-                .shared
-                .keyed_mutex
-                .AcquireSync(synchronization.consumer_acquire_key, u32::MAX)
-        }
-        .map_err(|error| CaptureError::windows("acquire fixture GPU Surface key", error))?;
+        require_keyed_mutex(
+            &lease.publication.shared.keyed_mutex,
+            synchronization.consumer_acquire_key,
+            u32::MAX,
+            "acquire fixture GPU Surface key",
+        )?;
         lease.mark_native_acquired()?;
         // SAFETY: the fixture performs no access after releasing producer key 0.
         unsafe {
@@ -1843,6 +2123,14 @@ pub(super) mod fixture {
         Ok(outcomes)
     }
 
+    pub(crate) fn retry_pending(
+        plan: &mut PreparedGpuSurfacePlan,
+    ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
+        let mut outcomes = Vec::new();
+        plan.retry_pending(|outcome| outcomes.push(outcome))?;
+        Ok(outcomes)
+    }
+
     pub(crate) fn republish_with_fault(
         plan: &mut PreparedGpuSurfacePlan,
         sequence: u64,
@@ -1888,15 +2176,12 @@ pub(super) mod fixture {
     ) -> CaptureResult<()> {
         let mut lease = publication.claim()?;
         let synchronization = lease.synchronization();
-        // SAFETY: the producer released the consumer key before callback publication.
-        unsafe {
-            lease
-                .publication
-                .shared
-                .keyed_mutex
-                .AcquireSync(synchronization.consumer_acquire_key, u32::MAX)
-        }
-        .map_err(|error| CaptureError::windows("acquire fixture GPU Surface key", error))?;
+        require_keyed_mutex(
+            &lease.publication.shared.keyed_mutex,
+            synchronization.consumer_acquire_key,
+            u32::MAX,
+            "acquire fixture GPU Surface key",
+        )?;
         lease.mark_native_acquired()?;
         drop(lease);
         Ok(())
@@ -1907,15 +2192,12 @@ pub(super) mod fixture {
     ) -> CaptureResult<()> {
         let mut lease = publication.claim()?;
         let synchronization = lease.synchronization();
-        // SAFETY: the producer released the consumer key before callback publication.
-        unsafe {
-            lease
-                .publication
-                .shared
-                .keyed_mutex
-                .AcquireSync(synchronization.consumer_acquire_key, u32::MAX)
-        }
-        .map_err(|error| CaptureError::windows("acquire fixture GPU Surface key", error))?;
+        require_keyed_mutex(
+            &lease.publication.shared.keyed_mutex,
+            synchronization.consumer_acquire_key,
+            u32::MAX,
+            "acquire fixture GPU Surface key",
+        )?;
         lease.mark_native_acquired()?;
         // SAFETY: the fixture owns the consumer key and performs no later access.
         unsafe {
@@ -1943,15 +2225,12 @@ pub(super) mod fixture {
             )
         }
         .map_err(|error| CaptureError::windows("wait for fixture GPU Surface", error))?;
-        // SAFETY: the producer released the consumer key after dispatch.
-        unsafe {
-            lease
-                .publication
-                .shared
-                .keyed_mutex
-                .AcquireSync(synchronization.consumer_acquire_key, u32::MAX)
-        }
-        .map_err(|error| CaptureError::windows("acquire fixture GPU Surface key", error))?;
+        require_keyed_mutex(
+            &lease.publication.shared.keyed_mutex,
+            synchronization.consumer_acquire_key,
+            u32::MAX,
+            "acquire fixture GPU Surface key",
+        )?;
         lease.mark_native_acquired()?;
 
         let extent = lease.provenance().output_extent;

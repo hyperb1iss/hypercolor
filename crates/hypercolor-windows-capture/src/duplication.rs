@@ -1141,15 +1141,19 @@ impl DesktopDuplicator {
             return Err(CaptureError::GpuSurfacePlanInvalidated);
         }
         self.release_frame();
-        let Some(update) = self.acquire_native_update(timeout, plan.has_clean_desktop())? else {
+        let update = self.acquire_native_update(timeout, plan.has_clean_desktop())?;
+        let result = if let Some(update) = update {
+            plan.publish(
+                update.texture.as_ref(),
+                update.metadata,
+                self.duplication_generation,
+                emit,
+            )
+        } else if plan.has_pending_routes() {
+            plan.retry_pending(emit)
+        } else {
             return Ok(None);
         };
-        let result = plan.publish(
-            update.texture.as_ref(),
-            update.metadata,
-            self.duplication_generation,
-            emit,
-        );
         self.release_frame();
         result.map(Some)
     }

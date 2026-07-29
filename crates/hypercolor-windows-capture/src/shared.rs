@@ -344,6 +344,17 @@ pub enum CaptureError {
         source_sequence: u64,
     },
 
+    /// Exact cursor composition is waiting for the matching pointer shape.
+    #[error(
+        "GPU Surface descriptor {descriptor_id:?} sequence {source_sequence} has no visible cursor shape"
+    )]
+    GpuSurfaceCursorShapeUnavailable {
+        /// Cursor-including descriptor that cannot yet publish exactly.
+        descriptor_id: GpuSurfaceDescriptorId,
+        /// Source acquisition whose visible cursor lacks shape pixels.
+        source_sequence: u64,
+    },
+
     /// A claimed native hand-off disappeared before queuing its release.
     #[error(
         "GPU Surface descriptor {descriptor_id:?} use {use_id} lost its claim guard before release"
