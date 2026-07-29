@@ -907,6 +907,12 @@ impl DesktopDuplicator {
         self.duplication_generation
     }
 
+    /// Physical DXGI adapter that owns this capture session.
+    #[must_use]
+    pub const fn adapter_luid(&self) -> GpuAdapterLuid {
+        self.adapter_luid
+    }
+
     /// Requested reduction extent for subsequent frames.
     #[must_use]
     pub const fn requested_extent(&self) -> CaptureExtent {

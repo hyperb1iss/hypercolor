@@ -285,3 +285,19 @@ fn every_attached_monitor_opens_with_rotation_consistent_geometry() {
         drop(duplicator);
     }
 }
+
+#[test]
+#[ignore = "requires Windows with at least one attached DXGI display"]
+fn opened_capture_exposes_adapter_identity() {
+    let _capture_guard = capture_test_lock();
+    let Some(duplicator) = duplicator_or_skip(0) else {
+        return;
+    };
+
+    let adapter = duplicator.adapter_luid();
+    assert_ne!(
+        (adapter.low_part(), adapter.high_part()),
+        (0, 0),
+        "capture should expose a concrete DXGI adapter LUID",
+    );
+}
