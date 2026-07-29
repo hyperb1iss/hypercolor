@@ -25,7 +25,7 @@ use super::gpu_reduction::{
     GpuReductionError, checked_rgba_row_pitch, create_srv, create_surface_compute_shader,
     create_texture, create_uav, normalized_pointer, pointer_kind_code, rotation_code,
 };
-use super::{CaptureMetadata, PointerState};
+use super::{CaptureMetadata, PointerState, RetainedDesktop};
 use crate::shared::checked_gpu_surface_bytes;
 use crate::{
     CaptureError, CaptureExtent, CaptureResult, GpuAdapterLuid, GpuSharedHandle,
@@ -474,9 +474,6 @@ pub struct PreparedGpuSurfacePlan {
     context4: ID3D11DeviceContext4,
     shader: ID3D11ComputeShader,
     params: ID3D11Buffer,
-    clean: ID3D11Texture2D,
-    clean_srv: ID3D11ShaderResourceView,
-    clean_metadata: Option<CaptureMetadata>,
     pointer: Option<PointerResource>,
     routes: Vec<SurfaceRoute>,
     texture_budget: u64,
@@ -546,15 +543,6 @@ impl PreparedGpuSurfacePlan {
             .map_err(|_| unsupported_fence_error(descriptors))?;
         let shader = create_surface_compute_shader(device).map_err(capture_gpu_error)?;
         let params = create_surface_params(device).map_err(capture_gpu_error)?;
-        let clean_desc = texture_desc(
-            native_source_extent,
-            DXGI_FORMAT_B8G8R8A8_UNORM,
-            D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
-            0,
-        );
-        let clean = create_texture(device, &clean_desc, None).map_err(capture_gpu_error)?;
-        let clean_srv = create_srv(device, &clean).map_err(capture_gpu_error)?;
-
         let mut routes = Vec::new();
         routes.try_reserve_exact(descriptors.len()).map_err(|_| {
             CaptureError::ResourceExhausted {
@@ -588,9 +576,6 @@ impl PreparedGpuSurfacePlan {
             context4,
             shader,
             params,
-            clean,
-            clean_srv,
-            clean_metadata: None,
             pointer: None,
             routes,
             texture_budget: admission.max_texture_bytes(),
@@ -680,10 +665,6 @@ impl PreparedGpuSurfacePlan {
         }
     }
 
-    pub(super) fn has_clean_desktop(&self) -> bool {
-        self.clean_metadata.is_some()
-    }
-
     pub(super) fn has_pending_routes(&self) -> bool {
         self.routes
             .iter()
@@ -692,14 +673,14 @@ impl PreparedGpuSurfacePlan {
 
     pub(super) fn publish<F>(
         &mut self,
-        texture: Option<&ID3D11Texture2D>,
-        metadata: CaptureMetadata,
+        clean: &RetainedDesktop,
         duplication_generation: u64,
         emit: F,
     ) -> CaptureResult<GpuSurfaceBatchInfo>
     where
         F: FnMut(GpuSurfacePublishOutcome),
     {
+        let metadata = &clean.metadata;
         let logical_source_extent = logical_extent(
             metadata.source_width,
             metadata.source_height,
@@ -721,11 +702,11 @@ impl PreparedGpuSurfacePlan {
                 .checked_add(route.descriptor.freshness())
                 .ok_or(CaptureError::GpuSurfaceFreshnessOverflow)?;
         }
-        self.update_clean(texture, &metadata)?;
+        self.validate_clean(clean)?;
         for route in &mut self.routes {
             route.pending_source_sequence = Some(metadata.sequence);
         }
-        self.validate_cursor_shape(&metadata)?;
+        self.validate_cursor_shape(metadata)?;
         if self
             .routes
             .iter()
@@ -733,20 +714,20 @@ impl PreparedGpuSurfacePlan {
         {
             self.ensure_pointer(&metadata.pointer)?;
         }
-        self.fanout_pending(&metadata, emit)
+        self.fanout_pending(clean, emit)
     }
 
-    pub(super) fn retry_pending<F>(&mut self, mut emit: F) -> CaptureResult<GpuSurfaceBatchInfo>
+    pub(super) fn retry_pending<F>(
+        &mut self,
+        clean: &RetainedDesktop,
+        mut emit: F,
+    ) -> CaptureResult<GpuSurfaceBatchInfo>
     where
         F: FnMut(GpuSurfacePublishOutcome),
     {
-        let metadata = self.clean_metadata.clone().ok_or_else(|| {
-            CaptureError::windows(
-                "retry exact GPU Surface",
-                "no retained clean desktop is available",
-            )
-        })?;
-        self.validate_cursor_shape(&metadata)?;
+        let metadata = &clean.metadata;
+        self.validate_clean(clean)?;
+        self.validate_cursor_shape(metadata)?;
         if self
             .routes
             .iter()
@@ -754,7 +735,7 @@ impl PreparedGpuSurfacePlan {
         {
             self.ensure_pointer(&metadata.pointer)?;
         }
-        self.fanout_pending(&metadata, &mut emit)
+        self.fanout_pending(clean, &mut emit)
     }
 
     fn validate_cursor_shape(&self, metadata: &CaptureMetadata) -> CaptureResult<()> {
@@ -775,12 +756,13 @@ impl PreparedGpuSurfacePlan {
 
     fn fanout_pending<F>(
         &mut self,
-        metadata: &CaptureMetadata,
+        clean: &RetainedDesktop,
         mut emit: F,
     ) -> CaptureResult<GpuSurfaceBatchInfo>
     where
         F: FnMut(GpuSurfacePublishOutcome),
     {
+        let metadata = &clean.metadata;
         self.reclaim_abandoned()?;
         for route in &mut self.routes {
             route.pending = PendingRouteOutcome::None;
@@ -792,7 +774,7 @@ impl PreparedGpuSurfacePlan {
             if self.routes[route_index].pending_source_sequence != Some(metadata.sequence) {
                 continue;
             }
-            match self.publish_route(route_index, metadata) {
+            match self.publish_route(route_index, clean) {
                 Ok(outcome) => {
                     match outcome {
                         PendingRouteOutcome::Published(_) => published += 1,
@@ -975,41 +957,24 @@ impl PreparedGpuSurfacePlan {
         Ok(reclaimed)
     }
 
-    fn update_clean(
-        &mut self,
-        texture: Option<&ID3D11Texture2D>,
-        metadata: &CaptureMetadata,
-    ) -> CaptureResult<()> {
-        if let Some(texture) = texture {
-            let mut observed = D3D11_TEXTURE2D_DESC::default();
-            // SAFETY: GetDesc fills caller-owned storage and cannot fail.
-            unsafe { texture.GetDesc(&mut observed) };
-            if observed.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
-                let descriptor_id = self
-                    .routes
-                    .first()
-                    .map_or_else(fallback_descriptor_id, |route| route.descriptor.id());
-                return Err(CaptureError::UnsupportedGpuSurface {
-                    descriptor_id,
-                    reason: GpuSurfaceUnsupportedReason::SourceFormat,
-                });
-            }
-            if observed.Width != self.native_source_extent.width()
-                || observed.Height != self.native_source_extent.height()
-            {
-                return Err(CaptureError::GpuSurfacePlanInvalidated);
-            }
-            // SAFETY: the descriptors match and both resources belong to the
-            // same D3D11 device and immediate context.
-            unsafe { self.context.CopyResource(&self.clean, texture) };
-            self.clean_metadata = Some(metadata.clone());
-        } else if self.clean_metadata.is_none() {
-            return Err(CaptureError::windows(
-                "publish exact GPU Surface",
-                "no retained clean desktop is available",
-            ));
-        } else {
-            self.clean_metadata = Some(metadata.clone());
+    fn validate_clean(&self, clean: &RetainedDesktop) -> CaptureResult<()> {
+        let mut observed = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: GetDesc fills caller-owned storage and cannot fail.
+        unsafe { clean.texture.GetDesc(&mut observed) };
+        if observed.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
+            let descriptor_id = self
+                .routes
+                .first()
+                .map_or_else(fallback_descriptor_id, |route| route.descriptor.id());
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id,
+                reason: GpuSurfaceUnsupportedReason::SourceFormat,
+            });
+        }
+        if observed.Width != self.native_source_extent.width()
+            || observed.Height != self.native_source_extent.height()
+        {
+            return Err(CaptureError::GpuSurfacePlanInvalidated);
         }
         Ok(())
     }
@@ -1077,8 +1042,9 @@ impl PreparedGpuSurfacePlan {
     fn publish_route(
         &mut self,
         route_index: usize,
-        metadata: &CaptureMetadata,
+        clean: &RetainedDesktop,
     ) -> CaptureResult<PendingRouteOutcome> {
+        let metadata = &clean.metadata;
         #[cfg(test)]
         let injected_fault = self.injected_fault.take();
         let route = &mut self.routes[route_index];
@@ -1170,7 +1136,7 @@ impl PreparedGpuSurfacePlan {
         };
         update_params(&self.context, &self.params, &params);
         let srvs = [
-            Some(self.clean_srv.clone()),
+            Some(clean.srv.clone()),
             shape.and(self.pointer.as_ref().map(|resource| resource.srv.clone())),
         ];
         let uavs = [Some(slot.uav.clone())];
@@ -1737,6 +1703,7 @@ pub(super) mod fixture {
 
     pub(crate) struct PublishedFixture {
         pub(crate) plan: PreparedGpuSurfacePlan,
+        clean: RetainedDesktop,
         pub(crate) info: GpuSurfaceBatchInfo,
         pub(crate) outcomes: Vec<GpuSurfacePublishOutcome>,
     }
@@ -1920,10 +1887,16 @@ pub(super) mod fixture {
             source_color_space: GpuSurfaceSourceColorSpace::RgbFullG22P709,
             region: CaptureRegion::full(width, height),
         };
+        let clean = RetainedDesktop {
+            srv: create_srv(&device, &source).map_err(capture_gpu_error)?,
+            texture: source,
+            metadata,
+        };
         let mut outcomes = Vec::new();
-        let info = plan.publish(Some(&source), metadata, 5, |outcome| outcomes.push(outcome))?;
+        let info = plan.publish(&clean, 5, |outcome| outcomes.push(outcome))?;
         Ok(PublishedFixture {
             plan,
+            clean,
             info,
             outcomes,
         })
@@ -2121,9 +2094,10 @@ pub(super) mod fixture {
     }
 
     pub(crate) fn republish(
-        plan: &mut PreparedGpuSurfacePlan,
+        fixture: &mut PublishedFixture,
         sequence: u64,
     ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
+        let plan = &mut fixture.plan;
         let metadata = CaptureMetadata {
             source_id: Arc::clone(&plan.source_id),
             topology_generation: plan.topology_generation,
@@ -2142,25 +2116,29 @@ pub(super) mod fixture {
                 plan.native_source_extent.height(),
             ),
         };
+        fixture.clean.metadata = metadata;
         let mut outcomes = Vec::new();
-        plan.publish(None, metadata, plan.duplication_generation, |outcome| {
+        plan.publish(&fixture.clean, plan.duplication_generation, |outcome| {
             outcomes.push(outcome);
         })?;
         Ok(outcomes)
     }
 
     pub(crate) fn retry_pending(
-        plan: &mut PreparedGpuSurfacePlan,
+        fixture: &mut PublishedFixture,
     ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
         let mut outcomes = Vec::new();
-        plan.retry_pending(|outcome| outcomes.push(outcome))?;
+        fixture
+            .plan
+            .retry_pending(&fixture.clean, |outcome| outcomes.push(outcome))?;
         Ok(outcomes)
     }
 
     pub(crate) fn retry_pending_for_duplication_epoch(
-        plan: &mut PreparedGpuSurfacePlan,
+        fixture: &mut PublishedFixture,
         duplication_generation: u64,
     ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
+        let plan = &fixture.plan;
         plan.validate_source(
             &plan.source_id,
             plan.topology_generation,
@@ -2171,22 +2149,23 @@ pub(super) mod fixture {
             plan.source_rotation,
             plan.source_color_space,
         )?;
-        retry_pending(plan)
+        retry_pending(fixture)
     }
 
     pub(crate) fn republish_with_fault(
-        plan: &mut PreparedGpuSurfacePlan,
+        fixture: &mut PublishedFixture,
         sequence: u64,
         fault: InjectedSurfaceFault,
     ) -> CaptureResult<Vec<GpuSurfacePublishOutcome>> {
-        plan.injected_fault = Some(fault);
-        republish(plan, sequence)
+        fixture.plan.injected_fault = Some(fault);
+        republish(fixture, sequence)
     }
 
     pub(crate) fn callback_observes_only_submitted_publications(
-        plan: &mut PreparedGpuSurfacePlan,
+        fixture: &mut PublishedFixture,
         sequence: u64,
     ) -> CaptureResult<bool> {
+        let plan = &mut fixture.plan;
         let metadata = CaptureMetadata {
             source_id: Arc::clone(&plan.source_id),
             topology_generation: plan.topology_generation,
@@ -2205,8 +2184,9 @@ pub(super) mod fixture {
                 plan.native_source_extent.height(),
             ),
         };
+        fixture.clean.metadata = metadata;
         let mut submitted = true;
-        plan.publish(None, metadata, plan.duplication_generation, |outcome| {
+        plan.publish(&fixture.clean, plan.duplication_generation, |outcome| {
             if let GpuSurfacePublishOutcome::Published(publication) = outcome {
                 submitted &= publication.state.load(Ordering::Acquire) == USE_UNCLAIMED;
             }

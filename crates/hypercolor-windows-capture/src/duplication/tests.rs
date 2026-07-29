@@ -395,7 +395,7 @@ fn release_marker_without_release_fence_cannot_unlock_a_native_slot() {
         .expect("consumer key release is recorded without a fence signal");
     drop(first);
 
-    let mut second_outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, 42)
+    let mut second_outcomes = super::gpu_surface::fixture::republish(&mut fixture, 42)
         .expect("independent sibling remains publishable");
     let crate::GpuSurfacePublishOutcome::Published(second) = second_outcomes.remove(0) else {
         panic!("sibling descriptor unexpectedly busy");
@@ -405,7 +405,7 @@ fn release_marker_without_release_fence_cannot_unlock_a_native_slot() {
         super::gpu_surface::fixture::texture_handle(&second)
     );
 
-    let third_outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+    let third_outcomes = super::gpu_surface::fixture::republish(&mut fixture, 43)
         .expect("unsignaled release fence remains a normal busy state");
     assert!(matches!(
         third_outcomes.as_slice(),
@@ -461,7 +461,7 @@ fn abandoned_exact_gpu_surfaces_reclaim_under_sustained_pressure() {
     for sequence in 42..74 {
         let publication = (0..64)
             .find_map(|_| {
-                let outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, sequence)
+                let outcomes = super::gpu_surface::fixture::republish(&mut fixture, sequence)
                     .expect("abandoned slots remain safely reclaimable");
                 let publication = outcomes.into_iter().find_map(|outcome| match outcome {
                     crate::GpuSurfacePublishOutcome::Published(publication) => Some(publication),
@@ -664,7 +664,7 @@ fn exact_gpu_surface_routing_skips_a_busy_slot_when_a_sibling_is_released() {
     let crate::GpuSurfacePublishOutcome::Published(first) = fixture.outcomes.remove(0) else {
         panic!("first descriptor unexpectedly busy");
     };
-    let mut second_outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, 42)
+    let mut second_outcomes = super::gpu_surface::fixture::republish(&mut fixture, 42)
         .expect("second exact Surface slot publishes");
     let crate::GpuSurfacePublishOutcome::Published(second) = second_outcomes.remove(0) else {
         panic!("second descriptor unexpectedly busy");
@@ -676,7 +676,7 @@ fn exact_gpu_surface_routing_skips_a_busy_slot_when_a_sibling_is_released() {
         .expect("second slot is released out of order");
     drop(second);
 
-    let mut third_outcomes = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+    let mut third_outcomes = super::gpu_surface::fixture::republish(&mut fixture, 43)
         .expect("released sibling slot is selected");
     let crate::GpuSurfacePublishOutcome::Published(third) = third_outcomes.remove(0) else {
         panic!("released sibling was hidden by the busy write cursor");
@@ -715,7 +715,7 @@ fn callback_fanout_exposes_only_submitted_publications() {
 
     assert!(
         super::gpu_surface::fixture::callback_observes_only_submitted_publications(
-            &mut fixture.plan,
+            &mut fixture,
             42,
         )
         .expect("callback publication succeeds")
@@ -754,7 +754,7 @@ fn static_retry_publishes_only_routes_that_missed_the_latest_clean_frame() {
         }
     }
     let first_a = first_a.expect("first source publishes route A");
-    let second = super::gpu_surface::fixture::republish(&mut fixture.plan, 42)
+    let second = super::gpu_surface::fixture::republish(&mut fixture, 42)
         .expect("second source publishes both routes");
     let mut second_a = None;
     for outcome in second {
@@ -770,7 +770,7 @@ fn static_retry_publishes_only_routes_that_missed_the_latest_clean_frame() {
     }
     let second_a = second_a.expect("second source publishes route A");
 
-    let latest = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+    let latest = super::gpu_surface::fixture::republish(&mut fixture, 43)
         .expect("latest source reports route pressure independently");
     assert!(latest.iter().any(
         |outcome| matches!(outcome, crate::GpuSurfacePublishOutcome::Busy(id) if *id == descriptor_a.id())
@@ -784,7 +784,7 @@ fn static_retry_publishes_only_routes_that_missed_the_latest_clean_frame() {
 
     let retried = (0..64)
         .find_map(|_| {
-            let outcomes = super::gpu_surface::fixture::retry_pending(&mut fixture.plan)
+            let outcomes = super::gpu_surface::fixture::retry_pending(&mut fixture)
                 .expect("static clean-frame retry remains healthy");
             assert!(outcomes.iter().all(|outcome| match outcome {
                 crate::GpuSurfacePublishOutcome::Busy(id) => *id == descriptor_a.id(),
@@ -829,10 +829,10 @@ fn duplication_epoch_change_rejects_retained_pending_surface_retry() {
     )
     .expect("first WARP exact Surface publication succeeds");
     let first = fixture.outcomes.remove(0);
-    let second = super::gpu_surface::fixture::republish(&mut fixture.plan, 42)
+    let second = super::gpu_surface::fixture::republish(&mut fixture, 42)
         .expect("second native slot publishes")
         .remove(0);
-    let latest = super::gpu_surface::fixture::republish(&mut fixture.plan, 43)
+    let latest = super::gpu_surface::fixture::republish(&mut fixture, 43)
         .expect("latest source remains pending while both slots are retained");
     assert!(matches!(
         latest.as_slice(),
@@ -840,7 +840,7 @@ fn duplication_epoch_change_rejects_retained_pending_surface_retry() {
     ));
 
     assert!(matches!(
-        super::gpu_surface::fixture::retry_pending_for_duplication_epoch(&mut fixture.plan, 6),
+        super::gpu_surface::fixture::retry_pending_for_duplication_epoch(&mut fixture, 6),
         Err(CaptureError::GpuSurfacePlanInvalidated)
     ));
     drop((first, second));
@@ -893,8 +893,7 @@ fn every_injected_post_acquire_exit_poison_fences_reuse() {
         fixture.outcomes.clear();
 
         assert!(
-            super::gpu_surface::fixture::republish_with_fault(&mut fixture.plan, 42, fault,)
-                .is_err()
+            super::gpu_surface::fixture::republish_with_fault(&mut fixture, 42, fault,).is_err()
         );
         assert!(matches!(
             fixture.plan.reclaim_abandoned(),

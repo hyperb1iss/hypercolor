@@ -7,9 +7,10 @@ use tracing::{debug, warn};
 use windows::Win32::Foundation::{E_ACCESSDENIED, E_OUTOFMEMORY, HMODULE};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
@@ -171,12 +172,13 @@ struct CaptureMetadata {
 }
 
 struct NativeCaptureUpdate {
-    texture: Option<ID3D11Texture2D>,
     metadata: CaptureMetadata,
 }
 
+#[derive(Clone)]
 struct RetainedDesktop {
     texture: ID3D11Texture2D,
+    srv: ID3D11ShaderResourceView,
     metadata: CaptureMetadata,
 }
 
@@ -754,8 +756,10 @@ pub struct DesktopDuplicator {
     context: ID3D11DeviceContext,
     output: IDXGIOutput1,
     duplication: Option<IDXGIOutputDuplication>,
-    /// CPU-readable clean desktop paired with the acquisition that produced it.
-    staging: Option<RetainedDesktop>,
+    /// Canonical GPU-resident desktop paired with the acquisition that produced it.
+    clean_desktop: Option<RetainedDesktop>,
+    /// CPU-readable scratch texture used only by the legacy fallback path.
+    cpu_staging: Option<ID3D11Texture2D>,
     /// RGBA allocations returned by frames after their last consumer drops.
     frame_pool: Arc<Mutex<Vec<Vec<u8>>>>,
     /// Set while a duplicated frame is held and must be released before the
@@ -850,7 +854,8 @@ impl DesktopDuplicator {
             context,
             output,
             duplication: Some(duplication),
-            staging: None,
+            clean_desktop: None,
+            cpu_staging: None,
             frame_pool: Arc::new(Mutex::new(Vec::new())),
             frame_held: false,
             logical_width,
@@ -987,17 +992,12 @@ impl DesktopDuplicator {
     }
 
     fn refresh_latest_capture(&mut self) {
-        let clean_available = self.staging.is_some()
-            || self
-                .gpu_reducer
-                .as_ref()
-                .is_some_and(GpuReducer::has_clean_desktop);
-        if !clean_available {
+        if self.clean_desktop.is_none() {
             return;
         }
         let metadata = self.new_capture_metadata(Instant::now());
-        if let Some(staging) = self.staging.as_mut() {
-            staging.metadata = metadata.clone();
+        if let Some(clean) = self.clean_desktop.as_mut() {
+            clean.metadata = metadata.clone();
         }
         self.latest_capture = Some(metadata);
         self.analysis_pending = true;
@@ -1145,20 +1145,27 @@ impl DesktopDuplicator {
         self.validate_gpu_surface_plan(plan)?;
         self.release_frame();
         let acquire_timeout = gpu_surface_acquire_timeout(timeout, plan.has_pending_routes());
-        let update = self.acquire_native_update(acquire_timeout, plan.has_clean_desktop())?;
+        let update = self.acquire_native_update(acquire_timeout)?;
         if let Err(error) = self.validate_gpu_surface_plan(plan) {
             self.release_frame();
             return Err(error);
         }
-        let result = if let Some(update) = update {
-            plan.publish(
-                update.texture.as_ref(),
-                update.metadata,
-                self.duplication_generation,
-                emit,
-            )
+        let result = if update.is_some() {
+            let clean = self.clean_desktop.as_ref().ok_or_else(|| {
+                CaptureError::windows(
+                    "publish exact GPU Surface",
+                    "no retained clean desktop is available",
+                )
+            })?;
+            plan.publish(clean, self.duplication_generation, emit)
         } else if plan.has_pending_routes() {
-            plan.retry_pending(emit)
+            let clean = self.clean_desktop.as_ref().ok_or_else(|| {
+                CaptureError::windows(
+                    "retry exact GPU Surface",
+                    "no retained clean desktop is available",
+                )
+            })?;
+            plan.retry_pending(clean, emit)
         } else {
             return Ok(None);
         };
@@ -1182,7 +1189,6 @@ impl DesktopDuplicator {
     fn acquire_native_update(
         &mut self,
         timeout: Duration,
-        clean_available: bool,
     ) -> CaptureResult<Option<NativeCaptureUpdate>> {
         if self.duplication.is_none() {
             self.rebuild()?;
@@ -1282,7 +1288,7 @@ impl DesktopDuplicator {
         }
         let metadata = self.new_capture_metadata(captured_at);
         self.latest_capture = Some(metadata.clone());
-        let texture = match desktop_frame_source(desktop_updated, clean_available) {
+        let texture = match desktop_frame_source(desktop_updated, self.clean_desktop.is_some()) {
             DesktopFrameSource::AcquiredResource => {
                 let Some(resource) = resource else {
                     self.release_frame();
@@ -1298,7 +1304,15 @@ impl DesktopDuplicator {
             }
             DesktopFrameSource::RetainedStaging => None,
         };
-        Ok(Some(NativeCaptureUpdate { texture, metadata }))
+        if let Some(texture) = texture.as_ref() {
+            if let Err(error) = self.retain_desktop(texture, metadata.clone()) {
+                self.release_frame();
+                return Err(error);
+            }
+        } else if let Some(clean) = self.clean_desktop.as_mut() {
+            clean.metadata = metadata.clone();
+        }
+        Ok(Some(NativeCaptureUpdate { metadata }))
     }
 
     /// Wait up to `timeout` for the next desktop frame.
@@ -1318,7 +1332,7 @@ impl DesktopDuplicator {
         let mut ready = self.poll_gpu_frame()?;
         if self.analysis_pending && self.gpu_reducer.is_some() {
             if let Some(metadata) = self.latest_capture.clone() {
-                self.submit_gpu(None, metadata)?;
+                self.submit_gpu(metadata)?;
             }
             if ready.is_none() {
                 ready = self.poll_gpu_frame()?;
@@ -1329,46 +1343,21 @@ impl DesktopDuplicator {
             self.analysis_pending = false;
         }
 
-        let clean_available = self.staging.is_some()
-            || self
-                .gpu_reducer
-                .as_ref()
-                .is_some_and(GpuReducer::has_clean_desktop);
         let acquire_timeout = if ready.is_some() {
             Duration::ZERO
         } else {
             timeout
         };
-        let Some(NativeCaptureUpdate { texture, metadata }) =
-            self.acquire_native_update(acquire_timeout, clean_available)?
+        let Some(NativeCaptureUpdate { metadata }) = self.acquire_native_update(acquire_timeout)?
         else {
             return Ok(ready);
         };
 
-        let mut retained = Ok(());
         if self.gpu_reducer.is_some() {
             self.analysis_pending = true;
-            self.submit_gpu(texture.as_ref(), metadata.clone())?;
-            if self.gpu_reducer.is_none()
-                && let Some(texture) = texture.as_ref()
-            {
-                retained = self.retain_desktop(texture, metadata.clone());
-            }
-        } else if let Some(texture) = texture.as_ref() {
-            retained = self.retain_desktop(texture, metadata.clone());
-        } else if let Some(staging) = self.staging.as_mut() {
-            staging.metadata = metadata;
+            self.submit_gpu(metadata)?;
         }
         self.release_frame();
-        if matches!(retained, Err(CaptureError::AccessLost)) {
-            debug!(
-                operation = "desktop readback",
-                "desktop duplication access lost; rebuilding session"
-            );
-            self.rebuild()?;
-            return Ok(None);
-        }
-        retained?;
 
         if self.gpu_reducer.is_none() {
             self.analysis_pending = false;
@@ -1380,15 +1369,17 @@ impl DesktopDuplicator {
         Ok(ready)
     }
 
-    fn submit_gpu(
-        &mut self,
-        texture: Option<&ID3D11Texture2D>,
-        metadata: CaptureMetadata,
-    ) -> CaptureResult<()> {
+    fn submit_gpu(&mut self, metadata: CaptureMetadata) -> CaptureResult<()> {
+        let clean = self.clean_desktop.clone().ok_or_else(|| {
+            CaptureError::windows(
+                "submit desktop reduction",
+                "no retained clean desktop is available",
+            )
+        })?;
         let Some(reducer) = self.gpu_reducer.as_mut() else {
             return Ok(());
         };
-        match reducer.submit(texture, self.requested_extent, metadata) {
+        match reducer.submit(&clean, self.requested_extent, metadata) {
             Ok(SubmitOutcome::Submitted) => {
                 self.reduction_telemetry.gpu_submitted =
                     self.reduction_telemetry.gpu_submitted.saturating_add(1);
@@ -1401,10 +1392,6 @@ impl DesktopDuplicator {
             Err(error) => {
                 if let Some(capture_error) = error.as_capture_error() {
                     return Err(capture_error);
-                }
-                let clean = reducer.clean_desktop();
-                if let Some(clean) = clean {
-                    self.retain_desktop(&clean.texture, clean.metadata)?;
                 }
                 self.degrade_gpu(error.to_string());
                 self.analysis_pending = true;
@@ -1443,11 +1430,7 @@ impl DesktopDuplicator {
                     self.recycle_plane(rgba);
                     return Err(capture_error);
                 }
-                let clean = reducer.clean_desktop();
                 self.recycle_plane(rgba);
-                if let Some(clean) = clean {
-                    self.retain_desktop(&clean.texture, clean.metadata)?;
-                }
                 self.degrade_gpu(error.to_string());
                 self.analysis_pending = true;
                 let frame = self.cpu_frame_from_retained()?;
@@ -1549,7 +1532,7 @@ impl DesktopDuplicator {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: GetDesc fills a caller-owned struct and cannot fail.
         unsafe { texture.GetDesc(&mut desc) };
-        let staging = if let Some(retained) = self.staging.as_ref() {
+        if let Some(retained) = self.clean_desktop.as_mut() {
             let mut retained_desc = D3D11_TEXTURE2D_DESC::default();
             // SAFETY: GetDesc fills a caller-owned struct and cannot fail.
             unsafe { retained.texture.GetDesc(&mut retained_desc) };
@@ -1557,17 +1540,20 @@ impl DesktopDuplicator {
                 && retained_desc.Height == desc.Height
                 && retained_desc.Format == desc.Format
             {
-                retained.texture.clone()
-            } else {
-                create_staging_texture(&self.device, &desc)?
+                // SAFETY: both textures are same-desc 2D textures on this device.
+                unsafe { self.context.CopyResource(&retained.texture, texture) };
+                retained.metadata = metadata;
+                return Ok(());
             }
-        } else {
-            create_staging_texture(&self.device, &desc)?
-        };
+        }
+        let clean = create_clean_texture(&self.device, &desc)?;
         // SAFETY: both textures are same-desc 2D textures on this device.
-        unsafe { self.context.CopyResource(&staging, texture) };
-        self.staging = Some(RetainedDesktop {
-            texture: staging,
+        unsafe { self.context.CopyResource(&clean, texture) };
+        let srv = gpu_reduction::create_srv(&self.device, &clean)
+            .map_err(|error| CaptureError::windows("create clean desktop view", error))?;
+        self.clean_desktop = Some(RetainedDesktop {
+            texture: clean,
+            srv,
             metadata,
         });
         Ok(())
@@ -1578,14 +1564,35 @@ impl DesktopDuplicator {
         &mut self,
         rgba: &mut Vec<u8>,
     ) -> CaptureResult<Option<(u32, u32, CaptureMetadata)>> {
-        let Some(retained) = self.staging.as_ref() else {
+        let Some(retained) = self.clean_desktop.as_ref() else {
             return Ok(None);
         };
-        let staging = retained.texture.clone();
+        let clean = retained.texture.clone();
         let metadata = retained.metadata.clone();
         let native_width = metadata.source_width;
         let native_height = metadata.source_height;
 
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: GetDesc fills caller-owned storage and cannot fail.
+        unsafe { clean.GetDesc(&mut desc) };
+        let staging = if let Some(staging) = self.cpu_staging.as_ref() {
+            let mut staging_desc = D3D11_TEXTURE2D_DESC::default();
+            // SAFETY: GetDesc fills caller-owned storage and cannot fail.
+            unsafe { staging.GetDesc(&mut staging_desc) };
+            if staging_desc.Width == desc.Width
+                && staging_desc.Height == desc.Height
+                && staging_desc.Format == desc.Format
+            {
+                staging.clone()
+            } else {
+                create_staging_texture(&self.device, &desc)?
+            }
+        } else {
+            create_staging_texture(&self.device, &desc)?
+        };
+        // SAFETY: both textures have matching geometry and format on this device.
+        unsafe { self.context.CopyResource(&staging, &clean) };
+        self.cpu_staging = Some(staging.clone());
         let mapped = MappedTexture::map(&self.context, &staging)?;
         let dimensions = Self::copy_bgra_rows(
             mapped.rows(native_width, native_height)?,
@@ -1729,7 +1736,7 @@ impl DesktopDuplicator {
         let (duplication, (logical_width, logical_height, rotation, gpu_reducer, reduction_status)) =
             prepare_duplication(
                 &mut self.duplication,
-                &mut self.staging,
+                &mut self.clean_desktop,
                 || duplicate_output(&output, &device),
                 |duplication| {
                     let (logical_width, logical_height, rotation) =
@@ -1757,7 +1764,8 @@ impl DesktopDuplicator {
         self.context = context;
         self.output = output;
         self.duplication = Some(duplication);
-        self.staging = None;
+        self.clean_desktop = None;
+        self.cpu_staging = None;
         self.monitor = entry.monitor.index;
         self.source_id = Arc::from(entry.monitor.id);
         self.topology_generation = entry.monitor.topology_generation;
@@ -1833,6 +1841,39 @@ fn create_staging_texture(
     texture.ok_or_else(|| {
         CaptureError::windows(
             "create staging texture",
+            "CreateTexture2D returned no texture",
+        )
+    })
+}
+
+fn create_clean_texture(
+    device: &ID3D11Device,
+    desc: &D3D11_TEXTURE2D_DESC,
+) -> CaptureResult<ID3D11Texture2D> {
+    let requested_bytes =
+        checked_rgba_len(desc.Width, desc.Height, "create clean desktop texture")?;
+    let clean_desc = D3D11_TEXTURE2D_DESC {
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+        ..*desc
+    };
+    let mut texture = None;
+    // SAFETY: clean_desc is valid and the caller-owned out-param is live.
+    unsafe { device.CreateTexture2D(&clean_desc, None, Some(&mut texture)) }.map_err(|source| {
+        if source.code() == E_OUTOFMEMORY {
+            CaptureError::ResourceExhausted {
+                operation: "create clean desktop texture",
+                requested_bytes,
+            }
+        } else {
+            classify_windows_error("create clean desktop texture", source)
+        }
+    })?;
+    texture.ok_or_else(|| {
+        CaptureError::windows(
+            "create clean desktop texture",
             "CreateTexture2D returned no texture",
         )
     })

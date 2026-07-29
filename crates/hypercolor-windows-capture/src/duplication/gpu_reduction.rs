@@ -25,7 +25,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::core::{BOOL, HRESULT, Interface, PCSTR, w};
 
-use super::{CaptureMetadata, PointerShapeKind, PointerState};
+use super::{CaptureMetadata, PointerShapeKind, PointerState, RetainedDesktop};
 #[cfg(feature = "capture-bench")]
 use crate::CaptureResult;
 use crate::{
@@ -322,9 +322,6 @@ struct ReadbackSlot {
 
 struct Resources {
     key: ResourceKey,
-    clean: ID3D11Texture2D,
-    clean_srv: ID3D11ShaderResourceView,
-    clean_metadata: Option<CaptureMetadata>,
     reduced: ID3D11Texture2D,
     reduced_uav: ID3D11UnorderedAccessView,
     slots: Vec<ReadbackSlot>,
@@ -349,11 +346,6 @@ pub(super) struct ReducedFrame {
     pub(super) height: u32,
     pub(super) metadata: CaptureMetadata,
     pub(super) bytes: usize,
-}
-
-pub(super) struct CleanDesktopState {
-    pub(super) texture: ID3D11Texture2D,
-    pub(super) metadata: CaptureMetadata,
 }
 
 pub(super) struct GpuReducer {
@@ -394,29 +386,13 @@ impl GpuReducer {
         })
     }
 
-    pub(super) fn has_clean_desktop(&self) -> bool {
-        self.resources.is_some()
-    }
-
-    pub(super) fn clean_desktop(&self) -> Option<CleanDesktopState> {
-        self.resources.as_ref().and_then(|resources| {
-            resources
-                .clean_metadata
-                .clone()
-                .map(|metadata| CleanDesktopState {
-                    texture: resources.clean.clone(),
-                    metadata,
-                })
-        })
-    }
-
     pub(super) fn submit(
         &mut self,
-        texture: Option<&ID3D11Texture2D>,
+        clean: &RetainedDesktop,
         requested_extent: CaptureExtent,
         metadata: CaptureMetadata,
     ) -> Result<SubmitOutcome, GpuReductionError> {
-        self.update_clean(texture, requested_extent, &metadata)?;
+        self.ensure_resources(&clean.texture, requested_extent, metadata.region)?;
         self.ensure_pointer(&metadata.pointer)?;
         let context = self.context.clone();
         let params_buffer = self.params.clone();
@@ -451,7 +427,7 @@ impl GpuReducer {
         };
         update_params(&context, &params_buffer, &params);
         let srvs = [
-            Some(resources.clean_srv.clone()),
+            Some(clean.srv.clone()),
             shape.and(self.pointer.as_ref().map(|pointer| pointer.srv.clone())),
         ];
         let uavs = [Some(resources.reduced_uav.clone())];
@@ -484,26 +460,6 @@ impl GpuReducer {
         slot.progress_kicked = false;
         resources.write_index = (resources.write_index + 1) % resources.slots.len();
         Ok(SubmitOutcome::Submitted)
-    }
-
-    fn update_clean(
-        &mut self,
-        texture: Option<&ID3D11Texture2D>,
-        requested_extent: CaptureExtent,
-        metadata: &CaptureMetadata,
-    ) -> Result<(), GpuReductionError> {
-        self.ensure_resources(texture, requested_extent, metadata.region)?;
-        let resources = self
-            .resources
-            .as_mut()
-            .expect("resource initialization succeeds before clean update");
-        if let Some(texture) = texture {
-            // SAFETY: the clean texture matches the acquired descriptor and
-            // belongs to the same immediate context.
-            unsafe { self.context.CopyResource(&resources.clean, texture) };
-        }
-        resources.clean_metadata = Some(metadata.clone());
-        Ok(())
     }
 
     pub(super) fn poll(
@@ -618,23 +574,13 @@ impl GpuReducer {
 
     fn ensure_resources(
         &mut self,
-        texture: Option<&ID3D11Texture2D>,
+        texture: &ID3D11Texture2D,
         requested_extent: CaptureExtent,
         region: CaptureRegion,
     ) -> Result<(), GpuReductionError> {
-        let source_desc = if let Some(texture) = texture {
-            let mut desc = D3D11_TEXTURE2D_DESC::default();
-            // SAFETY: GetDesc fills a live caller-owned descriptor.
-            unsafe { texture.GetDesc(&mut desc) };
-            desc
-        } else {
-            let Some(resources) = self.resources.as_ref() else {
-                return Err(GpuReductionError::operation(
-                    "no retained clean desktop is available for reduction",
-                ));
-            };
-            source_desc(resources.key)
-        };
+        let mut source_desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: GetDesc fills a live caller-owned descriptor.
+        unsafe { texture.GetDesc(&mut source_desc) };
         let key = resource_key(&source_desc, requested_extent, region)?;
         if self
             .resources
@@ -645,20 +591,6 @@ impl GpuReducer {
         }
 
         let mut replacement = create_resources(&self.device, key)?;
-        if texture.is_none()
-            && let Some(previous) = self.resources.as_ref()
-            && previous.key.width == key.width
-            && previous.key.height == key.height
-            && previous.key.format == key.format
-        {
-            // SAFETY: source descriptors match and both resources belong to
-            // this device. This preserves static desktops across grid changes.
-            unsafe {
-                self.context
-                    .CopyResource(&replacement.clean, &previous.clean)
-            };
-            replacement.clean_metadata = previous.clean_metadata.clone();
-        }
         replacement.write_index = 0;
         replacement.read_index = 0;
         self.resources = Some(replacement);
@@ -816,13 +748,6 @@ fn create_resources(
         "typed-UAV",
     )?;
     let source = source_desc(key);
-    let clean_desc = D3D11_TEXTURE2D_DESC {
-        BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
-        ..source
-    };
-    let clean = create_texture(device, &clean_desc, None)?;
-    let clean_srv = create_srv(device, &clean)?;
-
     let reduced_desc = D3D11_TEXTURE2D_DESC {
         Width: key.output_width,
         Height: key.output_height,
@@ -849,9 +774,6 @@ fn create_resources(
     }
     Ok(Resources {
         key,
-        clean,
-        clean_srv,
-        clean_metadata: None,
         reduced,
         reduced_uav,
         slots,
@@ -1125,6 +1047,7 @@ pub struct CaptureReductionBenchmark {
     context: ID3D11DeviceContext,
     reducer: GpuReducer,
     source: ID3D11Texture2D,
+    clean: RetainedDesktop,
     pointer: PointerState,
     requested_extent: CaptureExtent,
     source_bytes: u64,
@@ -1205,16 +1128,36 @@ impl CaptureReductionBenchmark {
         };
         let source =
             create_texture(&device, &desc, Some(&initial)).map_err(public_capture_error)?;
+        let pointer = PointerState::default();
+        let clean_desc = D3D11_TEXTURE2D_DESC {
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
+            ..desc
+        };
+        let clean_texture =
+            create_texture(&device, &clean_desc, None).map_err(public_capture_error)?;
+        let clean = RetainedDesktop {
+            srv: create_srv(&device, &clean_texture).map_err(public_capture_error)?,
+            texture: clean_texture,
+            metadata: synthetic_metadata(
+                width,
+                height,
+                &pointer,
+                DisplayRotation::Identity,
+                CaptureRegion::full(width, height),
+                1,
+            ),
+        };
         let mut reducer = GpuReducer::new(&device, &context).map_err(public_capture_error)?;
         let region = CaptureRegion::full(width, height);
         reducer
-            .ensure_resources(Some(&source), requested_extent, region)
+            .ensure_resources(&clean.texture, requested_extent, region)
             .map_err(public_capture_error)?;
         Ok(Self {
             context,
             reducer,
             source,
-            pointer: PointerState::default(),
+            clean,
+            pointer,
             requested_extent,
             source_bytes: u64::try_from(rgba_len).unwrap_or(u64::MAX),
             source_width: width,
@@ -1229,16 +1172,9 @@ impl CaptureReductionBenchmark {
         use std::time::Instant;
 
         let acquisition_started = Instant::now();
-        let clean = self
-            .reducer
-            .resources
-            .as_ref()
-            .expect("benchmark resources are initialized")
-            .clean
-            .clone();
         // SAFETY: the source and clean textures have identical descriptors and
         // belong to the same device.
-        unsafe { self.context.CopyResource(&clean, &self.source) };
+        unsafe { self.context.CopyResource(&self.clean.texture, &self.source) };
         let acquisition_enqueue = acquisition_started.elapsed();
 
         let reduction_started = Instant::now();
@@ -1251,9 +1187,10 @@ impl CaptureReductionBenchmark {
             CaptureRegion::full(self.source_width, self.source_height),
             self.sequence,
         );
+        self.clean.metadata = metadata.clone();
         match self
             .reducer
-            .submit(None, self.requested_extent, metadata)
+            .submit(&self.clean, self.requested_extent, metadata)
             .map_err(|error| error.to_string())?
         {
             SubmitOutcome::Submitted => {}
@@ -1315,9 +1252,9 @@ impl CaptureReductionBenchmark {
                 self.sequence,
             );
             let acquisition_started = Instant::now();
-            self.reducer
-                .update_clean(Some(&self.source), self.requested_extent, &metadata)
-                .map_err(|error| error.to_string())?;
+            // SAFETY: source and canonical clean share an exact descriptor.
+            unsafe { self.context.CopyResource(&self.clean.texture, &self.source) };
+            self.clean.metadata = metadata.clone();
             acquisition_enqueue.push(acquisition_started.elapsed());
 
             if let Some(frame) = self
@@ -1336,7 +1273,7 @@ impl CaptureReductionBenchmark {
                 let submitted_at = Instant::now();
                 match self
                     .reducer
-                    .submit(None, self.requested_extent, metadata)
+                    .submit(&self.clean, self.requested_extent, metadata)
                     .map_err(|error| error.to_string())?
                 {
                     SubmitOutcome::Submitted => {
@@ -1464,6 +1401,18 @@ pub(super) fn ring_pressure_is_bounded_for_test() -> Result<(usize, bool), GpuRe
     let (device, context) = test_device()?;
     let source = test_source(&device, &[10, 20, 30, 0xFF], 1, 1)?;
     let pointer = PointerState::default();
+    let clean = test_clean(
+        &device,
+        &source,
+        synthetic_metadata(
+            1,
+            1,
+            &pointer,
+            DisplayRotation::Identity,
+            CaptureRegion::full(1, 1),
+            1,
+        ),
+    )?;
     let mut reducer = GpuReducer::new(&device, &context)?;
     for submission in 0..=READBACK_RING_LEN {
         let metadata = synthetic_metadata(
@@ -1475,7 +1424,7 @@ pub(super) fn ring_pressure_is_bounded_for_test() -> Result<(usize, bool), GpuRe
             submission as u64 + 1,
         );
         let outcome = reducer.submit(
-            (submission == 0).then_some(&source),
+            &clean,
             CaptureExtent::try_new(1, u32::MAX).expect("test extent"),
             metadata,
         )?;
@@ -1505,11 +1454,19 @@ pub(super) fn ring_busy_keeps_latest_clean_metadata_for_test()
     let pointer = PointerState::default();
     let region = CaptureRegion::full(1, 1);
     let mut reducer = GpuReducer::new(&device, &context)?;
+    let mut clean = test_clean(
+        &device,
+        &source,
+        synthetic_metadata(1, 1, &pointer, DisplayRotation::Identity, region, 1),
+    )?;
     for sequence in 1..=4 {
+        let metadata =
+            synthetic_metadata(1, 1, &pointer, DisplayRotation::Identity, region, sequence);
+        clean.metadata = metadata.clone();
         reducer.submit(
-            (sequence == 1).then_some(&source),
+            &clean,
             CaptureExtent::try_new(1, u32::MAX).expect("test extent"),
-            synthetic_metadata(1, 1, &pointer, DisplayRotation::Identity, region, sequence),
+            metadata,
         )?;
     }
     let resources = reducer.resources.as_ref().expect("ring resources exist");
@@ -1519,9 +1476,6 @@ pub(super) fn ring_busy_keeps_latest_clean_metadata_for_test()
         .expect("oldest slot is pending")
         .metadata
         .sequence;
-    let clean = reducer
-        .clean_desktop()
-        .expect("busy submission preserves a clean desktop");
     Ok((
         pending_sequence,
         clean.metadata.sequence,
@@ -1541,10 +1495,12 @@ pub(super) fn poll_failure_preserves_clean_metadata_for_test(
     let pointer = PointerState::default();
     let region = CaptureRegion::new(1, 1, 4, 2).expect("fixture region is non-empty");
     let mut reducer = GpuReducer::new(&device, &context)?;
+    let metadata = synthetic_metadata(5, 3, &pointer, DisplayRotation::Identity, region, 41);
+    let clean = test_clean(&device, &source, metadata.clone())?;
     reducer.submit(
-        Some(&source),
+        &clean,
         CaptureExtent::try_new(3, u32::MAX).expect("test extent"),
-        synthetic_metadata(5, 3, &pointer, DisplayRotation::Identity, region, 41),
+        metadata,
     )?;
     reducer.poll_failure = Some(failure);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1565,9 +1521,6 @@ pub(super) fn poll_failure_preserves_clean_metadata_for_test(
             }
         }
     }
-    let clean = reducer
-        .clean_desktop()
-        .expect("failed first frame keeps its clean desktop");
     Ok((clean.metadata.sequence, clean.metadata.region))
 }
 
@@ -1640,8 +1593,9 @@ pub(super) fn reduce_region_fixture(
     let source = test_source(&device, bgra, width, height)?;
     let mut reducer = GpuReducer::new(&device, &context)?;
     let metadata = synthetic_metadata(width, height, pointer, rotation, region, 1);
+    let clean = test_clean(&device, &source, metadata.clone())?;
     match reducer.submit(
-        Some(&source),
+        &clean,
         CaptureExtent::try_new(max_width, u32::MAX).expect("test extent"),
         metadata,
     )? {
@@ -1667,16 +1621,22 @@ pub(super) fn reduce_pointer_sequence(
     let source = test_source(&device, bgra, width, height)?;
     let mut reducer = GpuReducer::new(&device, &context)?;
     let region = CaptureRegion::full(width, height);
+    let first_metadata =
+        synthetic_metadata(width, height, first, DisplayRotation::Identity, region, 1);
+    let mut clean = test_clean(&device, &source, first_metadata.clone())?;
     reducer.submit(
-        Some(&source),
+        &clean,
         CaptureExtent::try_new(width, u32::MAX).expect("test extent"),
-        synthetic_metadata(width, height, first, DisplayRotation::Identity, region, 1),
+        first_metadata,
     )?;
     let first = poll_test_reduction(&mut reducer)?;
+    let second_metadata =
+        synthetic_metadata(width, height, second, DisplayRotation::Identity, region, 2);
+    clean.metadata = second_metadata.clone();
     reducer.submit(
-        None,
+        &clean,
         CaptureExtent::try_new(width, u32::MAX).expect("test extent"),
-        synthetic_metadata(width, height, second, DisplayRotation::Identity, region, 2),
+        second_metadata,
     )?;
     let second = poll_test_reduction(&mut reducer)?;
     Ok((first, second))
@@ -1739,7 +1699,7 @@ pub(super) fn test_source(
             Quality: 0,
         },
         Usage: D3D11_USAGE_DEFAULT,
-        BindFlags: 0,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
         CPUAccessFlags: 0,
         MiscFlags: 0,
     };
@@ -1749,6 +1709,19 @@ pub(super) fn test_source(
         SysMemSlicePitch: 0,
     };
     create_texture(device, &desc, Some(&initial))
+}
+
+#[cfg(test)]
+fn test_clean(
+    device: &ID3D11Device,
+    source: &ID3D11Texture2D,
+    metadata: CaptureMetadata,
+) -> Result<RetainedDesktop, GpuReductionError> {
+    Ok(RetainedDesktop {
+        texture: source.clone(),
+        srv: create_srv(device, source)?,
+        metadata,
+    })
 }
 
 #[cfg(test)]
