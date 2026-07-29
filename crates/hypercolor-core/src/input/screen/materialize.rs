@@ -270,6 +270,46 @@ fn materialize_surface_pixels(
     Ok(())
 }
 
+fn restore_surface_fill(
+    output_extent: super::PixelExtent,
+    layout: DynamicSurfaceLayout,
+    fill: ScreenLetterboxFill,
+    pixel_format: CapturePixelFormat,
+    output: &mut [u8],
+) -> Result<(), CpuSurfaceMaterializationError> {
+    for output_y in 0..output_extent.height() {
+        for output_x in 0..output_extent.width() {
+            let in_content = output_x >= layout.output_x
+                && output_y >= layout.output_y
+                && output_x < layout.output_x + layout.output_width
+                && output_y < layout.output_y + layout.output_height;
+            if in_content {
+                continue;
+            }
+            let output_offset = pixel_offset(output_extent.width(), output_x, output_y)?;
+            let replacement = match fill {
+                ScreenLetterboxFill::Transparent => [0, 0, 0, 0],
+                ScreenLetterboxFill::Solid([red, green, blue, alpha]) => match pixel_format {
+                    CapturePixelFormat::Rgba8 => [red, green, blue, alpha],
+                    CapturePixelFormat::Bgra8 => [blue, green, red, alpha],
+                },
+                ScreenLetterboxFill::EdgeExtend => {
+                    let edge_x =
+                        output_x.clamp(layout.output_x, layout.output_x + layout.output_width - 1);
+                    let edge_y =
+                        output_y.clamp(layout.output_y, layout.output_y + layout.output_height - 1);
+                    let edge_offset = pixel_offset(output_extent.width(), edge_x, edge_y)?;
+                    output[edge_offset..edge_offset + BYTES_PER_PIXEL]
+                        .try_into()
+                        .expect("one encoded Surface pixel has four bytes")
+                }
+            };
+            output[output_offset..output_offset + BYTES_PER_PIXEL].copy_from_slice(&replacement);
+        }
+    }
+    Ok(())
+}
+
 fn pixel_offset(width: u32, x: u32, y: u32) -> Result<usize, CpuSurfaceMaterializationError> {
     usize::try_from(u64::from(y) * u64::from(width) + u64::from(x))
         .ok()
@@ -545,7 +585,6 @@ impl PreparedCpuSurfaceMaterializer {
             self.pixel_format,
             output,
         )?;
-        apply_surface_tuning(self.tuning, self.transfer, self.pixel_format, output);
         if let Some(smoother) = &mut self.smoother {
             for (pixel, color) in output
                 .chunks_exact(BYTES_PER_PIXEL)
@@ -573,6 +612,14 @@ impl PreparedCpuSurfaceMaterializer {
                 write_surface_rgb(pixel, self.pixel_format, color);
             }
         }
+        apply_surface_tuning(self.tuning, self.transfer, self.pixel_format, output);
+        restore_surface_fill(
+            geometry.output_extent(),
+            dynamic_layout,
+            self.descriptor.processing_profile().letterbox_fill(),
+            self.pixel_format,
+            output,
+        )?;
         self.staged_capture_at = Some(captured_at);
         self.staged_bars = Some(bars);
         Ok(())
@@ -598,6 +645,18 @@ impl PreparedCpuSurfaceMaterializer {
         self.committed_capture_at = Some(captured_at);
         self.committed_bars = self.staged_bars.take();
         Ok(())
+    }
+
+    pub(crate) fn validate_staged(
+        &self,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<(), CpuSurfaceMaterializationError> {
+        self.validate_generation(plan_generation)?;
+        if self.staged_capture_at.is_some() {
+            Ok(())
+        } else {
+            Err(CpuSurfaceMaterializationError::NoStagedPublication)
+        }
     }
 
     /// Discard staged state after hub rejection.
@@ -990,7 +1049,6 @@ impl PreparedCpuZoneMaterializer {
         };
         let (columns, rows) = effective_grid_shape(self.descriptor.kind(), bars)?;
         let color_count = compact_zone_grid(output, self.descriptor.kind(), bars)?;
-        self.apply_tuning(&mut output[..color_count]);
 
         let reset_history = self.committed_bars.is_some_and(|previous| previous != bars);
         let elapsed = self
@@ -1008,6 +1066,7 @@ impl PreparedCpuZoneMaterializer {
                 elapsed,
                 reset_history,
             )?;
+        self.apply_tuning(&mut output[..color_count]);
         output[color_count..].fill([0, 0, 0]);
         self.staged = Some(StagedZoneState { bars, captured_at });
         Ok(StagedCpuZonePublication {
@@ -1038,6 +1097,18 @@ impl PreparedCpuZoneMaterializer {
         self.committed_bars = Some(staged.bars);
         self.committed_capture_at = Some(staged.captured_at);
         Ok(())
+    }
+
+    pub(crate) fn validate_staged(
+        &self,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<(), CpuZoneMaterializationError> {
+        self.validate_generation(plan_generation)?;
+        if self.staged.is_some() {
+            Ok(())
+        } else {
+            Err(CpuZoneMaterializationError::NoStagedPublication)
+        }
     }
 
     /// Discard staged state after hub rejection while preserving history.

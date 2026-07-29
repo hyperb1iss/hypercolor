@@ -8,13 +8,13 @@ use hypercolor_core::input::screen::sector::{LetterboxDetectionError, PreparedLe
 use hypercolor_core::input::screen::smooth::PreparedTemporalSmoother;
 use hypercolor_core::input::screen::{
     CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch, CaptureGeometry,
-    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
+    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureTransferFunction, ColorTuning,
     CommittedScreenPlan, CpuReductionExecutor, CpuSurfaceMaterializationError,
     CpuZoneMaterializationError, KnownCaptureColorimetry, PhysicalOrigin, PixelExtent,
     PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer, PreparedScreenPublication,
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCapturePlan,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTuning,
     ScreenContentBarsPolicy, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
     ScreenGridPolicy, ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPayloadKind,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenPlanGeneration,
@@ -334,6 +334,53 @@ fn rgba_row(color: [u8; 4], count: usize) -> Vec<u8> {
     std::iter::repeat_n(color, count).flatten().collect()
 }
 
+fn encoded_pixel(color: [u8; 4], pixel_format: CapturePixelFormat) -> [u8; 4] {
+    match pixel_format {
+        CapturePixelFormat::Rgba8 => color,
+        CapturePixelFormat::Bgra8 => [color[2], color[1], color[0], color[3]],
+    }
+}
+
+fn decoded_pixel(color: [u8; 4], pixel_format: CapturePixelFormat) -> [u8; 3] {
+    match pixel_format {
+        CapturePixelFormat::Rgba8 => color[..3].try_into().expect("pixel has RGB channels"),
+        CapturePixelFormat::Bgra8 => [color[2], color[1], color[0]],
+    }
+}
+
+fn smoothed_color(
+    smoothing: ScreenSmoothingPolicy,
+    incoming: [u8; 3],
+    elapsed: Duration,
+) -> [u8; 3] {
+    let mut smoother =
+        PreparedTemporalSmoother::try_new(smoothing, 1, 1).expect("reference smoother prepares");
+    let mut colors = [[0, 0, 0]];
+    smoother
+        .stage(
+            &mut colors,
+            1,
+            1,
+            CaptureTransferFunction::Srgb,
+            Duration::ZERO,
+            false,
+        )
+        .expect("reference baseline stages");
+    assert!(smoother.commit_staged());
+    colors[0] = incoming;
+    smoother
+        .stage(
+            &mut colors,
+            1,
+            1,
+            CaptureTransferFunction::Srgb,
+            elapsed,
+            false,
+        )
+        .expect("reference response stages");
+    colors[0]
+}
+
 #[test]
 fn contain_geometry_keeps_explicit_odd_output_placement() {
     let fixture = SurfaceFixture::new(
@@ -423,6 +470,199 @@ fn surface_letterbox_fill_modes_preserve_content_and_alpha() {
         materializer
             .discard_staged(fixture.generation)
             .expect("unpublished fill state discards");
+    }
+}
+
+#[test]
+fn surface_fill_is_exact_after_tuning_for_rgba_and_bgra() {
+    let tuning = ColorTuning {
+        saturation: 1.6,
+        brightness: 0.7,
+        gamma: 1.2,
+    };
+    let source_top = [224, 48, 16, 255];
+    let source_bottom = [24, 96, 208, 173];
+    let solid = [3, 17, 99, 41];
+    let mut tuned = [[source_top[0], source_top[1], source_top[2]]];
+    tuning.apply(&mut tuned);
+    let tuned_top = [tuned[0][0], tuned[0][1], tuned[0][2], source_top[3]];
+    tuned[0] = [source_bottom[0], source_bottom[1], source_bottom[2]];
+    tuning.apply(&mut tuned);
+    let tuned_bottom = [tuned[0][0], tuned[0][1], tuned[0][2], source_bottom[3]];
+
+    for pixel_format in [CapturePixelFormat::Rgba8, CapturePixelFormat::Bgra8] {
+        for (fill, expected_top, expected_bottom) in [
+            (ScreenLetterboxFill::Transparent, [0, 0, 0, 0], [0, 0, 0, 0]),
+            (
+                ScreenLetterboxFill::Solid(solid),
+                encoded_pixel(solid, pixel_format),
+                encoded_pixel(solid, pixel_format),
+            ),
+            (
+                ScreenLetterboxFill::EdgeExtend,
+                encoded_pixel(tuned_top, pixel_format),
+                encoded_pixel(tuned_bottom, pixel_format),
+            ),
+        ] {
+            let fixture = SurfaceFixture::new(
+                4,
+                2,
+                5,
+                5,
+                ScreenAspectPolicy::Contain,
+                ScreenProcessingProfileConfig {
+                    letterbox_fill: fill,
+                    smoothing: ScreenSmoothingPolicy::Exponential {
+                        time_constant: Duration::from_secs(1),
+                        scene_cut: ScreenSceneCutPolicy::Disabled,
+                    },
+                    tuning: ScreenColorTuning::try_new(
+                        tuning.saturation,
+                        tuning.brightness,
+                        tuning.gamma,
+                    )
+                    .expect("test tuning is finite"),
+                    target_pixel_format: pixel_format,
+                    ..ScreenProcessingProfileConfig::default()
+                },
+            );
+            let mut materializer = PreparedCpuSurfaceMaterializer::prepare_stateful(
+                &fixture.descriptor,
+                fixture.generation,
+            )
+            .expect("processed Surface materializer prepares");
+            let mut physical = rgba_row(encoded_pixel(source_top, pixel_format), 5);
+            physical.extend(rgba_row(encoded_pixel(source_bottom, pixel_format), 5));
+            let now = Instant::now();
+            let mut publication = fixture.publication(1, now);
+            materializer
+                .stage(
+                    fixture.generation,
+                    &fixture.physical,
+                    &physical,
+                    now,
+                    &mut publication,
+                )
+                .expect("processed Surface stages");
+            let pixels = publication
+                .surface_pixels_mut()
+                .expect("processed Surface remains writable");
+            assert!(
+                pixels[..20]
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == expected_top)
+            );
+            assert!(
+                pixels[60..]
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == expected_bottom)
+            );
+        }
+    }
+}
+
+#[test]
+fn stateful_surface_and_zones_smooth_before_non_neutral_tuning() {
+    let smoothing = ScreenSmoothingPolicy::Exponential {
+        time_constant: Duration::from_millis(250),
+        scene_cut: ScreenSceneCutPolicy::Disabled,
+    };
+    let tuning = ColorTuning {
+        saturation: 1.7,
+        brightness: 0.65,
+        gamma: 1.3,
+    };
+    let configured_tuning =
+        ScreenColorTuning::try_new(tuning.saturation, tuning.brightness, tuning.gamma)
+            .expect("test tuning is finite");
+    let incoming = [160, 96, 32];
+    let elapsed = Duration::from_millis(100);
+    let mut expected = [smoothed_color(smoothing, incoming, elapsed)];
+    tuning.apply(&mut expected);
+    let mut tuned_first = [incoming];
+    tuning.apply(&mut tuned_first);
+    let old_order = smoothed_color(smoothing, tuned_first[0], elapsed);
+    assert_ne!(expected[0], old_order);
+
+    for pixel_format in [CapturePixelFormat::Rgba8, CapturePixelFormat::Bgra8] {
+        let profile = ScreenProcessingProfileConfig {
+            smoothing,
+            tuning: configured_tuning,
+            target_pixel_format: pixel_format,
+            ..ScreenProcessingProfileConfig::default()
+        };
+        let surface = SurfaceFixture::new(1, 1, 1, 1, ScreenAspectPolicy::Cover, profile.clone());
+        let mut surface_materializer = PreparedCpuSurfaceMaterializer::prepare_stateful(
+            &surface.descriptor,
+            surface.generation,
+        )
+        .expect("stateful Surface prepares");
+        let started = Instant::now();
+        let mut surface_baseline = surface.publication(1, started);
+        surface_materializer
+            .stage(
+                surface.generation,
+                &surface.physical,
+                &encoded_pixel([0, 0, 0, 255], pixel_format),
+                started,
+                &mut surface_baseline,
+            )
+            .expect("Surface baseline stages");
+        surface_materializer
+            .commit_staged(surface.generation)
+            .expect("Surface baseline commits");
+        drop(surface_baseline);
+        let mut surface_next = surface.publication(2, started + elapsed);
+        surface_materializer
+            .stage(
+                surface.generation,
+                &surface.physical,
+                &encoded_pixel([incoming[0], incoming[1], incoming[2], 255], pixel_format),
+                started + elapsed,
+                &mut surface_next,
+            )
+            .expect("Surface response stages");
+        let surface_pixel: [u8; 4] = surface_next
+            .surface_pixels_mut()
+            .expect("Surface response remains writable")
+            .try_into()
+            .expect("one Surface pixel has four bytes");
+        assert_eq!(decoded_pixel(surface_pixel, pixel_format), expected[0]);
+
+        let zones = ZoneFixture::new(1, 1, 1, 1, profile, CaptureColorimetry::SRGB);
+        let mut zone_materializer =
+            PreparedCpuZoneMaterializer::prepare_stateful(&zones.descriptor, zones.generation)
+                .expect("stateful Zones prepare");
+        let mut zone_baseline = zones.publication(1, started);
+        zone_materializer
+            .stage(
+                zones.generation,
+                &zones.physical,
+                &encoded_pixel([0, 0, 0, 255], pixel_format),
+                started,
+                &mut zone_baseline,
+            )
+            .expect("Zones baseline stages");
+        zone_materializer
+            .commit_staged(zones.generation)
+            .expect("Zones baseline commits");
+        drop(zone_baseline);
+        let mut zone_next = zones.publication(2, started + elapsed);
+        zone_materializer
+            .stage(
+                zones.generation,
+                &zones.physical,
+                &encoded_pixel([incoming[0], incoming[1], incoming[2], 255], pixel_format),
+                started + elapsed,
+                &mut zone_next,
+            )
+            .expect("Zones response stages");
+        assert_eq!(
+            zone_next
+                .zone_colors_mut()
+                .expect("Zones response remains writable")[0],
+            expected[0]
+        );
     }
 }
 
