@@ -33,7 +33,7 @@ use windows::core::{HRESULT, Interface, PCWSTR};
 use crate::shared::{
     CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
     CursorInfo, DisplayRotation, Frame, GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceDescriptor,
-    GpuSurfaceDescriptorId, GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo,
+    GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo,
     MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride_within, subsampled_extent,
 };
 
@@ -2229,6 +2229,7 @@ pub mod fixtures {
     use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
     use super::*;
+    use crate::GpuSurfaceDescriptorId;
 
     /// Inputs for one deterministic exact GPU publication fixture.
     pub struct GpuSurfaceFixtureConfig {
