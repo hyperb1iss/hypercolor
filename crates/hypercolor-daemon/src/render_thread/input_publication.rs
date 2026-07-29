@@ -7,11 +7,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
 use hypercolor_core::input::screen::{
-    InputPublicationDemandRevision, PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy,
-    ScreenCaptureDemand, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenProcessingProfile,
-    ScreenPublicationDemandSnapshot, ScreenPublicationExecutorRequest, ScreenPublicationHub,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationRetirement,
-    ScreenSourceSelector, ScreenUpscalePolicy,
+    CommittedScreenPublicationTransition, InputPublicationDemandRevision, PixelExtent,
+    RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenCaptureDemand, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenProcessingProfile, ScreenPublicationDemandSnapshot,
+    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenPublicationRetirement, ScreenSourceSelector,
+    ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
@@ -810,6 +811,12 @@ impl<T> AbortOnDropTask<T> {
         self.handle = None;
         result
     }
+
+    fn is_finished(&self) -> bool {
+        self.handle
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
 }
 
 impl<T> Drop for AbortOnDropTask<T> {
@@ -818,6 +825,83 @@ impl<T> Drop for AbortOnDropTask<T> {
             handle.abort();
         }
     }
+}
+
+type ExactScreenTransitionKey = (InputPublicationDemandRevision, u64);
+
+struct ExactScreenTransitionTask {
+    key: ExactScreenTransitionKey,
+    task: AbortOnDropTask<Result<Option<CommittedScreenPublicationTransition>>>,
+}
+
+impl ExactScreenTransitionTask {
+    fn spawn(
+        manager: Arc<Mutex<InputManager>>,
+        reader: InputPublicationReader,
+        demands: InputPublicationDemandHandle,
+        demand: ScreenPublicationDemandSnapshot,
+    ) -> Self {
+        let key = (demand.revision(), demand.graph_generation().get());
+        let task = AbortOnDropTask::new(tokio::spawn(run_exact_screen_transition(
+            manager, reader, demands, demand,
+        )));
+        Self { key, task }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
+
+    async fn join(
+        self,
+    ) -> std::result::Result<
+        Result<Option<CommittedScreenPublicationTransition>>,
+        tokio::task::JoinError,
+    > {
+        self.task.join().await
+    }
+}
+
+async fn run_exact_screen_transition(
+    manager: Arc<Mutex<InputManager>>,
+    reader: InputPublicationReader,
+    demands: InputPublicationDemandHandle,
+    demand: ScreenPublicationDemandSnapshot,
+) -> Result<Option<CommittedScreenPublicationTransition>> {
+    let revision = demand.revision();
+    let graph_generation = demand.graph_generation().get();
+    let mut input_manager = manager.lock().await;
+    if demands.snapshot().revision() != revision
+        || reader.graph_snapshot().generation() != graph_generation
+    {
+        return Ok(None);
+    }
+    let preparation = input_manager
+        .begin_screen_publication_transition(demand)
+        .context("exact screen publication plan was rejected")?;
+    drop(input_manager);
+    let Some(preparation) = preparation else {
+        return Ok(None);
+    };
+    let prepared = preparation
+        .await_workers()
+        .await
+        .context("exact screen publication worker preparation failed")?;
+    if demands.snapshot().revision() != revision
+        || reader.graph_snapshot().generation() != graph_generation
+    {
+        return Ok(None);
+    }
+    let mut input_manager = manager.lock().await;
+    if demands.snapshot().revision() != revision
+        || reader.graph_snapshot().generation() != graph_generation
+    {
+        return Ok(None);
+    }
+    input_manager
+        .commit_screen_publication_transition(prepared, revision)
+        .context("exact screen publication plan commit failed")
+        .map(Some)
 }
 
 async fn run_pump(
@@ -835,16 +919,65 @@ async fn run_pump(
     let mut capture_demand = CaptureDemandState::default();
     let mut applied_exact_screen = None;
     let mut exact_screen_retry = None;
+    let mut exact_screen_transition: Option<ExactScreenTransitionTask> = None;
     let mut publication_retirements = VecDeque::new();
     let mut worker_retirement_tasks = JoinSet::new();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
     let mut graph_changes = reader.graph.subscribe_generation();
     let mut demand_changes = demands.subscribe_revision();
-    'pump: loop {
+    loop {
         reap_screen_publication_retirements(&mut publication_retirements);
         while let Some(result) = worker_retirement_tasks.try_join_next() {
             if let Err(error) = result {
                 tracing::warn!(%error, "screen publication retirement task terminated");
+            }
+        }
+        if exact_screen_transition
+            .as_ref()
+            .is_some_and(ExactScreenTransitionTask::is_finished)
+        {
+            let transition = exact_screen_transition
+                .take()
+                .expect("finished exact screen transition remains present");
+            let transition_key = transition.key;
+            let current_key = (
+                demands.snapshot().revision(),
+                reader.graph_snapshot().generation(),
+            );
+            match transition.join().await {
+                Ok(Ok(committed)) => {
+                    if transition_key == current_key {
+                        applied_exact_screen = Some(transition_key);
+                        exact_screen_retry = None;
+                    }
+                    if let Some(committed) = committed {
+                        let (committed, worker_retirements) = committed.into_parts();
+                        for (source, retirement) in worker_retirements {
+                            worker_retirement_tasks.spawn(async move {
+                                if let Err(error) = retirement.complete().await {
+                                    tracing::warn!(%source, %error, "screen source retirement failed");
+                                }
+                            });
+                        }
+                        let (_, retirement) = committed.into_parts();
+                        publication_retirements.push_back(retirement);
+                        reap_screen_publication_retirements(&mut publication_retirements);
+                    }
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "exact screen publication transition failed");
+                    if transition_key == current_key {
+                        exact_screen_retry =
+                            Some((transition_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "exact screen publication transition task terminated");
+                    if transition_key == current_key {
+                        exact_screen_retry =
+                            Some((transition_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
+                    }
+                }
             }
         }
         let demand = demands.snapshot();
@@ -867,97 +1000,26 @@ async fn run_pump(
         }
         let lifecycle_current = capture_demand.is_current(graph.generation(), desired_capture);
         let exact_screen_key = (demand.revision(), graph.generation());
+        if exact_screen_transition
+            .as_ref()
+            .is_some_and(|transition| transition.key != exact_screen_key)
+        {
+            exact_screen_transition = None;
+        }
         let exact_screen_retry_due =
             exact_screen_retry.is_none_or(|(retry_key, retry_at): (_, Instant)| {
                 retry_key != exact_screen_key || Instant::now() >= retry_at
             });
-        if applied_exact_screen != Some(exact_screen_key) && exact_screen_retry_due {
-            'exact_transition: {
-                let exact_demand = demand.exact_screen_demand(graph.generation());
-                let manager_lock = manager.lock();
-                tokio::pin!(manager_lock);
-                let mut input_manager = tokio::select! {
-                    () = cancel.cancelled() => break 'pump,
-                    _ = demand_changes.changed() => continue 'pump,
-                    _ = graph_changes.changed() => continue 'pump,
-                    manager = &mut manager_lock => manager,
-                };
-                if demands.snapshot().revision() != demand.revision()
-                    || reader.graph_snapshot().generation() != graph.generation()
-                {
-                    continue 'pump;
-                }
-                let preparation =
-                    match input_manager.begin_screen_publication_transition(exact_demand) {
-                        Ok(preparation) => preparation,
-                        Err(error) => {
-                            tracing::warn!(%error, "exact screen publication plan was rejected");
-                            drop(input_manager);
-                            exact_screen_retry =
-                                Some((exact_screen_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
-                            break 'exact_transition;
-                        }
-                    };
-                drop(input_manager);
-                let Some(preparation) = preparation else {
-                    applied_exact_screen = Some(exact_screen_key);
-                    exact_screen_retry = None;
-                    break 'exact_transition;
-                };
-                let prepared = tokio::select! {
-                    () = cancel.cancelled() => break 'pump,
-                    _ = demand_changes.changed() => continue 'pump,
-                    _ = graph_changes.changed() => continue 'pump,
-                    prepared = preparation.await_workers() => prepared,
-                };
-                let prepared = match prepared {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        tracing::warn!(%error, "exact screen publication worker preparation failed");
-                        exact_screen_retry =
-                            Some((exact_screen_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
-                        break 'exact_transition;
-                    }
-                };
-                let manager_lock = manager.lock();
-                tokio::pin!(manager_lock);
-                let mut input_manager = tokio::select! {
-                    () = cancel.cancelled() => break 'pump,
-                    _ = demand_changes.changed() => continue 'pump,
-                    _ = graph_changes.changed() => continue 'pump,
-                    manager = &mut manager_lock => manager,
-                };
-                if demands.snapshot().revision() != demand.revision()
-                    || reader.graph_snapshot().generation() != graph.generation()
-                {
-                    continue 'pump;
-                }
-                let committed = match input_manager
-                    .commit_screen_publication_transition(prepared, demand.revision())
-                {
-                    Ok(committed) => committed,
-                    Err(error) => {
-                        tracing::warn!(%error, "exact screen publication plan commit failed");
-                        exact_screen_retry =
-                            Some((exact_screen_key, Instant::now() + LIFECYCLE_PROBE_INTERVAL));
-                        break 'exact_transition;
-                    }
-                };
-                drop(input_manager);
-                let (committed, worker_retirements) = committed.into_parts();
-                for (source, retirement) in worker_retirements {
-                    worker_retirement_tasks.spawn(async move {
-                        if let Err(error) = retirement.complete().await {
-                            tracing::warn!(%source, %error, "screen source retirement failed");
-                        }
-                    });
-                }
-                let (_, retirement) = committed.into_parts();
-                publication_retirements.push_back(retirement);
-                reap_screen_publication_retirements(&mut publication_retirements);
-                applied_exact_screen = Some(exact_screen_key);
-                exact_screen_retry = None;
-            }
+        if applied_exact_screen != Some(exact_screen_key)
+            && exact_screen_retry_due
+            && exact_screen_transition.is_none()
+        {
+            exact_screen_transition = Some(ExactScreenTransitionTask::spawn(
+                Arc::clone(&manager),
+                reader.clone(),
+                demands.clone(),
+                demand.exact_screen_demand(graph.generation()),
+            ));
         }
         let active_demand = demand_for_active_sources(&graph, &demand);
         let now = Instant::now();
@@ -970,7 +1032,10 @@ async fn run_pump(
                     || now + LIFECYCLE_PROBE_INTERVAL,
                     |(_, retry_at)| retry_at.min(now + LIFECYCLE_PROBE_INTERVAL),
                 );
-            if exact_screen_retry.is_some() || !publication_retirements.is_empty() {
+            if exact_screen_retry.is_some()
+                || exact_screen_transition.is_some()
+                || !publication_retirements.is_empty()
+            {
                 tokio::select! {
                     () = cancel.cancelled() => break,
                     _ = demand_changes.changed() => {}

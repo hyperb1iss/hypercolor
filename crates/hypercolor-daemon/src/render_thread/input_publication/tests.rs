@@ -891,8 +891,9 @@ async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
 }
 
 #[tokio::test]
-async fn pump_releases_manager_while_exact_workers_prepare() {
+async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let samples = Arc::new(AtomicUsize::new(0));
     let preparation_started = Arc::new(Notify::new());
     let preparation_release = Arc::new(Notify::new());
     let source = ScreenDemandSource::new(Arc::clone(&transitions)).with_preparation_gate(
@@ -901,7 +902,8 @@ async fn pump_releases_manager_while_exact_workers_prepare() {
     );
     let mut manager = InputManager::new();
     manager.add_source(Box::new(source));
-    manager.start_all().expect("screen source starts");
+    manager.add_source(Box::new(CountingSource::new(Arc::clone(&samples))));
+    manager.start_all().expect("input sources start");
     let manager = Arc::new(Mutex::new(manager));
     let demands = InputPublicationDemandHandle::new();
     let mut pump = InputPublicationPump::start(Arc::clone(&manager), demands.clone())
@@ -910,7 +912,9 @@ async fn pump_releases_manager_while_exact_workers_prepare() {
     let publications = pump.reader().screen_publications();
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(144, extent(7_680, 4_320)),
+        InputPublicationDemand::default()
+            .with_screen(144, extent(7_680, 4_320))
+            .with_source(SourceKind::Interaction, 120),
     );
 
     tokio::time::timeout(Duration::from_millis(500), preparation_started.notified())
@@ -920,6 +924,13 @@ async fn pump_releases_manager_while_exact_workers_prepare() {
         .await
         .expect("worker preparation must not hold the input manager lock");
     drop(manager_guard);
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while samples.load(Ordering::Relaxed) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("gated screen preparation must not stall unrelated input sampling");
     preparation_release.notify_one();
 
     tokio::time::timeout(Duration::from_millis(500), async {
