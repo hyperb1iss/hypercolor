@@ -31,11 +31,9 @@ servo-context = [
 
 [dependencies]
 hypercolor-windows-capture = { path = "../hypercolor-windows-capture", optional = true }
+pollster = { workspace = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
-
-[dev-dependencies]
-pollster = { workspace = true }
 
 [[test]]
 name = "d3d11on12_screen_copy_tests"

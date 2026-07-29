@@ -99,6 +99,17 @@ pub enum D3d11On12ScreenInteropError {
         /// Exact output height.
         height: u32,
     },
+    /// Wgpu rejected the renderer-owned target allocation.
+    #[error("screen target {width}x{height} allocation failed: {source}")]
+    TargetAllocationFailed {
+        /// Exact output width.
+        width: u32,
+        /// Exact output height.
+        height: u32,
+        /// Wgpu allocation error captured before its fatal default handler.
+        #[source]
+        source: wgpu::Error,
+    },
     /// A copy arrived before its renderer target was transactionally prepared.
     #[error(
         "screen target for plan {plan_generation:?}, descriptor {descriptor_id:?} was not prepared at {width}x{height}"
@@ -1144,6 +1155,9 @@ fn create_target(
     width: u32,
     height: u32,
 ) -> ScreenInteropResult<ScreenCopyTarget> {
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("hypercolor native screen copy target"),
         size: wgpu::Extent3d {
@@ -1161,6 +1175,16 @@ fn create_target(
             | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
+    let allocation_error = pollster::block_on(internal_scope.pop())
+        .or_else(|| pollster::block_on(validation_scope.pop()))
+        .or_else(|| pollster::block_on(out_of_memory_scope.pop()));
+    if let Some(source) = allocation_error {
+        return Err(D3d11On12ScreenInteropError::TargetAllocationFailed {
+            width,
+            height,
+            source,
+        });
+    }
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
