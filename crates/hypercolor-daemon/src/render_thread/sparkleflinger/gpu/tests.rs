@@ -487,6 +487,7 @@ fn gpu_compositor_passthroughs_current_output_texture() {
         .expect("current output frame should exist");
 
     assert_eq!(frame.origin, GpuTextureFrameOrigin::CompositorOutput);
+    assert_eq!(frame.content_generation, output_generation);
 
     let passthrough_plan = CompositionPlan::single(
         4,
@@ -526,7 +527,7 @@ fn gpu_compositor_does_not_passthrough_producer_texture() {
         producer_frame.origin,
         GpuTextureFrameOrigin::ProducerTexture
     );
-    assert_eq!(producer_frame.storage_id, output_generation);
+    assert_eq!(producer_frame.content_generation, 1);
 
     let producer_plan = CompositionPlan::single(
         4,

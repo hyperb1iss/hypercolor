@@ -168,6 +168,7 @@ fn gpu_display_finalize_copies_imported_face_into_owned_source_texture() {
         face_source.cached_gpu_copy,
         Some(CachedGpuSourceCopy {
             storage_id: 42,
+            content_generation: 42,
             width,
             height,
         }),

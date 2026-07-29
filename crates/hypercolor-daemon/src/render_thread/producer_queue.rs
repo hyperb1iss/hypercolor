@@ -9,6 +9,7 @@ pub(crate) struct GpuTextureFrame {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) storage_id: u64,
+    pub(crate) content_generation: u64,
     pub(crate) origin: GpuTextureFrameOrigin,
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
@@ -172,6 +173,7 @@ impl ProducerFrame {
                 left.width == right.width
                     && left.height == right.height
                     && left.storage_id == right.storage_id
+                    && left.content_generation == right.content_generation
             }
             _ => false,
         }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 #[cfg(test)]
@@ -69,6 +70,7 @@ const SOURCE_COPY_PARAM_BYTES: usize = 16;
 const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
+static NEXT_GPU_TEXTURE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct GpuSparkleFlinger {
     _render_device: GpuRenderDevice,
@@ -92,7 +94,7 @@ pub(crate) struct GpuSparkleFlinger {
     ready_preview_surface: Option<PublishedSurface>,
     sampling_latch: SamplingReadbackLatch,
     output_generation: u64,
-    producer_texture_generation: u64,
+    producer_content_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
     #[cfg(test)]
     superseded_frame_count: usize,
@@ -328,6 +330,7 @@ impl PendingUploadBuffers {
 }
 
 struct GpuCompositorTexture {
+    storage_id: u64,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
@@ -430,7 +433,7 @@ impl GpuSparkleFlinger {
             ready_preview_surface: None,
             sampling_latch: SamplingReadbackLatch::default(),
             output_generation: 0,
-            producer_texture_generation: 0,
+            producer_content_generation: 0,
             cached_sample_result: None,
             #[cfg(test)]
             superseded_frame_count: 0,
@@ -459,20 +462,20 @@ impl GpuSparkleFlinger {
 
     pub(crate) fn current_output_frame(&mut self) -> Result<Option<GpuTextureFrame>> {
         self.flush_pending_output_submission()?;
-        let Some(current_output) = self.current_output else {
-            return Ok(None);
-        };
         let Some(surfaces) = self.surfaces.as_ref() else {
             return Ok(None);
         };
-        let texture = match current_output {
+        let Some(texture) = self.current_output.map(|output| match output {
             GpuCompositorOutputSurface::Front => &surfaces.front,
             GpuCompositorOutputSurface::Back => &surfaces.back,
+        }) else {
+            return Ok(None);
         };
         Ok(Some(GpuTextureFrame {
             width: surfaces.width,
             height: surfaces.height,
-            storage_id: self.output_generation,
+            storage_id: texture.storage_id,
+            content_generation: self.output_generation,
             origin: GpuTextureFrameOrigin::CompositorOutput,
             texture: texture.texture.clone(),
             view: texture.view.clone(),
@@ -534,11 +537,12 @@ impl GpuSparkleFlinger {
             canvas.height(),
             canvas.as_rgba_bytes(),
         );
-        self.producer_texture_generation = self.producer_texture_generation.saturating_add(1);
+        self.producer_content_generation = self.producer_content_generation.saturating_add(1);
         Some(GpuTextureFrame {
             width: canvas.width(),
             height: canvas.height(),
-            storage_id: self.producer_texture_generation,
+            storage_id: texture.storage_id,
+            content_generation: self.producer_content_generation,
             origin: GpuTextureFrameOrigin::ProducerTexture,
             texture: texture.texture.clone(),
             view: texture.view.clone(),
@@ -715,7 +719,11 @@ impl GpuCompositorTexture {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Self { texture, view }
+        Self {
+            storage_id: NEXT_GPU_TEXTURE_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            texture,
+            view,
+        }
     }
 }
 

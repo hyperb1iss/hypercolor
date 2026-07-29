@@ -26,6 +26,7 @@ pub(super) struct CachedSourceUpload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CachedGpuSourceCopy {
     pub(super) storage_id: u64,
+    pub(super) content_generation: u64,
     pub(super) width: u32,
     pub(super) height: u32,
 }
@@ -233,16 +234,18 @@ impl GpuSourceFrame<'_> {
         }
     }
 
-    const fn cached_display_source_copy(&self) -> CachedGpuSourceCopy {
+    pub(super) const fn cached_display_source_copy(&self) -> CachedGpuSourceCopy {
         match self {
             #[cfg(feature = "servo-gpu-import")]
             Self::Imported(frame) => CachedGpuSourceCopy {
                 storage_id: frame.storage_id,
+                content_generation: frame.storage_id,
                 width: frame.width,
                 height: frame.height,
             },
             Self::Texture(frame) => CachedGpuSourceCopy {
                 storage_id: frame.storage_id,
+                content_generation: frame.content_generation,
                 width: frame.width,
                 height: frame.height,
             },

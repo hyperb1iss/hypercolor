@@ -375,8 +375,16 @@ impl GpuSparkleFlinger {
         width: u32,
         height: u32,
     ) -> bool {
-        self.current_output.is_some()
-            && layer.mode == CompositionMode::Replace
+        let Some(current_storage_id) = self.current_output.and_then(|output| {
+            let surfaces = self.surfaces.as_ref()?;
+            Some(match output {
+                GpuCompositorOutputSurface::Front => surfaces.front.storage_id,
+                GpuCompositorOutputSurface::Back => surfaces.back.storage_id,
+            })
+        }) else {
+            return false;
+        };
+        layer.mode == CompositionMode::Replace
             && layer.opacity >= 1.0
             && layer.transform.is_none()
             && layer.adjust.is_none()
@@ -384,7 +392,8 @@ impl GpuSparkleFlinger {
                 &layer.frame,
                 ProducerFrame::GpuTexture(frame)
                     if frame.origin == GpuTextureFrameOrigin::CompositorOutput
-                        && frame.storage_id == self.output_generation
+                        && frame.storage_id == current_storage_id
+                        && frame.content_generation == self.output_generation
                         && frame.width == width
                         && frame.height == height
             )
