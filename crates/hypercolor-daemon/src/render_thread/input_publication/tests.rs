@@ -19,8 +19,9 @@ use tokio::sync::{Mutex, Notify};
 
 use super::{
     InputPublicationCadence, InputPublicationConsumer, InputPublicationDemand,
-    InputPublicationDemandHandle, InputPublicationPump, InputPublicationSchedule,
-    InputPublicationStatus, InputScreenBranchDemand, cadence_interval,
+    InputPublicationDemandHandle, InputPublicationPump, InputPublicationReader,
+    InputPublicationSchedule, InputPublicationStatus, InputScreenBranchDemand, cadence_interval,
+    run_exact_screen_transition,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -943,6 +944,54 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
 
     drop(registration);
     pump.shutdown().await.expect("publication pump stops");
+}
+
+#[tokio::test]
+async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(ScreenDemandSource::new(Arc::clone(&transitions))));
+    manager.start_all().expect("screen source starts");
+    let reader = InputPublicationReader::new(
+        manager.input_graph_handle(),
+        manager.sensor_snapshot_receiver(),
+        manager.screen_publication_hub(),
+    );
+    let publications = reader.screen_publications();
+    let graph_generation = reader.graph_snapshot().generation();
+    let manager = Arc::new(Mutex::new(manager));
+    let demands = InputPublicationDemandHandle::new();
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_screen(60, extent(7_680, 4_320)),
+    );
+    let stale = demands.snapshot().exact_screen_demand(graph_generation);
+    let stale_revision = stale.revision();
+    let commit_pause = demands.pause_next_exact_screen_commit();
+    let transition = tokio::spawn(run_exact_screen_transition(
+        Arc::clone(&manager),
+        reader,
+        demands.clone(),
+        stale,
+    ));
+
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        commit_pause.wait_until_reached(),
+    )
+    .await
+    .expect("stale transition should reach its final commit boundary");
+    registration.update(InputPublicationDemand::default().with_screen(60, extent(1_280, 720)));
+    assert!(demands.revision() > stale_revision);
+    assert_eq!(publications.committed_state().branch_count(), 0);
+    commit_pause.release();
+
+    let committed = transition
+        .await
+        .expect("exact transition task should not panic")
+        .expect("stale transition should abort cleanly");
+    assert!(committed.is_none());
+    assert_eq!(publications.committed_state().branch_count(), 0);
 }
 
 #[tokio::test]

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -400,10 +400,37 @@ struct InputPublicationDemandRegistry {
     next_id: AtomicU64,
     latest: ArcSwap<InputPublicationDemandSnapshot>,
     revision_tx: watch::Sender<InputPublicationDemandRevision>,
+    revision_gate: SyncMutex<()>,
+    #[cfg(test)]
+    commit_test_hook: SyncMutex<Option<ExactScreenCommitTestHook>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct ExactScreenCommitTestHook {
+    reached: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+struct ExactScreenCommitTestPause {
+    reached: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+impl ExactScreenCommitTestPause {
+    async fn wait_until_reached(&self) {
+        self.reached.notified().await;
+    }
+
+    fn release(&self) {
+        self.release.notify_one();
+    }
 }
 
 #[derive(Clone)]
-/// Lock-free latest-value demand publication for all input consumers.
+/// Lock-free latest-value demand reads for all input consumers.
 pub struct InputPublicationDemandHandle {
     registry: Arc<InputPublicationDemandRegistry>,
 }
@@ -418,6 +445,9 @@ impl InputPublicationDemandHandle {
                 next_id: AtomicU64::new(1),
                 latest: ArcSwap::from_pointee(InputPublicationDemandSnapshot::default()),
                 revision_tx,
+                revision_gate: SyncMutex::new(()),
+                #[cfg(test)]
+                commit_test_hook: SyncMutex::new(None),
             }),
         }
     }
@@ -484,6 +514,51 @@ impl InputPublicationDemandHandle {
     fn subscribe_revision(&self) -> watch::Receiver<InputPublicationDemandRevision> {
         self.registry.revision_tx.subscribe()
     }
+
+    fn commit_if_revision<T>(
+        &self,
+        expected: InputPublicationDemandRevision,
+        commit: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let _revision_guard = self
+            .registry
+            .revision_gate
+            .lock()
+            .expect("input publication revision gate is healthy");
+        (self.registry.latest.load().revision() == expected).then(commit)
+    }
+
+    #[cfg(test)]
+    fn pause_next_exact_screen_commit(&self) -> ExactScreenCommitTestPause {
+        let pause = ExactScreenCommitTestPause {
+            reached: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+        };
+        let hook = ExactScreenCommitTestHook {
+            reached: Arc::clone(&pause.reached),
+            release: Arc::clone(&pause.release),
+        };
+        *self
+            .registry
+            .commit_test_hook
+            .lock()
+            .expect("input publication commit test hook is healthy") = Some(hook);
+        pause
+    }
+
+    #[cfg(test)]
+    async fn wait_at_exact_screen_commit_test_hook(&self) {
+        let hook = self
+            .registry
+            .commit_test_hook
+            .lock()
+            .expect("input publication commit test hook is healthy")
+            .take();
+        if let Some(hook) = hook {
+            hook.reached.notify_one();
+            hook.release.notified().await;
+        }
+    }
 }
 
 impl Default for InputPublicationDemandHandle {
@@ -494,6 +569,10 @@ impl Default for InputPublicationDemandHandle {
 
 impl InputPublicationDemandRegistry {
     fn update_entries(&self, update: impl Fn(&mut Vec<InputPublicationDemandEntry>)) {
+        let _revision_guard = self
+            .revision_gate
+            .lock()
+            .expect("input publication revision gate is healthy");
         self.latest.rcu(|current| {
             let mut entries = current.entries.to_vec();
             update(&mut entries);
@@ -898,8 +977,14 @@ async fn run_exact_screen_transition(
     {
         return Ok(None);
     }
-    input_manager
-        .commit_screen_publication_transition(prepared, revision)
+    #[cfg(test)]
+    demands.wait_at_exact_screen_commit_test_hook().await;
+    let Some(committed) = demands.commit_if_revision(revision, || {
+        input_manager.commit_screen_publication_transition(prepared, revision)
+    }) else {
+        return Ok(None);
+    };
+    committed
         .context("exact screen publication plan commit failed")
         .map(Some)
 }
