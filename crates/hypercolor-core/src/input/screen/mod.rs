@@ -39,6 +39,7 @@ pub use cadence::{
 pub use fanout::{
     CpuPublicationFanoutError, PreparedCpuLogicalFanout, PreparedCpuLogicalFanoutKind,
     PreparedCpuPhysicalFanout, PreparedCpuPublicationFanout,
+    PreparedCpuPublicationFanoutCandidate,
 };
 pub use frame::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureCursor,
@@ -92,8 +93,8 @@ pub use publication::{
     ScreenUnknownColorPolicy, ScreenUpscalePolicy,
 };
 pub use reducer::{
-    CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError, CpuReductionExecutor,
-    CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
+    CpuFallbackNeed, CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError,
+    CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
     PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
 };
 pub use sampling::{
