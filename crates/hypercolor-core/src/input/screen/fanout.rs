@@ -10,11 +10,11 @@ use thiserror::Error;
 use super::reducer::branch_requires_materialization;
 use super::{
     CaptureCadence, CaptureCadenceError, CaptureFrame, CapturePacer, CpuReductionError,
-    CpuReductionExecutor, CpuSurfaceMaterializationError, CpuSurfaceReductionJob,
-    CpuZoneMaterializationError, PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
-    PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer, PreparedScreenPublication,
-    RawCaptureSurface, ResolvedScreenPublicationDescriptor, ScreenBranchPublisher,
-    ScreenCapturePlan, ScreenCommittedState, ScreenPayloadKind, ScreenPhysicalReductionDescriptor,
+    CpuReductionExecutor, CpuSurfaceMaterializationError, CpuZoneMaterializationError,
+    PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch, PreparedCpuSurfaceMaterializer,
+    PreparedCpuZoneMaterializer, PreparedScreenPublication, RawCaptureSurface,
+    ResolvedScreenPublicationDescriptor, ScreenBranchPublisher, ScreenCapturePlan,
+    ScreenCommittedState, ScreenPayloadKind, ScreenPhysicalReductionDescriptor,
     ScreenPlanGeneration, ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
     ScreenPublicationKind, ScreenPublicationMetadata, ScreenWorkerBinding,
 };
@@ -147,6 +147,8 @@ pub struct PreparedCpuPublicationFanoutCandidate {
     workspace: Option<PreparedCpuMaterializationWorkspace>,
     workspace_schedule: Vec<usize>,
     reservations: Vec<CpuPendingPublication>,
+    publications: Vec<PreparedScreenPublication>,
+    direct_batch_indices: Vec<Option<usize>>,
     allocation_byte_len: u64,
 }
 
@@ -154,7 +156,6 @@ pub struct PreparedCpuPublicationFanoutCandidate {
 struct CpuPendingPublication {
     physical_index: usize,
     branch_index: usize,
-    publication: PreparedScreenPublication,
 }
 
 impl PreparedCpuPublicationFanoutCandidate {
@@ -293,12 +294,30 @@ impl PreparedCpuPublicationFanoutCandidate {
         reservations
             .try_reserve_exact(branch_count)
             .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
+        let mut publications = Vec::new();
+        publications
+            .try_reserve_exact(branch_count)
+            .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
+        let mut direct_batch_indices = Vec::new();
+        direct_batch_indices
+            .try_reserve_exact(branch_count)
+            .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
         let allocation_byte_len = allocation_byte_len(&physical, physical.capacity())?
             .checked_add(checked_bytes::<usize>(workspace_schedule.capacity())?)
             .and_then(|bytes| {
                 checked_bytes::<CpuPendingPublication>(reservations.capacity())
                     .ok()
                     .and_then(|reservation_bytes| bytes.checked_add(reservation_bytes))
+            })
+            .and_then(|bytes| {
+                checked_bytes::<PreparedScreenPublication>(publications.capacity())
+                    .ok()
+                    .and_then(|publication_bytes| bytes.checked_add(publication_bytes))
+            })
+            .and_then(|bytes| {
+                checked_bytes::<Option<usize>>(direct_batch_indices.capacity())
+                    .ok()
+                    .and_then(|schedule_bytes| bytes.checked_add(schedule_bytes))
             })
             .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
         Ok(Self {
@@ -308,6 +327,8 @@ impl PreparedCpuPublicationFanoutCandidate {
             workspace: None,
             workspace_schedule,
             reservations,
+            publications,
+            direct_batch_indices,
             allocation_byte_len,
         })
     }
@@ -371,6 +392,8 @@ impl PreparedCpuPublicationFanoutCandidate {
             workspace: self.workspace,
             workspace_schedule: self.workspace_schedule,
             reservations: self.reservations,
+            publications: self.publications,
+            direct_batch_indices: self.direct_batch_indices,
             allocation_byte_len: self.allocation_byte_len,
         })
     }
@@ -420,6 +443,8 @@ pub struct PreparedCpuPublicationFanout {
     workspace: Option<PreparedCpuMaterializationWorkspace>,
     workspace_schedule: Vec<usize>,
     reservations: Vec<CpuPendingPublication>,
+    publications: Vec<PreparedScreenPublication>,
+    direct_batch_indices: Vec<Option<usize>>,
     allocation_byte_len: u64,
 }
 
@@ -575,6 +600,8 @@ impl PreparedCpuPublicationFanout {
         let mut report = CpuPublicationFanoutReport::default();
         let plan_generation = self.authority.plan().generation();
         self.reservations.clear();
+        self.publications.clear();
+        self.direct_batch_indices.clear();
         for (physical_index, physical) in self.physical.iter_mut().enumerate() {
             for (branch_index, branch) in physical.branches.iter_mut().enumerate() {
                 if !branch.accepts_sequence(sequence) {
@@ -601,17 +628,29 @@ impl PreparedCpuPublicationFanout {
                 };
                 match hub.prepare_writable_publication(branch.publisher(), payload_kind, &metadata)
                 {
-                    Ok(publication) => self.reservations.push(CpuPendingPublication {
-                        physical_index,
-                        branch_index,
-                        publication,
-                    }),
+                    Ok(publication) => {
+                        self.reservations.push(CpuPendingPublication {
+                            physical_index,
+                            branch_index,
+                        });
+                        self.publications.push(publication);
+                        self.direct_batch_indices.push(
+                            physical
+                                .workspace_index
+                                .is_none()
+                                .then_some(physical.batch_index),
+                        );
+                    }
                     Err(ScreenPublicationHubError::PublicationPressure { .. }) => {
                         branch.pending_due = false;
                         report.pressured += 1;
                     }
                     Err(error) => {
-                        self.reservations.clear();
+                        clear_pending_publications(
+                            &mut self.reservations,
+                            &mut self.publications,
+                            &mut self.direct_batch_indices,
+                        );
                         return Err(error.into());
                     }
                 }
@@ -630,39 +669,27 @@ impl PreparedCpuPublicationFanout {
                 self.workspace_schedule.push(workspace_index);
             }
         }
-        if let Err(error) = executor.execute_scheduled_publications(
+        if let Err(error) = executor.execute_aligned_publications(
             &self.batch,
             frame,
             workspace,
             &self.workspace_schedule,
-            &mut [],
+            &self.direct_batch_indices,
+            &mut self.publications,
         ) {
-            self.reservations.clear();
+            clear_pending_publications(
+                &mut self.reservations,
+                &mut self.publications,
+                &mut self.direct_batch_indices,
+            );
             return Err(error.into());
         }
 
-        for pending in &mut self.reservations {
-            let physical = &self.physical[pending.physical_index];
-            if physical.workspace_index.is_some() {
-                continue;
-            }
-            let mut jobs = [CpuSurfaceReductionJob::new(
-                physical.batch_index,
-                &mut pending.publication,
-            )];
-            if let Err(error) = executor.execute_scheduled_publications(
-                &self.batch,
-                frame,
-                workspace,
-                &[],
-                &mut jobs,
-            ) {
-                self.reservations.clear();
-                return Err(error.into());
-            }
-        }
-
-        let (physical_routes, reservations) = (&mut self.physical, &mut self.reservations);
+        let (physical_routes, reservations, publications) = (
+            &mut self.physical,
+            &self.reservations,
+            &mut self.publications,
+        );
         for reservation_index in 0..reservations.len() {
             let physical_index = reservations[reservation_index].physical_index;
             let branch_index = reservations[reservation_index].branch_index;
@@ -670,9 +697,17 @@ impl PreparedCpuPublicationFanout {
             let Some(workspace_index) = physical.workspace_index else {
                 continue;
             };
-            let pixels = workspace.pixels(workspace_index).ok_or(
-                CpuPublicationFanoutError::WorkspacePublicationUnavailable { workspace_index },
-            )?;
+            let Some(pixels) = workspace.pixels(workspace_index) else {
+                discard_all_stages(physical_routes, reservations, plan_generation);
+                clear_pending_publications(
+                    &mut self.reservations,
+                    &mut self.publications,
+                    &mut self.direct_batch_indices,
+                );
+                return Err(CpuPublicationFanoutError::WorkspacePublicationUnavailable {
+                    workspace_index,
+                });
+            };
             let descriptor = self
                 .batch
                 .descriptor(physical.batch_index)
@@ -684,28 +719,54 @@ impl PreparedCpuPublicationFanout {
                 pixels,
                 frame,
                 plan_generation,
-                &mut reservations[reservation_index].publication,
+                &mut publications[reservation_index],
             );
             if let Err(error) = result {
                 discard_all_stages(physical_routes, reservations, plan_generation);
-                reservations.clear();
+                clear_pending_publications(
+                    &mut self.reservations,
+                    &mut self.publications,
+                    &mut self.direct_batch_indices,
+                );
                 return Err(error);
             }
         }
 
-        while let Some(pending) = self.reservations.pop() {
-            let branch = &mut self.physical[pending.physical_index].branches[pending.branch_index];
-            match hub.finalize_writable_publication(pending.publication, now, health) {
-                Ok(_) => commit_branch_stage(branch, plan_generation)?,
-                Err(error) => {
-                    discard_branch_stage(branch, plan_generation)?;
-                    return Err(error.into());
-                }
+        for pending in &self.reservations {
+            let branch = &self.physical[pending.physical_index].branches[pending.branch_index];
+            if let Err(error) = validate_branch_stage(branch, plan_generation) {
+                discard_all_stages(&mut self.physical, &self.reservations, plan_generation);
+                clear_pending_publications(
+                    &mut self.reservations,
+                    &mut self.publications,
+                    &mut self.direct_batch_indices,
+                );
+                return Err(error);
             }
+        }
+        if let Err(error) = hub.finalize_writable_publications(&mut self.publications, now, health)
+        {
+            discard_all_stages(&mut self.physical, &self.reservations, plan_generation);
+            clear_pending_publications(
+                &mut self.reservations,
+                &mut self.publications,
+                &mut self.direct_batch_indices,
+            );
+            return Err(error.into());
+        }
+        for pending in &self.reservations {
+            let branch = &mut self.physical[pending.physical_index].branches[pending.branch_index];
+            commit_branch_stage(branch, plan_generation)
+                .expect("validated branch stage commits after atomic hub publication");
             branch.pending_due = false;
             branch.last_accepted_sequence = Some(sequence);
             report.published += 1;
         }
+        clear_pending_publications(
+            &mut self.reservations,
+            &mut self.publications,
+            &mut self.direct_batch_indices,
+        );
         report.needs_source |= self.any_pending();
         Ok(report)
     }
@@ -730,6 +791,16 @@ fn discard_all_stages(
         )
         .expect("prepared branch stage belongs to the active plan generation");
     }
+}
+
+fn clear_pending_publications(
+    reservations: &mut Vec<CpuPendingPublication>,
+    publications: &mut Vec<PreparedScreenPublication>,
+    direct_batch_indices: &mut Vec<Option<usize>>,
+) {
+    publications.clear();
+    reservations.clear();
+    direct_batch_indices.clear();
 }
 
 fn stage_workspace_publication(
@@ -805,6 +876,27 @@ fn commit_branch_stage(
             .as_mut()
             .expect("Zones routes own a processor")
             .commit_staged(plan_generation)
+            .map_err(Into::into),
+    }
+}
+
+fn validate_branch_stage(
+    branch: &PreparedCpuLogicalFanout,
+    plan_generation: ScreenPlanGeneration,
+) -> Result<(), CpuPublicationFanoutError> {
+    match branch.kind {
+        PreparedCpuLogicalFanoutKind::DirectSurface => Ok(()),
+        PreparedCpuLogicalFanoutKind::MaterializedSurface => branch
+            .surface_materializer
+            .as_ref()
+            .expect("materialized Surface routes own a processor")
+            .validate_staged(plan_generation)
+            .map_err(Into::into),
+        PreparedCpuLogicalFanoutKind::Zones => branch
+            .zone_materializer
+            .as_ref()
+            .expect("Zones routes own a processor")
+            .validate_staged(plan_generation)
             .map_err(Into::into),
     }
 }

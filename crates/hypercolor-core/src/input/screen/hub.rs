@@ -1230,6 +1230,19 @@ impl ScreenCommittedState {
         barrier_entries.extend(branches.iter().map(|branch| Arc::clone(&branch.entry)));
         barrier_entries.sort_unstable_by(|left, right| left.descriptor.cmp(&right.descriptor));
         barrier_entries.dedup_by(|right, left| Arc::ptr_eq(left, right));
+        let mut barrier_bindings = Vec::new();
+        let binding_capacity = base
+            .worker_bindings
+            .len()
+            .checked_add(worker_bindings.len())
+            .ok_or(ScreenPlanError::AllocationFailed)?;
+        barrier_bindings
+            .try_reserve_exact(binding_capacity)
+            .map_err(|_| ScreenPlanError::AllocationFailed)?;
+        barrier_bindings.extend(base.worker_bindings.iter().cloned());
+        barrier_bindings.extend(worker_bindings.iter().cloned());
+        barrier_bindings.sort_unstable_by(compare_bindings);
+        barrier_bindings.dedup_by(|right, left| left.is_same(right));
         let retired_publication_bytes =
             retired_entries.iter().try_fold(0_u64, |total, entry| {
                 total
@@ -1262,6 +1275,7 @@ impl ScreenCommittedState {
             }),
             ScreenCommitActivation {
                 activation,
+                barrier_bindings,
                 barrier_entries,
                 retired_entries,
                 retired_resource_lifetimes,
@@ -1473,6 +1487,7 @@ impl fmt::Debug for ScreenPublicationRetirement {
 #[derive(Debug)]
 pub(crate) struct ScreenCommitActivation {
     activation: Arc<ScreenWorkerActivationLatch>,
+    barrier_bindings: Vec<ScreenWorkerBinding>,
     barrier_entries: Vec<Arc<ScreenBranchEntry>>,
     retired_entries: Vec<Arc<ScreenBranchEntry>>,
     retired_resource_lifetimes: Vec<ScreenResourceLifetime>,
@@ -1689,94 +1704,44 @@ impl ScreenPublicationHub {
         &self,
         mut prepared: PreparedScreenPublication,
     ) -> Result<ScreenLiveBranchReceipt, ScreenPublicationHubError> {
-        let mut runtime = prepared.branch.lock_runtime();
+        let binding = prepared.binding.clone();
+        let _finalization = binding.lock_finalization();
         let state = self.state.load_full();
-        if !state.contains_authority(&prepared.branch, &prepared.binding) {
-            let error = ScreenPublicationHubError::PublisherStale {
-                expected: state.plan.generation(),
-                observed: prepared.binding.plan_generation(),
-            };
-            drop(runtime);
-            return Err(error);
+        preflight_publication(&state, &prepared)?;
+        Ok(commit_preflighted_publication(state, &mut prepared))
+    }
+
+    pub(crate) fn finalize_writable_publications(
+        &self,
+        prepared: &mut [PreparedScreenPublication],
+        published_at: Instant,
+        health: ScreenPublicationHealth,
+    ) -> Result<(), ScreenPublicationHubError> {
+        for publication in prepared.iter_mut() {
+            publication.metadata.complete(published_at, health)?;
         }
-        if prepared.branch.is_retired() {
-            let error = ScreenPublicationHubError::BranchRetired {
-                descriptor: Arc::new(prepared.branch.descriptor.clone()),
-            };
-            drop(runtime);
-            return Err(error);
-        }
-        if let Err(error) =
-            validate_metadata(&prepared.branch, &prepared.binding, &prepared.metadata)
+        let Some(first) = prepared.first() else {
+            return Ok(());
+        };
+        let binding = first.binding.clone();
+        if prepared
+            .iter()
+            .any(|publication| !binding.is_same(&publication.binding))
         {
-            drop(runtime);
-            return Err(error);
+            return Err(ScreenPublicationHubError::PublicationBatchBindingMismatch);
         }
-        if runtime
-            .last_native_sequence
-            .is_some_and(|sequence| prepared.metadata.native_sequence <= sequence)
-        {
-            let error = ScreenPublicationHubError::NativeSequenceNotMonotonic {
-                previous: runtime
-                    .last_native_sequence
-                    .expect("checked previous native sequence exists"),
-                observed: prepared.metadata.native_sequence,
-            };
-            drop(runtime);
-            return Err(error);
+        let _finalization = binding.lock_finalization();
+        let state = self.state.load_full();
+        for publication in prepared.iter() {
+            preflight_publication(&state, publication)?;
         }
-        let Some(next_branch_sequence) = runtime
-            .next_branch_sequence
-            .checked_add(1)
-            .and_then(NonZeroU64::new)
-        else {
-            drop(runtime);
-            return Err(ScreenPublicationHubError::BranchSequenceExhausted);
-        };
-        let slot_is_reserved = runtime
-            .slots
-            .get(prepared.slot_index)
-            .is_some_and(Option::is_none);
-        if !slot_is_reserved {
-            drop(runtime);
-            return Err(ScreenPublicationHubError::PublicationReservationLost);
+        for publication in prepared.iter_mut() {
+            drop(commit_preflighted_publication(
+                Arc::clone(&state),
+                publication,
+            ));
         }
-        let Some(mut publication) = prepared.publication.take() else {
-            drop(runtime);
-            return Err(ScreenPublicationHubError::PublicationReservationLost);
-        };
-        let Some(publication_storage) = Arc::get_mut(&mut publication) else {
-            prepared.publication = Some(publication);
-            drop(runtime);
-            return Err(ScreenPublicationHubError::PublicationReservationLost);
-        };
-        let completion = prepared
-            .metadata
-            .completion
-            .expect("validated publication completion exists");
-        publication_storage.committed_plan_generation = state.plan.generation();
-        publication_storage.worker_plan_generation = prepared.metadata.worker_plan_generation;
-        publication_storage.source_epoch = prepared.metadata.source_epoch.clone();
-        publication_storage.native_sequence = prepared.metadata.native_sequence;
-        publication_storage.branch_sequence = next_branch_sequence;
-        publication_storage.captured_at = prepared.metadata.captured_at;
-        publication_storage.published_at = completion.published_at;
-        publication_storage.freshness_deadline = prepared.metadata.freshness_deadline;
-        publication_storage.health = completion.health;
-        runtime.next_branch_sequence = next_branch_sequence.get();
-        runtime.last_native_sequence = Some(prepared.metadata.native_sequence);
-        if let Some(slot) = runtime.slots.get_mut(prepared.slot_index) {
-            *slot = Some(Arc::clone(&publication));
-        }
-        prepared.branch.latest.store(Some(Arc::clone(&publication)));
-        prepared.branch.report_health(completion.health);
-        prepared.branch.clear_pressure();
-        drop(runtime);
-        Ok(ScreenLiveBranchReceipt {
-            state,
-            branch: Arc::clone(&prepared.branch),
-            publication,
-        })
+        Ok(())
     }
 
     /// Complete and finalize one directly written publication slot.
@@ -1872,11 +1837,22 @@ impl ScreenPublicationHub {
         state: Arc<ScreenCommittedState>,
         activation: Box<ScreenCommitActivation>,
     ) -> Result<ScreenPublicationRetirement, (ScreenPlanError, Box<ScreenCommitActivation>)> {
+        let mut binding_guards = Vec::new();
+        if binding_guards
+            .try_reserve_exact(activation.barrier_bindings.len())
+            .is_err()
+        {
+            return Err((ScreenPlanError::AllocationFailed, activation));
+        }
+        for binding in &activation.barrier_bindings {
+            binding_guards.push(binding.lock_finalization());
+        }
         let mut guards = Vec::new();
         if guards
             .try_reserve_exact(activation.barrier_entries.len())
             .is_err()
         {
+            drop(binding_guards);
             return Err((ScreenPlanError::AllocationFailed, activation));
         }
         for entry in &activation.barrier_entries {
@@ -1890,6 +1866,7 @@ impl ScreenPublicationHub {
             .is_err()
         {
             drop(guards);
+            drop(binding_guards);
             return Err((ScreenPlanError::RetirementAccountingOverflow, activation));
         }
         for entry in &activation.retired_entries {
@@ -1907,11 +1884,13 @@ impl ScreenPublicationHub {
         }
         activation.activation.activate();
         drop(guards);
+        drop(binding_guards);
         for entry in &activation.retired_entries {
             entry.reap_releasable_gpu_payloads();
         }
         let ScreenCommitActivation {
             activation: _,
+            barrier_bindings: _,
             barrier_entries: _,
             retired_entries,
             retired_resource_lifetimes,
@@ -1923,6 +1902,102 @@ impl ScreenPublicationHub {
             resource_lifetimes: retired_resource_lifetimes,
             bytes: retired_bytes,
         })
+    }
+}
+
+fn preflight_publication(
+    state: &ScreenCommittedState,
+    prepared: &PreparedScreenPublication,
+) -> Result<(), ScreenPublicationHubError> {
+    let runtime = prepared.branch.lock_runtime();
+    if !state.contains_authority(&prepared.branch, &prepared.binding) {
+        return Err(ScreenPublicationHubError::PublisherStale {
+            expected: state.plan.generation(),
+            observed: prepared.binding.plan_generation(),
+        });
+    }
+    if prepared.branch.is_retired() {
+        return Err(ScreenPublicationHubError::BranchRetired {
+            descriptor: Arc::new(prepared.branch.descriptor.clone()),
+        });
+    }
+    validate_metadata(&prepared.branch, &prepared.binding, &prepared.metadata)?;
+    if runtime
+        .last_native_sequence
+        .is_some_and(|sequence| prepared.metadata.native_sequence <= sequence)
+    {
+        return Err(ScreenPublicationHubError::NativeSequenceNotMonotonic {
+            previous: runtime
+                .last_native_sequence
+                .expect("checked previous native sequence exists"),
+            observed: prepared.metadata.native_sequence,
+        });
+    }
+    if runtime
+        .next_branch_sequence
+        .checked_add(1)
+        .and_then(NonZeroU64::new)
+        .is_none()
+    {
+        return Err(ScreenPublicationHubError::BranchSequenceExhausted);
+    }
+    if !runtime
+        .slots
+        .get(prepared.slot_index)
+        .is_some_and(Option::is_none)
+    {
+        return Err(ScreenPublicationHubError::PublicationReservationLost);
+    }
+    let publication = prepared
+        .publication
+        .as_ref()
+        .ok_or(ScreenPublicationHubError::PublicationReservationLost)?;
+    if Arc::strong_count(publication) != 1 || Arc::weak_count(publication) != 0 {
+        return Err(ScreenPublicationHubError::PublicationReservationLost);
+    }
+    Ok(())
+}
+
+fn commit_preflighted_publication(
+    state: Arc<ScreenCommittedState>,
+    prepared: &mut PreparedScreenPublication,
+) -> ScreenLiveBranchReceipt {
+    let mut runtime = prepared.branch.lock_runtime();
+    let next_branch_sequence = runtime
+        .next_branch_sequence
+        .checked_add(1)
+        .and_then(NonZeroU64::new)
+        .expect("preflighted publication has branch sequence capacity");
+    let mut publication = prepared
+        .publication
+        .take()
+        .expect("preflighted publication retains its reservation");
+    let publication_storage =
+        Arc::get_mut(&mut publication).expect("preflighted publication has unique ownership");
+    let completion = prepared
+        .metadata
+        .completion
+        .expect("preflighted publication has completion metadata");
+    publication_storage.committed_plan_generation = state.plan.generation();
+    publication_storage.worker_plan_generation = prepared.metadata.worker_plan_generation;
+    publication_storage.source_epoch = prepared.metadata.source_epoch.clone();
+    publication_storage.native_sequence = prepared.metadata.native_sequence;
+    publication_storage.branch_sequence = next_branch_sequence;
+    publication_storage.captured_at = prepared.metadata.captured_at;
+    publication_storage.published_at = completion.published_at;
+    publication_storage.freshness_deadline = prepared.metadata.freshness_deadline;
+    publication_storage.health = completion.health;
+    runtime.next_branch_sequence = next_branch_sequence.get();
+    runtime.last_native_sequence = Some(prepared.metadata.native_sequence);
+    runtime.slots[prepared.slot_index] = Some(Arc::clone(&publication));
+    prepared.branch.latest.store(Some(Arc::clone(&publication)));
+    prepared.branch.report_health(completion.health);
+    prepared.branch.clear_pressure();
+    drop(runtime);
+    ScreenLiveBranchReceipt {
+        state,
+        branch: Arc::clone(&prepared.branch),
+        publication,
     }
 }
 
@@ -2550,6 +2625,9 @@ pub enum ScreenPublicationHubError {
     /// Finalization was attempted before publication completion was supplied.
     #[error("publication completion metadata is missing")]
     PublicationCompletionMissing,
+    /// One atomic batch mixed reservations from distinct source workers.
+    #[error("publication batch contains more than one worker binding")]
+    PublicationBatchBindingMismatch,
     /// Reducer work completed after the source freshness deadline.
     #[error("publication completed after its freshness deadline")]
     PublicationFreshnessExpired,

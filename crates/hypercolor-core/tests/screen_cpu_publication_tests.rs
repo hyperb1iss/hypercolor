@@ -686,6 +686,108 @@ fn executable_fanout_preserves_branch_cadence_pressure_and_authority() {
 }
 
 #[test]
+fn fanout_finalize_failure_is_atomic_and_discards_every_staged_branch() {
+    let executor = executor();
+    let source = source(extent(11, 11));
+    let profile = ScreenProcessingProfileConfig {
+        tuning: ScreenColorTuning::try_new(1.25, 0.8, 1.1).expect("test tuning is finite"),
+        ..ScreenProcessingProfileConfig::default()
+    };
+    let wide = demand(&source, extent(9, 5), profile.clone(), &executor);
+    let tall = demand(&source, extent(5, 9), profile, &executor);
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [wide, tall]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("materialized batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("materialized workspace prepares");
+    let candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+        &executor, &batch, workspace, &plan,
+    )
+    .expect("materialized fanout prepares");
+    let mut fanout = candidate
+        .bind(builder.committed_state(), &binding)
+        .expect("materialized fanout binds");
+    let first_descriptor = fanout.physical()[0].branches()[0].descriptor().clone();
+    let second_descriptor = fanout.physical()[1].branches()[0].descriptor().clone();
+    let seeded_frame = frame_with_sequence(&source, 10);
+    let first_publisher = hub
+        .publisher(&first_descriptor, &binding)
+        .expect("first branch publisher is committed");
+    let mut seeded = hub
+        .prepare_writable_publication(
+            &first_publisher,
+            ScreenPayloadKind::Surface,
+            &intent(&first_descriptor, &binding, &seeded_frame),
+        )
+        .expect("first branch seed slot reserves");
+    seeded
+        .surface_pixels_mut()
+        .expect("seeded Surface is writable")
+        .fill(0x33);
+    hub.finalize_writable_publication(seeded, Instant::now(), ScreenPublicationHealth::Healthy)
+        .expect("first branch seed finalizes");
+
+    let rejected_frame = frame_with_sequence(&source, 5);
+    let rejection = fanout
+        .publish_due(
+            &hub,
+            Some(&rejected_frame),
+            Instant::now(),
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect_err("batch rejects a non-monotonic branch before publishing peers");
+    let hypercolor_core::input::screen::CpuPublicationFanoutError::Publisher(
+        hypercolor_core::input::screen::ScreenPublicationHubError::NativeSequenceNotMonotonic {
+            previous,
+            observed,
+        },
+    ) = rejection
+    else {
+        panic!("unexpected fanout rejection: {rejection}");
+    };
+    assert_eq!((previous.get(), observed.get()), (10, 5));
+    assert_eq!(
+        hub.lease(&first_descriptor)
+            .expect("first branch lease exists")
+            .read()
+            .expect("seed remains live")
+            .native_sequence(),
+        NonZeroU64::new(10).expect("test sequence is non-zero")
+    );
+    assert!(
+        hub.lease(&second_descriptor)
+            .expect("second branch lease exists")
+            .read()
+            .is_none()
+    );
+
+    let recovery_frame = frame_with_sequence(&source, 11);
+    let report = fanout
+        .publish_due(
+            &hub,
+            Some(&recovery_frame),
+            Instant::now(),
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("all reservations and stages recover after rejection");
+    assert_eq!(report.published(), 2);
+    for descriptor in [&first_descriptor, &second_descriptor] {
+        assert_eq!(
+            hub.lease(descriptor)
+                .expect("branch lease exists")
+                .read()
+                .expect("recovery publication is live")
+                .native_sequence(),
+            NonZeroU64::new(11).expect("test sequence is non-zero")
+        );
+    }
+}
+
+#[test]
 fn fanout_candidate_rejects_stale_authority_generation() {
     let executor = executor();
     let source = source(extent(17, 11));

@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::num::{NonZeroU32, NonZeroU64};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use thiserror::Error;
 
@@ -894,6 +894,7 @@ struct ScreenWorkerBindingInner {
     transaction_id: ScreenPlanTransactionId,
     worker_nonce: NonZeroU64,
     activation: Arc<ScreenWorkerActivationLatch>,
+    finalization: Mutex<()>,
     retired: AtomicBool,
 }
 
@@ -920,6 +921,7 @@ impl ScreenWorkerBinding {
                 transaction_id,
                 worker_nonce,
                 activation,
+                finalization: Mutex::new(()),
                 retired: AtomicBool::new(false),
             }),
         }
@@ -967,6 +969,13 @@ impl ScreenWorkerBinding {
 
     pub(crate) fn is_same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    pub(crate) fn lock_finalization(&self) -> MutexGuard<'_, ()> {
+        self.inner
+            .finalization
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn retire(&self) {

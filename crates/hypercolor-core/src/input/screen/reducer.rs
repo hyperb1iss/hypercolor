@@ -644,6 +644,39 @@ fn validate_surface_schedule(
     Ok(())
 }
 
+fn validate_aligned_surface_schedule(
+    batch: &PreparedCpuReductionBatch,
+    batch_indices: &[Option<usize>],
+    publications: &[PreparedScreenPublication],
+) -> Result<(), CpuReductionError> {
+    if batch_indices.len() != publications.len() {
+        return Err(CpuReductionError::SurfacePublicationScheduleCountMismatch {
+            expected: publications.len(),
+            actual: batch_indices.len(),
+        });
+    }
+    let mut previous = None;
+    for (batch_index, publication) in batch_indices.iter().zip(publications) {
+        let Some(batch_index) = *batch_index else {
+            continue;
+        };
+        if previous.is_some_and(|previous| batch_index <= previous) {
+            return Err(CpuReductionError::SurfaceScheduleNotCanonical);
+        }
+        let reduction = batch.reductions.get(batch_index).ok_or(
+            CpuReductionError::SurfaceScheduleIndexOutOfBounds {
+                batch_index,
+                batch_len: batch.reductions.len(),
+            },
+        )?;
+        if publication.physical_descriptor() != &reduction.descriptor {
+            return Err(CpuReductionError::BatchDescriptorMismatch { index: batch_index });
+        }
+        previous = Some(batch_index);
+    }
+    Ok(())
+}
+
 fn validate_schedule_disjoint(
     workspace: &PreparedCpuMaterializationWorkspace,
     workspace_indices: &[usize],
@@ -662,6 +695,30 @@ fn validate_schedule_disjoint(
                 return Err(CpuReductionError::ScheduledPhysicalKeyDuplicated {
                     batch_index: workspace_batch_index,
                 });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_aligned_schedule_disjoint(
+    workspace: &PreparedCpuMaterializationWorkspace,
+    workspace_indices: &[usize],
+    surface_batch_indices: &[Option<usize>],
+) -> Result<(), CpuReductionError> {
+    let mut workspace_cursor = 0;
+    for surface_batch_index in surface_batch_indices.iter().flatten() {
+        while workspace_cursor < workspace_indices.len() {
+            let workspace_batch_index =
+                workspace.planes[workspace_indices[workspace_cursor]].batch_index;
+            match workspace_batch_index.cmp(surface_batch_index) {
+                std::cmp::Ordering::Less => workspace_cursor += 1,
+                std::cmp::Ordering::Greater => break,
+                std::cmp::Ordering::Equal => {
+                    return Err(CpuReductionError::ScheduledPhysicalKeyDuplicated {
+                        batch_index: workspace_batch_index,
+                    });
+                }
             }
         }
     }
@@ -1094,6 +1151,141 @@ impl CpuReductionExecutor {
         Ok(CpuReductionBatchReport {
             source_sequence,
             completed_jobs: workspace_indices.len() + surface_jobs.len(),
+            scheduled_tiles,
+            output_bytes,
+        })
+    }
+
+    /// Execute retained planes and aligned direct-Surface reservations together.
+    ///
+    /// `surface_batch_indices` is parallel to `publications`: `Some(index)`
+    /// names a direct physical reduction and `None` leaves a materialized
+    /// reservation for branch-local processing. The complete sparse union runs
+    /// in one fixed-pool invocation without constructing per-frame job wrappers.
+    ///
+    /// # Errors
+    ///
+    /// Rejects mismatched aligned storage, non-canonical or overlapping
+    /// schedules, stale frames, and incompatible destinations before writes.
+    pub(super) fn execute_aligned_publications(
+        &self,
+        batch: &PreparedCpuReductionBatch,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        workspace: &mut PreparedCpuMaterializationWorkspace,
+        workspace_indices: &[usize],
+        surface_batch_indices: &[Option<usize>],
+        publications: &mut [PreparedScreenPublication],
+    ) -> Result<CpuReductionBatchReport, CpuReductionError> {
+        if !Arc::ptr_eq(&batch.reductions, &workspace.reductions) {
+            return Err(CpuReductionError::WorkspaceBatchMismatch);
+        }
+        validate_workspace_schedule(workspace, workspace_indices)?;
+        validate_aligned_surface_schedule(batch, surface_batch_indices, publications)?;
+        validate_aligned_schedule_disjoint(workspace, workspace_indices, surface_batch_indices)?;
+        if let Some(report) = empty_cpu_batch_report(batch, frame)? {
+            return Ok(report);
+        }
+        let view = prepared_cpu_sampling_view(batch, frame)?;
+        let source_sequence = frame.metadata().sequence;
+        let mut output_bytes = 0_u64;
+        let mut scheduled_tiles = 0_u64;
+        for &workspace_index in workspace_indices {
+            let plane = &workspace.planes[workspace_index];
+            if plane
+                .completed_source_sequence
+                .is_some_and(|previous| source_sequence <= previous)
+            {
+                return Err(CpuReductionError::WorkspaceFrameSequenceNotIncreasing {
+                    workspace_index,
+                    previous: plane
+                        .completed_source_sequence
+                        .expect("non-increasing workspace sequence exists"),
+                    actual: source_sequence,
+                });
+            }
+            let reduction = &batch.reductions[plane.batch_index];
+            preflight_reduction(
+                reduction,
+                &plane.scratch,
+                frame,
+                &mut output_bytes,
+                &mut scheduled_tiles,
+                self.inner.worker_count,
+                self.inner.tile_rows,
+                plane.batch_index,
+            )?;
+        }
+        let mut direct_count = 0;
+        for (batch_index, publication) in surface_batch_indices.iter().zip(publications.iter_mut())
+        {
+            let Some(batch_index) = *batch_index else {
+                continue;
+            };
+            let reduction = &batch.reductions[batch_index];
+            let output = publication.output_mut(batch_index)?;
+            preflight_reduction(
+                reduction,
+                output,
+                frame,
+                &mut output_bytes,
+                &mut scheduled_tiles,
+                self.inner.worker_count,
+                self.inner.tile_rows,
+                batch_index,
+            )?;
+            direct_count += 1;
+        }
+        let (workspace_result, surface_result) = self.inner.pool.install(|| {
+            rayon::join(
+                || {
+                    workspace
+                        .planes
+                        .par_iter_mut()
+                        .enumerate()
+                        .filter(|(workspace_index, _)| {
+                            workspace_indices.binary_search(workspace_index).is_ok()
+                        })
+                        .try_for_each(|(_, plane)| {
+                            let reduction = &batch.reductions[plane.batch_index];
+                            reduce_prepared_in_pool(
+                                &view,
+                                reduction,
+                                self.inner.worker_count,
+                                self.inner.tile_rows,
+                                &mut plane.scratch,
+                            )
+                        })
+                },
+                || {
+                    publications
+                        .par_iter_mut()
+                        .zip(surface_batch_indices.par_iter())
+                        .try_for_each(|(publication, batch_index)| {
+                            let Some(batch_index) = *batch_index else {
+                                return Ok(());
+                            };
+                            let reduction = &batch.reductions[batch_index];
+                            reduce_prepared_in_pool(
+                                &view,
+                                reduction,
+                                self.inner.worker_count,
+                                self.inner.tile_rows,
+                                publication.output_mut(batch_index)?,
+                            )
+                        })
+                },
+            )
+        });
+        workspace_result?;
+        surface_result?;
+        for &workspace_index in workspace_indices {
+            let plane = &mut workspace.planes[workspace_index];
+            std::mem::swap(&mut plane.pixels, &mut plane.scratch);
+            plane.completed_source_sequence = Some(source_sequence);
+        }
+        Ok(CpuReductionBatchReport {
+            source_sequence,
+            completed_jobs: workspace_indices.len() + direct_count,
             scheduled_tiles,
             output_bytes,
         })
@@ -1747,6 +1939,9 @@ pub enum CpuReductionError {
     /// Due direct-Surface indices must be unique and strictly increasing.
     #[error("CPU direct-Surface schedule is not canonical")]
     SurfaceScheduleNotCanonical,
+    /// An aligned direct-Surface schedule must match its reservation slice.
+    #[error("CPU direct-Surface schedule requires {expected} entries, got {actual}")]
+    SurfacePublicationScheduleCountMismatch { expected: usize, actual: usize },
     /// One due direct-Surface index escapes the prepared physical batch.
     #[error("CPU direct-Surface index {batch_index} escapes its {batch_len}-key batch")]
     SurfaceScheduleIndexOutOfBounds {
