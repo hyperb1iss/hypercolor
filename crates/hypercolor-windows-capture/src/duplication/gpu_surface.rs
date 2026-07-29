@@ -620,7 +620,6 @@ pub struct PreparedGpuSurfacePlan {
     params: ID3D11Buffer,
     routes: Vec<SurfaceRoute>,
     selection_controlled: bool,
-    texture_budget: u64,
     allocation_byte_len: u64,
     #[cfg(test)]
     injected_fault: Option<InjectedSurfaceFault>,
@@ -723,7 +722,6 @@ impl PreparedGpuSurfacePlan {
             params,
             routes,
             selection_controlled: false,
-            texture_budget: admission.max_texture_bytes(),
             allocation_byte_len,
             #[cfg(test)]
             injected_fault: None,
@@ -773,10 +771,6 @@ impl PreparedGpuSurfacePlan {
                 || route.pending_source_sequence.is_some())
                 && route.descriptor.cursor() == GpuSurfaceCursorPolicy::Include
         })
-    }
-
-    pub(super) const fn texture_budget(&self) -> u64 {
-        self.texture_budget
     }
 
     /// Retain every native slot required to prepare one exact renderer route.
@@ -1453,8 +1447,7 @@ pub(super) fn ensure_pointer_resource(
     device: &ID3D11Device,
     resource: &mut Option<PointerResource>,
     pointer: &PointerState,
-    base_allocation_byte_len: u64,
-    texture_budget: u64,
+    available_bytes: u64,
 ) -> CaptureResult<()> {
     let Some(shape) = pointer.shape.as_ref() else {
         return Ok(());
@@ -1468,18 +1461,10 @@ pub(super) fn ensure_pointer_resource(
         return Ok(());
     }
     let byte_len = checked_gpu_surface_bytes(CaptureExtent::try_new(shape.width, height)?)?;
-    let requested_bytes =
-        base_allocation_byte_len
-            .checked_add(byte_len)
-            .ok_or(CaptureError::GeometryOverflow {
-                operation: "account source-owned GPU pointer texture",
-                width: shape.width,
-                height,
-            })?;
-    if requested_bytes > texture_budget {
+    if byte_len > available_bytes {
         return Err(CaptureError::GpuSurfaceBudgetExceeded {
-            requested_bytes,
-            budget_bytes: texture_budget,
+            requested_bytes: byte_len,
+            budget_bytes: available_bytes,
         });
     }
 
@@ -2197,8 +2182,7 @@ pub(super) mod fixture {
                 &device,
                 &mut pointer_resource,
                 &clean.metadata.pointer,
-                plan.allocation_byte_len(),
-                plan.texture_budget(),
+                u64::MAX,
             )?;
         }
         let mut outcomes = Vec::new();

@@ -441,6 +441,15 @@ impl DesktopDuplicator {
         GpuAdapterLuid::new(0, 0)
     }
 
+    /// Always fails because no GPU adapter budget exists on this platform.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub const fn available_gpu_memory_bytes(&self) -> CaptureResult<u64> {
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
     /// Empty virtual-desktop origin.
     #[must_use]
     pub const fn origin(&self) -> (i32, i32) {

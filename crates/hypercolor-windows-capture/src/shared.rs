@@ -776,7 +776,7 @@ impl GpuSurfaceAdmission {
         }
     }
 
-    /// Maximum admitted bytes across the clean texture and output slots.
+    /// Maximum admitted bytes across candidate output slots.
     #[must_use]
     pub const fn max_texture_bytes(self) -> u64 {
         self.max_texture_bytes
@@ -790,8 +790,9 @@ impl GpuSurfaceAdmission {
 
     /// Validate exact descriptors and return their checked texture ledger.
     ///
-    /// The ledger includes one native clean-desktop texture plus every
-    /// descriptor's configured in-flight output slots. It imposes no axis or
+    /// The ledger includes every descriptor's configured in-flight output
+    /// slots. The source-owned clean desktop and pointer texture are already
+    /// represented by current adapter usage. This imposes no axis or
     /// resolution cap; actual D3D allocation remains the final admission.
     ///
     /// # Errors
@@ -809,7 +810,7 @@ impl GpuSurfaceAdmission {
                 minimum: 2,
             });
         }
-        let mut bytes = checked_gpu_surface_bytes(source_extent)?;
+        let mut bytes = 0_u64;
         for (index, descriptor) in descriptors.iter().enumerate() {
             descriptor.validate_exact_gpu()?;
             if !descriptor

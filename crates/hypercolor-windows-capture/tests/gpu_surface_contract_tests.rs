@@ -41,7 +41,7 @@ fn descriptor(
 }
 
 #[test]
-fn admission_accounts_clean_texture_and_configured_inflight_slots() {
+fn admission_accounts_only_candidate_inflight_slots() {
     let source = CaptureExtent::try_new(8, 4).expect("source extent is valid");
     let output = CaptureExtent::try_new(4, 2).expect("output extent is valid");
     let descriptor = descriptor(
@@ -52,13 +52,13 @@ fn admission_accounts_clean_texture_and_configured_inflight_slots() {
         GpuSurfaceColorPipeline::PreserveEncoded,
     );
     let admission =
-        GpuSurfaceAdmission::new(224, NonZeroU32::new(3).expect("three slots is non-zero"));
+        GpuSurfaceAdmission::new(96, NonZeroU32::new(3).expect("three slots is non-zero"));
 
     assert_eq!(
         admission
             .admit(source, &[descriptor])
             .expect("exact texture ledger is admitted"),
-        224
+        96
     );
 }
 
@@ -79,20 +79,27 @@ fn admission_has_no_artificial_resolution_axis_cap() {
         admission
             .admit(source, &[descriptor])
             .expect("large descriptor remains resource-admitted"),
-        1_592_524_800
+        1_061_683_200
     );
 }
 
 #[test]
 fn admission_rejects_checked_geometry_overflow_before_backend_allocation() {
     let extent = CaptureExtent::try_new(u32::MAX, u32::MAX).expect("extent is non-empty");
+    let descriptor = descriptor(
+        1,
+        extent,
+        GpuSurfaceFilter::Nearest,
+        GpuSurfaceFormat::Rgba8Unorm,
+        GpuSurfaceColorPipeline::PreserveEncoded,
+    );
     let admission = GpuSurfaceAdmission::new(
         u64::MAX,
         NonZeroU32::new(2).expect("two slots are non-zero"),
     );
 
     assert!(matches!(
-        admission.admit(extent, &[]),
+        admission.admit(extent, &[descriptor]),
         Err(CaptureError::GeometryOverflow {
             operation: "account GPU Surface texture",
             width: u32::MAX,
@@ -113,13 +120,13 @@ fn admission_rejects_budget_pressure_without_resizing_the_descriptor() {
         GpuSurfaceColorPipeline::PreserveEncoded,
     );
     let admission =
-        GpuSurfaceAdmission::new(223, NonZeroU32::new(3).expect("three slots is non-zero"));
+        GpuSurfaceAdmission::new(95, NonZeroU32::new(3).expect("three slots is non-zero"));
 
     assert!(matches!(
         admission.admit(source, &[descriptor]),
         Err(CaptureError::GpuSurfaceBudgetExceeded {
-            requested_bytes: 224,
-            budget_bytes: 223,
+            requested_bytes: 96,
+            budget_bytes: 95,
         })
     ));
 }

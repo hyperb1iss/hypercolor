@@ -21,11 +21,12 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
     DXGI_ERROR_NOT_CURRENTLY_AVAILABLE, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_SESSION_DISCONNECTED,
-    DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
-    DXGI_OUTDUPL_POINTER_SHAPE_INFO, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR,
-    DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME,
-    IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1, IDXGIOutput6, IDXGIOutputDuplication,
-    IDXGIResource,
+    DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_WAIT_TIMEOUT, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+    DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_POINTER_SHAPE_INFO,
+    DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR,
+    DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter1,
+    IDXGIAdapter3, IDXGIDevice, IDXGIFactory1, IDXGIOutput, IDXGIOutput1, IDXGIOutput6,
+    IDXGIOutputDuplication, IDXGIResource,
 };
 use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
 use windows::core::{HRESULT, Interface, PCWSTR};
@@ -253,35 +254,6 @@ fn advance_cpu_clean(
     };
 }
 
-fn publish_acquired_clean<F>(
-    device: &ID3D11Device,
-    pointer_resource: &mut Option<gpu_surface::PointerResource>,
-    clean: &RetainedDesktop,
-    duplication_generation: u64,
-    gpu: Option<&mut PreparedGpuSurfacePlan>,
-    cpu: Option<&mut PreparedCpuDesktopReadback>,
-    report: &mut CapturePumpReport,
-    mut emit: F,
-) where
-    F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
-{
-    if let Some(plan) = gpu {
-        let pointer_result = prepare_gpu_pointer_resource(device, pointer_resource, plan, clean);
-        report.gpu = match pointer_result.and_then(|()| {
-            plan.publish_with_feedback(
-                clean,
-                pointer_resource.as_ref(),
-                duplication_generation,
-                &mut emit,
-            )
-        }) {
-            Ok(info) => CaptureLane::Ready(info),
-            Err(error) => CaptureLane::Failed(error),
-        };
-    }
-    advance_cpu_clean(clean, cpu, &mut report.cpu);
-}
-
 fn prepare_duplication<D, S, A, E>(
     duplication: &mut Option<D>,
     staging: &mut Option<S>,
@@ -314,24 +286,6 @@ fn gpu_surface_acquire_timeout(requested: Duration, has_pending_routes: bool) ->
     } else {
         requested
     }
-}
-
-fn prepare_gpu_pointer_resource(
-    device: &ID3D11Device,
-    resource: &mut Option<gpu_surface::PointerResource>,
-    plan: &PreparedGpuSurfacePlan,
-    clean: &RetainedDesktop,
-) -> CaptureResult<()> {
-    if !plan.requires_pointer_for_next_publication() || !clean.metadata.pointer.visible {
-        return Ok(());
-    }
-    gpu_surface::ensure_pointer_resource(
-        device,
-        resource,
-        &clean.metadata.pointer,
-        plan.allocation_byte_len(),
-        plan.texture_budget(),
-    )
 }
 
 const fn desktop_frame_source(
@@ -1046,6 +1000,75 @@ impl DesktopDuplicator {
         self.adapter_luid
     }
 
+    /// Current local-memory headroom reported by DXGI for this adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed Windows capture error when the device cannot expose a
+    /// DXGI 1.4 adapter budget or the live budget query fails.
+    pub fn available_gpu_memory_bytes(&self) -> CaptureResult<u64> {
+        let dxgi_device = self
+            .device
+            .cast::<IDXGIDevice>()
+            .map_err(|error| CaptureError::windows("query capture DXGI device", error))?;
+        // SAFETY: the live D3D11 device owns the returned adapter reference.
+        let adapter = unsafe { dxgi_device.GetAdapter() }
+            .map_err(|error| CaptureError::windows("query capture DXGI adapter", error))?;
+        let adapter = adapter
+            .cast::<IDXGIAdapter3>()
+            .map_err(|error| CaptureError::windows("query capture DXGI 1.4 adapter", error))?;
+        let mut memory = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        // SAFETY: the output pointer references initialized writable storage
+        // for the duration of the synchronous adapter query.
+        unsafe { adapter.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut memory) }
+            .map_err(|error| CaptureError::windows("query capture GPU memory budget", error))?;
+        Ok(memory.Budget.saturating_sub(memory.CurrentUsage))
+    }
+
+    fn prepare_gpu_pointer_resource(
+        &mut self,
+        plan: &PreparedGpuSurfacePlan,
+        clean: &RetainedDesktop,
+    ) -> CaptureResult<()> {
+        if !plan.requires_pointer_for_next_publication() || !clean.metadata.pointer.visible {
+            return Ok(());
+        }
+        let available_bytes = self.available_gpu_memory_bytes()?;
+        gpu_surface::ensure_pointer_resource(
+            &self.device,
+            &mut self.gpu_pointer,
+            &clean.metadata.pointer,
+            available_bytes,
+        )
+    }
+
+    fn publish_acquired_clean<F>(
+        &mut self,
+        clean: &RetainedDesktop,
+        gpu: Option<&mut PreparedGpuSurfacePlan>,
+        cpu: Option<&mut PreparedCpuDesktopReadback>,
+        report: &mut CapturePumpReport,
+        mut emit: F,
+    ) where
+        F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
+    {
+        if let Some(plan) = gpu {
+            let pointer_result = self.prepare_gpu_pointer_resource(plan, clean);
+            report.gpu = match pointer_result.and_then(|()| {
+                plan.publish_with_feedback(
+                    clean,
+                    self.gpu_pointer.as_ref(),
+                    self.duplication_generation,
+                    &mut emit,
+                )
+            }) {
+                Ok(info) => CaptureLane::Ready(info),
+                Err(error) => CaptureLane::Failed(error),
+            };
+        }
+        advance_cpu_clean(clean, cpu, &mut report.cpu);
+    }
+
     /// Virtual-desktop origin of the captured output.
     #[must_use]
     pub const fn origin(&self) -> (i32, i32) {
@@ -1407,11 +1430,8 @@ impl DesktopDuplicator {
                     "acquisition produced no retained clean desktop",
                 )
             })?;
-            publish_acquired_clean(
-                &self.device,
-                &mut self.gpu_pointer,
+            self.publish_acquired_clean(
                 clean,
-                self.duplication_generation,
                 gpu.as_deref_mut(),
                 cpu.as_deref_mut(),
                 &mut report,
@@ -1420,8 +1440,7 @@ impl DesktopDuplicator {
         } else if let (Some(plan), Some(clean)) = (gpu, clean.as_ref())
             && plan.has_pending_routes()
         {
-            let pointer_result =
-                prepare_gpu_pointer_resource(&self.device, &mut self.gpu_pointer, plan, clean);
+            let pointer_result = self.prepare_gpu_pointer_resource(plan, clean);
             report.gpu = match pointer_result.and_then(|()| {
                 plan.retry_pending_with_feedback(clean, self.gpu_pointer.as_ref(), &mut emit)
             }) {
