@@ -29,7 +29,8 @@ use super::{CaptureMetadata, PointerShapeKind, PointerState, RetainedDesktop};
 #[cfg(feature = "capture-bench")]
 use crate::CaptureResult;
 use crate::{
-    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, subsample_stride_within,
+    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, GpuSurfaceColorPipeline,
+    GpuSurfaceCursorPolicy, GpuSurfaceDescriptor, GpuSurfaceFilter, subsample_stride_within,
     subsampled_extent,
 };
 
@@ -178,6 +179,7 @@ fn public_capture_error(error: GpuReductionError) -> CaptureError {
 
 struct ShaderBytecode {
     reduce: Vec<u8>,
+    reduce_exact: Vec<u8>,
     publish_surface: Vec<u8>,
 }
 
@@ -209,6 +211,7 @@ fn compiled_shaders() -> Result<&'static ShaderBytecode, GpuReductionError> {
             let compile: D3DCompileFn = unsafe { transmute(entry) };
             Ok(ShaderBytecode {
                 reduce: compile_entry(compile, c"reduce_desktop")?,
+                reduce_exact: compile_entry(compile, c"reduce_desktop_exact")?,
                 publish_surface: compile_entry(compile, c"publish_surface_exact")?,
             })
         })
@@ -296,6 +299,10 @@ struct ShaderParams {
     region_y: u32,
     region_width: u32,
     region_height: u32,
+    filter: u32,
+    color_pipeline: u32,
+    cursor_policy: u32,
+    padding: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -386,6 +393,39 @@ impl GpuReducer {
         })
     }
 
+    pub(super) fn new_exact(
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        native_extent: CaptureExtent,
+        source_format: DXGI_FORMAT,
+        descriptor: &GpuSurfaceDescriptor,
+        slot_count: u32,
+    ) -> Result<Self, GpuReductionError> {
+        let bytecode = compiled_shaders()?;
+        let reduce_shader = create_compute_shader(device, &bytecode.reduce_exact)?;
+        let params = create_constant_buffer(device)?;
+        let key = ResourceKey {
+            width: native_extent.width(),
+            height: native_extent.height(),
+            output_width: descriptor.output_extent().width(),
+            output_height: descriptor.output_extent().height(),
+            stride: 0,
+            format: source_format,
+            region: descriptor.source_region(),
+        };
+        let resources = create_resources(device, key, slot_count)?;
+        Ok(Self {
+            device: device.clone(),
+            context: context.clone(),
+            reduce_shader,
+            params,
+            resources: Some(resources),
+            pointer: None,
+            #[cfg(test)]
+            poll_failure: None,
+        })
+    }
+
     pub(super) fn submit(
         &mut self,
         clean: &RetainedDesktop,
@@ -424,6 +464,10 @@ impl GpuReducer {
             region_y: resources.key.region.origin_y(),
             region_width: resources.key.region.width(),
             region_height: resources.key.region.height(),
+            filter: filter_code(GpuSurfaceFilter::Area),
+            color_pipeline: color_pipeline_code(GpuSurfaceColorPipeline::PreserveEncoded),
+            cursor_policy: cursor_policy_code(GpuSurfaceCursorPolicy::Include),
+            padding: 0,
         };
         update_params(&context, &params_buffer, &params);
         let srvs = [
@@ -452,6 +496,105 @@ impl GpuReducer {
         let slot = &mut resources.slots[resources.write_index];
         // SAFETY: staging shares the reduced texture descriptor except for
         // usage/bind flags, and the event query belongs to this context.
+        unsafe {
+            self.context.CopyResource(&slot.staging, &resources.reduced);
+            self.context.End(&slot.query);
+        }
+        slot.pending = Some(PendingFrame { metadata });
+        slot.progress_kicked = false;
+        resources.write_index = (resources.write_index + 1) % resources.slots.len();
+        Ok(SubmitOutcome::Submitted)
+    }
+
+    pub(super) fn submit_exact(
+        &mut self,
+        clean: &RetainedDesktop,
+        pointer_resource: Option<&super::gpu_surface::PointerResource>,
+        descriptor: &GpuSurfaceDescriptor,
+        metadata: CaptureMetadata,
+    ) -> Result<SubmitOutcome, GpuReductionError> {
+        let context = self.context.clone();
+        let params_buffer = self.params.clone();
+        let resources = self
+            .resources
+            .as_mut()
+            .expect("exact reduction resources are prepared with the plan");
+        let mut source_desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: GetDesc fills a live caller-owned descriptor.
+        unsafe { clean.texture.GetDesc(&mut source_desc) };
+        if source_desc.Width != resources.key.width
+            || source_desc.Height != resources.key.height
+            || source_desc.Format != resources.key.format
+            || descriptor.output_extent().width() != resources.key.output_width
+            || descriptor.output_extent().height() != resources.key.output_height
+            || descriptor.source_region() != resources.key.region
+        {
+            return Err(GpuReductionError::operation(
+                "exact GPU reduction descriptor or source changed after preparation",
+            ));
+        }
+        if resources.slots[resources.write_index].pending.is_some() {
+            return Ok(SubmitOutcome::Busy);
+        }
+        let pointer = &metadata.pointer;
+        let shape = pointer.shape.as_ref().filter(|_| pointer.visible);
+        let pointer_resource = pointer_resource.filter(|resource| {
+            shape.is_some_and(|shape| {
+                resource.generation == pointer.shape_generation
+                    && resource.width == shape.width
+                    && resource.height == shape.visible_height()
+            })
+        });
+        let params = ShaderParams {
+            source_width: resources.key.width,
+            source_height: resources.key.height,
+            output_width: resources.key.output_width,
+            output_height: resources.key.output_height,
+            stride: 0,
+            rotation: rotation_code(metadata.rotation),
+            pointer_kind: shape.map_or(0, |shape| pointer_kind_code(shape.kind)),
+            pointer_visible: u32::from(
+                descriptor.cursor() == GpuSurfaceCursorPolicy::Include
+                    && pointer_resource.is_some(),
+            ),
+            pointer_x: pointer.position_x,
+            pointer_y: pointer.position_y,
+            pointer_width: shape.map_or(0, |shape| shape.width),
+            pointer_height: shape.map_or(0, |shape| shape.visible_height()),
+            region_x: resources.key.region.origin_x(),
+            region_y: resources.key.region.origin_y(),
+            region_width: resources.key.region.width(),
+            region_height: resources.key.region.height(),
+            filter: filter_code(descriptor.filter()),
+            color_pipeline: color_pipeline_code(descriptor.color_pipeline()),
+            cursor_policy: cursor_policy_code(descriptor.cursor()),
+            padding: 0,
+        };
+        update_params(&context, &params_buffer, &params);
+        let srvs = [
+            Some(clean.srv.clone()),
+            pointer_resource.map(|resource| resource.srv.clone()),
+        ];
+        let uavs = [Some(resources.reduced_uav.clone())];
+        // SAFETY: immutable plan resources match the exact shader contract.
+        unsafe {
+            self.context
+                .CSSetConstantBuffers(0, Some(&[Some(self.params.clone())]));
+            self.context.CSSetShaderResources(0, Some(&srvs));
+            self.context
+                .CSSetUnorderedAccessViews(0, 1, Some(uavs.as_ptr()), None);
+            self.context
+                .CSSetShader(&self.reduce_shader, None::<&[Option<_>]>);
+            self.context.Dispatch(
+                resources.key.output_width.div_ceil(THREAD_GROUP),
+                resources.key.output_height.div_ceil(THREAD_GROUP),
+                1,
+            );
+        }
+        unbind_compute_views(&context);
+
+        let slot = &mut resources.slots[resources.write_index];
+        // SAFETY: staging and reduced resources share exact texture geometry.
         unsafe {
             self.context.CopyResource(&slot.staging, &resources.reduced);
             self.context.End(&slot.query);
@@ -590,7 +733,7 @@ impl GpuReducer {
             return Ok(());
         }
 
-        let mut replacement = create_resources(&self.device, key)?;
+        let mut replacement = create_resources(&self.device, key, READBACK_RING_LEN as u32)?;
         replacement.write_index = 0;
         replacement.read_index = 0;
         self.resources = Some(replacement);
@@ -732,6 +875,7 @@ fn source_desc(key: ResourceKey) -> D3D11_TEXTURE2D_DESC {
 fn create_resources(
     device: &ID3D11Device,
     key: ResourceKey,
+    slot_count: u32,
 ) -> Result<Resources, GpuReductionError> {
     require_format_support(
         device,
@@ -763,8 +907,17 @@ fn create_resources(
         CPUAccessFlags: D3D11_CPU_ACCESS_READ.0.cast_unsigned(),
         ..reduced_desc
     };
-    let mut slots = Vec::with_capacity(READBACK_RING_LEN);
-    for _ in 0..READBACK_RING_LEN {
+    let slot_count = usize::try_from(slot_count)
+        .map_err(|_| GpuReductionError::operation("readback slot count exceeds usize"))?;
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(slot_count).map_err(|error| {
+        GpuReductionError::resource_exhausted(
+            "allocate GPU reduction readback slots",
+            slot_count.saturating_mul(size_of::<ReadbackSlot>()),
+            error,
+        )
+    })?;
+    for _ in 0..slot_count {
         slots.push(ReadbackSlot {
             staging: create_texture(device, &staging_desc, None)?,
             query: create_event_query(device)?,
@@ -780,6 +933,29 @@ fn create_resources(
         write_index: 0,
         read_index: 0,
     })
+}
+
+const fn filter_code(filter: GpuSurfaceFilter) -> u32 {
+    match filter {
+        GpuSurfaceFilter::Nearest => 0,
+        GpuSurfaceFilter::Bilinear => 1,
+        GpuSurfaceFilter::Area => 2,
+    }
+}
+
+const fn color_pipeline_code(pipeline: GpuSurfaceColorPipeline) -> u32 {
+    match pipeline {
+        GpuSurfaceColorPipeline::PreserveEncoded => 0,
+        GpuSurfaceColorPipeline::LinearSdr => 1,
+        GpuSurfaceColorPipeline::ToneMapHdrToSdr => 2,
+    }
+}
+
+const fn cursor_policy_code(policy: GpuSurfaceCursorPolicy) -> u32 {
+    match policy {
+        GpuSurfaceCursorPolicy::Exclude => 0,
+        GpuSurfaceCursorPolicy::Include => 1,
+    }
 }
 
 fn require_format_support(

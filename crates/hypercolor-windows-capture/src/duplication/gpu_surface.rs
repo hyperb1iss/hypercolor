@@ -58,6 +58,10 @@ struct SurfaceShaderParams {
     region_y: u32,
     region_width: u32,
     region_height: u32,
+    filter: u32,
+    color_pipeline: u32,
+    cursor_policy: u32,
+    padding: u32,
 }
 
 #[derive(Debug)]
@@ -595,10 +599,10 @@ fn require_keyed_mutex(
 }
 
 pub(super) struct PointerResource {
-    generation: u64,
-    width: u32,
-    height: u32,
-    srv: ID3D11ShaderResourceView,
+    pub(super) generation: u64,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) srv: ID3D11ShaderResourceView,
 }
 
 /// Allocation-complete descriptor-keyed D3D11 Surface plan.
@@ -1364,6 +1368,10 @@ impl PreparedGpuSurfacePlan {
             region_y: region.origin_y(),
             region_width: region.width(),
             region_height: region.height(),
+            filter: 0,
+            color_pipeline: 0,
+            cursor_policy: u32::from(descriptor.cursor() == GpuSurfaceCursorPolicy::Include),
+            padding: 0,
         };
         update_params(&self.context, &self.params, &params);
         let srvs = [

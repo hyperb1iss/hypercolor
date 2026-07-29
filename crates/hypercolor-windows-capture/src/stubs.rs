@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use crate::shared::{
     CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
-    DisplayRotation, Frame, GpuAdapterLuid, GpuSharedHandle, GpuSurfaceAdmission,
-    GpuSurfaceDescriptor, GpuSurfaceDescriptorId, GpuSurfacePlanGeneration, GpuSurfaceProvenance,
-    GpuSurfaceSlotId, GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization, MonitorSelector,
-    ReductionTelemetry,
+    DisplayRotation, Frame, GpuAdapterLuid, GpuReductionAdmission, GpuReductionProvenance,
+    GpuSharedHandle, GpuSurfaceAdmission, GpuSurfaceDescriptor, GpuSurfaceDescriptorId,
+    GpuSurfacePlanGeneration, GpuSurfaceProvenance, GpuSurfaceSlotId, GpuSurfaceSourceColorSpace,
+    GpuSurfaceSynchronization, MonitorSelector, ReductionTelemetry,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -221,9 +221,79 @@ impl GpuSurfaceBatchInfo {
     }
 }
 
+/// API-compatible non-Windows GPU reduction feedback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuReductionPublicationDisposition {
+    /// Unreachable downstream acceptance.
+    Accepted,
+    /// Unreachable downstream retry request.
+    Retry,
+}
+
+/// Borrowed non-Windows stand-in for exact reduced bytes.
+pub struct GpuReductionPublishOutcome<'a> {
+    provenance: &'a GpuReductionProvenance,
+    pixels: &'a [u8],
+}
+
+impl GpuReductionPublishOutcome<'_> {
+    /// No reduction provenance exists on this platform.
+    #[must_use]
+    pub const fn provenance(&self) -> &GpuReductionProvenance {
+        self.provenance
+    }
+
+    /// No reduced pixels exist on this platform.
+    #[must_use]
+    pub const fn pixels(&self) -> &[u8] {
+        self.pixels
+    }
+}
+
+/// Non-Windows stand-in for one GPU reduction batch summary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuReductionBatchInfo {
+    submitted: usize,
+    completed: usize,
+    busy: usize,
+    readback_bytes: u64,
+}
+
+impl GpuReductionBatchInfo {
+    /// No descriptor reductions execute on this platform.
+    #[must_use]
+    pub const fn submitted(self) -> usize {
+        self.submitted
+    }
+
+    /// No readbacks complete on this platform.
+    #[must_use]
+    pub const fn completed(self) -> usize {
+        self.completed
+    }
+
+    /// No reduction slots exist on this platform.
+    #[must_use]
+    pub const fn busy(self) -> usize {
+        self.busy
+    }
+
+    /// No staging bytes are mapped on this platform.
+    #[must_use]
+    pub const fn readback_bytes(self) -> u64 {
+        self.readback_bytes
+    }
+}
+
 /// Uninhabited non-Windows stand-in for a prepared D3D11 Surface plan.
 #[derive(Debug)]
 pub struct PreparedGpuSurfacePlan {
+    never: Never,
+}
+
+/// Uninhabited non-Windows descriptor-keyed reduction plan.
+#[derive(Debug)]
+pub struct PreparedGpuReductionPlan {
     never: Never,
 }
 
@@ -262,6 +332,7 @@ impl PreparedCpuDesktopReadback {
 /// Requested consumers for one unsupported capture pump cycle.
 pub struct CapturePumpRequest<'a> {
     gpu: Option<&'a mut PreparedGpuSurfacePlan>,
+    reduction: Option<&'a mut PreparedGpuReductionPlan>,
     cpu: Option<&'a mut PreparedCpuDesktopReadback>,
 }
 
@@ -272,7 +343,25 @@ impl<'a> CapturePumpRequest<'a> {
         gpu: Option<&'a mut PreparedGpuSurfacePlan>,
         cpu: Option<&'a mut PreparedCpuDesktopReadback>,
     ) -> Self {
-        Self { gpu, cpu }
+        Self {
+            gpu,
+            reduction: None,
+            cpu,
+        }
+    }
+
+    /// Request any combination of unsupported capture lanes.
+    #[must_use]
+    pub const fn with_reduction(
+        gpu: Option<&'a mut PreparedGpuSurfacePlan>,
+        reduction: Option<&'a mut PreparedGpuReductionPlan>,
+        cpu: Option<&'a mut PreparedCpuDesktopReadback>,
+    ) -> Self {
+        Self {
+            gpu,
+            reduction,
+            cpu,
+        }
     }
 
     /// Request only exact GPU publications.
@@ -285,6 +374,12 @@ impl<'a> CapturePumpRequest<'a> {
     #[must_use]
     pub const fn cpu(readback: &'a mut PreparedCpuDesktopReadback) -> Self {
         Self::new(None, Some(readback))
+    }
+
+    /// Request only unsupported GPU reduction readback.
+    #[must_use]
+    pub const fn reduction(plan: &'a mut PreparedGpuReductionPlan) -> Self {
+        Self::with_reduction(None, Some(plan), None)
     }
 
     /// Request exact GPU publications and native CPU readback together.
@@ -304,6 +399,8 @@ pub struct CapturePumpReport {
     pub acquired: bool,
     /// Exact GPU lane outcome.
     pub gpu: CaptureLane<GpuSurfaceBatchInfo>,
+    /// Exact GPU reduction lane outcome.
+    pub reduction: CaptureLane<GpuReductionBatchInfo>,
     /// Native CPU lane outcome.
     pub cpu: CaptureLane<CpuDesktopFrame>,
 }
@@ -362,6 +459,51 @@ impl PreparedGpuSurfacePlan {
 
     /// No native ownership can be reclaimed on this platform.
     pub fn reclaim_abandoned(&mut self) -> CaptureResult<usize> {
+        match self.never {}
+    }
+}
+
+impl PreparedGpuReductionPlan {
+    /// No D3D11 descriptors exist on this platform.
+    pub fn descriptors(&self) -> std::iter::Empty<&GpuSurfaceDescriptor> {
+        match self.never {}
+    }
+
+    /// No descriptor routes exist to select on this platform.
+    pub fn select_routes_for_next_acquisition<F>(&mut self, _select: F)
+    where
+        F: FnMut(&GpuSurfaceDescriptor) -> bool,
+    {
+        match self.never {}
+    }
+
+    /// No native acquisition can advance on this platform.
+    #[must_use]
+    pub fn has_selected_routes(&self) -> bool {
+        match self.never {}
+    }
+
+    /// No asynchronous readback can remain pending on this platform.
+    #[must_use]
+    pub fn has_pending_routes(&self) -> bool {
+        match self.never {}
+    }
+
+    /// No D3D11 allocation exists on this platform.
+    #[must_use]
+    pub fn allocation_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No D3D11 staging allocation exists on this platform.
+    #[must_use]
+    pub fn readback_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No callback buffer exists on this platform.
+    #[must_use]
+    pub fn publication_buffer_byte_len(&self) -> usize {
         match self.never {}
     }
 }
@@ -525,6 +667,20 @@ impl DesktopDuplicator {
         Err(CaptureError::UnsupportedPlatform)
     }
 
+    /// Always fails: descriptor-keyed D3D11 readback is Windows-only.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub const fn prepare_gpu_reduction_plan(
+        &self,
+        _plan_generation: GpuSurfacePlanGeneration,
+        _descriptors: &[GpuSurfaceDescriptor],
+        _admission: GpuReductionAdmission,
+    ) -> CaptureResult<PreparedGpuReductionPlan> {
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
     /// Always fails: Desktop Duplication is Windows-only.
     ///
     /// # Errors
@@ -539,8 +695,12 @@ impl DesktopDuplicator {
     where
         F: FnMut(GpuSurfacePublishOutcome),
     {
-        let CapturePumpRequest { gpu, cpu } = request;
-        drop((gpu, cpu));
+        let CapturePumpRequest {
+            gpu,
+            reduction,
+            cpu,
+        } = request;
+        drop((gpu, reduction, cpu));
         Err(CaptureError::UnsupportedPlatform)
     }
 
@@ -558,8 +718,37 @@ impl DesktopDuplicator {
     where
         F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
     {
-        let CapturePumpRequest { gpu, cpu } = request;
-        drop((gpu, cpu));
+        let CapturePumpRequest {
+            gpu,
+            reduction,
+            cpu,
+        } = request;
+        drop((gpu, reduction, cpu));
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
+    /// Always fails: Desktop Duplication is Windows-only.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub fn pump_with_reduction_feedback<F, R>(
+        &mut self,
+        request: CapturePumpRequest<'_>,
+        _timeout: Duration,
+        _emit: F,
+        _emit_reduction: R,
+    ) -> CaptureResult<CapturePumpReport>
+    where
+        F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
+        R: FnMut(GpuReductionPublishOutcome<'_>) -> GpuReductionPublicationDisposition,
+    {
+        let CapturePumpRequest {
+            gpu,
+            reduction,
+            cpu,
+        } = request;
+        drop((gpu, reduction, cpu));
         Err(CaptureError::UnsupportedPlatform)
     }
 

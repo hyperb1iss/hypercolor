@@ -2,10 +2,11 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
 use hypercolor_windows_capture::{
-    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, GpuSurfaceAdmission,
-    GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy,
-    GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter,
-    GpuSurfaceFormat, GpuSurfaceSourceColorSpace, GpuSurfaceUnsupportedReason,
+    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, GpuReductionAdmission,
+    GpuSurfaceAdmission, GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace,
+    GpuSurfaceCursorPolicy, GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig,
+    GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat, GpuSurfaceSourceColorSpace,
+    GpuSurfaceUnsupportedReason,
 };
 
 fn descriptor_config(id: u64, output_extent: CaptureExtent) -> GpuSurfaceDescriptorConfig {
@@ -38,6 +39,70 @@ fn descriptor(
         color_pipeline,
         ..descriptor_config(id, output_extent)
     })
+}
+
+#[test]
+fn reduction_admission_accounts_output_and_descriptor_readback_ring() {
+    let source = CaptureExtent::try_new(8, 4).expect("source extent is valid");
+    let output = CaptureExtent::try_new(4, 2).expect("output extent is valid");
+    let descriptors = [
+        descriptor(
+            1,
+            output,
+            GpuSurfaceFilter::Nearest,
+            GpuSurfaceFormat::Rgba8Unorm,
+            GpuSurfaceColorPipeline::PreserveEncoded,
+        ),
+        descriptor(
+            2,
+            output,
+            GpuSurfaceFilter::Bilinear,
+            GpuSurfaceFormat::Rgba8Unorm,
+            GpuSurfaceColorPipeline::LinearSdr,
+        ),
+        descriptor(
+            3,
+            output,
+            GpuSurfaceFilter::Area,
+            GpuSurfaceFormat::Rgba8Unorm,
+            GpuSurfaceColorPipeline::LinearSdr,
+        ),
+    ];
+    let admission =
+        GpuReductionAdmission::new(384, NonZeroU32::new(3).expect("three slots is non-zero"));
+
+    assert_eq!(
+        admission
+            .admit(source, &descriptors)
+            .expect("all exact reduction filters are admitted"),
+        384
+    );
+}
+
+#[test]
+fn reduction_admission_rejects_unsupported_color_without_route_fallback() {
+    let source = CaptureExtent::try_new(8, 4).expect("source extent is valid");
+    let descriptor = descriptor(
+        9,
+        CaptureExtent::try_new(4, 2).expect("output extent is valid"),
+        GpuSurfaceFilter::Area,
+        GpuSurfaceFormat::Rgba8Unorm,
+        GpuSurfaceColorPipeline::ToneMapHdrToSdr,
+    );
+    let admission = GpuReductionAdmission::new(
+        u64::MAX,
+        NonZeroU32::new(3).expect("three slots is non-zero"),
+    );
+
+    assert!(matches!(
+        admission.admit(source, &[descriptor]),
+        Err(CaptureError::UnsupportedGpuSurface {
+            descriptor_id: _,
+            reason: GpuSurfaceUnsupportedReason::ColorPipeline(
+                GpuSurfaceColorPipeline::ToneMapHdrToSdr
+            ),
+        })
+    ));
 }
 
 #[test]

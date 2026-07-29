@@ -33,16 +33,21 @@ use windows::core::{HRESULT, Interface, PCWSTR};
 
 use crate::shared::{
     CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
-    CursorInfo, DisplayRotation, Frame, GpuAdapterLuid, GpuSurfaceAdmission, GpuSurfaceDescriptor,
-    GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo, MonitorSelector,
-    ReductionPath, ReductionTelemetry, subsample_stride_within, subsampled_extent,
+    CursorInfo, DisplayRotation, Frame, GpuAdapterLuid, GpuReductionAdmission, GpuSurfaceAdmission,
+    GpuSurfaceDescriptor, GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo,
+    MonitorSelector, ReductionPath, ReductionTelemetry, subsample_stride_within, subsampled_extent,
 };
 
 mod cpu_readback;
+mod gpu_readback;
 pub(crate) mod gpu_reduction;
 mod gpu_surface;
 
 pub use cpu_readback::PreparedCpuDesktopReadback;
+pub use gpu_readback::{
+    GpuReductionBatchInfo, GpuReductionPublicationDisposition, GpuReductionPublishOutcome,
+    PreparedGpuReductionPlan,
+};
 pub use gpu_surface::{
     GpuSurfaceBatchInfo, GpuSurfaceLease, GpuSurfacePublication, GpuSurfacePublicationDisposition,
     GpuSurfacePublishOutcome, GpuSurfaceTargetPreparation, GpuSurfaceTargetPreparationSlot,
@@ -52,6 +57,7 @@ pub use gpu_surface::{
 /// Requested consumers for one Desktop Duplication acquisition cycle.
 pub struct CapturePumpRequest<'a> {
     gpu: Option<&'a mut PreparedGpuSurfacePlan>,
+    reduction: Option<&'a mut PreparedGpuReductionPlan>,
     cpu: Option<&'a mut PreparedCpuDesktopReadback>,
 }
 
@@ -62,7 +68,26 @@ impl<'a> CapturePumpRequest<'a> {
         gpu: Option<&'a mut PreparedGpuSurfacePlan>,
         cpu: Option<&'a mut PreparedCpuDesktopReadback>,
     ) -> Self {
-        Self { gpu, cpu }
+        Self {
+            gpu,
+            reduction: None,
+            cpu,
+        }
+    }
+
+    /// Request any combination of native GPU, reduced GPU readback, and
+    /// native CPU outputs from one retained desktop acquisition.
+    #[must_use]
+    pub const fn with_reduction(
+        gpu: Option<&'a mut PreparedGpuSurfacePlan>,
+        reduction: Option<&'a mut PreparedGpuReductionPlan>,
+        cpu: Option<&'a mut PreparedCpuDesktopReadback>,
+    ) -> Self {
+        Self {
+            gpu,
+            reduction,
+            cpu,
+        }
     }
 
     /// Request only exact GPU publications.
@@ -75,6 +100,12 @@ impl<'a> CapturePumpRequest<'a> {
     #[must_use]
     pub const fn cpu(readback: &'a mut PreparedCpuDesktopReadback) -> Self {
         Self::new(None, Some(readback))
+    }
+
+    /// Request only exact descriptor-keyed GPU reduction readback.
+    #[must_use]
+    pub const fn reduction(plan: &'a mut PreparedGpuReductionPlan) -> Self {
+        Self::with_reduction(None, Some(plan), None)
     }
 
     /// Request exact GPU publications and native CPU readback together.
@@ -94,6 +125,8 @@ pub struct CapturePumpReport {
     pub acquired: bool,
     /// Exact shareable GPU publication lane.
     pub gpu: CaptureLane<GpuSurfaceBatchInfo>,
+    /// Descriptor-keyed GPU reduction/readback lane.
+    pub reduction: CaptureLane<GpuReductionBatchInfo>,
     /// Exact tightly packed native BGRA readback lane.
     pub cpu: CaptureLane<CpuDesktopFrame>,
 }
@@ -1314,6 +1347,39 @@ impl DesktopDuplicator {
         )
     }
 
+    /// Allocate immutable descriptor-keyed GPU reduction and readback rings.
+    ///
+    /// Each supported physical descriptor owns a fixed output UAV and a fixed
+    /// asynchronous staging ring. Native full-frame staging remains separate
+    /// and is unnecessary when every physical route is admitted here.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed descriptor, geometry, device, or allocation failures
+    /// without reducing resolution, cadence, or requested semantics.
+    pub fn prepare_gpu_reduction_plan(
+        &self,
+        plan_generation: GpuSurfacePlanGeneration,
+        descriptors: &[GpuSurfaceDescriptor],
+        admission: GpuReductionAdmission,
+    ) -> CaptureResult<PreparedGpuReductionPlan> {
+        PreparedGpuReductionPlan::prepare(
+            &self.device,
+            &self.context,
+            plan_generation,
+            Arc::clone(&self.source_id),
+            self.topology_generation,
+            self.duplication_generation,
+            self.adapter_luid,
+            CaptureExtent::try_new(self.native_width, self.native_height)?,
+            CaptureExtent::try_new(self.logical_width, self.logical_height)?,
+            self.rotation,
+            self.source_color_space,
+            descriptors,
+            admission,
+        )
+    }
+
     /// Acquire once and independently advance exact GPU and native CPU lanes.
     ///
     /// CPU staging is never created, copied, queried, or mapped unless the
@@ -1346,12 +1412,34 @@ impl DesktopDuplicator {
     /// affecting healthy siblings or allocating a side queue.
     pub fn pump_with_feedback<F>(
         &mut self,
-        mut request: CapturePumpRequest<'_>,
+        request: CapturePumpRequest<'_>,
         timeout: Duration,
-        mut emit: F,
+        emit: F,
     ) -> CaptureResult<CapturePumpReport>
     where
         F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
+    {
+        self.pump_with_reduction_feedback(request, timeout, emit, |_| {
+            GpuReductionPublicationDisposition::Accepted
+        })
+    }
+
+    /// Advance native Surface, descriptor-keyed reduction, and optional full
+    /// native readback lanes from one retained Desktop Duplication acquisition.
+    ///
+    /// Completed reduced bytes remain owned by their immutable descriptor ring
+    /// until the reduction callback accepts them. Failures stay lane-local so
+    /// supported and fallback physical routes remain independent.
+    pub fn pump_with_reduction_feedback<F, R>(
+        &mut self,
+        mut request: CapturePumpRequest<'_>,
+        timeout: Duration,
+        mut emit: F,
+        mut emit_reduction: R,
+    ) -> CaptureResult<CapturePumpReport>
+    where
+        F: FnMut(GpuSurfacePublishOutcome) -> GpuSurfacePublicationDisposition,
+        R: FnMut(GpuReductionPublishOutcome<'_>) -> GpuReductionPublicationDisposition,
     {
         self.release_frame();
 
@@ -1368,6 +1456,24 @@ impl DesktopDuplicator {
             gpu = None;
         }
 
+        let mut reduction = request.reduction.take();
+        let mut reduction_lane = if let Some(plan) = reduction.as_deref_mut() {
+            if let Err(error) = self.validate_gpu_reduction_plan(plan) {
+                reduction = None;
+                CaptureLane::Failed(error)
+            } else {
+                match plan.poll_with_feedback(&mut emit_reduction) {
+                    Ok(info) => CaptureLane::Ready(info),
+                    Err(error) => {
+                        reduction = None;
+                        CaptureLane::Failed(error)
+                    }
+                }
+            }
+        } else {
+            CaptureLane::NotRequested
+        };
+
         let mut cpu = request.cpu.take();
         let mut cpu_lane = if let Some(readback) = cpu.as_deref_mut() {
             if self.validate_cpu_readback(readback) {
@@ -1383,10 +1489,11 @@ impl DesktopDuplicator {
             cpu = None;
         }
 
-        if gpu.is_none() && cpu.is_none() {
+        if gpu.is_none() && reduction.is_none() && cpu.is_none() {
             return Ok(CapturePumpReport {
                 acquired: false,
                 gpu: gpu_lane,
+                reduction: reduction_lane,
                 cpu: cpu_lane,
             });
         }
@@ -1397,9 +1504,15 @@ impl DesktopDuplicator {
         let cpu_pending = cpu
             .as_deref()
             .is_some_and(PreparedCpuDesktopReadback::has_pending);
-        let return_ready = matches!(cpu_lane, CaptureLane::Ready(_) | CaptureLane::Busy);
-        let acquire_timeout =
-            gpu_surface_acquire_timeout(timeout, gpu_pending || cpu_pending || return_ready);
+        let reduction_pending = reduction
+            .as_deref()
+            .is_some_and(PreparedGpuReductionPlan::has_pending_routes);
+        let return_ready = matches!(cpu_lane, CaptureLane::Ready(_) | CaptureLane::Busy)
+            || matches!(reduction_lane, CaptureLane::Ready(_));
+        let acquire_timeout = gpu_surface_acquire_timeout(
+            timeout,
+            gpu_pending || reduction_pending || cpu_pending || return_ready,
+        );
         let update = self.acquire_native_update(acquire_timeout)?;
         self.release_frame();
         let acquired = update.is_some();
@@ -1416,11 +1529,18 @@ impl DesktopDuplicator {
             cpu_lane = CaptureLane::Failed(CaptureError::GpuSurfacePlanInvalidated);
             cpu = None;
         }
+        if let Some(plan) = reduction.as_deref_mut()
+            && let Err(error) = self.validate_gpu_reduction_plan(plan)
+        {
+            reduction_lane = CaptureLane::Failed(error);
+            reduction = None;
+        }
 
         let clean = self.clean_desktop.clone();
         let mut report = CapturePumpReport {
             acquired,
             gpu: gpu_lane,
+            reduction: reduction_lane,
             cpu: cpu_lane,
         };
         if acquired {
@@ -1430,6 +1550,19 @@ impl DesktopDuplicator {
                     "acquisition produced no retained clean desktop",
                 )
             })?;
+            if reduction
+                .as_deref()
+                .is_some_and(PreparedGpuReductionPlan::requires_pointer_for_next_publication)
+                && clean.metadata.pointer.visible
+            {
+                let available_bytes = self.available_gpu_memory_bytes()?;
+                gpu_surface::ensure_pointer_resource(
+                    &self.device,
+                    &mut self.gpu_pointer,
+                    &clean.metadata.pointer,
+                    available_bytes,
+                )?;
+            }
             self.publish_acquired_clean(
                 clean,
                 gpu.as_deref_mut(),
@@ -1437,6 +1570,19 @@ impl DesktopDuplicator {
                 &mut report,
                 &mut emit,
             );
+            if let Some(plan) = reduction {
+                match plan.submit_selected(
+                    clean,
+                    self.gpu_pointer.as_ref(),
+                    self.duplication_generation,
+                ) {
+                    Ok(submitted) => match &mut report.reduction {
+                        CaptureLane::Ready(info) => info.merge(submitted),
+                        lane => *lane = CaptureLane::Ready(submitted),
+                    },
+                    Err(error) => report.reduction = CaptureLane::Failed(error),
+                }
+            }
         } else if let (Some(plan), Some(clean)) = (gpu, clean.as_ref())
             && plan.has_pending_routes()
         {
@@ -1489,6 +1635,19 @@ impl DesktopDuplicator {
     }
 
     fn validate_gpu_surface_plan(&self, plan: &PreparedGpuSurfacePlan) -> CaptureResult<()> {
+        plan.validate_source(
+            &self.source_id,
+            self.topology_generation,
+            self.duplication_generation,
+            self.adapter_luid,
+            CaptureExtent::try_new(self.native_width, self.native_height)?,
+            CaptureExtent::try_new(self.logical_width, self.logical_height)?,
+            self.rotation,
+            self.source_color_space,
+        )
+    }
+
+    fn validate_gpu_reduction_plan(&self, plan: &PreparedGpuReductionPlan) -> CaptureResult<()> {
         plan.validate_source(
             &self.source_id,
             self.topology_generation,

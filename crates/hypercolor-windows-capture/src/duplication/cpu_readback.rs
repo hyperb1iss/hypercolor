@@ -538,6 +538,7 @@ pub(super) fn hybrid_sequence_proof_for_test() -> CaptureResult<HybridSequencePr
     let mut report = super::CapturePumpReport {
         acquired: true,
         gpu: CaptureLane::Idle,
+        reduction: CaptureLane::Idle,
         cpu: CaptureLane::Idle,
     };
     let mut publication = None;

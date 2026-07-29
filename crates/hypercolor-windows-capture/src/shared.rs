@@ -757,6 +757,182 @@ impl GpuSurfaceDescriptor {
         }
         Ok(())
     }
+
+    /// Validate the exact GPU reduction/readback operations implemented by
+    /// the current D3D11 shader.
+    ///
+    /// Unlike shareable renderer surfaces, reduced readback supports every
+    /// raster filter and same-encoding SDR processing. The output remains
+    /// tightly packed RGBA8 and source coordinates remain logical pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed unsupported reason without changing the requested
+    /// descriptor or silently falling back to approximate GPU work.
+    pub const fn validate_exact_gpu_readback(&self) -> CaptureResult<()> {
+        if !matches!(
+            self.coordinate_space,
+            GpuSurfaceCoordinateSpace::LogicalDisplay
+        ) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::CoordinateSpace(self.coordinate_space),
+            });
+        }
+        if !matches!(self.format, GpuSurfaceFormat::Rgba8Unorm) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::OutputFormat(self.format),
+            });
+        }
+        if !matches!(
+            self.color_pipeline,
+            GpuSurfaceColorPipeline::PreserveEncoded | GpuSurfaceColorPipeline::LinearSdr
+        ) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::ColorPipeline(self.color_pipeline),
+            });
+        }
+        if !matches!(
+            self.source_color_space,
+            GpuSurfaceSourceColorSpace::RgbFullG22P709
+        ) {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::SourceColorSpace(self.source_color_space),
+            });
+        }
+        if self.algorithm_revision.get() != GPU_SURFACE_ALGORITHM_REVISION.get() {
+            return Err(CaptureError::UnsupportedGpuSurface {
+                descriptor_id: self.id,
+                reason: GpuSurfaceUnsupportedReason::AlgorithmRevision(self.algorithm_revision),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Caller-supplied resource ledger for descriptor-keyed GPU readback rings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuReductionAdmission {
+    max_texture_bytes: u64,
+    slots_per_descriptor: NonZeroU32,
+}
+
+impl GpuReductionAdmission {
+    /// Define the byte budget and reusable asynchronous readback depth.
+    #[must_use]
+    pub const fn new(max_texture_bytes: u64, slots_per_descriptor: NonZeroU32) -> Self {
+        Self {
+            max_texture_bytes,
+            slots_per_descriptor,
+        }
+    }
+
+    /// Maximum admitted bytes across output UAVs and staging rings.
+    #[must_use]
+    pub const fn max_texture_bytes(self) -> u64 {
+        self.max_texture_bytes
+    }
+
+    /// Fixed asynchronous staging depth for every descriptor.
+    #[must_use]
+    pub const fn slots_per_descriptor(self) -> NonZeroU32 {
+        self.slots_per_descriptor
+    }
+
+    /// Validate a complete immutable plan and return its checked GPU bytes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported semantics, duplicate identities, regions outside
+    /// the source, checked byte overflow, and plans over the supplied budget.
+    pub fn admit(
+        self,
+        source_extent: CaptureExtent,
+        descriptors: &[GpuSurfaceDescriptor],
+    ) -> CaptureResult<u64> {
+        let mut bytes = 0_u64;
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            descriptor.validate_exact_gpu_readback()?;
+            if !descriptor
+                .source_region()
+                .fits_within(source_extent.width(), source_extent.height())
+            {
+                return Err(CaptureError::GpuSurfaceRegionOutOfBounds {
+                    descriptor_id: descriptor.id(),
+                    source_width: source_extent.width(),
+                    source_height: source_extent.height(),
+                });
+            }
+            if descriptors[..index]
+                .iter()
+                .any(|candidate| candidate.id() == descriptor.id())
+            {
+                return Err(CaptureError::DuplicateGpuSurfaceDescriptor {
+                    descriptor_id: descriptor.id(),
+                });
+            }
+            let texture_count = u64::from(self.slots_per_descriptor.get()) + 1;
+            let route = checked_gpu_surface_bytes(descriptor.output_extent())?
+                .checked_mul(texture_count)
+                .ok_or(CaptureError::GeometryOverflow {
+                    operation: "account GPU reduction readback ring",
+                    width: descriptor.output_extent().width(),
+                    height: descriptor.output_extent().height(),
+                })?;
+            bytes = bytes
+                .checked_add(route)
+                .ok_or(CaptureError::GeometryOverflow {
+                    operation: "account GPU reduction plan",
+                    width: descriptor.output_extent().width(),
+                    height: descriptor.output_extent().height(),
+                })?;
+        }
+        if bytes > self.max_texture_bytes {
+            return Err(CaptureError::GpuSurfaceBudgetExceeded {
+                requested_bytes: bytes,
+                budget_bytes: self.max_texture_bytes,
+            });
+        }
+        Ok(bytes)
+    }
+}
+
+/// Immutable provenance for one descriptor-keyed GPU reduction readback.
+#[derive(Clone, Debug)]
+pub struct GpuReductionProvenance {
+    /// Complete physical descriptor represented by the returned bytes.
+    pub descriptor: Arc<GpuSurfaceDescriptor>,
+    /// Committed plan generation that authorized the reduction.
+    pub plan_generation: GpuSurfacePlanGeneration,
+    /// Physical adapter that executed the reduction.
+    pub adapter_luid: GpuAdapterLuid,
+    /// Stable display source id.
+    pub source_id: Arc<str>,
+    /// Attached-output topology generation.
+    pub topology_generation: u64,
+    /// Desktop Duplication session generation.
+    pub duplication_generation: u64,
+    /// Native acquisition sequence reduced by the shader.
+    pub source_sequence: u64,
+    /// Native acquisition time.
+    pub captured_at: Instant,
+    /// Time the staging result became CPU-readable.
+    pub completed_at: Instant,
+    /// Last instant at which this result may be delivered.
+    pub freshness_deadline: Instant,
+    /// Native scanout extent feeding the reduction.
+    pub native_source_extent: CaptureExtent,
+    /// Upright logical display extent represented by descriptor coordinates.
+    pub logical_source_extent: CaptureExtent,
+    /// Source color space consumed by the shader.
+    pub source_color_space: GpuSurfaceSourceColorSpace,
+    /// Pending scanout transform normalized by the shader.
+    pub source_rotation: DisplayRotation,
+    /// Whether the shader composed the separately reported cursor.
+    pub cursor_composed: bool,
 }
 
 /// Caller-supplied resource ledger for one prepared GPU Surface plan.
