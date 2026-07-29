@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 use hypercolor_core::input::screen::{
     InputPublicationDemandRevision, RegisteredScreenBranchDemand, ScreenAspectPolicy,
     ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
-    ScreenPublicationDemandError, ScreenPublicationDemandSnapshot, ScreenPublicationHub,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenPublicationDemandError, ScreenPublicationDemandSnapshot,
+    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{InputData, InputManager, InputSource};
 
@@ -14,6 +15,7 @@ fn branch(kind: ScreenPublicationKind) -> RegisteredScreenBranchDemand {
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             kind,
+            ScreenPublicationExecutorRequest::Cpu,
             ScreenExtentRequest::bounded(
                 NonZeroU32::new(7_680),
                 NonZeroU32::new(4_320),

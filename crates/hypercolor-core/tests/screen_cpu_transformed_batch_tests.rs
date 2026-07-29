@@ -16,9 +16,9 @@ use hypercolor_core::input::screen::{
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
     ScreenCursorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenPublicationKind, ScreenPublicationRequest, ScreenRational,
-    ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenUpscalePolicy, SourceScale,
+    ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenRational, ScreenReductionFilter, ScreenResourceApi,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -100,6 +100,7 @@ fn demand(
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::Cpu,
             extent_request,
             aspect,
             Arc::new(ScreenProcessingProfile::new(

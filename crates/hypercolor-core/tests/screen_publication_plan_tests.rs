@@ -17,9 +17,10 @@ use hypercolor_core::input::screen::{
     ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy,
     ScreenHdrPolicy, ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPlanBuilder,
     ScreenPlanError, ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
-    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationFreshness,
-    ScreenPublicationHealth, ScreenPublicationHubError, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationSlotPolicy,
+    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationFreshness, ScreenPublicationHealth,
+    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
+    ScreenPublicationRequest, ScreenPublicationResidency, ScreenPublicationSlotPolicy,
     ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
     ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
     ScreenSurfacePayload, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
@@ -179,8 +180,28 @@ fn registered(
     processing_profile: Arc<ScreenProcessingProfile>,
     requested_hz: u32,
 ) -> RegisteredScreenBranchDemand {
+    registered_with_executor(
+        selector,
+        kind,
+        ScreenPublicationExecutorRequest::Cpu,
+        extent,
+        aspect,
+        processing_profile,
+        requested_hz,
+    )
+}
+
+fn registered_with_executor(
+    selector: ScreenSourceSelector,
+    kind: ScreenPublicationKind,
+    executor: ScreenPublicationExecutorRequest,
+    extent: ScreenExtentRequest,
+    aspect: ScreenAspectPolicy,
+    processing_profile: Arc<ScreenProcessingProfile>,
+    requested_hz: u32,
+) -> RegisteredScreenBranchDemand {
     RegisteredScreenBranchDemand::new(
-        ScreenPublicationRequest::new(selector, kind, extent, aspect, processing_profile),
+        ScreenPublicationRequest::new(selector, kind, executor, extent, aspect, processing_profile),
         non_zero(requested_hz),
     )
 }
@@ -1477,9 +1498,10 @@ fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
         config,
     );
     let surface = resolve(
-        &registered(
+        &registered_with_executor(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::SourceNative,
             ScreenExtentRequest::Native,
             ScreenAspectPolicy::Contain,
             default_profile(),
@@ -1504,6 +1526,94 @@ fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
     assert_eq!(ledger.publication_subscriber_slot_bytes(), 0);
     assert_eq!(ledger.physical_plane_bytes(), 0);
     assert_eq!(ledger.total_bytes(), 0);
+}
+
+#[test]
+fn executor_identity_separates_physical_sharing_and_source_deltas() {
+    let mut config = source_config_parts(3840, 2160);
+    config.resources = ScreenBackendResourceIdentity::new(
+        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        9,
+        17,
+    );
+    let source = resolved_source_with_config(
+        ScreenSourceSelector::Configured,
+        "gpu-executor-split",
+        3,
+        5,
+        config,
+    );
+    let demand = |executor| {
+        resolve(
+            &registered_with_executor(
+                ScreenSourceSelector::Configured,
+                ScreenPublicationKind::Surface,
+                executor,
+                ScreenExtentRequest::Native,
+                ScreenAspectPolicy::Contain,
+                default_profile(),
+                60,
+            ),
+            &source,
+        )
+    };
+    let cpu = demand(ScreenPublicationExecutorRequest::Cpu);
+    let native = demand(ScreenPublicationExecutorRequest::SourceNative);
+
+    assert_eq!(
+        cpu.descriptor().required_residency(),
+        ScreenPublicationResidency::Cpu
+    );
+    assert_eq!(
+        native.descriptor().required_residency(),
+        ScreenPublicationResidency::PlatformGpu(PlatformGpuApi::Direct3d11)
+    );
+    assert_eq!(
+        cpu.descriptor().physical().executor(),
+        &ScreenPublicationExecutor::Cpu
+    );
+    assert!(matches!(
+        native.descriptor().physical().executor(),
+        ScreenPublicationExecutor::SourceNative(PlatformGpuApi::Direct3d11)
+    ));
+    assert_ne!(cpu.descriptor().physical(), native.descriptor().physical());
+
+    let mut grouped_builder = ScreenPlanBuilder::new();
+    let grouped = grouped_builder
+        .prepare(
+            [cpu.clone(), native.clone()],
+            None,
+            InputPublicationDemandRevision::new(1),
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("executor-distinct branches are admitted");
+    assert_eq!(grouped.candidate_plan().physical_reductions().len(), 2);
+
+    let mut delta_builder = ScreenPlanBuilder::new();
+    commit_demands(&mut delta_builder, [cpu], None).expect("CPU branch becomes active");
+    let revision = next_demand_revision(&delta_builder);
+    let mut preparing = delta_builder
+        .prepare(
+            [native],
+            None,
+            revision,
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("executor replacement prepares");
+    let ticket = preparing
+        .worker_ticket(&source.epoch().source_id)
+        .expect("source worker receives the executor transition");
+    assert_eq!(ticket.source_delta().added_physical_reductions().len(), 1);
+    assert!(
+        ticket
+            .source_delta()
+            .retained_physical_reductions()
+            .is_empty()
+    );
+    assert_eq!(ticket.source_delta().removed_physical_reductions().len(), 1);
 }
 
 #[test]

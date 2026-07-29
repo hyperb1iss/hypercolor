@@ -104,6 +104,13 @@ impl CpuSamplingTransform {
         if !matches!(config.resources().api(), ScreenResourceApi::Cpu) {
             return Err(CpuSamplingError::UnsupportedSourceResource);
         }
+        Self::try_from_cpu_executor(source)
+    }
+
+    pub(crate) fn try_from_cpu_executor(
+        source: &ResolvedScreenSource,
+    ) -> Result<Self, CpuSamplingError> {
+        let config = source.config();
         let geometry = config.geometry();
         let (crop_origin, crop_extent) = geometry
             .crop()

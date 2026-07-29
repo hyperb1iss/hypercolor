@@ -10,9 +10,9 @@ use hypercolor_core::input::screen::{
     ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenExactResource,
     ScreenExactResourceLedger, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenUpscalePolicy, SourceScale,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
 };
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
@@ -74,6 +74,7 @@ fn authority_binding_performs_no_heap_allocation() {
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::Cpu,
             ScreenExtentRequest::bounded(
                 Some(non_zero(13)),
                 Some(non_zero(7)),

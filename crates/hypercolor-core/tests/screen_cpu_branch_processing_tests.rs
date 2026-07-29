@@ -18,10 +18,11 @@ use hypercolor_core::input::screen::{
     ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration,
     ScreenLetterboxFill, ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError,
     ScreenPlanGeneration, ScreenProcessingProfile, ScreenProcessingProfileConfig,
-    ScreenProfileScalar, ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata,
-    ScreenPublicationRequest, ScreenResourceApi, ScreenResourceLifetime, ScreenSceneCutPolicy,
-    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry,
-    ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerPreparationTicket, SourceScale,
+    ScreenProfileScalar, ScreenPublicationExecutorRequest, ScreenPublicationHub,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest, ScreenResourceApi,
+    ScreenResourceLifetime, ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy, ScreenWorkerBinding,
+    ScreenWorkerPreparationTicket, SourceScale,
 };
 use hypercolor_types::canvas::SurfaceResourceError;
 
@@ -192,6 +193,7 @@ impl ZoneFixture {
                     columns: non_zero(columns),
                     rows: non_zero(rows),
                 },
+                ScreenPublicationExecutorRequest::Cpu,
                 ScreenExtentRequest::bounded(
                     Some(non_zero(width)),
                     Some(non_zero(height)),

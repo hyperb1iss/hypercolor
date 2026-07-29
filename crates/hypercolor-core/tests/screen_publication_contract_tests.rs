@@ -9,9 +9,9 @@ use hypercolor_core::input::screen::{
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCursorCapabilities,
     ScreenCursorPolicy, ScreenExtentRequest, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenTargetColorimetry, SourceScale,
+    ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenTargetColorimetry, SourceScale,
 };
 
 fn source(capabilities: ScreenCursorCapabilities) -> ResolvedScreenSource {
@@ -55,10 +55,30 @@ fn request(profile: ScreenProcessingProfile) -> ScreenPublicationRequest {
     ScreenPublicationRequest::new(
         ScreenSourceSelector::Configured,
         ScreenPublicationKind::Surface,
+        ScreenPublicationExecutorRequest::Cpu,
         ScreenExtentRequest::Native,
         ScreenAspectPolicy::Contain,
         Arc::new(profile),
     )
+}
+
+#[test]
+fn source_native_zones_are_rejected_before_transform_admission() {
+    let request = ScreenPublicationRequest::new(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Zones {
+            columns: std::num::NonZeroU32::MIN,
+            rows: std::num::NonZeroU32::MIN,
+        },
+        ScreenPublicationExecutorRequest::SourceNative,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        Arc::new(ScreenProcessingProfile::default()),
+    );
+    assert_eq!(
+        request.resolve(&source(ScreenCursorCapabilities::clean_only())),
+        Err(ScreenPublicationError::SourceNativeZonesUnsupported)
+    );
 }
 
 #[test]

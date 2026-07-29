@@ -366,6 +366,62 @@ pub enum ScreenPublicationResidency {
     PlatformGpu(PlatformGpuApi),
 }
 
+impl Ord for ScreenPublicationResidency {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Cpu, Self::Cpu) => Ordering::Equal,
+            (Self::Cpu, Self::PlatformGpu(_)) => Ordering::Less,
+            (Self::PlatformGpu(_), Self::Cpu) => Ordering::Greater,
+            (Self::PlatformGpu(left), Self::PlatformGpu(right)) => {
+                platform_gpu_api_cmp(left, right)
+            }
+        }
+    }
+}
+
+impl PartialOrd for ScreenPublicationResidency {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Executor requested by one logical publication consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenPublicationExecutorRequest {
+    /// Materialize exact host-addressable output, reading back a GPU source when needed.
+    Cpu,
+    /// Execute on the source's native storage API without host readback.
+    SourceNative,
+}
+
+/// Concrete executor selected after resolving the capture source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScreenPublicationExecutor {
+    /// CPU reduction over a host-addressable source or exact platform readback.
+    Cpu,
+    /// Native platform reduction retaining GPU ownership.
+    SourceNative(PlatformGpuApi),
+}
+
+impl Ord for ScreenPublicationExecutor {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Cpu, Self::Cpu) => Ordering::Equal,
+            (Self::Cpu, Self::SourceNative(_)) => Ordering::Less,
+            (Self::SourceNative(_), Self::Cpu) => Ordering::Greater,
+            (Self::SourceNative(left), Self::SourceNative(right)) => {
+                platform_gpu_api_cmp(left, right)
+            }
+        }
+    }
+}
+
+impl PartialOrd for ScreenPublicationExecutor {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Canonical finite scalar used by byte-changing processing controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScreenProfileScalar(u32);
@@ -1073,6 +1129,7 @@ impl PartialOrd for ScreenProcessingProfile {
 pub struct ScreenPublicationRequest {
     selector: ScreenSourceSelector,
     kind: ScreenPublicationKind,
+    executor: ScreenPublicationExecutorRequest,
     extent: ScreenExtentRequest,
     aspect: ScreenAspectPolicy,
     processing_profile: Arc<ScreenProcessingProfile>,
@@ -1084,6 +1141,7 @@ impl ScreenPublicationRequest {
     pub fn new(
         selector: ScreenSourceSelector,
         kind: ScreenPublicationKind,
+        executor: ScreenPublicationExecutorRequest,
         extent: ScreenExtentRequest,
         aspect: ScreenAspectPolicy,
         processing_profile: Arc<ScreenProcessingProfile>,
@@ -1091,6 +1149,7 @@ impl ScreenPublicationRequest {
         Self {
             selector,
             kind,
+            executor,
             extent,
             aspect,
             processing_profile,
@@ -1107,6 +1166,12 @@ impl ScreenPublicationRequest {
     #[must_use]
     pub const fn kind(&self) -> ScreenPublicationKind {
         self.kind
+    }
+
+    /// Requested execution lane.
+    #[must_use]
+    pub const fn executor(&self) -> ScreenPublicationExecutorRequest {
+        self.executor
     }
 
     /// Requested extent policy.
@@ -1163,6 +1228,8 @@ impl ScreenPublicationRequest {
             }
             ScreenCursorPolicy::Exclude | ScreenCursorPolicy::Include => {}
         }
+        let (executor, residency) =
+            resolve_executor(source.config.resources.api(), self.kind, self.executor)?;
         let geometry = resolve_geometry(source.config.logical_extent, self.extent, self.aspect)?;
         let color_pipeline = resolve_color_pipeline(
             &source.config,
@@ -1175,6 +1242,7 @@ impl ScreenPublicationRequest {
             physical: ScreenPhysicalReductionDescriptor {
                 source_epoch: source.epoch.clone(),
                 source: source.config.clone(),
+                executor,
                 source_region: geometry.source_region,
                 reduction_extent: geometry.output_extent,
                 cursor: self.processing_profile.cursor,
@@ -1183,6 +1251,7 @@ impl ScreenPublicationRequest {
                 target_pixel_format: self.processing_profile.target_pixel_format,
                 color_pipeline,
             },
+            residency,
             kind: self.kind,
             aspect: self.aspect,
             processing_profile: Arc::clone(&self.processing_profile),
@@ -1389,6 +1458,7 @@ impl ResolvedScreenGeometry {
 pub struct ScreenPhysicalReductionDescriptor {
     source_epoch: CaptureEpoch,
     source: ResolvedScreenSourceConfig,
+    executor: ScreenPublicationExecutor,
     source_region: ScreenSubpixelRect,
     reduction_extent: PixelExtent,
     cursor: ScreenCursorPolicy,
@@ -1412,6 +1482,12 @@ impl ScreenPhysicalReductionDescriptor {
     #[must_use]
     pub const fn source(&self) -> &ResolvedScreenSourceConfig {
         &self.source
+    }
+
+    /// Concrete executor owning this physical reduction.
+    #[must_use]
+    pub const fn executor(&self) -> &ScreenPublicationExecutor {
+        &self.executor
     }
 
     /// Exact selected source-space region.
@@ -1461,6 +1537,7 @@ impl Ord for ScreenPhysicalReductionDescriptor {
     fn cmp(&self, other: &Self) -> Ordering {
         capture_epoch_cmp(&self.source_epoch, &other.source_epoch)
             .then_with(|| self.source.cmp(&other.source))
+            .then_with(|| self.executor.cmp(&other.executor))
             .then_with(|| self.source_region.cmp(&other.source_region))
             .then_with(|| {
                 extent_key(self.reduction_extent).cmp(&extent_key(other.reduction_extent))
@@ -1486,6 +1563,7 @@ impl PartialOrd for ScreenPhysicalReductionDescriptor {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedScreenPublicationDescriptor {
     physical: ScreenPhysicalReductionDescriptor,
+    residency: ScreenPublicationResidency,
     kind: ScreenPublicationKind,
     aspect: ScreenAspectPolicy,
     processing_profile: Arc<ScreenProcessingProfile>,
@@ -1537,24 +1615,22 @@ impl ResolvedScreenPublicationDescriptor {
         &self.physical
     }
 
+    /// Concrete executor selected for this resolved branch.
+    #[must_use]
+    pub const fn executor(&self) -> &ScreenPublicationExecutor {
+        self.physical.executor()
+    }
+
     /// Publication kind.
     #[must_use]
     pub const fn kind(&self) -> ScreenPublicationKind {
         self.kind
     }
 
-    /// Storage residency required by the source API and publication kind.
+    /// Concrete storage residency produced by the selected executor.
     #[must_use]
     pub fn required_residency(&self) -> ScreenPublicationResidency {
-        match self.kind {
-            ScreenPublicationKind::Zones { .. } => ScreenPublicationResidency::Cpu,
-            ScreenPublicationKind::Surface => match self.source().resources().api() {
-                ScreenResourceApi::Cpu => ScreenPublicationResidency::Cpu,
-                ScreenResourceApi::PlatformGpu(api) => {
-                    ScreenPublicationResidency::PlatformGpu(api.clone())
-                }
-            },
-        }
+        self.residency.clone()
     }
 
     /// Geometric policy retained in the complete output contract.
@@ -1574,6 +1650,7 @@ impl Ord for ResolvedScreenPublicationDescriptor {
     fn cmp(&self, other: &Self) -> Ordering {
         self.physical
             .cmp(&other.physical)
+            .then_with(|| self.residency.cmp(&other.residency))
             .then_with(|| self.kind.cmp(&other.kind))
             .then_with(|| self.aspect.cmp(&other.aspect))
             .then_with(|| self.processing_profile.cmp(&other.processing_profile))
@@ -1677,6 +1754,9 @@ pub enum ScreenPublicationError {
     /// The resolved source was produced for another selector or exact identity.
     #[error("resolved screen source does not match the publication selector")]
     SourceSelectorMismatch,
+    /// Zone analysis always produces host-addressable colors.
+    #[error("screen zone publications require the CPU executor")]
+    SourceNativeZonesUnsupported,
     /// Cursor exclusion was requested from composed-only capture storage.
     #[error("screen source cannot exclude cursor pixels from composed storage")]
     CursorExclusionUnsupported,
@@ -1716,6 +1796,34 @@ pub enum ScreenPublicationError {
     /// Aspect-derived geometry exceeded the representable pixel extent.
     #[error("resolved screen publication geometry exceeds u32 dimensions")]
     GeometryOverflow,
+}
+
+fn resolve_executor(
+    source_api: &ScreenResourceApi,
+    kind: ScreenPublicationKind,
+    requested: ScreenPublicationExecutorRequest,
+) -> Result<(ScreenPublicationExecutor, ScreenPublicationResidency), ScreenPublicationError> {
+    match requested {
+        ScreenPublicationExecutorRequest::Cpu => Ok((
+            ScreenPublicationExecutor::Cpu,
+            ScreenPublicationResidency::Cpu,
+        )),
+        ScreenPublicationExecutorRequest::SourceNative => {
+            if matches!(kind, ScreenPublicationKind::Zones { .. }) {
+                return Err(ScreenPublicationError::SourceNativeZonesUnsupported);
+            }
+            Ok(match source_api {
+                ScreenResourceApi::Cpu => (
+                    ScreenPublicationExecutor::Cpu,
+                    ScreenPublicationResidency::Cpu,
+                ),
+                ScreenResourceApi::PlatformGpu(api) => (
+                    ScreenPublicationExecutor::SourceNative(api.clone()),
+                    ScreenPublicationResidency::PlatformGpu(api.clone()),
+                ),
+            })
+        }
+    }
 }
 
 fn resolve_color_pipeline(

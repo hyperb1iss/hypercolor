@@ -9,7 +9,9 @@ use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use hypercolor_core::effect::EffectRegistry;
-use hypercolor_core::input::screen::{PixelExtent, ScreenExtentRequest, ScreenPublicationKind};
+use hypercolor_core::input::screen::{
+    PixelExtent, ScreenExtentRequest, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+};
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserInputSource,
     BrowserPreviewId, InputData, InputGraphHandle, InputManager, InputSource, SourceIssue,
@@ -124,6 +126,10 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     );
     let canvas_only = demands.screen_branches();
     assert_eq!(canvas_only.len(), 1);
+    assert_eq!(
+        canvas_only[0].request().executor(),
+        ScreenPublicationExecutorRequest::Cpu
+    );
     let ScreenExtentRequest::Bounded(canvas_bounds) = canvas_only[0].request().extent() else {
         panic!("width-only canvas request remains bounded");
     };
@@ -156,6 +162,11 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
     );
     let mixed_branches = demands.screen_branches();
     assert_eq!(mixed_branches.len(), 2);
+    assert!(
+        mixed_branches
+            .iter()
+            .all(|branch| { branch.request().executor() == ScreenPublicationExecutorRequest::Cpu })
+    );
     let ScreenExtentRequest::Bounded(canvas_bounds) = mixed_branches[0].request().extent() else {
         panic!("two-axis canvas request remains bounded");
     };

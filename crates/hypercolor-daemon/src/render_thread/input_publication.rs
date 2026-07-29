@@ -8,8 +8,8 @@ use arc_swap::ArcSwap;
 use hypercolor_core::input::screen::{
     InputPublicationDemandRevision, PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy,
     ScreenCaptureDemand, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenProcessingProfile,
-    ScreenPublicationDemandSnapshot, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenPublicationDemandSnapshot, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
@@ -94,6 +94,7 @@ impl InputScreenBranchDemand {
         let request = ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::SourceNative,
             extent,
             ScreenAspectPolicy::Contain,
             Arc::new(ScreenProcessingProfile::default()),

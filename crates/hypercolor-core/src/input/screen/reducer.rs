@@ -23,8 +23,8 @@ use super::{
     ResolvedScreenColorPipeline, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenColorTuning,
     ScreenContentBarsPolicy, ScreenCursorPolicy, ScreenLetterboxFill,
-    ScreenPhysicalReductionDescriptor, ScreenPlanGeneration, ScreenPublicationKind,
-    ScreenReductionFilter, ScreenResourceApi, ScreenSmoothingPolicy, ScreenSourceReflection,
+    ScreenPhysicalReductionDescriptor, ScreenPlanGeneration, ScreenPublicationExecutor,
+    ScreenPublicationKind, ScreenReductionFilter, ScreenSmoothingPolicy, ScreenSourceReflection,
     ScreenSubpixelRect,
 };
 
@@ -685,6 +685,22 @@ fn prepared_cpu_sampling_view<'frame>(
         .map_err(Into::into)
 }
 
+fn empty_cpu_batch_report(
+    batch: &PreparedCpuReductionBatch,
+    frame: &CaptureFrame<RawCaptureSurface>,
+) -> Result<Option<CpuReductionBatchReport>, CpuReductionError> {
+    if !batch.is_empty() {
+        return Ok(None);
+    }
+    frame.validate_epoch(batch.source.epoch())?;
+    Ok(Some(CpuReductionBatchReport {
+        source_sequence: frame.metadata().sequence,
+        completed_jobs: 0,
+        scheduled_tiles: 0,
+        output_bytes: 0,
+    }))
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "preflight updates the exact shared receipt without allocating a temporary record"
@@ -876,10 +892,7 @@ impl CpuReductionExecutor {
         source: &ResolvedScreenSource,
         plan: &ScreenCapturePlan,
     ) -> Result<PreparedCpuReductionBatch, CpuReductionError> {
-        if let ScreenResourceApi::PlatformGpu(api) = source.config().resources().api() {
-            return Err(CpuFallbackNeed::PlatformReadback { api: api.clone() }.into());
-        }
-        let sampling_transform = CpuSamplingTransform::try_from_source(source)?;
+        let sampling_transform = CpuSamplingTransform::try_from_cpu_executor(source)?;
         let source_id = source.epoch().source_id.as_str();
         let physical_reductions = plan.physical_reductions();
         let first = physical_reductions.partition_point(|reduction| {
@@ -888,12 +901,24 @@ impl CpuReductionExecutor {
         let last = physical_reductions.partition_point(|reduction| {
             reduction.descriptor().source_epoch().source_id.as_str() <= source_id
         });
+        let cpu_reduction_count = physical_reductions[first..last]
+            .iter()
+            .filter(|reduction| {
+                matches!(
+                    reduction.descriptor().executor(),
+                    ScreenPublicationExecutor::Cpu
+                )
+            })
+            .count();
         let mut reductions = Vec::new();
         reductions
-            .try_reserve(last - first)
+            .try_reserve_exact(cpu_reduction_count)
             .map_err(|_| CpuReductionError::BatchPreparationAllocationFailed)?;
         for reduction in &physical_reductions[first..last] {
             let descriptor = reduction.descriptor();
+            if !matches!(descriptor.executor(), ScreenPublicationExecutor::Cpu) {
+                continue;
+            }
             if descriptor.source_epoch() != source.epoch() || descriptor.source() != source.config()
             {
                 return Err(CpuReductionError::SourceConfigMismatch);
@@ -977,6 +1002,9 @@ impl CpuReductionExecutor {
         validate_workspace_schedule(workspace, workspace_indices)?;
         validate_surface_schedule(batch, surface_jobs)?;
         validate_schedule_disjoint(workspace, workspace_indices, surface_jobs)?;
+        if let Some(report) = empty_cpu_batch_report(batch, frame)? {
+            return Ok(report);
+        }
         let view = prepared_cpu_sampling_view(batch, frame)?;
         let source_sequence = frame.metadata().sequence;
         let mut output_bytes = 0_u64;
@@ -1093,6 +1121,9 @@ impl CpuReductionExecutor {
         if !Arc::ptr_eq(&batch.reductions, &workspace.reductions) {
             return Err(CpuReductionError::WorkspaceBatchMismatch);
         }
+        if let Some(report) = empty_cpu_batch_report(batch, frame)? {
+            return Ok(report);
+        }
         let view = prepared_cpu_sampling_view(batch, frame)?;
         let source_sequence = frame.metadata().sequence;
         let mut output_bytes = 0_u64;
@@ -1184,6 +1215,9 @@ impl CpuReductionExecutor {
                 expected: batch.reductions.len(),
                 actual: destinations.len(),
             });
+        }
+        if let Some(report) = empty_cpu_batch_report(batch, frame)? {
+            return Ok(report);
         }
         let view = prepared_cpu_sampling_view(batch, frame)?;
         let mut output_bytes = 0_u64;

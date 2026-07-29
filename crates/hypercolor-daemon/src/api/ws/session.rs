@@ -25,8 +25,8 @@ use uuid::Uuid;
 
 use hypercolor_core::input::screen::{
     PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenExtentRequest,
-    ScreenProcessingProfile, ScreenPublicationKind, ScreenPublicationRequest, ScreenSourceSelector,
-    ScreenUpscalePolicy,
+    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
@@ -695,6 +695,7 @@ fn screen_branch_demand(
     let request = ScreenPublicationRequest::new(
         ScreenSourceSelector::Configured,
         kind,
+        ScreenPublicationExecutorRequest::Cpu,
         extent,
         ScreenAspectPolicy::Contain,
         Arc::new(ScreenProcessingProfile::default()),

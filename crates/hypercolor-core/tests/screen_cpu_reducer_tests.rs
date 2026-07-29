@@ -12,9 +12,9 @@ use hypercolor_core::input::screen::{
     ResolvedScreenColorPipeline, ResolvedScreenColorTransform, ResolvedScreenSource,
     ResolvedScreenSourceConfig, ScreenAspectPolicy, ScreenBackendResourceIdentity,
     ScreenCaptureBackend, ScreenColorTransformCapabilities, ScreenExtentRequest,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenTargetColorimetry, SourceScale,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry, SourceScale,
 };
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
@@ -96,6 +96,7 @@ fn resolve_pipeline(
     ScreenPublicationRequest::new(
         ScreenSourceSelector::Configured,
         ScreenPublicationKind::Surface,
+        ScreenPublicationExecutorRequest::Cpu,
         ScreenExtentRequest::Native,
         ScreenAspectPolicy::Contain,
         Arc::clone(&profile),

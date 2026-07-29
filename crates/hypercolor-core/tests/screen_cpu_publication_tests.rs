@@ -18,10 +18,11 @@ use hypercolor_core::input::screen::{
     ScreenColorTuning, ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger,
     ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration, ScreenPayloadKind,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenPublicationHealth, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry,
-    ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerPreparationTicket, SourceScale,
+    ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenReductionFilter, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy, ScreenWorkerBinding,
+    ScreenWorkerPreparationTicket, SourceScale,
 };
 use hypercolor_types::canvas::linear_to_srgb_u8;
 
@@ -112,6 +113,7 @@ fn demand_for_kind(
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Configured,
             kind,
+            ScreenPublicationExecutorRequest::Cpu,
             ScreenExtentRequest::bounded(
                 Some(non_zero(output_extent.width())),
                 Some(non_zero(output_extent.height())),

@@ -14,8 +14,8 @@ use super::hub::{
 use super::reducer::branch_requires_materialization;
 use super::{
     CaptureSourceId, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ScreenPhysicalReductionDescriptor, ScreenPublicationKind, ScreenPublicationResidency,
-    ScreenResourceApi,
+    ScreenPhysicalReductionDescriptor, ScreenPublicationExecutor, ScreenPublicationKind,
+    ScreenPublicationResidency,
 };
 
 const TARGET_PIXEL_BYTES: u64 = 4;
@@ -3145,8 +3145,8 @@ fn reduction_cpu_plane_count(
     reduction: &ScreenPhysicalReductionDemand,
 ) -> u64 {
     if !matches!(
-        reduction.descriptor().source().resources().api(),
-        ScreenResourceApi::Cpu
+        reduction.descriptor().executor(),
+        ScreenPublicationExecutor::Cpu
     ) {
         return 0;
     }

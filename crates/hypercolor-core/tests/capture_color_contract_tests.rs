@@ -12,10 +12,11 @@ use hypercolor_core::input::screen::{
     ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenCaptureBackend,
     ScreenColorTransformCapabilities, ScreenColorTuning, ScreenCursorCapabilities,
     ScreenExtentRequest, ScreenHdrPolicy, ScreenProcessingProfile, ScreenProcessingProfileConfig,
-    ScreenPublicationError, ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter,
-    ScreenResourceApi, ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
-    ScreenUnknownColorPolicy, ScreenUpscalePolicy, SourceScale,
+    ScreenPublicationError, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi, ScreenSceneCutPolicy,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry,
+    ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy, ScreenUpscalePolicy,
+    SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -131,6 +132,7 @@ fn request(
     ScreenPublicationRequest::new(
         ScreenSourceSelector::Configured,
         kind,
+        ScreenPublicationExecutorRequest::Cpu,
         extent,
         ScreenAspectPolicy::Contain,
         Arc::new(ScreenProcessingProfile::new(config)),
@@ -382,6 +384,7 @@ fn unknown_preservation_requires_a_byte_identical_surface_path() {
     invalid.push(ScreenPublicationRequest::new(
         ScreenSourceSelector::Configured,
         ScreenPublicationKind::Surface,
+        ScreenPublicationExecutorRequest::Cpu,
         ScreenExtentRequest::bounded(
             std::num::NonZeroU32::new(1_000),
             std::num::NonZeroU32::new(1_000),
