@@ -46,12 +46,16 @@ fn sample_transformed_layer(
 
     let mut target = Canvas::new(target_width, target_height);
     let sampler = LayerSampler::new(source.width(), source.height(), target_width, target_height);
+    let prepared = sampler.prepare(transform);
     for y in 0..target_height {
+        let (mut local_x, mut local_y) = prepared.row_origin(y);
         for x in 0..target_width {
             let color = match transform.fit {
-                FitMode::Tile | FitMode::Mirror => sampler.sample_repeated(source, x, y, transform),
-                FitMode::Contain | FitMode::Cover | FitMode::Stretch => sampler
-                    .source_normalized_for(x, y, transform)
+                FitMode::Tile | FitMode::Mirror => {
+                    prepared.sample_repeated(source, local_x, local_y)
+                }
+                FitMode::Contain | FitMode::Cover | FitMode::Stretch => prepared
+                    .source_normalized_for(x, y, local_x, local_y)
                     .map_or(Rgba::TRANSPARENT, |(nx, ny)| {
                         let mut color = source.sample_nearest(nx, ny);
                         if transform.sample_target_space {
@@ -61,6 +65,8 @@ fn sample_transformed_layer(
                     }),
             };
             target.set_pixel(x, y, color);
+            local_x += prepared.step_x.0;
+            local_y += prepared.step_x.1;
         }
     }
     target
@@ -84,64 +90,7 @@ impl LayerSampler {
         }
     }
 
-    fn source_normalized_for(
-        self,
-        x: u32,
-        y: u32,
-        transform: CompositionTransform,
-    ) -> Option<(f32, f32)> {
-        let geometry = self.fit_geometry(transform.fit);
-        let (local_x, local_y) = self.inverse_local_point(x, y, transform)?;
-        let u = local_x / geometry.draw_width + 0.5;
-        let v = local_y / geometry.draw_height + 0.5;
-        if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
-            return None;
-        }
-
-        if transform.sample_target_space {
-            return Some((
-                (x as f32 + 0.5) / self.target_width,
-                (y as f32 + 0.5) / self.target_height,
-            ));
-        }
-
-        let source_x = geometry.crop_x + u.mul_add(geometry.crop_width, -0.5);
-        let source_y = geometry.crop_y + v.mul_add(geometry.crop_height, -0.5);
-        Some((
-            normalize_source_axis(source_x, self.source_width),
-            normalize_source_axis(source_y, self.source_height),
-        ))
-    }
-
-    fn sample_repeated(
-        self,
-        source: &Canvas,
-        x: u32,
-        y: u32,
-        transform: CompositionTransform,
-    ) -> Rgba {
-        let Some((local_x, local_y)) = self.inverse_local_point(x, y, transform) else {
-            return Rgba::TRANSPARENT;
-        };
-        let anchor_x = transform.anchor.x * self.target_width;
-        let anchor_y = transform.anchor.y * self.target_height;
-        let source_x = repeated_axis(anchor_x + local_x, source.width(), transform.fit);
-        let source_y = repeated_axis(anchor_y + local_y, source.height(), transform.fit);
-        source_x
-            .zip(source_y)
-            .map_or(Rgba::TRANSPARENT, |(sx, sy)| source.get_pixel(sx, sy))
-    }
-
-    fn inverse_local_point(
-        self,
-        x: u32,
-        y: u32,
-        transform: CompositionTransform,
-    ) -> Option<(f32, f32)> {
-        let anchor_x = transform.anchor.x * self.target_width;
-        let anchor_y = transform.anchor.y * self.target_height;
-        let dx = x as f32 + 0.5 - anchor_x;
-        let dy = y as f32 + 0.5 - anchor_y;
+    fn prepare(self, transform: CompositionTransform) -> PreparedLayerSampler {
         let minimum_scale = if transform.sample_target_space {
             0.000_000_1
         } else {
@@ -149,14 +98,26 @@ impl LayerSampler {
         };
         let scale_x = transform.scale[0].max(minimum_scale);
         let scale_y = transform.scale[1].max(minimum_scale);
-        let cos = transform.rotation.cos();
-        let sin = transform.rotation.sin();
-        let local_x = cos.mul_add(dx, sin * dy) / scale_x;
-        let local_y = (-sin).mul_add(dx, cos * dy) / scale_y;
-        if local_x.is_finite() && local_y.is_finite() {
-            Some((local_x, local_y))
-        } else {
-            None
+        let (sin, cos) = transform.rotation.sin_cos();
+        let step_x = (cos / scale_x, -sin / scale_y);
+        let step_y = (sin / scale_x, cos / scale_y);
+        let dx = 0.5 - transform.anchor.x * self.target_width;
+        let dy = 0.5 - transform.anchor.y * self.target_height;
+
+        PreparedLayerSampler {
+            sampler: self,
+            transform,
+            geometry: self.fit_geometry(transform.fit),
+            origin: (
+                cos.mul_add(dx, sin * dy) / scale_x,
+                (-sin).mul_add(dx, cos * dy) / scale_y,
+            ),
+            step_x,
+            step_y,
+            repeat_anchor: (
+                transform.anchor.x * self.target_width,
+                transform.anchor.y * self.target_height,
+            ),
         }
     }
 
@@ -217,6 +178,77 @@ impl LayerSampler {
                 }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedLayerSampler {
+    sampler: LayerSampler,
+    transform: CompositionTransform,
+    geometry: FitGeometry,
+    origin: (f32, f32),
+    step_x: (f32, f32),
+    step_y: (f32, f32),
+    repeat_anchor: (f32, f32),
+}
+
+impl PreparedLayerSampler {
+    fn row_origin(self, y: u32) -> (f32, f32) {
+        let y = y as f32;
+        (
+            self.step_y.0.mul_add(y, self.origin.0),
+            self.step_y.1.mul_add(y, self.origin.1),
+        )
+    }
+
+    fn source_normalized_for(
+        self,
+        x: u32,
+        y: u32,
+        local_x: f32,
+        local_y: f32,
+    ) -> Option<(f32, f32)> {
+        if !local_x.is_finite() || !local_y.is_finite() {
+            return None;
+        }
+        let u = local_x / self.geometry.draw_width + 0.5;
+        let v = local_y / self.geometry.draw_height + 0.5;
+        if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+            return None;
+        }
+
+        if self.transform.sample_target_space {
+            return Some((
+                (x as f32 + 0.5) / self.sampler.target_width,
+                (y as f32 + 0.5) / self.sampler.target_height,
+            ));
+        }
+
+        let source_x = self.geometry.crop_x + u.mul_add(self.geometry.crop_width, -0.5);
+        let source_y = self.geometry.crop_y + v.mul_add(self.geometry.crop_height, -0.5);
+        Some((
+            normalize_source_axis(source_x, self.sampler.source_width),
+            normalize_source_axis(source_y, self.sampler.source_height),
+        ))
+    }
+
+    fn sample_repeated(self, source: &Canvas, local_x: f32, local_y: f32) -> Rgba {
+        if !local_x.is_finite() || !local_y.is_finite() {
+            return Rgba::TRANSPARENT;
+        }
+        let source_x = repeated_axis(
+            self.repeat_anchor.0 + local_x,
+            source.width(),
+            self.transform.fit,
+        );
+        let source_y = repeated_axis(
+            self.repeat_anchor.1 + local_y,
+            source.height(),
+            self.transform.fit,
+        );
+        source_x
+            .zip(source_y)
+            .map_or(Rgba::TRANSPARENT, |(sx, sy)| source.get_pixel(sx, sy))
     }
 }
 
