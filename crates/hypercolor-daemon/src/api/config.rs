@@ -821,11 +821,14 @@ async fn apply_capture_config_transaction(
     {
         warn!(%error, "Capture identity persistence task failed");
     }
-    state
+    if let Err(error) = state
         .scene_transactions
         .push(SceneTransaction::SetScreenCaptureConfigured(
             capture.enabled,
-        ));
+        ))
+    {
+        warn!(%error, "Render pipeline stopped before capture state publication");
+    }
     info!(
         enabled = capture.enabled,
         "Applied live screen capture config"
@@ -981,8 +984,8 @@ fn should_reconfigure_render(key: Option<&str>) -> bool {
 /// Apply render config changes live: FPS retune and canvas resize.
 ///
 /// FPS changes go directly to the `RenderLoop`. Canvas dimension changes
-/// are pushed as a `SceneTransaction::ResizeCanvas` and take effect at
-/// the next frame boundary without blocking the pipeline.
+/// are queued as an acknowledged layout transaction and take effect at the
+/// next frame boundary without blocking the pipeline.
 async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
     if !should_reconfigure_render(key) {
         return false;

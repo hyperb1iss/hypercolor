@@ -60,7 +60,9 @@ use super::scene_state::RenderSceneState;
 use super::screen_canvas::screen_data_to_surface;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::PendingDisplayFinalization;
-use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
+use super::sparkleflinger::{
+    PendingZoneSampling, SparkleFlinger, SparkleFlingerCanvasPreparation,
+};
 use super::{RenderThreadState, micros_u32};
 use crate::interaction_routing::InteractionRoutingControl;
 
@@ -1307,6 +1309,13 @@ pub(crate) struct RenderCaches {
     effect_delta_clock: EffectDeltaClock,
 }
 
+pub(crate) struct PreparedCanvasResize {
+    render_group_runtime: ZoneRuntime,
+    sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
+    #[cfg(feature = "wgpu")]
+    display_sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct EffectDeltaClock {
     retained_delta: Duration,
@@ -1478,6 +1487,7 @@ impl ComposeRuntime<'_> {
                 .scene_runtime
                 .active_display_group_descriptors,
             registry,
+            authoritative_spatial_engine: Some(&scene_snapshot.spatial_engine),
             inputs: ZoneFrameInputs {
                 delta_secs,
                 audio: &inputs.audio,
@@ -1760,12 +1770,11 @@ impl RenderCaches {
         }
     }
 
-    /// Rebuild surface pools and clear cached canvases for a canvas resize.
-    ///
-    /// Called at the frame boundary when a `ResizeCanvas` transaction is drained.
-    /// Existing published surfaces stay valid until their leases drop; new
-    /// dequeues get the updated dimensions.
-    pub(crate) fn apply_canvas_resize(&mut self, width: u32, height: u32) -> Result<()> {
+    pub(crate) fn prepare_canvas_resize(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<PreparedCanvasResize> {
         let render_group_runtime = match self.render_group_runtime.asset_library() {
             Some(asset_library) => {
                 ZoneRuntime::try_with_asset_library(width, height, asset_library)?
@@ -1786,6 +1795,15 @@ impl RenderCaches {
             sparkleflinger_preparation.force_cpu_fallback(width, height)?;
             display_sparkleflinger_preparation.force_cpu_fallback(width, height)?;
         }
+        Ok(PreparedCanvasResize {
+            render_group_runtime,
+            sparkleflinger_preparation,
+            #[cfg(feature = "wgpu")]
+            display_sparkleflinger_preparation,
+        })
+    }
+
+    pub(crate) fn commit_canvas_resize(&mut self, prepared: PreparedCanvasResize) {
         self.deferred_sampling
             .clear_for_canvas_resize(&mut self.sparkleflinger);
         #[cfg(feature = "wgpu")]
@@ -1794,15 +1812,14 @@ impl RenderCaches {
                 .discard_pending_display_finalization(pending.pending);
         }
         self.sparkleflinger
-            .apply_canvas_resize(sparkleflinger_preparation);
+            .apply_canvas_resize(prepared.sparkleflinger_preparation);
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
-            .apply_canvas_resize(display_sparkleflinger_preparation);
-        self.render_group_runtime = render_group_runtime;
+            .apply_canvas_resize(prepared.display_sparkleflinger_preparation);
+        self.render_group_runtime = prepared.render_group_runtime;
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.output_artifacts.reset_for_canvas_resize();
-        Ok(())
     }
 
     pub(crate) fn render_surface_snapshot(

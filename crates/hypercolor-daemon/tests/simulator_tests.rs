@@ -9,7 +9,9 @@ use hypercolor_core::scene::make_scene;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_transactions::apply_layout_update;
+use hypercolor_daemon::scene_transactions::{
+    SceneTransaction, SceneTransactionQueue, apply_layout_update,
+};
 use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
@@ -23,6 +25,31 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct LayoutAcknowledger(tokio::task::JoinHandle<()>);
+
+impl Drop for LayoutAcknowledger {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn spawn_layout_acknowledger(queue: SceneTransactionQueue) -> LayoutAcknowledger {
+    LayoutAcknowledger(tokio::spawn(async move {
+        let _consumer = queue.consumer();
+        loop {
+            for transaction in queue.drain() {
+                match transaction {
+                    SceneTransaction::ApplyLayout(transaction) => transaction.accept(),
+                    transaction => queue
+                        .push(transaction)
+                        .expect("test transaction queue should remain open"),
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }))
+}
 
 fn simulator_config(enabled: bool) -> SimulatedDisplayConfig {
     SimulatedDisplayConfig {
@@ -367,6 +394,7 @@ async fn simulated_display_create_rejects_invalid_resource_dimensions() {
 #[tokio::test]
 async fn simulated_display_crud_routes_update_runtime_state() {
     let (state, _tempdir) = isolated_state();
+    let _layout_acknowledger = spawn_layout_acknowledger(state.scene_transactions.clone());
     let app = api::build_router(Arc::clone(&state), None);
 
     let created = body_json(

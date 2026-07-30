@@ -86,7 +86,9 @@ pub(super) fn combine_led_group_layouts(groups: &[Zone], width: u32, height: u32
     layout
 }
 
-pub(super) fn combined_led_state(layout: SpatialLayout) -> (Arc<SpatialLayout>, SpatialEngine) {
-    let engine = SpatialEngine::new(layout);
-    (engine.layout(), engine)
+pub(super) fn combined_led_state(
+    layout: SpatialLayout,
+) -> Result<(Arc<SpatialLayout>, SpatialEngine), hypercolor_core::spatial::SpatialPlanError> {
+    let engine = SpatialEngine::try_new(layout)?;
+    Ok((engine.layout(), engine))
 }

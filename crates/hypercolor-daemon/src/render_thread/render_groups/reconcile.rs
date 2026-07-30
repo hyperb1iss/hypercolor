@@ -10,7 +10,7 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use super::ZoneRuntime;
 use super::group_state::{
-    combine_led_group_layouts, combined_led_state, desired_media_asset_ids, empty_group_layout,
+    combine_led_group_layouts, combined_led_state, desired_media_asset_ids,
     group_contributes_to_scene_canvas, group_publishes_direct_canvas,
 };
 use super::projection::build_group_projection;
@@ -21,6 +21,12 @@ use crate::render_thread::scene_dependency::SceneDependencyKey;
 /// needs room for watch channel + in-flight display encode.
 const DIRECT_SURFACE_POOL_INITIAL_SLOTS: usize = 6;
 const DIRECT_SURFACE_POOL_MAX_SLOTS: usize = 32;
+
+struct PreparedSpatialState {
+    engines: HashMap<ZoneId, SpatialEngine>,
+    combined_layout: Arc<hypercolor_types::spatial::SpatialLayout>,
+    combined_engine: SpatialEngine,
+}
 
 impl ZoneRuntime {
     pub(crate) fn effect_registry_snapshot(
@@ -56,10 +62,8 @@ impl ZoneRuntime {
         self.last_effect_error = None;
         self.recovered_effect_error = None;
         self.layer_runtime.clear();
-        let (layout, engine) =
-            combined_led_state(empty_group_layout(self.scene_width, self.scene_height));
-        self.combined_led_layout = layout;
-        self.combined_led_spatial_engine = engine;
+        self.combined_led_layout = self.empty_led_spatial_engine.layout();
+        self.combined_led_spatial_engine = self.empty_led_spatial_engine.clone();
     }
 
     pub(super) fn has_inactive_group_resources(&self) -> bool {
@@ -81,10 +85,14 @@ impl ZoneRuntime {
         dependency_key: SceneDependencyKey,
         registry: &EffectRegistry,
         display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
+        authoritative_spatial_engine: Option<&SpatialEngine>,
     ) -> Result<()> {
         if self.reconciled_dependency_key == Some(dependency_key) {
             return Ok(());
         }
+
+        let prepared_spatial_state =
+            self.prepare_spatial_state(groups, authoritative_spatial_engine)?;
 
         self.effect_pool
             .reconcile(groups, registry, display_descriptors)?;
@@ -125,10 +133,11 @@ impl ZoneRuntime {
             if group_publishes_direct_canvas(group) {
                 self.ensure_direct_surface_pool(group)?;
             }
-            self.ensure_spatial_engine(group);
         }
 
-        self.reconcile_combined_led_state(groups);
+        self.spatial_engines = prepared_spatial_state.engines;
+        self.combined_led_layout = prepared_spatial_state.combined_layout;
+        self.combined_led_spatial_engine = prepared_spatial_state.combined_engine;
         self.reconciled_dependency_key = Some(dependency_key);
 
         Ok(())
@@ -181,37 +190,53 @@ impl ZoneRuntime {
         Ok(())
     }
 
-    fn ensure_spatial_engine(&mut self, group: &Zone) {
-        let needs_engine = self
-            .spatial_engines
-            .get(&group.id)
-            .is_none_or(|engine| engine.layout().as_ref() != &group.layout);
-        if needs_engine {
-            self.spatial_engines
-                .insert(group.id, SpatialEngine::new(group.layout.clone()));
+    fn prepare_spatial_state(
+        &self,
+        groups: &[Zone],
+        authoritative_spatial_engine: Option<&SpatialEngine>,
+    ) -> Result<PreparedSpatialState> {
+        let mut engines = HashMap::with_capacity(groups.len());
+        for group in groups {
+            let engine = if let Some(authoritative_engine) = authoritative_spatial_engine
+                .filter(|engine| engine.layout().as_ref() == &group.layout)
+            {
+                authoritative_engine.clone()
+            } else if let Some(existing) = self
+                .spatial_engines
+                .get(&group.id)
+                .filter(|engine| engine.layout().as_ref() == &group.layout)
+            {
+                existing.clone()
+            } else {
+                SpatialEngine::try_new(group.layout.clone())?
+            };
+            engines.insert(group.id, engine);
         }
-    }
 
-    fn reconcile_combined_led_state(&mut self, groups: &[Zone]) {
         let mut contributing_groups = groups
             .iter()
             .filter(|group| group_contributes_to_scene_canvas(group));
         if let Some(group) = contributing_groups.next()
             && contributing_groups.next().is_none()
-            && let Some(engine) = self.spatial_engines.get(&group.id)
+            && let Some(engine) = engines.get(&group.id)
         {
             let engine = engine.clone();
-            self.combined_led_layout = engine.layout();
-            self.combined_led_spatial_engine = engine;
-            return;
+            return Ok(PreparedSpatialState {
+                engines,
+                combined_layout: engine.layout(),
+                combined_engine: engine,
+            });
         }
 
         let (layout, engine) = combined_led_state(combine_led_group_layouts(
             groups,
             self.scene_width,
             self.scene_height,
-        ));
-        self.combined_led_layout = layout;
-        self.combined_led_spatial_engine = engine;
+        ))?;
+        Ok(PreparedSpatialState {
+            engines,
+            combined_layout: layout,
+            combined_engine: engine,
+        })
     }
 }

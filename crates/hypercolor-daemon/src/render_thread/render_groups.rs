@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 use hypercolor_core::asset::AssetLibrary;
@@ -10,6 +11,7 @@ use hypercolor_core::effect::{EffectPool, EffectRegistry};
 #[cfg(test)]
 use hypercolor_core::input::ScreenData;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_core::spatial::SpatialPlanError;
 #[cfg(test)]
 use hypercolor_core::spatial::sample_led;
 use hypercolor_types::asset::AssetId;
@@ -106,8 +108,17 @@ pub(crate) struct ZoneRuntime {
     layer_runtime: LayerRuntimeRegistry,
     combined_led_layout: Arc<SpatialLayout>,
     combined_led_spatial_engine: SpatialEngine,
+    empty_led_spatial_engine: SpatialEngine,
     scene_width: u32,
     scene_height: u32,
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum ZoneRuntimePreparationError {
+    #[error(transparent)]
+    Surface(#[from] SurfaceResourceError),
+    #[error(transparent)]
+    Spatial(#[from] SpatialPlanError),
 }
 
 impl ZoneRuntime {
@@ -120,7 +131,7 @@ impl ZoneRuntime {
     pub(crate) fn try_new(
         scene_width: u32,
         scene_height: u32,
-    ) -> Result<Self, SurfaceResourceError> {
+    ) -> Result<Self, ZoneRuntimePreparationError> {
         Self::try_with_scene_surface_pool(
             scene_width,
             scene_height,
@@ -132,7 +143,7 @@ impl ZoneRuntime {
     pub(crate) fn try_new_preview(
         scene_width: u32,
         scene_height: u32,
-    ) -> Result<Self, SurfaceResourceError> {
+    ) -> Result<Self, ZoneRuntimePreparationError> {
         Self::try_with_scene_surface_pool(
             scene_width,
             scene_height,
@@ -146,9 +157,10 @@ impl ZoneRuntime {
         scene_height: u32,
         initial_slots: usize,
         max_slots: usize,
-    ) -> Result<Self, SurfaceResourceError> {
+    ) -> Result<Self, ZoneRuntimePreparationError> {
         let (combined_led_layout, combined_led_spatial_engine) =
-            combined_led_state(empty_group_layout(scene_width, scene_height));
+            combined_led_state(empty_group_layout(scene_width, scene_height))?;
+        let empty_led_spatial_engine = combined_led_spatial_engine.clone();
         let mut scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
             SurfaceDescriptor::rgba8888(scene_width, scene_height),
             initial_slots,
@@ -184,6 +196,7 @@ impl ZoneRuntime {
             layer_runtime: LayerRuntimeRegistry::default(),
             combined_led_layout,
             combined_led_spatial_engine,
+            empty_led_spatial_engine,
             scene_width,
             scene_height,
         })
@@ -193,11 +206,13 @@ impl ZoneRuntime {
         &mut self,
         scene_width: u32,
         scene_height: u32,
-    ) -> Result<(), SurfaceResourceError> {
+    ) -> Result<(), ZoneRuntimePreparationError> {
         if self.scene_width == scene_width && self.scene_height == scene_height {
             return Ok(());
         }
 
+        let (empty_led_layout, empty_led_spatial_engine) =
+            combined_led_state(empty_group_layout(scene_width, scene_height))?;
         let mut scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
             SurfaceDescriptor::rgba8888(scene_width, scene_height),
             self.scene_surface_pool_initial_slots,
@@ -215,9 +230,9 @@ impl ZoneRuntime {
         self.scene_surface_pool = scene_surface_pool;
         self.retained_frame = None;
         self.reconciled_dependency_key = None;
-        let (layout, engine) = combined_led_state(empty_group_layout(scene_width, scene_height));
-        self.combined_led_layout = layout;
-        self.combined_led_spatial_engine = engine;
+        self.combined_led_layout = empty_led_layout;
+        self.combined_led_spatial_engine = empty_led_spatial_engine.clone();
+        self.empty_led_spatial_engine = empty_led_spatial_engine;
         Ok(())
     }
 
@@ -235,7 +250,7 @@ impl ZoneRuntime {
         scene_width: u32,
         scene_height: u32,
         asset_library: Arc<RwLock<AssetLibrary>>,
-    ) -> Result<Self, SurfaceResourceError> {
+    ) -> Result<Self, ZoneRuntimePreparationError> {
         let mut runtime = Self::try_new(scene_width, scene_height)?;
         runtime
             .effect_pool
@@ -248,7 +263,7 @@ impl ZoneRuntime {
         scene_width: u32,
         scene_height: u32,
         asset_library: Arc<RwLock<AssetLibrary>>,
-    ) -> Result<Self, SurfaceResourceError> {
+    ) -> Result<Self, ZoneRuntimePreparationError> {
         let mut runtime = Self::try_new_preview(scene_width, scene_height)?;
         runtime
             .effect_pool

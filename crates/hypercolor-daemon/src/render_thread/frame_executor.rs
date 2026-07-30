@@ -29,6 +29,7 @@ use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_gene
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::OutputFrameSourceKind;
+use crate::scene_transactions::{LayoutTransactionRejection, SceneTransaction};
 
 #[expect(
     clippy::too_many_lines,
@@ -55,32 +56,53 @@ pub(crate) async fn execute_frame(
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
-    let pending_transactions = scene
-        .render_state
-        .drain_transactions(&state.scene_transactions);
-    if let Some((width, height)) = pending_transactions.resize {
-        match render.apply_canvas_resize(width, height) {
-            Ok(()) => {
-                if let Some(spatial_engine) = pending_transactions.spatial_engine {
-                    scene.render_state.replace_spatial_engine(spatial_engine);
-                }
-                state.canvas_dims.set(width, height);
-                frame_loop.throttle.reset_for_canvas_resize();
-                info!(width, height, "Applied live canvas resize");
+    for transaction in state.scene_transactions.drain() {
+        match transaction {
+            SceneTransaction::SetScreenCaptureConfigured(configured) => {
+                scene.render_state.set_screen_capture_configured(configured);
             }
-            Err(error) => {
-                warn!(
-                    %error,
-                    requested_width = width,
-                    requested_height = height,
-                    active_width = state.canvas_dims.width(),
-                    active_height = state.canvas_dims.height(),
-                    "Rejected live canvas resize because resources could not be prepared"
-                );
+            SceneTransaction::ApplyLayout(transaction) => {
+                if transaction.is_cancelled() {
+                    continue;
+                }
+                let spatial_engine = transaction.spatial_engine().clone();
+                let layout = spatial_engine.layout();
+                let width = layout.canvas_width;
+                let height = layout.canvas_height;
+                let needs_resize =
+                    state.canvas_dims.width() != width || state.canvas_dims.height() != height;
+                let prepared_resize = if needs_resize {
+                    match render.prepare_canvas_resize(width, height) {
+                        Ok(prepared) => Some(prepared),
+                        Err(error) => {
+                            warn!(
+                                %error,
+                                requested_width = width,
+                                requested_height = height,
+                                active_width = state.canvas_dims.width(),
+                                active_height = state.canvas_dims.height(),
+                                "Rejected live layout because render resources could not be prepared"
+                            );
+                            transaction.reject(LayoutTransactionRejection::PreparationFailed {
+                                message: error.to_string(),
+                            });
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(prepared_resize) = prepared_resize {
+                    render.commit_canvas_resize(prepared_resize);
+                    state.canvas_dims.set(width, height);
+                    frame_loop.throttle.reset_for_canvas_resize();
+                    info!(width, height, "Applied live canvas resize");
+                }
+                scene.render_state.replace_spatial_engine(spatial_engine);
+                transaction.accept();
             }
         }
-    } else if let Some(spatial_engine) = pending_transactions.spatial_engine {
-        scene.render_state.replace_spatial_engine(spatial_engine);
     }
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,

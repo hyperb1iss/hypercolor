@@ -244,7 +244,10 @@ impl DaemonState {
         info!("Device metrics snapshot store created");
 
         // ── Spatial Engine ──────────────────────────────────────────────
-        let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout.clone())));
+        let spatial_engine = Arc::new(RwLock::new(
+            SpatialEngine::try_new(default_layout.clone())
+                .context("failed to prepare the default spatial layout")?,
+        ));
         info!("Spatial engine created (empty default layout)");
 
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");

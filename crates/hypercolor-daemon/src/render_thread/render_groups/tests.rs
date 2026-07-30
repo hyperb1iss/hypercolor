@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_4;
+use std::sync::Arc;
 
 use anyhow::Result;
 use gif::{Encoder, Frame, Repeat};
@@ -74,15 +75,18 @@ fn wide_runtime_admits_one_scene_surface_without_eager_fanout() {
 #[test]
 fn failed_scene_resize_preserves_last_good_geometry() {
     let mut runtime = ZoneRuntime::try_new(4, 4).expect("small runtime should construct");
+    let previous_plan = runtime.combined_led_spatial_engine.sampling_plan();
 
     let result = runtime.try_resize_scene(u32::MAX, u32::MAX);
 
     assert!(matches!(
         result,
-        Err(SurfaceResourceError::ByteLengthOverflow {
-            width: u32::MAX,
-            height: u32::MAX,
-        })
+        Err(ZoneRuntimePreparationError::Spatial(
+            SpatialPlanError::CanvasByteLengthOverflow {
+                width: u32::MAX,
+                height: u32::MAX,
+            }
+        ))
     ));
     assert_eq!(runtime.scene_width, 4);
     assert_eq!(runtime.scene_height, 4);
@@ -90,6 +94,104 @@ fn failed_scene_resize_preserves_last_good_geometry() {
         runtime.scene_surface_pool.descriptor(),
         SurfaceDescriptor::rgba8888(4, 4)
     );
+    assert!(Arc::ptr_eq(
+        &previous_plan,
+        &runtime.combined_led_spatial_engine.sampling_plan()
+    ));
+}
+
+#[test]
+fn authoritative_group_reuses_the_exact_prepared_sampling_plan() {
+    let mut runtime = ZoneRuntime::try_new(4, 4).expect("small runtime should construct");
+    let mut group = sample_group(4, 4);
+    make_color_fill_group(&mut group);
+    group.layout.zones.push(point_zone("primary"));
+    let authoritative =
+        SpatialEngine::try_new(group.layout.clone()).expect("group layout should be addressable");
+    group.layout = authoritative.layout().as_ref().clone();
+    let authoritative_plan = authoritative.sampling_plan();
+
+    runtime
+        .reconcile(
+            std::slice::from_ref(&group),
+            Some(SceneId::DEFAULT),
+            SceneDependencyKey::new(1, 1),
+            &EffectRegistry::default(),
+            &HashMap::new(),
+            Some(&authoritative),
+        )
+        .expect("valid authoritative group should reconcile");
+
+    let group_engine = runtime
+        .spatial_engines
+        .get(&group.id)
+        .expect("group engine should be installed");
+    assert!(Arc::ptr_eq(
+        &authoritative_plan,
+        &group_engine.sampling_plan()
+    ));
+    assert!(Arc::ptr_eq(
+        &authoritative_plan,
+        &runtime.combined_led_spatial_engine.sampling_plan()
+    ));
+}
+
+#[test]
+fn custom_group_plan_failure_preserves_every_installed_spatial_plan() {
+    let mut runtime = ZoneRuntime::try_new(4, 4).expect("small runtime should construct");
+    let mut group = sample_group(4, 4);
+    make_color_fill_group(&mut group);
+    group.layout.zones.push(point_zone("custom"));
+    let original_dependency = SceneDependencyKey::new(1, 1);
+    runtime
+        .reconcile(
+            std::slice::from_ref(&group),
+            Some(SceneId::DEFAULT),
+            original_dependency,
+            &EffectRegistry::default(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("valid custom group should reconcile");
+    let original_group_plan = runtime
+        .spatial_engines
+        .get(&group.id)
+        .expect("group engine should be installed")
+        .sampling_plan();
+    let original_combined_plan = runtime.combined_led_spatial_engine.sampling_plan();
+
+    group.layout.default_sampling_mode = SamplingMode::GaussianArea {
+        sigma: 1.0,
+        radius: u32::MAX,
+    };
+    let result = runtime.reconcile(
+        std::slice::from_ref(&group),
+        Some(SceneId::DEFAULT),
+        SceneDependencyKey::new(2, 1),
+        &EffectRegistry::default(),
+        &HashMap::new(),
+        None,
+    );
+
+    assert!(matches!(
+        result,
+        Err(error)
+            if error.downcast_ref::<SpatialPlanError>()
+                == Some(&SpatialPlanError::GaussianKernelUnaddressable { radius: u32::MAX })
+    ));
+    assert_eq!(runtime.reconciled_dependency_key, Some(original_dependency));
+    assert!(Arc::ptr_eq(
+        &original_group_plan,
+        &runtime
+            .spatial_engines
+            .get(&group.id)
+            .expect("last good group engine should remain installed")
+            .sampling_plan()
+    ));
+    assert!(Arc::ptr_eq(
+        &original_combined_plan,
+        &runtime.combined_led_spatial_engine.sampling_plan()
+    ));
 }
 
 fn sample_group(width: u32, height: u32) -> Zone {
@@ -122,6 +224,23 @@ fn sample_group(width: u32, height: u32) -> Zone {
         controls_version: 0,
         layers_version: 0,
     }
+}
+
+fn make_color_fill_group(group: &mut Zone) {
+    group.effect_id = None;
+    group.layers = vec![hypercolor_types::layer::SceneLayer {
+        id: hypercolor_types::layer::SceneLayerId::new(),
+        name: None,
+        source: hypercolor_types::layer::LayerSource::ColorFill {
+            rgba: [1.0, 0.0, 0.0, 1.0],
+        },
+        blend: hypercolor_types::layer::LayerBlendMode::Replace,
+        opacity: 1.0,
+        transform: hypercolor_types::layer::LayerTransform::default(),
+        adjust: hypercolor_types::layer::LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }];
 }
 
 fn patterned_source_canvas(width: u32, height: u32) -> Canvas {
@@ -329,6 +448,7 @@ fn render_scene_for_test_with_screen(
         display_group_target_fps,
         display_group_descriptors: &HashMap::new(),
         registry,
+        authoritative_spatial_engine: None,
         inputs,
     };
     runtime.render_scene(context, &mut sparkleflinger, zones)

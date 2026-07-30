@@ -55,7 +55,7 @@ use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand,
     InputPublicationDemandRegistration, RenderThread, RenderThreadState,
 };
-use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
+use hypercolor_daemon::scene_transactions::{SceneTransactionQueue, apply_layout_update};
 use hypercolor_daemon::session::OutputPowerState;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -4000,11 +4000,14 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
         .expect("initial sampled color should exist");
     assert_eq!(initial_color, [255, 0, 0]);
 
-    state
-        .scene_transactions
-        .push(SceneTransaction::ReplaceSpatialEngine(SpatialEngine::new(
-            test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
-        )));
+    apply_layout_update(
+        &state.spatial_engine,
+        &state.scene_manager,
+        &state.scene_transactions,
+        test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
+    )
+    .await
+    .expect("renderer should acknowledge the layout update");
 
     let updated_color = tokio::time::timeout(Duration::from_secs(2), async {
         loop {

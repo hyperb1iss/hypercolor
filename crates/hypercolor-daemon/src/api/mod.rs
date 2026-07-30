@@ -454,7 +454,10 @@ impl AppState {
         let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
         let configured_max_fps_tier = ConfiguredFpsTier::new(FpsTier::Full);
-        let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
+        let spatial_engine = Arc::new(RwLock::new(
+            SpatialEngine::try_new(default_layout)
+                .expect("empty default spatial layout should always be addressable"),
+        ));
         let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
         let usb_protocol_configs = UsbProtocolConfigStore::new();
         let performance = Arc::new(RwLock::new(PerformanceTracker::default()));

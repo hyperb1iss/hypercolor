@@ -42,7 +42,7 @@ use hypercolor_core::types::event::InputButtonState;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_transactions::SceneTransaction;
+use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_daemon::session::{
     OutputPowerState, current_global_brightness, set_global_brightness,
 };
@@ -779,6 +779,43 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
         .await
         .expect("failed to read response body");
     serde_json::from_slice(&bytes).expect("failed to parse JSON body")
+}
+
+async fn request_with_layout_ack(
+    app: axum::Router,
+    request: Request<Body>,
+    scene_transactions: &SceneTransactionQueue,
+) -> (axum::response::Response, Vec<SpatialLayout>) {
+    let request = app.oneshot(request);
+    tokio::pin!(request);
+    let mut applied = Vec::new();
+    loop {
+        tokio::select! {
+            response = &mut request => {
+                return (
+                    response.expect("failed to execute request"),
+                    applied,
+                );
+            }
+            () = tokio::time::sleep(Duration::from_millis(1)) => {
+                let mut deferred = Vec::new();
+                for transaction in scene_transactions.drain() {
+                    match transaction {
+                        SceneTransaction::ApplyLayout(transaction) => {
+                            applied.push(transaction.spatial_engine().layout().as_ref().clone());
+                            transaction.accept();
+                        }
+                        transaction => deferred.push(transaction),
+                    }
+                }
+                for transaction in deferred {
+                    scene_transactions
+                        .push(transaction)
+                        .expect("test transaction queue should remain open");
+                }
+            }
+        }
+    }
 }
 
 /// Extract UTF-8 text body from a response.
@@ -1889,25 +1926,26 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
 
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
+    let mut applied_layouts = Vec::new();
 
     for (key, value) in [
         ("daemon.canvas_width", "1024"),
         ("daemon.canvas_height", "768"),
     ] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/config/set")
-                    .header("content-type", "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"key":"{key}","value":"{value}"}}"#
-                    )))
-                    .expect("failed to build request"),
-            )
-            .await
-            .expect("failed to execute request");
+        let (response, applied) = request_with_layout_ack(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"key":"{key}","value":"{value}"}}"#
+                )))
+                .expect("failed to build request"),
+            &state.scene_transactions,
+        )
+        .await;
+        applied_layouts.extend(applied);
 
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
@@ -1936,30 +1974,15 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     assert_eq!(config.daemon.canvas_width, 1024);
     assert_eq!(config.daemon.canvas_height, 768);
 
-    let transactions = state.scene_transactions.drain();
-    assert!(transactions.len() >= 4);
-    assert!(transactions.iter().any(|transaction| {
-        matches!(
-            transaction,
-            SceneTransaction::ReplaceSpatialEngine(engine)
-                if engine.layout().id == "default"
-                    && engine.layout().canvas_width == 1024
-                    && engine.layout().canvas_height == 768
-        )
+    assert_eq!(applied_layouts.len(), 2);
+    assert!(applied_layouts.iter().any(|layout| {
+        layout.id == "default" && layout.canvas_width == 1024 && layout.canvas_height == 768
     }));
-    assert!(transactions.iter().any(|transaction| {
-        matches!(
-            transaction,
-            SceneTransaction::ResizeCanvas { width, height }
-                if *width == 1024 && *height == 768
-        )
-    }));
-    assert!(transactions.iter().any(|transaction| {
-        matches!(
-            transaction,
-            SceneTransaction::ResizeCanvas { width, .. } if *width == 1024
-        )
-    }));
+    assert!(
+        applied_layouts
+            .iter()
+            .any(|layout| layout.canvas_width == 1024)
+    );
 }
 
 #[tokio::test]
@@ -7828,17 +7851,16 @@ async fn profile_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/profiles/{profile_id}/apply"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let (response, _) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/profiles/{profile_id}/apply"))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state.scene_transactions,
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
@@ -8471,17 +8493,16 @@ async fn layout_apply_updates_active_layout() {
         .expect("id should be string")
         .to_owned();
 
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/layouts/{layout_id}/apply"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let (apply_response, applied_layouts) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{layout_id}/apply"))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state.scene_transactions,
+    )
+    .await;
     assert_eq!(apply_response.status(), StatusCode::OK);
     let apply_json = body_json(apply_response).await;
     assert_eq!(apply_json["data"]["applied"], true);
@@ -8502,21 +8523,13 @@ async fn layout_apply_updates_active_layout() {
     assert_eq!(active_json["data"]["id"], layout_id);
     assert_eq!(active_json["data"]["name"], "Studio Layout");
 
-    let transactions = state.scene_transactions.drain();
     assert!(matches!(
-        transactions.first(),
-        Some(SceneTransaction::ReplaceSpatialEngine(engine))
-            if engine.layout().id == layout_id
-                && engine.layout().canvas_width == 640
-                && engine.layout().canvas_height == 360
+        applied_layouts.first(),
+        Some(layout)
+            if layout.id == layout_id
+                && layout.canvas_width == 640
+                && layout.canvas_height == 360
     ));
-    assert!(transactions.iter().any(|transaction| {
-        matches!(
-            transaction,
-            SceneTransaction::ResizeCanvas { width, height }
-                if *width == 640 && *height == 360
-        )
-    }));
 
     let list_response = app
         .oneshot(
@@ -8564,30 +8577,28 @@ async fn layout_delete_active_falls_back_to_default_layout() {
         .expect("id should be string")
         .to_owned();
 
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/layouts/{layout_id}/apply"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let (apply_response, _) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{layout_id}/apply"))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state.scene_transactions,
+    )
+    .await;
     assert_eq!(apply_response.status(), StatusCode::OK);
 
-    let delete_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/layouts/{layout_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let (delete_response, _) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/layouts/{layout_id}"))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state.scene_transactions,
+    )
+    .await;
     assert_eq!(delete_response.status(), StatusCode::OK);
 
     let active_response = app
@@ -9072,29 +9083,27 @@ async fn applying_effect_auto_applies_associated_layout() {
         .await
         .expect("failed to execute request");
 
-    let _ = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/layouts/{first_layout_id}/apply"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let _ = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{first_layout_id}/apply"))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state.scene_transactions,
+    )
+    .await;
 
-    let apply_effect_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let (apply_effect_response, _) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/effects/solid_color/apply")
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state.scene_transactions,
+    )
+    .await;
     assert_eq!(apply_effect_response.status(), StatusCode::OK);
     let apply_effect_json = body_json(apply_effect_response).await;
     assert_eq!(apply_effect_json["data"]["layout"]["applied"], true);

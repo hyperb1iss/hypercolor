@@ -4,6 +4,7 @@ use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGr
 use hypercolor_core::effect::media::MediaProducer;
 use hypercolor_core::effect::{EffectRegistry, FrameDataSources, InputSourceAvailability};
 use hypercolor_core::input::{InteractionData, ScreenData};
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
 use hypercolor_types::canvas::PublishedSurface;
@@ -96,6 +97,7 @@ pub(crate) struct RenderSceneContext<'a> {
     pub(crate) display_group_target_fps: &'a HashMap<ZoneId, u32>,
     pub(crate) display_group_descriptors: &'a HashMap<ZoneId, DisplayDescriptor>,
     pub(crate) registry: &'a EffectRegistry,
+    pub(crate) authoritative_spatial_engine: Option<&'a SpatialEngine>,
     pub(crate) inputs: ZoneFrameInputs<'a>,
 }
 

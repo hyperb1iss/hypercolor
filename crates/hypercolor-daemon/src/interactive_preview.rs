@@ -1171,6 +1171,7 @@ fn render_preview_scene(
         display_group_target_fps: &HashMap::new(),
         display_group_descriptors: display_descriptors,
         registry: &scene.registry,
+        authoritative_spatial_engine: None,
         inputs: ZoneFrameInputs {
             delta_secs,
             audio: input.audio(),

@@ -1,31 +1,143 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use tokio::sync::{Mutex, RwLock};
+use thiserror::Error;
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, oneshot};
 
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::spatial::SpatialLayout;
 
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum LayoutTransactionRejection {
+    #[error("render pipeline stopped before applying the layout")]
+    RendererStopped,
+    #[error("render pipeline rejected the layout: {message}")]
+    PreparationFailed { message: String },
+}
+
+#[derive(Debug, Error)]
+pub enum LayoutUpdateError {
+    #[error(transparent)]
+    SpatialPlan(#[from] SpatialPlanError),
+    #[error(transparent)]
+    Transaction(#[from] LayoutTransactionRejection),
+    #[error("layout update coordinator failed: {0}")]
+    Coordinator(String),
+}
+
 #[derive(Debug, Clone)]
+pub struct PreparedLayoutUpdate {
+    spatial_engine: SpatialEngine,
+}
+
+impl PreparedLayoutUpdate {
+    pub fn try_new(layout: SpatialLayout) -> Result<Self, SpatialPlanError> {
+        Ok(Self {
+            spatial_engine: SpatialEngine::try_new(layout)?,
+        })
+    }
+
+    #[must_use]
+    pub fn spatial_engine(&self) -> &SpatialEngine {
+        &self.spatial_engine
+    }
+
+    fn into_spatial_engine(self) -> SpatialEngine {
+        self.spatial_engine
+    }
+}
+
+#[derive(Debug)]
+pub struct ApplyLayoutTransaction {
+    spatial_engine: SpatialEngine,
+    acknowledgment: oneshot::Sender<Result<(), LayoutTransactionRejection>>,
+}
+
+impl ApplyLayoutTransaction {
+    #[must_use]
+    pub fn spatial_engine(&self) -> &SpatialEngine {
+        &self.spatial_engine
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.acknowledgment.is_closed()
+    }
+
+    #[doc(hidden)]
+    pub fn accept(self) {
+        let _ = self.acknowledgment.send(Ok(()));
+    }
+
+    #[doc(hidden)]
+    pub fn reject(self, rejection: LayoutTransactionRejection) {
+        let _ = self.acknowledgment.send(Err(rejection));
+    }
+}
+
+#[derive(Debug)]
 pub enum SceneTransaction {
-    ReplaceSpatialEngine(SpatialEngine),
+    ApplyLayout(ApplyLayoutTransaction),
     SetScreenCaptureConfigured(bool),
-    ResizeCanvas { width: u32, height: u32 },
+}
+
+#[derive(Default)]
+struct SceneTransactionQueueState {
+    pending: VecDeque<SceneTransaction>,
+    closed: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct SceneTransactionQueue {
-    inner: Arc<StdMutex<VecDeque<SceneTransaction>>>,
+    inner: Arc<StdMutex<SceneTransactionQueueState>>,
     layout_update_lock: Arc<Mutex<()>>,
 }
 
+pub struct LayoutUpdateGuard {
+    guard: Arc<OwnedMutexGuard<()>>,
+}
+
+impl Clone for LayoutUpdateGuard {
+    fn clone(&self) -> Self {
+        Self {
+            guard: Arc::clone(&self.guard),
+        }
+    }
+}
+
+pub struct SceneTransactionConsumer {
+    queue: SceneTransactionQueue,
+}
+
+impl Drop for SceneTransactionConsumer {
+    fn drop(&mut self) {
+        self.queue.close();
+    }
+}
+
 impl SceneTransactionQueue {
-    pub fn push(&self, transaction: SceneTransaction) {
-        self.inner
+    pub fn push(&self, transaction: SceneTransaction) -> Result<(), LayoutTransactionRejection> {
+        let mut state = self
+            .inner
             .lock()
-            .expect("scene transaction queue should lock")
-            .push_back(transaction);
+            .expect("scene transaction queue should lock");
+        if state.closed {
+            return Err(LayoutTransactionRejection::RendererStopped);
+        }
+        state.pending.push_back(transaction);
+        Ok(())
+    }
+
+    fn submit_layout(
+        &self,
+        spatial_engine: SpatialEngine,
+    ) -> Result<LayoutTransactionReceipt, LayoutTransactionRejection> {
+        let (acknowledgment, receipt) = oneshot::channel();
+        self.push(SceneTransaction::ApplyLayout(ApplyLayoutTransaction {
+            spatial_engine,
+            acknowledgment,
+        }))?;
+        Ok(LayoutTransactionReceipt(receipt))
     }
 
     #[must_use]
@@ -33,220 +145,110 @@ impl SceneTransactionQueue {
         self.inner
             .lock()
             .expect("scene transaction queue should lock")
+            .pending
             .drain(..)
             .collect()
     }
-}
 
-pub async fn apply_layout_update(
-    spatial_engine: &RwLock<SpatialEngine>,
-    scene_manager: &RwLock<SceneManager>,
-    scene_transactions: &SceneTransactionQueue,
-    layout: SpatialLayout,
-) -> Result<(), SpatialPlanError> {
-    let _transaction = scene_transactions.layout_update_lock.lock().await;
-    let canvas_width = layout.canvas_width;
-    let canvas_height = layout.canvas_height;
-    let (prepared_engine, needs_resize) = {
-        let mut spatial = spatial_engine.write().await;
-        let current = spatial.layout();
-        let needs_resize =
-            current.canvas_width != canvas_width || current.canvas_height != canvas_height;
-        spatial.try_update_layout(layout.clone())?;
-        (spatial.clone(), needs_resize)
-    };
-    {
-        let mut manager = scene_manager.write().await;
-        manager.sync_primary_group_layout(&layout);
-    }
-    scene_transactions.push(SceneTransaction::ReplaceSpatialEngine(prepared_engine));
-    if needs_resize {
-        scene_transactions.push(SceneTransaction::ResizeCanvas {
-            width: canvas_width,
-            height: canvas_height,
-        });
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use tokio::sync::RwLock;
-
-    use hypercolor_core::scene::SceneManager;
-    use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
-
-    use super::{SceneTransaction, SceneTransactionQueue, apply_layout_update};
-
-    fn test_layout(id: &str) -> SpatialLayout {
-        SpatialLayout {
-            id: id.into(),
-            name: id.into(),
-            description: None,
-            canvas_width: 320,
-            canvas_height: 200,
-            zones: Vec::new(),
-            default_sampling_mode: SamplingMode::Bilinear,
-            default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
-            version: 1,
+    #[must_use]
+    pub fn consumer(&self) -> SceneTransactionConsumer {
+        SceneTransactionConsumer {
+            queue: self.clone(),
         }
     }
 
-    #[test]
-    fn scene_transaction_queue_drains_in_submission_order() {
-        let queue = SceneTransactionQueue::default();
-        queue.push(SceneTransaction::SetScreenCaptureConfigured(true));
-        queue.push(SceneTransaction::ReplaceSpatialEngine(SpatialEngine::new(
-            test_layout("updated"),
-        )));
-
-        let transactions = queue.drain();
-        assert_eq!(transactions.len(), 2);
-        assert!(matches!(
-            transactions.first(),
-            Some(SceneTransaction::SetScreenCaptureConfigured(true))
-        ));
-        assert!(matches!(
-            transactions.get(1),
-            Some(SceneTransaction::ReplaceSpatialEngine(engine))
-                if engine.layout().id == "updated"
-        ));
-        assert!(queue.drain().is_empty());
+    pub async fn acquire_layout_update_guard(&self) -> LayoutUpdateGuard {
+        LayoutUpdateGuard {
+            guard: Arc::new(Arc::clone(&self.layout_update_lock).lock_owned().await),
+        }
     }
 
-    #[tokio::test]
-    async fn apply_layout_update_queues_resize_for_layout_canvas() {
-        let queue = SceneTransactionQueue::default();
-        let spatial_engine = RwLock::new(SpatialEngine::new(test_layout("initial")));
-        let scene_manager = RwLock::new(SceneManager::with_default());
-        let layout = SpatialLayout {
-            canvas_width: 640,
-            canvas_height: 360,
-            ..test_layout("updated")
+    pub fn close(&self) {
+        let pending = {
+            let mut state = self
+                .inner
+                .lock()
+                .expect("scene transaction queue should lock");
+            state.closed = true;
+            state.pending.drain(..).collect::<Vec<_>>()
         };
-
-        apply_layout_update(&spatial_engine, &scene_manager, &queue, layout.clone())
-            .await
-            .expect("valid layout should apply");
-
-        let updated = spatial_engine.read().await.layout().as_ref().clone();
-        assert_eq!(updated.id, layout.id);
-        assert_eq!(updated.canvas_width, layout.canvas_width);
-        assert_eq!(updated.canvas_height, layout.canvas_height);
-
-        let transactions = queue.drain();
-        assert_eq!(transactions.len(), 2);
-        assert!(matches!(
-            transactions.first(),
-            Some(SceneTransaction::ReplaceSpatialEngine(engine))
-                if engine.layout().id == layout.id
-                    && engine.layout().canvas_width == layout.canvas_width
-                    && engine.layout().canvas_height == layout.canvas_height
-        ));
-        assert!(matches!(
-            transactions.get(1),
-            Some(SceneTransaction::ResizeCanvas { width, height })
-                if *width == layout.canvas_width && *height == layout.canvas_height
-        ));
+        for transaction in pending {
+            if let SceneTransaction::ApplyLayout(transaction) = transaction {
+                transaction.reject(LayoutTransactionRejection::RendererStopped);
+            }
+        }
     }
 
-    #[tokio::test]
-    async fn apply_layout_update_skips_resize_when_canvas_dimensions_match() {
-        let queue = SceneTransactionQueue::default();
-        let spatial_engine = RwLock::new(SpatialEngine::new(test_layout("initial")));
-        let scene_manager = RwLock::new(SceneManager::with_default());
-        let layout = SpatialLayout {
-            id: "updated".into(),
-            name: "updated".into(),
-            ..test_layout("initial")
-        };
-
-        apply_layout_update(&spatial_engine, &scene_manager, &queue, layout.clone())
-            .await
-            .expect("valid layout should apply");
-
-        let transactions = queue.drain();
-        assert_eq!(transactions.len(), 1);
-        assert!(matches!(
-            transactions.first(),
-            Some(SceneTransaction::ReplaceSpatialEngine(engine))
-                if engine.layout().id == layout.id
-        ));
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("scene transaction queue should lock")
+            .closed
     }
 
-    #[tokio::test]
-    async fn rejected_layout_preserves_spatial_scene_and_transaction_state() {
-        let queue = SceneTransactionQueue::default();
-        let initial = test_layout("initial");
-        let spatial_engine = RwLock::new(SpatialEngine::new(initial.clone()));
-        let scene_manager = RwLock::new(SceneManager::with_default());
-        let primary_layout_before = scene_manager
-            .read()
-            .await
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .map(|group| group.layout.clone());
-        let mut invalid = test_layout("invalid");
-        invalid.canvas_width = u32::MAX;
-        invalid.canvas_height = u32::MAX;
-
-        let result = apply_layout_update(&spatial_engine, &scene_manager, &queue, invalid).await;
-
-        assert!(result.is_err());
-        assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
-        assert_eq!(
-            scene_manager
-                .read()
-                .await
-                .active_scene()
-                .and_then(|scene| scene.primary_group())
-                .map(|group| group.layout.clone()),
-            primary_layout_before
-        );
-        assert!(queue.drain().is_empty());
-    }
-
-    #[tokio::test]
-    async fn concurrent_layout_updates_keep_engine_scene_and_queue_ordered() {
-        let queue = SceneTransactionQueue::default();
-        let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(test_layout("initial"))));
-        let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
-        let first = apply_layout_update(
-            &spatial_engine,
-            &scene_manager,
-            &queue,
-            test_layout("first"),
-        );
-        let second = apply_layout_update(
-            &spatial_engine,
-            &scene_manager,
-            &queue,
-            test_layout("second"),
-        );
-
-        let (first_result, second_result) = tokio::join!(first, second);
-
-        first_result.expect("first layout should apply");
-        second_result.expect("second layout should apply");
-        let active_id = spatial_engine.read().await.layout().id.clone();
-        let scene_id = scene_manager
-            .read()
-            .await
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .map(|group| group.layout.id.clone());
-        let queued_id = queue.drain().into_iter().rev().find_map(|transaction| {
-            let SceneTransaction::ReplaceSpatialEngine(engine) = transaction else {
-                return None;
-            };
-            Some(engine.layout().id.clone())
-        });
-
-        assert_eq!(scene_id.as_deref(), Some(active_id.as_str()));
-        assert_eq!(queued_id.as_deref(), Some(active_id.as_str()));
+    #[doc(hidden)]
+    #[must_use]
+    pub fn pending_len(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("scene transaction queue should lock")
+            .pending
+            .len()
     }
 }
+
+struct LayoutTransactionReceipt(oneshot::Receiver<Result<(), LayoutTransactionRejection>>);
+
+impl LayoutTransactionReceipt {
+    async fn wait(self) -> Result<(), LayoutTransactionRejection> {
+        self.0
+            .await
+            .unwrap_or(Err(LayoutTransactionRejection::RendererStopped))
+    }
+}
+
+pub async fn apply_prepared_layout_update_under_guard(
+    spatial_engine: Arc<RwLock<SpatialEngine>>,
+    scene_manager: Arc<RwLock<SceneManager>>,
+    scene_transactions: SceneTransactionQueue,
+    guard: &LayoutUpdateGuard,
+    prepared: PreparedLayoutUpdate,
+) -> Result<(), LayoutUpdateError> {
+    let retained_guard = guard.clone();
+    tokio::spawn(async move {
+        let retained_guard = retained_guard;
+        let mut manager = scene_manager.write().await;
+        let mut authoritative_spatial_engine = spatial_engine.write().await;
+        let prepared_engine = prepared.into_spatial_engine();
+        let receipt = scene_transactions.submit_layout(prepared_engine.clone())?;
+        receipt.wait().await?;
+        manager.sync_primary_group_layout(prepared_engine.layout().as_ref());
+        *authoritative_spatial_engine = prepared_engine;
+        drop(retained_guard);
+        Ok::<(), LayoutUpdateError>(())
+    })
+    .await
+    .map_err(|error| LayoutUpdateError::Coordinator(error.to_string()))?
+}
+
+pub async fn apply_layout_update(
+    spatial_engine: &Arc<RwLock<SpatialEngine>>,
+    scene_manager: &Arc<RwLock<SceneManager>>,
+    scene_transactions: &SceneTransactionQueue,
+    layout: SpatialLayout,
+) -> Result<(), LayoutUpdateError> {
+    let guard = scene_transactions.acquire_layout_update_guard().await;
+    let prepared = PreparedLayoutUpdate::try_new(layout)?;
+    apply_prepared_layout_update_under_guard(
+        Arc::clone(spatial_engine),
+        Arc::clone(scene_manager),
+        scene_transactions.clone(),
+        &guard,
+        prepared,
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests;

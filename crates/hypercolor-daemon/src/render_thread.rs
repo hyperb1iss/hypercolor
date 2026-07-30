@@ -355,6 +355,7 @@ impl RenderThread {
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
             .spawn(move || -> Result<()> {
+                let _scene_transaction_consumer = state.scene_transactions.consumer();
                 configure_render_thread_priority();
                 let runtime = match build_runtime() {
                     Ok(runtime) => runtime,
