@@ -1604,6 +1604,7 @@ fn subscribe_wire_negotiates_preview_transport_before_publication() {
         max_idle_ms: 1000,
         max_message_bytes: 256,
         max_chunk_count: 128,
+        ..PreviewTransportCapability::default().legacy_v1()
     };
     let message: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "subscribe",

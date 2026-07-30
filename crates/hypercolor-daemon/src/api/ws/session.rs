@@ -302,8 +302,8 @@ async fn handle_socket(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    let mut preview_capability = PreviewTransportCapability::default();
-    let mut preview_cursors = PreviewCursorQueue::new(preview_capability.max_streams);
+    let mut preview_capability = PreviewTransportCapability::default().legacy_v1();
+    let mut preview_cursors = PreviewCursorQueue::with_capability(preview_capability);
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
@@ -1074,7 +1074,7 @@ pub(super) fn negotiate_preview_transport(
         .negotiate_transport(peer)
         .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
     preview_cursors
-        .set_max_streams(negotiated.max_streams)
+        .set_capability(negotiated)
         .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
     *preview_capability = negotiated;
     Ok(negotiated)

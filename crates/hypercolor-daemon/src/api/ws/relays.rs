@@ -20,7 +20,7 @@ use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
     PreviewCancelFrame, PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewFormat, PreviewPublicationMetadata, PreviewStreamId,
-    PreviewTransportCapability, ScreenZonesFrame as WireScreenZonesFrame,
+    PreviewTransportCapability, PreviewTransportVersion, ScreenZonesFrame as WireScreenZonesFrame,
     ZonePreviewFrame as WireZonePreviewFrame,
 };
 use hypercolor_types::canvas::{PublishedSurfaceStorageIdentity, SurfaceDescriptor};
@@ -69,7 +69,7 @@ pub(super) struct PreviewOutboundLimits {
 
 impl Default for PreviewOutboundLimits {
     fn default() -> Self {
-        let capability = PreviewTransportCapability::default();
+        let capability = PreviewTransportCapability::default().legacy_v1();
         Self {
             max_publication_bytes: capability.max_encoded_publication_bytes,
             max_connection_bytes: capability.max_connection_bytes,
@@ -103,6 +103,10 @@ pub(super) enum PreviewOutboundError {
     ConnectionBudgetExceeded { maximum: usize, actual: usize },
     #[error("preview connection stream limit is {maximum}")]
     StreamBudgetExceeded { maximum: usize },
+    #[error("preview sender state needs {actual} bytes; limit is {maximum}")]
+    SenderStateBudgetExceeded { maximum: usize, actual: usize },
+    #[error("preview cursor state needs {actual} bytes; limit is {maximum}")]
+    CursorStateBudgetExceeded { maximum: usize, actual: usize },
     #[error("preview cancellation queue limit is {maximum}")]
     CancellationBudgetExceeded { maximum: usize },
     #[error("preview router could not allocate indexed state for {entries} streams")]
@@ -176,6 +180,33 @@ impl PreviewOutboundState {
         self.queued_bytes.saturating_add(self.in_flight_bytes)
     }
 
+    fn sender_state_bytes(&self) -> usize {
+        let queued = self
+            .queued
+            .keys()
+            .map(preview_queued_state_bytes)
+            .fold(0_usize, usize::saturating_add);
+        let in_flight = self
+            .in_flight
+            .keys()
+            .map(|key| preview_in_flight_state_bytes(&key.stream))
+            .fold(0_usize, usize::saturating_add);
+        let current = self
+            .current
+            .keys()
+            .map(preview_current_state_bytes)
+            .fold(0_usize, usize::saturating_add);
+        let cancellations = self
+            .pending_cancellations
+            .keys()
+            .map(preview_cancellation_state_bytes)
+            .fold(0_usize, usize::saturating_add);
+        queued
+            .saturating_add(in_flight)
+            .saturating_add(current)
+            .saturating_add(cancellations)
+    }
+
     fn try_reserve_stream_state(
         &mut self,
         stream: &PreviewStreamId,
@@ -196,15 +227,45 @@ impl PreviewOutboundState {
                 .try_reserve(1)
                 .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
         }
+        if self.capability.version == PreviewTransportVersion::V2 {
+            let additional = usize::from(!self.current.contains_key(stream))
+                .saturating_mul(preview_current_state_bytes(stream))
+                .saturating_add(
+                    usize::from(!self.queued.contains_key(stream))
+                        .saturating_mul(preview_queued_state_bytes(stream)),
+                );
+            let requested = self.sender_state_bytes().saturating_add(additional);
+            if requested > self.capability.max_sender_state_bytes {
+                return Err(PreviewOutboundError::SenderStateBudgetExceeded {
+                    maximum: self.capability.max_sender_state_bytes,
+                    actual: requested,
+                });
+            }
+        }
         Ok(())
     }
 
-    fn try_reserve_cancellations(&mut self, additional: usize) -> Result<(), PreviewOutboundError> {
+    fn try_reserve_cancellations(
+        &mut self,
+        additional: usize,
+        additional_bytes: usize,
+    ) -> Result<(), PreviewOutboundError> {
         let entries = self.pending_cancellations.len().saturating_add(additional);
-        if entries > self.capability.max_tombstones {
+        if self.capability.version == PreviewTransportVersion::V1
+            && entries > self.capability.max_tombstones
+        {
             return Err(PreviewOutboundError::CancellationBudgetExceeded {
                 maximum: self.capability.max_tombstones,
             });
+        }
+        if self.capability.version == PreviewTransportVersion::V2 {
+            let requested = self.sender_state_bytes().saturating_add(additional_bytes);
+            if requested > self.capability.max_sender_state_bytes {
+                return Err(PreviewOutboundError::SenderStateBudgetExceeded {
+                    maximum: self.capability.max_sender_state_bytes,
+                    actual: requested,
+                });
+            }
         }
         self.pending_cancellations
             .try_reserve(additional)
@@ -307,6 +368,25 @@ struct QueuedPreviewPublication {
     next: Option<PreviewStreamId>,
 }
 
+fn preview_queued_state_bytes(stream: &PreviewStreamId) -> usize {
+    std::mem::size_of::<(PreviewStreamId, QueuedPreviewPublication)>()
+        .saturating_add(stream.identity_bytes().saturating_mul(4))
+}
+
+fn preview_in_flight_state_bytes(stream: &PreviewStreamId) -> usize {
+    std::mem::size_of::<(PreviewPublicationKey, usize)>().saturating_add(stream.identity_bytes())
+}
+
+fn preview_current_state_bytes(stream: &PreviewStreamId) -> usize {
+    std::mem::size_of::<(PreviewStreamId, u64)>().saturating_add(stream.identity_bytes())
+}
+
+fn preview_cancellation_state_bytes(stream: &PreviewStreamId) -> usize {
+    std::mem::size_of::<(PreviewStreamId, u64)>()
+        .saturating_add(std::mem::size_of::<PreviewStreamId>())
+        .saturating_add(stream.identity_bytes().saturating_mul(2))
+}
+
 #[derive(Debug)]
 struct PreviewOutboundShared {
     state: StdMutex<PreviewOutboundState>,
@@ -343,7 +423,7 @@ pub(super) fn preview_outbound_channel_with_limits(
             cancellation_order: VecDeque::new(),
             next_publication_id: 1,
             limits,
-            capability: PreviewTransportCapability::default(),
+            capability: PreviewTransportCapability::default().legacy_v1(),
         }),
         notify: Notify::new(),
     });
@@ -372,16 +452,15 @@ impl PreviewOutboundSender {
         {
             return Err(PreviewOutboundError::TransportAlreadyActive);
         }
+        let supported = PreviewTransportCapability::default();
         let local = PreviewTransportCapability {
-            max_encoded_publication_bytes: state
-                .capability
+            max_encoded_publication_bytes: supported
                 .max_encoded_publication_bytes
                 .min(state.limits.max_publication_bytes),
-            max_connection_bytes: state
-                .capability
+            max_connection_bytes: supported
                 .max_connection_bytes
                 .min(state.limits.max_connection_bytes),
-            ..state.capability
+            ..supported
         };
         let negotiated = local.negotiated_with(peer);
         state.capability = negotiated;
@@ -464,7 +543,8 @@ impl PreviewOutboundSender {
                 actual: encoded.len(),
             });
         }
-        if !state.current.contains_key(&stream)
+        if state.capability.version == PreviewTransportVersion::V1
+            && !state.current.contains_key(&stream)
             && state.current.len() >= state.capability.max_streams
         {
             return Err(PreviewOutboundError::StreamBudgetExceeded {
@@ -488,6 +568,11 @@ impl PreviewOutboundSender {
             state.current.contains_key(&stream)
                 && !state.pending_cancellations.contains_key(&stream),
         );
+        let mut cancellation_reservation_bytes = if cancellation_reservations == 0 {
+            0
+        } else {
+            preview_cancellation_state_bytes(&stream)
+        };
         let mut eviction_cursor = state.queue_head.clone();
         while projected_bytes > state.limits.max_connection_bytes {
             let Some(candidate) = eviction_cursor.take() else {
@@ -506,11 +591,14 @@ impl PreviewOutboundSender {
             }
             if !state.pending_cancellations.contains_key(&candidate) {
                 cancellation_reservations = cancellation_reservations.saturating_add(1);
+                cancellation_reservation_bytes = cancellation_reservation_bytes
+                    .saturating_add(preview_cancellation_state_bytes(&candidate));
             }
             projected_bytes = projected_bytes.saturating_sub(queued.publication.encoded.len());
         }
         state.try_reserve_stream_state(&stream)?;
-        state.try_reserve_cancellations(cancellation_reservations)?;
+        state
+            .try_reserve_cancellations(cancellation_reservations, cancellation_reservation_bytes)?;
 
         let publication_id = state.next_publication_id;
         let next_publication_id = publication_id
@@ -585,7 +673,8 @@ impl PreviewOutboundSender {
             return Ok(false);
         };
         let additional = usize::from(!state.pending_cancellations.contains_key(stream));
-        state.try_reserve_cancellations(additional)?;
+        let additional_bytes = additional.saturating_mul(preview_cancellation_state_bytes(stream));
+        state.try_reserve_cancellations(additional, additional_bytes)?;
         if let Some(removed) = state.remove_queued(stream) {
             state.queued_bytes = state.queued_bytes.saturating_sub(removed.encoded.len());
             WS_PREVIEW_QUEUE_BYTES.fetch_sub(removed.encoded.len(), Ordering::Relaxed);
@@ -620,7 +709,12 @@ impl PreviewOutboundSender {
             .iter()
             .filter(|stream| !state.pending_cancellations.contains_key(*stream))
             .count();
-        state.try_reserve_cancellations(additional)?;
+        let additional_bytes = streams
+            .iter()
+            .filter(|stream| !state.pending_cancellations.contains_key(*stream))
+            .map(preview_cancellation_state_bytes)
+            .fold(0_usize, usize::saturating_add);
+        state.try_reserve_cancellations(additional, additional_bytes)?;
         for stream in &streams {
             let publication_id = state
                 .current
@@ -746,7 +840,7 @@ impl PreviewSendCursor {
         publication: PreviewPublication,
         max_message_bytes: usize,
     ) -> Result<Self, PreviewOutboundError> {
-        let capability = PreviewTransportCapability::default();
+        let capability = PreviewTransportCapability::default().legacy_v1();
         if max_message_bytes > capability.max_message_bytes {
             return Err(PreviewOutboundError::ChunkEncoding(format!(
                 "message budget {max_message_bytes} exceeds advertised limit {}",
@@ -797,10 +891,11 @@ impl PreviewSendCursor {
         } else {
             1
         };
-        if chunk_count > capability.max_chunk_count {
+        let max_chunk_count = capability.effective_max_chunk_count(identity_len);
+        if chunk_count > max_chunk_count {
             return Err(PreviewOutboundError::ChunkEncoding(format!(
                 "chunk count {chunk_count} exceeds advertised limit {}",
-                capability.max_chunk_count
+                max_chunk_count
             )));
         }
         Ok(Self {
@@ -872,15 +967,34 @@ pub(super) struct PreviewCursorQueue {
     head: Option<PreviewStreamId>,
     tail: Option<PreviewStreamId>,
     max_streams: usize,
+    max_state_bytes: usize,
+    state_bytes: usize,
+    version: PreviewTransportVersion,
 }
 
 impl PreviewCursorQueue {
+    #[cfg(test)]
     pub(super) fn new(max_streams: usize) -> Self {
         Self {
             cursors: HashMap::new(),
             head: None,
             tail: None,
             max_streams,
+            max_state_bytes: usize::MAX,
+            state_bytes: 0,
+            version: PreviewTransportVersion::V1,
+        }
+    }
+
+    pub(super) fn with_capability(capability: PreviewTransportCapability) -> Self {
+        Self {
+            cursors: HashMap::new(),
+            head: None,
+            tail: None,
+            max_streams: capability.max_streams,
+            max_state_bytes: capability.max_cursor_state_bytes,
+            state_bytes: 0,
+            version: capability.version,
         }
     }
 
@@ -897,15 +1011,53 @@ impl PreviewCursorQueue {
         Ok(())
     }
 
+    pub(super) fn set_capability(
+        &mut self,
+        capability: PreviewTransportCapability,
+    ) -> Result<(), PreviewOutboundError> {
+        if capability.version == PreviewTransportVersion::V1 {
+            self.set_max_streams(capability.max_streams)?;
+        } else if self.state_bytes > capability.max_cursor_state_bytes {
+            return Err(PreviewOutboundError::CursorStateBudgetExceeded {
+                maximum: capability.max_cursor_state_bytes,
+                actual: self.state_bytes,
+            });
+        }
+        self.max_streams = capability.max_streams;
+        self.max_state_bytes = capability.max_cursor_state_bytes;
+        self.version = capability.version;
+        Ok(())
+    }
+
     pub(super) fn try_insert(
         &mut self,
         cursor: PreviewSendCursor,
     ) -> Result<Option<PreviewSendCursor>, PreviewOutboundError> {
         let stream = cursor.publication().stream().clone();
         let replacing = self.cursors.contains_key(&stream);
-        if !replacing && self.cursors.len() >= self.max_streams {
+        if self.version == PreviewTransportVersion::V1
+            && !replacing
+            && self.cursors.len() >= self.max_streams
+        {
             return Err(PreviewOutboundError::StreamBudgetExceeded {
                 maximum: self.max_streams,
+            });
+        }
+        let replaced_bytes = self.cursors.get(&stream).map_or(0, |queued| {
+            preview_cursor_state_bytes(queued.cursor.publication().stream())
+        });
+        let requested = self
+            .state_bytes
+            .checked_sub(replaced_bytes)
+            .and_then(|bytes| bytes.checked_add(preview_cursor_state_bytes(&stream)))
+            .ok_or(PreviewOutboundError::CursorStateBudgetExceeded {
+                maximum: self.max_state_bytes,
+                actual: usize::MAX,
+            })?;
+        if self.version == PreviewTransportVersion::V2 && requested > self.max_state_bytes {
+            return Err(PreviewOutboundError::CursorStateBudgetExceeded {
+                maximum: self.max_state_bytes,
+                actual: requested,
             });
         }
         if !replacing {
@@ -917,6 +1069,7 @@ impl PreviewCursorQueue {
         }
         let replaced = self.remove(&stream);
         self.insert_at_tail(stream, cursor);
+        self.state_bytes = requested;
         Ok(replaced)
     }
 
@@ -943,6 +1096,9 @@ impl PreviewCursorQueue {
 
     pub(super) fn remove(&mut self, stream: &PreviewStreamId) -> Option<PreviewSendCursor> {
         let queued = self.cursors.remove(stream)?;
+        self.state_bytes = self.state_bytes.saturating_sub(preview_cursor_state_bytes(
+            queued.cursor.publication().stream(),
+        ));
         if let Some(previous) = &queued.previous {
             self.cursors
                 .get_mut(previous)
@@ -981,6 +1137,9 @@ impl PreviewCursorQueue {
             .cursors
             .remove(&stream)
             .expect("cursor head must remain indexed");
+        self.state_bytes = self.state_bytes.saturating_sub(preview_cursor_state_bytes(
+            queued.cursor.publication().stream(),
+        ));
         self.head.clone_from(&queued.next);
         if let Some(next) = &queued.next {
             self.cursors
@@ -996,13 +1155,27 @@ impl PreviewCursorQueue {
     pub(super) fn requeue(&mut self, cursor: PreviewSendCursor) {
         let stream = cursor.publication().stream().clone();
         debug_assert!(!self.cursors.contains_key(&stream));
-        debug_assert!(self.cursors.len() < self.max_streams);
+        debug_assert!(
+            self.version == PreviewTransportVersion::V2 || self.cursors.len() < self.max_streams
+        );
+        let cursor_bytes = preview_cursor_state_bytes(&stream);
+        debug_assert!(
+            self.version == PreviewTransportVersion::V1
+                || self.state_bytes.saturating_add(cursor_bytes) <= self.max_state_bytes
+        );
         self.insert_at_tail(stream, cursor);
+        self.state_bytes = self.state_bytes.saturating_add(cursor_bytes);
     }
 
     pub(super) fn is_empty(&self) -> bool {
         self.cursors.is_empty()
     }
+}
+
+fn preview_cursor_state_bytes(stream: &PreviewStreamId) -> usize {
+    std::mem::size_of::<QueuedPreviewCursor>()
+        .saturating_add(std::mem::size_of::<PreviewStreamId>())
+        .saturating_add(stream.identity_bytes().saturating_mul(4))
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -341,11 +341,14 @@ fn replacement_churn_coalesces_cancellation_state() {
 
 #[test]
 fn cancellation_churn_is_bounded_without_discarding_live_state() {
-    let capability = PreviewTransportCapability::default();
+    let capability = PreviewTransportCapability::default().legacy_v1();
     let (sender, receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
         max_publication_bytes: 1_024,
         max_connection_bytes: 1_024 * 1_024,
     });
+    sender
+        .negotiate_transport(capability)
+        .expect("legacy transport negotiates before activation");
 
     for index in 0..capability.max_tombstones {
         let (stream, encoded) = zone_frame(u64::try_from(index).expect("fixture index fits u64"));
@@ -412,6 +415,71 @@ fn cancellation_churn_is_bounded_without_discarding_live_state() {
 }
 
 #[test]
+fn v2_sender_uses_bytes_instead_of_legacy_stream_counts() {
+    let capability = PreviewTransportCapability {
+        max_streams: 1,
+        ..PreviewTransportCapability::default()
+    };
+    let (sender, _receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
+        max_publication_bytes: 1_024,
+        max_connection_bytes: 1_024 * 1_024,
+    });
+    sender
+        .negotiate_transport(capability)
+        .expect("v2 transport negotiates before activation");
+
+    for index in 0..257_u64 {
+        let (stream, encoded) = zone_frame(index);
+        sender
+            .publish(stream, encoded, None)
+            .expect("byte budget admits streams beyond the legacy count");
+    }
+
+    let state = sender
+        .shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(state.current.len(), 257);
+    assert!(state.sender_state_bytes() <= capability.max_sender_state_bytes);
+}
+
+#[test]
+fn v2_cancellation_delivery_releases_sender_state_bytes() {
+    let (sender, receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
+        max_publication_bytes: 1_024,
+        max_connection_bytes: 1_024,
+    });
+    sender
+        .negotiate_transport(PreviewTransportCapability::default())
+        .expect("v2 transport negotiates before activation");
+    let (stream, encoded) = zone_frame(1);
+    sender
+        .publish(stream.clone(), encoded, None)
+        .expect("publication queues");
+    assert!(sender.cancel(&stream).expect("publication cancels"));
+    {
+        let state = sender
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.sender_state_bytes() > 0);
+    }
+
+    assert!(matches!(
+        receiver.try_recv(),
+        Some(PreviewOutboundItem::Cancellation(_))
+    ));
+    let state = sender
+        .shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(state.sender_state_bytes(), 0);
+}
+
+#[test]
 fn router_allocation_failure_is_reported_without_panicking() {
     let frame = passive_frame(PreviewFrameChannel::Canvas, 1, 64);
     let (sender, _receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
@@ -423,10 +491,11 @@ fn router_allocation_failure_is_reported_without_panicking() {
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.capability = PreviewTransportCapability::default().legacy_v1();
     state.capability.max_tombstones = usize::MAX;
 
     assert!(matches!(
-        state.try_reserve_cancellations(usize::MAX),
+        state.try_reserve_cancellations(usize::MAX, usize::MAX),
         Err(PreviewOutboundError::RouterAllocationFailed { .. })
     ));
     assert!(state.pending_cancellations.is_empty());
@@ -511,12 +580,66 @@ fn cursor_queue_rotates_chunked_streams_round_robin() {
 }
 
 #[test]
-fn router_enforces_shared_stream_metadata_budget() {
+fn v2_cursor_queue_enforces_exact_byte_budget_and_releases_on_remove() {
     let capability = PreviewTransportCapability::default();
+    let (sender, receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
+        max_publication_bytes: 1_024,
+        max_connection_bytes: 2_048,
+    });
+    for index in 1..=2 {
+        let (stream, encoded) = zone_frame(index);
+        sender
+            .publish(stream, encoded, None)
+            .expect("cursor fixture queues");
+    }
+    let first = PreviewSendCursor::with_capability(next_publication(&receiver), capability)
+        .expect("first cursor builds");
+    let second = PreviewSendCursor::with_capability(next_publication(&receiver), capability)
+        .expect("second cursor builds");
+
+    let mut probe = PreviewCursorQueue::with_capability(capability);
+    probe.try_insert(first).expect("probe cursor queues");
+    let exact_state_bytes = probe.state_bytes;
+    let first_stream = probe.head.clone().expect("probe cursor has a head");
+    assert!(probe.remove(&first_stream).is_some());
+    assert_eq!(probe.state_bytes, 0);
+
+    let exact_capability = PreviewTransportCapability {
+        max_streams: 0,
+        max_cursor_state_bytes: exact_state_bytes,
+        ..capability
+    };
+    let mut exact = PreviewCursorQueue::with_capability(exact_capability);
+    exact
+        .try_insert(second)
+        .expect("exact byte budget admits cursor");
+    assert_eq!(exact.state_bytes, exact_state_bytes);
+
+    let (third_stream, third_encoded) = zone_frame(3);
+    sender
+        .publish(third_stream, third_encoded, None)
+        .expect("third cursor fixture queues");
+    let third = PreviewSendCursor::with_capability(next_publication(&receiver), exact_capability)
+        .expect("third cursor builds");
+    assert!(matches!(
+        exact.try_insert(third),
+        Err(PreviewOutboundError::CursorStateBudgetExceeded {
+            maximum,
+            actual,
+        }) if maximum == exact_state_bytes && actual > maximum
+    ));
+}
+
+#[test]
+fn router_enforces_shared_stream_metadata_budget() {
+    let capability = PreviewTransportCapability::default().legacy_v1();
     let (sender, _receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
         max_publication_bytes: 1024,
         max_connection_bytes: 1024 * 1024,
     });
+    sender
+        .negotiate_transport(capability)
+        .expect("legacy transport negotiates before activation");
     for index in 0..capability.max_streams {
         let identity = u16::try_from(index)
             .expect("fixture index fits u16")
@@ -565,8 +688,20 @@ fn router_enforces_shared_stream_metadata_budget() {
 #[test]
 fn hello_capabilities_advertise_shared_preview_transport_limits() {
     let capabilities = super::super::protocol::ws_capabilities();
+    let v2 = PreviewTransportCapability::default();
+    let v1 = v2.legacy_v1();
+    assert!(capabilities.contains(&v2.encode()));
+    assert!(capabilities.contains(&v1.encode()));
     assert_eq!(
         PreviewTransportCapability::from_capabilities(capabilities.iter().map(String::as_str)),
-        Some(PreviewTransportCapability::default())
+        Some(v2)
     );
+
+    let (sender, _receiver) = super::preview_outbound_channel();
+    let state = sender
+        .shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(state.capability, v1);
 }

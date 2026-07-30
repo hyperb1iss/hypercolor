@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytes::{BufMut, Bytes};
 use thiserror::Error;
@@ -40,6 +41,18 @@ pub const DEFAULT_PREVIEW_MAX_IDLE_MS: u64 = 5_000;
 pub const DEFAULT_PREVIEW_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_CHUNK_COUNT: u32 = 4096;
 pub const PREVIEW_TRANSPORT_CAPABILITY_PREFIX: &str = "preview_transport_v1:";
+pub const PREVIEW_TRANSPORT_V2_CAPABILITY_PREFIX: &str = "preview_transport_v2:";
+pub const DEFAULT_PREVIEW_MAX_REASSEMBLY_STATE_BYTES: usize = 8 * 1024 * 1024;
+pub const DEFAULT_PREVIEW_MAX_TOMBSTONE_BYTES: usize = 4 * 1024 * 1024;
+pub const DEFAULT_PREVIEW_MAX_SENDER_STATE_BYTES: usize = 8 * 1024 * 1024;
+pub const DEFAULT_PREVIEW_MAX_CURSOR_STATE_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PreviewTransportVersion {
+    V1,
+    #[default]
+    V2,
+}
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[repr(u8)]
@@ -624,6 +637,15 @@ pub enum PreviewStreamId {
 }
 
 impl PreviewStreamId {
+    #[must_use]
+    pub fn identity_bytes(&self) -> usize {
+        match self {
+            Self::Passive(_) | Self::ScreenZones => 0,
+            Self::Zone { .. } => 32,
+            Self::Interactive(preview_id) => preview_id.len(),
+        }
+    }
+
     fn wire_parts(&self) -> Result<(u8, u8, Vec<u8>), PreviewFrameDecodeError> {
         match self {
             Self::Passive(channel) => Ok((0, channel.tag(), Vec::new())),
@@ -890,7 +912,20 @@ pub fn split_preview_publication(
     metadata: &PreviewPublicationMetadata,
     max_message_bytes: usize,
 ) -> Result<Vec<Bytes>, PreviewChunkError> {
-    let capability = PreviewTransportCapability::default();
+    split_preview_publication_with_capability(
+        encoded,
+        metadata,
+        max_message_bytes,
+        PreviewTransportCapability::default(),
+    )
+}
+
+pub fn split_preview_publication_with_capability(
+    encoded: &Bytes,
+    metadata: &PreviewPublicationMetadata,
+    max_message_bytes: usize,
+    capability: PreviewTransportCapability,
+) -> Result<Vec<Bytes>, PreviewChunkError> {
     if encoded.len() > capability.max_encoded_publication_bytes {
         return Err(PreviewChunkError::PublicationBudgetExceeded {
             requested: encoded.len(),
@@ -923,10 +958,11 @@ pub fn split_preview_publication(
     let chunk_count = encoded.len().div_ceil(payload_capacity);
     let chunk_count_u32 =
         u32::try_from(chunk_count).map_err(|_| PreviewChunkError::LengthOverflow)?;
-    if chunk_count_u32 > capability.max_chunk_count {
+    let max_chunk_count = capability.effective_max_chunk_count(identity.len());
+    if chunk_count_u32 > max_chunk_count {
         return Err(PreviewChunkError::ChunkCountBudgetExceeded {
             requested: chunk_count_u32,
-            limit: capability.max_chunk_count,
+            limit: max_chunk_count,
         });
     }
     let total_encoded_bytes =
@@ -967,6 +1003,9 @@ pub struct PreviewReassemblyLimits {
     pub max_idle_ms: u64,
     pub max_message_bytes: usize,
     pub max_chunk_count: u32,
+    pub max_reassembly_state_bytes: usize,
+    pub max_tombstone_bytes: usize,
+    pub version: PreviewTransportVersion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -979,11 +1018,21 @@ pub struct PreviewTransportCapability {
     pub max_idle_ms: u64,
     pub max_message_bytes: usize,
     pub max_chunk_count: u32,
+    pub max_reassembly_state_bytes: usize,
+    pub max_tombstone_bytes: usize,
+    pub max_sender_state_bytes: usize,
+    pub max_cursor_state_bytes: usize,
+    pub version: PreviewTransportVersion,
 }
 
 impl PreviewTransportCapability {
     #[must_use]
     pub fn negotiated_with(self, peer: Self) -> Self {
+        if self.version == PreviewTransportVersion::V1
+            || peer.version == PreviewTransportVersion::V1
+        {
+            return self.legacy_v1().negotiated_v1(peer.legacy_v1());
+        }
         let mut negotiated = Self {
             max_decoded_publication_bytes: self
                 .max_decoded_publication_bytes
@@ -997,6 +1046,41 @@ impl PreviewTransportCapability {
             max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
             max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
             max_chunk_count: self.max_chunk_count.min(peer.max_chunk_count),
+            max_reassembly_state_bytes: self
+                .max_reassembly_state_bytes
+                .min(peer.max_reassembly_state_bytes),
+            max_tombstone_bytes: self.max_tombstone_bytes.min(peer.max_tombstone_bytes),
+            max_sender_state_bytes: self.max_sender_state_bytes.min(peer.max_sender_state_bytes),
+            max_cursor_state_bytes: self.max_cursor_state_bytes.min(peer.max_cursor_state_bytes),
+            version: PreviewTransportVersion::V2,
+        };
+        negotiated.max_encoded_publication_bytes = negotiated
+            .max_encoded_publication_bytes
+            .min(negotiated.max_connection_bytes);
+        negotiated
+    }
+
+    fn negotiated_v1(self, peer: Self) -> Self {
+        let mut negotiated = Self {
+            max_decoded_publication_bytes: self
+                .max_decoded_publication_bytes
+                .min(peer.max_decoded_publication_bytes),
+            max_encoded_publication_bytes: self
+                .max_encoded_publication_bytes
+                .min(peer.max_encoded_publication_bytes),
+            max_connection_bytes: self.max_connection_bytes.min(peer.max_connection_bytes),
+            max_streams: self.max_streams.min(peer.max_streams),
+            max_tombstones: self.max_tombstones.min(peer.max_tombstones),
+            max_idle_ms: self.max_idle_ms.min(peer.max_idle_ms),
+            max_message_bytes: self.max_message_bytes.min(peer.max_message_bytes),
+            max_chunk_count: self.max_chunk_count.min(peer.max_chunk_count),
+            max_reassembly_state_bytes: self
+                .max_reassembly_state_bytes
+                .min(peer.max_reassembly_state_bytes),
+            max_tombstone_bytes: self.max_tombstone_bytes.min(peer.max_tombstone_bytes),
+            max_sender_state_bytes: self.max_sender_state_bytes.min(peer.max_sender_state_bytes),
+            max_cursor_state_bytes: self.max_cursor_state_bytes.min(peer.max_cursor_state_bytes),
+            version: PreviewTransportVersion::V1,
         };
         negotiated.max_encoded_publication_bytes = negotiated
             .max_encoded_publication_bytes
@@ -1011,22 +1095,42 @@ impl PreviewTransportCapability {
 
     #[must_use]
     pub fn encode(self) -> String {
-        format!(
-            "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},streams={},tombstones={},idle_ms={},message={},chunks={}",
-            self.max_decoded_publication_bytes,
-            self.max_encoded_publication_bytes,
-            self.max_connection_bytes,
-            self.max_streams,
-            self.max_tombstones,
-            self.max_idle_ms,
-            self.max_message_bytes,
-            self.max_chunk_count,
-        )
+        match self.version {
+            PreviewTransportVersion::V1 => format!(
+                "{PREVIEW_TRANSPORT_CAPABILITY_PREFIX}decoded={},encoded={},connection={},streams={},tombstones={},idle_ms={},message={},chunks={}",
+                self.max_decoded_publication_bytes,
+                self.max_encoded_publication_bytes,
+                self.max_connection_bytes,
+                self.max_streams,
+                self.max_tombstones,
+                self.max_idle_ms,
+                self.max_message_bytes,
+                self.max_chunk_count,
+            ),
+            PreviewTransportVersion::V2 => format!(
+                "{PREVIEW_TRANSPORT_V2_CAPABILITY_PREFIX}decoded={},encoded={},connection={},reassembly={},tombstones={},sender={},cursors={},idle_ms={},message={}",
+                self.max_decoded_publication_bytes,
+                self.max_encoded_publication_bytes,
+                self.max_connection_bytes,
+                self.max_reassembly_state_bytes,
+                self.max_tombstone_bytes,
+                self.max_sender_state_bytes,
+                self.max_cursor_state_bytes,
+                self.max_idle_ms,
+                self.max_message_bytes,
+            ),
+        }
     }
 
     pub fn decode(value: &str) -> Result<Self, PreviewCapabilityError> {
-        let fields = value
-            .strip_prefix(PREVIEW_TRANSPORT_CAPABILITY_PREFIX)
+        let (version, fields) = value
+            .strip_prefix(PREVIEW_TRANSPORT_V2_CAPABILITY_PREFIX)
+            .map(|fields| (PreviewTransportVersion::V2, fields))
+            .or_else(|| {
+                value
+                    .strip_prefix(PREVIEW_TRANSPORT_CAPABILITY_PREFIX)
+                    .map(|fields| (PreviewTransportVersion::V1, fields))
+            })
             .ok_or(PreviewCapabilityError::UnknownCapability)?;
         let mut decoded = None;
         let mut encoded = None;
@@ -1036,6 +1140,10 @@ impl PreviewTransportCapability {
         let mut idle_ms = None;
         let mut message = None;
         let mut chunks = None;
+        let mut reassembly = None;
+        let mut tombstone_bytes = None;
+        let mut sender = None;
+        let mut cursors = None;
         for field in fields.split(',') {
             let (name, value) = field
                 .split_once('=')
@@ -1045,52 +1153,109 @@ impl PreviewTransportCapability {
                 "encoded" => parse_capability_field(value, &mut encoded)?,
                 "connection" => parse_capability_field(value, &mut connection)?,
                 "streams" => parse_capability_field(value, &mut streams)?,
-                "tombstones" => parse_capability_field(value, &mut tombstones)?,
+                "tombstones" if version == PreviewTransportVersion::V1 => {
+                    parse_capability_field(value, &mut tombstones)?;
+                }
+                "tombstones" => parse_capability_field(value, &mut tombstone_bytes)?,
                 "idle_ms" => parse_capability_field(value, &mut idle_ms)?,
                 "message" => parse_capability_field(value, &mut message)?,
                 "chunks" => parse_capability_field(value, &mut chunks)?,
+                "reassembly" => parse_capability_field(value, &mut reassembly)?,
+                "sender" => parse_capability_field(value, &mut sender)?,
+                "cursors" => parse_capability_field(value, &mut cursors)?,
                 _ => return Err(PreviewCapabilityError::InvalidField),
             }
         }
+        let defaults = Self::default();
         let capability = Self {
             max_decoded_publication_bytes: decoded.ok_or(PreviewCapabilityError::MissingField)?,
             max_encoded_publication_bytes: encoded.ok_or(PreviewCapabilityError::MissingField)?,
             max_connection_bytes: connection.ok_or(PreviewCapabilityError::MissingField)?,
-            max_streams: streams.ok_or(PreviewCapabilityError::MissingField)?,
-            max_tombstones: tombstones.ok_or(PreviewCapabilityError::MissingField)?,
+            max_streams: streams.unwrap_or(defaults.max_streams),
+            max_tombstones: if version == PreviewTransportVersion::V1 {
+                tombstones.ok_or(PreviewCapabilityError::MissingField)?
+            } else {
+                defaults.max_tombstones
+            },
             max_idle_ms: idle_ms.ok_or(PreviewCapabilityError::MissingField)?,
             max_message_bytes: message.ok_or(PreviewCapabilityError::MissingField)?,
-            max_chunk_count: chunks.ok_or(PreviewCapabilityError::MissingField)?,
+            max_chunk_count: chunks.unwrap_or(defaults.max_chunk_count),
+            max_reassembly_state_bytes: reassembly.unwrap_or(defaults.max_reassembly_state_bytes),
+            max_tombstone_bytes: if version == PreviewTransportVersion::V2 {
+                tombstone_bytes.ok_or(PreviewCapabilityError::MissingField)?
+            } else {
+                defaults.max_tombstone_bytes
+            },
+            max_sender_state_bytes: sender.unwrap_or(defaults.max_sender_state_bytes),
+            max_cursor_state_bytes: cursors.unwrap_or(defaults.max_cursor_state_bytes),
+            version,
         };
         capability.validate()?;
         Ok(capability)
     }
 
     pub fn from_capabilities<'a>(capabilities: impl IntoIterator<Item = &'a str>) -> Option<Self> {
-        capabilities
-            .into_iter()
-            .find_map(|capability| Self::decode(capability).ok())
+        let mut legacy = None;
+        for encoded in capabilities {
+            let Ok(capability) = Self::decode(encoded) else {
+                continue;
+            };
+            if capability.version == PreviewTransportVersion::V2 {
+                return Some(capability);
+            }
+            legacy = Some(capability);
+        }
+        legacy
+    }
+
+    #[must_use]
+    pub fn legacy_v1(self) -> Self {
+        Self {
+            version: PreviewTransportVersion::V1,
+            ..self
+        }
     }
 
     fn validate(self) -> Result<(), PreviewCapabilityError> {
         if self.max_decoded_publication_bytes == 0
             || self.max_encoded_publication_bytes == 0
-            || self
-                .max_encoded_publication_bytes
-                .checked_mul(2)
-                .is_none_or(|replacement_bytes| self.max_connection_bytes < replacement_bytes)
-            || self.max_streams == 0
-            || self.max_tombstones == 0
+            || match self.version {
+                PreviewTransportVersion::V1 => self
+                    .max_encoded_publication_bytes
+                    .checked_mul(2)
+                    .is_none_or(|bytes| self.max_connection_bytes < bytes),
+                PreviewTransportVersion::V2 => {
+                    self.max_connection_bytes < self.max_encoded_publication_bytes
+                }
+            }
             || self.max_idle_ms == 0
             || self.max_message_bytes < PREVIEW_MIN_MESSAGE_BYTES
-            || self.max_chunk_count == 0
         {
             return Err(PreviewCapabilityError::InvalidLimits);
         }
-        if self.max_encoded_publication_bytes
-            > self
-                .max_transmissible_encoded_bytes()
-                .ok_or(PreviewCapabilityError::InvalidLimits)?
+        match self.version {
+            PreviewTransportVersion::V1
+                if self.max_streams == 0
+                    || self.max_tombstones == 0
+                    || self.max_chunk_count == 0 =>
+            {
+                return Err(PreviewCapabilityError::InvalidLimits);
+            }
+            PreviewTransportVersion::V2
+                if self.max_reassembly_state_bytes == 0
+                    || self.max_tombstone_bytes == 0
+                    || self.max_sender_state_bytes == 0
+                    || self.max_cursor_state_bytes == 0 =>
+            {
+                return Err(PreviewCapabilityError::InvalidLimits);
+            }
+            PreviewTransportVersion::V1 | PreviewTransportVersion::V2 => {}
+        }
+        if self.version == PreviewTransportVersion::V1
+            && self.max_encoded_publication_bytes
+                > self
+                    .max_transmissible_encoded_bytes()
+                    .ok_or(PreviewCapabilityError::InvalidLimits)?
         {
             return Err(PreviewCapabilityError::InvalidLimits);
         }
@@ -1108,6 +1273,14 @@ impl PreviewTransportCapability {
         };
         Some(self.max_message_bytes.max(chunked_bytes))
     }
+
+    #[must_use]
+    pub fn effective_max_chunk_count(self, _identity_bytes: usize) -> u32 {
+        if self.version == PreviewTransportVersion::V1 {
+            return self.max_chunk_count;
+        }
+        u32::try_from(self.max_encoded_publication_bytes).unwrap_or(u32::MAX)
+    }
 }
 
 impl Default for PreviewTransportCapability {
@@ -1121,6 +1294,11 @@ impl Default for PreviewTransportCapability {
             max_idle_ms: DEFAULT_PREVIEW_MAX_IDLE_MS,
             max_message_bytes: DEFAULT_PREVIEW_MAX_MESSAGE_BYTES,
             max_chunk_count: DEFAULT_PREVIEW_MAX_CHUNK_COUNT,
+            max_reassembly_state_bytes: DEFAULT_PREVIEW_MAX_REASSEMBLY_STATE_BYTES,
+            max_tombstone_bytes: DEFAULT_PREVIEW_MAX_TOMBSTONE_BYTES,
+            max_sender_state_bytes: DEFAULT_PREVIEW_MAX_SENDER_STATE_BYTES,
+            max_cursor_state_bytes: DEFAULT_PREVIEW_MAX_CURSOR_STATE_BYTES,
+            version: PreviewTransportVersion::V2,
         }
     }
 }
@@ -1137,6 +1315,11 @@ impl PreviewReassemblyLimits {
             max_idle_ms: self.max_idle_ms,
             max_message_bytes: self.max_message_bytes,
             max_chunk_count: self.max_chunk_count,
+            max_reassembly_state_bytes: self.max_reassembly_state_bytes,
+            max_tombstone_bytes: self.max_tombstone_bytes,
+            max_sender_state_bytes: usize::MAX,
+            max_cursor_state_bytes: usize::MAX,
+            version: self.version,
         }
         .negotiated_with(peer);
         Self {
@@ -1148,7 +1331,30 @@ impl PreviewReassemblyLimits {
             max_idle_ms: negotiated.max_idle_ms,
             max_message_bytes: negotiated.max_message_bytes,
             max_chunk_count: negotiated.max_chunk_count,
+            max_reassembly_state_bytes: negotiated.max_reassembly_state_bytes,
+            max_tombstone_bytes: negotiated.max_tombstone_bytes,
+            version: negotiated.version,
         }
+    }
+
+    #[must_use]
+    pub fn effective_max_chunk_count(self, identity_bytes: usize) -> u32 {
+        PreviewTransportCapability {
+            max_decoded_publication_bytes: self.max_decoded_publication_bytes,
+            max_encoded_publication_bytes: self.max_encoded_publication_bytes,
+            max_connection_bytes: self.max_connection_bytes,
+            max_streams: self.max_streams,
+            max_tombstones: self.max_tombstones,
+            max_idle_ms: self.max_idle_ms,
+            max_message_bytes: self.max_message_bytes,
+            max_chunk_count: self.max_chunk_count,
+            max_reassembly_state_bytes: self.max_reassembly_state_bytes,
+            max_tombstone_bytes: self.max_tombstone_bytes,
+            max_sender_state_bytes: usize::MAX,
+            max_cursor_state_bytes: usize::MAX,
+            version: self.version,
+        }
+        .effective_max_chunk_count(identity_bytes)
     }
 }
 
@@ -1164,6 +1370,9 @@ impl Default for PreviewReassemblyLimits {
             max_idle_ms: capability.max_idle_ms,
             max_message_bytes: capability.max_message_bytes,
             max_chunk_count: capability.max_chunk_count,
+            max_reassembly_state_bytes: capability.max_reassembly_state_bytes,
+            max_tombstone_bytes: capability.max_tombstone_bytes,
+            version: capability.version,
         }
     }
 }
@@ -1210,10 +1419,12 @@ struct PreviewStreamState {
 #[derive(Debug)]
 pub struct PreviewChunkReassembler {
     limits: PreviewReassemblyLimits,
-    streams: HashMap<PreviewStreamId, PreviewStreamState>,
+    streams: HashMap<Arc<PreviewStreamId>, PreviewStreamState>,
     active_streams: usize,
     tombstones: usize,
     reserved_bytes: usize,
+    state_bytes: usize,
+    tombstone_bytes: usize,
     logical_now_ms: u64,
     next_tombstone_generation: u64,
     superseded_publications: u64,
@@ -1229,6 +1440,8 @@ impl PreviewChunkReassembler {
             active_streams: 0,
             tombstones: 0,
             reserved_bytes: 0,
+            state_bytes: 0,
+            tombstone_bytes: 0,
             logical_now_ms: 0,
             next_tombstone_generation: 1,
             superseded_publications: 0,
@@ -1258,10 +1471,13 @@ impl PreviewChunkReassembler {
             });
         }
         let chunk = PreviewChunkFrame::decode_bytes(encoded_chunk)?;
-        if chunk.chunk_count > self.limits.max_chunk_count {
+        let max_chunk_count = self
+            .limits
+            .effective_max_chunk_count(chunk.metadata.stream.identity_bytes());
+        if chunk.chunk_count > max_chunk_count {
             return Err(PreviewChunkError::ChunkCountBudgetExceeded {
                 requested: chunk.chunk_count,
-                limit: self.limits.max_chunk_count,
+                limit: max_chunk_count,
             });
         }
         let total_encoded_bytes = usize::try_from(chunk.total_encoded_bytes)
@@ -1311,9 +1527,29 @@ impl PreviewChunkReassembler {
             .streams
             .get(stream)
             .is_some_and(|state| state.partial.is_some());
-        if !existing_is_active && self.active_streams >= self.limits.max_streams {
+        if self.limits.version == PreviewTransportVersion::V1
+            && !existing_is_active
+            && self.active_streams >= self.limits.max_streams
+        {
             return Err(PreviewChunkError::StreamBudgetExceeded {
                 limit: self.limits.max_streams,
+            });
+        }
+        let stream_state_bytes = preview_stream_state_bytes(stream)?;
+        let existing_is_tombstone = self
+            .streams
+            .get(stream)
+            .is_some_and(|state| state.partial.is_none());
+        let requested_state_bytes = self
+            .state_bytes
+            .checked_add(usize::from(!existing_is_active) * stream_state_bytes)
+            .ok_or(PreviewChunkError::LengthOverflow)?;
+        if self.limits.version == PreviewTransportVersion::V2
+            && requested_state_bytes > self.limits.max_reassembly_state_bytes
+        {
+            return Err(PreviewChunkError::ReassemblyStateBudgetExceeded {
+                requested: requested_state_bytes,
+                limit: self.limits.max_reassembly_state_bytes,
             });
         }
 
@@ -1340,12 +1576,27 @@ impl PreviewChunkReassembler {
         } else {
             total_encoded_bytes.min(EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN)
         };
+        let replaced = self.streams.get_mut(stream).and_then(|state| {
+            state.high_water_publication_id = chunk.metadata.publication_id;
+            state.partial.take()
+        });
+        if let Some(replaced) = &replaced {
+            self.reserved_bytes = self
+                .reserved_bytes
+                .saturating_sub(replaced.total_encoded_bytes);
+        }
+        drop(replaced);
+
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(initial_reservation).map_err(|_| {
-            PreviewChunkError::AllocationFailed {
-                bytes: initial_reservation,
+        if bytes.try_reserve_exact(initial_reservation).is_err() {
+            if existing_is_active {
+                self.active_streams = self.active_streams.saturating_sub(1);
+                self.mark_tombstone(stream, true);
             }
-        })?;
+            return Err(PreviewChunkError::AllocationFailed {
+                bytes: initial_reservation,
+            });
+        }
         let partial = PartialPreviewPublication {
             metadata: chunk.metadata.clone(),
             total_encoded_bytes,
@@ -1359,15 +1610,16 @@ impl PreviewChunkReassembler {
                 .try_reserve(1)
                 .map_err(|_| PreviewChunkError::AllocationFailed { bytes: 0 })?;
         }
-        let existing_was_tombstone = self
-            .streams
-            .get(stream)
-            .is_some_and(|state| state.partial.is_none());
-        if existing_was_tombstone {
+        if existing_is_tombstone {
             self.tombstones = self.tombstones.saturating_sub(1);
+            self.tombstone_bytes = self.tombstone_bytes.saturating_sub(stream_state_bytes);
         }
-        let replaced = self.streams.insert(
-            stream.clone(),
+        let stream_handle = self.streams.get_key_value(stream).map_or_else(
+            || Arc::new(stream.clone()),
+            |(handle, _)| Arc::clone(handle),
+        );
+        self.streams.insert(
+            stream_handle,
             PreviewStreamState {
                 high_water_publication_id: chunk.metadata.publication_id,
                 partial: Some(partial),
@@ -1375,14 +1627,12 @@ impl PreviewChunkReassembler {
                 tombstone_generation: 0,
             },
         );
-        if replaced
-            .as_ref()
-            .is_some_and(|state| state.partial.is_some())
-        {
+        if existing_is_active {
             self.superseded_publications = self.superseded_publications.saturating_add(1);
         }
         if !existing_is_active {
             self.active_streams = self.active_streams.saturating_add(1);
+            self.state_bytes = requested_state_bytes;
         }
         self.reserved_bytes = requested;
         Ok(())
@@ -1470,7 +1720,7 @@ impl PreviewChunkReassembler {
             .checked_sub(completed.total_encoded_bytes)
             .ok_or(PreviewChunkError::LengthOverflow)?;
         self.active_streams = self.active_streams.saturating_sub(1);
-        self.mark_tombstone(stream);
+        self.mark_tombstone(stream, true);
         let encoded = Bytes::from(completed.bytes);
         validate_completed_publication(&completed.metadata, &encoded, self.limits)?;
         Ok(Some(ReassembledPreviewPublication {
@@ -1482,8 +1732,9 @@ impl PreviewChunkReassembler {
     pub fn expire_at(&mut self, now_ms: u64) -> usize {
         let max_idle_ms = self.limits.max_idle_ms;
         let mut expired_bytes = 0_usize;
+        let mut expired_state_bytes = 0_usize;
         let mut expired_publications = 0_u64;
-        for state in self.streams.values_mut() {
+        for (stream, state) in &mut self.streams {
             let expired = state.partial.is_some()
                 && now_ms.saturating_sub(state.last_activity_ms) >= max_idle_ms;
             if !expired {
@@ -1491,6 +1742,8 @@ impl PreviewChunkReassembler {
             }
             if let Some(partial) = state.partial.take() {
                 expired_bytes = expired_bytes.saturating_add(partial.total_encoded_bytes);
+                expired_state_bytes = expired_state_bytes
+                    .saturating_add(preview_stream_state_bytes(stream).unwrap_or(usize::MAX));
                 expired_publications = expired_publications.saturating_add(1);
             }
             state.tombstone_generation = self.next_tombstone_generation;
@@ -1501,6 +1754,8 @@ impl PreviewChunkReassembler {
             .active_streams
             .saturating_sub(usize::try_from(expired_publications).unwrap_or(usize::MAX));
         self.reserved_bytes = self.reserved_bytes.saturating_sub(expired_bytes);
+        self.state_bytes = self.state_bytes.saturating_sub(expired_state_bytes);
+        self.tombstone_bytes = self.tombstone_bytes.saturating_add(expired_state_bytes);
         self.expired_publications = self
             .expired_publications
             .saturating_add(expired_publications);
@@ -1537,6 +1792,16 @@ impl PreviewChunkReassembler {
     }
 
     #[must_use]
+    pub const fn state_bytes(&self) -> usize {
+        self.state_bytes
+    }
+
+    #[must_use]
+    pub const fn tombstone_bytes(&self) -> usize {
+        self.tombstone_bytes
+    }
+
+    #[must_use]
     pub fn partial_count(&self) -> usize {
         self.active_streams
     }
@@ -1555,7 +1820,7 @@ impl PreviewChunkReassembler {
                 .try_reserve(1)
                 .map_err(|_| PreviewChunkError::AllocationFailed { bytes: 0 })?;
             self.streams.insert(
-                cancellation.stream.clone(),
+                Arc::new(cancellation.stream.clone()),
                 PreviewStreamState {
                     high_water_publication_id: cancellation.publication_id,
                     partial: None,
@@ -1563,7 +1828,7 @@ impl PreviewChunkReassembler {
                     tombstone_generation: 0,
                 },
             );
-            self.mark_tombstone(&cancellation.stream);
+            self.mark_tombstone(&cancellation.stream, false);
             return Ok(false);
         }
 
@@ -1582,7 +1847,7 @@ impl PreviewChunkReassembler {
                 .saturating_sub(partial.total_encoded_bytes);
             self.active_streams = self.active_streams.saturating_sub(1);
         }
-        self.mark_tombstone(&cancellation.stream);
+        self.mark_tombstone(&cancellation.stream, cancelled.is_some());
         Ok(cancelled.is_some())
     }
 
@@ -1591,15 +1856,36 @@ impl PreviewChunkReassembler {
         self.active_streams = 0;
         self.tombstones = 0;
         self.reserved_bytes = 0;
+        self.state_bytes = 0;
+        self.tombstone_bytes = 0;
     }
 
-    fn mark_tombstone(&mut self, stream: &PreviewStreamId) {
+    fn mark_tombstone(&mut self, stream: &PreviewStreamId, was_active: bool) {
+        let stream_state_bytes = preview_stream_state_bytes(stream).unwrap_or(usize::MAX);
+        let is_new_tombstone = self
+            .streams
+            .get(stream)
+            .is_some_and(|state| state.tombstone_generation == 0);
+        if is_new_tombstone && self.limits.version == PreviewTransportVersion::V2 {
+            self.make_tombstone_room(stream_state_bytes);
+            if stream_state_bytes > self.limits.max_tombstone_bytes {
+                if was_active {
+                    self.state_bytes = self.state_bytes.saturating_sub(stream_state_bytes);
+                }
+                self.streams.remove(stream);
+                return;
+            }
+        }
         let state = self
             .streams
             .get_mut(stream)
             .expect("tombstone stream must exist");
         if state.tombstone_generation == 0 {
             self.tombstones = self.tombstones.saturating_add(1);
+            if was_active {
+                self.state_bytes = self.state_bytes.saturating_sub(stream_state_bytes);
+            }
+            self.tombstone_bytes = self.tombstone_bytes.saturating_add(stream_state_bytes);
         }
         state.tombstone_generation = self.next_tombstone_generation;
         self.next_tombstone_generation = self.next_tombstone_generation.saturating_add(1);
@@ -1607,31 +1893,84 @@ impl PreviewChunkReassembler {
     }
 
     fn prune_tombstones(&mut self) {
-        while self.tombstones > self.limits.max_tombstones {
+        while match self.limits.version {
+            PreviewTransportVersion::V1 => self.tombstones > self.limits.max_tombstones,
+            PreviewTransportVersion::V2 => self.tombstone_bytes > self.limits.max_tombstone_bytes,
+        } {
             let Some(oldest_generation) = self
                 .streams
                 .values()
-                .filter(|state| state.partial.is_none())
+                .filter(|state| state.partial.is_none() && state.tombstone_generation != 0)
                 .map(|state| state.tombstone_generation)
                 .min()
             else {
                 break;
             };
             let mut removed = false;
-            self.streams.retain(|_, state| {
+            let mut removed_bytes = 0;
+            self.streams.retain(|stream, state| {
                 let evict = !removed
                     && state.partial.is_none()
+                    && state.tombstone_generation != 0
                     && state.tombstone_generation == oldest_generation;
                 removed |= evict;
+                if evict {
+                    removed_bytes = preview_stream_state_bytes(stream).unwrap_or(usize::MAX);
+                }
                 !evict
             });
             if removed {
                 self.tombstones = self.tombstones.saturating_sub(1);
+                self.tombstone_bytes = self.tombstone_bytes.saturating_sub(removed_bytes);
             } else {
                 break;
             }
         }
     }
+
+    fn make_tombstone_room(&mut self, additional_bytes: usize) {
+        while self
+            .tombstone_bytes
+            .checked_add(additional_bytes)
+            .is_none_or(|bytes| bytes > self.limits.max_tombstone_bytes)
+            && self.tombstones > 0
+        {
+            let Some(oldest_generation) = self
+                .streams
+                .values()
+                .filter(|state| state.partial.is_none() && state.tombstone_generation != 0)
+                .map(|state| state.tombstone_generation)
+                .min()
+            else {
+                break;
+            };
+            let mut removed = false;
+            let mut removed_bytes = 0;
+            self.streams.retain(|stream, state| {
+                let evict = !removed
+                    && state.partial.is_none()
+                    && state.tombstone_generation == oldest_generation;
+                removed |= evict;
+                if evict {
+                    removed_bytes = preview_stream_state_bytes(stream).unwrap_or(usize::MAX);
+                }
+                !evict
+            });
+            if !removed {
+                break;
+            }
+            self.tombstones = self.tombstones.saturating_sub(1);
+            self.tombstone_bytes = self.tombstone_bytes.saturating_sub(removed_bytes);
+        }
+    }
+}
+
+fn preview_stream_state_bytes(stream: &PreviewStreamId) -> Result<usize, PreviewChunkError> {
+    std::mem::size_of::<(Arc<PreviewStreamId>, PreviewStreamState)>()
+        .checked_add(std::mem::size_of::<(usize, usize)>())
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PreviewStreamId>()))
+        .and_then(|bytes| bytes.checked_add(stream.identity_bytes()))
+        .ok_or(PreviewChunkError::LengthOverflow)
 }
 
 fn validate_reassembly_admission(
@@ -1876,6 +2215,8 @@ pub enum PreviewChunkError {
     ConnectionBudgetExceeded { requested: usize, limit: usize },
     #[error("preview reassembly stream limit is {limit}")]
     StreamBudgetExceeded { limit: usize },
+    #[error("preview reassembly state needs {requested} bytes; limit is {limit}")]
+    ReassemblyStateBudgetExceeded { requested: usize, limit: usize },
     #[error("preview chunk arrived without publication start")]
     MissingPublicationStart,
     #[error("preview chunk duplicates already received data")]

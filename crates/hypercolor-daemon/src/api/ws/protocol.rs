@@ -1719,7 +1719,9 @@ pub(super) fn ws_capabilities() -> Vec<String> {
     capabilities.push("interactive_previews".to_owned());
     capabilities.push("wide_preview_frames".to_owned());
     capabilities.push("preview_chunking".to_owned());
-    capabilities.push(PreviewTransportCapability::default().encode());
+    let preview_transport = PreviewTransportCapability::default();
+    capabilities.push(preview_transport.encode());
+    capabilities.push(preview_transport.legacy_v1().encode());
     capabilities
 }
 
