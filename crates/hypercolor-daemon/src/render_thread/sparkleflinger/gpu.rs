@@ -58,7 +58,10 @@ mod screen_upload;
 mod source;
 mod telemetry;
 
-use compositor::{ComposeSourceBindGroupCache, SamplingReadbackLatch, create_compose_bind_group};
+use compositor::{
+    ComposeSourceBindGroupCache, SamplingReadbackBuffers, SamplingReadbackLatch,
+    create_compose_bind_group,
+};
 #[cfg(test)]
 use display_finalize::DISPLAY_FINALIZE_READBACK_SLOT_COUNT;
 pub(crate) use display_finalize::{
@@ -129,8 +132,14 @@ enum GpuCanvasAdmission {
 }
 
 pub(crate) enum GpuCanvasPreparation {
-    Gpu(GpuCompositorSurfaceSet),
+    Gpu(GpuCanvasGeneration),
     CpuFallback,
+}
+
+pub(crate) struct GpuCanvasGeneration {
+    surfaces: GpuCompositorSurfaceSet,
+    preview_surfaces: Option<GpuPreviewSurfaceSet>,
+    sampling_readback_buffers: Option<SamplingReadbackBuffers>,
 }
 
 impl GpuCanvasPreparation {
@@ -985,7 +994,11 @@ impl GpuSparkleFlinger {
         self.screen_target.as_ref()
     }
 
-    pub(super) fn prepare_canvas_resize(&self, width: u32, height: u32) -> GpuCanvasPreparation {
+    pub(super) fn prepare_canvas_resize(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> GpuCanvasPreparation {
         let admission = gpu_canvas_admission(self.probe.max_texture_dimension_2d, width, height);
         match admission {
             GpuCanvasAdmission::Gpu => {}
@@ -999,8 +1012,8 @@ impl GpuSparkleFlinger {
                 return GpuCanvasPreparation::CpuFallback;
             }
         }
-        match GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height) {
-            Ok(surfaces) => GpuCanvasPreparation::Gpu(surfaces),
+        match self.prepare_gpu_canvas_generation(width, height) {
+            Ok(generation) => GpuCanvasPreparation::Gpu(generation),
             Err(error) => {
                 tracing::warn!(
                     %error,
@@ -1014,21 +1027,71 @@ impl GpuSparkleFlinger {
         }
     }
 
+    fn prepare_gpu_canvas_generation(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<GpuCanvasGeneration> {
+        let surfaces =
+            GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height)?;
+        let sampling_readback_buffers =
+            self.prepare_sampling_readback_buffers_for_canvas_resize(width, height)?;
+        let preview_request = self.preview_surfaces.as_ref().map(|preview| {
+            let tracks_canvas_extent = self.surfaces.as_ref().is_some_and(|surfaces| {
+                preview.width == surfaces.width && preview.height == surfaces.height
+            });
+            if tracks_canvas_extent {
+                super::PreviewSurfaceRequest { width, height }
+            } else {
+                super::PreviewSurfaceRequest {
+                    width: preview.width,
+                    height: preview.height,
+                }
+            }
+        });
+        let preview_surfaces = preview_request
+            .map(|request| {
+                let scale_views = preview::preview_requires_scale(request, width, height)
+                    .then_some((&surfaces.front.view, &surfaces.back.view));
+                self.prepare_preview_surfaces_for_canvas_resize(width, height, request, scale_views)
+            })
+            .transpose()?;
+        Ok(GpuCanvasGeneration {
+            surfaces,
+            preview_surfaces,
+            sampling_readback_buffers,
+        })
+    }
+
     pub(super) fn apply_canvas_resize(&mut self, preparation: GpuCanvasPreparation) {
         self.discard_pending_preview_map();
         self.clear_sampling_readback_latch();
         drop(self.supersede_frame_in_flight("canvas resize committed"));
-        self.surfaces = match preparation {
-            GpuCanvasPreparation::Gpu(surfaces) => {
+        self.discard_pending_uploads();
+        let (surfaces, preview_surfaces, sampling_readback_buffers) = match preparation {
+            GpuCanvasPreparation::Gpu(mut generation) => {
+                if let Some(current) = self.surfaces.as_mut() {
+                    std::mem::swap(
+                        &mut current.screen_upload_pool,
+                        &mut generation.surfaces.screen_upload_pool,
+                    );
+                }
                 self.canvas_gpu_admitted = true;
-                Some(surfaces)
+                (
+                    Some(generation.surfaces),
+                    generation.preview_surfaces,
+                    generation.sampling_readback_buffers,
+                )
             }
             GpuCanvasPreparation::CpuFallback => {
                 self.canvas_gpu_admitted = false;
-                None
+                (None, None, None)
             }
         };
-        self.preview_surfaces = None;
+        self.surfaces = surfaces;
+        self.preview_surfaces = preview_surfaces;
+        self.sampling_latch
+            .install_buffers(sampling_readback_buffers);
         self.current_output = None;
         self.cached_composition_key = None;
         self.cached_readback_surface = None;

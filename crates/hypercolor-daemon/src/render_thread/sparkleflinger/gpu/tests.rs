@@ -80,6 +80,182 @@ fn gpu_canvas_admission_uses_only_texture_capability() {
 }
 
 #[test]
+fn frame_boundary_preview_preparation_failure_preserves_active_generation() {
+    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+        return;
+    };
+    let initial = compositor.prepare_canvas_resize(4, 4);
+    assert!(initial.is_admitted());
+    compositor.apply_canvas_resize(initial);
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                255, 32, 0, 255,
+            )))),
+            CompositionLayer::alpha(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(32, 64, 255, 255))),
+                0.35,
+            ),
+        ],
+    );
+    compositor
+        .compose(
+            &plan,
+            false,
+            Some(PreviewSurfaceRequest {
+                width: 2,
+                height: 2,
+            }),
+        )
+        .expect("active preview generation should compose");
+    assert!(compositor.has_pending_output_submission());
+
+    compositor.fail_next_preview_scale_output_preparation();
+    let rejected = compositor.prepare_canvas_resize(8, 8);
+    assert!(!rejected.is_admitted());
+    assert_eq!(
+        compositor
+            .surface_snapshot()
+            .map(|snapshot| (snapshot.width, snapshot.height)),
+        Some((4, 4))
+    );
+    assert!(compositor.has_pending_output_submission());
+    assert!(
+        compositor
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| {
+                surfaces.width == 2 && surfaces.height == 2 && surfaces.has_scale_output()
+            })
+    );
+
+    let prepared = compositor.prepare_canvas_resize(8, 8);
+    assert!(prepared.is_admitted());
+    compositor.apply_canvas_resize(prepared);
+    assert_eq!(
+        compositor
+            .surface_snapshot()
+            .map(|snapshot| (snapshot.width, snapshot.height)),
+        Some((8, 8))
+    );
+    assert!(
+        compositor
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| {
+                surfaces.width == 2 && surfaces.height == 2 && surfaces.has_scale_output()
+            })
+    );
+    assert!(!compositor.has_pending_output_submission());
+}
+
+#[test]
+fn frame_boundary_sampling_preparation_failure_preserves_active_generation() {
+    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+        return;
+    };
+    let initial = compositor.prepare_canvas_resize(4, 4);
+    assert!(initial.is_admitted());
+    compositor.apply_canvas_resize(initial);
+    let frame = compositor
+        .upload_media_canvas_frame(MediaTextureSourceKey::for_test(90), &patterned_canvas(37))
+        .expect("sampling source should upload");
+    let plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(frame)),
+    );
+    compositor
+        .compose(&plan, true, None)
+        .expect("active sampling generation should compose");
+    assert_eq!(compositor.sampling_latch.buffer_extent(), Some((4, 4)));
+
+    compositor.fail_next_sampling_readback_preparation();
+    let rejected = compositor.prepare_canvas_resize(8, 8);
+    assert!(!rejected.is_admitted());
+    assert_eq!(
+        compositor
+            .surface_snapshot()
+            .map(|snapshot| (snapshot.width, snapshot.height)),
+        Some((4, 4))
+    );
+    assert_eq!(compositor.sampling_latch.buffer_extent(), Some((4, 4)));
+
+    let prepared = compositor.prepare_canvas_resize(8, 8);
+    assert!(prepared.is_admitted());
+    compositor.apply_canvas_resize(prepared);
+    assert_eq!(
+        compositor
+            .surface_snapshot()
+            .map(|snapshot| (snapshot.width, snapshot.height)),
+        Some((8, 8))
+    );
+    assert_eq!(compositor.sampling_latch.buffer_extent(), Some((8, 8)));
+}
+
+#[test]
+fn frame_boundary_resize_retains_prepared_screen_upload_descriptors() {
+    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+        return;
+    };
+    let initial = compositor.prepare_canvas_resize(4, 4);
+    assert!(initial.is_admitted());
+    compositor.apply_canvas_resize(initial);
+    let device = compositor.device.clone();
+    let queue = compositor.queue.clone();
+    let pixels = vec![53_u8; 3 * 2 * 4];
+    let content_key = screen_upload_key(71, 5, 3, 2);
+    let original_storage_id = {
+        let pool = &mut compositor
+            .surfaces
+            .as_mut()
+            .expect("initial GPU generation should be installed")
+            .screen_upload_pool;
+        let (texture, uploaded) = pool
+            .upload_rgba(&device, &queue, 3, 2, &pixels, content_key, |_| {})
+            .expect("screen descriptor should prepare before resize");
+        assert!(uploaded);
+        pool.discard_encoding();
+        pool.fail_next_allocation();
+        texture.storage_id
+    };
+
+    let prepared = compositor.prepare_canvas_resize(8, 8);
+    assert!(prepared.is_admitted());
+    compositor.apply_canvas_resize(prepared);
+    let pool = &mut compositor
+        .surfaces
+        .as_mut()
+        .expect("resized GPU generation should be installed")
+        .screen_upload_pool;
+    let (retained, uploaded) = pool
+        .upload_rgba(&device, &queue, 3, 2, &pixels, content_key, |_| {})
+        .expect("known screen descriptor should be ready without allocation");
+    assert!(!uploaded);
+    assert_eq!(retained.storage_id, original_storage_id);
+    assert!(pool.allocation_failure_is_armed());
+    let error = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            3,
+            2,
+            &pixels,
+            screen_upload_key(72, 6, 3, 2),
+            |_| {},
+        )
+        .expect_err("unknown descriptor should consume the armed allocation failure");
+    assert!(
+        error
+            .to_string()
+            .contains("injected screen upload texture preparation failure")
+    );
+    pool.discard_encoding();
+}
+
+#[test]
 fn texture_composition_survives_scoped_full_frame_readback_rejection() {
     let Ok(mut compositor) = GpuSparkleFlinger::new() else {
         return;

@@ -121,6 +121,25 @@ pub(super) struct CachedPreviewSurfaceKey {
 }
 
 impl GpuSparkleFlinger {
+    pub(super) fn prepare_preview_surfaces_for_canvas_resize(
+        &mut self,
+        source_width: u32,
+        source_height: u32,
+        request: PreviewSurfaceRequest,
+        scale_views: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
+    ) -> Result<GpuPreviewSurfaceSet> {
+        let prepared =
+            self.prepare_preview_surface_change(request.width, request.height, scale_views, true)?;
+        let PreparedPreviewSurfaceChangeKind::Replace(replacement) = prepared.0 else {
+            unreachable!("forced preview preparation must create a replacement")
+        };
+        debug_assert_eq!(
+            scale_views.is_some(),
+            preview_requires_scale(request, source_width, source_height)
+        );
+        Ok(replacement)
+    }
+
     pub(super) fn cached_preview_surface(
         &self,
         key: &CachedPreviewSurfaceKey,

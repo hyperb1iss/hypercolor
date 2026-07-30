@@ -594,11 +594,11 @@ impl SparkleFlinger {
     }
 
     pub(crate) fn prepare_canvas_resize(
-        &self,
+        &mut self,
         width: u32,
         height: u32,
     ) -> Result<SparkleFlingerCanvasPreparation> {
-        match &self.backend {
+        match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(SparkleFlingerCanvasPreparation::Cpu(
                 cpu::CpuCanvasPreparation::try_new(width, height)?,
             )),

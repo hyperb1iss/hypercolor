@@ -63,6 +63,8 @@ pub(super) struct ScreenPublicationUploadPool {
     pub(super) reuse_count: usize,
     #[cfg(test)]
     pub(super) upload_count: usize,
+    #[cfg(test)]
+    fail_next_allocation: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +108,8 @@ impl ScreenPublicationUploadPool {
             reuse_count: 0,
             #[cfg(test)]
             upload_count: 0,
+            #[cfg(test)]
+            fail_next_allocation: false,
         }
     }
 
@@ -177,6 +181,11 @@ impl ScreenPublicationUploadPool {
             slot
         } else {
             self.ensure_texture_slot(&mut release_cached_source)?;
+            #[cfg(test)]
+            super::reject_injected_gpu_preparation(
+                std::mem::take(&mut self.fail_next_allocation),
+                "screen upload texture",
+            )?;
             let texture = try_create_upload_texture(device, width, height)?;
             self.resident_bytes = self
                 .resident_bytes
@@ -302,6 +311,16 @@ impl ScreenPublicationUploadPool {
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_allocation(&mut self) {
+        self.fail_next_allocation = true;
+    }
+
+    #[cfg(test)]
+    pub(super) const fn allocation_failure_is_armed(&self) -> bool {
+        self.fail_next_allocation
     }
 
     fn reclaim_completed(&mut self, device: &wgpu::Device) -> Result<()> {

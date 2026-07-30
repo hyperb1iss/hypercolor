@@ -55,7 +55,7 @@ pub(super) struct SamplingReadbackLatch {
     pub(super) last_readback_bytes: u64,
 }
 
-struct SamplingReadbackBuffers {
+pub(super) struct SamplingReadbackBuffers {
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
@@ -110,6 +110,17 @@ impl SamplingReadbackBuffers {
 }
 
 impl SamplingReadbackLatch {
+    pub(super) fn install_buffers(&mut self, buffers: Option<SamplingReadbackBuffers>) {
+        self.buffers = buffers;
+    }
+
+    #[cfg(test)]
+    pub(super) fn buffer_extent(&self) -> Option<(u32, u32)> {
+        self.buffers
+            .as_ref()
+            .map(|buffers| (buffers.width, buffers.height))
+    }
+
     pub(super) fn surface_pool_counts(&mut self) -> SurfaceStateCounts {
         self.buffers
             .as_mut()
@@ -977,7 +988,7 @@ impl GpuSparkleFlinger {
         }
     }
 
-    fn prepare_sampling_readback_buffers(
+    pub(super) fn prepare_sampling_readback_buffers(
         &mut self,
         width: u32,
         height: u32,
@@ -988,6 +999,25 @@ impl GpuSparkleFlinger {
             .as_ref()
             .is_some_and(|buffers| buffers.width == width && buffers.height == height)
         {
+            return Ok(None);
+        }
+        let fail_after_prepare = self.take_sampling_readback_failure_injection();
+        SamplingReadbackBuffers::try_new(
+            &self.device,
+            self.max_buffer_size,
+            width,
+            height,
+            fail_after_prepare,
+        )
+        .map(Some)
+    }
+
+    pub(super) fn prepare_sampling_readback_buffers_for_canvas_resize(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<SamplingReadbackBuffers>> {
+        if self.sampling_latch.buffers.is_none() {
             return Ok(None);
         }
         let fail_after_prepare = self.take_sampling_readback_failure_injection();
