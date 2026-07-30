@@ -54,6 +54,30 @@ fn solid_canvas(color: Rgba) -> Canvas {
     canvas
 }
 
+fn required_gpu<T>(result: anyhow::Result<T>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            assert!(
+                std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                "required real-GPU test environment is unavailable: {error:#}"
+            );
+            eprintln!(
+                "real-GPU test skipped because no compatible adapter is available: {error:#}"
+            );
+            None
+        }
+    }
+}
+
+fn gpu_test_compositor() -> Option<GpuSparkleFlinger> {
+    required_gpu(GpuSparkleFlinger::new())
+}
+
+fn gpu_test_sparkleflinger() -> Option<SparkleFlinger> {
+    required_gpu(SparkleFlinger::new(RenderAccelerationMode::Gpu))
+}
+
 fn bypass_surface_plan(width: u32, height: u32) -> CompositionPlan {
     CompositionPlan::single(
         width,
@@ -121,7 +145,7 @@ fn gpu_canvas_admission_uses_only_texture_capability() {
 
 #[test]
 fn frame_boundary_preview_preparation_failure_preserves_active_generation() {
-    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+    let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
     let initial = compositor.prepare_canvas_resize(4, 4, None);
@@ -207,7 +231,7 @@ fn frame_boundary_preview_preparation_failure_preserves_active_generation() {
 
 #[test]
 fn frame_boundary_equal_extent_preview_preserves_concrete_request() {
-    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+    let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
     let initial = compositor.prepare_canvas_resize(64, 4, None);
@@ -291,7 +315,7 @@ fn frame_boundary_equal_extent_preview_preserves_concrete_request() {
 
 #[test]
 fn active_preview_request_bypass_is_prepared_before_resize() {
-    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+    let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
         return;
     };
     let initial = sparkleflinger
@@ -353,7 +377,7 @@ fn active_preview_request_bypass_is_prepared_before_resize() {
 
 #[test]
 fn active_preview_request_successful_none_clears() {
-    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+    let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
         return;
     };
     let initial = sparkleflinger
@@ -386,7 +410,7 @@ fn active_preview_request_successful_none_clears() {
 
 #[test]
 fn active_preview_request_failed_compose_retains_last_good() {
-    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+    let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
         return;
     };
     let initial = sparkleflinger
@@ -449,7 +473,7 @@ fn active_preview_request_failed_compose_retains_last_good() {
 
 #[test]
 fn active_preview_request_upload_saturation_rejects_replacement() {
-    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+    let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
         return;
     };
     let retained_request = PreviewSurfaceRequest {
@@ -483,7 +507,7 @@ fn active_preview_request_upload_saturation_rejects_replacement() {
 
 #[test]
 fn active_preview_request_upload_saturation_rejects_clear() {
-    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+    let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
         return;
     };
     let retained_request = PreviewSurfaceRequest {
@@ -509,7 +533,7 @@ fn active_preview_request_upload_saturation_rejects_clear() {
 
 #[test]
 fn active_preview_request_replaces_stale_surface_on_resize() {
-    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+    let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
         return;
     };
     let initial = sparkleflinger
@@ -569,7 +593,7 @@ fn active_preview_request_replaces_stale_surface_on_resize() {
 
 #[test]
 fn active_preview_request_cpu_fallback_change_survives_gpu_readmission() {
-    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+    let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
         return;
     };
     let initial = sparkleflinger
@@ -647,7 +671,7 @@ fn active_preview_request_cpu_fallback_change_survives_gpu_readmission() {
 
 #[test]
 fn frame_boundary_sampling_preparation_failure_preserves_active_generation() {
-    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+    let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
     let initial = compositor.prepare_canvas_resize(4, 4, None);
@@ -691,7 +715,7 @@ fn frame_boundary_sampling_preparation_failure_preserves_active_generation() {
 
 #[test]
 fn frame_boundary_resize_retains_prepared_screen_upload_descriptors() {
-    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+    let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
     let initial = compositor.prepare_canvas_resize(4, 4, None);
@@ -751,7 +775,7 @@ fn frame_boundary_resize_retains_prepared_screen_upload_descriptors() {
 
 #[test]
 fn texture_composition_survives_scoped_full_frame_readback_rejection() {
-    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+    let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
     compositor.max_buffer_size = 4;
@@ -850,9 +874,8 @@ const fn screen_upload_key(
 
 #[test]
 fn screen_upload_pool_reuses_only_completion_retired_textures() {
-    let compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
@@ -908,9 +931,8 @@ fn screen_upload_pool_reuses_only_completion_retired_textures() {
 
 #[test]
 fn unchanged_screen_publication_does_not_reupload_when_other_layer_recomposes() {
-    let compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
@@ -941,9 +963,8 @@ fn unchanged_screen_publication_does_not_reupload_when_other_layer_recomposes() 
 
 #[test]
 fn screen_upload_pool_fences_distinct_branches_with_matching_sequences() {
-    let compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
@@ -989,9 +1010,8 @@ fn screen_upload_pool_charges_aligned_row_residency() {
 
 #[test]
 fn screen_upload_pool_evicts_completed_descriptors_within_texture_limit() {
-    let compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
@@ -1046,9 +1066,8 @@ fn screen_upload_pool_evicts_completed_descriptors_within_texture_limit() {
 
 #[test]
 fn screen_upload_pool_allows_pipeline_depth_then_reports_typed_saturation() {
-    let compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
@@ -1085,9 +1104,8 @@ fn screen_upload_pool_allows_pipeline_depth_then_reports_typed_saturation() {
 
 #[test]
 fn screen_upload_pool_reuses_only_matching_free_descriptors() {
-    let compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
@@ -1473,10 +1491,10 @@ fn fade_sampling_layout(mode: SamplingMode) -> SpatialLayout {
 
 #[test]
 fn gpu_compositor_probe_reports_a_texture_format() {
-    let probe = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor.probe.clone(),
-        Err(_) => return,
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
     };
+    let probe = compositor.probe.clone();
 
     assert!(!probe.adapter_name.is_empty());
     assert!(!probe.texture_format.is_empty());
@@ -1485,9 +1503,8 @@ fn gpu_compositor_probe_reports_a_texture_format() {
 #[cfg(target_os = "windows")]
 #[test]
 fn dx12_compositor_exposes_one_renderer_bound_screen_target() {
-    let compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
     };
     if compositor.probe.backend == "dx12" {
         let target = compositor
@@ -1555,9 +1572,8 @@ fn native_screen_manifest_generation_is_an_exact_fence() {
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 #[test]
 fn gpu_macos_imported_frame_composes_without_cpu_readback() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let width = 2;
     let height = 2;
@@ -1632,9 +1648,8 @@ fn gpu_macos_imported_frame_composes_without_cpu_readback() {
 
 #[test]
 fn gpu_compositor_passthroughs_current_output_texture() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let source_plan = CompositionPlan::single(
         4,
@@ -1671,9 +1686,8 @@ fn gpu_compositor_passthroughs_current_output_texture() {
 
 #[test]
 fn gpu_compositor_does_not_passthrough_producer_texture() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let source_plan = CompositionPlan::single(
         4,
@@ -1709,9 +1723,8 @@ fn gpu_compositor_does_not_passthrough_producer_texture() {
 
 #[test]
 fn gpu_compositor_matches_cpu_alpha_composition() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
 
     let plan = CompositionPlan::with_layers(
@@ -1732,9 +1745,8 @@ fn gpu_compositor_matches_cpu_alpha_composition() {
 
 #[test]
 fn gpu_compositor_matches_cpu_add_composition() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
 
     let plan = CompositionPlan::with_layers(
@@ -1755,9 +1767,8 @@ fn gpu_compositor_matches_cpu_add_composition() {
 
 #[test]
 fn gpu_compositor_matches_cpu_screen_composition() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
 
     let plan = CompositionPlan::with_layers(
@@ -1778,9 +1789,8 @@ fn gpu_compositor_matches_cpu_screen_composition() {
 
 #[test]
 fn gpu_compositor_matches_cpu_for_distinct_multi_pass_params() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
 
     let plan = CompositionPlan::with_layers(
@@ -1806,9 +1816,8 @@ fn gpu_compositor_matches_cpu_for_distinct_multi_pass_params() {
 
 #[test]
 fn gpu_compositor_bypasses_single_replace_surfaces() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let source =
         PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(12, 34, 56, 255)), 1, 2);
@@ -1829,9 +1838,8 @@ fn gpu_compositor_bypasses_single_replace_surfaces() {
 
 #[test]
 fn gpu_compositor_bypass_surfaces_still_support_gpu_zone_sampling() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let source = slot_surface(Rgba::new(24, 88, 160, 255));
@@ -1859,9 +1867,8 @@ fn gpu_compositor_bypass_surfaces_still_support_gpu_zone_sampling() {
 
 #[test]
 fn gpu_compositor_skips_cpu_readback_when_canvas_is_not_required() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -1888,9 +1895,8 @@ fn gpu_compositor_skips_cpu_readback_when_canvas_is_not_required() {
 
 #[test]
 fn gpu_steady_state_animated_compose_keeps_params_in_uniform_ring() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let base = compositor
         .upload_media_canvas_frame(MediaTextureSourceKey::for_test(0), &patterned_canvas(9))
@@ -1936,9 +1942,8 @@ fn gpu_steady_state_animated_compose_keeps_params_in_uniform_ring() {
 
 #[test]
 fn gpu_compose_params_ring_wrap_falls_back_to_staging_uploads() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     compositor
         .pipeline
@@ -1987,9 +1992,8 @@ fn gpu_compose_params_ring_wrap_falls_back_to_staging_uploads() {
 
 #[test]
 fn gpu_compositor_latches_sampling_canvas_for_animated_gpu_plans() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let first_content = patterned_canvas(9);
     let second_content = patterned_canvas(63);
@@ -2050,9 +2054,8 @@ fn gpu_compositor_latches_sampling_canvas_for_animated_gpu_plans() {
 
 #[test]
 fn gpu_failed_sampling_preparation_preserves_last_good_readback() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let first_content = patterned_canvas(27);
     let second_content = patterned_canvas(83);
@@ -2118,9 +2121,8 @@ fn gpu_failed_sampling_preparation_preserves_last_good_readback() {
 
 #[test]
 fn gpu_compositor_scales_preview_surface_to_requested_size() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -2157,9 +2159,8 @@ fn gpu_compositor_scales_preview_surface_to_requested_size() {
 
 #[test]
 fn gpu_full_size_preview_stages_publication_without_sampling_canvas() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -2201,9 +2202,8 @@ fn gpu_full_size_preview_stages_publication_without_sampling_canvas() {
 
 #[test]
 fn gpu_full_size_preview_uses_texture_copy_for_aligned_rows() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         64,
@@ -2255,9 +2255,8 @@ fn gpu_full_size_preview_uses_texture_copy_for_aligned_rows() {
 
 #[test]
 fn gpu_scaled_preview_reuses_bind_groups_and_scale_params() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let request = PreviewSurfaceRequest {
         width: 2,
@@ -2308,9 +2307,8 @@ fn gpu_scaled_preview_reuses_bind_groups_and_scale_params() {
 
 #[test]
 fn gpu_scaled_preview_reuses_buffers_across_smaller_requests() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -2368,9 +2366,8 @@ fn gpu_scaled_preview_reuses_buffers_across_smaller_requests() {
 
 #[test]
 fn gpu_scaled_preview_reuses_readback_surface_pools_across_size_flips() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let first_plan = CompositionPlan::with_layers(
         4,
@@ -2431,9 +2428,8 @@ fn gpu_scaled_preview_reuses_readback_surface_pools_across_size_flips() {
 
 #[test]
 fn gpu_compositor_reuses_source_bind_groups_across_frames() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
 
     let producer_frame = compositor
@@ -2471,9 +2467,8 @@ fn gpu_compositor_reuses_source_bind_groups_across_frames() {
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 #[test]
 fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let width = 4;
     let height = 4;
@@ -2597,4 +2592,5 @@ mod display_finalize;
 mod media_upload;
 mod preview;
 mod sampler;
+mod shaders;
 mod surface;

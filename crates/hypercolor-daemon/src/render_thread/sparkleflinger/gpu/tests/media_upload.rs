@@ -4,9 +4,8 @@ use crate::render_thread::producer_queue::{ProducerFrameState, ProducerQueue};
 
 #[test]
 fn gpu_media_upload_reuses_source_size_texture_ring() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let source = MediaTextureSourceKey::for_test(7);
     let canvas = solid_canvas_with_size(4, 4, Rgba::new(32, 96, 160, 255));
@@ -44,9 +43,8 @@ fn gpu_media_upload_reuses_source_size_texture_ring() {
 
 #[test]
 fn gpu_media_upload_keys_distinct_sources_separately() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let first_source = MediaTextureSourceKey::for_test(7);
     let second_source = MediaTextureSourceKey::for_test(8);
@@ -83,9 +81,8 @@ fn gpu_media_upload_keys_distinct_sources_separately() {
 
 #[test]
 fn gpu_reused_storage_advances_content_freshness_and_copy_identity() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let source = MediaTextureSourceKey::for_test(7);
     let canvas = solid_canvas_with_size(4, 4, Rgba::new(32, 96, 160, 255));
@@ -163,9 +160,8 @@ fn gpu_reused_storage_advances_content_freshness_and_copy_identity() {
 
 #[test]
 fn gpu_media_upload_prunes_idle_source_size_texture_pools() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let source = MediaTextureSourceKey::for_test(7);
     let canvas = solid_canvas_with_size(4, 4, Rgba::new(32, 96, 160, 255));
@@ -184,9 +180,8 @@ fn gpu_media_upload_prunes_idle_source_size_texture_pools() {
 
 #[test]
 fn gpu_texture_frame_records_blocked_cpu_materialization() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let source = MediaTextureSourceKey::for_test(7);
     let canvas = solid_canvas_with_size(4, 4, Rgba::new(32, 96, 160, 255));

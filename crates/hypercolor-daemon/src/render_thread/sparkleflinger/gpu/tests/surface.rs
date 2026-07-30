@@ -2,9 +2,8 @@ use super::*;
 
 #[test]
 fn gpu_compositor_reuses_matching_surface_sizes() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
 
     compositor
@@ -25,9 +24,8 @@ fn gpu_compositor_reuses_matching_surface_sizes() {
 
 #[test]
 fn gpu_resize_clears_ready_preview_surface() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
 
     compositor.ready_preview_surface = Some(PublishedSurface::from_owned_canvas(
@@ -45,9 +43,8 @@ fn gpu_resize_clears_ready_preview_surface() {
 
 #[test]
 fn gpu_resize_clears_sampling_bind_groups() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::single(

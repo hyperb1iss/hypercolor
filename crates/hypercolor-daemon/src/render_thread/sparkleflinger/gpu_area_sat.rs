@@ -654,6 +654,56 @@ fn encode_hierarchy(
 mod tests {
     use super::{GpuAreaGeometry, SAT_VALUE_BYTES, SAT_WORKGROUP_SIZE};
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct GpuAreaWorkload {
+        resident_bytes: u64,
+        compute_passes: u64,
+        scheduled_workgroups: u64,
+        scheduled_invocations: u64,
+    }
+
+    impl GpuAreaWorkload {
+        fn from_geometry(geometry: &GpuAreaGeometry) -> Self {
+            let hierarchy_workgroups = |hierarchy: &super::GpuAreaHierarchyGeometry| {
+                let segments = u64::from(hierarchy.segment_count);
+                let scans = hierarchy
+                    .levels
+                    .iter()
+                    .map(|level| u64::from(level.block_count) * segments)
+                    .sum::<u64>();
+                let adds = hierarchy
+                    .levels
+                    .iter()
+                    .take(hierarchy.levels.len().saturating_sub(1))
+                    .map(|level| u64::from(level.block_count) * segments)
+                    .sum::<u64>();
+                scans + adds
+            };
+            let horizontal_main =
+                u64::from(geometry.horizontal_block_count) * u64::from(geometry.height);
+            let vertical_main =
+                u64::from(geometry.width) * u64::from(geometry.vertical_block_count);
+            let scheduled_workgroups = horizontal_main * 2
+                + vertical_main * 2
+                + hierarchy_workgroups(&geometry.horizontal_hierarchy)
+                + hierarchy_workgroups(&geometry.vertical_hierarchy);
+            let hierarchy_passes = |hierarchy: &super::GpuAreaHierarchyGeometry| {
+                u64::try_from(hierarchy.levels.len() * 2 - 1)
+                    .expect("hierarchy pass count fits u64")
+            };
+            Self {
+                resident_bytes: geometry.value_bytes
+                    + geometry.horizontal_hierarchy.byte_len
+                    + geometry.vertical_hierarchy.byte_len,
+                compute_passes: 4
+                    + hierarchy_passes(&geometry.horizontal_hierarchy)
+                    + hierarchy_passes(&geometry.vertical_hierarchy),
+                scheduled_workgroups,
+                scheduled_invocations: scheduled_workgroups * u64::from(SAT_WORKGROUP_SIZE),
+            }
+        }
+    }
+
     fn synthetic_limits() -> wgpu::Limits {
         wgpu::Limits {
             max_texture_dimension_2d: u32::MAX,
@@ -726,6 +776,30 @@ mod tests {
             .expect_err("width times height must remain u32-addressable in WGSL");
 
         assert!(error.to_string().contains("exceeds u32 shader indexing"));
+    }
+
+    #[test]
+    fn exact_sat_workload_is_quantified_at_1080p_4k_and_8k() {
+        let cases = [
+            (1920, 1080, 50_276_160, 45_480, 11_642_880),
+            (3840, 2160, 200_816_640, 151_920, 38_891_520),
+            (7680, 4320, 802_794_240, 556_320, 142_417_920),
+        ];
+        let mut previous = None;
+        for (width, height, resident_bytes, workgroups, invocations) in cases {
+            let geometry = GpuAreaGeometry::try_new(synthetic_limits(), width, height)
+                .expect("synthetic scale descriptor should be admitted");
+            let workload = GpuAreaWorkload::from_geometry(&geometry);
+            eprintln!("exact SAT {width}x{height}: {workload:?}");
+            assert_eq!(workload.resident_bytes, resident_bytes);
+            assert_eq!(workload.compute_passes, 10);
+            assert_eq!(workload.scheduled_workgroups, workgroups);
+            assert_eq!(workload.scheduled_invocations, invocations);
+            if let Some(previous) = previous {
+                assert!(workload.resident_bytes > previous);
+            }
+            previous = Some(workload.resident_bytes);
+        }
     }
 
     #[test]

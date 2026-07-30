@@ -2,9 +2,8 @@ use super::*;
 
 #[test]
 fn gpu_display_finalize_applies_replace_brightness_and_circular_mask() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(0, 0, 255, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(255, 0, 0, 255)));
@@ -26,9 +25,8 @@ fn gpu_display_finalize_applies_replace_brightness_and_circular_mask() {
 
 #[test]
 fn gpu_display_finalize_alpha_blends_in_linear_light() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
@@ -45,9 +43,8 @@ fn gpu_display_finalize_alpha_blends_in_linear_light() {
 
 #[test]
 fn gpu_display_finalize_yuv420_reads_back_luma_and_chroma_planes() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
@@ -66,9 +63,8 @@ fn gpu_display_finalize_yuv420_reads_back_luma_and_chroma_planes() {
 
 #[test]
 fn gpu_display_finalize_yuv420_samples_same_size_face_on_texel_centers() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 1, Rgba::new(0, 0, 0, 255)));
     let mut face_canvas = Canvas::new(2, 1);
@@ -87,9 +83,8 @@ fn gpu_display_finalize_yuv420_samples_same_size_face_on_texel_centers() {
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 #[test]
 fn gpu_display_finalize_copies_imported_face_into_owned_source_texture() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let width = 2;
     let height = 2;
@@ -178,9 +173,8 @@ fn gpu_display_finalize_copies_imported_face_into_owned_source_texture() {
 
 #[test]
 fn gpu_display_finalize_async_ring_releases_slots_after_discard() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 255, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
@@ -225,9 +219,8 @@ fn gpu_display_finalize_async_ring_releases_slots_after_discard() {
 
 #[test]
 fn gpu_display_finalize_keeps_route_surface_sets_independent() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let scene_small =
         ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 255, 255)));

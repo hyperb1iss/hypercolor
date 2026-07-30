@@ -2,9 +2,8 @@ use super::super::*;
 
 #[test]
 fn gpu_sampler_matches_cpu_spatial_sampling_for_bilinear_plans() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::with_layers(
@@ -43,9 +42,8 @@ fn gpu_sampler_matches_cpu_spatial_sampling_for_bilinear_plans() {
 
 #[test]
 fn gpu_sampler_matches_cpu_spatial_sampling_with_fade_edges() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(fade_sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::with_layers(
@@ -85,9 +83,8 @@ fn gpu_sampler_matches_cpu_spatial_sampling_with_fade_edges() {
 
 #[test]
 fn gpu_sampling_matches_cpu_after_canvas_resize() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::single(
@@ -119,9 +116,8 @@ fn gpu_sampling_matches_cpu_after_canvas_resize() {
 
 #[test]
 fn gpu_sampler_rejects_gaussian_plans_without_dispatch() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::GaussianArea {
         sigma: 1.0,
@@ -148,9 +144,8 @@ fn gpu_sampler_rejects_gaussian_plans_without_dispatch() {
 
 #[test]
 fn gpu_sampler_matches_cpu_spatial_sampling_for_area_plans() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
         radius_x: 1.0,
@@ -186,9 +181,8 @@ fn gpu_sampler_matches_cpu_spatial_sampling_for_area_plans() {
 
 #[test]
 fn gpu_area_sampling_leaves_cpu_workspace_unallocated() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
         radius_x: 2.0,
@@ -222,9 +216,8 @@ fn gpu_area_sampling_leaves_cpu_workspace_unallocated() {
 
 #[test]
 fn gpu_area_sampling_carries_across_u32_prefix_limb() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let mut layout = sampling_layout(SamplingMode::AreaAverage {
         radius_x: 128.0,
@@ -257,9 +250,8 @@ fn gpu_area_sampling_carries_across_u32_prefix_limb() {
 
 #[test]
 fn gpu_sampler_matches_cpu_area_sampling_with_fade_edges() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(fade_sampling_layout(SamplingMode::AreaAverage {
         radius_x: 2.0,
@@ -288,9 +280,8 @@ fn gpu_sampler_matches_cpu_area_sampling_with_fade_edges() {
 
 #[test]
 fn gpu_sampler_matches_cpu_for_anisotropic_area_radii() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
         radius_x: 3.0,
@@ -319,9 +310,8 @@ fn gpu_sampler_matches_cpu_for_anisotropic_area_radii() {
 
 #[test]
 fn gpu_sampler_matches_cpu_for_area_radius_above_u16_at_clamped_borders() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
         radius_x: 65_536.0,
@@ -350,9 +340,8 @@ fn gpu_sampler_matches_cpu_for_area_radius_above_u16_at_clamped_borders() {
 
 #[test]
 fn gpu_sampling_admission_rolls_back_retries_and_reuses_resources() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let initial = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
         radius_x: 1.0,
@@ -403,9 +392,8 @@ fn gpu_sampling_admission_rolls_back_retries_and_reuses_resources() {
 
 #[test]
 fn deterministic_gpu_sampling_limits_are_cached_without_retrying() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let width = compositor
         .device
@@ -430,9 +418,8 @@ fn deterministic_gpu_sampling_limits_are_cached_without_retrying() {
 
 #[test]
 fn gpu_sampler_matches_cpu_when_negative_area_radius_clamps_to_zero() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
         radius_x: -1.0,

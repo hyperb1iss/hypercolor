@@ -3,9 +3,8 @@ use crate::render_thread::sparkleflinger::gpu::source::cached_readback_key;
 
 #[test]
 fn gpu_scaled_preview_reuses_cached_surface_across_size_flips() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -97,9 +96,8 @@ fn gpu_scaled_preview_tracks_compositor_texture_identity_across_size_flips() {
 
 #[test]
 fn gpu_preview_work_can_submit_before_finalize() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -145,9 +143,8 @@ fn gpu_preview_work_can_submit_before_finalize() {
 
 #[test]
 fn gpu_active_preview_map_is_reused_on_identical_compose() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let base = slot_surface(Rgba::new(24, 96, 160, 255));
     let overlay = slot_surface(Rgba::new(200, 48, 96, 255));
@@ -187,9 +184,8 @@ fn gpu_active_preview_map_is_reused_on_identical_compose() {
 
 #[test]
 fn gpu_failed_preview_scale_preparation_preserves_last_good_map() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -451,9 +447,8 @@ fn gpu_failed_preview_preparation_preserves_composition_cache_until_retry() {
 
 #[test]
 fn gpu_preview_finalize_can_defer_without_blocking() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -489,9 +484,8 @@ fn gpu_preview_finalize_can_defer_without_blocking() {
 
 #[test]
 fn gpu_matching_pending_preview_map_is_reused_on_identical_compose() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let base = slot_surface(Rgba::new(24, 96, 160, 255));
     let overlay = slot_surface(Rgba::new(200, 48, 96, 255));
@@ -532,9 +526,8 @@ fn gpu_matching_pending_preview_map_is_reused_on_identical_compose() {
 
 #[test]
 fn gpu_deferred_preview_queues_next_compose_after_pending_map() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let first_plan = CompositionPlan::single(
         4,
@@ -584,9 +577,8 @@ fn gpu_deferred_preview_queues_next_compose_after_pending_map() {
 
 #[test]
 fn gpu_fresh_preview_restage_uses_alternate_readback_slot() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let first_plan = CompositionPlan::single(
         4,
@@ -659,9 +651,8 @@ fn gpu_fresh_preview_restage_uses_alternate_readback_slot() {
 
 #[test]
 fn gpu_current_output_preview_restage_supersedes_retained_submitted_frame() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let first_plan = CompositionPlan::single(
         4,
@@ -728,9 +719,8 @@ fn gpu_current_output_preview_restage_supersedes_retained_submitted_frame() {
 
 #[test]
 fn gpu_deferred_preview_is_superseded_by_non_bypass_resize_compose() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let first_plan = CompositionPlan::with_layers(
         4,
@@ -802,9 +792,8 @@ fn gpu_deferred_preview_is_superseded_by_non_bypass_resize_compose() {
 
 #[test]
 fn gpu_discard_superseded_preview_work_clears_preview_state() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
 
     let encoder = compositor

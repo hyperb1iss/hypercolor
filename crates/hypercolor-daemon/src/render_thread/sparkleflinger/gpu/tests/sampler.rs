@@ -2,9 +2,8 @@ use super::*;
 
 #[test]
 fn gpu_sampler_arms_preview_map_after_sampling_completion() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::with_layers(
@@ -49,9 +48,8 @@ fn gpu_sampler_arms_preview_map_after_sampling_completion() {
 
 #[test]
 fn gpu_sampler_preserves_mapped_preview_when_new_sample_submits() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let first_plan = CompositionPlan::with_layers(
@@ -132,9 +130,8 @@ fn gpu_sampler_preserves_mapped_preview_when_new_sample_submits() {
 
 #[test]
 fn gpu_zero_sample_plan_keeps_pending_preview_work() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Bilinear, 0));
     let plan = CompositionPlan::with_layers(
@@ -176,9 +173,8 @@ fn gpu_zero_sample_plan_keeps_pending_preview_work() {
 
 #[test]
 fn gpu_compositor_bypassed_canvas_shares_sampling_surface_storage() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::single(
         4,
@@ -210,9 +206,8 @@ fn gpu_compositor_bypassed_canvas_shares_sampling_surface_storage() {
 
 #[test]
 fn gpu_compositor_reuses_cached_shared_canvas_bypass_surfaces() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let canvas = solid_canvas(Rgba::new(24, 88, 160, 255));
     let plan = CompositionPlan::single(
@@ -255,9 +250,8 @@ fn gpu_compositor_reuses_cached_shared_canvas_bypass_surfaces() {
 
 #[test]
 fn gpu_compositor_reuses_cached_unique_canvas_bypass_surfaces_on_second_frame() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::single(
         4,
@@ -301,9 +295,8 @@ fn gpu_compositor_reuses_cached_unique_canvas_bypass_surfaces_on_second_frame() 
 
 #[test]
 fn gpu_compositor_reuses_cached_slot_backed_frame_uploads() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let retained_base = slot_surface(Rgba::new(255, 32, 0, 255));
@@ -384,9 +377,8 @@ fn gpu_compositor_reuses_cached_slot_backed_frame_uploads() {
 
 #[test]
 fn gpu_compositor_reuses_compose_params_for_same_alpha_shape() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let first_plan = CompositionPlan::with_layers(
         4,
@@ -432,9 +424,8 @@ fn gpu_compositor_reuses_compose_params_for_same_alpha_shape() {
 
 #[test]
 fn gpu_sampler_reuses_zone_output_storage() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::with_layers(
@@ -481,9 +472,8 @@ fn gpu_sampler_reuses_zone_output_storage() {
 
 #[test]
 fn gpu_sampler_reuses_cached_zone_results_for_identical_retained_surfaces() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let retained_base = slot_surface(Rgba::new(255, 32, 0, 255));
@@ -527,9 +517,8 @@ fn gpu_sampler_reuses_cached_zone_results_for_identical_retained_surfaces() {
 
 #[test]
 fn gpu_cached_sample_hit_preserves_retained_preview_submission() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let retained_base = slot_surface(Rgba::new(255, 32, 0, 255));
@@ -590,9 +579,8 @@ fn gpu_cached_sample_hit_preserves_retained_preview_submission() {
 
 #[test]
 fn gpu_sampler_caches_bind_groups_by_output_surface() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let back_output_plan = CompositionPlan::with_layers(
@@ -646,9 +634,8 @@ fn gpu_sampler_caches_bind_groups_by_output_surface() {
 
 #[test]
 fn gpu_sampler_reuses_sample_params_for_same_output_shape() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let first_plan = CompositionPlan::with_layers(
@@ -694,9 +681,8 @@ fn gpu_sampler_reuses_sample_params_for_same_output_shape() {
 
 #[test]
 fn gpu_sampler_copies_only_live_sample_bytes_after_capacity_growth() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let large_engine =
         SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Bilinear, 16));
@@ -745,9 +731,8 @@ fn gpu_sampler_copies_only_live_sample_bytes_after_capacity_growth() {
 
 #[test]
 fn gpu_sampler_rotates_readback_slots_for_overlapped_dispatches() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::with_layers(
@@ -830,9 +815,8 @@ fn gpu_sampler_rotates_readback_slots_for_overlapped_dispatches() {
 
 #[test]
 fn gpu_sampler_keeps_new_generation_slot_leased_after_retired_readback_finishes() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let old_engine = SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Bilinear, 4));
     let grown_engine =
@@ -928,9 +912,8 @@ fn gpu_sampler_keeps_new_generation_slot_leased_after_retired_readback_finishes(
 
 #[test]
 fn gpu_sampler_refuses_a_fourth_overlapped_readback_until_a_slot_is_released() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let alternate_engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
@@ -1009,9 +992,8 @@ fn gpu_sampler_refuses_a_fourth_overlapped_readback_until_a_slot_is_released() {
 
 #[test]
 fn gpu_sampler_discard_releases_overlapped_readback_slot() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let alternate_engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
@@ -1078,9 +1060,8 @@ fn gpu_sampler_discard_releases_overlapped_readback_slot() {
 
 #[test]
 fn gpu_sampler_decodes_overlapped_readbacks_with_distinct_sampling_plans() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let large_engine =
         SpatialEngine::new(sampling_layout_with_led_count(SamplingMode::Nearest, 16));
@@ -1135,9 +1116,8 @@ fn gpu_sampler_decodes_overlapped_readbacks_with_distinct_sampling_plans() {
 
 #[test]
 fn gpu_pending_sample_try_finish_can_prime_cache_without_blocking() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
     let plan = CompositionPlan::with_layers(
@@ -1206,9 +1186,8 @@ fn gpu_pending_sample_try_finish_can_prime_cache_without_blocking() {
 
 #[test]
 fn gpu_stale_pending_sample_finalize_does_not_poison_new_output_cache() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
     let first_plan = CompositionPlan::with_layers(
@@ -1291,9 +1270,8 @@ fn gpu_stale_pending_sample_finalize_does_not_poison_new_output_cache() {
 
 #[test]
 fn gpu_pending_sample_stops_matching_after_layout_generation_changes() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let mut engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
     let plan = CompositionPlan::single(
@@ -1324,9 +1302,8 @@ fn gpu_pending_sample_stops_matching_after_layout_generation_changes() {
 
 #[test]
 fn gpu_refuses_late_full_surface_readback_for_cpu_sampling_fallback() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let plan = CompositionPlan::with_layers(
         4,
@@ -1351,9 +1328,8 @@ fn gpu_refuses_late_full_surface_readback_for_cpu_sampling_fallback() {
 
 #[test]
 fn gpu_sampler_skips_blocking_wait_when_readback_is_already_mapped() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::with_layers(
@@ -1405,9 +1381,8 @@ fn gpu_sampler_skips_blocking_wait_when_readback_is_already_mapped() {
 
 #[test]
 fn gpu_sampler_nonblocking_finalize_eventually_completes_without_explicit_wait() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let plan = CompositionPlan::with_layers(
@@ -1463,9 +1438,8 @@ fn gpu_sampler_nonblocking_finalize_eventually_completes_without_explicit_wait()
 
 #[test]
 fn gpu_pending_sample_matches_and_finishes_across_retained_bypass_frames() {
-    let mut compositor = match GpuSparkleFlinger::new() {
-        Ok(compositor) => compositor,
-        Err(_) => return,
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
     };
     let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
     let source = PublishedSurface::from_owned_canvas(patterned_canvas(12), 1, 1);
