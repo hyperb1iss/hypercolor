@@ -120,6 +120,7 @@ pub struct ScreenRuntimeConfigPlan {
     expected_graph_generation: u64,
     expected_source_present: bool,
     expected_source_running: bool,
+    expected_capture_demand: ScreenCaptureDemand,
     enabled: bool,
     capture_demand: ScreenCaptureDemand,
 }
@@ -146,6 +147,53 @@ impl ScreenRuntimeConfigPlan {
     }
 }
 
+/// Exact steady-state screen capacity prepared against one manager revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use = "screen capacity preparations must be committed or discarded"]
+pub struct ScreenCapacityPreparation {
+    expected_graph_generation: u64,
+    expected_capture_demand: Option<ScreenCaptureDemand>,
+    expected_plan_generation: screen::ScreenPlanGeneration,
+    expected_demand_revision: screen::InputPublicationDemandRevision,
+    expected_resource_capacity_revision: u64,
+    expected_total_capacity: screen::ScreenAdmissionCapacity,
+    total_capacity: screen::ScreenAdmissionCapacity,
+    publication_capacity: screen::ScreenAdmissionCapacity,
+    analysis_peak_bytes: u64,
+}
+
+impl ScreenCapacityPreparation {
+    /// Publication capacity left after the exact candidate analysis quote.
+    #[must_use]
+    pub const fn publication_capacity(self) -> screen::ScreenAdmissionCapacity {
+        self.publication_capacity
+    }
+
+    /// Peak candidate analysis bytes subtracted from both steady fences.
+    #[must_use]
+    pub const fn analysis_peak_bytes(self) -> u64 {
+        self.analysis_peak_bytes
+    }
+}
+
+/// Rejection while coupling analysis and publication capacity.
+#[derive(Debug, thiserror::Error)]
+pub enum ScreenCapacityPreparationError {
+    /// Candidate analysis alone exceeds the configured steady-state total.
+    #[error(
+        "screen analysis needs {requested_bytes} bytes; steady capacity is {available_bytes} bytes"
+    )]
+    AnalysisCapacityExceeded {
+        /// Exact candidate analysis peak.
+        requested_bytes: u64,
+        /// Capacity shared by both configured and physical fences.
+        available_bytes: u64,
+    },
+    /// The active publication state cannot fit the candidate remainder.
+    #[error(transparent)]
+    Publication(#[from] screen::ScreenPlanError),
+}
+
 /// A concurrent input-graph transition invalidated prepared screen state.
 #[derive(Debug, thiserror::Error)]
 pub enum ScreenReconfigurationConflict {
@@ -158,6 +206,15 @@ pub enum ScreenReconfigurationConflict {
     /// The target screen source started or stopped after preparation began.
     #[error("screen source lifecycle changed while reconfiguration was prepared")]
     SourceLifecycleChanged,
+    /// Screen demand changed after preparation began.
+    #[error("screen capture demand changed while reconfiguration was prepared")]
+    CaptureDemandChanged,
+    /// Exact publication state changed after capacity preparation began.
+    #[error("screen publication state changed while reconfiguration was prepared")]
+    PublicationStateChanged,
+    /// The shared physical resource fence changed after preparation began.
+    #[error("screen resource capacity changed while reconfiguration was prepared")]
+    ResourceCapacityChanged,
     /// The prepared replacement does not match the plan.
     #[error("prepared screen source does not match the reconfiguration plan")]
     InvalidReplacement,
@@ -252,7 +309,9 @@ pub struct InputManager {
     committed_screen_publication_resolution_revision: Option<u64>,
     screen_plan_builder: screen::ScreenPlanBuilder,
     screen_resource_capacity: screen::ScreenAdmissionCapacity,
+    screen_total_capacity: screen::ScreenAdmissionCapacity,
     screen_publication_capacity: screen::ScreenAdmissionCapacity,
+    screen_capacity_enforced: bool,
     interaction_capture_active: Option<bool>,
     sensor_poller: Option<SensorPoller>,
     sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
@@ -476,7 +535,9 @@ impl InputManager {
             committed_screen_publication_resolution_revision: None,
             screen_plan_builder: screen::ScreenPlanBuilder::new(),
             screen_resource_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+            screen_total_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
             screen_publication_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+            screen_capacity_enforced: false,
             interaction_capture_active: None,
             sensor_poller: None,
             sensor_snapshot_rx: None,
@@ -1002,22 +1063,18 @@ impl InputManager {
         Ok(())
     }
 
-    /// Set the policy fence used to admit future screen publication plans.
-    pub const fn set_screen_publication_capacity(
-        &mut self,
-        capacity: screen::ScreenAdmissionCapacity,
-    ) {
-        self.screen_publication_capacity = capacity;
-    }
-
-    /// Atomically install the total capture fence and its post-analysis remainder.
+    /// Install the physical transition fence, configured steady total, and
+    /// exact initial publication remainder.
     pub fn set_screen_capacity_plan(
         &mut self,
+        resource: screen::ScreenAdmissionCapacity,
         total: screen::ScreenAdmissionCapacity,
         publication: screen::ScreenAdmissionCapacity,
     ) -> Result<(), screen::ScreenByteAdmissionError> {
-        self.set_screen_resource_capacity(total)?;
-        self.set_screen_publication_capacity(publication);
+        self.set_screen_resource_capacity(resource)?;
+        self.screen_total_capacity = total;
+        self.screen_publication_capacity = publication;
+        self.screen_capacity_enforced = true;
         Ok(())
     }
 
@@ -1027,10 +1084,157 @@ impl InputManager {
         self.screen_resource_capacity
     }
 
+    /// Return the configured steady-state capacity shared by analysis and publication.
+    #[must_use]
+    pub const fn screen_total_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.screen_total_capacity
+    }
+
     /// Return the byte fences installed for screen publication admission.
     #[must_use]
     pub const fn screen_publication_capacity(&self) -> screen::ScreenAdmissionCapacity {
         self.screen_publication_capacity
+    }
+
+    /// Return the exact analysis plan for the currently installed screen source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source cannot represent its current demand.
+    pub fn screen_analysis_resource_plan(
+        &self,
+    ) -> anyhow::Result<Option<screen::ScreenAnalysisResourcePlan>> {
+        let Some(source) = self.sources.iter().find(|source| source.is_screen_source()) else {
+            return Ok(None);
+        };
+        source.screen_analysis_resource_plan(self.current_screen_capture_demand())
+    }
+
+    /// Return the manager's authoritative current screen-capture demand.
+    #[must_use]
+    pub fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.current_screen_capture_demand()
+    }
+
+    /// Prepare an exact publication remainder for one candidate analysis peak.
+    ///
+    /// The shared byte coordinator remains the physical overlap authority.
+    /// This preparation separately proves that the candidate steady state fits
+    /// the configured total and snapshots every manager-owned commit fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed analysis or active-publication capacity rejection.
+    pub fn prepare_screen_capacity(
+        &self,
+        analysis_peak_bytes: u64,
+    ) -> Result<Option<ScreenCapacityPreparation>, ScreenCapacityPreparationError> {
+        self.prepare_screen_capacity_plan(self.screen_total_capacity, analysis_peak_bytes)
+    }
+
+    /// Prepare a replacement steady-state total and exact analysis split.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed analysis or active-publication capacity rejection.
+    pub fn prepare_screen_capacity_plan(
+        &self,
+        total_capacity: screen::ScreenAdmissionCapacity,
+        analysis_peak_bytes: u64,
+    ) -> Result<Option<ScreenCapacityPreparation>, ScreenCapacityPreparationError> {
+        if !self.screen_capacity_enforced {
+            return Ok(None);
+        }
+        let available_bytes = total_capacity
+            .byte_budget()
+            .min(total_capacity.backend_capacity());
+        let publication_capacity = screen::ScreenAdmissionCapacity::new(
+            total_capacity
+                .byte_budget()
+                .checked_sub(analysis_peak_bytes)
+                .ok_or(ScreenCapacityPreparationError::AnalysisCapacityExceeded {
+                    requested_bytes: analysis_peak_bytes,
+                    available_bytes,
+                })?,
+            total_capacity
+                .backend_capacity()
+                .checked_sub(analysis_peak_bytes)
+                .ok_or(ScreenCapacityPreparationError::AnalysisCapacityExceeded {
+                    requested_bytes: analysis_peak_bytes,
+                    available_bytes,
+                })?,
+        );
+        self.screen_plan_builder
+            .validate_capacity(publication_capacity)?;
+        let plan = self.screen_plan_builder.current();
+        let resource_snapshot = self.screen_plan_builder.admission_coordinator().snapshot();
+        Ok(Some(ScreenCapacityPreparation {
+            expected_graph_generation: self.source_graph_generation,
+            expected_capture_demand: self.screen_capture_demand,
+            expected_plan_generation: plan.generation(),
+            expected_demand_revision: plan.demand_revision(),
+            expected_resource_capacity_revision: resource_snapshot.capacity_revision(),
+            expected_total_capacity: self.screen_total_capacity,
+            total_capacity,
+            publication_capacity,
+            analysis_peak_bytes,
+        }))
+    }
+
+    /// Verify that an exact capacity preparation still describes this manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed conflict when demand, publication, or capacity advanced.
+    pub fn validate_screen_capacity(
+        &self,
+        preparation: &ScreenCapacityPreparation,
+    ) -> Result<(), ScreenReconfigurationConflict> {
+        if self.source_graph_generation != preparation.expected_graph_generation {
+            return Err(ScreenReconfigurationConflict::GraphChanged);
+        }
+        if self.screen_capture_demand != preparation.expected_capture_demand {
+            return Err(ScreenReconfigurationConflict::CaptureDemandChanged);
+        }
+        let plan = self.screen_plan_builder.current();
+        if plan.generation() != preparation.expected_plan_generation
+            || plan.demand_revision() != preparation.expected_demand_revision
+        {
+            return Err(ScreenReconfigurationConflict::PublicationStateChanged);
+        }
+        let resource_snapshot = self.screen_plan_builder.admission_coordinator().snapshot();
+        if resource_snapshot.capacity_revision() != preparation.expected_resource_capacity_revision
+            || self.screen_total_capacity != preparation.expected_total_capacity
+        {
+            return Err(ScreenReconfigurationConflict::ResourceCapacityChanged);
+        }
+        Ok(())
+    }
+
+    /// Commit a previously validated exact publication remainder.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed conflict if any preparation fence advanced.
+    pub fn commit_screen_capacity(
+        &mut self,
+        preparation: ScreenCapacityPreparation,
+    ) -> Result<(), ScreenReconfigurationConflict> {
+        self.validate_screen_capacity(&preparation)?;
+        self.screen_total_capacity = preparation.total_capacity;
+        self.screen_publication_capacity = preparation.publication_capacity;
+        Ok(())
+    }
+
+    fn current_screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.screen_capture_demand.unwrap_or_else(|| {
+            self.sources
+                .iter()
+                .find(|source| source.is_screen_source())
+                .map_or(ScreenCaptureDemand::Inactive, |source| {
+                    source.screen_capture_demand()
+                })
+        })
     }
 
     /// Refresh the process-wide revision of exact screen source metadata.
@@ -1347,15 +1551,12 @@ impl InputManager {
     /// Snapshot a generation-fenced screen-source replacement plan.
     pub fn plan_screen_runtime_config(&self, enabled: bool) -> ScreenRuntimeConfigPlan {
         let source = self.sources.iter().find(|source| source.is_screen_source());
-        let current_demand = self.screen_capture_demand.unwrap_or_else(|| {
-            source.map_or(ScreenCaptureDemand::Inactive, |source| {
-                source.screen_capture_demand()
-            })
-        });
+        let current_demand = self.current_screen_capture_demand();
         ScreenRuntimeConfigPlan {
             expected_graph_generation: self.source_graph_generation,
             expected_source_present: source.is_some(),
             expected_source_running: source.is_some_and(|source| source.is_running()),
+            expected_capture_demand: current_demand,
             enabled,
             capture_demand: if enabled {
                 current_demand
@@ -1438,6 +1639,9 @@ impl InputManager {
             .is_some_and(|index| self.sources[index].is_running() != plan.expected_source_running)
         {
             return Err(ScreenReconfigurationConflict::SourceLifecycleChanged);
+        }
+        if self.current_screen_capture_demand() != plan.expected_capture_demand {
+            return Err(ScreenReconfigurationConflict::CaptureDemandChanged);
         }
         if replacement.as_ref().is_some() != plan.enabled
             || replacement.as_ref().is_some_and(|source| {
@@ -1726,13 +1930,28 @@ impl InputManager {
                     .then(|| source.screen_capture_demand())
             })
             .collect::<Vec<_>>();
+        let analysis_peak_bytes = self
+            .sources
+            .iter()
+            .filter(|source| source.is_screen_source())
+            .try_fold(0_u64, |total, source| {
+                let bytes = source
+                    .screen_analysis_resource_plan(demand)?
+                    .map_or(0, screen::ScreenAnalysisResourcePlan::peak_bytes);
+                total
+                    .checked_add(bytes)
+                    .ok_or_else(|| anyhow::anyhow!("screen analysis capacity overflow"))
+            })?;
+        let mut capacity_preparation = self.prepare_screen_capacity(analysis_peak_bytes)?;
         let source_graph_generation = self.bump_source_graph_generation();
+        if let Some(preparation) = &mut capacity_preparation {
+            preparation.expected_graph_generation = source_graph_generation;
+        }
         for source in &mut self.sources {
             if source.is_screen_source() {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
-
         for source_index in 0..self.sources.len() {
             if !self.sources[source_index].is_screen_source() {
                 continue;
@@ -1774,6 +1993,9 @@ impl InputManager {
             }
         }
 
+        if let Some(capacity_preparation) = capacity_preparation {
+            self.commit_screen_capacity(capacity_preparation)?;
+        }
         self.screen_capture_demand = Some(demand);
         self.publish_source_status_registry();
         Ok(())

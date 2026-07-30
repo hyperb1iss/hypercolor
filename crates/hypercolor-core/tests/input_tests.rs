@@ -11,7 +11,8 @@ use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::screen::{
-    PixelExtent, ScreenAdmissionCapacity, ScreenCaptureDemand, ScreenCaptureInput,
+    PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan, ScreenCaptureDemand,
+    ScreenCaptureInput,
 };
 use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
@@ -822,6 +823,22 @@ impl InputSource for CountingScreenDemandSource {
         self.demand
     }
 
+    fn screen_analysis_resource_plan(
+        &self,
+        demand: ScreenCaptureDemand,
+    ) -> anyhow::Result<Option<ScreenAnalysisResourcePlan>> {
+        let Some(extent) = demand.requested_extent() else {
+            return Ok(None);
+        };
+        Ok(Some(ScreenAnalysisResourcePlan::try_new_for_extent(
+            8,
+            6,
+            30,
+            extent,
+            u64::MAX,
+        )?))
+    }
+
     fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
         if demand.is_active() && !self.demand.is_active() {
             self.activations.fetch_add(1, Ordering::Relaxed);
@@ -1314,18 +1331,26 @@ fn removed_source_fences_worker_owned_session() {
 #[test]
 fn manager_constructs_screen_analysis_inside_its_total_byte_fence() {
     let mut manager = InputManager::new();
-    let total = ScreenAdmissionCapacity::new(1_000_000, 900_000);
+    let resource = ScreenAdmissionCapacity::new(1_000_000, 900_000);
+    let total = ScreenAdmissionCapacity::new(600_000, 500_000);
     let publication = ScreenAdmissionCapacity::new(400_000, 300_000);
     manager
-        .set_screen_capacity_plan(total, publication)
+        .set_screen_capacity_plan(resource, total, publication)
         .expect("empty manager should accept its configured screen capacities");
     let coordinator = manager.screen_admission_coordinator();
-    assert_eq!(coordinator.snapshot().capacity(), total);
-    let next_publication = ScreenAdmissionCapacity::new(200_000, 150_000);
-    manager.set_screen_publication_capacity(next_publication);
+    assert_eq!(coordinator.snapshot().capacity(), resource);
+    let preparation = manager
+        .prepare_screen_capacity(300_000)
+        .expect("empty publication state should admit the exact analysis peak")
+        .expect("configured manager should prepare capacity");
+    let next_publication = preparation.publication_capacity();
+    manager
+        .commit_screen_capacity(preparation)
+        .expect("unchanged manager should commit prepared capacity");
     assert_eq!(manager.screen_publication_capacity(), next_publication);
-    assert_eq!(manager.screen_resource_capacity(), total);
-    assert_eq!(coordinator.snapshot().capacity(), total);
+    assert_eq!(manager.screen_resource_capacity(), resource);
+    assert_eq!(manager.screen_total_capacity(), total);
+    assert_eq!(coordinator.snapshot().capacity(), resource);
 
     let input = manager
         .prepare_screen_capture_input(
@@ -2041,6 +2066,82 @@ fn manager_updates_screen_capture_demand_for_screen_sources() {
 
     let samples = mgr.sample_all();
     assert!(matches!(&samples[0], InputData::None));
+}
+
+#[test]
+fn manager_recomputes_publication_capacity_from_the_exact_demand_extent() {
+    let demand = screen_demand(3840, 2160);
+    let extent = demand
+        .requested_extent()
+        .expect("active demand carries an extent");
+    let analysis = ScreenAnalysisResourcePlan::try_new_for_extent(8, 6, 30, extent, u64::MAX)
+        .expect("4K analysis is representable");
+    let steady =
+        ScreenAdmissionCapacity::new(analysis.peak_bytes() + 777, analysis.peak_bytes() + 333);
+    let physical = ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
+    let activations = Arc::new(AtomicUsize::new(0));
+    let mut manager = InputManager::new();
+    manager
+        .set_screen_capacity_plan(physical, steady, steady)
+        .expect("empty manager accepts capacity policy");
+    manager.add_source(Box::new(CountingScreenDemandSource::new(activations)));
+    manager.start_all().expect("screen source starts");
+
+    manager
+        .set_screen_capture_demand(demand)
+        .expect("exact 4K analysis and publication split is admitted");
+
+    assert_eq!(manager.screen_capture_demand(), demand);
+    assert_eq!(
+        manager.screen_publication_capacity(),
+        ScreenAdmissionCapacity::new(777, 333)
+    );
+    assert_eq!(
+        manager
+            .screen_analysis_resource_plan()
+            .expect("analysis quote resolves"),
+        Some(analysis)
+    );
+}
+
+#[test]
+fn demand_growth_rejects_before_source_or_publication_policy_mutates() {
+    let initial = screen_demand(640, 480);
+    let initial_extent = initial
+        .requested_extent()
+        .expect("active demand carries an extent");
+    let initial_analysis =
+        ScreenAnalysisResourcePlan::try_new_for_extent(8, 6, 30, initial_extent, u64::MAX)
+            .expect("baseline analysis is representable");
+    let steady = ScreenAdmissionCapacity::new(
+        initial_analysis.peak_bytes() + 1,
+        initial_analysis.peak_bytes() + 1,
+    );
+    let mut manager = InputManager::new();
+    manager
+        .set_screen_capacity_plan(
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+            steady,
+            steady,
+        )
+        .expect("empty manager accepts capacity policy");
+    manager.add_source(Box::new(CountingScreenDemandSource::new(Arc::new(
+        AtomicUsize::new(0),
+    ))));
+    manager.start_all().expect("screen source starts");
+    manager
+        .set_screen_capture_demand(initial)
+        .expect("baseline demand is admitted");
+    let publication_before = manager.screen_publication_capacity();
+    let graph_before = manager.source_graph_generation();
+
+    manager
+        .set_screen_capture_demand(screen_demand(3840, 2160))
+        .expect_err("growth beyond the steady total is rejected");
+
+    assert_eq!(manager.screen_capture_demand(), initial);
+    assert_eq!(manager.screen_publication_capacity(), publication_before);
+    assert_eq!(manager.source_graph_generation(), graph_before);
 }
 
 #[test]

@@ -689,6 +689,21 @@ pub trait InputSource: Send {
         crate::input::screen::ScreenCaptureDemand::Inactive
     }
 
+    /// Quote the analysis resources needed by one screen-capture demand.
+    ///
+    /// Sources without manager-coupled screen admission return `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested analysis geometry or compute work
+    /// cannot be represented by this source.
+    fn screen_analysis_resource_plan(
+        &self,
+        _demand: crate::input::screen::ScreenCaptureDemand,
+    ) -> anyhow::Result<Option<crate::input::screen::ScreenAnalysisResourcePlan>> {
+        Ok(None)
+    }
+
     /// Apply typed screen publication demand.
     ///
     /// Active demand carries the analyzed publication extent independently of

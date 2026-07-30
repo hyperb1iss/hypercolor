@@ -44,18 +44,18 @@ use crate::input::screen::{
     PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
     ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity,
-    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenBranchPublisher,
-    ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
-    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativePreparationPayload,
-    ScreenNativeTargetPreparation, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
-    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
-    ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
-    ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
-    ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
+    ScreenAnalysisResourcePlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
+    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
+    ScreenCaptureDemand, ScreenCaptureInput, ScreenColorTransformCapabilities,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
+    ScreenGpuSurfacePayload, ScreenNativePreparationPayload, ScreenNativeTargetPreparation,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken,
+    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
+    ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation,
+    ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
@@ -1364,6 +1364,23 @@ impl InputSource for WindowsScreenCaptureInput {
 
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.capture_demand
+    }
+
+    fn screen_analysis_resource_plan(
+        &self,
+        demand: ScreenCaptureDemand,
+    ) -> anyhow::Result<Option<ScreenAnalysisResourcePlan>> {
+        let Some(requested_extent) = demand.requested_extent() else {
+            return Ok(None);
+        };
+        let config = self.settings.snapshot().config;
+        Ok(Some(ScreenAnalysisResourcePlan::try_new_for_extent(
+            config.grid_cols,
+            config.grid_rows,
+            config.target_fps,
+            requested_extent,
+            u64::MAX,
+        )?))
     }
 
     fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
