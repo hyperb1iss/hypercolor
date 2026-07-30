@@ -4784,6 +4784,7 @@ dependencies = [
  "single-instance",
  "socket2 0.6.3",
  "spin_sleep",
+ "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
  "thread-priority",

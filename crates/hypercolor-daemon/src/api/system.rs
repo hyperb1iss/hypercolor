@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::{PixelExtent, ScreenAnalysisResourcePlan};
 use hypercolor_core::input::{SourceFreshness, SourceIssue, SourceKind, SourceState, SourceStatus};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -56,6 +58,7 @@ pub struct SystemStatus {
     pub global_brightness: u8,
     pub audio_available: bool,
     pub capture_available: bool,
+    pub screen_capture_capacity: ScreenCaptureCapacityStatus,
     pub input: InputStatus,
     pub compositor_acceleration: RenderAccelerationStatus,
     pub render_loop: RenderLoopStatus,
@@ -64,6 +67,42 @@ pub struct SystemStatus {
     pub preview_runtime: PreviewRuntimeStatus,
     pub event_bus_subscribers: usize,
     pub capabilities: Vec<String>,
+}
+
+/// Installed byte fences for transactional screen publication admission.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ScreenCaptureCapacityStatus {
+    pub windows_admission_enforced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_transition_byte_capacity: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_transition_backend_capacity: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_reserved_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_available_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steady_total_byte_budget: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steady_total_backend_capacity: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steady_publication_byte_budget: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition_publication_backend_capacity: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_retained_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_peak_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_frame_work_units: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_frame_work_capacity: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_worker_count: Option<u64>,
 }
 
 /// Host keyboard/mouse capture health, for consent and remediation UX.
@@ -766,6 +805,60 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
     let input_status = input_status_snapshot(&state);
+    let screen_capture_capacity = {
+        let input_manager = state.input_manager.lock().await;
+        #[cfg(target_os = "windows")]
+        {
+            let resource_capacity = input_manager.screen_resource_capacity();
+            let total_capacity = input_manager.screen_total_capacity();
+            let publication_capacity = input_manager.screen_publication_capacity();
+            let resource_snapshot = input_manager.screen_admission_coordinator().snapshot();
+            let demand = input_manager.screen_capture_demand();
+            let analysis = input_manager.screen_analysis_resource_plan().ok().flatten();
+            let extent = demand.requested_extent();
+            ScreenCaptureCapacityStatus {
+                windows_admission_enforced: true,
+                physical_transition_byte_capacity: Some(resource_capacity.byte_budget()),
+                physical_transition_backend_capacity: Some(resource_capacity.backend_capacity()),
+                physical_reserved_bytes: Some(resource_snapshot.reserved_bytes()),
+                physical_available_bytes: Some(resource_snapshot.available_bytes()),
+                steady_total_byte_budget: Some(total_capacity.byte_budget()),
+                steady_total_backend_capacity: Some(total_capacity.backend_capacity()),
+                steady_publication_byte_budget: Some(publication_capacity.byte_budget()),
+                transition_publication_backend_capacity: Some(
+                    publication_capacity.backend_capacity(),
+                ),
+                analysis_width: extent.map(PixelExtent::width),
+                analysis_height: extent.map(PixelExtent::height),
+                analysis_retained_bytes: analysis.map(ScreenAnalysisResourcePlan::retained_bytes),
+                analysis_peak_bytes: analysis.map(ScreenAnalysisResourcePlan::peak_bytes),
+                analysis_frame_work_units: analysis
+                    .map(ScreenAnalysisResourcePlan::frame_work_units),
+                analysis_frame_work_capacity: analysis
+                    .map(ScreenAnalysisResourcePlan::frame_work_capacity),
+                analysis_worker_count: analysis.map(ScreenAnalysisResourcePlan::worker_count),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        ScreenCaptureCapacityStatus {
+            windows_admission_enforced: false,
+            physical_transition_byte_capacity: None,
+            physical_transition_backend_capacity: None,
+            physical_reserved_bytes: None,
+            physical_available_bytes: None,
+            steady_total_byte_budget: None,
+            steady_total_backend_capacity: None,
+            steady_publication_byte_budget: None,
+            transition_publication_backend_capacity: None,
+            analysis_width: None,
+            analysis_height: None,
+            analysis_retained_bytes: None,
+            analysis_peak_bytes: None,
+            analysis_frame_work_units: None,
+            analysis_frame_work_capacity: None,
+            analysis_worker_count: None,
+        }
+    };
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();
@@ -789,6 +882,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         global_brightness: brightness_percent(current_global_brightness(&state.power_state)),
         audio_available: settings::audio_input_available(),
         capture_available: settings::capture_input_available(),
+        screen_capture_capacity,
         input: input_status,
         compositor_acceleration: render_acceleration_status(&state.render_acceleration),
         render_loop: render_loop_status,
@@ -1464,6 +1558,7 @@ mod tests {
     use axum::body::to_bytes;
     use axum::extract::{Path, State};
     use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
     use serde_json::Value;
@@ -1640,6 +1735,16 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             state.performance.write().await.record_frame(&frame);
         }
+        state
+            .input_manager
+            .lock()
+            .await
+            .set_screen_capacity_plan(
+                ScreenAdmissionCapacity::new(2_000_000, 2_000_000),
+                ScreenAdmissionCapacity::new(123, 456),
+                ScreenAdmissionCapacity::new(123, 456),
+            )
+            .expect("empty manager should accept test capacity");
 
         let response = get_status(State(state)).await;
         let body = to_bytes(response.into_body(), usize::MAX)
@@ -1667,6 +1772,43 @@ mod tests {
         );
         assert!(json["data"]["compositor_acceleration"]["fallback_reason"].is_null());
         assert!(json["data"]["compositor_acceleration"]["gpu_probe"].is_null());
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["windows_admission_enforced"],
+            cfg!(target_os = "windows")
+        );
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
+                2_000_000
+            );
+            assert_eq!(
+                json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
+                2_000_000
+            );
+            assert_eq!(
+                json["data"]["screen_capture_capacity"]["physical_reserved_bytes"],
+                0
+            );
+            assert_eq!(
+                json["data"]["screen_capture_capacity"]["physical_available_bytes"],
+                2_000_000
+            );
+            assert_eq!(
+                json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
+                123
+            );
+            assert_eq!(
+                json["data"]["screen_capture_capacity"]["steady_publication_byte_budget"],
+                123
+            );
+        } else {
+            assert!(
+                json["data"]["screen_capture_capacity"]
+                    .as_object()
+                    .is_some_and(|capacity| capacity.len() == 1)
+            );
+        }
+        assert!(json["data"]["screen_capture_capacity"]["analysis_retained_bytes"].is_null());
         assert_eq!(json["data"]["latest_frame"]["frame_token"], 77);
         assert_eq!(
             json["data"]["latest_frame"]["compositor_backend"],

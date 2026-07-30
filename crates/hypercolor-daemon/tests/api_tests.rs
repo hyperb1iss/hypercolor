@@ -1543,7 +1543,7 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
 
     for (key, value) in [
         ("capture.capture_fps", "0"),
-        ("capture.grid_cols", "65"),
+        ("capture.grid_cols", "0"),
         ("capture.smoothing", "1.1"),
         ("capture.gamma", "nan"),
     ] {
@@ -1571,6 +1571,33 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         !manager.path().exists(),
         "invalid capture config must not reach persistent storage"
     );
+    assert!(!state.input_manager.lock().await.has_screen_source());
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn config_set_rejects_capture_resource_plan_before_persistence() {
+    let (state, manager, _tempdir) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"key":"capture.publication_memory_bytes","value":"1"}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert!(!manager.path().exists());
     assert!(!state.input_manager.lock().await.has_screen_source());
 }
 

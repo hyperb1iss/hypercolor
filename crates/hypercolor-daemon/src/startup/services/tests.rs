@@ -1,12 +1,83 @@
 use std::sync::Arc;
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::input::screen::ResolvedCaptureSource;
+use hypercolor_core::input::screen::{
+    PixelExtent, ResolvedCaptureSource, ScreenAdmissionCapacity, ScreenCaptureDemand,
+};
 use hypercolor_core::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 use super::{
-    CaptureConfigPersistenceGate, screen_capture_config_from, windows_capture_source_sink,
+    CaptureConfigPersistenceGate, screen_analysis_plan_for_demand,
+    screen_capacity_plan_for_backend, screen_capture_config_from, windows_capture_source_sink,
 };
+#[cfg(target_os = "windows")]
+use super::{screen_capacity_plan, windows_screen_capture_config_from};
+
+#[cfg(target_os = "windows")]
+#[test]
+fn steady_capacity_uses_configured_budget_and_live_backend_memory() {
+    let capture = hypercolor_types::config::CaptureConfig {
+        publication_memory_bytes: Some(1),
+        ..Default::default()
+    };
+
+    let plan = screen_capacity_plan(&capture).expect("capacity resolves");
+
+    assert_eq!(plan.total_capacity().byte_budget(), 1);
+    assert!(plan.total_capacity().backend_capacity() > 0);
+    assert!(plan.total_capacity().backend_capacity() < u64::MAX);
+}
+
+#[test]
+fn steady_capacity_defaults_to_live_backend_memory() {
+    let plan = screen_capacity_plan_for_backend(
+        &hypercolor_types::config::CaptureConfig::default(),
+        1_000_000,
+    )
+    .expect("capacity resolves");
+    let total = plan.total_capacity();
+
+    assert_eq!(total.byte_budget(), total.backend_capacity());
+    assert_eq!(total.byte_budget(), 1_000_000);
+}
+
+#[test]
+fn analysis_quote_uses_the_actual_requested_extent() {
+    let mut capture = hypercolor_types::config::CaptureConfig::default();
+    let extent = PixelExtent::new(3840, 2160).expect("4K extent is non-empty");
+    let demand = ScreenCaptureDemand::active(extent);
+    let unbounded = ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
+    let baseline = screen_analysis_plan_for_demand(&capture, demand, unbounded)
+        .expect("4K analysis is representable")
+        .expect("active demand has an analysis plan");
+    let peak = baseline.peak_bytes();
+
+    capture.publication_memory_bytes = Some(peak);
+    let exact = screen_capacity_plan_for_backend(&capture, peak).expect("exact peak is configured");
+    let admitted = screen_analysis_plan_for_demand(&capture, demand, exact.total_capacity())
+        .expect("exact 4K peak is admitted")
+        .expect("active demand has an analysis plan");
+    assert_eq!(admitted.peak_bytes(), peak);
+
+    capture.publication_memory_bytes = Some(peak - 1);
+    let undersized = screen_capacity_plan_for_backend(&capture, peak)
+        .expect("steady policy is valid while capture is inactive");
+    assert!(
+        screen_analysis_plan_for_demand(&capture, demand, undersized.total_capacity()).is_err()
+    );
+
+    capture.publication_memory_bytes = Some(peak + 777);
+    let capacity = screen_capacity_plan_for_backend(&capture, peak + 333)
+        .expect("independent steady and physical fences resolve");
+    assert_eq!(
+        capacity.resource_capacity(),
+        ScreenAdmissionCapacity::new(peak + 333, peak + 333)
+    );
+    assert_eq!(
+        capacity.total_capacity(),
+        ScreenAdmissionCapacity::new(peak + 777, peak + 333)
+    );
+}
 
 fn persistence_gate(
     manager: &Arc<ConfigManager>,
@@ -154,8 +225,21 @@ fn screen_capture_config_conversion_preserves_validated_values_exactly() {
     );
     assert_eq!(runtime.grid_cols, 64);
     assert_eq!(runtime.grid_rows, 1);
+    assert_eq!(runtime.analysis_memory_bytes, u64::MAX);
     assert!((runtime.smoothing_alpha - 1.0).abs() < f32::EPSILON);
     assert!((runtime.tuning.gamma - 5.0).abs() < f32::EPSILON);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_capture_config_installs_the_steady_analysis_budget() {
+    let capture = hypercolor_types::config::CaptureConfig::default();
+    let capacity = ScreenAdmissionCapacity::new(1_000_000, 2_000_000);
+
+    let runtime = windows_screen_capture_config_from(&capture, capacity)
+        .expect("Windows analysis capacity should be admitted");
+
+    assert_eq!(runtime.analysis_memory_bytes, 1_000_000);
 }
 
 #[test]

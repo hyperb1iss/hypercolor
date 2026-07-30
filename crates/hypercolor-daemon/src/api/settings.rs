@@ -92,6 +92,9 @@ pub(crate) fn audio_input_available() -> bool {
 }
 
 pub(crate) fn capture_input_available() -> bool {
+    if cfg!(target_os = "windows") {
+        return true;
+    }
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
