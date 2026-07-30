@@ -34,7 +34,7 @@ use hypercolor_windows_gpu_interop::{
 };
 
 use super::{
-    CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
+    ComposedFrameSet, CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
     SparkleFlingerSurfacePoolCounts,
 };
 use crate::render_thread::gpu_device::{GpuRenderDevice, texture_format_name};
@@ -140,6 +140,12 @@ pub(crate) struct GpuCanvasGeneration {
     surfaces: GpuCompositorSurfaceSet,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     sampling_readback_buffers: Option<SamplingReadbackBuffers>,
+}
+
+pub(crate) enum GpuComposeOutcome {
+    Produced(ComposedFrameSet),
+    Retained(ComposedFrameSet),
+    Failed(anyhow::Error),
 }
 
 impl GpuCanvasPreparation {
@@ -571,6 +577,8 @@ pub(crate) struct GpuSparkleFlinger {
     fail_next_sampling_readback_preparation: bool,
     #[cfg(test)]
     fail_next_preview_scale_output_preparation: bool,
+    #[cfg(test)]
+    fail_next_screen_upload_pool_saturation: bool,
 }
 
 struct FrameInFlight {
@@ -929,6 +937,8 @@ impl GpuSparkleFlinger {
             fail_next_sampling_readback_preparation: false,
             #[cfg(test)]
             fail_next_preview_scale_output_preparation: false,
+            #[cfg(test)]
+            fail_next_screen_upload_pool_saturation: false,
         })
     }
 
@@ -955,6 +965,11 @@ impl GpuSparkleFlinger {
     }
 
     #[cfg(test)]
+    fn take_screen_upload_pool_saturation_injection(&mut self) -> bool {
+        std::mem::take(&mut self.fail_next_screen_upload_pool_saturation)
+    }
+
+    #[cfg(test)]
     pub(super) fn fail_next_sampling_readback_preparation(&mut self) {
         self.fail_next_sampling_readback_preparation = true;
     }
@@ -962,6 +977,11 @@ impl GpuSparkleFlinger {
     #[cfg(test)]
     pub(super) fn fail_next_preview_scale_output_preparation(&mut self) {
         self.fail_next_preview_scale_output_preparation = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_screen_upload_pool_saturation(&mut self) {
+        self.fail_next_screen_upload_pool_saturation = true;
     }
 
     pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {

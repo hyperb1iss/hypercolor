@@ -23,7 +23,6 @@ use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 use super::CachedGpuSourceCopy;
-use super::compositor::screen_upload_failure_frame;
 use super::screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
     ScreenUploadResidencyPolicy, resident_frame_bytes,
@@ -445,6 +444,66 @@ fn active_preview_request_failed_compose_retains_last_good() {
         gpu_backend_mut(&mut sparkleflinger)
             .preview_surfaces
             .is_none()
+    );
+}
+
+#[test]
+fn active_preview_request_upload_saturation_rejects_replacement() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let retained_request = PreviewSurfaceRequest {
+        width: 64,
+        height: 4,
+    };
+    let composed = sparkleflinger.compose_for_outputs(
+        bypass_surface_plan(64, 4),
+        false,
+        Some(retained_request),
+    );
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+
+    gpu_backend_mut(&mut sparkleflinger).fail_next_screen_upload_pool_saturation();
+    let replacement_request = PreviewSurfaceRequest {
+        width: 32,
+        height: 2,
+    };
+    let retained = sparkleflinger.compose_for_outputs(
+        layered_surface_plan(64, 4),
+        false,
+        Some(replacement_request),
+    );
+
+    assert_eq!(retained.backend, CompositorBackendKind::Gpu);
+    assert_eq!(
+        sparkleflinger.active_preview_request,
+        Some(retained_request)
+    );
+}
+
+#[test]
+fn active_preview_request_upload_saturation_rejects_clear() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let retained_request = PreviewSurfaceRequest {
+        width: 64,
+        height: 4,
+    };
+    let composed = sparkleflinger.compose_for_outputs(
+        bypass_surface_plan(64, 4),
+        false,
+        Some(retained_request),
+    );
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+
+    gpu_backend_mut(&mut sparkleflinger).fail_next_screen_upload_pool_saturation();
+    let retained = sparkleflinger.compose_for_outputs(layered_surface_plan(64, 4), false, None);
+
+    assert_eq!(retained.backend, CompositorBackendKind::Gpu);
+    assert_eq!(
+        sparkleflinger.active_preview_request,
+        Some(retained_request)
     );
 }
 
@@ -1021,12 +1080,6 @@ fn screen_upload_pool_allows_pipeline_depth_then_reports_typed_saturation() {
     assert!(error.is::<ScreenUploadPoolSaturated>());
     assert_eq!(pool.state_counts(), (0, 2, 0));
     assert_eq!(pool.allocation_count, 2);
-    let retained = screen_upload_failure_frame(error)
-        .expect("typed saturation should retain the current GPU output");
-    assert_eq!(
-        retained.backend,
-        crate::performance::CompositorBackendKind::Gpu
-    );
     pool.discard_encoding();
 }
 

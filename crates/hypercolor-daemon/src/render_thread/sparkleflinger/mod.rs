@@ -599,6 +599,7 @@ impl SparkleFlinger {
         width: u32,
         height: u32,
     ) -> Result<SparkleFlingerCanvasPreparation> {
+        #[cfg(feature = "wgpu")]
         let active_preview_request = self.active_preview_request;
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(SparkleFlingerCanvasPreparation::Cpu(
@@ -779,14 +780,19 @@ impl SparkleFlinger {
                 let failure_width = plan.width;
                 let failure_height = plan.height;
                 let contains_gpu_frames = plan.contains_gpu_frames();
-                let gpu_compose_result = if gpu.supports_plan(&plan) {
-                    Some(gpu.compose(&plan, requires_cpu_sampling_canvas, preview_surface_request))
+                let gpu_compose_outcome = if gpu.supports_plan(&plan) {
+                    Some(gpu.compose_attempt(
+                        &plan,
+                        requires_cpu_sampling_canvas,
+                        preview_surface_request,
+                    ))
                 } else {
                     None
                 };
-                match gpu_compose_result {
-                    Some(Ok(composed)) => (composed, true),
-                    Some(Err(error)) if contains_gpu_frames => {
+                match gpu_compose_outcome {
+                    Some(gpu::GpuComposeOutcome::Produced(composed)) => (composed, true),
+                    Some(gpu::GpuComposeOutcome::Retained(composed)) => (composed, false),
+                    Some(gpu::GpuComposeOutcome::Failed(error)) if contains_gpu_frames => {
                         tracing::warn!(
                             %error,
                             "GPU producer composition failed; refusing CPU readback fallback"
@@ -815,7 +821,7 @@ impl SparkleFlinger {
                             false,
                         )
                     }
-                    Some(Err(_)) | None => {
+                    Some(gpu::GpuComposeOutcome::Failed(_)) | None => {
                         let mut composed = cpu_fallback.compose_with_surface_pools(
                             plan,
                             requires_cpu_sampling_canvas,

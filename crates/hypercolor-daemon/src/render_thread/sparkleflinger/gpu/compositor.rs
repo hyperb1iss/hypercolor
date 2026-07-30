@@ -148,12 +148,32 @@ struct LatchedSamplingSurface {
 }
 
 impl GpuSparkleFlinger {
+    pub(crate) fn compose_attempt(
+        &mut self,
+        plan: &CompositionPlan,
+        requires_cpu_sampling_canvas: bool,
+        preview_surface_request: Option<PreviewSurfaceRequest>,
+    ) -> super::GpuComposeOutcome {
+        match self.compose(plan, requires_cpu_sampling_canvas, preview_surface_request) {
+            Ok(composed) => super::GpuComposeOutcome::Produced(composed),
+            Err(error) if error.is::<ScreenUploadPoolSaturated>() => {
+                tracing::debug!(%error, "retaining GPU output while screen uploads are saturated");
+                super::GpuComposeOutcome::Retained(gpu_composed_without_surfaces())
+            }
+            Err(error) => super::GpuComposeOutcome::Failed(error),
+        }
+    }
+
     pub(crate) fn compose(
         &mut self,
         plan: &CompositionPlan,
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
     ) -> Result<ComposedFrameSet> {
+        #[cfg(test)]
+        if self.take_screen_upload_pool_saturation_injection() {
+            return Err(ScreenUploadPoolSaturated::for_test().into());
+        }
         let requires_preview_surface = preview_surface_request.is_some();
         let readback_key = cached_readback_key(plan);
         if plan.layers.len() == 1
@@ -321,13 +341,13 @@ impl GpuSparkleFlinger {
                 .screen_upload_pool
                 .preflight_uploads(&self.device, screen_upload_content_keys(&plan.layers))
             {
-                return screen_upload_failure_frame(error);
+                return Err(error);
             }
             match upload_screen_layers(&self.device, &self.queue, surfaces, &plan.layers) {
                 Ok(uploaded) => uploaded,
                 Err(error) => {
                     surfaces.discard_pending_uploads();
-                    return screen_upload_failure_frame(error);
+                    return Err(error);
                 }
             }
         };
@@ -1231,14 +1251,6 @@ fn compose_layer_into_gpu(
         surfaces.height,
     );
     set_texture_contents(surfaces, output_surface, None);
-}
-
-pub(super) fn screen_upload_failure_frame(error: anyhow::Error) -> Result<ComposedFrameSet> {
-    if error.is::<ScreenUploadPoolSaturated>() {
-        tracing::debug!(%error, "retaining GPU output while screen uploads are saturated");
-        return Ok(gpu_composed_without_surfaces());
-    }
-    Err(error)
 }
 
 fn upload_screen_layers(

@@ -95,6 +95,17 @@ pub(super) struct ScreenUploadPoolSaturated {
     resident_bytes: u64,
 }
 
+impl ScreenUploadPoolSaturated {
+    #[cfg(test)]
+    pub(super) const fn for_test() -> Self {
+        Self {
+            resident_textures: 2,
+            max_textures: 2,
+            resident_bytes: 0,
+        }
+    }
+}
+
 impl ScreenPublicationUploadPool {
     pub(super) const fn new(policy: ScreenUploadResidencyPolicy) -> Self {
         Self {
