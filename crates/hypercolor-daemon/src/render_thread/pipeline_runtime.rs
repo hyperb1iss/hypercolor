@@ -60,9 +60,7 @@ use super::scene_state::RenderSceneState;
 use super::screen_canvas::screen_data_to_surface;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::PendingDisplayFinalization;
-use super::sparkleflinger::{
-    PendingZoneSampling, SparkleFlinger, SparkleFlingerCanvasPreparation,
-};
+use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger, SparkleFlingerCanvasPreparation};
 use super::{RenderThreadState, micros_u32};
 use crate::interaction_routing::InteractionRoutingControl;
 
