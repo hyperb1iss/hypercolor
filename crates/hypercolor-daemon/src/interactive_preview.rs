@@ -98,7 +98,7 @@ pub struct InteractivePreviewFrame {
     pub height: u32,
     pub format: PreviewPixelFormat,
     pub surface: PublishedSurface,
-    pub(crate) _resource_lease: PreviewResourceLease,
+    pub(crate) resource_lease: PreviewResourceLease,
 }
 
 #[derive(Clone, Debug)]
@@ -1097,7 +1097,7 @@ impl PreviewLane {
             height: surface.height(),
             format: self.spec.format,
             surface,
-            _resource_lease: self.resources.clone(),
+            resource_lease: self.resources.clone(),
         });
         self.frame_tx.send_replace(Some(Arc::clone(&frame)));
         self.retained_frame = Some(frame);

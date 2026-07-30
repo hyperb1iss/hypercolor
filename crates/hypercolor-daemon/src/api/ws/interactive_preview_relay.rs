@@ -111,7 +111,7 @@ fn spawn_interactive_preview_relay_with_encoder(
                 PreviewStreamId::Interactive(preview_id.clone()),
                 bytes,
                 Some(publication_id),
-                frame._resource_lease.clone(),
+                frame.resource_lease.clone(),
             ) {
                 warn!(preview_id, %error, "Rejected interactive preview publication");
             }

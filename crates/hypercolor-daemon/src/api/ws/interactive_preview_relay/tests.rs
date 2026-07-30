@@ -117,7 +117,7 @@ fn frame_with_resources(
         height: 1,
         format: PreviewPixelFormat::Rgba,
         surface: PublishedSurface::from_vec(vec![1, 2, 3, 255], 1, 1, frame_number, frame_number),
-        _resource_lease: resource_lease,
+        resource_lease,
     })
 }
 
