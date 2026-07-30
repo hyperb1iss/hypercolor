@@ -570,12 +570,16 @@ pub async fn set_effect_layout(
     };
 
     let effect_id = effect.id.to_string();
-    let snapshot = {
+    let pending = {
         let mut links = state.effect_layout_links.write().await;
         links.insert(effect_id.clone(), layout.id.clone());
-        links.clone()
+        effect_layouts::reserve_save(&state.effect_layout_links_path, &links)
     };
-    if let Err(error) = save_effect_layout_links(&state, &snapshot) {
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
+    if let Err(error) = save_effect_layout_links(&state, pending) {
         return ApiError::internal(error);
     }
 
@@ -603,17 +607,23 @@ pub async fn delete_effect_layout(
     };
     let effect_id = effect.id.to_string();
 
-    let (removed_layout_id, snapshot) = {
+    let (removed_layout_id, pending) = {
         let mut links = state.effect_layout_links.write().await;
         let removed = links.remove(&effect_id);
-        let snapshot = removed.as_ref().map(|_| links.clone());
-        (removed, snapshot)
+        let pending = removed
+            .as_ref()
+            .map(|_| effect_layouts::reserve_save(&state.effect_layout_links_path, &links));
+        (removed, pending)
     };
 
-    if let Some(store_snapshot) = snapshot.as_ref()
-        && let Err(error) = save_effect_layout_links(&state, store_snapshot)
-    {
-        return ApiError::internal(error);
+    if let Some(pending) = pending {
+        let pending = match pending {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(error.to_string()),
+        };
+        if let Err(error) = save_effect_layout_links(&state, pending) {
+            return ApiError::internal(error);
+        }
     }
 
     ApiResponse::ok(serde_json::json!({
@@ -2090,9 +2100,10 @@ fn resolve_layout_for_link(
 
 fn save_effect_layout_links(
     state: &AppState,
-    snapshot: &HashMap<String, String>,
+    pending: effect_layouts::EffectLayoutSave,
 ) -> Result<(), String> {
-    effect_layouts::save(&state.effect_layout_links_path, snapshot)
+    effect_layouts::save_reserved(pending)
+        .map(|_| ())
         .map_err(|error| format!("{} ({})", error, state.effect_layout_links_path.display()))
 }
 

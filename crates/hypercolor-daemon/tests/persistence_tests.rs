@@ -1,9 +1,14 @@
+use std::collections::HashMap;
 use std::fs;
+use std::sync::{Arc, Barrier};
 
+use hypercolor_daemon::effect_layouts;
+use hypercolor_daemon::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, PersistenceError, write_atomic,
 };
 use hypercolor_daemon::runtime_state::{RuntimeSessionSnapshot, load, reserve_save, save_reserved};
+use hypercolor_types::device::DeviceId;
 
 #[test]
 fn atomic_write_replaces_an_existing_file() {
@@ -49,6 +54,101 @@ fn newer_reservation_rejects_a_stale_prepared_payload() {
         fs::read(&path).expect("read newest state"),
         br#"{"generation":2}"#
     );
+}
+
+#[test]
+fn concurrent_distinct_payloads_commit_only_the_newest_generation() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    let worker_count = 16;
+    let barrier = Arc::new(Barrier::new(worker_count));
+    let mut workers = Vec::with_capacity(worker_count);
+
+    for generation in 0..worker_count {
+        let reservation = writer.reserve();
+        let barrier = Arc::clone(&barrier);
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            let payload = format!("generation={generation}");
+            reservation
+                .write(payload.as_bytes())
+                .expect("concurrent write")
+        }));
+    }
+
+    let outcomes = workers
+        .into_iter()
+        .map(|worker| worker.join().expect("worker should not panic"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == AtomicWriteOutcome::Written)
+            .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("read newest payload"),
+        "generation=15"
+    );
+}
+
+#[test]
+fn effect_layout_save_rejects_an_overtaken_snapshot() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("effect-layouts.json");
+    let older = HashMap::from([("effect".to_owned(), "older".to_owned())]);
+    let newer = HashMap::from([("effect".to_owned(), "newer".to_owned())]);
+    let older_save = effect_layouts::reserve_save(&path, &older).expect("reserve older snapshot");
+    let newer_save = effect_layouts::reserve_save(&path, &newer).expect("reserve newer snapshot");
+
+    assert_eq!(
+        effect_layouts::save_reserved(newer_save).expect("save newer snapshot"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        effect_layouts::save_reserved(older_save).expect("reject older snapshot"),
+        AtomicWriteOutcome::Superseded
+    );
+    assert_eq!(
+        effect_layouts::load(&path).expect("reload effect layouts"),
+        newer
+    );
+}
+
+#[test]
+fn logical_device_save_rejects_an_overtaken_snapshot() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("logical-devices.json");
+    let physical_device_id = DeviceId::new();
+    let entry = |id: &str| LogicalDevice {
+        id: id.to_owned(),
+        physical_device_id,
+        name: id.to_owned(),
+        led_start: 0,
+        led_count: 16,
+        enabled: true,
+        kind: LogicalDeviceKind::Segment,
+    };
+    let older = HashMap::from([("older".to_owned(), entry("older"))]);
+    let newer = HashMap::from([("newer".to_owned(), entry("newer"))]);
+    let older_save = logical_devices::reserve_save_segments(&path, &older)
+        .expect("reserve older logical-device snapshot");
+    let newer_save = logical_devices::reserve_save_segments(&path, &newer)
+        .expect("reserve newer logical-device snapshot");
+
+    assert_eq!(
+        logical_devices::save_reserved_segments(newer_save).expect("save newer snapshot"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        logical_devices::save_reserved_segments(older_save).expect("reject older snapshot"),
+        AtomicWriteOutcome::Superseded
+    );
+    let loaded = logical_devices::load_segments(&path).expect("reload logical devices");
+    assert!(loaded.contains_key("newer"));
+    assert!(!loaded.contains_key("older"));
 }
 
 #[test]

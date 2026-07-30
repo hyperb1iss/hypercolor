@@ -722,14 +722,14 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
 }
 
 pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Result<()> {
-    let scenes = {
+    let pending = {
         let manager = state.scene_manager.read().await;
-        manager.list().into_iter().cloned().collect::<Vec<_>>()
+        let store = state.scene_store.read().await;
+        store.reserve_save(manager.list().into_iter().cloned())?
     };
 
     let mut store = state.scene_store.write().await;
-    store.replace_named_scenes(scenes);
-    store.save()
+    store.save_reserved(pending).map(|_| ())
 }
 
 pub(crate) fn publish_render_group_changed(

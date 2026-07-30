@@ -8,7 +8,16 @@ use anyhow::Context;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
-use crate::persistence::write_atomic;
+use crate::persistence::{
+    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
+};
+
+/// Named-scene snapshot reserved at its owning scene-manager boundary.
+#[derive(Debug)]
+pub struct SceneStoreSave {
+    scenes: HashMap<SceneId, Scene>,
+    write: AtomicWriteReservation,
+}
 
 /// JSON-backed named-scene store.
 #[derive(Debug, Clone, Default)]
@@ -48,15 +57,29 @@ impl SceneStore {
 
     /// Save the current snapshot to disk.
     pub fn save(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
+        let pending = self.reserve_save(self.scenes.values().cloned())?;
+        persist_reserved(pending).map(|_| ())
+    }
 
-        let payload =
-            serde_json::to_string_pretty(&self.scenes).context("failed to serialize scenes")?;
-        write_atomic(&self.path, payload.as_bytes()).context("failed to persist scenes")?;
-        Ok(())
+    /// Reserve a named-scene snapshot before releasing its source lock.
+    pub fn reserve_save<I>(&self, scenes: I) -> Result<SceneStoreSave, PersistenceError>
+    where
+        I: IntoIterator<Item = Scene>,
+    {
+        let writer = AtomicFileWriter::new(&self.path)?;
+        Ok(SceneStoreSave {
+            scenes: named_scenes(scenes),
+            write: writer.reserve(),
+        })
+    }
+
+    /// Commit a previously reserved snapshot and retain it when it wins.
+    pub fn save_reserved(&mut self, pending: SceneStoreSave) -> anyhow::Result<AtomicWriteOutcome> {
+        let (outcome, scenes) = persist_reserved(pending)?;
+        if outcome == AtomicWriteOutcome::Written {
+            self.scenes = scenes;
+        }
+        Ok(outcome)
     }
 
     #[must_use]
@@ -77,11 +100,7 @@ impl SceneStore {
     where
         I: IntoIterator<Item = Scene>,
     {
-        self.scenes = scenes
-            .into_iter()
-            .filter(|scene| scene.kind == SceneKind::Named && !scene.id.is_default())
-            .map(|scene| (scene.id, scene))
-            .collect();
+        self.scenes = named_scenes(scenes);
     }
 
     pub fn sync_from_manager(&mut self, manager: &SceneManager) {
@@ -103,4 +122,27 @@ impl SceneStore {
                 && !scene.name.is_empty()
         });
     }
+}
+
+fn named_scenes<I>(scenes: I) -> HashMap<SceneId, Scene>
+where
+    I: IntoIterator<Item = Scene>,
+{
+    scenes
+        .into_iter()
+        .filter(|scene| scene.kind == SceneKind::Named && !scene.id.is_default())
+        .map(|scene| (scene.id, scene))
+        .collect()
+}
+
+fn persist_reserved(
+    pending: SceneStoreSave,
+) -> anyhow::Result<(AtomicWriteOutcome, HashMap<SceneId, Scene>)> {
+    let payload =
+        serde_json::to_string_pretty(&pending.scenes).context("failed to serialize scenes")?;
+    let outcome = pending
+        .write
+        .write(payload.as_bytes())
+        .context("failed to persist scenes")?;
+    Ok((outcome, pending.scenes))
 }

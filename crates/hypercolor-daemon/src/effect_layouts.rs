@@ -6,7 +6,16 @@ use std::path::Path;
 
 use anyhow::Context;
 
-use crate::persistence::write_atomic;
+use crate::persistence::{
+    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
+};
+
+/// Effect-layout snapshot reserved at its owning mutation boundary.
+#[derive(Debug)]
+pub struct EffectLayoutSave {
+    associations: HashMap<String, String>,
+    write: AtomicWriteReservation,
+}
 
 /// Load persisted effect layout associations from disk.
 ///
@@ -32,19 +41,29 @@ pub fn load(path: &Path) -> anyhow::Result<HashMap<String, String>> {
 
 /// Persist effect layout associations to disk.
 pub fn save(path: &Path, associations: &HashMap<String, String>) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create effect layout association directory {}",
-                parent.display()
-            )
-        })?;
-    }
+    let pending = reserve_save(path, associations)?;
+    save_reserved(pending).map(|_| ())
+}
 
-    let payload = serde_json::to_string_pretty(associations)
+/// Reserve an effect-layout snapshot before releasing its mutation lock.
+pub fn reserve_save(
+    path: &Path,
+    associations: &HashMap<String, String>,
+) -> Result<EffectLayoutSave, PersistenceError> {
+    let writer = AtomicFileWriter::new(path)?;
+    Ok(EffectLayoutSave {
+        associations: associations.clone(),
+        write: writer.reserve(),
+    })
+}
+
+/// Commit a previously reserved effect-layout snapshot.
+pub fn save_reserved(pending: EffectLayoutSave) -> anyhow::Result<AtomicWriteOutcome> {
+    let payload = serde_json::to_string_pretty(&pending.associations)
         .context("failed to serialize effect layout associations")?;
-    write_atomic(path, payload.as_bytes())
+    let outcome = pending
+        .write
+        .write(payload.as_bytes())
         .context("failed to persist effect layout associations")?;
-
-    Ok(())
+    Ok(outcome)
 }

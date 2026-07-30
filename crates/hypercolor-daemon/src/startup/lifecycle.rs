@@ -375,18 +375,21 @@ impl DaemonState {
     }
 
     async fn persist_scene_store_snapshot(&self) {
-        let scenes = {
+        let pending = {
             let scene_manager = self.scene_manager.read().await;
-            scene_manager
-                .list()
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>()
+            let store = self.scene_store.read().await;
+            store.reserve_save(scene_manager.list().into_iter().cloned())
         };
 
+        let pending = match pending {
+            Ok(pending) => pending,
+            Err(error) => {
+                warn!(%error, "Failed to reserve scene store snapshot");
+                return;
+            }
+        };
         let mut store = self.scene_store.write().await;
-        store.replace_named_scenes(scenes);
-        if let Err(error) = store.save() {
+        if let Err(error) = store.save_reserved(pending) {
             warn!(%error, "Failed to persist scene store");
         }
     }

@@ -12,7 +12,16 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_types::device::DeviceId;
 
-use crate::persistence::write_atomic;
+use crate::persistence::{
+    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
+};
+
+/// Logical-device snapshot reserved at its owning mutation boundary.
+#[derive(Debug)]
+pub struct LogicalDeviceSave {
+    entries: Vec<LogicalDevice>,
+    write: AtomicWriteReservation,
+}
 
 /// One logical device mapped onto a physical device LED range.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,28 +336,36 @@ pub fn load_segments(path: &Path) -> anyhow::Result<HashMap<String, LogicalDevic
 ///
 /// Default logical devices are ephemeral and are not persisted.
 pub fn save_segments(path: &Path, store: &HashMap<String, LogicalDevice>) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create logical device store directory {}",
-                parent.display()
-            )
-        })?;
-    }
+    let pending = reserve_save_segments(path, store)?;
+    save_reserved_segments(pending).map(|_| ())
+}
 
+/// Reserve a logical-device snapshot before releasing its mutation lock.
+pub fn reserve_save_segments(
+    path: &Path,
+    store: &HashMap<String, LogicalDevice>,
+) -> Result<LogicalDeviceSave, PersistenceError> {
     let mut entries: Vec<LogicalDevice> = store
         .values()
         .filter(|entry| entry.kind == LogicalDeviceKind::Segment)
         .cloned()
         .collect();
     entries.sort_by(|left, right| left.id.cmp(&right.id));
+    let writer = AtomicFileWriter::new(path)?;
+    Ok(LogicalDeviceSave {
+        entries,
+        write: writer.reserve(),
+    })
+}
 
-    let payload = serde_json::to_string_pretty(&entries)
+/// Commit a previously reserved logical-device snapshot.
+pub fn save_reserved_segments(pending: LogicalDeviceSave) -> anyhow::Result<AtomicWriteOutcome> {
+    let payload = serde_json::to_string_pretty(&pending.entries)
         .context("failed to serialize logical device store")?;
-
-    write_atomic(path, payload.as_bytes()).context("failed to persist logical device store")?;
-
-    Ok(())
+    pending
+        .write
+        .write(payload.as_bytes())
+        .context("failed to persist logical device store")
 }
 
 #[cfg(test)]

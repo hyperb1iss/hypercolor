@@ -1,6 +1,7 @@
 //! Integration tests for persisted named-scene storage.
 
 use hypercolor_core::scene::{SceneManager, make_scene};
+use hypercolor_daemon::persistence::AtomicWriteOutcome;
 use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
@@ -91,6 +92,42 @@ fn scene_store_sync_from_manager_filters_default_scene() {
         store.list().all(|scene| scene.id != SceneId::DEFAULT),
         "the synthesized default scene should never be persisted"
     );
+}
+
+#[test]
+fn scene_store_rejects_an_overtaken_snapshot() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let mut store = SceneStore::new(path.clone());
+    let older = make_scene("Older");
+    let newer = make_scene("Newer");
+
+    let older_save = store
+        .reserve_save([older])
+        .expect("reserve older scene snapshot");
+    let newer_save = store
+        .reserve_save([newer])
+        .expect("reserve newer scene snapshot");
+
+    assert_eq!(
+        store
+            .save_reserved(newer_save)
+            .expect("save newer scene snapshot"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        store
+            .save_reserved(older_save)
+            .expect("reject older scene snapshot"),
+        AtomicWriteOutcome::Superseded
+    );
+
+    let loaded = SceneStore::load(&path).expect("scene store should reload");
+    let names = loaded
+        .list()
+        .map(|scene| scene.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["Newer"]);
 }
 
 #[test]

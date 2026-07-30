@@ -204,7 +204,7 @@ pub async fn create_logical_device(
     let physical_layout_id = ensure_default_logical_entry(&state, &tracked.info).await;
     let physical_led_count = tracked.info.total_led_count();
 
-    let created = {
+    let (created, pending) = {
         let mut store = state.logical_devices.write().await;
         let logical_id =
             logical_devices::allocate_segment_id(&store, &physical_layout_id, &normalized_name);
@@ -225,13 +225,19 @@ pub async fn create_logical_device(
 
         store.insert(logical_id.clone(), entry);
         logical_devices::reconcile_default_enabled(&mut store, physical_id);
-        store
+        let created = store
             .get(&logical_id)
             .expect("created logical device must exist")
-            .clone()
+            .clone();
+        let pending = logical_devices::reserve_save_segments(&state.logical_devices_path, &store);
+        (created, pending)
     };
 
-    if let Err(error) = persist_logical_segments(&state).await {
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
+    if let Err(error) = persist_logical_segments(&state, pending) {
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
@@ -321,7 +327,7 @@ pub async fn update_logical_device(
     };
     let physical_led_count = tracked.info.total_led_count();
 
-    let updated = {
+    let (updated, pending) = {
         let mut candidate = existing.clone();
         if let Some(name) = body.name {
             candidate.name = match normalize_logical_name(&name) {
@@ -347,13 +353,19 @@ pub async fn update_logical_device(
         }
         store.insert(id.clone(), candidate);
         logical_devices::reconcile_default_enabled(&mut store, existing.physical_device_id);
-        store
+        let updated = store
             .get(&id)
             .expect("updated logical device must exist")
-            .clone()
+            .clone();
+        let pending = logical_devices::reserve_save_segments(&state.logical_devices_path, &store);
+        (updated, pending)
     };
 
-    if let Err(error) = persist_logical_segments(&state).await {
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
+    if let Err(error) = persist_logical_segments(&state, pending) {
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
@@ -389,13 +401,18 @@ pub async fn delete_logical_device(
     if existing.kind == LogicalDeviceKind::Default {
         return ApiError::conflict("Cannot delete the default logical device");
     }
-    {
+    let pending = {
         let mut store = state.logical_devices.write().await;
         store.remove(&id);
         logical_devices::reconcile_default_enabled(&mut store, existing.physical_device_id);
-    }
+        logical_devices::reserve_save_segments(&state.logical_devices_path, &store)
+    };
 
-    if let Err(error) = persist_logical_segments(&state).await {
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
+    if let Err(error) = persist_logical_segments(&state, pending) {
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
@@ -510,12 +527,12 @@ fn normalize_logical_name(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_owned())
 }
 
-async fn persist_logical_segments(state: &AppState) -> Result<(), String> {
-    let snapshot = {
-        let store = state.logical_devices.read().await;
-        store.clone()
-    };
-    logical_devices::save_segments(&state.logical_devices_path, &snapshot)
+fn persist_logical_segments(
+    state: &AppState,
+    pending: logical_devices::LogicalDeviceSave,
+) -> Result<(), String> {
+    logical_devices::save_reserved_segments(pending)
+        .map(|_| ())
         .map_err(|error| format!("{} ({})", error, state.logical_devices_path.display()))
 }
 
