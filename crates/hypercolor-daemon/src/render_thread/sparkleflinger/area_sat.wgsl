@@ -105,22 +105,6 @@ fn scan_horizontal_tiles(
 }
 
 @compute @workgroup_size(256)
-fn scan_horizontal_blocks(
-  @builtin(workgroup_id) group: vec3<u32>,
-  @builtin(local_invocation_id) local: vec3<u32>,
-) {
-  let y = group.y;
-  var value = rgb_zero();
-  if (local.x < params.horizontal_blocks && y < params.height) {
-    value = horizontal_sums[y * params.horizontal_blocks + local.x];
-  }
-  let prefix = scan_workgroup(local.x, value);
-  if (local.x < params.horizontal_blocks && y < params.height) {
-    horizontal_sums[y * params.horizontal_blocks + local.x] = prefix;
-  }
-}
-
-@compute @workgroup_size(256)
 fn add_horizontal_blocks(
   @builtin(workgroup_id) group: vec3<u32>,
   @builtin(local_invocation_id) local: vec3<u32>,
@@ -154,22 +138,6 @@ fn scan_vertical_tiles(
     if (local.x == WORKGROUP_SIZE - 1u || y == params.height - 1u) {
       vertical_sums[x * params.vertical_blocks + group.y] = prefix;
     }
-  }
-}
-
-@compute @workgroup_size(256)
-fn scan_vertical_blocks(
-  @builtin(workgroup_id) group: vec3<u32>,
-  @builtin(local_invocation_id) local: vec3<u32>,
-) {
-  let x = group.x;
-  var value = rgb_zero();
-  if (local.x < params.vertical_blocks && x < params.width) {
-    value = vertical_sums[x * params.vertical_blocks + local.x];
-  }
-  let prefix = scan_workgroup(local.x, value);
-  if (local.x < params.vertical_blocks && x < params.width) {
-    vertical_sums[x * params.vertical_blocks + local.x] = prefix;
   }
 }
 
