@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use super::gpu_sampling::GpuSampleSource;
 
 const SAT_WORKGROUP_SIZE: u32 = 256;
-const SAT_VALUE_BYTES: u64 = 16;
+pub(super) const SAT_VALUE_BYTES: u64 = 24;
 const SAT_PARAM_BYTES: u64 = 16;
 
 pub(super) struct GpuAreaPipeline {
@@ -21,8 +21,7 @@ pub(super) struct GpuAreaResources {
     height: u32,
     horizontal_block_count: u32,
     vertical_block_count: u32,
-    values_a: wgpu::Buffer,
-    values_b: wgpu::Buffer,
+    values: wgpu::Buffer,
     horizontal_sums: wgpu::Buffer,
     vertical_sums: wgpu::Buffer,
     params: wgpu::Buffer,
@@ -38,9 +37,8 @@ impl GpuAreaPipeline {
                 storage_entry(1),
                 storage_entry(2),
                 storage_entry(3),
-                storage_entry(4),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 5,
+                    binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -182,14 +180,9 @@ impl GpuAreaPipeline {
 
 impl GpuAreaResources {
     fn new(device: &wgpu::Device, geometry: GpuAreaGeometry) -> Self {
-        let values_a = storage_buffer(
+        let values = storage_buffer(
             device,
-            "SparkleFlinger GPU area SAT A",
-            geometry.value_bytes,
-        );
-        let values_b = storage_buffer(
-            device,
-            "SparkleFlinger GPU area SAT B",
+            "SparkleFlinger GPU area SAT values",
             geometry.value_bytes,
         );
         let horizontal_sums = storage_buffer(
@@ -224,8 +217,7 @@ impl GpuAreaResources {
             height: geometry.height,
             horizontal_block_count: geometry.horizontal_block_count,
             vertical_block_count: geometry.vertical_block_count,
-            values_a,
-            values_b,
+            values,
             horizontal_sums,
             vertical_sums,
             params,
@@ -238,7 +230,7 @@ impl GpuAreaResources {
     }
 
     pub(super) fn summed_area_buffer(&self) -> &wgpu::Buffer {
-        &self.values_b
+        &self.values
     }
 
     pub(super) fn clear_bind_groups(&mut self) {
@@ -264,11 +256,10 @@ impl GpuAreaResources {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(source_view),
                 },
-                buffer_entry(1, &self.values_a),
-                buffer_entry(2, &self.values_b),
-                buffer_entry(3, &self.horizontal_sums),
-                buffer_entry(4, &self.vertical_sums),
-                buffer_entry(5, &self.params),
+                buffer_entry(1, &self.values),
+                buffer_entry(2, &self.horizontal_sums),
+                buffer_entry(3, &self.vertical_sums),
+                buffer_entry(4, &self.params),
             ],
         });
         self.bind_groups[index] = Some(bind_group.clone());
@@ -311,6 +302,10 @@ impl GpuAreaGeometry {
                 && vertical_block_count <= max_dispatch,
             "GPU area scan dispatch exceeds the device workgroup grid limit"
         );
+        u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(u64::from(u16::MAX)))
+            .context("GPU area accumulator range overflowed")?;
 
         let value_bytes = checked_buffer_bytes(width, height, "summed-area values")?;
         let horizontal_sum_bytes =
@@ -430,6 +425,33 @@ fn encode_pass(
 mod tests {
     use super::{GpuAreaGeometry, SAT_VALUE_BYTES, SAT_WORKGROUP_SIZE};
 
+    #[derive(Clone, Copy)]
+    struct Wide64 {
+        lo: u32,
+        hi: u32,
+    }
+
+    impl Wide64 {
+        fn from_u64(value: u64) -> Self {
+            Self {
+                lo: u32::try_from(value & u64::from(u32::MAX)).expect("masked low limb fits u32"),
+                hi: u32::try_from(value >> 32).expect("high limb fits u32"),
+            }
+        }
+
+        fn as_u64(self) -> u64 {
+            u64::from(self.lo) | (u64::from(self.hi) << 32)
+        }
+
+        fn subtract(self, right: Self) -> Self {
+            let (lo, borrow) = self.lo.overflowing_sub(right.lo);
+            Self {
+                lo,
+                hi: self.hi - right.hi - u32::from(borrow),
+            }
+        }
+    }
+
     #[test]
     fn geometry_work_is_independent_of_sampling_radius() {
         let limits = wgpu::Limits {
@@ -446,5 +468,26 @@ mod tests {
         assert_eq!(geometry.horizontal_block_count, 20);
         assert_eq!(geometry.vertical_block_count, 9);
         assert_eq!(geometry.value_bytes, 5120 * 2160 * SAT_VALUE_BYTES);
+    }
+
+    #[test]
+    fn exact_limbs_preserve_one_pixel_at_8k_prefix_magnitude() {
+        let width = 7680_u64;
+        let height = 4320_u64;
+        let value = u64::from(u16::MAX);
+        let bottom_right = Wide64::from_u64(width * height * value);
+        let bottom_left = Wide64::from_u64((width - 1) * height * value);
+        let top_right = Wide64::from_u64(width * (height - 1) * value);
+        let top_left = Wide64::from_u64((width - 1) * (height - 1) * value);
+
+        let exact = bottom_right
+            .subtract(bottom_left)
+            .subtract(top_right.subtract(top_left))
+            .as_u64();
+        assert_eq!(exact, value);
+
+        let shader = include_str!("area_sat.wgsl");
+        assert!(shader.contains("array<WideRgb>"));
+        assert!(!shader.contains("array<vec4<f32>>"));
     }
 }

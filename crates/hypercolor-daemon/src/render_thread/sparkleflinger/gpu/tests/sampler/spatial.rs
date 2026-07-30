@@ -185,6 +185,77 @@ fn gpu_sampler_matches_cpu_spatial_sampling_for_area_plans() {
 }
 
 #[test]
+fn gpu_area_sampling_leaves_cpu_workspace_unallocated() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
+        radius_x: 2.0,
+        radius_y: 1.0,
+    }));
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        hypercolor_core::spatial::SpatialSamplingWorkspaceUsage::default()
+    );
+
+    let plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(27))),
+    );
+    assert!(compositor.can_sample_zone_plan(engine.sampling_plan().as_ref()));
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before resident area sampling");
+    assert!(
+        compositor
+            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+            .expect("GPU area sampling should remain resident")
+    );
+
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        hypercolor_core::spatial::SpatialSamplingWorkspaceUsage::default()
+    );
+}
+
+#[test]
+fn gpu_area_sampling_carries_across_u32_prefix_limb() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let mut layout = sampling_layout(SamplingMode::AreaAverage {
+        radius_x: 128.0,
+        radius_y: 128.0,
+    });
+    layout.canvas_width = 257;
+    layout.canvas_height = 257;
+    let engine = SpatialEngine::new(layout);
+    let mut canvas = Canvas::new(257, 257);
+    canvas.fill(Rgba::new(255, 255, 255, 255));
+    let expected_zones = engine.sample(&canvas);
+    let plan = CompositionPlan::single(
+        257,
+        257,
+        CompositionLayer::replace(ProducerFrame::Canvas(canvas)),
+    );
+
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should cross the area scan tile boundary");
+    let mut sampled = Vec::new();
+    assert!(
+        compositor
+            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU area sampling should carry into the high prefix limb")
+    );
+
+    assert_zone_colors_within(&sampled, &expected_zones, 0);
+}
+
+#[test]
 fn gpu_sampler_matches_cpu_area_sampling_with_fade_edges() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,

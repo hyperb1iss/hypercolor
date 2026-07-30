@@ -8,7 +8,7 @@ use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::SamplingMode;
 
-use super::gpu_area_sat::{GpuAreaPipeline, GpuAreaResources};
+use super::gpu_area_sat::{GpuAreaPipeline, GpuAreaResources, SAT_VALUE_BYTES};
 
 const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
@@ -99,6 +99,7 @@ struct CachedGpuSamplingPlan {
     key: GpuSamplingPlanKey,
     plan: GpuSamplingPlan,
     encoded_points: Vec<u8>,
+    dispatch_workgroups: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +127,47 @@ struct PreparedGpuSampleBuffers {
     output: wgpu::Buffer,
     readbacks: [wgpu::Buffer; SAMPLE_READBACK_SLOT_COUNT],
     capacity: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GpuSampleGeometry {
+    sample_count: usize,
+    point_bytes: u64,
+    output_bytes: u64,
+    dispatch_workgroups: u32,
+}
+
+impl GpuSampleGeometry {
+    fn try_new(limits: &wgpu::Limits, sample_count: usize) -> Result<Self> {
+        let sample_count_u32 =
+            u32::try_from(sample_count).context("GPU sample count exceeds u32 addressability")?;
+        let dispatch_workgroups = sample_count_u32.div_ceil(SAMPLE_WORKGROUP_SIZE);
+        anyhow::ensure!(
+            dispatch_workgroups <= limits.max_compute_workgroups_per_dimension,
+            "GPU sample dispatch requires {dispatch_workgroups} workgroups but the device limit is {}",
+            limits.max_compute_workgroups_per_dimension
+        );
+        let sample_count_u64 = u64::from(sample_count_u32);
+        let point_bytes = sample_count_u64
+            .checked_mul(SAMPLE_POINT_BYTES)
+            .context("GPU sample point buffer byte size overflowed")?;
+        let output_bytes = sample_count_u64
+            .checked_mul(4)
+            .context("GPU sample output buffer byte size overflowed")?;
+        anyhow::ensure!(
+            point_bytes <= limits.max_buffer_size
+                && output_bytes <= limits.max_buffer_size
+                && point_bytes <= limits.max_storage_buffer_binding_size
+                && output_bytes <= limits.max_storage_buffer_binding_size,
+            "GPU sample buffers exceed the device buffer limits"
+        );
+        Ok(Self {
+            sample_count,
+            point_bytes,
+            output_bytes,
+            dispatch_workgroups,
+        })
+    }
 }
 
 enum PreparedGpuArea {
@@ -452,7 +494,7 @@ impl GpuSpatialSampler {
         });
         let dummy_summed_area_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU empty summed-area table"),
-            size: 16,
+            size: SAT_VALUE_BYTES,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -533,8 +575,14 @@ impl GpuSpatialSampler {
             return GpuSamplingPreparation::unsupported();
         };
         let sample_count = plan.points.len();
+        let geometry = match GpuSampleGeometry::try_new(&device.limits(), sample_count) {
+            Ok(geometry) => geometry,
+            Err(error) => {
+                return GpuSamplingPreparation::cpu_fallback(admission, error.to_string());
+            }
+        };
         let buffers = if sample_count > self.capacity {
-            match try_prepare_sample_buffers(device, sample_count) {
+            match try_prepare_sample_buffers(device, geometry) {
                 Ok(buffers) => Some(buffers),
                 Err(error) => {
                     return GpuSamplingPreparation::cpu_fallback(admission, error.to_string());
@@ -576,6 +624,7 @@ impl GpuSpatialSampler {
                 key: plan_key,
                 plan,
                 encoded_points,
+                dispatch_workgroups: geometry.dispatch_workgroups,
             },
             buffers,
             area,
@@ -691,10 +740,10 @@ impl GpuSpatialSampler {
                 .iter()
                 .any(|point| point.method == GpuSampleMethod::Area)
         });
-        let sample_count = self
-            .cached_plan
-            .as_ref()
-            .map_or(0, |cached| cached.plan.points.len());
+        let (sample_count, dispatch_workgroups) =
+            self.cached_plan.as_ref().map_or((0, 0), |cached| {
+                (cached.plan.points.len(), cached.dispatch_workgroups)
+            });
         let Some(points_buffer) = self.points_buffer.clone() else {
             zones.clear();
             return Ok(GpuSamplingDispatch {
@@ -756,13 +805,7 @@ impl GpuSpatialSampler {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(
-                u32::try_from(sample_count)
-                    .unwrap_or(u32::MAX)
-                    .div_ceil(SAMPLE_WORKGROUP_SIZE),
-                1,
-                1,
-            );
+            pass.dispatch_workgroups(dispatch_workgroups, 1, 1);
         }
         #[cfg(test)]
         {
@@ -1011,44 +1054,27 @@ impl GpuSpatialSampler {
 
 fn try_prepare_sample_buffers(
     device: &wgpu::Device,
-    sample_count: usize,
+    geometry: GpuSampleGeometry,
 ) -> Result<PreparedGpuSampleBuffers> {
-    let sample_count_u64 =
-        u64::try_from(sample_count).context("GPU sample count is unaddressable")?;
-    let point_bytes = sample_count_u64
-        .checked_mul(SAMPLE_POINT_BYTES)
-        .context("GPU sample point buffer byte size overflowed")?;
-    let output_bytes = sample_count_u64
-        .checked_mul(4)
-        .context("GPU sample output buffer byte size overflowed")?;
-    let limits = device.limits();
-    anyhow::ensure!(
-        point_bytes <= limits.max_buffer_size
-            && output_bytes <= limits.max_buffer_size
-            && point_bytes <= limits.max_storage_buffer_binding_size
-            && output_bytes <= limits.max_storage_buffer_binding_size,
-        "GPU sample buffers exceed the device buffer limits"
-    );
-
     let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let points = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("SparkleFlinger GPU sample points"),
-        size: point_bytes,
+        size: geometry.point_bytes,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let output = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("SparkleFlinger GPU sample output"),
-        size: output_bytes,
+        size: geometry.output_bytes,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
     let readbacks = std::array::from_fn(|_| {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU sample readback"),
-            size: output_bytes,
+            size: geometry.output_bytes,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         })
@@ -1063,7 +1089,7 @@ fn try_prepare_sample_buffers(
         points,
         output,
         readbacks,
-        capacity: sample_count,
+        capacity: geometry.sample_count,
     })
 }
 
@@ -1297,7 +1323,41 @@ mod tests {
         StripDirection,
     };
 
-    use super::{GpuSampleMethod, GpuSamplingPlan};
+    use super::{GpuSampleGeometry, GpuSampleMethod, GpuSamplingPlan, SAMPLE_WORKGROUP_SIZE};
+
+    fn synthetic_sample_limits(max_dispatch: u32) -> wgpu::Limits {
+        wgpu::Limits {
+            max_buffer_size: u64::MAX,
+            max_storage_buffer_binding_size: u64::MAX,
+            max_compute_workgroups_per_dimension: max_dispatch,
+            ..wgpu::Limits::default()
+        }
+    }
+
+    #[test]
+    fn gpu_sample_admission_enforces_65535_workgroup_boundary() {
+        let limits = synthetic_sample_limits(65_535);
+        let admitted_count = 65_535_usize * SAMPLE_WORKGROUP_SIZE as usize;
+        let admitted = GpuSampleGeometry::try_new(&limits, admitted_count)
+            .expect("65,535 workgroups should fit the synthetic device limit");
+        assert_eq!(admitted.dispatch_workgroups, 65_535);
+
+        let error = GpuSampleGeometry::try_new(&limits, admitted_count + 1)
+            .expect_err("65,536 workgroups must exceed the synthetic device limit");
+        assert!(error.to_string().contains("requires 65536 workgroups"));
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn gpu_sample_admission_rejects_counts_above_u32() {
+        let limits = synthetic_sample_limits(u32::MAX);
+        GpuSampleGeometry::try_new(&limits, u32::MAX as usize)
+            .expect("u32::MAX samples remain shader-addressable");
+
+        let error = GpuSampleGeometry::try_new(&limits, u32::MAX as usize + 1)
+            .expect_err("sample counts above u32 must be rejected before encoding");
+        assert!(error.to_string().contains("exceeds u32 addressability"));
+    }
 
     fn test_layout(mode: SamplingMode) -> SpatialLayout {
         SpatialLayout {
