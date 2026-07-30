@@ -1036,19 +1036,13 @@ impl GpuSparkleFlinger {
             GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height)?;
         let sampling_readback_buffers =
             self.prepare_sampling_readback_buffers_for_canvas_resize(width, height)?;
-        let preview_request = self.preview_surfaces.as_ref().map(|preview| {
-            let tracks_canvas_extent = self.surfaces.as_ref().is_some_and(|surfaces| {
-                preview.width == surfaces.width && preview.height == surfaces.height
-            });
-            if tracks_canvas_extent {
-                super::PreviewSurfaceRequest { width, height }
-            } else {
-                super::PreviewSurfaceRequest {
+        let preview_request =
+            self.preview_surfaces
+                .as_ref()
+                .map(|preview| super::PreviewSurfaceRequest {
                     width: preview.width,
                     height: preview.height,
-                }
-            }
-        });
+                });
         let preview_surfaces = preview_request
             .map(|request| {
                 let scale_views = preview::preview_requires_scale(request, width, height)

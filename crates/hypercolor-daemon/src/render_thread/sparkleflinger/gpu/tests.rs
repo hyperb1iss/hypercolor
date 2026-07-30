@@ -152,6 +152,90 @@ fn frame_boundary_preview_preparation_failure_preserves_active_generation() {
 }
 
 #[test]
+fn frame_boundary_equal_extent_preview_preserves_concrete_request() {
+    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+        return;
+    };
+    let initial = compositor.prepare_canvas_resize(64, 4);
+    assert!(initial.is_admitted());
+    compositor.apply_canvas_resize(initial);
+    let fixed_request = PreviewSurfaceRequest {
+        width: 64,
+        height: 4,
+    };
+    let plan = CompositionPlan::with_layers(
+        64,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Surface(slot_surface_with_size(
+                64,
+                4,
+                Rgba::new(255, 32, 0, 255),
+            ))),
+            CompositionLayer::alpha(
+                ProducerFrame::Surface(slot_surface_with_size(64, 4, Rgba::new(32, 64, 255, 255))),
+                0.35,
+            ),
+        ],
+    );
+    compositor
+        .compose(&plan, false, Some(fixed_request))
+        .expect("equal-extent preview should compose");
+    assert!(
+        compositor
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| !surfaces.has_scale_output())
+    );
+
+    compositor.fail_next_preview_scale_output_preparation();
+    let rejected = compositor.prepare_canvas_resize(128, 8);
+    assert!(!rejected.is_admitted());
+    assert_eq!(
+        compositor
+            .surface_snapshot()
+            .map(|snapshot| (snapshot.width, snapshot.height)),
+        Some((64, 4))
+    );
+
+    let prepared = compositor.prepare_canvas_resize(128, 8);
+    assert!(prepared.is_admitted());
+    compositor.apply_canvas_resize(prepared);
+    assert!(
+        compositor
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| {
+                surfaces.width == fixed_request.width
+                    && surfaces.height == fixed_request.height
+                    && surfaces.has_scale_output()
+            })
+    );
+
+    compositor.fail_next_preview_scale_output_preparation();
+    let resized_plan = CompositionPlan::with_layers(
+        128,
+        8,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Surface(slot_surface_with_size(
+                128,
+                8,
+                Rgba::new(24, 72, 160, 255),
+            ))),
+            CompositionLayer::alpha(
+                ProducerFrame::Surface(slot_surface_with_size(128, 8, Rgba::new(210, 48, 96, 255))),
+                0.25,
+            ),
+        ],
+    );
+    compositor
+        .compose(&resized_plan, false, Some(fixed_request))
+        .expect("prepared fixed preview should not allocate after resize acceptance");
+    assert!(compositor.fail_next_preview_scale_output_preparation);
+    compositor.discard_preview_work();
+}
+
+#[test]
 fn frame_boundary_sampling_preparation_failure_preserves_active_generation() {
     let Ok(mut compositor) = GpuSparkleFlinger::new() else {
         return;
