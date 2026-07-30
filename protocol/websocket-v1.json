@@ -358,6 +358,12 @@
       "tag": 16,
       "channel": "preview_transport",
       "layout": "preview_cancel_frame"
+    },
+    {
+      "name": "extended_screen_zones",
+      "tag": 17,
+      "channel": "screen_zones",
+      "layout": "extended_screen_zones_frame"
     }
   ],
   "preview_frame": {
@@ -599,6 +605,23 @@
       ["u8", "letterbox_bottom"],
       ["u8", "letterbox_left"],
       ["u8", "letterbox_right"],
+      ["repeated_u8_rgb", "zone_colors"]
+    ]
+  },
+  "extended_screen_zones_frame": {
+    "header_len": 41,
+    "layout": [
+      ["u8", "tag"],
+      ["u32_le", "frame_number"],
+      ["u32_le", "timestamp_ms"],
+      ["u32_le", "source_width"],
+      ["u32_le", "source_height"],
+      ["u32_le", "grid_cols"],
+      ["u32_le", "grid_rows"],
+      ["u32_le", "letterbox_top"],
+      ["u32_le", "letterbox_bottom"],
+      ["u32_le", "letterbox_left"],
+      ["u32_le", "letterbox_right"],
       ["repeated_u8_rgb", "zone_colors"]
     ]
   },

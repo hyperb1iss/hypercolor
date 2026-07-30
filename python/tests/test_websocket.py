@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import struct
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 import pytest
 
-from hypercolor import ws_protocol
+from hypercolor import websocket as websocket_module, ws_protocol
 from hypercolor.websocket import (
     BinaryMessage,
     CanvasData,
@@ -26,6 +27,19 @@ from hypercolor.websocket import (
 )
 
 PROTOCOL_MANIFEST = Path(__file__).resolve().parents[2] / "protocol" / "websocket-v1.json"
+
+
+class _TestClient:
+    ws_url = "ws://127.0.0.1:9420/api/v1/ws"
+    api_key = None
+
+
+class _ClosableConnection:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def test_ws_protocol_constants_match_manifest() -> None:
@@ -245,6 +259,454 @@ def test_parse_screen_zones() -> None:
     assert message.grid_rows == 2
     assert message.letterbox == (0, 1, 0, 0)
     assert message.rgb == rgb
+
+
+def test_parse_extended_screen_zones() -> None:
+    payload = (
+        struct.pack(
+            "<B10I",
+            ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
+            43,
+            9877,
+            100_000,
+            2160,
+            256,
+            1,
+            0,
+            0,
+            256,
+            0,
+        )
+        + bytes([1, 2, 3]) * 256
+    )
+
+    message = HypercolorEventStream._decode_binary(payload)
+
+    assert isinstance(message, ScreenZonesData)
+    assert message.frame_number == 43
+    assert message.source_width == 100_000
+    assert message.grid_cols == 256
+    assert message.grid_rows == 1
+    assert message.letterbox == (0, 0, 256, 0)
+    assert message.rgb == bytes([1, 2, 3]) * 256
+
+
+def test_parse_preserved_wide_source_screen_zones() -> None:
+    payload = struct.pack(
+        "<B4I6B",
+        ws_protocol.BINARY_MESSAGE_TAGS["wide_screen_zones"],
+        44,
+        9878,
+        100_000,
+        2160,
+        2,
+        1,
+        0,
+        0,
+        1,
+        0,
+    ) + bytes([1, 2, 3, 4, 5, 6])
+
+    message = HypercolorEventStream._decode_binary(payload)
+
+    assert isinstance(message, ScreenZonesData)
+    assert message.frame_number == 44
+    assert message.source_width == 100_000
+    assert message.grid_cols == 2
+    assert message.letterbox == (0, 0, 1, 0)
+    assert message.rgb == bytes([1, 2, 3, 4, 5, 6])
+
+
+def test_parse_screen_zones_rejects_wrong_payload_length() -> None:
+    payload = struct.pack(
+        "<BIIHH6B",
+        ws_protocol.BINARY_MESSAGE_TAGS["screen_zones"],
+        42,
+        9876,
+        1920,
+        1080,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+    ) + bytes([1, 2, 3])
+
+    with pytest.raises(ValueError, match="must be 6 bytes"):
+        HypercolorEventStream._decode_binary(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        bytes([ws_protocol.BINARY_MESSAGE_TAGS["screen_zones"]]),
+        bytes([ws_protocol.BINARY_MESSAGE_TAGS["wide_screen_zones"]]) + bytes(21),
+        bytes([ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"]]) + bytes(39),
+    ],
+)
+def test_parse_screen_zones_rejects_truncated_headers(payload: bytes) -> None:
+    with pytest.raises(ValueError, match="shorter than"):
+        HypercolorEventStream._decode_binary(payload)
+
+
+@pytest.mark.asyncio
+async def test_screen_zones_dispatches_to_registered_handlers() -> None:
+    stream = HypercolorEventStream(_TestClient())
+    received: list[ScreenZonesData] = []
+    stream.on_screen_zones(received.append)
+    message = ScreenZonesData(
+        frame_number=1,
+        timestamp_ms=2,
+        source_width=3840,
+        source_height=2160,
+        grid_cols=256,
+        grid_rows=1,
+        letterbox=(0, 0, 0, 0),
+        rgb=bytes(256 * 3),
+    )
+
+    await stream._dispatch_binary(message)
+
+    assert received == [message]
+
+
+def _screen_zone_chunks(encoded: bytes, publication_id: int, chunk_bytes: int) -> list[bytes]:
+    chunk_count = (len(encoded) + chunk_bytes - 1) // chunk_bytes
+    frame_number, timestamp_ms = struct.unpack_from("<II", encoded, 1)
+    if encoded[0] == ws_protocol.BINARY_MESSAGE_TAGS["screen_zones"]:
+        source_width, source_height = struct.unpack_from("<HH", encoded, 9)
+    else:
+        source_width, source_height = struct.unpack_from("<II", encoded, 9)
+    chunks = []
+    for chunk_index in range(chunk_count):
+        offset = chunk_index * chunk_bytes
+        chunk = encoded[offset : offset + chunk_bytes]
+        header = struct.pack(
+            "<5BHQ4I2Q2I",
+            ws_protocol.BINARY_MESSAGE_TAGS["preview_chunk"],
+            1,
+            3,
+            ws_protocol.BINARY_MESSAGE_TAGS["screen_zones"],
+            0,
+            0,
+            publication_id,
+            frame_number,
+            timestamp_ms,
+            source_width,
+            source_height,
+            len(encoded),
+            offset,
+            chunk_index,
+            chunk_count,
+        )
+        chunks.append(header + chunk)
+    return chunks
+
+
+def _screen_zone_cancel(publication_id: int) -> bytes:
+    return struct.pack(
+        "<4BHQ",
+        ws_protocol.BINARY_MESSAGE_TAGS["preview_cancel"],
+        1,
+        3,
+        ws_protocol.BINARY_MESSAGE_TAGS["screen_zones"],
+        0,
+        publication_id,
+    )
+
+
+def _extended_screen_zones_frame(grid_cols: int, grid_rows: int, rgb: bytes) -> bytes:
+    return (
+        struct.pack(
+            "<B10I",
+            ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
+            1,
+            2,
+            3840,
+            2160,
+            grid_cols,
+            grid_rows,
+            0,
+            0,
+            0,
+            0,
+        )
+        + rgb
+    )
+
+
+@pytest.mark.asyncio
+async def test_chunked_extended_screen_zones_reassemble_and_dispatch() -> None:
+    grid_cols = 350_000
+    rgb = bytes([1, 2, 3]) * grid_cols
+    encoded = (
+        struct.pack(
+            "<B10I",
+            ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
+            45,
+            9879,
+            3840,
+            2160,
+            grid_cols,
+            1,
+            0,
+            0,
+            0,
+            0,
+        )
+        + rgb
+    )
+    chunks = _screen_zone_chunks(encoded, 9001, 600_000)
+    stream = HypercolorEventStream(_TestClient())
+    received: list[ScreenZonesData] = []
+    stream.on_screen_zones(received.append)
+
+    first = stream._decode_received_binary(chunks[0])
+    assert isinstance(first, BinaryMessage)
+    completed = stream._decode_received_binary(chunks[1])
+    await stream._dispatch_binary(completed)
+
+    assert len(received) == 1
+    assert received[0].grid_cols == grid_cols
+    assert received[0].rgb == rgb
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+
+
+def test_screen_zone_chunks_reject_out_of_order_and_duplicate_data() -> None:
+    encoded = struct.pack(
+        "<B10I",
+        ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
+        1,
+        2,
+        3840,
+        2160,
+        4,
+        1,
+        0,
+        0,
+        0,
+        0,
+    ) + bytes(12)
+    chunks = _screen_zone_chunks(encoded, 100, 30)
+    stream = HypercolorEventStream(_TestClient())
+
+    with pytest.raises(ValueError, match="start with chunk zero"):
+        stream._decode_received_binary(chunks[1])
+    stream._decode_received_binary(chunks[0])
+    with pytest.raises(ValueError, match="duplicates"):
+        stream._decode_received_binary(chunks[0])
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+
+
+def test_screen_zone_chunks_reject_declared_publication_overflow() -> None:
+    total = 536_936_449
+    payload = (
+        struct.pack(
+            "<5BHQ4I2Q2I",
+            ws_protocol.BINARY_MESSAGE_TAGS["preview_chunk"],
+            1,
+            3,
+            ws_protocol.BINARY_MESSAGE_TAGS["screen_zones"],
+            0,
+            0,
+            101,
+            1,
+            2,
+            3840,
+            2160,
+            total,
+            0,
+            0,
+            2,
+        )
+        + b"x"
+    )
+
+    with pytest.raises(ValueError, match="bounds"):
+        HypercolorEventStream(_TestClient())._decode_received_binary(payload)
+
+
+def test_screen_zone_cancel_releases_reserved_publication() -> None:
+    encoded = struct.pack(
+        "<B10I",
+        ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
+        1,
+        2,
+        3840,
+        2160,
+        4,
+        1,
+        0,
+        0,
+        0,
+        0,
+    ) + bytes(12)
+    chunks = _screen_zone_chunks(encoded, 102, 30)
+    stream = HypercolorEventStream(_TestClient())
+    stream._decode_received_binary(chunks[0])
+    assert stream._screen_zones_reassembler.reserved_bytes == len(encoded)
+
+    cancelled = stream._decode_received_binary(_screen_zone_cancel(102))
+
+    assert isinstance(cancelled, BinaryMessage)
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+    with pytest.raises(ValueError, match="completed or cancelled"):
+        stream._decode_received_binary(chunks[1])
+
+
+def test_non_screen_preview_transport_remains_opaque() -> None:
+    encoded = bytes(80)
+    screen_chunk = bytearray(_screen_zone_chunks(encoded, 103, 80)[0])
+    screen_chunk[2] = 0
+    screen_chunk[3] = ws_protocol.BINARY_MESSAGE_TAGS["canvas"]
+    cancel = bytearray(_screen_zone_cancel(103))
+    cancel[2] = 0
+    cancel[3] = ws_protocol.BINARY_MESSAGE_TAGS["canvas"]
+    stream = HypercolorEventStream(_TestClient())
+
+    chunk_message = stream._decode_received_binary(bytes(screen_chunk))
+    cancel_message = stream._decode_received_binary(bytes(cancel))
+
+    assert isinstance(chunk_message, BinaryMessage)
+    assert chunk_message.payload == bytes(screen_chunk)
+    assert isinstance(cancel_message, BinaryMessage)
+    assert cancel_message.payload == bytes(cancel)
+
+
+def test_screen_zone_chunk_idle_expiry_releases_reserved_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    monkeypatch.setattr("hypercolor.websocket.time.monotonic", lambda: now)
+    encoded = struct.pack(
+        "<B10I",
+        ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
+        1,
+        2,
+        3840,
+        2160,
+        4,
+        1,
+        0,
+        0,
+        0,
+        0,
+    ) + bytes(12)
+    chunks = _screen_zone_chunks(encoded, 104, 30)
+    stream = HypercolorEventStream(_TestClient())
+    stream._decode_received_binary(chunks[0])
+    assert stream._screen_zones_reassembler.reserved_bytes == len(encoded)
+
+    now = 6.0
+
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+    with pytest.raises(ValueError, match="completed or cancelled"):
+        stream._decode_received_binary(chunks[1])
+
+
+@pytest.mark.asyncio
+async def test_screen_zone_chunk_idle_timer_expires_without_more_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(websocket_module._PREVIEW_TRANSPORT_LIMITS, "idle_ms", 1)
+    encoded = _extended_screen_zones_frame(4, 1, bytes(12))
+    chunks = _screen_zone_chunks(encoded, 107, 30)
+    stream = HypercolorEventStream(_TestClient())
+
+    stream._decode_received_binary(chunks[0])
+    await asyncio.sleep(0.02)
+
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_disconnect_clears_screen_zone_partial_and_high_water() -> None:
+    encoded = _extended_screen_zones_frame(4, 1, bytes(12))
+    chunks = _screen_zone_chunks(encoded, 108, 30)
+    stream = HypercolorEventStream(_TestClient())
+    connection = _ClosableConnection()
+    stream._connection = cast(Any, connection)
+    stream._decode_received_binary(chunks[0])
+
+    await stream.disconnect()
+
+    assert connection.closed
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert isinstance(stream._decode_received_binary(chunks[0]), BinaryMessage)
+
+
+def test_screen_zone_completion_obeys_peak_connection_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded = struct.pack(
+        "<B10I",
+        ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
+        1,
+        2,
+        3840,
+        2160,
+        4,
+        1,
+        0,
+        0,
+        0,
+        0,
+    ) + bytes(12)
+    peak_bytes = len(encoded) + 12
+    chunks = _screen_zone_chunks(encoded, 105, 30)
+    monkeypatch.setitem(
+        websocket_module._PREVIEW_TRANSPORT_LIMITS,
+        "connection",
+        peak_bytes - 1,
+    )
+    stream = HypercolorEventStream(_TestClient())
+    stream._decode_received_binary(chunks[0])
+
+    with pytest.raises(ValueError, match="connection byte ledger"):
+        stream._decode_received_binary(chunks[1])
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+
+    monkeypatch.setitem(
+        websocket_module._PREVIEW_TRANSPORT_LIMITS,
+        "connection",
+        peak_bytes,
+    )
+    admitted = HypercolorEventStream(_TestClient())
+    admitted_chunks = _screen_zone_chunks(encoded, 106, 30)
+    admitted._decode_received_binary(admitted_chunks[0])
+    completed = admitted._decode_received_binary(admitted_chunks[1])
+    assert isinstance(completed, ScreenZonesData)
+
+
+def test_screen_zone_completion_obeys_decoded_byte_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rgb = bytes(12)
+    encoded = _extended_screen_zones_frame(4, 1, rgb)
+    chunks = _screen_zone_chunks(encoded, 109, 30)
+    monkeypatch.setitem(
+        websocket_module._PREVIEW_TRANSPORT_LIMITS,
+        "decoded",
+        len(rgb) - 1,
+    )
+    stream = HypercolorEventStream(_TestClient())
+    stream._decode_received_binary(chunks[0])
+
+    with pytest.raises(ValueError, match="decoded byte ledger"):
+        stream._decode_received_binary(chunks[1])
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+
+    monkeypatch.setitem(
+        websocket_module._PREVIEW_TRANSPORT_LIMITS,
+        "decoded",
+        len(rgb),
+    )
+    admitted = HypercolorEventStream(_TestClient())
+    admitted_chunks = _screen_zone_chunks(encoded, 110, 30)
+    admitted._decode_received_binary(admitted_chunks[0])
+    completed = admitted._decode_received_binary(admitted_chunks[1])
+    assert isinstance(completed, ScreenZonesData)
 
 
 def test_unknown_binary_tag_is_tolerated() -> None:

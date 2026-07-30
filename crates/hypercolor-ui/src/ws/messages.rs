@@ -7,12 +7,13 @@ use hypercolor_leptos_ext::prelude::now_ms;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 use hypercolor_leptos_ext::ws::{
-    INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame, InteractivePreviewFrameView,
-    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkReassembler,
-    PreviewFrame, PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
-    PreviewTransportCapability, ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, ZonePreviewFrameView,
+    EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame,
+    InteractivePreviewFrameView, PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG,
+    PreviewCancelFrame, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
+    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
+    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
+    ZonePreviewFrame, ZonePreviewFrameView,
 };
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
@@ -757,7 +758,10 @@ pub(super) fn decode_interactive_preview_frame(
 
 pub(super) fn decode_screen_zones_frame(buffer: &js_sys::ArrayBuffer) -> Option<ScreenZonesFrame> {
     let tag = js_sys::Uint8Array::new(buffer).get_index(0);
-    if !matches!(tag, SCREEN_ZONES_FRAME_TAG | WIDE_SCREEN_ZONES_FRAME_TAG) {
+    if !matches!(
+        tag,
+        SCREEN_ZONES_FRAME_TAG | WIDE_SCREEN_ZONES_FRAME_TAG | EXTENDED_SCREEN_ZONES_FRAME_TAG
+    ) {
         return None;
     }
     ScreenZonesFrame::decode_array_buffer(buffer).ok()

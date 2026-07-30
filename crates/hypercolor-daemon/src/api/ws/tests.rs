@@ -3712,6 +3712,10 @@ fn websocket_manifest_matches_protocol_constants() {
         hypercolor_leptos_ext::ws::WIDE_SCREEN_ZONES_FRAME_TAG
     );
     assert_eq!(
+        binary_tags["extended_screen_zones"],
+        hypercolor_leptos_ext::ws::EXTENDED_SCREEN_ZONES_FRAME_TAG
+    );
+    assert_eq!(
         binary_tags["preview_chunk"],
         hypercolor_leptos_ext::ws::PREVIEW_CHUNK_FRAME_TAG
     );
@@ -4963,6 +4967,35 @@ fn screen_zones_encoding_round_trips_through_shared_wire_format() {
     assert_eq!(decoded.letterbox, [1, 1, 0, 0]);
     assert_eq!(decoded.zone_rgb(0, 0), Some(colors[0]));
     assert_eq!(decoded.zone_rgb(2, 3), Some(colors[11]));
+}
+
+#[test]
+fn screen_zones_encoding_preserves_wide_grid_dimensions() {
+    let colors = vec![[1, 2, 3]; 256];
+    let frame = hypercolor_core::bus::ScreenZonesFrame {
+        frame_number: 100,
+        timestamp_ms: 5_001,
+        source_width: 3840,
+        source_height: 2160,
+        grid_cols: 256,
+        grid_rows: 1,
+        letterbox: [0, 0, 256, 0],
+        colors: Arc::new(colors),
+    };
+
+    let encoded = super::relays::encode_screen_zones_frame(&frame)
+        .expect("wide screen zones encoding should succeed");
+    let decoded = hypercolor_leptos_ext::ws::ScreenZonesFrame::decode(&encoded)
+        .expect("wide daemon encoding must decode with the shared wire format");
+
+    assert_eq!(
+        encoded[0],
+        hypercolor_leptos_ext::ws::EXTENDED_SCREEN_ZONES_FRAME_TAG
+    );
+    assert_eq!(decoded.grid_cols, 256);
+    assert_eq!(decoded.grid_rows, 1);
+    assert_eq!(decoded.letterbox, [0, 0, 256, 0]);
+    assert_eq!(decoded.zone_rgb(0, 255), Some([1, 2, 3]));
 }
 
 #[test]

@@ -45,6 +45,7 @@ WS_CAPABILITIES: Final = (
     "interactive_previews",
     "wide_preview_frames",
     "preview_chunking",
+    "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
 )
 
 BINARY_MESSAGE_TAGS: Final = MappingProxyType(
@@ -63,6 +64,8 @@ BINARY_MESSAGE_TAGS: Final = MappingProxyType(
         "wide_interactive_preview": 0x0D,
         "wide_screen_zones": 0x0E,
         "preview_chunk": 0x0F,
+        "preview_cancel": 0x10,
+        "extended_screen_zones": 0x11,
     }
 )
 PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(

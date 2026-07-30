@@ -27,6 +27,8 @@ pub const PREVIEW_CHUNK_SCHEMA: u8 = 1;
 pub const PREVIEW_CANCEL_FRAME_TAG: u8 = 0x10;
 pub const PREVIEW_CANCEL_FIXED_HEADER_LEN: usize = 14;
 pub const PREVIEW_CANCEL_SCHEMA: u8 = 1;
+pub const EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN: usize = 41;
+pub const EXTENDED_SCREEN_ZONES_FRAME_TAG: u8 = 0x11;
 pub const DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES: usize = 512 * 1024 * 1024;
 pub const DEFAULT_PREVIEW_MAX_ENCODED_PUBLICATION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES + 64 * 1024;
@@ -455,18 +457,22 @@ impl InteractivePreviewFrame {
 /// them. Payload is row-major RGB, `grid_cols * grid_rows * 3` bytes.
 ///
 /// Wire layout (little endian):
-/// tag u8 | frame u32 | timestamp u32 | source_w u16/u32 | source_h u16/u32 |
+/// Legacy layout:
+/// tag u8 | frame u32 | timestamp u32 | source_w u16 | source_h u16 |
 /// cols u8 | rows u8 | letterbox top/bottom/left/right u8 each | RGB payload
+///
+/// Wide-source layout uses u32 source dimensions with u8 grid and letterbox
+/// dimensions. Extended layout uses u32 for every dimension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenZonesFrame {
     pub frame_number: u32,
     pub timestamp_ms: u32,
     pub source_width: u32,
     pub source_height: u32,
-    pub grid_cols: u8,
-    pub grid_rows: u8,
+    pub grid_cols: u32,
+    pub grid_rows: u32,
     /// Letterbox bars in grid units: top, bottom, left, right.
-    pub letterbox: [u8; 4],
+    pub letterbox: [u32; 4],
     pub payload: Bytes,
 }
 
@@ -485,8 +491,13 @@ impl ScreenZonesFrame {
     }
 
     pub fn try_encode(&self) -> Result<Bytes, PreviewFrameDecodeError> {
-        let payload_len = usize::from(self.grid_cols)
-            .checked_mul(usize::from(self.grid_rows))
+        let payload_len = usize::try_from(self.grid_cols)
+            .ok()
+            .and_then(|cols| {
+                usize::try_from(self.grid_rows)
+                    .ok()
+                    .and_then(|rows| cols.checked_mul(rows))
+            })
             .and_then(|zones| zones.checked_mul(3))
             .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
         if self.payload.len() != payload_len {
@@ -502,38 +513,70 @@ impl ScreenZonesFrame {
         let mut out = Vec::new();
         out.try_reserve_exact(encoded_len)
             .map_err(|_| PreviewFrameDecodeError::AllocationFailed { bytes: encoded_len })?;
-        out.put_u8(if self.uses_legacy_layout() {
+        let tag = if self.uses_legacy_layout() {
             SCREEN_ZONES_FRAME_TAG
-        } else {
+        } else if self.uses_compact_grid_layout() {
             WIDE_SCREEN_ZONES_FRAME_TAG
-        });
+        } else {
+            EXTENDED_SCREEN_ZONES_FRAME_TAG
+        };
+        out.put_u8(tag);
         out.put_u32_le(self.frame_number);
         out.put_u32_le(self.timestamp_ms);
         if self.uses_legacy_layout() {
             out.put_u16_le(u16::try_from(self.source_width).expect("legacy width fits"));
             out.put_u16_le(u16::try_from(self.source_height).expect("legacy height fits"));
+            out.put_u8(u8::try_from(self.grid_cols).expect("legacy columns fit"));
+            out.put_u8(u8::try_from(self.grid_rows).expect("legacy rows fit"));
+            for bar in self.letterbox {
+                out.put_u8(u8::try_from(bar).expect("legacy letterbox value fits"));
+            }
+        } else if self.uses_compact_grid_layout() {
+            out.put_u32_le(self.source_width);
+            out.put_u32_le(self.source_height);
+            out.put_u8(u8::try_from(self.grid_cols).expect("wide columns fit"));
+            out.put_u8(u8::try_from(self.grid_rows).expect("wide rows fit"));
+            for bar in self.letterbox {
+                out.put_u8(u8::try_from(bar).expect("wide letterbox value fits"));
+            }
         } else {
             out.put_u32_le(self.source_width);
             out.put_u32_le(self.source_height);
+            out.put_u32_le(self.grid_cols);
+            out.put_u32_le(self.grid_rows);
+            for bar in self.letterbox {
+                out.put_u32_le(bar);
+            }
         }
-        out.put_u8(self.grid_cols);
-        out.put_u8(self.grid_rows);
-        out.extend_from_slice(&self.letterbox);
         out.extend_from_slice(&self.payload);
         Ok(Bytes::from(out))
     }
 
     #[must_use]
     pub const fn uses_legacy_layout(&self) -> bool {
-        self.source_width <= u16::MAX as u32 && self.source_height <= u16::MAX as u32
+        self.source_width <= u16::MAX as u32
+            && self.source_height <= u16::MAX as u32
+            && self.uses_compact_grid_layout()
+    }
+
+    #[must_use]
+    pub const fn uses_compact_grid_layout(&self) -> bool {
+        self.grid_cols <= u8::MAX as u32
+            && self.grid_rows <= u8::MAX as u32
+            && self.letterbox[0] <= u8::MAX as u32
+            && self.letterbox[1] <= u8::MAX as u32
+            && self.letterbox[2] <= u8::MAX as u32
+            && self.letterbox[3] <= u8::MAX as u32
     }
 
     #[must_use]
     pub const fn header_len(&self) -> usize {
         if self.uses_legacy_layout() {
             SCREEN_ZONES_FRAME_HEADER_LEN
-        } else {
+        } else if self.uses_compact_grid_layout() {
             WIDE_SCREEN_ZONES_FRAME_HEADER_LEN
+        } else {
+            EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN
         }
     }
 
@@ -555,11 +598,15 @@ impl ScreenZonesFrame {
 
     /// RGB color of the zone at `(row, col)`, if in range.
     #[must_use]
-    pub fn zone_rgb(&self, row: u8, col: u8) -> Option<[u8; 3]> {
+    pub fn zone_rgb(&self, row: u32, col: u32) -> Option<[u8; 3]> {
         if row >= self.grid_rows || col >= self.grid_cols {
             return None;
         }
-        let offset = (usize::from(row) * usize::from(self.grid_cols) + usize::from(col)) * 3;
+        let offset = usize::try_from(row)
+            .ok()?
+            .checked_mul(usize::try_from(self.grid_cols).ok()?)?
+            .checked_add(usize::try_from(col).ok()?)?
+            .checked_mul(3)?;
         let bytes = self.payload.get(offset..offset + 3)?;
         Some([bytes[0], bytes[1], bytes[2]])
     }
@@ -1031,9 +1078,7 @@ impl PreviewTransportCapability {
             || self
                 .max_encoded_publication_bytes
                 .checked_mul(2)
-                .is_none_or(|replacement_bytes| {
-                    self.max_connection_bytes < replacement_bytes
-                })
+                .is_none_or(|replacement_bytes| self.max_connection_bytes < replacement_bytes)
             || self.max_streams == 0
             || self.max_tombstones == 0
             || self.max_idle_ms == 0
@@ -1150,6 +1195,7 @@ struct PartialPreviewPublication {
     total_encoded_bytes: usize,
     chunk_count: u32,
     next_chunk_index: u32,
+    screen_zones_header_validated: bool,
     bytes: Vec<u8>,
 }
 
@@ -1258,7 +1304,8 @@ impl PreviewChunkReassembler {
         if chunk.chunk_index != 0 || chunk.chunk_offset != 0 {
             return Err(PreviewChunkError::MissingPublicationStart);
         }
-        validate_reassembly_admission(chunk, total_encoded_bytes, self.limits)?;
+        let screen_zones_header_validated =
+            validate_reassembly_admission(chunk, total_encoded_bytes, self.limits)?;
         let stream = &chunk.metadata.stream;
         let existing_is_active = self
             .streams
@@ -1288,10 +1335,15 @@ impl PreviewChunkReassembler {
                 limit: self.limits.max_connection_bytes,
             });
         }
+        let initial_reservation = if screen_zones_header_validated {
+            total_encoded_bytes
+        } else {
+            total_encoded_bytes.min(EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN)
+        };
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(total_encoded_bytes).map_err(|_| {
+        bytes.try_reserve_exact(initial_reservation).map_err(|_| {
             PreviewChunkError::AllocationFailed {
-                bytes: total_encoded_bytes,
+                bytes: initial_reservation,
             }
         })?;
         let partial = PartialPreviewPublication {
@@ -1299,6 +1351,7 @@ impl PreviewChunkReassembler {
             total_encoded_bytes,
             chunk_count: chunk.chunk_count,
             next_chunk_index: 0,
+            screen_zones_header_validated,
             bytes,
         };
         if !self.streams.contains_key(stream) {
@@ -1364,6 +1417,37 @@ impl PreviewChunkReassembler {
         if chunk.chunk_index != partial.next_chunk_index || chunk.chunk_offset != expected_offset {
             return Err(PreviewChunkError::NonContiguousChunk);
         }
+        if !partial.screen_zones_header_validated {
+            let prefix_len = partial
+                .bytes
+                .len()
+                .checked_add(chunk.payload.len())
+                .ok_or(PreviewChunkError::LengthOverflow)?
+                .min(EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN);
+            let mut prefix = [0_u8; EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN];
+            let retained_prefix_len = partial.bytes.len().min(prefix_len);
+            prefix[..retained_prefix_len].copy_from_slice(&partial.bytes[..retained_prefix_len]);
+            let incoming_prefix_len = prefix_len.saturating_sub(retained_prefix_len);
+            prefix[retained_prefix_len..prefix_len]
+                .copy_from_slice(&chunk.payload[..incoming_prefix_len]);
+            if validate_screen_zones_header_prefix(
+                &partial.metadata,
+                partial.total_encoded_bytes,
+                &prefix[..prefix_len],
+                self.limits,
+            )? {
+                let additional = partial
+                    .total_encoded_bytes
+                    .checked_sub(partial.bytes.len())
+                    .ok_or(PreviewChunkError::LengthOverflow)?;
+                partial.bytes.try_reserve_exact(additional).map_err(|_| {
+                    PreviewChunkError::AllocationFailed {
+                        bytes: partial.total_encoded_bytes,
+                    }
+                })?;
+                partial.screen_zones_header_validated = true;
+            }
+        }
         partial.bytes.extend_from_slice(&chunk.payload);
         partial.next_chunk_index = partial
             .next_chunk_index
@@ -1388,7 +1472,7 @@ impl PreviewChunkReassembler {
         self.active_streams = self.active_streams.saturating_sub(1);
         self.mark_tombstone(stream);
         let encoded = Bytes::from(completed.bytes);
-        validate_completed_publication(&completed.metadata, &encoded)?;
+        validate_completed_publication(&completed.metadata, &encoded, self.limits)?;
         Ok(Some(ReassembledPreviewPublication {
             metadata: completed.metadata,
             encoded,
@@ -1554,7 +1638,7 @@ fn validate_reassembly_admission(
     chunk: &PreviewChunkFrame,
     total_encoded_bytes: usize,
     limits: PreviewReassemblyLimits,
-) -> Result<(), PreviewChunkError> {
+) -> Result<bool, PreviewChunkError> {
     let metadata = &chunk.metadata;
     if metadata.width == 0 || metadata.height == 0 {
         return Err(PreviewChunkError::InvalidGeometry {
@@ -1567,7 +1651,20 @@ fn validate_reassembly_admission(
         if metadata.format != PreviewPixelFormat::Rgb || total_encoded_bytes == 0 {
             return Err(PreviewChunkError::InvalidLayout);
         }
-        return Ok(());
+        let minimum_decoded_bytes =
+            total_encoded_bytes.saturating_sub(EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN);
+        if minimum_decoded_bytes > limits.max_decoded_publication_bytes {
+            return Err(PreviewChunkError::DecodedPublicationBudgetExceeded {
+                requested: minimum_decoded_bytes,
+                limit: limits.max_decoded_publication_bytes,
+            });
+        }
+        return validate_screen_zones_header_prefix(
+            metadata,
+            total_encoded_bytes,
+            &chunk.payload,
+            limits,
+        );
     }
 
     let header_len = publication_header_len(metadata)?;
@@ -1596,12 +1693,60 @@ fn validate_reassembly_admission(
     } else if total_encoded_bytes <= header_len {
         return Err(PreviewChunkError::InvalidLayout);
     }
-    Ok(())
+    Ok(true)
+}
+
+fn validate_screen_zones_header_prefix(
+    metadata: &PreviewPublicationMetadata,
+    total_encoded_bytes: usize,
+    prefix: &[u8],
+    limits: PreviewReassemblyLimits,
+) -> Result<bool, PreviewChunkError> {
+    let tag = prefix
+        .first()
+        .copied()
+        .ok_or(PreviewChunkError::InvalidLayout)?;
+    let header_len = match tag {
+        SCREEN_ZONES_FRAME_TAG => SCREEN_ZONES_FRAME_HEADER_LEN,
+        WIDE_SCREEN_ZONES_FRAME_TAG => WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
+        EXTENDED_SCREEN_ZONES_FRAME_TAG => EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN,
+        actual => {
+            return Err(PreviewChunkError::Frame(
+                PreviewFrameDecodeError::UnknownChannel { actual },
+            ));
+        }
+    };
+    if prefix.len() < header_len {
+        return Ok(false);
+    }
+    let header =
+        ScreenZonesFrameHeader::decode(&prefix[..header_len]).map_err(PreviewChunkError::Frame)?;
+    let end = header
+        .end_offset(total_encoded_bytes)
+        .map_err(PreviewChunkError::Frame)?;
+    let decoded_bytes = end
+        .checked_sub(header.payload_offset)
+        .ok_or(PreviewChunkError::LengthOverflow)?;
+    if decoded_bytes > limits.max_decoded_publication_bytes {
+        return Err(PreviewChunkError::DecodedPublicationBudgetExceeded {
+            requested: decoded_bytes,
+            limit: limits.max_decoded_publication_bytes,
+        });
+    }
+    if header.frame_number != metadata.frame_number
+        || header.timestamp_ms != metadata.timestamp_ms
+        || header.source_width != metadata.width
+        || header.source_height != metadata.height
+    {
+        return Err(PreviewChunkError::MetadataChanged);
+    }
+    Ok(true)
 }
 
 fn validate_completed_publication(
     metadata: &PreviewPublicationMetadata,
     encoded: &Bytes,
+    limits: PreviewReassemblyLimits,
 ) -> Result<(), PreviewChunkError> {
     let metadata_matches = match &metadata.stream {
         PreviewStreamId::Passive(channel) => {
@@ -1635,12 +1780,7 @@ fn validate_completed_publication(
                 && frame.format == metadata.format
         }
         PreviewStreamId::ScreenZones => {
-            let frame = ScreenZonesFrame::decode(encoded).map_err(PreviewChunkError::Frame)?;
-            frame.frame_number == metadata.frame_number
-                && frame.timestamp_ms == metadata.timestamp_ms
-                && frame.source_width == metadata.width
-                && frame.source_height == metadata.height
-                && metadata.format == PreviewPixelFormat::Rgb
+            validate_screen_zones_header_prefix(metadata, encoded.len(), encoded, limits)?
         }
     };
     if metadata_matches {
@@ -1765,19 +1905,20 @@ struct ScreenZonesFrameHeader {
     timestamp_ms: u32,
     source_width: u32,
     source_height: u32,
-    grid_cols: u8,
-    grid_rows: u8,
-    letterbox: [u8; 4],
+    grid_cols: u32,
+    grid_rows: u32,
+    letterbox: [u32; 4],
     payload_offset: usize,
 }
 
 impl ScreenZonesFrameHeader {
     fn decode(input: &[u8]) -> Result<Self, PreviewFrameDecodeError> {
-        let wide = input.first() == Some(&WIDE_SCREEN_ZONES_FRAME_TAG);
-        let header_len = if wide {
-            WIDE_SCREEN_ZONES_FRAME_HEADER_LEN
-        } else {
-            SCREEN_ZONES_FRAME_HEADER_LEN
+        let tag = input.first().copied().unwrap_or_default();
+        let header_len = match tag {
+            SCREEN_ZONES_FRAME_TAG => SCREEN_ZONES_FRAME_HEADER_LEN,
+            WIDE_SCREEN_ZONES_FRAME_TAG => WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
+            EXTENDED_SCREEN_ZONES_FRAME_TAG => EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN,
+            actual => return Err(PreviewFrameDecodeError::UnknownChannel { actual }),
         };
         if input.len() < header_len {
             return Err(PreviewFrameDecodeError::TooShort {
@@ -1785,45 +1926,72 @@ impl ScreenZonesFrameHeader {
                 actual: input.len(),
             });
         }
-        if input[0] != SCREEN_ZONES_FRAME_TAG && !wide {
-            return Err(PreviewFrameDecodeError::UnknownChannel { actual: input[0] });
-        }
-
-        let (source_width, source_height, grid_offset) = if wide {
-            (
-                u32::from_le_bytes(input[9..13].try_into().expect("slice has 4 bytes")),
-                u32::from_le_bytes(input[13..17].try_into().expect("slice has 4 bytes")),
-                17,
-            )
-        } else {
-            (
-                u32::from(u16::from_le_bytes(
-                    input[9..11].try_into().expect("slice has 2 bytes"),
-                )),
-                u32::from(u16::from_le_bytes(
-                    input[11..13].try_into().expect("slice has 2 bytes"),
-                )),
-                13,
-            )
-        };
+        let (source_width, source_height, grid_cols, grid_rows, letterbox) =
+            if tag == EXTENDED_SCREEN_ZONES_FRAME_TAG {
+                (
+                    u32::from_le_bytes(input[9..13].try_into().expect("slice has 4 bytes")),
+                    u32::from_le_bytes(input[13..17].try_into().expect("slice has 4 bytes")),
+                    u32::from_le_bytes(input[17..21].try_into().expect("slice has 4 bytes")),
+                    u32::from_le_bytes(input[21..25].try_into().expect("slice has 4 bytes")),
+                    [
+                        u32::from_le_bytes(input[25..29].try_into().expect("slice has 4 bytes")),
+                        u32::from_le_bytes(input[29..33].try_into().expect("slice has 4 bytes")),
+                        u32::from_le_bytes(input[33..37].try_into().expect("slice has 4 bytes")),
+                        u32::from_le_bytes(input[37..41].try_into().expect("slice has 4 bytes")),
+                    ],
+                )
+            } else if tag == WIDE_SCREEN_ZONES_FRAME_TAG {
+                (
+                    u32::from_le_bytes(input[9..13].try_into().expect("slice has 4 bytes")),
+                    u32::from_le_bytes(input[13..17].try_into().expect("slice has 4 bytes")),
+                    u32::from(input[17]),
+                    u32::from(input[18]),
+                    [
+                        u32::from(input[19]),
+                        u32::from(input[20]),
+                        u32::from(input[21]),
+                        u32::from(input[22]),
+                    ],
+                )
+            } else {
+                (
+                    u32::from(u16::from_le_bytes(
+                        input[9..11].try_into().expect("slice has 2 bytes"),
+                    )),
+                    u32::from(u16::from_le_bytes(
+                        input[11..13].try_into().expect("slice has 2 bytes"),
+                    )),
+                    u32::from(input[13]),
+                    u32::from(input[14]),
+                    [
+                        u32::from(input[15]),
+                        u32::from(input[16]),
+                        u32::from(input[17]),
+                        u32::from(input[18]),
+                    ],
+                )
+            };
 
         Ok(Self {
             frame_number: u32::from_le_bytes(input[1..5].try_into().expect("slice has 4 bytes")),
             timestamp_ms: u32::from_le_bytes(input[5..9].try_into().expect("slice has 4 bytes")),
             source_width,
             source_height,
-            grid_cols: input[grid_offset],
-            grid_rows: input[grid_offset + 1],
-            letterbox: input[grid_offset + 2..grid_offset + 6]
-                .try_into()
-                .expect("slice has 4 bytes"),
+            grid_cols,
+            grid_rows,
+            letterbox,
             payload_offset: header_len,
         })
     }
 
     fn end_offset(&self, input_len: usize) -> Result<usize, PreviewFrameDecodeError> {
-        let payload_len = usize::from(self.grid_cols)
-            .checked_mul(usize::from(self.grid_rows))
+        let payload_len = usize::try_from(self.grid_cols)
+            .ok()
+            .and_then(|cols| {
+                usize::try_from(self.grid_rows)
+                    .ok()
+                    .and_then(|rows| cols.checked_mul(rows))
+            })
             .and_then(|zones| zones.checked_mul(3))
             .ok_or(PreviewFrameDecodeError::DimensionsOverflow)?;
         let end = self

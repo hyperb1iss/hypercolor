@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import struct
+import time
 import unicodedata
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Never
 
 import msgspec
 from websockets import ConnectionClosed
@@ -18,10 +19,32 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.typing import Subprotocol
 
 from .constants import WS_SUBPROTOCOL
-from .ws_protocol import BINARY_MESSAGE_TAGS, CANVAS_FORMAT_TAGS, PREVIEW_CHANNEL_TAGS
+from .ws_protocol import (
+    BINARY_MESSAGE_TAGS,
+    CANVAS_FORMAT_TAGS,
+    PREVIEW_CHANNEL_TAGS,
+    WS_CAPABILITIES,
+)
 
 type JsonObject = dict[str, Any]
 type EventHandler = Callable[[Any], Any]
+
+_PREVIEW_TRANSPORT_PREFIX = "preview_transport_v1:"
+_PREVIEW_CHUNK_HEADER_LEN = 55
+_PREVIEW_CANCEL_HEADER_LEN = 14
+_PREVIEW_TRANSPORT_CAPABILITY = next(
+    capability
+    for capability in WS_CAPABILITIES
+    if capability.startswith(_PREVIEW_TRANSPORT_PREFIX)
+)
+
+
+def _preview_transport_limits() -> dict[str, int]:
+    fields = _PREVIEW_TRANSPORT_CAPABILITY.removeprefix(_PREVIEW_TRANSPORT_PREFIX).split(",")
+    return {name: int(value) for name, value in (field.split("=", 1) for field in fields)}
+
+
+_PREVIEW_TRANSPORT_LIMITS = _preview_transport_limits()
 
 
 @dataclass(slots=True)
@@ -156,6 +179,280 @@ class BinaryMessage:
     payload: bytes
 
 
+@dataclass(slots=True)
+class _PartialPreviewPublication:
+    publication_id: int
+    metadata: tuple[int, int, int, int, int, int, int]
+    total_encoded_bytes: int
+    chunk_count: int
+    next_chunk_index: int
+    encoded: bytearray
+    last_activity: float
+
+
+@dataclass(frozen=True, slots=True)
+class _ScreenZoneChunk:
+    publication_id: int
+    metadata: tuple[int, int, int, int, int, int, int]
+    total_encoded_bytes: int
+    chunk_offset: int
+    chunk_index: int
+    chunk_count: int
+    payload: bytes
+
+
+def _parse_screen_zone_chunk(payload: bytes) -> _ScreenZoneChunk:
+    if len(payload) > _PREVIEW_TRANSPORT_LIMITS["message"]:
+        msg = "Preview chunk exceeds the negotiated message-byte limit"
+        raise ValueError(msg)
+    if len(payload) < _PREVIEW_CHUNK_HEADER_LEN:
+        msg = "Preview chunk is shorter than its 55-byte header"
+        raise ValueError(msg)
+    (
+        tag,
+        schema,
+        stream_kind,
+        channel_tag,
+        pixel_format,
+        identity_len,
+        publication_id,
+        frame_number,
+        timestamp_ms,
+        width,
+        height,
+        total_encoded_bytes,
+        chunk_offset,
+        chunk_index,
+        chunk_count,
+    ) = struct.unpack_from("<5BHQ4I2Q2I", payload)
+    if tag != BINARY_MESSAGE_TAGS["preview_chunk"] or schema != 1:
+        msg = "Preview chunk has an unsupported tag or schema"
+        raise ValueError(msg)
+    payload_offset = _PREVIEW_CHUNK_HEADER_LEN + identity_len
+    if len(payload) <= payload_offset:
+        msg = "Preview chunk has a truncated identity or empty payload"
+        raise ValueError(msg)
+    identity = payload[_PREVIEW_CHUNK_HEADER_LEN:payload_offset]
+    if (
+        stream_kind != 3
+        or channel_tag != BINARY_MESSAGE_TAGS["screen_zones"]
+        or pixel_format != 0
+        or identity
+    ):
+        msg = "Preview chunk is not a screen-zone RGB publication"
+        raise ValueError(msg)
+    chunk_payload = payload[payload_offset:]
+    end = chunk_offset + len(chunk_payload)
+    if (
+        total_encoded_bytes == 0
+        or total_encoded_bytes > _PREVIEW_TRANSPORT_LIMITS["encoded"]
+        or chunk_count == 0
+        or chunk_count > _PREVIEW_TRANSPORT_LIMITS["chunks"]
+        or chunk_count > total_encoded_bytes
+        or chunk_index >= chunk_count
+        or end > total_encoded_bytes
+        or (chunk_index + 1 == chunk_count and end != total_encoded_bytes)
+        or (chunk_index + 1 < chunk_count and end >= total_encoded_bytes)
+    ):
+        msg = "Preview chunk layout exceeds negotiated bounds"
+        raise ValueError(msg)
+    return _ScreenZoneChunk(
+        publication_id=publication_id,
+        metadata=(
+            stream_kind,
+            channel_tag,
+            pixel_format,
+            frame_number,
+            timestamp_ms,
+            width,
+            height,
+        ),
+        total_encoded_bytes=total_encoded_bytes,
+        chunk_offset=chunk_offset,
+        chunk_index=chunk_index,
+        chunk_count=chunk_count,
+        payload=chunk_payload,
+    )
+
+
+class _ScreenZonesChunkReassembler:
+    def __init__(self) -> None:
+        self._partial: _PartialPreviewPublication | None = None
+        self._high_water_publication_id: int | None = None
+        self._reserved_bytes = 0
+
+    @property
+    def reserved_bytes(self) -> int:
+        self._expire_idle()
+        return self._reserved_bytes
+
+    @property
+    def has_partial(self) -> bool:
+        return self._partial is not None
+
+    def expire_partial(self) -> None:
+        self._partial = None
+        self._reserved_bytes = 0
+
+    def reset(self) -> None:
+        self.expire_partial()
+        self._high_water_publication_id = None
+
+    def _expire_idle(self) -> None:
+        partial = self._partial
+        if partial is None:
+            return
+        idle_seconds = _PREVIEW_TRANSPORT_LIMITS["idle_ms"] / 1000
+        if time.monotonic() - partial.last_activity >= idle_seconds:
+            self.expire_partial()
+
+    def _reject(self, message: str, publication_id: int | None = None) -> Never:
+        if self._partial is not None and self._partial.publication_id == publication_id:
+            self._partial = None
+            self._reserved_bytes = 0
+        raise ValueError(message)
+
+    def push(self, payload: bytes) -> bytearray | None:
+        self._expire_idle()
+        publication_id = struct.unpack_from("<Q", payload, 7)[0] if len(payload) >= 15 else None
+        try:
+            chunk = _parse_screen_zone_chunk(payload)
+        except ValueError as exc:
+            self._reject(str(exc), publication_id)
+        partial = self._publication_for(chunk)
+        return self._append_chunk(partial, chunk)
+
+    def _publication_for(self, chunk: _ScreenZoneChunk) -> _PartialPreviewPublication:
+        partial = self._partial
+        if (
+            self._high_water_publication_id is not None
+            and chunk.publication_id < self._high_water_publication_id
+        ):
+            msg = "Preview chunk belongs to a stale publication"
+            raise ValueError(msg)
+        starts_new = (
+            partial is None
+            and (
+                self._high_water_publication_id is None
+                or chunk.publication_id > self._high_water_publication_id
+            )
+        ) or (partial is not None and chunk.publication_id > partial.publication_id)
+        if starts_new:
+            return self._start_publication(chunk)
+        if partial is None:
+            msg = "Preview chunk duplicates a completed or cancelled publication"
+            raise ValueError(msg)
+        return partial
+
+    def _start_publication(self, chunk: _ScreenZoneChunk) -> _PartialPreviewPublication:
+        if chunk.chunk_index != 0 or chunk.chunk_offset != 0:
+            msg = "Preview publication did not start with chunk zero"
+            raise ValueError(msg)
+        if chunk.total_encoded_bytes > _PREVIEW_TRANSPORT_LIMITS["connection"]:
+            msg = "Preview publication exceeds the connection byte ledger"
+            raise ValueError(msg)
+        partial = _PartialPreviewPublication(
+            publication_id=chunk.publication_id,
+            metadata=chunk.metadata,
+            total_encoded_bytes=chunk.total_encoded_bytes,
+            chunk_count=chunk.chunk_count,
+            next_chunk_index=0,
+            encoded=bytearray(),
+            last_activity=time.monotonic(),
+        )
+        self._partial = partial
+        self._high_water_publication_id = chunk.publication_id
+        self._reserved_bytes = chunk.total_encoded_bytes
+        return partial
+
+    def _append_chunk(
+        self,
+        partial: _PartialPreviewPublication,
+        chunk: _ScreenZoneChunk,
+    ) -> bytearray | None:
+        if partial.metadata != chunk.metadata or (
+            partial.total_encoded_bytes != chunk.total_encoded_bytes
+            or partial.chunk_count != chunk.chunk_count
+        ):
+            self._reject(
+                "Preview chunk metadata changed within a publication",
+                chunk.publication_id,
+            )
+        if chunk.chunk_index < partial.next_chunk_index:
+            self._reject("Preview chunk duplicates already received data", chunk.publication_id)
+        if chunk.chunk_index != partial.next_chunk_index or chunk.chunk_offset != len(
+            partial.encoded
+        ):
+            self._reject("Preview chunks are not contiguous", chunk.publication_id)
+        try:
+            partial.encoded.extend(chunk.payload)
+        except MemoryError as exc:
+            self._partial = None
+            self._reserved_bytes = 0
+            msg = "Preview publication buffer allocation failed"
+            raise ValueError(msg) from exc
+        partial.next_chunk_index += 1
+        partial.last_activity = time.monotonic()
+        if partial.next_chunk_index != partial.chunk_count:
+            return None
+        if len(partial.encoded) != partial.total_encoded_bytes:
+            self._reject(
+                "Preview chunks do not cover the declared publication length",
+                chunk.publication_id,
+            )
+        return self._finish_publication(partial)
+
+    def _finish_publication(self, partial: _PartialPreviewPublication) -> bytearray:
+        completed = partial.encoded
+        try:
+            header_len = _validate_screen_zones_publication(completed, partial.metadata)
+        except ValueError as exc:
+            self._reject(str(exc), partial.publication_id)
+        decoded_bytes = partial.total_encoded_bytes - header_len
+        if decoded_bytes > _PREVIEW_TRANSPORT_LIMITS["decoded"]:
+            self._reject(
+                "Completed screen-zone publication exceeds the decoded byte ledger",
+                partial.publication_id,
+            )
+        peak_bytes = partial.total_encoded_bytes + decoded_bytes
+        if peak_bytes > _PREVIEW_TRANSPORT_LIMITS["connection"]:
+            self._reject(
+                "Completed screen-zone publication exceeds the connection byte ledger",
+                partial.publication_id,
+            )
+        self._partial = None
+        self._reserved_bytes = 0
+        return completed
+
+    def cancel(self, payload: bytes) -> None:
+        self._expire_idle()
+        if len(payload) < _PREVIEW_CANCEL_HEADER_LEN:
+            msg = "Preview cancellation is shorter than its 14-byte header"
+            raise ValueError(msg)
+        tag, schema, stream_kind, channel_tag, identity_len, publication_id = struct.unpack_from(
+            "<4BHQ", payload
+        )
+        if tag != BINARY_MESSAGE_TAGS["preview_cancel"] or schema != 1:
+            msg = "Preview cancellation has an unsupported tag or schema"
+            raise ValueError(msg)
+        if len(payload) != _PREVIEW_CANCEL_HEADER_LEN + identity_len:
+            msg = "Preview cancellation identity length is invalid"
+            raise ValueError(msg)
+        identity = payload[_PREVIEW_CANCEL_HEADER_LEN:]
+        if stream_kind != 3 or channel_tag != BINARY_MESSAGE_TAGS["screen_zones"] or identity:
+            msg = "Preview cancellation is not for the screen-zone stream"
+            raise ValueError(msg)
+        if (
+            self._high_water_publication_id is not None
+            and publication_id < self._high_water_publication_id
+        ):
+            return
+        self._high_water_publication_id = publication_id
+        if self._partial is not None and self._partial.publication_id <= publication_id:
+            self._partial = None
+            self._reserved_bytes = 0
+
+
 type WsMessage = (
     HelloMessage
     | EventMessage
@@ -181,6 +478,55 @@ type _BinaryWsMessage = (
 )
 
 
+def _is_screen_zone_preview_chunk(payload: bytes) -> bool:
+    return (
+        len(payload) >= _PREVIEW_CHUNK_HEADER_LEN
+        and payload[2] == 3
+        and payload[3] == BINARY_MESSAGE_TAGS["screen_zones"]
+        and payload[5:7] == b"\x00\x00"
+    )
+
+
+def _is_screen_zone_preview_cancel(payload: bytes) -> bool:
+    return (
+        len(payload) >= _PREVIEW_CANCEL_HEADER_LEN
+        and payload[2] == 3
+        and payload[3] == BINARY_MESSAGE_TAGS["screen_zones"]
+        and payload[4:6] == b"\x00\x00"
+    )
+
+
+def _screen_zones_header_len(payload: bytes | bytearray) -> int:
+    tag = payload[0]
+    if tag == BINARY_MESSAGE_TAGS["screen_zones"]:
+        return 19
+    if tag == BINARY_MESSAGE_TAGS["wide_screen_zones"]:
+        return 23
+    if tag == BINARY_MESSAGE_TAGS["extended_screen_zones"]:
+        return 41
+    msg = "Reassembled screen-zone publication has an unknown inner tag"
+    raise ValueError(msg)
+
+
+def _validate_screen_zones_publication(
+    payload: bytes | bytearray,
+    metadata: tuple[int, int, int, int, int, int, int],
+) -> int:
+    header_len = _screen_zones_header_len(payload)
+    if len(payload) < header_len:
+        msg = "Reassembled screen-zone publication has a truncated inner header"
+        raise ValueError(msg)
+    frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
+    if payload[0] == BINARY_MESSAGE_TAGS["screen_zones"]:
+        source_width, source_height = struct.unpack_from("<HH", payload, 9)
+    else:
+        source_width, source_height = struct.unpack_from("<II", payload, 9)
+    if (frame_number, timestamp_ms, source_width, source_height) != metadata[3:]:
+        msg = "Reassembled screen-zone publication metadata changed"
+        raise ValueError(msg)
+    return header_len
+
+
 class HypercolorEventStream:
     """WebSocket connection with channel subscriptions and event handlers."""
 
@@ -193,9 +539,12 @@ class HypercolorEventStream:
         self._spectrum_handlers: list[EventHandler] = []
         self._canvas_handlers: list[EventHandler] = []
         self._interactive_preview_handlers: list[EventHandler] = []
+        self._screen_zones_handlers: list[EventHandler] = []
         self._metrics_handlers: list[EventHandler] = []
         self._pending_responses: dict[str, asyncio.Future[CommandResponse]] = {}
         self._send_lock = asyncio.Lock()
+        self._screen_zones_reassembler = _ScreenZonesChunkReassembler()
+        self._screen_zones_expiry: asyncio.TimerHandle | None = None
         self.hello: HelloMessage | None = None
 
     async def __aenter__(self) -> HypercolorEventStream:
@@ -207,6 +556,7 @@ class HypercolorEventStream:
 
     async def connect(self) -> HelloMessage:
         """Open the WebSocket connection and read the hello message."""
+        self._reset_screen_zone_transport()
         headers = {}
         if self._api_key is not None:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -225,9 +575,12 @@ class HypercolorEventStream:
 
     async def disconnect(self) -> None:
         """Close the WebSocket connection if it is open."""
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
+        try:
+            if self._connection is not None:
+                await self._connection.close()
+                self._connection = None
+        finally:
+            self._reset_screen_zone_transport()
 
     async def subscribe(
         self,
@@ -235,7 +588,11 @@ class HypercolorEventStream:
         config: Mapping[str, Any] | None = None,
     ) -> None:
         """Subscribe to one or more channels."""
-        payload: JsonObject = {"type": "subscribe", "channels": list(channels)}
+        payload: JsonObject = {
+            "type": "subscribe",
+            "channels": list(channels),
+            "preview_transport": _PREVIEW_TRANSPORT_CAPABILITY,
+        }
         if config is not None:
             payload["config"] = dict(config)
         await self._send_json(payload)
@@ -323,6 +680,10 @@ class HypercolorEventStream:
         """Register a handler for addressed interactive preview frames."""
         self._interactive_preview_handlers.append(handler)
 
+    def on_screen_zones(self, handler: EventHandler) -> None:
+        """Register a handler for screen zone-grid frames."""
+        self._screen_zones_handlers.append(handler)
+
     def on_metrics(self, handler: EventHandler) -> None:
         """Register a handler for metrics messages."""
         self._metrics_handlers.append(handler)
@@ -358,11 +719,13 @@ class HypercolorEventStream:
         try:
             raw_message = await connection.recv()
         except ConnectionClosed as exc:
+            self._connection = None
+            self._reset_screen_zone_transport()
             msg = "Hypercolor WebSocket connection closed"
             raise RuntimeError(msg) from exc
 
         if isinstance(raw_message, bytes):
-            message = self._decode_binary(raw_message)
+            message = self._decode_received_binary(raw_message)
             await self._dispatch_binary(message)
             return message
 
@@ -426,6 +789,9 @@ class HypercolorEventStream:
 
     @staticmethod
     def _decode_binary(payload: bytes) -> _BinaryWsMessage:
+        if not payload:
+            msg = "Hypercolor binary message is empty"
+            raise ValueError(msg)
         message_type = payload[0]
         if message_type == BINARY_MESSAGE_TAGS["led_frame"]:
             return HypercolorEventStream._parse_led_frame(payload)
@@ -435,11 +801,69 @@ class HypercolorEventStream:
             return HypercolorEventStream._parse_canvas(payload)
         return HypercolorEventStream._parse_special_binary(message_type, payload)
 
+    def _decode_received_binary(self, payload: bytes) -> _BinaryWsMessage:
+        if not payload:
+            return self._decode_binary(payload)
+        if payload[0] == BINARY_MESSAGE_TAGS["preview_chunk"]:
+            return self._decode_preview_chunk(payload)
+        if payload[0] == BINARY_MESSAGE_TAGS["preview_cancel"]:
+            return self._decode_preview_cancel(payload)
+        return self._decode_binary(payload)
+
+    def _decode_preview_chunk(self, payload: bytes) -> _BinaryWsMessage:
+        if not _is_screen_zone_preview_chunk(payload):
+            return BinaryMessage(tag=payload[0], payload=payload)
+        try:
+            completed = self._screen_zones_reassembler.push(payload)
+        finally:
+            self._refresh_screen_zone_expiry()
+        if completed is None:
+            return BinaryMessage(tag=payload[0], payload=payload)
+        return self._parse_screen_zones(completed)
+
+    def _decode_preview_cancel(self, payload: bytes) -> BinaryMessage:
+        try:
+            if _is_screen_zone_preview_cancel(payload):
+                self._screen_zones_reassembler.cancel(payload)
+        finally:
+            self._refresh_screen_zone_expiry()
+        return BinaryMessage(tag=payload[0], payload=payload)
+
+    def _refresh_screen_zone_expiry(self) -> None:
+        if self._screen_zones_expiry is not None:
+            self._screen_zones_expiry.cancel()
+            self._screen_zones_expiry = None
+        if not self._screen_zones_reassembler.has_partial:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        idle_seconds = _PREVIEW_TRANSPORT_LIMITS["idle_ms"] / 1000
+        self._screen_zones_expiry = loop.call_later(
+            idle_seconds,
+            self._expire_screen_zone_partial,
+        )
+
+    def _expire_screen_zone_partial(self) -> None:
+        self._screen_zones_expiry = None
+        self._screen_zones_reassembler.expire_partial()
+
+    def _reset_screen_zone_transport(self) -> None:
+        if self._screen_zones_expiry is not None:
+            self._screen_zones_expiry.cancel()
+            self._screen_zones_expiry = None
+        self._screen_zones_reassembler.reset()
+
     @staticmethod
     def _parse_special_binary(message_type: int, payload: bytes) -> _BinaryWsMessage:
         if message_type == BINARY_MESSAGE_TAGS["zone_preview"]:
             return HypercolorEventStream._parse_zone_preview(payload)
-        if message_type == BINARY_MESSAGE_TAGS["screen_zones"]:
+        if message_type in (
+            BINARY_MESSAGE_TAGS["screen_zones"],
+            BINARY_MESSAGE_TAGS["wide_screen_zones"],
+            BINARY_MESSAGE_TAGS["extended_screen_zones"],
+        ):
             return HypercolorEventStream._parse_screen_zones(payload)
         if message_type == BINARY_MESSAGE_TAGS["interactive_preview"]:
             return HypercolorEventStream._parse_interactive_preview(payload)
@@ -471,6 +895,9 @@ class HypercolorEventStream:
                 await _run_handler(handler, message)
         elif isinstance(message, InteractivePreviewData):
             for handler in self._interactive_preview_handlers:
+                await _run_handler(handler, message)
+        elif isinstance(message, ScreenZonesData):
+            for handler in self._screen_zones_handlers:
                 await _run_handler(handler, message)
 
     @staticmethod
@@ -601,18 +1028,63 @@ class HypercolorEventStream:
         )
 
     @staticmethod
-    def _parse_screen_zones(payload: bytes) -> ScreenZonesData:
-        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
-        source_width, source_height = struct.unpack_from("<HH", payload, 9)
+    def _parse_screen_zones(payload: bytes | bytearray) -> ScreenZonesData:
+        wide_source = payload[0] == BINARY_MESSAGE_TAGS["wide_screen_zones"]
+        extended = payload[0] == BINARY_MESSAGE_TAGS["extended_screen_zones"]
+        header_len = 41 if extended else 23 if wide_source else 19
+        if len(payload) < header_len:
+            msg = (
+                f"Screen zones frame is shorter than its {header_len}-byte header: "
+                f"{len(payload)} bytes"
+            )
+            raise ValueError(msg)
+        if extended:
+            (
+                frame_number,
+                timestamp_ms,
+                source_width,
+                source_height,
+                grid_cols,
+                grid_rows,
+                letterbox_top,
+                letterbox_bottom,
+                letterbox_left,
+                letterbox_right,
+            ) = struct.unpack_from("<10I", payload, 1)
+            payload_offset = header_len
+        elif wide_source:
+            frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
+            source_width, source_height = struct.unpack_from("<II", payload, 9)
+            grid_cols = payload[17]
+            grid_rows = payload[18]
+            letterbox_top, letterbox_bottom, letterbox_left, letterbox_right = payload[19:23]
+            payload_offset = header_len
+        else:
+            frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
+            source_width, source_height = struct.unpack_from("<HH", payload, 9)
+            grid_cols = payload[13]
+            grid_rows = payload[14]
+            letterbox_top, letterbox_bottom, letterbox_left, letterbox_right = payload[15:19]
+            payload_offset = header_len
+        rgb = bytes(memoryview(payload)[payload_offset:])
+        expected = grid_cols * grid_rows * 3
+        if len(rgb) != expected:
+            msg = f"Screen zones payload must be {expected} bytes, got {len(rgb)}"
+            raise ValueError(msg)
         return ScreenZonesData(
             frame_number=frame_number,
             timestamp_ms=timestamp_ms,
             source_width=source_width,
             source_height=source_height,
-            grid_cols=payload[13],
-            grid_rows=payload[14],
-            letterbox=(payload[15], payload[16], payload[17], payload[18]),
-            rgb=payload[19:],
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+            letterbox=(
+                letterbox_top,
+                letterbox_bottom,
+                letterbox_left,
+                letterbox_right,
+            ),
+            rgb=rgb,
         )
 
 

@@ -2,15 +2,17 @@
 
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
-    DEFAULT_PREVIEW_MAX_CHUNK_COUNT, DEFAULT_PREVIEW_MAX_MESSAGE_BYTES,
-    INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, INTERACTIVE_PREVIEW_FRAME_TAG,
-    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_CANCEL_FRAME_TAG,
-    PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG, PREVIEW_FRAME_HEADER_LEN,
-    PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame, PreviewChunkError, PreviewChunkFrame,
-    PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
-    PreviewPixelFormat, PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
-    PreviewTransportCapability, SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG,
-    ScreenZonesFrame, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
+    DEFAULT_PREVIEW_MAX_CHUNK_COUNT, DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES,
+    DEFAULT_PREVIEW_MAX_MESSAGE_BYTES, EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN,
+    EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
+    INTERACTIVE_PREVIEW_FRAME_TAG, INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame,
+    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG,
+    PREVIEW_FRAME_HEADER_LEN, PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame, PreviewChunkError,
+    PreviewChunkFrame, PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel,
+    PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
+    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
+    SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
+    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
     WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN,
     ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, split_preview_publication,
 };
@@ -427,6 +429,74 @@ fn screen_zones_frame_round_trips() {
     let encoded = frame.encode();
     assert_eq!(encoded[0], SCREEN_ZONES_FRAME_TAG);
     assert_eq!(encoded.len(), SCREEN_ZONES_FRAME_HEADER_LEN + 4 * 3 * 3);
+    assert_eq!(ScreenZonesFrame::decode(&encoded), Ok(frame));
+}
+
+#[test]
+fn screen_zones_frame_uses_extended_layout_for_grid_and_letterbox_dimensions() {
+    let payload = Bytes::from(vec![7_u8; 256 * 2 * 3]);
+    let frame = ScreenZonesFrame {
+        frame_number: 78,
+        timestamp_ms: 123_457,
+        source_width: 3840,
+        source_height: 2160,
+        grid_cols: 256,
+        grid_rows: 2,
+        letterbox: [0, 0, 256, 1],
+        payload,
+    };
+
+    let encoded = frame.encode();
+    assert_eq!(encoded[0], EXTENDED_SCREEN_ZONES_FRAME_TAG);
+    assert_eq!(
+        encoded.len(),
+        EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN + 256 * 2 * 3
+    );
+    assert_eq!(ScreenZonesFrame::decode(&encoded), Ok(frame));
+}
+
+#[test]
+fn screen_zones_frame_preserves_wide_source_layout() {
+    let frame = ScreenZonesFrame {
+        frame_number: 80,
+        timestamp_ms: 123_459,
+        source_width: 100_000,
+        source_height: 2160,
+        grid_cols: 2,
+        grid_rows: 1,
+        letterbox: [0, 0, 1, 0],
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6]),
+    };
+
+    let encoded = frame.encode();
+    assert_eq!(encoded[0], WIDE_SCREEN_ZONES_FRAME_TAG);
+    assert_eq!(encoded.len(), WIDE_SCREEN_ZONES_FRAME_HEADER_LEN + 6);
+    assert_eq!(
+        encoded.as_ref(),
+        &[
+            0x0E, 0x50, 0x00, 0x00, 0x00, 0x43, 0xE2, 0x01, 0x00, 0xA0, 0x86, 0x01, 0x00, 0x70,
+            0x08, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+            0x06,
+        ]
+    );
+    assert_eq!(ScreenZonesFrame::decode(&encoded), Ok(frame));
+}
+
+#[test]
+fn screen_zones_frame_keeps_legacy_layout_at_u8_boundaries() {
+    let frame = ScreenZonesFrame {
+        frame_number: 79,
+        timestamp_ms: 123_458,
+        source_width: u32::from(u16::MAX),
+        source_height: u32::from(u16::MAX),
+        grid_cols: u32::from(u8::MAX),
+        grid_rows: 1,
+        letterbox: [u32::from(u8::MAX), 0, 0, 0],
+        payload: Bytes::from(vec![0; usize::from(u8::MAX) * 3]),
+    };
+
+    let encoded = frame.encode();
+    assert_eq!(encoded[0], SCREEN_ZONES_FRAME_TAG);
     assert_eq!(ScreenZonesFrame::decode(&encoded), Ok(frame));
 }
 
@@ -883,6 +953,108 @@ fn chunk_reassembly_enforces_decoded_budget_separately_from_encoded_budget() {
         })
     );
     assert_eq!(reassembler.reserved_bytes(), 0);
+}
+
+#[test]
+fn screen_zones_reassembly_enforces_decoded_budget_at_exact_boundary() {
+    let frame = ScreenZonesFrame {
+        frame_number: 7,
+        timestamp_ms: 8,
+        source_width: 1920,
+        source_height: 1080,
+        grid_cols: 2,
+        grid_rows: 1,
+        letterbox: [0; 4],
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6]),
+    };
+    let metadata = PreviewPublicationMetadata {
+        stream: PreviewStreamId::ScreenZones,
+        publication_id: 9,
+        frame_number: frame.frame_number,
+        timestamp_ms: frame.timestamp_ms,
+        width: frame.source_width,
+        height: frame.source_height,
+        format: PreviewPixelFormat::Rgb,
+    };
+    let encoded = frame.encode();
+    let decoded_limit = frame.payload.len();
+    let chunks = split_preview_publication(&encoded, &metadata, DEFAULT_PREVIEW_MAX_MESSAGE_BYTES)
+        .expect("screen-zone chunks split");
+    let mut admitted = PreviewChunkReassembler::new(PreviewReassemblyLimits {
+        max_decoded_publication_bytes: decoded_limit,
+        ..PreviewReassemblyLimits::default()
+    });
+
+    assert!(
+        admitted
+            .push(&chunks[0])
+            .expect("exact decoded limit is admitted")
+            .is_some()
+    );
+
+    let oversized = ScreenZonesFrame {
+        grid_cols: 3,
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        ..frame
+    };
+    let oversized_metadata = PreviewPublicationMetadata {
+        publication_id: 10,
+        ..metadata
+    };
+    let oversized_encoded = oversized.encode();
+    let oversized_chunks = split_preview_publication(
+        &oversized_encoded,
+        &oversized_metadata,
+        DEFAULT_PREVIEW_MAX_MESSAGE_BYTES,
+    )
+    .expect("oversized screen-zone chunks split");
+    let mut rejected = PreviewChunkReassembler::new(PreviewReassemblyLimits {
+        max_decoded_publication_bytes: decoded_limit,
+        ..PreviewReassemblyLimits::default()
+    });
+
+    assert_eq!(
+        rejected.push(&oversized_chunks[0]),
+        Err(PreviewChunkError::DecodedPublicationBudgetExceeded {
+            requested: oversized.payload.len(),
+            limit: decoded_limit,
+        })
+    );
+    assert_eq!(rejected.reserved_bytes(), 0);
+}
+
+#[test]
+fn screen_zones_declared_overflow_is_rejected_before_reservation() {
+    let declared = u64::try_from(
+        DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES + EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN + 1,
+    )
+    .expect("fixture length fits u64");
+    let chunk = PreviewChunkFrame {
+        metadata: PreviewPublicationMetadata {
+            stream: PreviewStreamId::ScreenZones,
+            publication_id: 11,
+            frame_number: 1,
+            timestamp_ms: 2,
+            width: 1920,
+            height: 1080,
+            format: PreviewPixelFormat::Rgb,
+        },
+        total_encoded_bytes: declared,
+        chunk_offset: 0,
+        chunk_index: 0,
+        chunk_count: 2,
+        payload: Bytes::from_static(&[SCREEN_ZONES_FRAME_TAG]),
+    }
+    .try_encode()
+    .expect("malicious screen-zone declaration has a valid envelope");
+    let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits::default());
+
+    assert!(matches!(
+        reassembler.push(&chunk),
+        Err(PreviewChunkError::DecodedPublicationBudgetExceeded { .. })
+    ));
+    assert_eq!(reassembler.reserved_bytes(), 0);
+    assert_eq!(reassembler.partial_count(), 0);
 }
 
 #[test]

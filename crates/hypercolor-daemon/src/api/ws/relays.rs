@@ -1674,32 +1674,29 @@ pub(super) async fn relay_screen_zones(
 pub(super) fn encode_screen_zones_frame(
     frame: &hypercolor_core::bus::ScreenZonesFrame,
 ) -> Result<Bytes, PreviewOutboundError> {
-    let checked_u8 = |field: &'static str, value: u32| {
-        u8::try_from(value).map_err(|_| {
-            PreviewOutboundError::InvalidPublication(format!(
-                "screen zones {field} value {value} exceeds u8"
-            ))
-        })
-    };
-    let payload: Vec<u8> = frame
-        .colors
-        .iter()
-        .flat_map(|rgb| rgb.iter().copied())
-        .collect();
+    let payload_len = frame.colors.len().checked_mul(3).ok_or_else(|| {
+        PreviewOutboundError::InvalidPublication(
+            "screen zones payload length exceeds address space".to_owned(),
+        )
+    })?;
+    let mut payload = Vec::new();
+    payload.try_reserve_exact(payload_len).map_err(|_| {
+        PreviewOutboundError::InvalidPublication(format!(
+            "screen zones payload allocation failed for {payload_len} bytes"
+        ))
+    })?;
+    for color in frame.colors.iter() {
+        payload.extend_from_slice(color);
+    }
 
     hypercolor_leptos_ext::ws::ScreenZonesFrame {
         frame_number: frame.frame_number,
         timestamp_ms: frame.timestamp_ms,
         source_width: frame.source_width,
         source_height: frame.source_height,
-        grid_cols: checked_u8("grid_cols", frame.grid_cols)?,
-        grid_rows: checked_u8("grid_rows", frame.grid_rows)?,
-        letterbox: [
-            checked_u8("letterbox_top", frame.letterbox[0])?,
-            checked_u8("letterbox_bottom", frame.letterbox[1])?,
-            checked_u8("letterbox_left", frame.letterbox[2])?,
-            checked_u8("letterbox_right", frame.letterbox[3])?,
-        ],
+        grid_cols: frame.grid_cols,
+        grid_rows: frame.grid_rows,
+        letterbox: frame.letterbox,
         payload: Bytes::from(payload),
     }
     .try_encode()
