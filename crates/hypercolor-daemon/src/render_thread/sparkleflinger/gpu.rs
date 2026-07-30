@@ -105,7 +105,6 @@ static NEXT_SCREEN_TARGET_ID: AtomicU64 = AtomicU64::new(1);
 enum GpuCanvasFallbackReason {
     InvalidExtent,
     TextureDimension,
-    FullFrameBufferCapacity,
     ResourceAllocation,
 }
 
@@ -114,9 +113,6 @@ impl GpuCanvasFallbackReason {
         match self {
             Self::InvalidExtent => "canvas extent is empty or not representable",
             Self::TextureDimension => "canvas extent exceeds the GPU texture dimension limit",
-            Self::FullFrameBufferCapacity => {
-                "canvas extent exceeds the GPU full-frame buffer capacity"
-            }
             Self::ResourceAllocation => "GPU canvas resources could not be admitted",
         }
     }
@@ -124,7 +120,7 @@ impl GpuCanvasFallbackReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GpuCanvasAdmission {
-    Gpu { full_frame_buffer_bytes: u64 },
+    Gpu,
     CpuFallback(GpuCanvasFallbackReason),
 }
 
@@ -145,7 +141,6 @@ impl GpuCanvasPreparation {
 
 fn gpu_canvas_admission(
     max_texture_dimension_2d: u32,
-    max_buffer_size: u64,
     width: u32,
     height: u32,
 ) -> GpuCanvasAdmission {
@@ -155,24 +150,36 @@ fn gpu_canvas_admission(
     if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
         return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::TextureDimension);
     }
-    let Some(bytes_per_row) = width.checked_mul(BYTES_PER_PIXEL as u32) else {
-        return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::InvalidExtent);
+    GpuCanvasAdmission::Gpu
+}
+
+fn ensure_readback_buffer_capacity(
+    max_buffer_size: u64,
+    width: u32,
+    height: u32,
+    align_rows: bool,
+) -> Result<u64> {
+    let row_bytes = width
+        .checked_mul(BYTES_PER_PIXEL as u32)
+        .context("GPU readback row byte size overflowed")?;
+    let bytes_per_row = if align_rows {
+        row_bytes
+            .checked_add(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1)
+            .map(|value| {
+                value / wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+            })
+            .context("GPU readback aligned row byte size overflowed")?
+    } else {
+        row_bytes
     };
-    let Some(padded_bytes_per_row) = bytes_per_row
-        .checked_add(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1)
-        .map(|value| {
-            value / wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
-        })
-    else {
-        return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::InvalidExtent);
-    };
-    let full_frame_buffer_bytes = u64::from(padded_bytes_per_row) * u64::from(height);
-    if full_frame_buffer_bytes > max_buffer_size {
-        return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::FullFrameBufferCapacity);
-    }
-    GpuCanvasAdmission::Gpu {
-        full_frame_buffer_bytes,
-    }
+    let required_bytes = u64::from(bytes_per_row)
+        .checked_mul(u64::from(height))
+        .context("GPU readback buffer byte size overflowed")?;
+    anyhow::ensure!(
+        required_bytes <= max_buffer_size,
+        "GPU readback for {width}x{height} requires {required_bytes} bytes but the device supports {max_buffer_size} bytes per buffer"
+    );
+    Ok(required_bytes)
 }
 
 #[cfg(target_os = "windows")]
@@ -862,13 +869,8 @@ impl GpuSparkleFlinger {
     pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {
         self.canvas_gpu_admitted
             && matches!(
-                gpu_canvas_admission(
-                    self.probe.max_texture_dimension_2d,
-                    self.max_buffer_size,
-                    plan.width,
-                    plan.height,
-                ),
-                GpuCanvasAdmission::Gpu { .. }
+                gpu_canvas_admission(self.probe.max_texture_dimension_2d, plan.width, plan.height,),
+                GpuCanvasAdmission::Gpu
             )
             && !plan.layers.is_empty()
             && plan.layers.iter().all(|layer| {
@@ -895,16 +897,9 @@ impl GpuSparkleFlinger {
     }
 
     pub(super) fn prepare_canvas_resize(&self, width: u32, height: u32) -> GpuCanvasPreparation {
-        let admission = gpu_canvas_admission(
-            self.probe.max_texture_dimension_2d,
-            self.max_buffer_size,
-            width,
-            height,
-        );
-        let full_frame_buffer_bytes = match admission {
-            GpuCanvasAdmission::Gpu {
-                full_frame_buffer_bytes,
-            } => full_frame_buffer_bytes,
+        let admission = gpu_canvas_admission(self.probe.max_texture_dimension_2d, width, height);
+        match admission {
+            GpuCanvasAdmission::Gpu => {}
             GpuCanvasAdmission::CpuFallback(reason) => {
                 tracing::info!(
                     width,
@@ -914,7 +909,7 @@ impl GpuSparkleFlinger {
                 );
                 return GpuCanvasPreparation::CpuFallback;
             }
-        };
+        }
         match GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height) {
             Ok(surfaces) => GpuCanvasPreparation::Gpu(surfaces),
             Err(error) => {
@@ -922,7 +917,6 @@ impl GpuSparkleFlinger {
                     %error,
                     width,
                     height,
-                    full_frame_buffer_bytes,
                     reason = GpuCanvasFallbackReason::ResourceAllocation.message(),
                     "using CPU compositor after GPU canvas admission failed"
                 );

@@ -30,7 +30,7 @@ use super::{
     GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
     GpuSparkleFlinger, GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES,
     MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap,
-    PendingPreviewReadback, gpu_canvas_admission,
+    PendingPreviewReadback, ensure_readback_buffer_capacity, gpu_canvas_admission,
 };
 #[cfg(target_os = "windows")]
 use super::{
@@ -53,19 +53,111 @@ fn solid_canvas(color: Rgba) -> Canvas {
 }
 
 #[test]
-fn gpu_canvas_admission_uses_device_dimensions_and_buffer_capacity() {
+fn gpu_canvas_admission_uses_only_texture_capability() {
     assert!(matches!(
-        gpu_canvas_admission(16_384, 256 * 1024 * 1024, 3840, 2160),
-        GpuCanvasAdmission::Gpu { .. }
+        gpu_canvas_admission(16_384, 3840, 2160),
+        GpuCanvasAdmission::Gpu
     ));
     assert_eq!(
-        gpu_canvas_admission(8192, u64::MAX, 8193, 1),
+        gpu_canvas_admission(8192, 8193, 1),
         GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::TextureDimension)
     );
+    assert!(ensure_readback_buffer_capacity(1024, 128, 3, true).is_err());
     assert_eq!(
-        gpu_canvas_admission(16_384, 1024, 128, 3),
-        GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::FullFrameBufferCapacity)
+        ensure_readback_buffer_capacity(1536, 128, 3, true)
+            .expect("readback should fit its exact device limit"),
+        1536
     );
+}
+
+#[test]
+fn texture_composition_survives_scoped_full_frame_readback_rejection() {
+    let Ok(mut compositor) = GpuSparkleFlinger::new() else {
+        return;
+    };
+    compositor.max_buffer_size = 4;
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Surface(PublishedSurface::from_owned_canvas(
+                solid_canvas(Rgba::new(20, 60, 100, 255)),
+                1,
+                1,
+            ))),
+            CompositionLayer::alpha(
+                ProducerFrame::Surface(PublishedSurface::from_owned_canvas(
+                    solid_canvas(Rgba::new(220, 40, 80, 128)),
+                    2,
+                    1,
+                )),
+                0.5,
+            ),
+        ],
+    );
+
+    assert!(compositor.supports_plan(&plan));
+    let composed = compositor
+        .compose(&plan, false, None)
+        .expect("texture-only composition should not require readback capacity");
+    assert_eq!(
+        composed.backend,
+        crate::performance::CompositorBackendKind::Gpu
+    );
+    assert!(compositor.canvas_gpu_admitted());
+    #[cfg(target_os = "windows")]
+    let native_target_available = compositor.screen_native_execution_target().is_some();
+
+    let error = compositor
+        .compose(
+            &plan,
+            false,
+            Some(PreviewSurfaceRequest {
+                width: 4,
+                height: 4,
+            }),
+        )
+        .expect_err("full-size CPU readback should reject its local buffer request");
+    assert!(error.to_string().contains("requires 64 bytes"));
+    assert!(compositor.canvas_gpu_admitted());
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        compositor.screen_native_execution_target().is_some(),
+        native_target_available
+    );
+    assert!(
+        compositor.has_pending_output_submission(),
+        "readback rejection must preserve deferred GPU composition work"
+    );
+    assert!(
+        compositor
+            .current_output_frame()
+            .expect("retained GPU output should remain queryable")
+            .is_some()
+    );
+
+    let downscaled = compositor
+        .compose(
+            &plan,
+            false,
+            Some(PreviewSurfaceRequest {
+                width: 1,
+                height: 1,
+            }),
+        )
+        .expect("downscaled preview should fit its own readback request");
+    assert_eq!(
+        downscaled.backend,
+        crate::performance::CompositorBackendKind::Gpu
+    );
+    assert!(compositor.canvas_gpu_admitted());
+    assert!(
+        compositor
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| { surfaces.width == 1 && surfaces.height == 1 })
+    );
+    compositor.discard_preview_work();
 }
 
 const fn screen_upload_key(

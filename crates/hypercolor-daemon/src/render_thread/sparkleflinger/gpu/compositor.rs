@@ -153,6 +153,22 @@ impl GpuSparkleFlinger {
             );
         }
 
+        if requires_cpu_sampling_canvas && readback_key.is_none() {
+            super::ensure_readback_buffer_capacity(
+                self.max_buffer_size,
+                plan.width,
+                plan.height,
+                true,
+            )?;
+        } else if !requires_cpu_sampling_canvas && let Some(request) = preview_surface_request {
+            super::ensure_readback_buffer_capacity(
+                self.max_buffer_size,
+                request.width,
+                request.height,
+                false,
+            )?;
+        }
+
         if matches!(
             self.surfaces,
             Some(GpuCompositorSurfaceSet {
@@ -356,12 +372,8 @@ impl GpuSparkleFlinger {
         ) {
             return Ok(());
         }
-        let admission = super::gpu_canvas_admission(
-            self.probe.max_texture_dimension_2d,
-            self.max_buffer_size,
-            width,
-            height,
-        );
+        let admission =
+            super::gpu_canvas_admission(self.probe.max_texture_dimension_2d, width, height);
         if let super::GpuCanvasAdmission::CpuFallback(reason) = admission {
             anyhow::bail!("{}", reason.message());
         }
@@ -556,7 +568,7 @@ impl GpuSparkleFlinger {
                 }
                 return Ok(gpu_composed_without_surfaces());
             }
-            return Ok(self.latch_sampling_surface_readback(width, height, encoder));
+            return self.latch_sampling_surface_readback(width, height, encoder);
         }
         let Some(current_output) = self.current_output else {
             anyhow::bail!("GPU readback requested without a composed output surface");
@@ -600,7 +612,7 @@ impl GpuSparkleFlinger {
         width: u32,
         height: u32,
         encoder: Option<wgpu::CommandEncoder>,
-    ) -> ComposedFrameSet {
+    ) -> Result<ComposedFrameSet> {
         self.resolve_pending_sampling_readback();
         let latched = self
             .sampling_latch
@@ -608,11 +620,11 @@ impl GpuSparkleFlinger {
             .as_ref()
             .filter(|latched| latched.width == width && latched.height == height)
             .map(|latched| latched.surface.clone());
-        self.stage_sampling_surface_readback(width, height, encoder);
-        match latched {
+        self.stage_sampling_surface_readback(width, height, encoder)?;
+        Ok(match latched {
             Some(surface) => gpu_composed_from_surface(surface, true),
             None => gpu_composed_without_surfaces(),
-        }
+        })
     }
 
     /// Polls the in-flight sampling readback without blocking and moves it
@@ -697,7 +709,7 @@ impl GpuSparkleFlinger {
         width: u32,
         height: u32,
         encoder: Option<wgpu::CommandEncoder>,
-    ) {
+    ) -> Result<()> {
         // A staged preview readback shares the deferred-submission slot.
         // Route it through the preview machinery first so its buffer map
         // still begins before this path claims the queue.
@@ -748,13 +760,13 @@ impl GpuSparkleFlinger {
             || source_texture.is_none()
         {
             self.submit_sampling_encoder(encoder);
-            return;
+            return Ok(());
         }
         let Some(source_texture) = source_texture else {
-            return;
+            return Ok(());
         };
 
-        self.ensure_sampling_readback_buffers(width, height);
+        self.ensure_sampling_readback_buffers(width, height)?;
         let mut encoder = encoder.unwrap_or_else(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -805,6 +817,7 @@ impl GpuSparkleFlinger {
             submission_index,
             receiver,
         });
+        Ok(())
     }
 
     fn submit_sampling_encoder(&mut self, encoder: Option<wgpu::CommandEncoder>) {
@@ -815,20 +828,22 @@ impl GpuSparkleFlinger {
         }
     }
 
-    fn ensure_sampling_readback_buffers(&mut self, width: u32, height: u32) {
+    fn ensure_sampling_readback_buffers(&mut self, width: u32, height: u32) -> Result<()> {
         if self
             .sampling_latch
             .buffers
             .as_ref()
             .is_some_and(|buffers| buffers.width == width && buffers.height == height)
         {
-            return;
+            return Ok(());
         }
+        super::ensure_readback_buffer_capacity(self.max_buffer_size, width, height, true)?;
         // The pending readback's mapped buffer belongs to the old set; drop
         // it before replacing the buffers.
         self.discard_pending_sampling_readback();
         self.sampling_latch.buffers =
             Some(SamplingReadbackBuffers::new(&self.device, width, height));
+        Ok(())
     }
 
     pub(super) fn discard_pending_sampling_readback(&mut self) {

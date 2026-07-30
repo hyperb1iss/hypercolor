@@ -397,6 +397,13 @@ impl GpuSparkleFlinger {
             return Ok(gpu_composed_with_preview_surface(cached));
         }
 
+        super::ensure_readback_buffer_capacity(
+            self.max_buffer_size,
+            request.width,
+            request.height,
+            false,
+        )?;
+
         let request_bytes_per_row = request.width.saturating_mul(BYTES_PER_PIXEL as u32);
         let direct_source_texture = if request.width == source_width
             && request.height == source_height

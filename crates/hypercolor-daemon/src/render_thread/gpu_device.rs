@@ -95,10 +95,11 @@ impl GpuRenderDevice {
             required_features |= wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32;
         }
 
+        let required_limits = compositor_device_limits(adapter.limits());
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some(label),
             required_features,
-            required_limits: wgpu::Limits::default(),
+            required_limits,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
@@ -134,10 +135,11 @@ impl GpuRenderDevice {
         let instance = self.inner.instance.clone();
         let adapter = self.inner.adapter.clone();
         let required_features = self.inner.device.features();
+        let required_limits = compositor_device_limits(adapter.limits());
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some(label),
             required_features,
-            required_limits: wgpu::Limits::default(),
+            required_limits,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
@@ -204,6 +206,15 @@ impl GpuRenderDevice {
             "adapter does not support {usage:?} for {}",
             texture_format_name(format)
         );
+    }
+}
+
+fn compositor_device_limits(adapter_limits: wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_texture_dimension_2d: adapter_limits.max_texture_dimension_2d,
+        max_buffer_size: adapter_limits.max_buffer_size,
+        max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+        ..wgpu::Limits::default()
     }
 }
 
@@ -341,6 +352,28 @@ mod tests {
         assert_eq!(backend_name(wgpu::Backend::Dx12), "dx12");
         assert_eq!(backend_name(wgpu::Backend::Gl), "gl");
         assert_eq!(backend_name(wgpu::Backend::BrowserWebGpu), "browser_webgpu");
+    }
+
+    #[test]
+    fn compositor_device_limits_request_adapter_resolution_and_buffer_capacity() {
+        let mut adapter_limits = wgpu::Limits::default();
+        adapter_limits.max_texture_dimension_2d = 32_768;
+        adapter_limits.max_buffer_size = 4_u64 * 1024 * 1024 * 1024;
+        adapter_limits.max_storage_buffer_binding_size = u64::from(u32::MAX);
+        adapter_limits.max_bind_groups = 12;
+
+        let requested = compositor_device_limits(adapter_limits);
+
+        assert_eq!(requested.max_texture_dimension_2d, 32_768);
+        assert_eq!(requested.max_buffer_size, 4_u64 * 1024 * 1024 * 1024);
+        assert_eq!(
+            requested.max_storage_buffer_binding_size,
+            u64::from(u32::MAX)
+        );
+        assert_eq!(
+            requested.max_bind_groups,
+            wgpu::Limits::default().max_bind_groups
+        );
     }
 
     #[test]
