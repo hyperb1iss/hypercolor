@@ -5,6 +5,7 @@ use super::{
     LayoutActivationControl, LayoutActivationDecision, LayoutTransactionRejection,
     LayoutUpdateError, PreparedLayoutUpdate, SceneTransaction, SceneTransactionQueue,
     apply_layout_update, apply_prepared_layout_update_under_guard_with_persistence,
+    publish_prepared_layout_activation,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
@@ -57,6 +58,46 @@ fn accept_preparation(transaction: super::PrepareLayoutTransaction) -> LayoutAct
     let activation = transaction.activation();
     transaction.accept();
     activation
+}
+
+struct AcceptedPublication {
+    activation: LayoutActivationControl,
+    spatial_engine: SpatialEngine,
+    expected_layout: SpatialLayout,
+    active_scene_id: Option<hypercolor_types::scene::SceneId>,
+    source_active_render_groups_revision: u64,
+}
+
+fn accept_publication(transaction: super::PrepareLayoutTransaction) -> AcceptedPublication {
+    let accepted = AcceptedPublication {
+        activation: transaction.activation(),
+        spatial_engine: transaction.spatial_engine().clone(),
+        expected_layout: transaction.expected_layout().clone(),
+        active_scene_id: transaction.active_scene_id(),
+        source_active_render_groups_revision: transaction.source_active_render_groups_revision(),
+    };
+    transaction.accept();
+    accepted
+}
+
+async fn publish_commit(
+    accepted: AcceptedPublication,
+    spatial_engine: &Arc<RwLock<SpatialEngine>>,
+    scene_manager: &Arc<RwLock<SceneManager>>,
+) -> Result<(), LayoutTransactionRejection> {
+    wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
+    let result = publish_prepared_layout_activation(
+        spatial_engine,
+        scene_manager,
+        accepted.spatial_engine,
+        &accepted.expected_layout,
+        accepted.active_scene_id,
+        accepted.source_active_render_groups_revision,
+        |_| {},
+    )
+    .await;
+    accepted.activation.complete(result.clone());
+    result
 }
 
 async fn complete_commit(activation: &LayoutActivationControl) {
@@ -154,8 +195,10 @@ async fn renderer_and_authoritative_state_reuse_the_exact_prepared_sampling_plan
         panic!("queued transaction should apply a layout");
     };
     let renderer_plan = transaction.spatial_engine().sampling_plan();
-    let activation = accept_preparation(transaction);
-    complete_commit(&activation).await;
+    let accepted = accept_publication(transaction);
+    publish_commit(accepted, &spatial_engine, &scene_manager)
+        .await
+        .expect("prepared layout should publish");
     update
         .await
         .expect("layout coordinator should not panic")
@@ -174,6 +217,105 @@ async fn renderer_and_authoritative_state_reuse_the_exact_prepared_sampling_plan
             .layout
             .id,
         "prepared"
+    );
+}
+
+#[tokio::test]
+async fn render_snapshot_reads_old_generation_while_activation_waits() {
+    let initial = layout("initial", 320, 200);
+    let (spatial_engine, scene_manager, queue) = state(initial.clone());
+    let _consumer = queue.consumer();
+    let update_spatial_engine = Arc::clone(&spatial_engine);
+    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_queue = queue.clone();
+    let update = tokio::spawn(async move {
+        apply_layout_update(
+            &update_spatial_engine,
+            &update_scene_manager,
+            &update_queue,
+            layout("candidate", 7_680, 4_320),
+        )
+        .await
+    });
+    wait_for_pending(&queue, 1).await;
+    let SceneTransaction::PrepareLayout(transaction) = queue
+        .drain()
+        .into_iter()
+        .next()
+        .expect("layout transaction should be queued")
+    else {
+        panic!("queued transaction should apply a layout");
+    };
+    let accepted = accept_publication(transaction);
+    wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        let manager = scene_manager.read().await;
+        let authoritative = spatial_engine.read().await;
+        assert_eq!(manager.active_render_groups()[0].layout.id, initial.id);
+        assert_eq!(authoritative.layout().id, initial.id);
+    })
+    .await
+    .expect("render snapshot should not wait behind layout activation");
+
+    publish_commit(accepted, &spatial_engine, &scene_manager)
+        .await
+        .expect("candidate layout should publish");
+    update
+        .await
+        .expect("layout coordinator should not panic")
+        .expect("layout should commit after renderer publication");
+}
+
+#[tokio::test]
+async fn newer_scene_state_supersedes_prepared_layout_before_publication() {
+    let initial = layout("initial", 320, 200);
+    let (spatial_engine, scene_manager, queue) = state(initial.clone());
+    let _consumer = queue.consumer();
+    let update_spatial_engine = Arc::clone(&spatial_engine);
+    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_queue = queue.clone();
+    let update = tokio::spawn(async move {
+        apply_layout_update(
+            &update_spatial_engine,
+            &update_scene_manager,
+            &update_queue,
+            layout("superseded", 1_920, 1_080),
+        )
+        .await
+    });
+    wait_for_pending(&queue, 1).await;
+    let SceneTransaction::PrepareLayout(transaction) = queue
+        .drain()
+        .into_iter()
+        .next()
+        .expect("layout transaction should be queued")
+    else {
+        panic!("queued transaction should apply a layout");
+    };
+    let accepted = accept_publication(transaction);
+    wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
+    scene_manager
+        .write()
+        .await
+        .invalidate_active_render_groups();
+
+    assert_eq!(
+        publish_commit(accepted, &spatial_engine, &scene_manager).await,
+        Err(LayoutTransactionRejection::Superseded)
+    );
+    assert!(matches!(
+        update.await.expect("layout coordinator should not panic"),
+        Err(LayoutUpdateError::Transaction(
+            LayoutTransactionRejection::Superseded
+        ))
+    ));
+    assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
+    assert_eq!(
+        scene_manager.read().await.active_render_groups()[0]
+            .layout
+            .id,
+        initial.id
     );
 }
 
@@ -236,8 +378,10 @@ async fn renderer_rejection_preserves_state_and_a_retry_can_commit() {
     else {
         panic!("retry transaction should apply a layout");
     };
-    let activation = accept_preparation(transaction);
-    complete_commit(&activation).await;
+    let accepted = accept_publication(transaction);
+    publish_commit(accepted, &spatial_engine, &scene_manager)
+        .await
+        .expect("retry layout should publish");
     retry
         .await
         .expect("layout coordinator should not panic")
@@ -393,14 +537,16 @@ async fn persistence_finishes_before_armed_renderer_publication() {
     else {
         panic!("queued transaction should prepare a layout");
     };
-    let activation = accept_preparation(transaction);
-    wait_for_decision(&activation, LayoutActivationDecision::Commit).await;
+    let accepted = accept_publication(transaction);
+    wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
 
     assert_eq!(
         std::fs::read_to_string(&persisted_path).expect("candidate persisted"),
         candidate.id
     );
-    activation.complete(Ok(()));
+    publish_commit(accepted, &spatial_engine, &scene_manager)
+        .await
+        .expect("persisted layout should publish");
     update
         .await
         .expect("layout coordinator should not panic")
@@ -418,6 +564,7 @@ async fn persistence_finishes_before_armed_renderer_publication() {
 async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation() {
     let initial = layout("initial", 320, 200);
     let candidate = layout("candidate", 7_680, 4_320);
+    let newer = layout("newer-live", 2_560, 1_440);
     let (spatial_engine, scene_manager, queue) = state(initial.clone());
     let _consumer = queue.consumer();
     let tempdir = TempDir::new().expect("transaction tempdir");
@@ -461,6 +608,13 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
     };
     let activation = accept_preparation(transaction);
     wait_for_decision(&activation, LayoutActivationDecision::Commit).await;
+    {
+        let mut manager = scene_manager.write().await;
+        let mut authoritative = spatial_engine.write().await;
+        manager.sync_primary_group_layout(&newer);
+        *authoritative =
+            SpatialEngine::try_new(newer.clone()).expect("newer live layout should prepare");
+    }
     activation.complete(Err(LayoutTransactionRejection::RendererStopped));
 
     assert!(matches!(
@@ -471,13 +625,13 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
     ));
     assert_eq!(
         std::fs::read_to_string(&persisted_path).expect("rollback persisted"),
-        initial.id
+        newer.id
     );
-    assert_eq!(spatial_engine.read().await.layout().id, initial.id);
+    assert_eq!(spatial_engine.read().await.layout().id, newer.id);
     assert_eq!(
         scene_manager.read().await.active_render_groups()[0]
             .layout
             .id,
-        initial.id
+        newer.id
     );
 }

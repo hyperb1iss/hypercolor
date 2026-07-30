@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
 
@@ -34,6 +34,7 @@ use crate::discovery::handle_async_write_failures;
 use crate::performance::OutputFrameSourceKind;
 use crate::scene_transactions::{
     LayoutActivationDecision, LayoutTransactionRejection, SceneTransaction,
+    publish_prepared_layout_activation,
 };
 
 #[expect(
@@ -70,26 +71,43 @@ pub(crate) async fn execute_frame(
                 prepared.activation.complete(Ok(()));
             }
             LayoutActivationDecision::Commit => {
-                let activation = prepared.activation.clone();
-                if let Some(prepared_resize) = prepared.prepared_resize {
-                    render.commit_canvas_resize(prepared_resize);
-                    state.canvas_dims.set(prepared.width, prepared.height);
-                    frame_loop.throttle.reset_for_canvas_resize();
-                    info!(
-                        width = prepared.width,
-                        height = prepared.height,
-                        "Applied live canvas resize"
-                    );
-                } else if let Some(sampling_preparation) = prepared.sampling_preparation {
-                    render.commit_spatial_sampling_plan(sampling_preparation);
-                }
-                render
-                    .render_group_runtime
-                    .commit_reconcile(prepared.prepared_groups);
-                scene
-                    .render_state
-                    .replace_spatial_engine(prepared.spatial_engine);
-                activation.complete(Ok(()));
+                let PreparedLayoutActivation {
+                    spatial_engine,
+                    expected_layout,
+                    active_scene_id,
+                    source_active_render_groups_revision,
+                    prepared_resize,
+                    sampling_preparation,
+                    prepared_groups,
+                    activation,
+                    width,
+                    height,
+                } = prepared;
+                let completion = activation.clone();
+                let publication = publish_prepared_layout_activation(
+                    &state.spatial_engine,
+                    &state.scene_manager,
+                    spatial_engine,
+                    &expected_layout,
+                    active_scene_id,
+                    source_active_render_groups_revision,
+                    |spatial_engine| {
+                        if let Some(prepared_resize) = prepared_resize {
+                            render.commit_canvas_resize(prepared_resize);
+                            state.canvas_dims.set(width, height);
+                            frame_loop.throttle.reset_for_canvas_resize();
+                            info!(width, height, "Applied live canvas resize");
+                        } else if let Some(sampling_preparation) = sampling_preparation {
+                            render.commit_spatial_sampling_plan(sampling_preparation);
+                        }
+                        render
+                            .render_group_runtime
+                            .commit_reconcile(prepared_groups);
+                        scene.render_state.replace_spatial_engine(spatial_engine);
+                    },
+                )
+                .await;
+                completion.complete(publication);
             }
         }
     }
@@ -110,6 +128,7 @@ pub(crate) async fn execute_frame(
                     continue;
                 }
                 let spatial_engine = transaction.spatial_engine().clone();
+                let expected_layout = transaction.expected_layout().clone();
                 let layout = spatial_engine.layout();
                 let width = layout.canvas_width;
                 let height = layout.canvas_height;
@@ -117,6 +136,8 @@ pub(crate) async fn execute_frame(
                     state.canvas_dims.width() != width || state.canvas_dims.height() != height;
                 let candidate_groups = transaction.active_render_groups();
                 let active_scene_id = transaction.active_scene_id();
+                let source_active_render_groups_revision =
+                    transaction.source_active_render_groups_revision();
                 let active_render_groups_revision = transaction.active_render_groups_revision();
                 let unassigned_behavior = transaction.unassigned_behavior().clone();
                 let preparation = async {
@@ -203,6 +224,9 @@ pub(crate) async fn execute_frame(
                 };
                 render.pending_layout_activation = Some(PreparedLayoutActivation {
                     spatial_engine,
+                    expected_layout,
+                    active_scene_id,
+                    source_active_render_groups_revision,
                     prepared_resize,
                     sampling_preparation,
                     prepared_groups,
@@ -213,6 +237,12 @@ pub(crate) async fn execute_frame(
                 transaction.accept();
             }
         }
+    }
+    if render.pending_layout_activation.is_some() {
+        let mut render_loop = state.render_loop.write().await;
+        return runtime
+            .frame_policy
+            .complete_throttled_frame(&mut render_loop, Duration::ZERO);
     }
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,

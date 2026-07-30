@@ -1380,6 +1380,9 @@ pub(crate) struct PreparedCanvasResize {
 
 pub(crate) struct PreparedLayoutActivation {
     pub(crate) spatial_engine: SpatialEngine,
+    pub(crate) expected_layout: SpatialLayout,
+    pub(crate) active_scene_id: Option<SceneId>,
+    pub(crate) source_active_render_groups_revision: u64,
     pub(crate) prepared_resize: Option<PreparedCanvasResize>,
     pub(crate) sampling_preparation: Option<SparkleFlingerSamplingPreparation>,
     pub(crate) prepared_groups: PreparedZoneReconcile,

@@ -15,6 +15,8 @@ use hypercolor_types::spatial::SpatialLayout;
 pub enum LayoutTransactionRejection {
     #[error("render pipeline stopped before applying the layout")]
     RendererStopped,
+    #[error("layout activation was superseded by a newer control-plane state")]
+    Superseded,
     #[error("render pipeline rejected the layout: {message}")]
     PreparationFailed { message: String },
 }
@@ -75,8 +77,10 @@ impl PreparedLayoutUpdate {
 pub struct PrepareLayoutTransaction {
     token: LayoutTransactionToken,
     spatial_engine: SpatialEngine,
+    expected_layout: SpatialLayout,
     active_scene_id: Option<SceneId>,
     active_render_groups: Arc<[Zone]>,
+    source_active_render_groups_revision: u64,
     active_render_groups_revision: u64,
     unassigned_behavior: UnassignedBehavior,
     activation: LayoutActivationControl,
@@ -95,6 +99,11 @@ impl PrepareLayoutTransaction {
     }
 
     #[must_use]
+    pub fn expected_layout(&self) -> &SpatialLayout {
+        &self.expected_layout
+    }
+
+    #[must_use]
     pub fn active_scene_id(&self) -> Option<SceneId> {
         self.active_scene_id
     }
@@ -102,6 +111,11 @@ impl PrepareLayoutTransaction {
     #[must_use]
     pub fn active_render_groups(&self) -> Arc<[Zone]> {
         Arc::clone(&self.active_render_groups)
+    }
+
+    #[must_use]
+    pub const fn source_active_render_groups_revision(&self) -> u64 {
+        self.source_active_render_groups_revision
     }
 
     #[must_use]
@@ -284,8 +298,10 @@ impl SceneTransactionQueue {
         &self,
         token: LayoutTransactionToken,
         spatial_engine: SpatialEngine,
+        expected_layout: SpatialLayout,
         active_scene_id: Option<SceneId>,
         active_render_groups: Arc<[Zone]>,
+        source_active_render_groups_revision: u64,
         active_render_groups_revision: u64,
         unassigned_behavior: UnassignedBehavior,
     ) -> Result<PreparedLayoutSubmission, LayoutTransactionRejection> {
@@ -294,8 +310,10 @@ impl SceneTransactionQueue {
         self.push(SceneTransaction::PrepareLayout(PrepareLayoutTransaction {
             token,
             spatial_engine,
+            expected_layout,
             active_scene_id,
             active_render_groups,
+            source_active_render_groups_revision,
             active_render_groups_revision,
             unassigned_behavior,
             activation: activation.clone(),
@@ -393,6 +411,33 @@ impl LayoutTransactionReceipt {
     }
 }
 
+pub(crate) async fn publish_prepared_layout_activation<F>(
+    spatial_engine: &Arc<RwLock<SpatialEngine>>,
+    scene_manager: &Arc<RwLock<SceneManager>>,
+    candidate_spatial_engine: SpatialEngine,
+    expected_layout: &SpatialLayout,
+    expected_active_scene_id: Option<SceneId>,
+    expected_active_render_groups_revision: u64,
+    publish_renderer_state: F,
+) -> Result<(), LayoutTransactionRejection>
+where
+    F: FnOnce(SpatialEngine),
+{
+    let mut manager = scene_manager.write().await;
+    let mut authoritative_spatial_engine = spatial_engine.write().await;
+    let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
+        && manager.active_render_groups_revision() == expected_active_render_groups_revision
+        && authoritative_spatial_engine.layout().as_ref() == expected_layout;
+    if !source_is_current {
+        return Err(LayoutTransactionRejection::Superseded);
+    }
+
+    manager.sync_primary_group_layout(candidate_spatial_engine.layout().as_ref());
+    *authoritative_spatial_engine = candidate_spatial_engine.clone();
+    publish_renderer_state(candidate_spatial_engine);
+    Ok(())
+}
+
 pub async fn apply_prepared_layout_update_under_guard(
     spatial_engine: Arc<RwLock<SpatialEngine>>,
     scene_manager: Arc<RwLock<SceneManager>>,
@@ -426,28 +471,39 @@ where
     let retained_guard = guard.clone();
     tokio::spawn(async move {
         let retained_guard = retained_guard;
-        let mut manager = scene_manager.write().await;
-        let mut authoritative_spatial_engine = spatial_engine.write().await;
         let prepared_engine = prepared.into_spatial_engine();
-        let rollback_engine = authoritative_spatial_engine.clone();
-        let rollback_state = LayoutPersistenceState {
-            layout: authoritative_spatial_engine.layout().as_ref().clone(),
-            active_scene_id: manager.active_scene_id().copied(),
-            active_render_groups: manager.active_render_groups(),
+        let (
+            expected_layout,
+            active_scene_id,
+            active_render_groups,
+            source_active_render_groups_revision,
+            active_render_groups_revision,
+            unassigned_behavior,
+        ) = {
+            let manager = scene_manager.read().await;
+            let authoritative_spatial_engine = spatial_engine.read().await;
+            let (active_render_groups, active_render_groups_revision) =
+                manager.active_render_groups_for_primary_layout(prepared_engine.layout().as_ref());
+            (
+                authoritative_spatial_engine.layout().as_ref().clone(),
+                manager.active_scene_id().copied(),
+                active_render_groups,
+                manager.active_render_groups_revision(),
+                active_render_groups_revision,
+                manager
+                    .active_scene()
+                    .map(|scene| scene.unassigned_behavior.clone())
+                    .unwrap_or_default(),
+            )
         };
-        let (active_render_groups, active_render_groups_revision) =
-            manager.active_render_groups_for_primary_layout(prepared_engine.layout().as_ref());
-        let active_scene_id = manager.active_scene_id().copied();
-        let unassigned_behavior = manager
-            .active_scene()
-            .map(|scene| scene.unassigned_behavior.clone())
-            .unwrap_or_default();
         let token = scene_transactions.next_layout_token();
         let submission = scene_transactions.submit_layout_preparation(
             token,
             prepared_engine.clone(),
+            expected_layout,
             active_scene_id,
             Arc::clone(&active_render_groups),
+            source_active_render_groups_revision,
             active_render_groups_revision,
             unassigned_behavior,
         )?;
@@ -462,13 +518,18 @@ where
             let _ = submission.completion.wait().await;
             return Err(LayoutUpdateError::Persistence(error.to_string()));
         }
-        manager.sync_primary_group_layout(prepared_engine.layout().as_ref());
-        *authoritative_spatial_engine = prepared_engine;
         submission.activation.commit();
         let renderer_result = submission.completion.wait().await;
         if let Err(error) = renderer_result {
-            manager.sync_primary_group_layout(rollback_engine.layout().as_ref());
-            *authoritative_spatial_engine = rollback_engine;
+            let rollback_state = {
+                let manager = scene_manager.read().await;
+                let authoritative_spatial_engine = spatial_engine.read().await;
+                LayoutPersistenceState {
+                    layout: authoritative_spatial_engine.layout().as_ref().clone(),
+                    active_scene_id: manager.active_scene_id().copied(),
+                    active_render_groups: manager.active_render_groups(),
+                }
+            };
             if let Err(rollback_error) =
                 persist(LayoutPersistencePhase::Rollback(rollback_state)).await
             {
