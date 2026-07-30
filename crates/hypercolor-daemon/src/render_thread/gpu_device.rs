@@ -57,6 +57,10 @@ impl GpuRenderDevice {
             allow(unused_mut)
         )]
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        #[cfg(target_os = "windows")]
+        {
+            instance_descriptor.backends = windows_backends_for_preference(backend_preference);
+        }
         instance_descriptor.memory_budget_thresholds = wgpu::MemoryBudgetThresholds {
             for_resource_creation: Some(GPU_RESOURCE_CREATION_BUDGET_PERCENT),
             for_device_loss: Some(GPU_DEVICE_LOSS_BUDGET_PERCENT),
@@ -129,6 +133,17 @@ impl GpuRenderDevice {
                 info,
             }),
         })
+    }
+
+    #[cfg(all(test, target_os = "windows"))]
+    pub(crate) fn new_dx12_required(label: &'static str) -> Result<Self> {
+        let render_device =
+            Self::new_with_backend_preference(label, GpuBackendPreference::Default)?;
+        anyhow::ensure!(
+            render_device.info().backend == wgpu::Backend::Dx12,
+            "required DX12 GPU test selected a different backend"
+        );
+        Ok(render_device)
     }
 
     pub(crate) fn independent_device(&self, label: &'static str) -> Result<Self> {
@@ -206,6 +221,17 @@ impl GpuRenderDevice {
             "adapter does not support {usage:?} for {}",
             texture_format_name(format)
         );
+    }
+}
+
+#[cfg(target_os = "windows")]
+const fn windows_backends_for_preference(
+    backend_preference: GpuBackendPreference,
+) -> wgpu::Backends {
+    match backend_preference {
+        GpuBackendPreference::Default => wgpu::Backends::DX12,
+        #[cfg(feature = "servo-gpu-import")]
+        GpuBackendPreference::VulkanRequiredForServoImport => wgpu::Backends::VULKAN,
     }
 }
 
@@ -352,6 +378,24 @@ mod tests {
         assert_eq!(backend_name(wgpu::Backend::Dx12), "dx12");
         assert_eq!(backend_name(wgpu::Backend::Gl), "gl");
         assert_eq!(backend_name(wgpu::Backend::BrowserWebGpu), "browser_webgpu");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_default_backend_is_dx12_for_native_screen_interop() {
+        assert_eq!(
+            windows_backends_for_preference(GpuBackendPreference::Default),
+            wgpu::Backends::DX12
+        );
+    }
+
+    #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
+    #[test]
+    fn windows_servo_import_keeps_its_explicit_vulkan_override() {
+        assert_eq!(
+            windows_backends_for_preference(GpuBackendPreference::VulkanRequiredForServoImport),
+            wgpu::Backends::VULKAN
+        );
     }
 
     #[test]
