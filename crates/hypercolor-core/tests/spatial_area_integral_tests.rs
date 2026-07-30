@@ -129,6 +129,39 @@ fn workspace_bytes(width: u32, height: u32) -> usize {
 }
 
 #[test]
+fn area_workspace_is_lazy_until_cpu_sampling_needs_it() {
+    let engine = SpatialEngine::try_new(layout(
+        vec![point_zone(
+            "area".into(),
+            NormalizedPosition::new(0.5, 0.5),
+            1.0,
+            1.0,
+        )],
+        8,
+        8,
+    ))
+    .expect("area workspace geometry should be admitted");
+
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        SpatialSamplingWorkspaceUsage::default()
+    );
+
+    engine
+        .try_sample(&patterned_canvas(8, 8))
+        .expect("first CPU sample should allocate the admitted workspace");
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        SpatialSamplingWorkspaceUsage {
+            retained_workspaces: 1,
+            retained_bytes: workspace_bytes(8, 8),
+            reserved_workspaces: 0,
+            reserved_bytes: 0,
+        }
+    );
+}
+
+#[test]
 fn summed_area_matches_scalar_clamped_sampling_for_rectangular_radii() {
     let radii = [(0.0, 0.0), (1.0, 0.0), (0.0, 2.0), (1.0, 2.0), (3.0, 1.0)];
     for (width, height) in [(1, 1), (1, 4), (4, 1), (4, 3), (5, 4)] {
@@ -298,7 +331,7 @@ fn sequential_descriptors_transactionally_reuse_one_idle_workspace() {
     )
     .expect("canonical workspace fits capacity");
 
-    let mut retained_bytes = workspace_bytes(2, 2);
+    let mut retained_bytes = 0;
     for (width, height) in [(3, 5), (5, 3), (8, 8), (2, 2)] {
         engine
             .try_prepare_sampling_canvas(width, height)
@@ -377,10 +410,10 @@ fn same_descriptor_preparation_is_single_flight_after_reservation() {
     assert_eq!(
         usage_at_gate,
         SpatialSamplingWorkspaceUsage {
-            retained_workspaces: 1,
-            retained_bytes: workspace_bytes(2, 2),
+            retained_workspaces: 0,
+            retained_bytes: 0,
             reserved_workspaces: 1,
-            reserved_bytes: workspace_bytes(8, 8) - workspace_bytes(2, 2),
+            reserved_bytes: workspace_bytes(8, 8),
         }
     );
     assert_eq!(results, [Ok(()), Ok(())]);
@@ -402,7 +435,6 @@ fn same_descriptor_preparation_is_single_flight_after_reservation() {
 fn distinct_descriptor_reservations_charge_all_live_backing() {
     let first_bytes = workspace_bytes(5, 5);
     let second_bytes = workspace_bytes(4, 4);
-    let initial_bytes = workspace_bytes(2, 2);
     let capacity_bytes = first_bytes + second_bytes;
     let engine = Arc::new(
         SpatialEngine::try_new_with_sampling_capacity(
@@ -446,10 +478,10 @@ fn distinct_descriptor_reservations_charge_all_live_backing() {
     assert_eq!(
         usage_at_gate,
         SpatialSamplingWorkspaceUsage {
-            retained_workspaces: 1,
-            retained_bytes: initial_bytes,
+            retained_workspaces: 0,
+            retained_bytes: 0,
             reserved_workspaces: 2,
-            reserved_bytes: capacity_bytes - initial_bytes,
+            reserved_bytes: capacity_bytes,
         }
     );
     assert_eq!(results, [Ok(()), Ok(())]);

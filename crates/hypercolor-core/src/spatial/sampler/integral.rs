@@ -162,41 +162,12 @@ impl AreaWorkspacePool {
     ) -> Result<Arc<Self>, SpatialSamplingError> {
         let geometry = WorkspaceGeometry::try_new(width, height)?;
         validate_aggregate_capacity(0, 0, geometry, geometry.byte_len, capacity)?;
-        let workspace = SummedAreaWorkspace::try_new(geometry)?;
-        let resident_bytes = workspace.backing_bytes();
-        if resident_bytes > capacity.max_area_workspace_bytes() {
-            return Err(SpatialSamplingError::AreaWorkspaceCapacityExceeded {
-                width,
-                height,
-                required_bytes: resident_bytes,
-                capacity_bytes: capacity.max_area_workspace_bytes(),
-            });
-        }
-        let mut available = Vec::new();
-        available.try_reserve_exact(1).map_err(|_| {
-            SpatialSamplingError::AreaWorkspaceAllocation {
-                width,
-                height,
-                entry_count: workspace.entry_count(),
-            }
-        })?;
-        available.push(workspace);
-        let descriptor = geometry.descriptor();
-        let mut resident_descriptors = Vec::new();
-        resident_descriptors.try_reserve_exact(1).map_err(|_| {
-            SpatialSamplingError::AreaWorkspaceAllocation {
-                width,
-                height,
-                entry_count: geometry.entry_count,
-            }
-        })?;
-        resident_descriptors.push(descriptor);
         Ok(Arc::new(Self {
             state: Mutex::new(AreaWorkspacePoolState {
-                available,
-                resident_descriptors,
+                available: Vec::new(),
+                resident_descriptors: Vec::new(),
                 allocating_descriptors: Vec::new(),
-                resident_bytes,
+                resident_bytes: 0,
                 reserved_bytes: 0,
                 leased: 0,
                 replacing: 0,
@@ -622,10 +593,6 @@ impl SummedAreaWorkspace {
 
     fn matches(&self, width: u32, height: u32) -> bool {
         self.width == width && self.height == height
-    }
-
-    fn entry_count(&self) -> usize {
-        self.sums.len()
     }
 
     fn backing_bytes(&self) -> usize {
