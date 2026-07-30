@@ -235,7 +235,7 @@ fn screen_region_layer_uses_latest_capture_canvas() {
     }];
     let source = Canvas::from_vec(vec![255, 0, 0, 255, 0, 255, 0, 255], 2, 1);
     let screen = ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(PublishedSurface::from_canvas(&source, 7, 11)),

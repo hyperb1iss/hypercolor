@@ -142,14 +142,14 @@ fn screen_zones_frame(
     if rows == 0 || cols == 0 {
         return None;
     }
-    let cell_count = usize::try_from(rows)
-        .ok()
-        .and_then(|row_count| usize::try_from(cols).ok()?.checked_mul(row_count))?;
+    let row_count = usize::try_from(rows).ok()?;
+    let col_count = usize::try_from(cols).ok()?;
+    let cell_count = checked_cell_count(row_count, col_count)?;
 
     if screen_data.zone_colors.len() != cell_count {
         return None;
     }
-    let mut colors = Vec::with_capacity(cell_count);
+    let mut colors = try_zone_color_buffer(cell_count)?;
     for zone in &screen_data.zone_colors {
         colors.push(*zone.colors.first()?);
     }
@@ -165,3 +165,16 @@ fn screen_zones_frame(
         colors: Arc::new(colors),
     })
 }
+
+fn checked_cell_count(rows: usize, cols: usize) -> Option<usize> {
+    rows.checked_mul(cols)
+}
+
+fn try_zone_color_buffer(cell_count: usize) -> Option<Vec<[u8; 3]>> {
+    let mut colors = Vec::new();
+    colors.try_reserve_exact(cell_count).ok()?;
+    Some(colors)
+}
+
+#[cfg(test)]
+mod tests;

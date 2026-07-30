@@ -400,7 +400,7 @@ impl InputSource for MockScreenSource {
         let grid_width = u32::try_from(self.zone_colors.len())
             .expect("mock screen grid width should fit in u32");
         Ok(InputData::Screen(ScreenData {
-            zone_colors: self.zone_colors.clone(),
+            zone_colors: self.zone_colors.clone().into(),
             grid_width,
             grid_height: 1,
             canvas_downscale: None,
@@ -1032,7 +1032,7 @@ fn preview_screen_data(left: [u8; 3], right: [u8; 3], frame_number: u32) -> Scre
     }
 
     ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(PublishedSurface::from_owned_canvas(
@@ -2198,7 +2198,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let preview_surface = PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 5, 9);
     let screen_data = ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(preview_surface),
@@ -2318,7 +2318,7 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
     .expect("initial empty-graph demand should reconcile");
 
     let screen_data = ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 5, 9)),
@@ -3191,7 +3191,7 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     }
     let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 41, 77);
     let screen_data = ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(source_surface.clone()),
@@ -3296,7 +3296,7 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     }
     let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 11, 22);
     let screen_data = ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(source_surface.clone()),
@@ -3443,7 +3443,7 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
     }
     let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 19, 31);
     let screen_data = ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(source_surface),
@@ -3575,7 +3575,7 @@ async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_s
     }
     let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 23, 41);
     let screen_data = ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(source_surface),
