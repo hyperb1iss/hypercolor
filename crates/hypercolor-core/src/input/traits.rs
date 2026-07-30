@@ -391,7 +391,7 @@ impl From<Vec<ZoneColors>> for ScreenZoneColors {
 
 impl PartialEq for ScreenZoneColors {
     fn eq(&self, other: &Self) -> bool {
-        self.deref() == other.deref()
+        self.storage[..self.len] == other.storage[..other.len]
     }
 }
 

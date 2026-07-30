@@ -25,11 +25,11 @@ use hypercolor_core::input::screen::{
     ScreenPublicationExecutorRequest, ScreenPublicationFreshness, ScreenPublicationHealth,
     ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
     ScreenPublicationRequest, ScreenPublicationResidency, ScreenPublicationSlotPolicy,
-    ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenSurfacePayload, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
-    ScreenUnknownColorPolicy, ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
-    ScreenWorkerPreparationTicket, ScreenZonesPayload, SourceScale,
+    ScreenReductionFilter, ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind,
+    ScreenResourceLifetime, ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenSurfacePayload, ScreenTargetColorimetry, ScreenToneMapOperator,
+    ScreenToneMapPolicy, ScreenUnknownColorPolicy, ScreenUpscalePolicy, ScreenWorkerBinding,
+    ScreenWorkerBindingState, ScreenWorkerPreparationTicket, ScreenZonesPayload, SourceScale,
 };
 
 #[path = "support/native_target.rs"]
@@ -579,7 +579,7 @@ fn invalid_worker_acknowledgement_retains_its_combined_quote() {
     let modeled_bytes = ticket
         .required_minimums()
         .iter()
-        .map(|minimum| minimum.minimum_bytes())
+        .map(ScreenRequiredResourceMinimum::minimum_bytes)
         .sum::<u64>();
     let top_up = ticket
         .reserve_additional_exact_bytes(7)
