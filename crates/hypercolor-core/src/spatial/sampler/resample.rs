@@ -328,10 +328,7 @@ pub(super) fn sample_srgb_rgb(
         SamplingMethod::Nearest => {
             let sample =
                 prepare_nearest_sample(position, edge_behavior, canvas.width(), canvas.height());
-            attenuate_rgb(
-                read_linear_rgb_at(bytes, prepared_offset(sample.offset)),
-                sample.attenuation,
-            )
+            attenuate_rgb(read_linear_rgb_at(bytes, sample.offset), sample.attenuation)
         }
         SamplingMethod::Bilinear => {
             let sample = prepare_bilinear_sample_for_position(
@@ -411,7 +408,7 @@ fn nearest_pixel_offset(
     position: NormalizedPosition,
     canvas_width: u32,
     canvas_height: u32,
-) -> u32 {
+) -> usize {
     let x = (position.x * (canvas_width - 1) as f32).round() as u32;
     let y = (position.y * (canvas_height - 1) as f32).round() as u32;
     pixel_offset(
@@ -422,13 +419,13 @@ fn nearest_pixel_offset(
 }
 
 #[must_use]
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    reason = "prepared canvas byte offsets are bounded by in-memory image sizes"
-)]
-fn pixel_offset(canvas_width: u32, x: u32, y: u32) -> u32 {
-    ((y as usize * canvas_width as usize) + x as usize) as u32 * BYTES_PER_PIXEL as u32
+fn pixel_offset(canvas_width: u32, x: u32, y: u32) -> usize {
+    usize::try_from(y)
+        .ok()
+        .and_then(|y| y.checked_mul(usize::try_from(canvas_width).ok()?))
+        .and_then(|row_offset| row_offset.checked_add(usize::try_from(x).ok()?))
+        .and_then(|pixel_offset| pixel_offset.checked_mul(BYTES_PER_PIXEL))
+        .expect("prepared canvas byte offset fits the process address space")
 }
 
 #[must_use]
@@ -442,18 +439,8 @@ fn read_linear_rgb_at(bytes: &[u8], offset: usize) -> [u16; 3] {
 }
 
 #[must_use]
-#[inline]
-#[allow(
-    clippy::as_conversions,
-    reason = "prepared sample offsets are constrained to the in-memory canvas byte range"
-)]
-fn prepared_offset(offset: u32) -> usize {
-    offset as usize
-}
-
-#[must_use]
 fn sample_bilinear_linear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u16; 3] {
-    let [top_left, top_right, bottom_left, bottom_right] = sample.offsets.map(prepared_offset);
+    let [top_left, top_right, bottom_left, bottom_right] = sample.offsets;
     let x_upper_weight = u32::from(sample.x_upper_weight);
     let x_lower_weight = BILINEAR_ONE - x_upper_weight;
     let y_upper_weight = u64::from(sample.y_upper_weight);
@@ -643,13 +630,13 @@ fn sample_prepared_nearest_pixels_into(
     if has_attenuation {
         for (color, sample) in colors.iter_mut().zip(samples) {
             *color = encode_linear_rgb(attenuate_rgb(
-                read_linear_rgb_at(bytes, prepared_offset(sample.offset)),
+                read_linear_rgb_at(bytes, sample.offset),
                 sample.attenuation,
             ));
         }
     } else {
         for (color, sample) in colors.iter_mut().zip(samples) {
-            *color = encode_linear_rgb(read_linear_rgb_at(bytes, prepared_offset(sample.offset)));
+            *color = encode_linear_rgb(read_linear_rgb_at(bytes, sample.offset));
         }
     }
 }

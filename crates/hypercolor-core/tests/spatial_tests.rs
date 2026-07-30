@@ -849,6 +849,44 @@ fn spatial_engine_exposes_prepared_sampling_plan() {
 }
 
 #[test]
+fn spatial_plan_preserves_offsets_beyond_four_gibibytes() {
+    let width = 32_769_u32;
+    let height = 32_768_u32;
+    let expected =
+        usize::try_from((u64::from(height - 1) * u64::from(width) + u64::from(width - 1)) * 4)
+            .expect("test geometry is addressable on supported 64-bit hosts");
+    assert!(expected > usize::try_from(u32::MAX).expect("u32 fits usize"));
+
+    let nearest = custom_zone(
+        "nearest",
+        LedTopology::Point,
+        NormalizedPosition::new(1.0, 1.0),
+        NormalizedPosition::new(0.0, 0.0),
+        Some(SamplingMode::Nearest),
+    );
+    let bilinear = custom_zone(
+        "bilinear",
+        LedTopology::Point,
+        NormalizedPosition::new(1.0, 1.0),
+        NormalizedPosition::new(0.0, 0.0),
+        Some(SamplingMode::Bilinear),
+    );
+    let engine = SpatialEngine::new(test_layout(vec![nearest, bilinear], width, height));
+    let plan = engine.sampling_plan();
+
+    match &plan[0].prepared_samples {
+        PreparedZoneSamples::Nearest(samples) => assert_eq!(samples[0].offset, expected),
+        other => panic!("expected nearest prepared samples, got {other:?}"),
+    }
+    match &plan[1].prepared_samples {
+        PreparedZoneSamples::Bilinear(samples) => {
+            assert_eq!(samples[0].offsets, [expected; 4]);
+        }
+        other => panic!("expected bilinear prepared samples, got {other:?}"),
+    }
+}
+
+#[test]
 fn spatial_engine_advances_plan_generation_after_layout_update() {
     let zone = full_canvas_zone(
         "strip",
