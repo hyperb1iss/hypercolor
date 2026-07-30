@@ -298,15 +298,17 @@ fn sequential_descriptors_transactionally_reuse_one_idle_workspace() {
     )
     .expect("canonical workspace fits capacity");
 
+    let mut retained_bytes = workspace_bytes(2, 2);
     for (width, height) in [(3, 5), (5, 3), (8, 8), (2, 2)] {
         engine
             .try_prepare_sampling_canvas(width, height)
             .expect("idle workspace can change descriptors within capacity");
+        retained_bytes = retained_bytes.max(workspace_bytes(width, height));
         assert_eq!(
             engine.sampling_workspace_usage(),
             SpatialSamplingWorkspaceUsage {
                 retained_workspaces: 1,
-                retained_bytes: workspace_bytes(width, height),
+                retained_bytes,
                 reserved_workspaces: 0,
                 reserved_bytes: 0,
             }
@@ -375,10 +377,10 @@ fn same_descriptor_preparation_is_single_flight_after_reservation() {
     assert_eq!(
         usage_at_gate,
         SpatialSamplingWorkspaceUsage {
-            retained_workspaces: 0,
-            retained_bytes: 0,
+            retained_workspaces: 1,
+            retained_bytes: workspace_bytes(2, 2),
             reserved_workspaces: 1,
-            reserved_bytes: workspace_bytes(8, 8),
+            reserved_bytes: workspace_bytes(8, 8) - workspace_bytes(2, 2),
         }
     );
     assert_eq!(results, [Ok(()), Ok(())]);
@@ -389,6 +391,141 @@ fn same_descriptor_preparation_is_single_flight_after_reservation() {
         SpatialSamplingWorkspaceUsage {
             retained_workspaces: 1,
             retained_bytes: workspace_bytes(8, 8),
+            reserved_workspaces: 0,
+            reserved_bytes: 0,
+        }
+    );
+}
+
+#[cfg(feature = "spatial-workspace-test-hooks")]
+#[test]
+fn distinct_descriptor_reservations_charge_all_live_backing() {
+    let first_bytes = workspace_bytes(5, 5);
+    let second_bytes = workspace_bytes(4, 4);
+    let initial_bytes = workspace_bytes(2, 2);
+    let capacity_bytes = first_bytes + second_bytes;
+    let engine = Arc::new(
+        SpatialEngine::try_new_with_sampling_capacity(
+            layout(
+                vec![point_zone(
+                    "area".into(),
+                    NormalizedPosition::new(0.5, 0.5),
+                    1.0,
+                    1.0,
+                )],
+                2,
+                2,
+            ),
+            SpatialSamplingCapacity::new(capacity_bytes),
+        )
+        .expect("canonical workspace fits capacity"),
+    );
+    let hook = Arc::new(SpatialWorkspaceAllocationTestHook::new_gated(false, 2));
+    assert!(engine.install_sampling_workspace_allocation_test_hook(Arc::clone(&hook)));
+    let timeout = Duration::from_secs(5);
+
+    let (first_reached, second_reached, usage_at_gate, results) = std::thread::scope(|scope| {
+        let first_engine = Arc::clone(&engine);
+        let first = scope.spawn(move || first_engine.try_prepare_sampling_canvas(5, 5));
+        let first_reached = hook.wait_for_allocation_attempts(1, timeout);
+
+        let second_engine = Arc::clone(&engine);
+        let second = scope.spawn(move || second_engine.try_prepare_sampling_canvas(4, 4));
+        let second_reached = hook.wait_for_allocation_attempts(2, timeout);
+        let usage_at_gate = engine.sampling_workspace_usage();
+        hook.release_first_allocation();
+        let results = [
+            first.join().expect("first preparation thread completes"),
+            second.join().expect("second preparation thread completes"),
+        ];
+        (first_reached, second_reached, usage_at_gate, results)
+    });
+
+    assert!(first_reached);
+    assert!(second_reached);
+    assert_eq!(
+        usage_at_gate,
+        SpatialSamplingWorkspaceUsage {
+            retained_workspaces: 1,
+            retained_bytes: initial_bytes,
+            reserved_workspaces: 2,
+            reserved_bytes: capacity_bytes - initial_bytes,
+        }
+    );
+    assert_eq!(results, [Ok(()), Ok(())]);
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        SpatialSamplingWorkspaceUsage {
+            retained_workspaces: 2,
+            retained_bytes: capacity_bytes,
+            reserved_workspaces: 0,
+            reserved_bytes: 0,
+        }
+    );
+}
+
+#[cfg(feature = "spatial-workspace-test-hooks")]
+#[test]
+fn shrunk_workspace_capacity_still_bounds_concurrent_allocation() {
+    let capacity_bytes = workspace_bytes(8, 8);
+    let engine = Arc::new(
+        SpatialEngine::try_new_with_sampling_capacity(
+            layout(
+                vec![point_zone(
+                    "area".into(),
+                    NormalizedPosition::new(0.5, 0.5),
+                    1.0,
+                    1.0,
+                )],
+                2,
+                2,
+            ),
+            SpatialSamplingCapacity::new(capacity_bytes),
+        )
+        .expect("canonical workspace fits capacity"),
+    );
+    engine
+        .try_prepare_sampling_canvas(8, 8)
+        .expect("workspace grows to its admitted high-water mark");
+    engine
+        .try_prepare_sampling_canvas(2, 2)
+        .expect("workspace shrinks logically without hiding its backing");
+    assert_eq!(
+        engine.sampling_workspace_usage().retained_bytes,
+        capacity_bytes
+    );
+
+    let hook = Arc::new(SpatialWorkspaceAllocationTestHook::new(false));
+    assert!(engine.install_sampling_workspace_allocation_test_hook(Arc::clone(&hook)));
+    let timeout = Duration::from_secs(5);
+    let (first_reached, rejected, first_result) = std::thread::scope(|scope| {
+        let first_engine = Arc::clone(&engine);
+        let first = scope.spawn(move || first_engine.try_prepare_sampling_canvas(4, 4));
+        let first_reached = hook.wait_for_first_reservation(timeout);
+        let rejected = engine.try_prepare_sampling_canvas(3, 3);
+        hook.release_first_allocation();
+        let first_result = first
+            .join()
+            .expect("replacement preparation thread completes");
+        (first_reached, rejected, first_result)
+    });
+
+    assert!(first_reached);
+    assert_eq!(first_result, Ok(()));
+    assert_eq!(
+        rejected,
+        Err(SpatialSamplingError::AreaWorkspaceCapacityExceeded {
+            width: 3,
+            height: 3,
+            required_bytes: capacity_bytes + workspace_bytes(3, 3),
+            capacity_bytes,
+        })
+    );
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        SpatialSamplingWorkspaceUsage {
+            retained_workspaces: 1,
+            retained_bytes: capacity_bytes,
             reserved_workspaces: 0,
             reserved_bytes: 0,
         }
