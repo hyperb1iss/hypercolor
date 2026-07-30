@@ -12,6 +12,7 @@ use super::super::plan::{
     PreparedAreaSample, PreparedBilinearSample, PreparedGaussianSample, PreparedGaussianSamples,
     PreparedNearestSample, PreparedZoneSamples,
 };
+use super::SummedAreaWorkspace;
 use super::lut::{
     ATTENUATION_ONE, BILINEAR_ONE, BILINEAR_SHIFT, decode_srgb_byte, encode_linear_byte,
 };
@@ -81,7 +82,8 @@ pub(super) fn prepare_bilinear_sample_for_position(
 pub(super) fn prepare_area_sample_for_position(
     position: NormalizedPosition,
     edge_behavior: EdgeBehavior,
-    radius: f32,
+    radius_x: f32,
+    radius_y: f32,
     canvas_width: u32,
     canvas_height: u32,
 ) -> PreparedAreaSample {
@@ -89,16 +91,19 @@ pub(super) fn prepare_area_sample_for_position(
     let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
     let cx = clamped.x * (canvas_width - 1) as f32;
     let cy = clamped.y * (canvas_height - 1) as f32;
-    let radius = if radius.is_finite() {
-        radius.max(0.0).ceil() as u32
-    } else {
-        0
+    let prepare_radius = |radius: f32| {
+        if radius.is_finite() {
+            radius.max(0.0).ceil() as u32
+        } else {
+            0
+        }
     };
 
     PreparedAreaSample {
         center_x: (cx as u32).min(canvas_width - 1),
         center_y: (cy as u32).min(canvas_height - 1),
-        radius,
+        radius_x: prepare_radius(radius_x),
+        radius_y: prepare_radius(radius_y),
         canvas_width,
         canvas_height,
         attenuation,
@@ -144,9 +149,9 @@ pub(super) fn prepare_gaussian_sample_for_position(
 pub(super) fn prepare_gaussian_kernel(
     sigma: f32,
     radius: u32,
-) -> Result<(Vec<u16>, u64), SpatialPlanError> {
-    if radius == 0 || sigma <= f32::EPSILON {
-        return Ok((vec![u16::MAX], u64::from(u16::MAX)));
+) -> Result<(Vec<u16>, u64, u32), SpatialPlanError> {
+    if radius == 0 || !sigma.is_finite() || sigma <= f32::EPSILON {
+        return Ok((vec![u16::MAX], u64::from(u16::MAX), 0));
     }
 
     let diameter = u64::from(radius)
@@ -165,9 +170,9 @@ pub(super) fn prepare_gaussian_kernel(
     let denominator = 2.0 * sigma * sigma;
     let mut weight_sum = 0_u64;
 
-    let radius = i64::from(radius);
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
+    let kernel_radius = i64::from(radius);
+    for dy in -kernel_radius..=kernel_radius {
+        for dx in -kernel_radius..=kernel_radius {
             let dx = i128::from(dx);
             let dy = i128::from(dy);
             let distance_squared = (dx * dx + dy * dy) as f64;
@@ -181,7 +186,7 @@ pub(super) fn prepare_gaussian_kernel(
         }
     }
 
-    Ok((weights, weight_sum.max(1)))
+    Ok((weights, weight_sum.max(1), radius))
 }
 
 // ── Per-frame sampling (hot path) ──────────────────────────────────────────
@@ -190,6 +195,7 @@ pub(super) fn prepare_gaussian_kernel(
 pub(super) fn sample_prepared_canvas_pixels(
     canvas: &Canvas,
     samples: &PreparedZoneSamples,
+    area_workspace: Option<&SummedAreaWorkspace>,
     has_attenuation: bool,
 ) -> Vec<[u8; 3]> {
     let bytes = canvas.as_rgba_bytes();
@@ -204,7 +210,9 @@ pub(super) fn sample_prepared_canvas_pixels(
             sample_prepared_bilinear_pixels(bytes, samples, has_attenuation)
         }
         PreparedZoneSamples::Area(samples) => {
-            sample_prepared_area_pixels(bytes, row_stride, samples, has_attenuation)
+            let workspace = area_workspace
+                .expect("prepared area sampling requires an admitted summed-area workspace");
+            sample_prepared_area_pixels(workspace, samples, has_attenuation)
         }
         PreparedZoneSamples::Gaussian(samples) => {
             sample_prepared_gaussian_pixels(bytes, row_stride, samples, has_attenuation)
@@ -215,6 +223,7 @@ pub(super) fn sample_prepared_canvas_pixels(
 pub(super) fn sample_prepared_canvas_pixels_into(
     canvas: &Canvas,
     samples: &PreparedZoneSamples,
+    area_workspace: Option<&SummedAreaWorkspace>,
     colors: &mut Vec<[u8; 3]>,
     has_attenuation: bool,
 ) {
@@ -231,7 +240,9 @@ pub(super) fn sample_prepared_canvas_pixels_into(
             sample_prepared_bilinear_pixels_into(bytes, samples, colors, has_attenuation);
         }
         PreparedZoneSamples::Area(samples) => {
-            sample_prepared_area_pixels_into(bytes, row_stride, samples, colors, has_attenuation);
+            let workspace = area_workspace
+                .expect("prepared area sampling requires an admitted summed-area workspace");
+            sample_prepared_area_pixels_into(workspace, samples, colors, has_attenuation);
         }
         PreparedZoneSamples::Gaussian(samples) => {
             sample_prepared_gaussian_pixels_into(
@@ -277,19 +288,47 @@ pub(super) fn sample_positions_for_mode_into_buffer(
     positions: &[NormalizedPosition],
     mode: &SamplingMode,
     edge_behavior: EdgeBehavior,
+    area_workspace: Option<&SummedAreaWorkspace>,
     colors: &mut Vec<[u8; 3]>,
 ) {
+    match mode {
+        SamplingMode::AreaAverage { radius_x, radius_y } => {
+            let workspace =
+                area_workspace.expect("area sampling requires an admitted summed-area workspace");
+            colors.clear();
+            colors.reserve(positions.len());
+            for &position in positions {
+                let sample = prepare_area_sample_for_position(
+                    position,
+                    edge_behavior,
+                    *radius_x,
+                    *radius_y,
+                    canvas.width(),
+                    canvas.height(),
+                );
+                colors.push(encode_linear_rgb(attenuate_rgb(
+                    workspace.sample(&sample),
+                    sample.attenuation,
+                )));
+            }
+            return;
+        }
+        SamplingMode::Nearest | SamplingMode::Bilinear => {
+            let method = match mode {
+                SamplingMode::Nearest => SamplingMethod::Nearest,
+                SamplingMode::Bilinear => SamplingMethod::Bilinear,
+                SamplingMode::AreaAverage { .. } | SamplingMode::GaussianArea { .. } => {
+                    unreachable!()
+                }
+            };
+            sample_positions_into_buffer(canvas, positions, method, edge_behavior, colors);
+            return;
+        }
+        SamplingMode::GaussianArea { .. } => {}
+    }
+
     let SamplingMode::GaussianArea { sigma, radius } = mode else {
-        let method = match mode {
-            SamplingMode::Nearest => SamplingMethod::Nearest,
-            SamplingMode::Bilinear => SamplingMethod::Bilinear,
-            SamplingMode::AreaAverage { radius_x, radius_y } => SamplingMethod::Area {
-                radius: (*radius_x).max(*radius_y),
-            },
-            SamplingMode::GaussianArea { .. } => unreachable!("gaussian mode handled above"),
-        };
-        sample_positions_into_buffer(canvas, positions, method, edge_behavior, colors);
-        return;
+        unreachable!()
     };
 
     colors.clear();
@@ -299,7 +338,8 @@ pub(super) fn sample_positions_for_mode_into_buffer(
         colors.resize(positions.len(), [0, 0, 0]);
         return;
     };
-    let Ok((weights, weight_sum)) = prepare_gaussian_kernel(*sigma, *radius) else {
+    let Ok((weights, weight_sum, effective_radius)) = prepare_gaussian_kernel(*sigma, *radius)
+    else {
         colors.resize(positions.len(), [0, 0, 0]);
         return;
     };
@@ -308,7 +348,7 @@ pub(super) fn sample_positions_for_mode_into_buffer(
         let sample = prepare_gaussian_sample_for_position(
             position,
             edge_behavior,
-            *radius,
+            effective_radius,
             canvas.width(),
             canvas.height(),
         );
@@ -323,7 +363,7 @@ pub(super) fn sample_positions_for_mode_into_buffer(
 pub(super) fn sample_srgb_rgb(
     canvas: &Canvas,
     bytes: &[u8],
-    row_stride: usize,
+    _row_stride: usize,
     position: NormalizedPosition,
     sampling_method: SamplingMethod,
     edge_behavior: EdgeBehavior,
@@ -352,17 +392,8 @@ pub(super) fn sample_srgb_rgb(
             )
         }
         SamplingMethod::Area { radius } => {
-            let sample = prepare_area_sample_for_position(
-                position,
-                edge_behavior,
-                radius,
-                canvas.width(),
-                canvas.height(),
-            );
-            attenuate_rgb(
-                sample_area_linear_rgb(bytes, row_stride, &sample),
-                sample.attenuation,
-            )
+            let _ = radius;
+            unreachable!("area sampling uses the summed-area workspace path")
         }
     };
 
@@ -551,52 +582,6 @@ fn bilinear_channel(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "area sampling clamps coordinates and averages byte channels before narrowing"
-)]
-fn sample_area_linear_rgb(
-    bytes: &[u8],
-    row_stride: usize,
-    sample: &PreparedAreaSample,
-) -> [u16; 3] {
-    let mut sum_r = 0u64;
-    let mut sum_g = 0u64;
-    let mut sum_b = 0u64;
-    let mut count = 0u64;
-
-    let radius = i64::from(sample.radius);
-    let max_x = i64::from(sample.canvas_width - 1);
-    let max_y = i64::from(sample.canvas_height - 1);
-    for dy in -radius..=radius {
-        let Ok(y) = u32::try_from((i64::from(sample.center_y) + dy).clamp(0, max_y)) else {
-            continue;
-        };
-        for dx in -radius..=radius {
-            let Ok(x) = u32::try_from((i64::from(sample.center_x) + dx).clamp(0, max_x)) else {
-                continue;
-            };
-            let Some(offset) = checked_sample_offset(row_stride, x, y) else {
-                continue;
-            };
-            sum_r += u64::from(decode_srgb_byte(bytes[offset]));
-            sum_g += u64::from(decode_srgb_byte(bytes[offset + 1]));
-            sum_b += u64::from(decode_srgb_byte(bytes[offset + 2]));
-            count = count.saturating_add(1);
-        }
-    }
-
-    let count = count.max(1);
-    [
-        (sum_r / count) as u16,
-        (sum_g / count) as u16,
-        (sum_b / count) as u16,
-    ]
-}
-
-#[must_use]
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     reason = "gaussian sampling clamps coordinates and normalizes fixed-point weights before narrowing"
 )]
 fn sample_gaussian_linear_rgb(
@@ -731,19 +716,17 @@ fn sample_prepared_bilinear_pixels_into(
 
 #[must_use]
 fn sample_prepared_area_pixels(
-    bytes: &[u8],
-    row_stride: usize,
+    workspace: &SummedAreaWorkspace,
     samples: &[PreparedAreaSample],
     has_attenuation: bool,
 ) -> Vec<[u8; 3]> {
     let mut colors = Vec::new();
-    sample_prepared_area_pixels_into(bytes, row_stride, samples, &mut colors, has_attenuation);
+    sample_prepared_area_pixels_into(workspace, samples, &mut colors, has_attenuation);
     colors
 }
 
 fn sample_prepared_area_pixels_into(
-    bytes: &[u8],
-    row_stride: usize,
+    workspace: &SummedAreaWorkspace,
     samples: &[PreparedAreaSample],
     colors: &mut Vec<[u8; 3]>,
     has_attenuation: bool,
@@ -751,14 +734,11 @@ fn sample_prepared_area_pixels_into(
     colors.resize(samples.len(), [0, 0, 0]);
     if has_attenuation {
         for (color, sample) in colors.iter_mut().zip(samples) {
-            *color = encode_linear_rgb(attenuate_rgb(
-                sample_area_linear_rgb(bytes, row_stride, sample),
-                sample.attenuation,
-            ));
+            *color = encode_linear_rgb(attenuate_rgb(workspace.sample(sample), sample.attenuation));
         }
     } else {
         for (color, sample) in colors.iter_mut().zip(samples) {
-            *color = encode_linear_rgb(sample_area_linear_rgb(bytes, row_stride, sample));
+            *color = encode_linear_rgb(workspace.sample(sample));
         }
     }
 }

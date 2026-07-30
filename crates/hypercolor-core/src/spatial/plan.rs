@@ -51,7 +51,8 @@ pub struct PreparedBilinearSample {
 pub struct PreparedAreaSample {
     pub center_x: u32,
     pub center_y: u32,
-    pub radius: u32,
+    pub radius_x: u32,
+    pub radius_y: u32,
     pub canvas_width: u32,
     pub canvas_height: u32,
     pub attenuation: u16,

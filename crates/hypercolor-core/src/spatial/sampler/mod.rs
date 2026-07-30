@@ -3,14 +3,17 @@
 //! Three sampling strategies with different quality/performance tradeoffs:
 //! - **Nearest**: O(1), 1 pixel read — fast but aliased.
 //! - **Bilinear**: O(1), 4 pixel reads — smooth gradients, default.
-//! - **Area Average**: O(area), brute-force rectangle — mood/ambient lighting.
+//! - **Area Average**: O(1) per query after one summed-area build per canvas.
 //!
 //! The canvas already provides `sample_nearest`, `sample_bilinear`, and `sample_area`
 //! methods. This module wraps them with the zone-level [`SamplingMode`] dispatch
 //! and coordinate transformation pipeline.
 
+mod integral;
 mod lut;
 mod resample;
+
+use std::sync::Arc;
 
 use hypercolor_types::canvas::{Canvas, Rgba, SamplingMethod};
 use hypercolor_types::spatial::{
@@ -18,7 +21,10 @@ use hypercolor_types::spatial::{
 };
 
 use super::plan::{PreparedZonePlan, PreparedZoneSamples};
-use super::{SpatialPlanError, validate_canvas_descriptor};
+use super::{
+    SpatialPlanError, SpatialSamplingCapacity, SpatialSamplingError, validate_canvas_descriptor,
+};
+pub(crate) use integral::{AreaWorkspacePool, SummedAreaWorkspace};
 use resample::{
     prepare_area_sample_for_position, prepare_bilinear_sample_for_position,
     prepare_gaussian_kernel, prepare_gaussian_sample_for_position, prepare_nearest_sample,
@@ -100,9 +106,9 @@ fn to_sampling_method(mode: &SamplingMode) -> SamplingMethod {
     match mode {
         SamplingMode::Nearest => SamplingMethod::Nearest,
         SamplingMode::Bilinear => SamplingMethod::Bilinear,
-        SamplingMode::AreaAverage { radius_x, radius_y } => SamplingMethod::Area {
-            radius: (*radius_x).max(*radius_y),
-        },
+        SamplingMode::AreaAverage { .. } => {
+            unreachable!("area sampling uses the summed-area workspace path")
+        }
         SamplingMode::GaussianArea { .. } => {
             unreachable!("gaussian sampling uses the prepared kernel path")
         }
@@ -162,7 +168,6 @@ pub(crate) fn prepare_zone(
             (PreparedZoneSamples::Bilinear(samples), has_attenuation)
         }
         SamplingMode::AreaAverage { radius_x, radius_y } => {
-            let radius = radius_x.max(radius_y);
             let samples = sample_positions
                 .iter()
                 .copied()
@@ -170,7 +175,8 @@ pub(crate) fn prepare_zone(
                     prepare_area_sample_for_position(
                         position,
                         edge,
-                        radius,
+                        radius_x,
+                        radius_y,
                         layout.canvas_width,
                         layout.canvas_height,
                     )
@@ -182,7 +188,7 @@ pub(crate) fn prepare_zone(
             (PreparedZoneSamples::Area(samples), has_attenuation)
         }
         SamplingMode::GaussianArea { sigma, radius } => {
-            let (weights, weight_sum) = prepare_gaussian_kernel(sigma, radius)?;
+            let (weights, weight_sum, effective_radius) = prepare_gaussian_kernel(sigma, radius)?;
             let samples = sample_positions
                 .iter()
                 .copied()
@@ -190,7 +196,7 @@ pub(crate) fn prepare_zone(
                     prepare_gaussian_sample_for_position(
                         position,
                         edge,
-                        radius,
+                        effective_radius,
                         layout.canvas_width,
                         layout.canvas_height,
                     )
@@ -223,15 +229,39 @@ pub(crate) fn prepare_zone(
     })
 }
 
+pub(crate) fn prepare_area_workspace_pool(
+    zones: &[PreparedZonePlan],
+    width: u32,
+    height: u32,
+    capacity: SpatialSamplingCapacity,
+) -> Result<Option<Arc<AreaWorkspacePool>>, SpatialSamplingError> {
+    if zones.iter().any(|zone| {
+        matches!(&zone.prepared_samples, PreparedZoneSamples::Area(samples) if !samples.is_empty())
+    }) {
+        AreaWorkspacePool::try_new(width, height, capacity).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 // ── Public sampling API ────────────────────────────────────────────────────
 
 /// Sample a prepared zone without redoing zone transform math.
 #[must_use]
-pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZonePlan) -> Vec<[u8; 3]> {
+pub(crate) fn sample_prepared_zone(
+    canvas: &Canvas,
+    zone: &PreparedZonePlan,
+    area_workspace: Option<&SummedAreaWorkspace>,
+) -> Vec<[u8; 3]> {
     if canvas.width() == zone.prepared_canvas_width
         && canvas.height() == zone.prepared_canvas_height
     {
-        return sample_prepared_canvas_pixels(canvas, &zone.prepared_samples, zone.has_attenuation);
+        return sample_prepared_canvas_pixels(
+            canvas,
+            &zone.prepared_samples,
+            area_workspace,
+            zone.has_attenuation,
+        );
     }
 
     let mut colors = Vec::new();
@@ -240,6 +270,7 @@ pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZonePlan) -> 
         &zone.sample_positions,
         &zone.sampling_mode,
         zone.edge_behavior,
+        area_workspace,
         &mut colors,
     );
     colors
@@ -249,6 +280,7 @@ pub(crate) fn sample_prepared_zone_into(
     canvas: &Canvas,
     zone: &PreparedZonePlan,
     colors: &mut Vec<[u8; 3]>,
+    area_workspace: Option<&SummedAreaWorkspace>,
 ) {
     if canvas.width() == zone.prepared_canvas_width
         && canvas.height() == zone.prepared_canvas_height
@@ -256,6 +288,7 @@ pub(crate) fn sample_prepared_zone_into(
         sample_prepared_canvas_pixels_into(
             canvas,
             &zone.prepared_samples,
+            area_workspace,
             colors,
             zone.has_attenuation,
         );
@@ -267,6 +300,7 @@ pub(crate) fn sample_prepared_zone_into(
         &zone.sample_positions,
         &zone.sampling_mode,
         zone.edge_behavior,
+        area_workspace,
         colors,
     );
 }
@@ -285,15 +319,73 @@ pub fn sample_led(
 ) -> Rgba {
     let canvas_pos = zone_local_to_canvas(local_pos, zone, edge);
 
-    // For area average with distinct X/Y radii, use the canvas area sampler
-    // with the larger radius (the canvas `sample_area` uses a square kernel).
-    if matches!(mode, SamplingMode::GaussianArea { .. }) {
+    if matches!(
+        mode,
+        SamplingMode::AreaAverage { .. } | SamplingMode::GaussianArea { .. }
+    ) {
+        let prepared_samples = match mode {
+            SamplingMode::AreaAverage { radius_x, radius_y } => {
+                let sample = prepare_area_sample_for_position(
+                    canvas_pos,
+                    edge,
+                    *radius_x,
+                    *radius_y,
+                    canvas.width(),
+                    canvas.height(),
+                );
+                PreparedZoneSamples::Area(vec![sample])
+            }
+            SamplingMode::GaussianArea { sigma, radius } => {
+                let Ok((weights, weight_sum, effective_radius)) =
+                    prepare_gaussian_kernel(*sigma, *radius)
+                else {
+                    return Rgba::new(0, 0, 0, 255);
+                };
+                PreparedZoneSamples::Gaussian(super::plan::PreparedGaussianSamples {
+                    samples: vec![prepare_gaussian_sample_for_position(
+                        canvas_pos,
+                        edge,
+                        effective_radius,
+                        canvas.width(),
+                        canvas.height(),
+                    )],
+                    weights,
+                    weight_sum,
+                })
+            }
+            SamplingMode::Nearest | SamplingMode::Bilinear => unreachable!(),
+        };
+        let workspace_pool = if matches!(prepared_samples, PreparedZoneSamples::Area(_)) {
+            match AreaWorkspacePool::try_new(
+                canvas.width(),
+                canvas.height(),
+                SpatialSamplingCapacity::UNBOUNDED,
+            ) {
+                Ok(pool) => Some(pool),
+                Err(_) => return Rgba::new(0, 0, 0, 255),
+            }
+        } else {
+            None
+        };
+        let workspace = match workspace_pool.as_ref() {
+            Some(pool) => match pool.try_checkout(canvas) {
+                Ok(workspace) => Some(workspace),
+                Err(_) => return Rgba::new(0, 0, 0, 255),
+            },
+            None => None,
+        };
         let mut colors = Vec::new();
-        sample_positions_for_mode_into_buffer(canvas, &[canvas_pos], mode, edge, &mut colors);
+        sample_prepared_canvas_pixels_into(
+            canvas,
+            &prepared_samples,
+            workspace.as_deref(),
+            &mut colors,
+            false,
+        );
         let [r, g, b] = colors
             .into_iter()
             .next()
-            .expect("single gaussian sample should produce one color");
+            .expect("single prepared sample should produce one color");
         return Rgba::new(r, g, b, 255);
     }
 
@@ -319,8 +411,23 @@ pub fn sample_zone(canvas: &Canvas, zone: &Output, layout: &SpatialLayout) -> Ve
     if validate_canvas_descriptor(layout.canvas_width, layout.canvas_height).is_err() {
         return Vec::new();
     }
-    prepare_zone(zone, layout, 0).map_or_else(
-        |_| Vec::new(),
-        |prepared| sample_prepared_zone(canvas, &prepared),
-    )
+    let Ok(prepared) = prepare_zone(zone, layout, 0) else {
+        return Vec::new();
+    };
+    let Ok(pool) = prepare_area_workspace_pool(
+        std::slice::from_ref(&prepared),
+        canvas.width(),
+        canvas.height(),
+        SpatialSamplingCapacity::UNBOUNDED,
+    ) else {
+        return Vec::new();
+    };
+    let workspace = match pool.as_ref() {
+        Some(pool) => match pool.try_checkout(canvas) {
+            Ok(workspace) => Some(workspace),
+            Err(_) => return Vec::new(),
+        },
+        None => None,
+    };
+    sample_prepared_zone(canvas, &prepared, workspace.as_deref())
 }

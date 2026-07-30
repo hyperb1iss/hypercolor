@@ -58,6 +58,59 @@ pub enum SpatialPlanError {
     /// The configured Gaussian kernel could not reserve its weight storage.
     #[error("gaussian kernel allocation failed for {sample_count} samples")]
     GaussianKernelAllocation { sample_count: usize },
+    /// The prepared frame-sampling workspace could not be admitted.
+    #[error(transparent)]
+    SamplingResources(#[from] SpatialSamplingError),
+}
+
+/// Failure to prepare frame-scoped spatial sampling resources.
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+pub enum SpatialSamplingError {
+    /// Summed-area geometry exceeds the host address space or accumulator range.
+    #[error("summed-area workspace for {width}x{height} is not addressable on this host")]
+    AreaWorkspaceUnaddressable { width: u32, height: u32 },
+    /// The summed-area table could not reserve its checked entry count.
+    #[error("summed-area workspace allocation failed for {width}x{height} ({entry_count} entries)")]
+    AreaWorkspaceAllocation {
+        width: u32,
+        height: u32,
+        entry_count: usize,
+    },
+    /// The checked workspace exceeds the caller's resource budget.
+    #[error(
+        "summed-area workspace for {width}x{height} requires {required_bytes} bytes, capacity is {capacity_bytes} bytes"
+    )]
+    AreaWorkspaceCapacityExceeded {
+        width: u32,
+        height: u32,
+        required_bytes: usize,
+        capacity_bytes: usize,
+    },
+}
+
+/// Resource budget for reusable frame-sampling workspaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpatialSamplingCapacity {
+    max_area_workspace_bytes: usize,
+}
+
+impl SpatialSamplingCapacity {
+    /// Admit every workspace representable by the host allocator.
+    pub const UNBOUNDED: Self = Self {
+        max_area_workspace_bytes: usize::MAX,
+    };
+
+    #[must_use]
+    pub const fn new(max_area_workspace_bytes: usize) -> Self {
+        Self {
+            max_area_workspace_bytes,
+        }
+    }
+
+    #[must_use]
+    pub const fn max_area_workspace_bytes(self) -> usize {
+        self.max_area_workspace_bytes
+    }
 }
 
 /// Return whether a layout zone represents a display viewport instead of LEDs.
@@ -88,6 +141,8 @@ pub struct SpatialEngine {
     layout: Arc<SpatialLayout>,
     /// Immutable per-zone sampling plans cached from the layout.
     prepared_zones: Arc<[PreparedZonePlan]>,
+    area_workspaces: Option<Arc<sampler::AreaWorkspacePool>>,
+    sampling_capacity: SpatialSamplingCapacity,
     plan_generation: u64,
 }
 
@@ -98,10 +153,13 @@ impl SpatialEngine {
     #[must_use]
     pub fn new(layout: SpatialLayout) -> Self {
         let mut layout = layout;
-        match prepare_layout(&mut layout, 1) {
-            Ok(prepared_zones) => Self {
+        let sampling_capacity = SpatialSamplingCapacity::UNBOUNDED;
+        match prepare_layout(&mut layout, 1, sampling_capacity) {
+            Ok(prepared) => Self {
                 layout: Arc::new(layout),
-                prepared_zones,
+                prepared_zones: prepared.zones,
+                area_workspaces: prepared.area_workspaces,
+                sampling_capacity,
                 plan_generation: 1,
             },
             Err(error) => {
@@ -109,6 +167,8 @@ impl SpatialEngine {
                 Self {
                     layout: Arc::new(layout),
                     prepared_zones: Arc::default(),
+                    area_workspaces: None,
+                    sampling_capacity,
                     plan_generation: 0,
                 }
             }
@@ -122,12 +182,27 @@ impl SpatialEngine {
     /// Returns [`SpatialPlanError`] when the canvas or a Gaussian kernel is
     /// not representable on this host, or when kernel storage cannot be
     /// reserved.
-    pub fn try_new(mut layout: SpatialLayout) -> Result<Self, SpatialPlanError> {
+    pub fn try_new(layout: SpatialLayout) -> Result<Self, SpatialPlanError> {
+        Self::try_new_with_sampling_capacity(layout, SpatialSamplingCapacity::UNBOUNDED)
+    }
+
+    /// Construct an engine with an explicit reusable-workspace budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpatialPlanError`] when the plan or its canonical workspace
+    /// cannot be admitted within `sampling_capacity`.
+    pub fn try_new_with_sampling_capacity(
+        mut layout: SpatialLayout,
+        sampling_capacity: SpatialSamplingCapacity,
+    ) -> Result<Self, SpatialPlanError> {
         let plan_generation = 1;
-        let prepared_zones = prepare_layout(&mut layout, plan_generation)?;
+        let prepared = prepare_layout(&mut layout, plan_generation, sampling_capacity)?;
         Ok(Self {
             layout: Arc::new(layout),
-            prepared_zones,
+            prepared_zones: prepared.zones,
+            area_workspaces: prepared.area_workspaces,
+            sampling_capacity,
             plan_generation,
         })
     }
@@ -139,21 +214,54 @@ impl SpatialEngine {
     /// sampling mode, and returns the results grouped by zone.
     #[must_use]
     pub fn sample(&self, canvas: &Canvas) -> Vec<ZoneColors> {
+        self.try_sample(canvas).unwrap_or_else(|error| {
+            tracing::warn!(%error, "Spatial sampling resources were unavailable");
+            Vec::new()
+        })
+    }
+
+    /// Sample the canvas after fallibly preparing any frame-scoped resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpatialSamplingError`] when an alternate canvas descriptor
+    /// cannot acquire a reusable summed-area workspace.
+    pub fn try_sample(&self, canvas: &Canvas) -> Result<Vec<ZoneColors>, SpatialSamplingError> {
         let mut zones = Vec::new();
-        self.sample_into(canvas, &mut zones);
-        zones
+        self.try_sample_into(canvas, &mut zones)?;
+        Ok(zones)
     }
 
     /// Sample the canvas into an existing output buffer, reusing allocations.
     pub fn sample_into(&self, canvas: &Canvas, zones: &mut Vec<ZoneColors>) {
-        let next_index = self.sample_append_into_at(canvas, zones, 0);
+        if let Err(error) = self.try_sample_into(canvas, zones) {
+            tracing::warn!(%error, "Spatial sampling resources were unavailable");
+            zones.clear();
+        }
+    }
+
+    /// Sample into an existing output buffer with typed workspace failures.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpatialSamplingError`] before changing `zones` when a
+    /// summed-area workspace cannot be acquired.
+    pub fn try_sample_into(
+        &self,
+        canvas: &Canvas,
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<(), SpatialSamplingError> {
+        let next_index = self.try_sample_append_into_at(canvas, zones, 0)?;
         zones.truncate(next_index);
+        Ok(())
     }
 
     /// Append sampled zones to an existing output buffer without allocating a temporary vector.
     pub fn append_sample_into(&self, canvas: &Canvas, zones: &mut Vec<ZoneColors>) {
         let start_index = zones.len();
-        let _ = self.sample_append_into_at(canvas, zones, start_index);
+        if let Err(error) = self.try_sample_append_into_at(canvas, zones, start_index) {
+            tracing::warn!(%error, "Spatial sampling resources were unavailable");
+        }
     }
 
     /// Sample the canvas into `zones` starting at `start_index`, reusing existing entries when possible.
@@ -165,6 +273,30 @@ impl SpatialEngine {
         zones: &mut Vec<ZoneColors>,
         start_index: usize,
     ) -> usize {
+        self.try_sample_append_into_at(canvas, zones, start_index)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "Spatial sampling resources were unavailable");
+                start_index
+            })
+    }
+
+    /// Sample a range with typed workspace failures.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpatialSamplingError`] before changing `zones` when a
+    /// summed-area workspace cannot be acquired.
+    pub(crate) fn try_sample_append_into_at(
+        &self,
+        canvas: &Canvas,
+        zones: &mut Vec<ZoneColors>,
+        start_index: usize,
+    ) -> Result<usize, SpatialSamplingError> {
+        let area_workspace = self
+            .area_workspaces
+            .as_ref()
+            .map(|pool| pool.try_checkout(canvas))
+            .transpose()?;
         let next_index = start_index.saturating_add(self.prepared_zones.len());
         zones.reserve(next_index.saturating_sub(zones.len()));
 
@@ -181,19 +313,45 @@ impl SpatialEngine {
             if zone.zone_id != prepared_zone.zone_id {
                 zone.zone_id.clone_from(&prepared_zone.zone_id);
             }
-            sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut zone.colors);
+            sampler::sample_prepared_zone_into(
+                canvas,
+                prepared_zone,
+                &mut zone.colors,
+                area_workspace.as_deref(),
+            );
         }
 
         for prepared_zone in &self.prepared_zones[reusable_count..] {
             let mut colors = Vec::with_capacity(prepared_zone.prepared_samples.len());
-            sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut colors);
+            sampler::sample_prepared_zone_into(
+                canvas,
+                prepared_zone,
+                &mut colors,
+                area_workspace.as_deref(),
+            );
             zones.push(ZoneColors {
                 zone_id: prepared_zone.zone_id.clone(),
                 colors,
             });
         }
 
-        next_index
+        Ok(next_index)
+    }
+
+    /// Pre-admit a reusable workspace for a future canvas descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpatialSamplingError`] without discarding an existing
+    /// workspace when the candidate descriptor cannot be allocated.
+    pub fn try_prepare_sampling_canvas(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<(), SpatialSamplingError> {
+        self.area_workspaces
+            .as_ref()
+            .map_or(Ok(()), |pool| pool.try_prepare(width, height))
     }
 
     /// Replace the active layout and recompute all LED positions.
@@ -217,9 +375,10 @@ impl SpatialEngine {
     /// and sampling plan remain active on failure.
     pub fn try_update_layout(&mut self, mut layout: SpatialLayout) -> Result<(), SpatialPlanError> {
         let plan_generation = self.plan_generation.saturating_add(1);
-        let prepared_zones = prepare_layout(&mut layout, plan_generation)?;
+        let prepared = prepare_layout(&mut layout, plan_generation, self.sampling_capacity)?;
         self.layout = Arc::new(layout);
-        self.prepared_zones = prepared_zones;
+        self.prepared_zones = prepared.zones;
+        self.area_workspaces = prepared.area_workspaces;
         self.plan_generation = plan_generation;
         Ok(())
     }
@@ -241,22 +400,38 @@ impl SpatialEngine {
     }
 }
 
+struct PreparedLayout {
+    zones: Arc<[PreparedZonePlan]>,
+    area_workspaces: Option<Arc<sampler::AreaWorkspacePool>>,
+}
+
 fn prepare_layout(
     layout: &mut SpatialLayout,
     plan_generation: u64,
-) -> Result<Arc<[PreparedZonePlan]>, SpatialPlanError> {
+    sampling_capacity: SpatialSamplingCapacity,
+) -> Result<PreparedLayout, SpatialPlanError> {
     validate_canvas_descriptor(layout.canvas_width, layout.canvas_height)?;
 
     for zone in &mut layout.zones {
         zone.led_positions = topology::generate_positions(&zone.topology);
     }
-    layout
+    let zones: Arc<[PreparedZonePlan]> = layout
         .zones
         .iter()
         .filter(|zone| is_led_sampled_zone(zone))
         .map(|zone| sampler::prepare_zone(zone, layout, plan_generation))
-        .collect::<Result<Vec<_>, _>>()
-        .map(Into::into)
+        .collect::<Result<Vec<_>, _>>()?
+        .into();
+    let area_workspaces = sampler::prepare_area_workspace_pool(
+        &zones,
+        layout.canvas_width,
+        layout.canvas_height,
+        sampling_capacity,
+    )?;
+    Ok(PreparedLayout {
+        zones,
+        area_workspaces,
+    })
 }
 
 fn validate_canvas_descriptor(width: u32, height: u32) -> Result<usize, SpatialPlanError> {

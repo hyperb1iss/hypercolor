@@ -636,7 +636,8 @@ fn area_average_clamps_invalid_radii_to_point_sampling() {
         let PreparedZoneSamples::Area(samples) = &plan[0].prepared_samples else {
             panic!("expected prepared area samples");
         };
-        assert_eq!(samples[0].radius, 0);
+        assert_eq!(samples[0].radius_x, 0);
+        assert_eq!(samples[0].radius_y, 0);
         assert_eq!(engine.sample(&prepared_canvas)[0].colors, expected_prepared);
         assert_eq!(engine.sample(&fallback_canvas)[0].colors, expected_fallback);
     }
@@ -673,6 +674,29 @@ fn gaussian_area_samples_weighted_kernel() {
         color[2] > 150,
         "gaussian kernel should retain center blue pixel, got {color:?}"
     );
+}
+
+#[test]
+fn gaussian_sigma_at_or_below_epsilon_prepares_point_samples() {
+    for sigma in [0.0, f32::EPSILON, -1.0, f32::NAN] {
+        let zone = custom_zone(
+            "gaussian",
+            LedTopology::Point,
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+            Some(SamplingMode::GaussianArea { sigma, radius: 7 }),
+        );
+        let engine = SpatialEngine::try_new(test_layout(vec![zone], 3, 1))
+            .expect("degenerate gaussian must prepare as a point sample");
+        let plan = engine.sampling_plan();
+        let PreparedZoneSamples::Gaussian(samples) = &plan[0].prepared_samples else {
+            panic!("expected gaussian samples");
+        };
+
+        assert_eq!(samples.samples[0].radius, 0);
+        assert_eq!(samples.weights, [u16::MAX]);
+        assert_eq!(samples.weight_sum, u64::from(u16::MAX));
+    }
 }
 
 #[test]
@@ -890,19 +914,9 @@ fn spatial_plan_preserves_offsets_beyond_four_gibibytes() {
 
 #[test]
 #[cfg(target_pointer_width = "64")]
-fn area_and_gaussian_plans_preserve_unsigned_dimension_boundaries() {
+fn gaussian_plans_preserve_unsigned_dimension_boundaries() {
     let signed_max = u32::try_from(i32::MAX).expect("i32 maximum fits u32");
     for width in [signed_max, signed_max + 1, u32::MAX] {
-        let area = custom_zone(
-            "area",
-            LedTopology::Point,
-            NormalizedPosition::new(1.0, 0.5),
-            NormalizedPosition::new(0.0, 0.0),
-            Some(SamplingMode::AreaAverage {
-                radius_x: 1.0,
-                radius_y: 1.0,
-            }),
-        );
         let gaussian = custom_zone(
             "gaussian",
             LedTopology::Point,
@@ -913,20 +927,11 @@ fn area_and_gaussian_plans_preserve_unsigned_dimension_boundaries() {
                 radius: 1,
             }),
         );
-        let engine = SpatialEngine::try_new(test_layout(vec![area, gaussian], width, 1))
+        let engine = SpatialEngine::try_new(test_layout(vec![gaussian], width, 1))
             .expect("single-row boundary descriptor is addressable on 64-bit hosts");
         let plan = engine.sampling_plan();
 
-        let PreparedZoneSamples::Area(area_samples) = &plan[0].prepared_samples else {
-            panic!("expected area samples");
-        };
-        assert_eq!(area_samples[0].canvas_width, width);
-        assert_eq!(area_samples[0].canvas_height, 1);
-        assert_eq!(area_samples[0].center_x, width - 1);
-        assert_eq!(area_samples[0].center_y, 0);
-        assert_eq!(area_samples[0].radius, 1);
-
-        let PreparedZoneSamples::Gaussian(gaussian_samples) = &plan[1].prepared_samples else {
+        let PreparedZoneSamples::Gaussian(gaussian_samples) = &plan[0].prepared_samples else {
             panic!("expected gaussian samples");
         };
         assert_eq!(gaussian_samples.samples[0].canvas_width, width);
@@ -990,7 +995,8 @@ fn area_radius_preserves_values_beyond_the_signed_coordinate_range() {
     let PreparedZoneSamples::Area(samples) = &plan[0].prepared_samples else {
         panic!("expected area samples");
     };
-    assert_eq!(samples[0].radius, 2_147_483_648);
+    assert_eq!(samples[0].radius_x, 2_147_483_648);
+    assert_eq!(samples[0].radius_y, 2_147_483_648);
 }
 
 #[test]
