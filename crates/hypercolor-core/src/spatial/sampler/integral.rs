@@ -1,5 +1,7 @@
 use std::ops::Deref;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+#[cfg(feature = "spatial-workspace-test-hooks")]
+use std::time::Duration;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
 
@@ -11,6 +13,8 @@ pub(crate) struct AreaWorkspacePool {
     state: Mutex<AreaWorkspacePoolState>,
     allocation_ready: Condvar,
     capacity: SpatialSamplingCapacity,
+    #[cfg(feature = "spatial-workspace-test-hooks")]
+    test_hook: Mutex<Option<Arc<SpatialWorkspaceAllocationTestHook>>>,
 }
 
 #[derive(Debug)]
@@ -28,6 +32,111 @@ struct AreaWorkspacePoolState {
 struct WorkspaceDescriptor {
     width: u32,
     height: u32,
+}
+
+#[cfg(feature = "spatial-workspace-test-hooks")]
+#[derive(Debug)]
+pub struct SpatialWorkspaceAllocationTestHook {
+    state: Mutex<SpatialWorkspaceAllocationTestState>,
+    changed: Condvar,
+}
+
+#[cfg(feature = "spatial-workspace-test-hooks")]
+#[derive(Debug)]
+struct SpatialWorkspaceAllocationTestState {
+    attempts: usize,
+    waiters: usize,
+    release_first: bool,
+    fail_first: bool,
+}
+
+#[cfg(feature = "spatial-workspace-test-hooks")]
+impl SpatialWorkspaceAllocationTestHook {
+    /// Create a hook that gates the first post-reservation allocation attempt.
+    #[must_use]
+    pub fn new(fail_first: bool) -> Self {
+        Self {
+            state: Mutex::new(SpatialWorkspaceAllocationTestState {
+                attempts: 0,
+                waiters: 0,
+                release_first: false,
+                fail_first,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    /// Wait until the first allocation has reserved capacity and reached the gate.
+    #[must_use]
+    pub fn wait_for_first_reservation(&self, timeout: Duration) -> bool {
+        self.wait_for(timeout, |state| state.attempts >= 1)
+    }
+
+    /// Wait until at least `count` peers are waiting on the in-flight descriptor.
+    #[must_use]
+    pub fn wait_for_waiters(&self, count: usize, timeout: Duration) -> bool {
+        self.wait_for(timeout, |state| state.waiters >= count)
+    }
+
+    /// Release the first allocation attempt from its deterministic gate.
+    pub fn release_first_allocation(&self) {
+        let mut state = self.lock_state();
+        state.release_first = true;
+        drop(state);
+        self.changed.notify_all();
+    }
+
+    /// Return the number of allocation attempts observed after reservation.
+    #[must_use]
+    pub fn allocation_attempts(&self) -> usize {
+        self.lock_state().attempts
+    }
+
+    /// Return the number of descriptor waits observed by the pool.
+    #[must_use]
+    pub fn waiter_count(&self) -> usize {
+        self.lock_state().waiters
+    }
+
+    fn before_allocation(&self) -> bool {
+        let mut state = self.lock_state();
+        state.attempts += 1;
+        let first = state.attempts == 1;
+        self.changed.notify_all();
+        while first && !state.release_first {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        first && state.fail_first
+    }
+
+    fn record_waiter(&self) {
+        let mut state = self.lock_state();
+        state.waiters += 1;
+        drop(state);
+        self.changed.notify_all();
+    }
+
+    fn wait_for(
+        &self,
+        timeout: Duration,
+        predicate: impl Fn(&SpatialWorkspaceAllocationTestState) -> bool,
+    ) -> bool {
+        let state = self.lock_state();
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| !predicate(state))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        predicate(&state)
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, SpatialWorkspaceAllocationTestState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl AreaWorkspacePool {
@@ -70,6 +179,8 @@ impl AreaWorkspacePool {
             }),
             allocation_ready: Condvar::new(),
             capacity,
+            #[cfg(feature = "spatial-workspace-test-hooks")]
+            test_hook: Mutex::new(None),
         }))
     }
 
@@ -102,18 +213,20 @@ impl AreaWorkspacePool {
                 drop(self.wait_for_allocation(state));
                 continue;
             }
-            reserve_allocation(&mut state, geometry, self.capacity)?;
+            let replacement = reserve_allocation(&mut state, geometry, self.capacity)?;
             drop(state);
 
-            let allocation = SummedAreaWorkspace::try_new(geometry);
+            let allocation =
+                allocate_workspace(replacement, geometry, self.inject_allocation_failure());
             let mut state = self.lock_state();
             finish_reservation(&mut state, descriptor, geometry);
             let mut workspace = match allocation {
                 Ok(workspace) => workspace,
-                Err(error) => {
+                Err(failure) => {
+                    restore_replacement(&mut state, failure.replacement);
                     drop(state);
                     self.allocation_ready.notify_all();
-                    return Err(error);
+                    return Err(failure.error);
                 }
             };
             state.resident_bytes += geometry.byte_len;
@@ -146,10 +259,11 @@ impl AreaWorkspacePool {
                 drop(self.wait_for_allocation(state));
                 continue;
             }
-            reserve_allocation(&mut state, geometry, self.capacity)?;
+            let replacement = reserve_allocation(&mut state, geometry, self.capacity)?;
             drop(state);
 
-            let allocation = SummedAreaWorkspace::try_new(geometry);
+            let allocation =
+                allocate_workspace(replacement, geometry, self.inject_allocation_failure());
             let mut state = self.lock_state();
             finish_reservation(&mut state, descriptor, geometry);
             match allocation {
@@ -161,18 +275,32 @@ impl AreaWorkspacePool {
                     self.allocation_ready.notify_all();
                     return Ok(());
                 }
-                Err(error) => {
+                Err(failure) => {
+                    restore_replacement(&mut state, failure.replacement);
                     drop(state);
                     self.allocation_ready.notify_all();
-                    return Err(error);
+                    return Err(failure.error);
                 }
             }
         }
     }
 
-    pub(crate) fn usage(&self) -> (usize, usize) {
+    pub(crate) fn usage(&self) -> (usize, usize, usize, usize) {
         let state = self.lock_state();
-        (state.resident_descriptors.len(), state.resident_bytes)
+        (
+            state.resident_descriptors.len(),
+            state.resident_bytes,
+            state.reserved,
+            state.reserved_bytes,
+        )
+    }
+
+    #[cfg(feature = "spatial-workspace-test-hooks")]
+    pub(crate) fn install_test_hook(&self, hook: Arc<SpatialWorkspaceAllocationTestHook>) {
+        *self
+            .test_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
 
     fn checkin(&self, workspace: SummedAreaWorkspace) {
@@ -185,6 +313,10 @@ impl AreaWorkspacePool {
         &self,
         state: MutexGuard<'a, AreaWorkspacePoolState>,
     ) -> MutexGuard<'a, AreaWorkspacePoolState> {
+        #[cfg(feature = "spatial-workspace-test-hooks")]
+        if let Some(hook) = self.test_hook() {
+            hook.record_waiter();
+        }
         self.allocation_ready
             .wait(state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -195,25 +327,44 @@ impl AreaWorkspacePool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    fn inject_allocation_failure(&self) -> bool {
+        #[cfg(feature = "spatial-workspace-test-hooks")]
+        if let Some(hook) = self.test_hook() {
+            return hook.before_allocation();
+        }
+        false
+    }
+
+    #[cfg(feature = "spatial-workspace-test-hooks")]
+    fn test_hook(&self) -> Option<Arc<SpatialWorkspaceAllocationTestHook>> {
+        self.test_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 fn reserve_allocation(
     state: &mut AreaWorkspacePoolState,
     geometry: WorkspaceGeometry,
     capacity: SpatialSamplingCapacity,
-) -> Result<(), SpatialSamplingError> {
+) -> Result<Option<EvictedWorkspace>, SpatialSamplingError> {
+    let replacement_geometry = state.available.last().map(SummedAreaWorkspace::geometry);
+    let replaced_bytes = replacement_geometry.map_or(0, |candidate| candidate.byte_len);
     validate_aggregate_capacity(
-        state.resident_bytes,
+        state.resident_bytes - replaced_bytes,
         state.reserved_bytes,
         geometry,
         capacity,
     )?;
+    let adds_workspace = usize::from(replacement_geometry.is_none());
     let required_slots = state
         .available
         .len()
         .saturating_add(state.leased)
         .saturating_add(state.reserved)
-        .saturating_add(1);
+        .saturating_add(adds_workspace);
     if state.available.capacity() < required_slots {
         state
             .available
@@ -224,7 +375,7 @@ fn reserve_allocation(
         .resident_descriptors
         .len()
         .saturating_add(state.reserved)
-        .saturating_add(1);
+        .saturating_add(adds_workspace);
     if state.resident_descriptors.capacity() < required_descriptors {
         state
             .resident_descriptors
@@ -235,10 +386,73 @@ fn reserve_allocation(
         .allocating_descriptors
         .try_reserve_exact(1)
         .map_err(|_| allocation_error(geometry))?;
+
+    let replacement = state.available.pop().map(|workspace| {
+        let old_geometry = workspace.geometry();
+        let descriptor_index = state
+            .resident_descriptors
+            .iter()
+            .position(|candidate| *candidate == old_geometry.descriptor())
+            .expect("idle workspace must retain a resident descriptor");
+        state.resident_descriptors.swap_remove(descriptor_index);
+        state.resident_bytes -= old_geometry.byte_len;
+        EvictedWorkspace {
+            workspace,
+            geometry: old_geometry,
+        }
+    });
     state.reserved += 1;
     state.reserved_bytes += geometry.byte_len;
     state.allocating_descriptors.push(geometry.descriptor());
-    Ok(())
+    Ok(replacement)
+}
+
+#[derive(Debug)]
+struct EvictedWorkspace {
+    workspace: SummedAreaWorkspace,
+    geometry: WorkspaceGeometry,
+}
+
+#[derive(Debug)]
+struct WorkspaceAllocationFailure {
+    error: SpatialSamplingError,
+    replacement: Option<EvictedWorkspace>,
+}
+
+fn allocate_workspace(
+    mut replacement: Option<EvictedWorkspace>,
+    geometry: WorkspaceGeometry,
+    inject_failure: bool,
+) -> Result<SummedAreaWorkspace, WorkspaceAllocationFailure> {
+    if inject_failure {
+        return Err(WorkspaceAllocationFailure {
+            error: allocation_error(geometry),
+            replacement,
+        });
+    }
+    if let Some(candidate) = replacement.as_mut() {
+        if let Err(error) = candidate.workspace.try_resize(geometry) {
+            return Err(WorkspaceAllocationFailure { error, replacement });
+        }
+        return Ok(replacement
+            .take()
+            .expect("replacement must remain present after resize")
+            .workspace);
+    }
+    SummedAreaWorkspace::try_new(geometry).map_err(|error| WorkspaceAllocationFailure {
+        error,
+        replacement: None,
+    })
+}
+
+fn restore_replacement(state: &mut AreaWorkspacePoolState, replacement: Option<EvictedWorkspace>) {
+    if let Some(replacement) = replacement {
+        state.resident_bytes += replacement.geometry.byte_len;
+        state
+            .resident_descriptors
+            .push(replacement.geometry.descriptor());
+        state.available.push(replacement.workspace);
+    }
 }
 
 fn finish_reservation(
@@ -334,12 +548,38 @@ impl SummedAreaWorkspace {
         })
     }
 
+    fn try_resize(&mut self, geometry: WorkspaceGeometry) -> Result<(), SpatialSamplingError> {
+        let additional = geometry.entry_count.saturating_sub(self.sums.len());
+        self.sums
+            .try_reserve_exact(additional)
+            .map_err(|_| allocation_error(geometry))?;
+        self.sums.resize(geometry.entry_count, [0; 3]);
+        self.width = geometry.width;
+        self.height = geometry.height;
+        self.stride = geometry.stride;
+        Ok(())
+    }
+
     fn matches(&self, width: u32, height: u32) -> bool {
         self.width == width && self.height == height
     }
 
     fn entry_count(&self) -> usize {
         self.sums.len()
+    }
+
+    fn geometry(&self) -> WorkspaceGeometry {
+        WorkspaceGeometry {
+            stride: self.stride,
+            entry_count: self.sums.len(),
+            width: self.width,
+            height: self.height,
+            byte_len: self
+                .sums
+                .len()
+                .checked_mul(std::mem::size_of::<[u64; 3]>())
+                .expect("admitted workspace byte length must remain addressable"),
+        }
     }
 
     fn rebuild(&mut self, canvas: &Canvas) {

@@ -14,6 +14,7 @@ workspace = true
 [features]
 default = []
 allocation-contract-tests = []
+spatial-workspace-test-hooks = []
 windows-capture-fixtures = []
 media-lottie = ["dep:rlottie"]
 media-video = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]

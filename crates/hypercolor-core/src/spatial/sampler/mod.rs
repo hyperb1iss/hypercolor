@@ -24,6 +24,8 @@ use super::plan::{PreparedZonePlan, PreparedZoneSamples};
 use super::{
     SpatialPlanError, SpatialSamplingCapacity, SpatialSamplingError, validate_canvas_descriptor,
 };
+#[cfg(feature = "spatial-workspace-test-hooks")]
+pub use integral::SpatialWorkspaceAllocationTestHook;
 pub(crate) use integral::{AreaWorkspacePool, SummedAreaWorkspace};
 use resample::{
     prepare_area_sample_for_position, prepare_bilinear_sample_for_position,

@@ -29,6 +29,8 @@ pub use plan::{
     PreparedAreaSample, PreparedBilinearSample, PreparedNearestSample, PreparedZonePlan,
     PreparedZoneSamples,
 };
+#[cfg(feature = "spatial-workspace-test-hooks")]
+pub use sampler::SpatialWorkspaceAllocationTestHook;
 pub use sampler::{sample_led, sample_zone};
 pub use topology::generate_positions;
 pub use viewport::sample_viewport;
@@ -123,6 +125,10 @@ pub struct SpatialSamplingWorkspaceUsage {
     pub retained_workspaces: usize,
     /// Bytes occupied by all retained summed-area tables.
     pub retained_bytes: usize,
+    /// Number of workspace allocations admitted but not yet completed.
+    pub reserved_workspaces: usize,
+    /// Bytes reserved for admitted workspace allocations.
+    pub reserved_bytes: usize,
 }
 
 /// Return whether a layout zone represents a display viewport instead of LEDs.
@@ -369,14 +375,29 @@ impl SpatialEngine {
     /// Report the retained summed-area workspace count and byte usage.
     #[must_use]
     pub fn sampling_workspace_usage(&self) -> SpatialSamplingWorkspaceUsage {
-        let (retained_workspaces, retained_bytes) = self
+        let (retained_workspaces, retained_bytes, reserved_workspaces, reserved_bytes) = self
             .area_workspaces
             .as_ref()
-            .map_or((0, 0), |pool| pool.usage());
+            .map_or((0, 0, 0, 0), |pool| pool.usage());
         SpatialSamplingWorkspaceUsage {
             retained_workspaces,
             retained_bytes,
+            reserved_workspaces,
+            reserved_bytes,
         }
+    }
+
+    /// Install a deterministic workspace-allocation hook for contract tests.
+    #[cfg(feature = "spatial-workspace-test-hooks")]
+    pub fn install_sampling_workspace_allocation_test_hook(
+        &self,
+        hook: Arc<SpatialWorkspaceAllocationTestHook>,
+    ) -> bool {
+        let Some(pool) = &self.area_workspaces else {
+            return false;
+        };
+        pool.install_test_hook(hook);
+        true
     }
 
     /// Replace the active layout and recompute all LED positions.
