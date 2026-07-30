@@ -4767,6 +4767,7 @@ dependencies = [
  "hypercolor-driver-builtin",
  "hypercolor-leptos-ext",
  "hypercolor-network",
+ "hypercolor-platform-fs",
  "hypercolor-types",
  "hypercolor-windows-capture",
  "hypercolor-windows-gpu-interop",
@@ -5055,6 +5056,14 @@ version = "0.2.1"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "hypercolor-platform-fs"
+version = "0.2.1"
+dependencies = [
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

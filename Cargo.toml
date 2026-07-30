@@ -139,6 +139,7 @@ windows-native-keyring-store = "1.0.0"
 hypercolor-types = { path = "crates/hypercolor-types" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
+hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
 hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
 hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture" }

@@ -518,12 +518,13 @@ fn try_write(
         });
     }
 
-    temporary
-        .persist(&destination.path)
-        .map_err(|error| PersistenceError::Replace {
+    let temporary_path = temporary.into_temp_path();
+    hypercolor_platform_fs::replace_file(&temporary_path, &destination.path).map_err(|source| {
+        PersistenceError::Replace {
             path: destination.path.clone(),
-            source: error.error,
-        })?;
+            source,
+        }
+    })?;
 
     #[cfg(unix)]
     sync_parent_directory(&destination.parent)?;
@@ -534,8 +535,8 @@ fn try_write(
 /// Write a complete file beside its destination and atomically replace it.
 ///
 /// The temporary file lives in the destination directory so persistence never
-/// crosses filesystems. `tempfile` maps replacement to `MoveFileExW` with
-/// `MOVEFILE_REPLACE_EXISTING` on Windows and `rename` on Unix.
+/// crosses filesystems. Windows replacement requests both replace-existing and
+/// write-through semantics; Unix replacement is followed by a parent fsync.
 ///
 /// # Errors
 ///
