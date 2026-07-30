@@ -50,8 +50,8 @@ pub(super) fn prepare_bilinear_sample_for_position(
     let fx = clamped.x * (canvas_width - 1) as f32;
     let fy = clamped.y * (canvas_height - 1) as f32;
 
-    let x0 = fx.floor() as u32;
-    let y0 = fy.floor() as u32;
+    let x0 = (fx.floor() as u32).min(canvas_width - 1);
+    let y0 = (fy.floor() as u32).min(canvas_height - 1);
     let x1 = x0.saturating_add(1).min(canvas_width - 1);
     let y1 = y0.saturating_add(1).min(canvas_height - 1);
     let frac_x = (fx.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;

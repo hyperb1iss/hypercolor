@@ -938,6 +938,40 @@ fn area_and_gaussian_plans_preserve_unsigned_dimension_boundaries() {
 }
 
 #[test]
+#[cfg(target_pointer_width = "64")]
+fn nearest_and_bilinear_clamp_float_rounding_at_u32_max_width() {
+    let width = u32::MAX;
+    let expected = usize::try_from(u64::from(width - 1) * 4)
+        .expect("single-row offset is addressable on 64-bit hosts");
+    let nearest = custom_zone(
+        "nearest",
+        LedTopology::Point,
+        NormalizedPosition::new(1.0, 0.5),
+        NormalizedPosition::new(0.0, 0.0),
+        Some(SamplingMode::Nearest),
+    );
+    let bilinear = custom_zone(
+        "bilinear",
+        LedTopology::Point,
+        NormalizedPosition::new(1.0, 0.5),
+        NormalizedPosition::new(0.0, 0.0),
+        Some(SamplingMode::Bilinear),
+    );
+    let engine = SpatialEngine::try_new(test_layout(vec![nearest, bilinear], width, 1))
+        .expect("single-row u32-max descriptor is addressable on 64-bit hosts");
+    let plan = engine.sampling_plan();
+
+    let PreparedZoneSamples::Nearest(samples) = &plan[0].prepared_samples else {
+        panic!("expected nearest samples");
+    };
+    assert_eq!(samples[0].offset, expected);
+    let PreparedZoneSamples::Bilinear(samples) = &plan[1].prepared_samples else {
+        panic!("expected bilinear samples");
+    };
+    assert_eq!(samples[0].offsets, [expected; 4]);
+}
+
+#[test]
 fn area_radius_preserves_values_beyond_the_signed_coordinate_range() {
     let radius = 2_147_483_648.0_f32;
     let zone = custom_zone(
