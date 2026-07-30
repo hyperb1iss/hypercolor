@@ -290,6 +290,34 @@ fn exact_resources(
     )
 }
 
+fn exact_resources_with_worker_overhead(
+    ticket: &ScreenWorkerPreparationTicket,
+    bytes: u64,
+) -> Result<BoundExactResources, ScreenPlanError> {
+    let profile_scope = required_scope(ticket, ScreenResourceKind::ProcessingProfileState);
+    bind_resources(
+        ticket,
+        ticket
+            .required_minimums()
+            .iter()
+            .map(|expected| {
+                ScreenExactResource::try_new(
+                    Arc::clone(expected.name()),
+                    expected.resource(),
+                    expected.minimum_bytes(),
+                )
+                .expect("ticket resource names are valid")
+            })
+            .chain([ScreenExactResource::try_new_scoped(
+                "worker-staging-overhead",
+                profile_scope,
+                ScreenResourceKind::WorkerAdditional,
+                bytes,
+            )
+            .expect("extra resource name is valid")]),
+    )
+}
+
 fn bind_resources(
     ticket: &ScreenWorkerPreparationTicket,
     resources: impl IntoIterator<Item = ScreenExactResource>,
@@ -1892,8 +1920,14 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
         ),
         &source,
     );
-    let mut builder = ScreenPlanBuilder::new();
+    let coordinator =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let mut builder = ScreenPlanBuilder::with_publication_slots_and_admission(
+        ScreenPublicationSlotPolicy::default(),
+        coordinator.clone(),
+    );
     commit_demands(&mut builder, [surface.clone()], None).expect("surface becomes active");
+    let active_reserved_bytes = coordinator.snapshot().reserved_bytes();
 
     let revision = next_demand_revision(&builder);
     let unchanged = builder
@@ -1923,17 +1957,18 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
         96
     );
     assert!(unchanged.required_sources().is_empty());
+    let _abort = unchanged.abort();
 
     let revision = next_demand_revision(&builder);
     let replacement = builder
         .prepare(
-            [zones],
+            [zones.clone()],
             None,
             revision,
             ScreenInputGraphGeneration::new(1),
-            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+            ScreenAdmissionCapacity::new(144, 276),
         )
-        .expect("replacement shares the physical reduction");
+        .expect("candidate steady state and transition high-water both fit");
     assert_eq!(replacement.admission().active().total_bytes(), 144);
     assert_eq!(replacement.admission().candidate().total_bytes(), 132);
     assert_eq!(replacement.admission().staged().total_bytes(), 132);
@@ -1952,6 +1987,53 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
             .staged()
             .publication_subscriber_slot_bytes(),
         24
+    );
+    let _abort = replacement.abort();
+    assert_eq!(
+        coordinator.snapshot().reserved_bytes(),
+        active_reserved_bytes
+    );
+
+    let revision = next_demand_revision(&builder);
+    assert!(matches!(
+        builder.prepare(
+            [zones.clone()],
+            None,
+            revision,
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(144, 275),
+        ),
+        Err(ScreenPlanError::ResourceExhausted {
+            resource: ScreenResourceKind::BackendCapacity,
+            requested: 276,
+            available: 275,
+            ..
+        })
+    ));
+    assert_eq!(
+        coordinator.snapshot().reserved_bytes(),
+        active_reserved_bytes
+    );
+
+    let revision = next_demand_revision(&builder);
+    assert!(matches!(
+        builder.prepare(
+            [zones],
+            None,
+            revision,
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(131, 276),
+        ),
+        Err(ScreenPlanError::ResourceExhausted {
+            resource: ScreenResourceKind::ByteBudget,
+            requested: 132,
+            available: 131,
+            ..
+        })
+    ));
+    assert_eq!(
+        coordinator.snapshot().reserved_bytes(),
+        active_reserved_bytes
     );
 }
 
@@ -2694,6 +2776,45 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
     let active_reserved_bytes = coordinator.snapshot().reserved_bytes();
     let active = builder.current().clone();
     let graph = ScreenInputGraphGeneration::new(9);
+
+    let revision = next_demand_revision(&builder);
+    let mut preparing = builder
+        .prepare(
+            [zones.clone()],
+            None,
+            revision,
+            graph,
+            ScreenAdmissionCapacity::new(147, 292),
+        )
+        .expect("modeled candidate fits the steady-state byte budget");
+    let ticket = preparing
+        .worker_ticket(&source_id("display-a"))
+        .expect("worker ticket is issued");
+    let token = exact_resources_with_worker_overhead(&ticket, 16)
+        .expect("worker resources bind to the ticket")
+        .acknowledge(&ticket)
+        .expect("required minimums and extra overhead are exhaustive");
+    preparing
+        .acknowledge(token)
+        .expect("bound worker token is accepted");
+    let failure = preparing
+        .arm(builder.current().generation(), revision, graph)
+        .expect_err("exact candidate steady state exceeds its byte budget");
+    assert!(matches!(
+        failure.error(),
+        ScreenPlanError::ResourceExhausted {
+            resource: ScreenResourceKind::ByteBudget,
+            requested: 148,
+            available: 147,
+            ..
+        }
+    ));
+    drop(failure.into_preparing().abort());
+    assert_eq!(
+        coordinator.snapshot().reserved_bytes(),
+        active_reserved_bytes
+    );
+
     let revision = next_demand_revision(&builder);
     let mut preparing = builder
         .prepare(
@@ -2701,35 +2822,14 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
             None,
             revision,
             graph,
-            ScreenAdmissionCapacity::new(291, 291),
+            ScreenAdmissionCapacity::new(148, 291),
         )
         .expect("planned overlap fits capacity");
     let ticket = preparing
         .worker_ticket(&source_id("display-a"))
         .expect("worker ticket is issued");
-    let profile_scope = required_scope(&ticket, ScreenResourceKind::ProcessingProfileState);
-    let ledger = ScreenExactResourceLedger::try_new(
-        ticket
-            .required_minimums()
-            .iter()
-            .map(|expected| {
-                ScreenExactResource::try_new(
-                    Arc::clone(expected.name()),
-                    expected.resource(),
-                    expected.minimum_bytes(),
-                )
-                .expect("ticket resource names are valid")
-            })
-            .chain([ScreenExactResource::try_new_scoped(
-                "worker-staging-overhead",
-                profile_scope,
-                ScreenResourceKind::WorkerAdditional,
-                16,
-            )
-            .expect("extra resource name is valid")]),
-    )
-    .expect("worker ledger with disjoint staging overhead is representable");
-    let bound = bind_ledger(&ticket, ledger).expect("worker resources bind to the ticket");
+    let bound = exact_resources_with_worker_overhead(&ticket, 16)
+        .expect("worker resources bind to the ticket");
     let worker_backing = bound
         .lifetimes
         .iter()
@@ -2748,7 +2848,7 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
     assert!(matches!(
         failure.error(),
         ScreenPlanError::ResourceExhausted {
-            resource: ScreenResourceKind::ByteBudget,
+            resource: ScreenResourceKind::BackendCapacity,
             requested: 292,
             available: 291,
             ..
@@ -2862,6 +2962,30 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
         .expect("surface candidate commits");
     reclaim_committed(committed);
     assert_eq!(builder.retained_exact_bytes(), 50);
+    let admitted = builder
+        .validate_capacity(ScreenAdmissionCapacity::new(194, 194))
+        .expect("current exact worker and publication footprint fits exactly");
+    assert_eq!(admitted.active().total_bytes(), 194);
+    assert_eq!(admitted.candidate().total_bytes(), 194);
+    assert_eq!(admitted.overlap().total_bytes(), 194);
+    assert!(matches!(
+        builder.validate_capacity(ScreenAdmissionCapacity::new(193, 194)),
+        Err(ScreenPlanError::ResourceExhausted {
+            resource: ScreenResourceKind::ByteBudget,
+            requested: 194,
+            available: 193,
+            ..
+        })
+    ));
+    assert!(matches!(
+        builder.validate_capacity(ScreenAdmissionCapacity::new(194, 193)),
+        Err(ScreenPlanError::ResourceExhausted {
+            resource: ScreenResourceKind::BackendCapacity,
+            requested: 194,
+            available: 193,
+            ..
+        })
+    ));
 
     let revision = next_demand_revision(&builder);
     let failure = builder
@@ -2870,13 +2994,13 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
             None,
             revision,
             graph,
-            ScreenAdmissionCapacity::new(325, 325),
+            ScreenAdmissionCapacity::new(u64::MAX, 325),
         )
         .expect_err("retained exact bytes plus staged zones exceed capacity");
     assert!(matches!(
         failure,
         ScreenPlanError::ResourceExhausted {
-            resource: ScreenResourceKind::ByteBudget,
+            resource: ScreenResourceKind::BackendCapacity,
             requested: 326,
             available: 325,
             ..
@@ -3046,6 +3170,27 @@ fn same_scope_worker_allocations_retire_independently_by_identity() {
     drop(retirement);
     assert_eq!(hub.pending_retired_bytes(), 7);
 
+    let admitted = builder
+        .validate_capacity(ScreenAdmissionCapacity::new(0, 7))
+        .expect("current empty plan fits while retirement uses transition capacity");
+    assert_eq!(admitted.candidate().total_bytes(), 0);
+    assert_eq!(admitted.overlap().total_bytes(), 7);
+    assert_eq!(admitted.active().pending_publication_retirement_bytes(), 7);
+    assert_eq!(hub.pending_retired_bytes(), 7);
+
+    let pressure_revision = next_demand_revision(&builder);
+    let preparing = builder
+        .prepare(
+            std::iter::empty(),
+            None,
+            pressure_revision,
+            graph,
+            ScreenAdmissionCapacity::new(0, 7),
+        )
+        .expect("pending retirement consumes only transition capacity");
+    let _abort = preparing.abort();
+    assert_eq!(hub.pending_retired_bytes(), 7);
+
     let pressure_revision = next_demand_revision(&builder);
     assert!(matches!(
         builder.prepare(
@@ -3056,6 +3201,7 @@ fn same_scope_worker_allocations_retire_independently_by_identity() {
             ScreenAdmissionCapacity::new(6, 6),
         ),
         Err(ScreenPlanError::RetirementPressure {
+            resource: ScreenResourceKind::BackendCapacity,
             requested: 7,
             available: 6,
             ..

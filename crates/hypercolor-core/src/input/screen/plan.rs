@@ -452,7 +452,7 @@ impl ScreenResourceLedger {
     }
 }
 
-/// Independent configured and backend capacity fences.
+/// Independent steady-state publication and transition high-water fences.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenAdmissionCapacity {
     byte_budget: u64,
@@ -469,13 +469,13 @@ impl ScreenAdmissionCapacity {
         }
     }
 
-    /// Configured process byte budget.
+    /// Candidate steady-state publication byte budget.
     #[must_use]
     pub const fn byte_budget(self) -> u64 {
         self.byte_budget
     }
 
-    /// Backend-reported byte capacity.
+    /// Backend transition capacity for active, staged, and retiring resources.
     #[must_use]
     pub const fn backend_capacity(self) -> u64 {
         self.backend_capacity
@@ -1579,34 +1579,22 @@ impl PreparingScreenPlan {
                 preparing: Box::new(self),
             });
         }
-        let exact_worker_bytes = match validate_exact_worker_ledgers(&self) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return Err(ScreenPlanArmFailure {
-                    error,
-                    preparing: Box::new(self),
-                });
-            }
-        };
+        let (exact_worker_bytes, candidate_retained_resources) =
+            match validate_exact_worker_ledgers(&self) {
+                Ok(exact) => exact,
+                Err(error) => {
+                    return Err(ScreenPlanArmFailure {
+                        error,
+                        preparing: Box::new(self),
+                    });
+                }
+            };
         let modeled_publication_bytes = self
             .admission
             .staged()
             .publication_retention_bytes()
             .checked_add(self.admission.staged().publication_subscriber_slot_bytes())
             .expect("staged admission ledger has a checked total");
-        let candidate_retained_resources = match candidate_retained_resources(
-            self.base_state.retained_resources(),
-            &self.candidate,
-            &self.prepared_tokens,
-        ) {
-            Ok(resources) => resources,
-            Err(error) => {
-                return Err(ScreenPlanArmFailure {
-                    error,
-                    preparing: Box::new(self),
-                });
-            }
-        };
         let (candidate_state, commit_activation) = match ScreenCommittedState::prepare(
             &self.base_state,
             Arc::clone(&self.candidate),
@@ -1941,6 +1929,57 @@ impl ScreenPlanBuilder {
             .retained_exact_bytes()
     }
 
+    /// Validate the committed publication footprint against new capacity fences.
+    ///
+    /// The current exact retained resources and publication slots must fit the
+    /// steady-state byte budget. Pending retirement is charged only to backend
+    /// transition capacity. This preflight does not mutate state or reserve
+    /// bytes from the shared admission coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed arithmetic, accounting, or capacity failures.
+    pub fn validate_capacity(
+        &self,
+        capacity: ScreenAdmissionCapacity,
+    ) -> Result<ScreenPlanAdmissionLedger, ScreenPlanError> {
+        let state = self.publication_hub.committed_state();
+        let mut admission = admit_candidate(
+            state.plan(),
+            state.plan(),
+            state.retained_exact_bytes(),
+            self.publication_hub.pending_retired_bytes(),
+            state.slot_policy(),
+            capacity,
+        )?;
+        let owner = admission_owner(state.plan(), state.plan());
+        let publication_bytes = checked_optional_sum(
+            owner,
+            ScreenResourceKind::PublicationSubscriberSlots,
+            admission.candidate.publication_retention_bytes,
+            admission.candidate.publication_subscriber_slot_bytes,
+        )?;
+        let exact_steady_bytes = checked_optional_sum(
+            owner,
+            ScreenResourceKind::WorkerExactLedger,
+            state.retained_exact_bytes(),
+            publication_bytes,
+        )?;
+        if exact_steady_bytes > capacity.byte_budget {
+            let owner = owner.expect("non-zero committed bytes require a descriptor");
+            return Err(ScreenPlanError::ResourceExhausted {
+                descriptor: Arc::new(owner.clone()),
+                resource: ScreenResourceKind::ByteBudget,
+                requested: exact_steady_bytes,
+                available: capacity.byte_budget,
+            });
+        }
+        admission.candidate = admission.active;
+        admission.candidate.pending_publication_retirement_bytes = 0;
+        admission.candidate.total_bytes = exact_steady_bytes;
+        Ok(admission)
+    }
+
     /// Publication authority committed by this coordinator.
     #[must_use]
     pub fn publication_hub(&self) -> Arc<ScreenPublicationHub> {
@@ -1950,9 +1989,10 @@ impl ScreenPlanBuilder {
     /// Prepare and admit a candidate without mutating the active plan.
     ///
     /// Exact descriptors group at maximum cadence, logical branches group by
-    /// their physical reduction key, and old-plus-staged resources are checked
-    /// against explicit byte and backend capacity. No dimensional, cadence, or
-    /// consumer-count cap participates in admission.
+    /// their physical reduction key, the candidate publication footprint is
+    /// checked against its steady byte budget, and old-plus-staged resources
+    /// are checked against backend transition capacity. No dimensional,
+    /// cadence, or consumer-count cap participates in admission.
     ///
     /// # Errors
     ///
@@ -2419,19 +2459,23 @@ pub enum ScreenPlanError {
     },
 }
 
-fn validate_exact_worker_ledgers(preparing: &PreparingScreenPlan) -> Result<u64, ScreenPlanError> {
-    if preparing.prepared_tokens.is_empty() {
-        return Ok(0);
-    }
+fn validate_exact_worker_ledgers(
+    preparing: &PreparingScreenPlan,
+) -> Result<(u64, ScreenRetainedResourceLedger), ScreenPlanError> {
+    let candidate_retained_resources = candidate_retained_resources(
+        preparing.base_state.retained_resources(),
+        &preparing.candidate,
+        &preparing.prepared_tokens,
+    )?;
     let owner = preparing
         .candidate
         .branches()
         .first()
         .or_else(|| preparing.base_state.plan().branches().first())
-        .map(ScreenBranchDemand::descriptor)
-        .expect("worker tokens require an active or candidate descriptor");
+        .map(ScreenBranchDemand::descriptor);
     let mut exact_worker_bytes = 0_u64;
     for token in &preparing.prepared_tokens {
+        let owner = owner.expect("worker tokens require an active or candidate descriptor");
         exact_worker_bytes = checked_sum(
             owner,
             ScreenResourceKind::WorkerExactLedger,
@@ -2439,33 +2483,50 @@ fn validate_exact_worker_ledgers(preparing: &PreparingScreenPlan) -> Result<u64,
             token.exact_ledger.total_bytes,
         )?;
     }
-    let staged_publication_bytes = checked_sum(
+    let candidate_publication_bytes = checked_optional_sum(
+        owner,
+        ScreenResourceKind::PublicationSubscriberSlots,
+        preparing.admission.candidate.publication_retention_bytes,
+        preparing
+            .admission
+            .candidate
+            .publication_subscriber_slot_bytes,
+    )?;
+    let exact_candidate_bytes = checked_optional_sum(
+        owner,
+        ScreenResourceKind::WorkerExactLedger,
+        candidate_retained_resources.total_bytes,
+        candidate_publication_bytes,
+    )?;
+    if exact_candidate_bytes > preparing.capacity.byte_budget {
+        let owner = owner.expect("non-zero candidate bytes require a descriptor");
+        return Err(ScreenPlanError::ResourceExhausted {
+            descriptor: Arc::new(owner.clone()),
+            resource: ScreenResourceKind::ByteBudget,
+            requested: exact_candidate_bytes,
+            available: preparing.capacity.byte_budget,
+        });
+    }
+    let staged_publication_bytes = checked_optional_sum(
         owner,
         ScreenResourceKind::PublicationSubscriberSlots,
         preparing.admission.staged.publication_retention_bytes,
         preparing.admission.staged.publication_subscriber_slot_bytes,
     )?;
-    let exact_staged_bytes = checked_sum(
+    let exact_staged_bytes = checked_optional_sum(
         owner,
         ScreenResourceKind::WorkerExactLedger,
         exact_worker_bytes,
         staged_publication_bytes,
     )?;
-    let exact_overlap = checked_sum(
+    let exact_overlap = checked_optional_sum(
         owner,
         ScreenResourceKind::OverlapTotal,
         preparing.admission.active.total_bytes,
         exact_staged_bytes,
     )?;
-    if exact_overlap > preparing.capacity.byte_budget {
-        return Err(ScreenPlanError::ResourceExhausted {
-            descriptor: Arc::new(owner.clone()),
-            resource: ScreenResourceKind::ByteBudget,
-            requested: exact_overlap,
-            available: preparing.capacity.byte_budget,
-        });
-    }
     if exact_overlap > preparing.capacity.backend_capacity {
+        let owner = owner.expect("non-zero overlap bytes require a descriptor");
         return Err(ScreenPlanError::ResourceExhausted {
             descriptor: Arc::new(owner.clone()),
             resource: ScreenResourceKind::BackendCapacity,
@@ -2473,7 +2534,7 @@ fn validate_exact_worker_ledgers(preparing: &PreparingScreenPlan) -> Result<u64,
             available: preparing.capacity.backend_capacity,
         });
     }
-    Ok(exact_worker_bytes)
+    Ok((exact_worker_bytes, candidate_retained_resources))
 }
 
 fn validate_resource_coverage(
@@ -3108,20 +3169,12 @@ fn admit_candidate(
     slot_policy: ScreenPublicationSlotPolicy,
     capacity: ScreenAdmissionCapacity,
 ) -> Result<ScreenPlanAdmissionLedger, ScreenPlanError> {
-    for (available, resource) in [
-        (capacity.byte_budget, ScreenResourceKind::ByteBudget),
-        (
-            capacity.backend_capacity,
-            ScreenResourceKind::BackendCapacity,
-        ),
-    ] {
-        if pending_retirement_bytes > available {
-            return Err(ScreenPlanError::RetirementPressure {
-                resource,
-                requested: pending_retirement_bytes,
-                available,
-            });
-        }
+    if pending_retirement_bytes > capacity.backend_capacity {
+        return Err(ScreenPlanError::RetirementPressure {
+            resource: ScreenResourceKind::BackendCapacity,
+            requested: pending_retirement_bytes,
+            available: capacity.backend_capacity,
+        });
     }
     let mut active_ledger = full_plan_ledger(active)?;
     if active_exact_bytes < active_ledger.total_bytes {
@@ -3151,12 +3204,12 @@ fn admit_candidate(
     let owner = admission_owner(active, candidate);
     let overlap = merge_ledgers(active_ledger, staged_ledger, owner)?;
 
-    if overlap.total_bytes > capacity.byte_budget {
+    if candidate_ledger.total_bytes > capacity.byte_budget {
         let owner = owner.expect("non-zero admission bytes require a descriptor");
         return Err(ScreenPlanError::ResourceExhausted {
             descriptor: Arc::new(owner.clone()),
             resource: ScreenResourceKind::ByteBudget,
-            requested: overlap.total_bytes,
+            requested: candidate_ledger.total_bytes,
             available: capacity.byte_budget,
         });
     }
