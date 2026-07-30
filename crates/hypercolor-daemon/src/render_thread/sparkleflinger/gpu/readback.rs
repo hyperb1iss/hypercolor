@@ -28,6 +28,7 @@ pub(super) struct CachedReadbackTransform {
     pub(super) scale_y_bits: u32,
     pub(super) rotation_bits: u32,
     pub(super) fit: hypercolor_types::viewport::FitMode,
+    pub(super) sample_target_space: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

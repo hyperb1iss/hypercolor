@@ -31,7 +31,7 @@ pub use plan::{
 };
 #[cfg(feature = "spatial-workspace-test-hooks")]
 pub use sampler::SpatialWorkspaceAllocationTestHook;
-pub use sampler::{sample_led, sample_zone};
+pub use sampler::{sample_canvas_position, sample_led, sample_zone};
 pub use topology::generate_positions;
 pub use viewport::sample_viewport;
 

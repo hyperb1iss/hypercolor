@@ -79,6 +79,7 @@ fn compose_transformed_source(source: Canvas, width: u32, height: u32, fit: FitM
                     scale: [1.0, 1.0],
                     rotation: 0.0,
                     fit,
+                    sample_target_space: false,
                 },
             ),
         ))

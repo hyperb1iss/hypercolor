@@ -235,10 +235,29 @@ fn render_scene_caches_compact_projection_metadata_until_layout_changes() {
         Some(ProjectionBounds {
             x0: 0,
             y0: 0,
-            x1: 4,
+            x1: 3,
             y1: 4,
         })
     ));
+}
+
+#[test]
+fn affine_projection_work_scales_linearly_through_8k() {
+    for (width, height) in [(1_920, 1_080), (3_840, 2_160), (7_680, 4_320)] {
+        let mut group = sample_group(width, height);
+        let mut zone = point_zone("full_scene");
+        zone.size = NormalizedPosition::new(1.0, 1.0);
+        zone.rotation = FRAC_PI_4;
+        group.layout.zones = vec![zone];
+
+        let work = build_group_projection(&group, width, height)
+            .expect("projection metadata should allocate")
+            .raster_work();
+
+        assert_eq!(work.affine_setups, 1);
+        assert_eq!(work.rows, u64::from(height));
+        assert_eq!(work.pixels, u64::from(width) * u64::from(height));
+    }
 }
 
 #[test]
@@ -248,7 +267,8 @@ fn projection_metadata_is_constant_size_for_large_dimensions() {
     zone.position = NormalizedPosition::new(0.5, 0.5);
     zone.size = NormalizedPosition::new(1.0, 1.0);
     group.layout.zones = vec![zone];
-    let projection = build_group_projection(&group, u32::MAX, u32::MAX);
+    let projection = build_group_projection(&group, u32::MAX, u32::MAX)
+        .expect("projection metadata should allocate");
 
     assert_eq!(projection.zones.len(), group.layout.zones.len());
     assert!(matches!(
@@ -406,7 +426,8 @@ fn full_scene_identity_fast_path_matches_projected_path() {
         controls_version: 0,
         layers_version: 0,
     };
-    let projection = build_group_projection(&group, 4, 4);
+    let projection =
+        build_group_projection(&group, 4, 4).expect("projection metadata should allocate");
     let mut source = Canvas::new(4, 4);
     for y in 0..4 {
         for x in 0..4 {
@@ -456,7 +477,8 @@ fn projected_composition_layers_match_nearest_projection() {
     group.layout.zones = vec![zone];
     group.layout.default_sampling_mode = SamplingMode::Nearest;
     group.layout.default_edge_behavior = EdgeBehavior::Clamp;
-    let projection = build_group_projection(&group, 4, 4);
+    let projection =
+        build_group_projection(&group, 4, 4).expect("projection metadata should allocate");
     let source = patterned_source_canvas(4, 4);
     let layers = projection_composition_layers_for_group(
         &ProducerFrame::Canvas(source.clone()),
@@ -498,12 +520,125 @@ fn projected_composition_layers_match_nearest_projection() {
 }
 
 #[test]
+fn projected_composition_matches_rotated_scaled_translated_zone() {
+    let mut zone = point_zone("zone_transformed_composition");
+    zone.position = NormalizedPosition::new(0.35, 0.6);
+    zone.size = NormalizedPosition::new(0.65, 0.45);
+    zone.scale = 0.8;
+    zone.rotation = FRAC_PI_4;
+    zone.sampling_mode = Some(SamplingMode::Nearest);
+    zone.edge_behavior = Some(EdgeBehavior::Clamp);
+    let mut group = sample_group(8, 8);
+    group.layout.zones = vec![zone];
+    group.layout.default_sampling_mode = SamplingMode::Nearest;
+    let projection =
+        build_group_projection(&group, 8, 8).expect("projection metadata should allocate");
+    let mut source = patterned_source_canvas(8, 8);
+    source.set_pixel(3, 4, Rgba::new(140, 60, 220, 0));
+    let layers = projection_composition_layers_for_group(
+        &ProducerFrame::Canvas(source.clone()),
+        &group,
+        &projection,
+        8,
+        8,
+    )
+    .expect("transformed nearest clamp projection should use composition layers");
+    let projection_cache = HashMap::from([(group.id, projection)]);
+    let target_canvases = HashMap::from([(group.id, source)]);
+    let mut expected = Canvas::new(8, 8);
+    compose_authoritative_scene_canvas(
+        &mut expected,
+        std::slice::from_ref(&group),
+        &target_canvases,
+        8,
+        8,
+        &projection_cache,
+    );
+    let mut runtime = ZoneRuntime::new(8, 8);
+    let mut sparkleflinger = SparkleFlinger::cpu();
+    let actual = runtime
+        .compose_projected_scene_frame(layers, &mut sparkleflinger)
+        .and_then(ProducerFrame::into_cpu_render_frame)
+        .map(|(canvas, _)| canvas)
+        .expect("CPU projection should materialize a scene canvas");
+
+    assert_eq!(actual.as_rgba_bytes(), expected.as_rgba_bytes());
+    assert_eq!(actual.get_pixel(0, 0), Rgba::BLACK);
+    assert_eq!(actual.get_pixel(3, 4), Rgba::new(140, 60, 220, 255));
+}
+
+#[test]
+fn projected_composition_preserves_zone_and_group_overlap_order() {
+    let mut back = sample_group(8, 8);
+    back.layout.zones = vec![rotated_zone("back_a", FRAC_PI_4, 0.7)];
+    back.layout.zones.push(point_zone_at("back_b", 0.2, 0.2));
+    back.layout.default_sampling_mode = SamplingMode::Nearest;
+    let mut front = sample_group(8, 8);
+    front.layout.zones = vec![point_zone_at("front", 0.5, 0.5)];
+    front.layout.zones[0].size = NormalizedPosition::new(0.35, 0.35);
+    front.layout.default_sampling_mode = SamplingMode::Nearest;
+
+    let back_projection =
+        build_group_projection(&back, 8, 8).expect("back projection metadata should allocate");
+    let front_projection =
+        build_group_projection(&front, 8, 8).expect("front projection metadata should allocate");
+    let mut back_source = Canvas::new(8, 8);
+    back_source.fill(Rgba::new(255, 0, 0, 255));
+    let mut front_source = Canvas::new(8, 8);
+    front_source.fill(Rgba::new(0, 0, 255, 255));
+    let mut layers = projection_composition_layers_for_group(
+        &ProducerFrame::Canvas(back_source.clone()),
+        &back,
+        &back_projection,
+        8,
+        8,
+    )
+    .expect("back projection should use composition layers");
+    layers.extend(
+        projection_composition_layers_for_group(
+            &ProducerFrame::Canvas(front_source.clone()),
+            &front,
+            &front_projection,
+            8,
+            8,
+        )
+        .expect("front projection should use composition layers"),
+    );
+    let projection_cache =
+        HashMap::from([(back.id, back_projection), (front.id, front_projection)]);
+    let target_canvases = HashMap::from([(back.id, back_source), (front.id, front_source)]);
+    let groups = [back, front];
+    let mut expected = Canvas::new(8, 8);
+    compose_authoritative_scene_canvas(
+        &mut expected,
+        &groups,
+        &target_canvases,
+        8,
+        8,
+        &projection_cache,
+    );
+
+    let mut runtime = ZoneRuntime::new(8, 8);
+    let mut sparkleflinger = SparkleFlinger::cpu();
+    let actual = runtime
+        .compose_projected_scene_frame(layers, &mut sparkleflinger)
+        .and_then(ProducerFrame::into_cpu_render_frame)
+        .map(|(canvas, _)| canvas)
+        .expect("CPU projection should materialize a scene canvas");
+
+    assert_eq!(actual.as_rgba_bytes(), expected.as_rgba_bytes());
+    assert_eq!(actual.get_pixel(4, 4), Rgba::new(0, 0, 255, 255));
+    assert_eq!(actual.get_pixel(0, 7), Rgba::BLACK);
+}
+
+#[test]
 fn projected_composition_rejects_bilinear_zones() {
     let mut zone = point_zone("zone_bilinear_projection");
     zone.sampling_mode = Some(SamplingMode::Bilinear);
     let mut group = sample_group(4, 4);
     group.layout.zones = vec![zone];
-    let projection = build_group_projection(&group, 4, 4);
+    let projection =
+        build_group_projection(&group, 4, 4).expect("projection metadata should allocate");
 
     assert!(
         projection_composition_layers_for_group(
@@ -535,7 +670,8 @@ fn gpu_projected_composition_matches_nearest_projection() {
     group.layout.zones = vec![zone];
     group.layout.default_sampling_mode = SamplingMode::Nearest;
     group.layout.default_edge_behavior = EdgeBehavior::Clamp;
-    let projection = build_group_projection(&group, 4, 4);
+    let projection =
+        build_group_projection(&group, 4, 4).expect("projection metadata should allocate");
     let source = patterned_source_canvas(4, 4);
     let Some(gpu_source) = sparkleflinger.upload_canvas_frame(&source) else {
         return;
@@ -610,18 +746,33 @@ fn gpu_projected_scene_frame_stays_gpu_resident() {
     else {
         return;
     };
-    let Some(gpu_source) = sparkleflinger.upload_canvas_frame(&patterned_source_canvas(4, 4))
-    else {
+    let source = patterned_source_canvas(8, 8);
+    let Some(gpu_source) = sparkleflinger.upload_canvas_frame(&source) else {
         return;
     };
-    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut zone = point_zone("gpu_transformed_projection");
+    zone.position = NormalizedPosition::new(0.35, 0.6);
+    zone.size = NormalizedPosition::new(0.65, 0.45);
+    zone.scale = 0.8;
+    zone.rotation = FRAC_PI_4;
+    zone.sampling_mode = Some(SamplingMode::Nearest);
+    zone.edge_behavior = Some(EdgeBehavior::Clamp);
+    let mut group = sample_group(8, 8);
+    group.layout.zones = vec![zone];
+    group.layout.default_sampling_mode = SamplingMode::Nearest;
+    let projection =
+        build_group_projection(&group, 8, 8).expect("projection metadata should allocate");
+    let layers = projection_composition_layers_for_group(
+        &ProducerFrame::GpuTexture(gpu_source),
+        &group,
+        &projection,
+        8,
+        8,
+    )
+    .expect("transformed nearest clamp projection should use composition layers");
+    let mut runtime = ZoneRuntime::new(8, 8);
     let frame = runtime
-        .compose_projected_scene_frame(
-            vec![CompositionLayer::replace_opaque(ProducerFrame::GpuTexture(
-                gpu_source,
-            ))],
-            &mut sparkleflinger,
-        )
+        .compose_projected_scene_frame(layers, &mut sparkleflinger)
         .expect("GPU projection should export the current output frame");
 
     assert!(matches!(frame, ProducerFrame::GpuTexture(_)));

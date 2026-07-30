@@ -22,7 +22,6 @@ use hypercolor_types::spatial::{Corner, LedTopology, NormalizedPosition, Output,
 use uuid::Uuid;
 
 use super::projection::{build_group_projection, compose_authoritative_scene_canvas};
-use crate::render_thread::sparkleflinger::CompositionLayer;
 
 use super::*;
 

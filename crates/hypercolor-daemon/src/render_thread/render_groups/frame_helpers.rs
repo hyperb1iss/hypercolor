@@ -175,6 +175,12 @@ pub(super) fn transparent_black_frame(
     cache.frame(width, height, Rgba::TRANSPARENT)
 }
 
+pub(super) fn opaque_black_frame(
+    cache: &mut StaticLayerSurfaceCache,
+) -> anyhow::Result<ProducerFrame> {
+    cache.frame(1, 1, Rgba::BLACK)
+}
+
 pub(super) fn media_layer_producer_frame(
     layer_id: SceneLayerId,
     canvas: Canvas,

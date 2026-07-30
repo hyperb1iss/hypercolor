@@ -6,7 +6,7 @@
 
 use hypercolor_core::spatial::{
     DISPLAY_ZONE_NAME, PreparedZoneSamples, SpatialEngine, SpatialPlanError, generate_positions,
-    is_display_zone, is_led_sampled_zone, sample_led,
+    is_display_zone, is_led_sampled_zone, sample_canvas_position, sample_led,
 };
 use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb, srgb_to_linear};
 use hypercolor_types::event::ZoneColors;
@@ -1378,6 +1378,25 @@ fn bilinear_sampling_blends_corner_channels_in_linear_space() {
     assert_eq!(color.g, expected_bilinear_channel(0, 255, 0, 255, 64, 192));
     assert_eq!(color.b, expected_bilinear_channel(0, 0, 255, 255, 64, 192));
     assert_eq!(color.a, 255);
+}
+
+#[test]
+fn direct_canvas_sampling_skips_zone_placement() {
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+    canvas.set_pixel(1, 0, Rgba::new(0, 255, 0, 255));
+    canvas.set_pixel(0, 1, Rgba::new(0, 0, 255, 255));
+    canvas.set_pixel(1, 1, Rgba::new(255, 255, 255, 255));
+
+    assert_eq!(
+        sample_canvas_position(
+            &canvas,
+            NormalizedPosition::new(1.0, 0.0),
+            &SamplingMode::Nearest,
+            EdgeBehavior::Clamp,
+        ),
+        Rgba::new(0, 255, 0, 255)
+    );
 }
 
 // ── Zone Positioning ────────────────────────────────────────────────────────

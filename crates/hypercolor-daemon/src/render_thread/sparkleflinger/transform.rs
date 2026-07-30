@@ -52,7 +52,13 @@ fn sample_transformed_layer(
                 FitMode::Tile | FitMode::Mirror => sampler.sample_repeated(source, x, y, transform),
                 FitMode::Contain | FitMode::Cover | FitMode::Stretch => sampler
                     .source_normalized_for(x, y, transform)
-                    .map_or(Rgba::TRANSPARENT, |(nx, ny)| source.sample_nearest(nx, ny)),
+                    .map_or(Rgba::TRANSPARENT, |(nx, ny)| {
+                        let mut color = source.sample_nearest(nx, ny);
+                        if transform.sample_target_space {
+                            color.a = 255;
+                        }
+                        color
+                    }),
             };
             target.set_pixel(x, y, color);
         }
@@ -92,6 +98,13 @@ impl LayerSampler {
             return None;
         }
 
+        if transform.sample_target_space {
+            return Some((
+                (x as f32 + 0.5) / self.target_width,
+                (y as f32 + 0.5) / self.target_height,
+            ));
+        }
+
         let source_x = geometry.crop_x + u.mul_add(geometry.crop_width, -0.5);
         let source_y = geometry.crop_y + v.mul_add(geometry.crop_height, -0.5);
         Some((
@@ -129,8 +142,13 @@ impl LayerSampler {
         let anchor_y = transform.anchor.y * self.target_height;
         let dx = x as f32 + 0.5 - anchor_x;
         let dy = y as f32 + 0.5 - anchor_y;
-        let scale_x = transform.scale[0].max(0.01);
-        let scale_y = transform.scale[1].max(0.01);
+        let minimum_scale = if transform.sample_target_space {
+            0.000_000_1
+        } else {
+            0.01
+        };
+        let scale_x = transform.scale[0].max(minimum_scale);
+        let scale_y = transform.scale[1].max(minimum_scale);
         let cos = transform.rotation.cos();
         let sin = transform.rotation.sin();
         let local_x = cos.mul_add(dx, sin * dy) / scale_x;

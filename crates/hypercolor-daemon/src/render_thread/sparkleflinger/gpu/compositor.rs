@@ -1491,7 +1491,7 @@ fn encode_compose_params_upload(
     write.offset
 }
 
-fn encode_compose_params(
+pub(super) fn encode_compose_params(
     width: u32,
     height: u32,
     mode: ComposeShaderMode,
@@ -1521,6 +1521,12 @@ fn encode_compose_params(
     bytes[48..52].copy_from_slice(&transform.scale[1].to_le_bytes());
     bytes[52..56].copy_from_slice(&transform.rotation.cos().to_le_bytes());
     bytes[56..60].copy_from_slice(&transform.rotation.sin().to_le_bytes());
+    let sample_target_space = if transform.sample_target_space {
+        1.0_f32
+    } else {
+        0.0_f32
+    };
+    bytes[60..64].copy_from_slice(&sample_target_space.to_le_bytes());
     bytes[64..68].copy_from_slice(&adjust.brightness.to_le_bytes());
     bytes[68..72].copy_from_slice(&adjust.saturation.to_le_bytes());
     bytes[72..76].copy_from_slice(&adjust.hue_shift.to_le_bytes());
@@ -1535,7 +1541,7 @@ fn encode_compose_params(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
-enum ComposeShaderMode {
+pub(super) enum ComposeShaderMode {
     Replace = 0,
     Alpha = 1,
     Add = 2,

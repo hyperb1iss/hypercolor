@@ -321,6 +321,17 @@ pub fn sample_led(
 ) -> Rgba {
     let canvas_pos = zone_local_to_canvas(local_pos, zone, edge);
 
+    sample_canvas_position(canvas, canvas_pos, mode, edge)
+}
+
+/// Sample one normalized canvas position without applying zone placement.
+#[must_use]
+pub fn sample_canvas_position(
+    canvas: &Canvas,
+    canvas_pos: NormalizedPosition,
+    mode: &SamplingMode,
+    edge: EdgeBehavior,
+) -> Rgba {
     if matches!(
         mode,
         SamplingMode::AreaAverage { .. } | SamplingMode::GaussianArea { .. }

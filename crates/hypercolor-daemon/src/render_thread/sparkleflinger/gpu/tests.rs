@@ -18,11 +18,13 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
+use hypercolor_types::viewport::FitMode;
 #[cfg(target_os = "windows")]
 use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 use super::CachedGpuSourceCopy;
+use super::compositor::{ComposeShaderMode, encode_compose_params};
 use super::screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
     ScreenUploadResidencyPolicy, resident_frame_bytes,
@@ -44,9 +46,31 @@ use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::{GpuTextureFrameOrigin, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
 use crate::render_thread::sparkleflinger::{
-    CompositionLayer, CompositionPlan, DisplayFinalizeCacheKey, DisplayFinalizeParams,
-    PreviewSurfaceRequest, SparkleFlinger, SparkleFlingerBackend, cpu::CpuSparkleFlinger,
+    CompositionLayer, CompositionPlan, CompositionTransform, DisplayFinalizeCacheKey,
+    DisplayFinalizeParams, PreviewSurfaceRequest, SparkleFlinger, SparkleFlingerBackend,
+    cpu::CpuSparkleFlinger,
 };
+
+#[test]
+fn compose_params_encode_target_space_as_float_flag() {
+    let layer = CompositionLayer::replace(ProducerFrame::Canvas(Canvas::new(2, 2))).with_transform(
+        CompositionTransform {
+            anchor: NormalizedPosition::new(0.5, 0.5),
+            scale: [0.5, 0.5],
+            rotation: 0.0,
+            fit: FitMode::Stretch,
+            sample_target_space: true,
+        },
+    );
+    let params = encode_compose_params(4, 4, ComposeShaderMode::Replace, &layer, false);
+    let flag = f32::from_le_bytes(
+        params[60..64]
+            .try_into()
+            .expect("flag should occupy four bytes"),
+    );
+
+    assert_eq!(flag, 1.0);
+}
 
 fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(4, 4);

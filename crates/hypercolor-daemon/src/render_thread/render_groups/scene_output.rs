@@ -12,7 +12,7 @@ use hypercolor_types::scene::ZoneId;
 use super::super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::super::sparkleflinger::{CompositionLayer, CompositionPlan, SparkleFlinger};
 use super::ZoneRuntime;
-use super::frame_helpers::composed_frame_to_producer_frame;
+use super::frame_helpers::{composed_frame_to_producer_frame, opaque_black_frame};
 use super::group_state::group_contributes_to_scene_canvas;
 use super::projection::compose_authoritative_scene_canvas;
 
@@ -80,16 +80,25 @@ impl ZoneRuntime {
 
     pub(super) fn compose_projected_scene_frame(
         &mut self,
-        layers: Vec<CompositionLayer>,
+        mut layers: Vec<CompositionLayer>,
         sparkleflinger: &mut SparkleFlinger,
     ) -> Option<ProducerFrame> {
         if layers.is_empty() {
             return None;
         }
 
+        layers.try_reserve(1).ok()?;
+        layers.insert(
+            0,
+            CompositionLayer::replace_opaque(
+                opaque_black_frame(&mut self.static_layer_surface_cache).ok()?,
+            ),
+        );
         let plan = CompositionPlan::with_layers(self.scene_width, self.scene_height, layers)
             .with_cpu_replay_cacheable(false);
-        let composed = sparkleflinger.compose_for_outputs(plan.clone(), false, None);
+        let requires_cpu_sampling_canvas = !sparkleflinger.supports_gpu_output_frames();
+        let composed =
+            sparkleflinger.compose_for_outputs(plan.clone(), requires_cpu_sampling_canvas, None);
         if let Some(frame) = composed_frame_to_producer_frame(composed, sparkleflinger) {
             record_producer_frame(&frame);
             return Some(frame);

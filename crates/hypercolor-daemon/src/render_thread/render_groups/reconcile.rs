@@ -217,7 +217,7 @@ impl ZoneRuntime {
                 if needs_projection {
                     scene_projection_cache.insert(
                         group.id,
-                        build_group_projection(group, scene_width, scene_height),
+                        build_group_projection(group, scene_width, scene_height)?,
                     );
                 }
             }

@@ -202,7 +202,8 @@ fn source_coord_for_destination(xy: vec2<u32>) -> vec3<f32> {
     let target_size = vec2<f32>(f32(params.size_and_mode.x), f32(params.size_and_mode.y));
     let anchor = vec2<f32>(params.opacity.y, params.opacity.z) * target_size;
     let delta = vec2<f32>(f32(xy.x) + 0.5, f32(xy.y) + 0.5) - anchor;
-    let scale = max(vec2<f32>(params.opacity.w, params.transform_a.x), vec2<f32>(0.01));
+    let minimum_scale = select(vec2<f32>(0.01), vec2<f32>(0.0000001), params.transform_a.w > 0.5);
+    let scale = max(vec2<f32>(params.opacity.w, params.transform_a.x), minimum_scale);
     let local = vec2<f32>(
         (params.transform_a.y * delta.x + params.transform_a.z * delta.y) / scale.x,
         (-params.transform_a.z * delta.x + params.transform_a.y * delta.y) / scale.y,
@@ -242,6 +243,10 @@ fn source_coord_for_destination(xy: vec2<u32>) -> vec3<f32> {
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
+    if (params.transform_a.w > 0.5) {
+        let target_uv = (vec2<f32>(xy) + vec2<f32>(0.5)) / target_size;
+        return vec3<f32>(target_uv * (source_size - vec2<f32>(1.0)), 1.0);
+    }
     return vec3<f32>(crop_origin + uv * crop_size - vec2<f32>(0.5), 1.0);
 }
 
@@ -267,7 +272,11 @@ fn load_source_rgba(xy: vec2<u32>) -> vec4<f32> {
     }
     let max_coord = vec2<f32>(f32(params.source_and_flags.x - 1u), f32(params.source_and_flags.y - 1u));
     let source_xy = vec2<i32>(round(clamp(coord.xy, vec2<f32>(0.0), max_coord)));
-    return load_source_texel(source_xy);
+    let source = load_source_texel(source_xy);
+    if (params.transform_a.w > 0.5) {
+        return vec4<f32>(source.rgb, 1.0);
+    }
+    return source;
 }
 
 fn rgb_to_hsl(color: vec3<f32>) -> vec3<f32> {
