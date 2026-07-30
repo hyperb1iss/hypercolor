@@ -7,6 +7,7 @@
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, SamplingMethod};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SamplingMode};
 
+use super::super::SpatialPlanError;
 use super::super::plan::{
     PreparedAreaSample, PreparedBilinearSample, PreparedGaussianSample, PreparedGaussianSamples,
     PreparedNearestSample, PreparedZoneSamples,
@@ -17,23 +18,21 @@ use super::lut::{
 
 // ── Sample preparation (layout-time) ───────────────────────────────────────
 
-#[must_use]
 pub(super) fn prepare_nearest_sample(
     position: NormalizedPosition,
     edge_behavior: EdgeBehavior,
     canvas_width: u32,
     canvas_height: u32,
-) -> PreparedNearestSample {
+) -> Result<PreparedNearestSample, SpatialPlanError> {
     let attenuation = attenuation_for_position(position, edge_behavior);
     let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
 
-    PreparedNearestSample {
-        offset: nearest_pixel_offset(clamped, canvas_width, canvas_height),
+    Ok(PreparedNearestSample {
+        offset: nearest_pixel_offset(clamped, canvas_width, canvas_height)?,
         attenuation,
-    }
+    })
 }
 
-#[must_use]
 #[allow(
     clippy::as_conversions,
     clippy::cast_precision_loss,
@@ -45,7 +44,7 @@ pub(super) fn prepare_bilinear_sample_for_position(
     edge_behavior: EdgeBehavior,
     canvas_width: u32,
     canvas_height: u32,
-) -> PreparedBilinearSample {
+) -> Result<PreparedBilinearSample, SpatialPlanError> {
     let attenuation = attenuation_for_position(position, edge_behavior);
     let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
     let fx = clamped.x * (canvas_width - 1) as f32;
@@ -53,22 +52,22 @@ pub(super) fn prepare_bilinear_sample_for_position(
 
     let x0 = fx.floor() as u32;
     let y0 = fy.floor() as u32;
-    let x1 = (x0 + 1).min(canvas_width - 1);
-    let y1 = (y0 + 1).min(canvas_height - 1);
+    let x1 = x0.saturating_add(1).min(canvas_width - 1);
+    let y1 = y0.saturating_add(1).min(canvas_height - 1);
     let frac_x = (fx.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
     let frac_y = (fy.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
 
-    PreparedBilinearSample {
+    Ok(PreparedBilinearSample {
         offsets: [
-            pixel_offset(canvas_width, x0, y0),
-            pixel_offset(canvas_width, x1, y0),
-            pixel_offset(canvas_width, x0, y1),
-            pixel_offset(canvas_width, x1, y1),
+            pixel_offset(canvas_width, canvas_height, x0, y0)?,
+            pixel_offset(canvas_width, canvas_height, x1, y0)?,
+            pixel_offset(canvas_width, canvas_height, x0, y1)?,
+            pixel_offset(canvas_width, canvas_height, x1, y1)?,
         ],
         x_upper_weight: u8::try_from(frac_x).expect("bilinear x upper weight must fit in u8"),
         y_upper_weight: u8::try_from(frac_y).expect("bilinear y upper weight must fit in u8"),
         attenuation,
-    }
+    })
 }
 
 #[must_use]
@@ -91,17 +90,17 @@ pub(super) fn prepare_area_sample_for_position(
     let cx = clamped.x * (canvas_width - 1) as f32;
     let cy = clamped.y * (canvas_height - 1) as f32;
     let radius = if radius.is_finite() {
-        radius.max(0.0).ceil() as i32
+        radius.max(0.0).ceil() as u32
     } else {
         0
     };
 
     PreparedAreaSample {
-        center_x: cx as i32,
-        center_y: cy as i32,
+        center_x: (cx as u32).min(canvas_width - 1),
+        center_y: (cy as u32).min(canvas_height - 1),
         radius,
-        canvas_width: canvas_width as i32,
-        canvas_height: canvas_height as i32,
+        canvas_width,
+        canvas_height,
         attenuation,
     }
 }
@@ -127,39 +126,50 @@ pub(super) fn prepare_gaussian_sample_for_position(
     let cy = clamped.y * (canvas_height - 1) as f32;
 
     PreparedGaussianSample {
-        center_x: cx as i32,
-        center_y: cy as i32,
-        radius: i32::try_from(radius).unwrap_or(i32::MAX),
-        canvas_width: canvas_width as i32,
-        canvas_height: canvas_height as i32,
+        center_x: (cx as u32).min(canvas_width - 1),
+        center_y: (cy as u32).min(canvas_height - 1),
+        radius,
+        canvas_width,
+        canvas_height,
         attenuation,
     }
 }
 
-#[must_use]
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
 )]
-pub(super) fn prepare_gaussian_kernel(sigma: f32, radius: u32) -> (Vec<u16>, u32) {
+pub(super) fn prepare_gaussian_kernel(
+    sigma: f32,
+    radius: u32,
+) -> Result<(Vec<u16>, u64), SpatialPlanError> {
     if radius == 0 || sigma <= f32::EPSILON {
-        return (vec![u16::MAX], u32::from(u16::MAX));
+        return Ok((vec![u16::MAX], u64::from(u16::MAX)));
     }
 
-    let radius_i32 = i32::try_from(radius).unwrap_or(i32::MAX);
-    let diameter = radius.saturating_mul(2).saturating_add(1);
-    let capacity = usize::try_from(diameter.saturating_mul(diameter)).unwrap_or(usize::MAX);
-    let mut weights = Vec::with_capacity(capacity);
+    let diameter = u64::from(radius)
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(1))
+        .ok_or(SpatialPlanError::GaussianKernelUnaddressable { radius })?;
+    let sample_count = diameter
+        .checked_mul(diameter)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(SpatialPlanError::GaussianKernelUnaddressable { radius })?;
+    let mut weights = Vec::new();
+    weights
+        .try_reserve_exact(sample_count)
+        .map_err(|_| SpatialPlanError::GaussianKernelAllocation { sample_count })?;
     let sigma = f64::from(sigma.max(f32::EPSILON));
     let denominator = 2.0 * sigma * sigma;
-    let mut weight_sum = 0_u32;
+    let mut weight_sum = 0_u64;
 
-    for dy in -radius_i32..=radius_i32 {
-        for dx in -radius_i32..=radius_i32 {
-            let dx = i64::from(dx);
-            let dy = i64::from(dy);
+    let radius = i64::from(radius);
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let dx = i128::from(dx);
+            let dy = i128::from(dy);
             let distance_squared = (dx * dx + dy * dy) as f64;
             let weight = (-distance_squared / denominator).exp();
             let fixed = (weight * f64::from(u16::MAX))
@@ -167,27 +177,25 @@ pub(super) fn prepare_gaussian_kernel(sigma: f32, radius: u32) -> (Vec<u16>, u32
                 .clamp(1.0, f64::from(u16::MAX));
             let fixed = fixed as u16;
             weights.push(fixed);
-            weight_sum = weight_sum.saturating_add(u32::from(fixed));
+            weight_sum = weight_sum.saturating_add(u64::from(fixed));
         }
     }
 
-    (weights, weight_sum.max(1))
+    Ok((weights, weight_sum.max(1)))
 }
 
 // ── Per-frame sampling (hot path) ──────────────────────────────────────────
 
 #[must_use]
-#[allow(
-    clippy::as_conversions,
-    reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
-)]
 pub(super) fn sample_prepared_canvas_pixels(
     canvas: &Canvas,
     samples: &PreparedZoneSamples,
     has_attenuation: bool,
 ) -> Vec<[u8; 3]> {
     let bytes = canvas.as_rgba_bytes();
-    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
+    let Some(row_stride) = checked_row_stride(canvas.width()) else {
+        return vec![[0, 0, 0]; samples.len()];
+    };
     match samples {
         PreparedZoneSamples::Nearest(samples) => {
             sample_prepared_nearest_pixels(bytes, samples, has_attenuation)
@@ -204,10 +212,6 @@ pub(super) fn sample_prepared_canvas_pixels(
     }
 }
 
-#[allow(
-    clippy::as_conversions,
-    reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
-)]
 pub(super) fn sample_prepared_canvas_pixels_into(
     canvas: &Canvas,
     samples: &PreparedZoneSamples,
@@ -215,7 +219,10 @@ pub(super) fn sample_prepared_canvas_pixels_into(
     has_attenuation: bool,
 ) {
     let bytes = canvas.as_rgba_bytes();
-    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
+    let Some(row_stride) = checked_row_stride(canvas.width()) else {
+        colors.resize(samples.len(), [0, 0, 0]);
+        return;
+    };
     match samples {
         PreparedZoneSamples::Nearest(samples) => {
             sample_prepared_nearest_pixels_into(bytes, samples, colors, has_attenuation);
@@ -248,11 +255,10 @@ pub(super) fn sample_positions_into_buffer(
     colors.clear();
     colors.reserve(positions.len());
     let bytes = canvas.as_rgba_bytes();
-    #[allow(
-        clippy::as_conversions,
-        reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
-    )]
-    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
+    let Some(row_stride) = checked_row_stride(canvas.width()) else {
+        colors.resize(positions.len(), [0, 0, 0]);
+        return;
+    };
 
     for &pos in positions {
         colors.push(sample_srgb_rgb(
@@ -289,12 +295,14 @@ pub(super) fn sample_positions_for_mode_into_buffer(
     colors.clear();
     colors.reserve(positions.len());
     let bytes = canvas.as_rgba_bytes();
-    #[allow(
-        clippy::as_conversions,
-        reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
-    )]
-    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
-    let (weights, weight_sum) = prepare_gaussian_kernel(*sigma, *radius);
+    let Some(row_stride) = checked_row_stride(canvas.width()) else {
+        colors.resize(positions.len(), [0, 0, 0]);
+        return;
+    };
+    let Ok((weights, weight_sum)) = prepare_gaussian_kernel(*sigma, *radius) else {
+        colors.resize(positions.len(), [0, 0, 0]);
+        return;
+    };
 
     for &position in positions {
         let sample = prepare_gaussian_sample_for_position(
@@ -312,10 +320,6 @@ pub(super) fn sample_positions_for_mode_into_buffer(
 }
 
 #[must_use]
-#[allow(
-    clippy::as_conversions,
-    reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
-)]
 pub(super) fn sample_srgb_rgb(
     canvas: &Canvas,
     bytes: &[u8],
@@ -326,17 +330,22 @@ pub(super) fn sample_srgb_rgb(
 ) -> [u8; 3] {
     let linear = match sampling_method {
         SamplingMethod::Nearest => {
-            let sample =
-                prepare_nearest_sample(position, edge_behavior, canvas.width(), canvas.height());
+            let Ok(sample) =
+                prepare_nearest_sample(position, edge_behavior, canvas.width(), canvas.height())
+            else {
+                return [0, 0, 0];
+            };
             attenuate_rgb(read_linear_rgb_at(bytes, sample.offset), sample.attenuation)
         }
         SamplingMethod::Bilinear => {
-            let sample = prepare_bilinear_sample_for_position(
+            let Ok(sample) = prepare_bilinear_sample_for_position(
                 position,
                 edge_behavior,
                 canvas.width(),
                 canvas.height(),
-            );
+            ) else {
+                return [0, 0, 0];
+            };
             attenuate_rgb(
                 sample_bilinear_linear_rgb(bytes, &sample),
                 sample.attenuation,
@@ -397,7 +406,6 @@ fn attenuation_for_position(position: NormalizedPosition, edge_behavior: EdgeBeh
     ((-distance * falloff).exp().clamp(0.0, 1.0) * f32::from(ATTENUATION_ONE)).round() as u16
 }
 
-#[must_use]
 #[allow(
     clippy::as_conversions,
     clippy::cast_precision_loss,
@@ -408,24 +416,60 @@ fn nearest_pixel_offset(
     position: NormalizedPosition,
     canvas_width: u32,
     canvas_height: u32,
-) -> usize {
+) -> Result<usize, SpatialPlanError> {
     let x = (position.x * (canvas_width - 1) as f32).round() as u32;
     let y = (position.y * (canvas_height - 1) as f32).round() as u32;
     pixel_offset(
         canvas_width,
+        canvas_height,
         x.min(canvas_width - 1),
         y.min(canvas_height - 1),
     )
 }
 
-#[must_use]
-fn pixel_offset(canvas_width: u32, x: u32, y: u32) -> usize {
+fn pixel_offset(
+    canvas_width: u32,
+    canvas_height: u32,
+    x: u32,
+    y: u32,
+) -> Result<usize, SpatialPlanError> {
+    let error = || SpatialPlanError::CanvasByteLengthOverflow {
+        width: canvas_width,
+        height: canvas_height,
+    };
+    let byte_len =
+        hypercolor_types::canvas::SurfaceDescriptor::rgba8888(canvas_width, canvas_height)
+            .checked_byte_len()
+            .ok_or_else(error)?;
+    let bytes_per_pixel = u64::try_from(BYTES_PER_PIXEL).map_err(|_| error())?;
+    let offset = u64::from(y)
+        .checked_mul(u64::from(canvas_width))
+        .and_then(|row| row.checked_add(u64::from(x)))
+        .and_then(|pixel| pixel.checked_mul(bytes_per_pixel))
+        .and_then(|offset| usize::try_from(offset).ok())
+        .ok_or_else(error)?;
+    if x >= canvas_width
+        || y >= canvas_height
+        || offset
+            .checked_add(BYTES_PER_PIXEL)
+            .is_none_or(|end| end > byte_len)
+    {
+        return Err(error());
+    }
+    Ok(offset)
+}
+
+fn checked_row_stride(canvas_width: u32) -> Option<usize> {
+    usize::try_from(canvas_width)
+        .ok()?
+        .checked_mul(BYTES_PER_PIXEL)
+}
+
+fn checked_sample_offset(row_stride: usize, x: u32, y: u32) -> Option<usize> {
     usize::try_from(y)
-        .ok()
-        .and_then(|y| y.checked_mul(usize::try_from(canvas_width).ok()?))
-        .and_then(|row_offset| row_offset.checked_add(usize::try_from(x).ok()?))
-        .and_then(|pixel_offset| pixel_offset.checked_mul(BYTES_PER_PIXEL))
-        .expect("prepared canvas byte offset fits the process address space")
+        .ok()?
+        .checked_mul(row_stride)?
+        .checked_add(usize::try_from(x).ok()?.checked_mul(BYTES_PER_PIXEL)?)
 }
 
 #[must_use]
@@ -519,16 +563,24 @@ fn sample_area_linear_rgb(
     let mut sum_b = 0u64;
     let mut count = 0u64;
 
-    for dy in -sample.radius..=sample.radius {
-        let y = (sample.center_y + dy).clamp(0, sample.canvas_height - 1) as usize;
-        let row_offset = y * row_stride;
-        for dx in -sample.radius..=sample.radius {
-            let x = (sample.center_x + dx).clamp(0, sample.canvas_width - 1) as usize;
-            let offset = row_offset + x * BYTES_PER_PIXEL;
+    let radius = i64::from(sample.radius);
+    let max_x = i64::from(sample.canvas_width - 1);
+    let max_y = i64::from(sample.canvas_height - 1);
+    for dy in -radius..=radius {
+        let Ok(y) = u32::try_from((i64::from(sample.center_y) + dy).clamp(0, max_y)) else {
+            continue;
+        };
+        for dx in -radius..=radius {
+            let Ok(x) = u32::try_from((i64::from(sample.center_x) + dx).clamp(0, max_x)) else {
+                continue;
+            };
+            let Some(offset) = checked_sample_offset(row_stride, x, y) else {
+                continue;
+            };
             sum_r += u64::from(decode_srgb_byte(bytes[offset]));
             sum_g += u64::from(decode_srgb_byte(bytes[offset + 1]));
             sum_b += u64::from(decode_srgb_byte(bytes[offset + 2]));
-            count += 1;
+            count = count.saturating_add(1);
         }
     }
 
@@ -552,28 +604,35 @@ fn sample_gaussian_linear_rgb(
     row_stride: usize,
     sample: &PreparedGaussianSample,
     weights: &[u16],
-    weight_sum: u32,
+    weight_sum: u64,
 ) -> [u16; 3] {
     let mut sum_r = 0u64;
     let mut sum_g = 0u64;
     let mut sum_b = 0u64;
     let mut weight_index = 0usize;
 
-    for dy in -sample.radius..=sample.radius {
-        let y = (sample.center_y + dy).clamp(0, sample.canvas_height - 1) as usize;
-        let row_offset = y * row_stride;
-        for dx in -sample.radius..=sample.radius {
+    let radius = i64::from(sample.radius);
+    let max_x = i64::from(sample.canvas_width - 1);
+    let max_y = i64::from(sample.canvas_height - 1);
+    for dy in -radius..=radius {
+        let Ok(y) = u32::try_from((i64::from(sample.center_y) + dy).clamp(0, max_y)) else {
+            continue;
+        };
+        for dx in -radius..=radius {
             let weight = u64::from(weights[weight_index]);
             weight_index += 1;
-            let x = (sample.center_x + dx).clamp(0, sample.canvas_width - 1) as usize;
-            let offset = row_offset + x * BYTES_PER_PIXEL;
+            let Ok(x) = u32::try_from((i64::from(sample.center_x) + dx).clamp(0, max_x)) else {
+                continue;
+            };
+            let Some(offset) = checked_sample_offset(row_stride, x, y) else {
+                continue;
+            };
             sum_r += u64::from(decode_srgb_byte(bytes[offset])) * weight;
             sum_g += u64::from(decode_srgb_byte(bytes[offset + 1])) * weight;
             sum_b += u64::from(decode_srgb_byte(bytes[offset + 2])) * weight;
         }
     }
 
-    let weight_sum = u64::from(weight_sum);
     [
         (sum_r / weight_sum) as u16,
         (sum_g / weight_sum) as u16,

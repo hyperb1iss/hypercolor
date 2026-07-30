@@ -35,12 +35,30 @@ pub use viewport::sample_viewport;
 
 use std::sync::Arc;
 
-use hypercolor_types::canvas::Canvas;
+use hypercolor_types::canvas::{Canvas, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{Output, SpatialLayout};
+use thiserror::Error;
 
 /// Layout zone name reserved for display-only viewports.
 pub const DISPLAY_ZONE_NAME: &str = "Display";
+
+/// Failure to construct an addressable spatial sampling plan.
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+pub enum SpatialPlanError {
+    /// The canvas has no addressable pixels.
+    #[error("spatial canvas dimensions must be nonzero, got {width}x{height}")]
+    EmptyCanvas { width: u32, height: u32 },
+    /// The canvas byte length exceeds the host address space.
+    #[error("spatial canvas {width}x{height} is not addressable on this host")]
+    CanvasByteLengthOverflow { width: u32, height: u32 },
+    /// The configured Gaussian kernel has no representable sample count.
+    #[error("gaussian radius {radius} has an unaddressable kernel")]
+    GaussianKernelUnaddressable { radius: u32 },
+    /// The configured Gaussian kernel could not reserve its weight storage.
+    #[error("gaussian kernel allocation failed for {sample_count} samples")]
+    GaussianKernelAllocation { sample_count: usize },
+}
 
 /// Return whether a layout zone represents a display viewport instead of LEDs.
 #[must_use]
@@ -79,13 +97,39 @@ impl SpatialEngine {
     /// Generates LED positions for every zone's topology on construction.
     #[must_use]
     pub fn new(layout: SpatialLayout) -> Self {
-        let mut engine = Self {
+        let mut layout = layout;
+        match prepare_layout(&mut layout, 1) {
+            Ok(prepared_zones) => Self {
+                layout: Arc::new(layout),
+                prepared_zones,
+                plan_generation: 1,
+            },
+            Err(error) => {
+                tracing::warn!(%error, "Rejected unaddressable spatial sampling plan");
+                Self {
+                    layout: Arc::new(layout),
+                    prepared_zones: Arc::default(),
+                    plan_generation: 0,
+                }
+            }
+        }
+    }
+
+    /// Construct an engine after validating every prepared byte offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpatialPlanError`] when the canvas or a Gaussian kernel is
+    /// not representable on this host, or when kernel storage cannot be
+    /// reserved.
+    pub fn try_new(mut layout: SpatialLayout) -> Result<Self, SpatialPlanError> {
+        let plan_generation = 1;
+        let prepared_zones = prepare_layout(&mut layout, plan_generation)?;
+        Ok(Self {
             layout: Arc::new(layout),
-            prepared_zones: Arc::default(),
-            plan_generation: 0,
-        };
-        engine.rebuild_positions();
-        engine
+            prepared_zones,
+            plan_generation,
+        })
     }
 
     /// Sample the canvas at every LED's position, producing per-zone color data.
@@ -156,10 +200,28 @@ impl SpatialEngine {
     ///
     /// Call this when the user edits the layout (moves/adds/removes zones,
     /// changes topology, etc.). The next [`sample`](Self::sample) call will
-    /// use the new positions.
+    /// use the new positions. Invalid layouts are rejected and the active
+    /// layout remains unchanged.
     pub fn update_layout(&mut self, layout: SpatialLayout) {
+        if let Err(error) = self.try_update_layout(layout) {
+            tracing::warn!(%error, "Rejected spatial layout update");
+        }
+    }
+
+    /// Validate and prepare a candidate layout before replacing active state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpatialPlanError`] when the candidate cannot be represented
+    /// or its Gaussian kernel storage cannot be reserved. The previous layout
+    /// and sampling plan remain active on failure.
+    pub fn try_update_layout(&mut self, mut layout: SpatialLayout) -> Result<(), SpatialPlanError> {
+        let plan_generation = self.plan_generation.saturating_add(1);
+        let prepared_zones = prepare_layout(&mut layout, plan_generation)?;
         self.layout = Arc::new(layout);
-        self.rebuild_positions();
+        self.prepared_zones = prepared_zones;
+        self.plan_generation = plan_generation;
+        Ok(())
     }
 
     /// Access the current layout.
@@ -177,21 +239,31 @@ impl SpatialEngine {
     pub const fn plan_generation(&self) -> u64 {
         self.plan_generation
     }
+}
 
-    /// Recompute `led_positions` for every zone from its topology.
-    fn rebuild_positions(&mut self) {
-        let layout = Arc::make_mut(&mut self.layout);
+fn prepare_layout(
+    layout: &mut SpatialLayout,
+    plan_generation: u64,
+) -> Result<Arc<[PreparedZonePlan]>, SpatialPlanError> {
+    validate_canvas_descriptor(layout.canvas_width, layout.canvas_height)?;
 
-        for zone in &mut layout.zones {
-            zone.led_positions = topology::generate_positions(&zone.topology);
-        }
-        self.plan_generation = self.plan_generation.saturating_add(1);
-        self.prepared_zones = layout
-            .zones
-            .iter()
-            .filter(|zone| is_led_sampled_zone(zone))
-            .map(|zone| sampler::prepare_zone(zone, layout, self.plan_generation))
-            .collect::<Vec<_>>()
-            .into();
+    for zone in &mut layout.zones {
+        zone.led_positions = topology::generate_positions(&zone.topology);
     }
+    layout
+        .zones
+        .iter()
+        .filter(|zone| is_led_sampled_zone(zone))
+        .map(|zone| sampler::prepare_zone(zone, layout, plan_generation))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Into::into)
+}
+
+fn validate_canvas_descriptor(width: u32, height: u32) -> Result<usize, SpatialPlanError> {
+    if width == 0 || height == 0 {
+        return Err(SpatialPlanError::EmptyCanvas { width, height });
+    }
+    SurfaceDescriptor::rgba8888(width, height)
+        .checked_byte_len()
+        .ok_or(SpatialPlanError::CanvasByteLengthOverflow { width, height })
 }

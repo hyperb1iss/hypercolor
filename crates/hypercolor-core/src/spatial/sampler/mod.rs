@@ -18,6 +18,7 @@ use hypercolor_types::spatial::{
 };
 
 use super::plan::{PreparedZonePlan, PreparedZoneSamples};
+use super::{SpatialPlanError, validate_canvas_descriptor};
 use resample::{
     prepare_area_sample_for_position, prepare_bilinear_sample_for_position,
     prepare_gaussian_kernel, prepare_gaussian_sample_for_position, prepare_nearest_sample,
@@ -111,12 +112,11 @@ fn to_sampling_method(mode: &SamplingMode) -> SamplingMethod {
 // ── Zone preparation ───────────────────────────────────────────────────────
 
 /// Build the immutable sampling plan for a zone.
-#[must_use]
 pub(crate) fn prepare_zone(
     zone: &Output,
     layout: &SpatialLayout,
     plan_generation: u64,
-) -> PreparedZonePlan {
+) -> Result<PreparedZonePlan, SpatialPlanError> {
     let mode = resolve_sampling_mode(zone, layout);
     let edge = resolve_edge_behavior(zone, layout);
     let sample_positions = zone
@@ -137,7 +137,7 @@ pub(crate) fn prepare_zone(
                         layout.canvas_height,
                     )
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             let has_attenuation = samples
                 .iter()
                 .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
@@ -155,7 +155,7 @@ pub(crate) fn prepare_zone(
                         layout.canvas_height,
                     )
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             let has_attenuation = samples
                 .iter()
                 .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
@@ -182,7 +182,7 @@ pub(crate) fn prepare_zone(
             (PreparedZoneSamples::Area(samples), has_attenuation)
         }
         SamplingMode::GaussianArea { sigma, radius } => {
-            let (weights, weight_sum) = prepare_gaussian_kernel(sigma, radius);
+            let (weights, weight_sum) = prepare_gaussian_kernel(sigma, radius)?;
             let samples = sample_positions
                 .iter()
                 .copied()
@@ -210,7 +210,7 @@ pub(crate) fn prepare_zone(
         }
     };
 
-    PreparedZonePlan {
+    Ok(PreparedZonePlan {
         plan_generation,
         zone_id: zone.id.clone(),
         sampling_mode: mode,
@@ -220,7 +220,7 @@ pub(crate) fn prepare_zone(
         prepared_canvas_width: layout.canvas_width,
         prepared_canvas_height: layout.canvas_height,
         prepared_samples,
-    }
+    })
 }
 
 // ── Public sampling API ────────────────────────────────────────────────────
@@ -300,11 +300,12 @@ pub fn sample_led(
     let method = to_sampling_method(mode);
 
     let bytes = canvas.as_rgba_bytes();
-    #[allow(
-        clippy::as_conversions,
-        reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
-    )]
-    let row_stride = canvas.width() as usize * hypercolor_types::canvas::BYTES_PER_PIXEL;
+    let Some(row_stride) = usize::try_from(canvas.width())
+        .ok()
+        .and_then(|width| width.checked_mul(hypercolor_types::canvas::BYTES_PER_PIXEL))
+    else {
+        return Rgba::new(0, 0, 0, 255);
+    };
     let color = sample_srgb_rgb(canvas, bytes, row_stride, canvas_pos, method, edge);
     Rgba::new(color[0], color[1], color[2], 255)
 }
@@ -315,6 +316,11 @@ pub fn sample_led(
 /// through the zone's affine placement and sampled from the canvas.
 #[must_use]
 pub fn sample_zone(canvas: &Canvas, zone: &Output, layout: &SpatialLayout) -> Vec<[u8; 3]> {
-    let prepared = prepare_zone(zone, layout, 0);
-    sample_prepared_zone(canvas, &prepared)
+    if validate_canvas_descriptor(layout.canvas_width, layout.canvas_height).is_err() {
+        return Vec::new();
+    }
+    prepare_zone(zone, layout, 0).map_or_else(
+        |_| Vec::new(),
+        |prepared| sample_prepared_zone(canvas, &prepared),
+    )
 }

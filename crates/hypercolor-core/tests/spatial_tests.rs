@@ -5,8 +5,8 @@
 //! algorithms produce the expected LED colors.
 
 use hypercolor_core::spatial::{
-    DISPLAY_ZONE_NAME, PreparedZoneSamples, SpatialEngine, generate_positions, is_display_zone,
-    is_led_sampled_zone, sample_led,
+    DISPLAY_ZONE_NAME, PreparedZoneSamples, SpatialEngine, SpatialPlanError, generate_positions,
+    is_display_zone, is_led_sampled_zone, sample_led,
 };
 use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb, srgb_to_linear};
 use hypercolor_types::event::ZoneColors;
@@ -849,6 +849,7 @@ fn spatial_engine_exposes_prepared_sampling_plan() {
 }
 
 #[test]
+#[cfg(target_pointer_width = "64")]
 fn spatial_plan_preserves_offsets_beyond_four_gibibytes() {
     let width = 32_769_u32;
     let height = 32_768_u32;
@@ -871,7 +872,8 @@ fn spatial_plan_preserves_offsets_beyond_four_gibibytes() {
         NormalizedPosition::new(0.0, 0.0),
         Some(SamplingMode::Bilinear),
     );
-    let engine = SpatialEngine::new(test_layout(vec![nearest, bilinear], width, height));
+    let engine = SpatialEngine::try_new(test_layout(vec![nearest, bilinear], width, height))
+        .expect("large descriptor is addressable on 64-bit hosts");
     let plan = engine.sampling_plan();
 
     match &plan[0].prepared_samples {
@@ -884,6 +886,138 @@ fn spatial_plan_preserves_offsets_beyond_four_gibibytes() {
         }
         other => panic!("expected bilinear prepared samples, got {other:?}"),
     }
+}
+
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn area_and_gaussian_plans_preserve_unsigned_dimension_boundaries() {
+    let signed_max = u32::try_from(i32::MAX).expect("i32 maximum fits u32");
+    for width in [signed_max, signed_max + 1, u32::MAX] {
+        let area = custom_zone(
+            "area",
+            LedTopology::Point,
+            NormalizedPosition::new(1.0, 0.5),
+            NormalizedPosition::new(0.0, 0.0),
+            Some(SamplingMode::AreaAverage {
+                radius_x: 1.0,
+                radius_y: 1.0,
+            }),
+        );
+        let gaussian = custom_zone(
+            "gaussian",
+            LedTopology::Point,
+            NormalizedPosition::new(1.0, 0.5),
+            NormalizedPosition::new(0.0, 0.0),
+            Some(SamplingMode::GaussianArea {
+                sigma: 1.0,
+                radius: 1,
+            }),
+        );
+        let engine = SpatialEngine::try_new(test_layout(vec![area, gaussian], width, 1))
+            .expect("single-row boundary descriptor is addressable on 64-bit hosts");
+        let plan = engine.sampling_plan();
+
+        let PreparedZoneSamples::Area(area_samples) = &plan[0].prepared_samples else {
+            panic!("expected area samples");
+        };
+        assert_eq!(area_samples[0].canvas_width, width);
+        assert_eq!(area_samples[0].canvas_height, 1);
+        assert_eq!(area_samples[0].center_x, width - 1);
+        assert_eq!(area_samples[0].center_y, 0);
+        assert_eq!(area_samples[0].radius, 1);
+
+        let PreparedZoneSamples::Gaussian(gaussian_samples) = &plan[1].prepared_samples else {
+            panic!("expected gaussian samples");
+        };
+        assert_eq!(gaussian_samples.samples[0].canvas_width, width);
+        assert_eq!(gaussian_samples.samples[0].canvas_height, 1);
+        assert_eq!(gaussian_samples.samples[0].center_x, width - 1);
+        assert_eq!(gaussian_samples.samples[0].center_y, 0);
+        assert_eq!(gaussian_samples.samples[0].radius, 1);
+    }
+}
+
+#[test]
+fn area_radius_preserves_values_beyond_the_signed_coordinate_range() {
+    let radius = 2_147_483_648.0_f32;
+    let zone = custom_zone(
+        "area",
+        LedTopology::Point,
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(0.0, 0.0),
+        Some(SamplingMode::AreaAverage {
+            radius_x: radius,
+            radius_y: radius,
+        }),
+    );
+    let engine = SpatialEngine::try_new(test_layout(vec![zone], 1, 1))
+        .expect("area planning does not allocate its sampling window");
+    let plan = engine.sampling_plan();
+    let PreparedZoneSamples::Area(samples) = &plan[0].prepared_samples else {
+        panic!("expected area samples");
+    };
+    assert_eq!(samples[0].radius, 2_147_483_648);
+}
+
+#[test]
+fn gaussian_radius_beyond_signed_range_returns_typed_kernel_error() {
+    let radius = u32::try_from(i32::MAX).expect("i32 maximum fits u32") + 1;
+    let zone = custom_zone(
+        "gaussian",
+        LedTopology::Point,
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(0.0, 0.0),
+        Some(SamplingMode::GaussianArea { sigma: 1.0, radius }),
+    );
+
+    assert_eq!(
+        SpatialEngine::try_new(test_layout(vec![zone], 1, 1))
+            .expect_err("unaddressable kernel must fail before allocation"),
+        SpatialPlanError::GaussianKernelUnaddressable { radius }
+    );
+}
+
+#[test]
+fn unaddressable_spatial_descriptor_returns_error_without_building_a_plan() {
+    #[cfg(target_pointer_width = "64")]
+    let dimensions = (u32::MAX, u32::MAX);
+    #[cfg(target_pointer_width = "32")]
+    let dimensions = (u32::MAX, 1);
+
+    let error = SpatialEngine::try_new(test_layout(Vec::new(), dimensions.0, dimensions.1))
+        .expect_err("descriptor must exceed the host address space");
+    assert_eq!(
+        error,
+        SpatialPlanError::CanvasByteLengthOverflow {
+            width: dimensions.0,
+            height: dimensions.1,
+        }
+    );
+}
+
+#[test]
+fn failed_layout_update_preserves_previous_layout_plan_and_samples() {
+    let zone = full_canvas_zone("point", LedTopology::Point);
+    let mut engine =
+        SpatialEngine::try_new(test_layout(vec![zone], 4, 1)).expect("initial layout is valid");
+    let canvas = horizontal_gradient(4, 1, Rgba::new(0, 0, 0, 255), Rgba::new(255, 255, 255, 255));
+    let previous_layout = engine.layout();
+    let previous_plan = engine.sampling_plan();
+    let previous_generation = engine.plan_generation();
+    let previous_samples = engine.sample(&canvas);
+
+    assert!(matches!(
+        engine.try_update_layout(test_layout(Vec::new(), u32::MAX, u32::MAX)),
+        Err(SpatialPlanError::CanvasByteLengthOverflow { .. })
+    ));
+
+    assert!(std::sync::Arc::ptr_eq(&engine.layout(), &previous_layout));
+    assert!(std::sync::Arc::ptr_eq(
+        &engine.sampling_plan(),
+        &previous_plan
+    ));
+    assert_eq!(engine.plan_generation(), previous_generation);
+    assert_eq!(engine.sample(&canvas), previous_samples);
 }
 
 #[test]
@@ -926,7 +1060,7 @@ fn spatial_engine_prepares_gaussian_sampling_plan() {
         PreparedZoneSamples::Gaussian(samples) => {
             assert_eq!(samples.samples.len(), 1);
             assert_eq!(samples.weights.len(), 9);
-            assert!(samples.weight_sum > u32::from(u16::MAX));
+            assert!(samples.weight_sum > u64::from(u16::MAX));
         }
         other => panic!("expected gaussian prepared samples, got {other:?}"),
     }

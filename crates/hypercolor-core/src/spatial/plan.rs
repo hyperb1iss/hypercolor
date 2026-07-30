@@ -49,11 +49,11 @@ pub struct PreparedBilinearSample {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedAreaSample {
-    pub center_x: i32,
-    pub center_y: i32,
-    pub radius: i32,
-    pub canvas_width: i32,
-    pub canvas_height: i32,
+    pub center_x: u32,
+    pub center_y: u32,
+    pub radius: u32,
+    pub canvas_width: u32,
+    pub canvas_height: u32,
     pub attenuation: u16,
 }
 
@@ -61,15 +61,15 @@ pub struct PreparedAreaSample {
 pub struct PreparedGaussianSamples {
     pub samples: Vec<PreparedGaussianSample>,
     pub weights: Vec<u16>,
-    pub weight_sum: u32,
+    pub weight_sum: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedGaussianSample {
-    pub center_x: i32,
-    pub center_y: i32,
-    pub radius: i32,
-    pub canvas_width: i32,
-    pub canvas_height: i32,
+    pub center_x: u32,
+    pub center_y: u32,
+    pub radius: u32,
+    pub canvas_width: u32,
+    pub canvas_height: u32,
     pub attenuation: u16,
 }
