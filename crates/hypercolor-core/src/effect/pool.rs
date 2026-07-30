@@ -34,7 +34,7 @@ pub struct EffectPool {
 /// Fully constructed effect-pool changes that can be committed without failure.
 pub struct PreparedEffectPoolReconcile {
     slots: HashMap<EffectSlotKey, EffectSlot>,
-    layer_states: HashMap<EffectSlotKey, SceneLayer>,
+    reused_keys: Vec<EffectSlotKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -102,8 +102,8 @@ impl EffectPool {
         let desired_layers = desired_effect_layers(groups);
         let mut slots = HashMap::new();
         slots.try_reserve(desired_layers.len())?;
-        let mut layer_states = HashMap::new();
-        layer_states.try_reserve(desired_layers.len())?;
+        let mut reused_keys = Vec::new();
+        reused_keys.try_reserve(desired_layers.len())?;
 
         for (group, layer) in desired_layers {
             let Some(source) = layer_effect_source(&layer) else {
@@ -120,52 +120,42 @@ impl EffectPool {
                 .display_target
                 .as_ref()
                 .and_then(|_| display_descriptors.get(&group.id));
-            let needs_rebuild = self.slots.get(&key).is_none_or(|slot| {
+            let needs_replacement = self.slots.get(&key).is_none_or(|slot| {
                 slot.needs_rebuild(
                     resolved_effect_id,
                     entry,
                     display_descriptor,
                     group.layout.canvas_width,
                     group.layout.canvas_height,
-                )
+                ) || slot.layer_source != source
             });
-            if needs_rebuild {
+            if needs_replacement {
                 let slot = EffectSlot::build(
                     entry,
                     group,
-                    &layer,
+                    source,
                     self.asset_library.as_ref(),
                     display_descriptor.cloned(),
                 )?;
                 slots.insert(key, slot);
+            } else {
+                reused_keys.push(key);
             }
-            layer_states.insert(key, layer);
         }
 
-        Ok(PreparedEffectPoolReconcile {
-            slots,
-            layer_states,
-        })
+        Ok(PreparedEffectPoolReconcile { slots, reused_keys })
     }
 
     /// Commit a previously prepared reconciliation without fallible work.
     pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) {
         let PreparedEffectPoolReconcile {
             mut slots,
-            layer_states,
+            reused_keys,
         } = prepared;
-        for (key, mut slot) in std::mem::take(&mut self.slots) {
-            if slots.contains_key(&key) {
-                continue;
-            }
-            if let Some(layer) = layer_states.get(&key) {
-                slot.sync_layer_state(layer);
+        let mut live_slots = std::mem::take(&mut self.slots);
+        for key in reused_keys {
+            if let Some(slot) = live_slots.remove(&key) {
                 slots.insert(key, slot);
-            }
-        }
-        for (key, slot) in &mut slots {
-            if let Some(layer) = layer_states.get(key) {
-                slot.sync_layer_state(layer);
             }
         }
         self.slots = slots;
@@ -381,6 +371,7 @@ impl Default for EffectPool {
 
 struct EffectSlot {
     effect_id: EffectId,
+    layer_source: LayerEffectSource,
     registry_metadata: EffectMetadata,
     registry_source_path: PathBuf,
     registry_modified: SystemTime,
@@ -399,7 +390,7 @@ impl EffectSlot {
     fn build(
         entry: &EffectEntry,
         group: &Zone,
-        layer: &SceneLayer,
+        layer_source: LayerEffectSource,
         asset_library: Option<&Arc<RwLock<AssetLibrary>>>,
         display_descriptor: Option<DisplayDescriptor>,
     ) -> Result<Self> {
@@ -418,6 +409,7 @@ impl EffectSlot {
 
         let mut slot = Self {
             effect_id: entry.metadata.id,
+            layer_source: layer_source.clone(),
             registry_metadata: entry.metadata.clone(),
             registry_source_path: entry.source_path.clone(),
             registry_modified: entry.modified,
@@ -431,7 +423,7 @@ impl EffectSlot {
             elapsed: Duration::ZERO,
             frame_number: 0,
         };
-        slot.sync_layer_state(layer);
+        slot.sync_layer_state(&layer_source);
         Ok(slot)
     }
 
@@ -452,13 +444,8 @@ impl EffectSlot {
             || self.canvas_height != canvas_height
     }
 
-    fn sync_layer_state(&mut self, layer: &SceneLayer) {
+    fn sync_layer_state(&mut self, source: &LayerEffectSource) {
         let mut desired = HashMap::new();
-        let Some(source) = layer_effect_source(layer) else {
-            self.controls.clear();
-            self.binding_state.clear();
-            return;
-        };
 
         for definition in &mut self.metadata.controls {
             let next_binding = source
@@ -986,6 +973,11 @@ mod tests {
         let registry_metadata = spy_metadata(effect_id);
         EffectSlot {
             effect_id,
+            layer_source: super::LayerEffectSource {
+                effect_id,
+                controls: HashMap::new(),
+                control_bindings: HashMap::new(),
+            },
             registry_metadata: registry_metadata.clone(),
             registry_source_path: PathBuf::from("mock/destroy-spy.wgsl"),
             registry_modified: SystemTime::UNIX_EPOCH,
@@ -1005,6 +997,11 @@ mod tests {
         let registry_metadata = spy_metadata(effect_id);
         EffectSlot {
             effect_id,
+            layer_source: super::LayerEffectSource {
+                effect_id,
+                controls: HashMap::new(),
+                control_bindings: HashMap::new(),
+            },
             registry_metadata: registry_metadata.clone(),
             registry_source_path: PathBuf::from("mock/advance-spy.wgsl"),
             registry_modified: SystemTime::UNIX_EPOCH,

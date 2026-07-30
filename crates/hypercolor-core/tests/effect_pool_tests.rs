@@ -204,6 +204,62 @@ fn abandoned_prepared_effect_pool_keeps_live_slots_renderable() {
 }
 
 #[test]
+fn changed_controls_replace_slot_only_when_prepared_pool_commits() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut live_group = render_group(ZoneId::new(), solid_id);
+    live_group
+        .controls
+        .insert("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    let mut candidate_group = live_group.clone();
+    candidate_group
+        .controls
+        .insert("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        std::slice::from_ref(&live_group),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live group should reconcile");
+
+    let prepared = pool
+        .prepare_reconcile(
+            std::slice::from_ref(&candidate_group),
+            &registry,
+            &HashMap::new(),
+        )
+        .expect("changed controls should prepare a replacement slot");
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_group_into(
+        &live_group,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("live slot should remain unchanged during preparation");
+    assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
+
+    pool.commit_reconcile(prepared);
+    pool.render_group_into(
+        &candidate_group,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("committed replacement slot should render");
+    assert_eq!(top_left(&canvas), Rgba::new(0, 0, 255, 255));
+}
+
+#[test]
 fn effect_pool_hot_swaps_effects_for_same_group() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");

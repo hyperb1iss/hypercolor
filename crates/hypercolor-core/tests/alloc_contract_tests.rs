@@ -5,11 +5,13 @@ compile_error!(
 
 use std::{
     alloc::System,
+    collections::HashMap,
     hint::black_box,
     sync::Arc,
     time::{Duration, Instant},
 };
 
+use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::realtime::{AudioFrameRing, PushStats, push_frames};
 use hypercolor_core::input::routing::{
@@ -31,6 +33,9 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig};
 use hypercolor_core::types::event::TimedInputEvent;
+use hypercolor_types::effect::ControlValue;
+use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
 #[cfg_attr(not(feature = "servo"), global_allocator)]
@@ -57,6 +62,67 @@ fn preallocated_control(storage: &mut Vec<u8>) -> Stats {
     let value = storage.pop();
     black_box(value);
 
+    region.change()
+}
+
+fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
+    let mut registry = EffectRegistry::new(Vec::new());
+    register_builtin_effects(&mut registry);
+    let effect_id = registry
+        .iter()
+        .find_map(|(id, entry)| {
+            (entry.metadata.source.source_stem() == Some("solid_color")).then_some(*id)
+        })
+        .expect("solid color effect should be registered");
+    let layout = SpatialLayout {
+        id: "allocation-pool".to_owned(),
+        name: "Allocation Pool".to_owned(),
+        description: None,
+        canvas_width: 8,
+        canvas_height: 8,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let mut group = Zone {
+        id: ZoneId::new(),
+        name: "Allocation Group".to_owned(),
+        description: None,
+        effect_id: Some(effect_id),
+        controls: HashMap::from([(
+            "color".to_owned(),
+            ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        )]),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: ZoneRole::Custom,
+        controls_version: 0,
+        layers_version: 0,
+    };
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
+        .expect("live effect pool should prepare");
+    if change_controls {
+        group.controls.insert(
+            "color".to_owned(),
+            ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
+        );
+    }
+    let prepared = pool
+        .prepare_reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
+        .expect("candidate effect pool should prepare");
+
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    black_box(&mut pool).commit_reconcile(black_box(prepared));
     region.change()
 }
 
@@ -706,6 +772,20 @@ fn counting_allocator_is_active_and_scoped() {
             < analyzer_construction.bytes_allocated,
         "prepared commit rebuilt heavy analyzer state: commit={first_audio_commit:?}, construction={analyzer_construction:?}"
     );
+
+    for commit in [
+        prepared_effect_pool_commit_round(false),
+        prepared_effect_pool_commit_round(true),
+    ] {
+        assert_eq!(
+            commit.allocations, 0,
+            "prepared pool commit allocated: {commit:?}"
+        );
+        assert_eq!(
+            commit.reallocations, 0,
+            "prepared pool commit reallocated: {commit:?}"
+        );
+    }
 
     #[cfg(target_os = "linux")]
     {
