@@ -10,6 +10,9 @@ use std::path::Path;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(target_os = "windows")]
+pub use windows::DestinationIdentity;
+
 /// Atomically replace `destination` with `source` on the same filesystem.
 ///
 /// Windows replacement requests write-through durability from the operating

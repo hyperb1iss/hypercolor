@@ -192,8 +192,8 @@ fn equivalent_parent_aliases_share_generation_order() {
 #[test]
 fn windows_case_aliases_share_generation_order() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let uppercase = directory.path().join("STATE.JSON");
-    let lowercase = directory.path().join("state.json");
+    let uppercase = directory.path().join("ÉTAT.JSON");
+    let lowercase = directory.path().join("état.json");
     let first = AtomicFileWriter::new(&uppercase).expect("uppercase writer");
     let older = first.reserve();
     let second = AtomicFileWriter::new(&lowercase).expect("lowercase writer");
@@ -208,6 +208,121 @@ fn windows_case_aliases_share_generation_order() {
         AtomicWriteOutcome::Superseded
     );
     assert_eq!(fs::read(&lowercase).expect("read case alias"), b"new");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_parent_symlink_aliases_share_generation_order() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let target = directory.path().join("target");
+    let alias = directory.path().join("alias");
+    fs::create_dir(&target).expect("target directory");
+    if let Err(error) = std::os::windows::fs::symlink_dir(&target, &alias) {
+        eprintln!("skipping parent symlink identity test: {error}");
+        return;
+    }
+    let first = AtomicFileWriter::new(&target.join("state.json")).expect("target writer");
+    let older = first.reserve();
+    let second = AtomicFileWriter::new(&alias.join("state.json")).expect("symlink writer");
+    let newer = second.reserve();
+
+    assert_eq!(
+        newer.write(b"new").expect("newer symlink write"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        older.write(b"old").expect("older symlink write"),
+        AtomicWriteOutcome::Superseded
+    );
+    assert_eq!(
+        fs::read(target.join("state.json")).expect("read symlink target"),
+        b"new"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_case_sensitive_directory_keeps_case_variants_distinct() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let parent = directory.path().join("sensitive");
+    fs::create_dir(&parent).expect("case-sensitive candidate directory");
+    let output = std::process::Command::new("fsutil.exe")
+        .args(["file", "SetCaseSensitiveInfo"])
+        .arg(&parent)
+        .arg("enable")
+        .output()
+        .expect("fsutil should launch");
+    if !output.status.success() {
+        eprintln!(
+            "skipping case-sensitive directory test: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        return;
+    }
+
+    let uppercase = AtomicFileWriter::new(&parent.join("STATE.JSON")).expect("uppercase writer");
+    let older = uppercase.reserve();
+    let lowercase = AtomicFileWriter::new(&parent.join("state.json")).expect("lowercase writer");
+
+    assert_eq!(
+        lowercase.write(b"lower").expect("lowercase write"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        older.write(b"upper").expect("uppercase write"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        fs::read(parent.join("STATE.JSON")).expect("read upper"),
+        b"upper"
+    );
+    assert_eq!(
+        fs::read(parent.join("state.json")).expect("read lower"),
+        b"lower"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_verbatim_trailing_names_remain_distinct_when_supported() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let parent = fs::canonicalize(directory.path()).expect("canonical verbatim parent");
+    let plain = parent.join("state.json");
+    let dotted = parent.join("state.json.");
+    let spaced = parent.join("state.json ");
+    fs::write(&plain, b"plain-probe").expect("write plain probe");
+    if let Err(error) = fs::write(&dotted, b"dot-probe") {
+        eprintln!("skipping trailing-name identity test: {error}");
+        return;
+    }
+    if let Err(error) = fs::write(&spaced, b"space-probe") {
+        eprintln!("skipping trailing-name identity test: {error}");
+        return;
+    }
+    if fs::read(&plain).expect("read plain probe") != b"plain-probe" {
+        eprintln!("skipping trailing-name identity test: filesystem aliases trailing names");
+        return;
+    }
+
+    let plain_writer = AtomicFileWriter::new(&plain).expect("plain writer");
+    let older_plain = plain_writer.reserve();
+    let dotted_writer = AtomicFileWriter::new(&dotted).expect("dotted writer");
+    let spaced_writer = AtomicFileWriter::new(&spaced).expect("spaced writer");
+    assert_eq!(
+        dotted_writer.write(b"dot").expect("dotted write"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        spaced_writer.write(b"space").expect("spaced write"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        older_plain.write(b"plain").expect("plain write"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(fs::read(&plain).expect("read plain"), b"plain");
+    assert_eq!(fs::read(&dotted).expect("read dotted"), b"dot");
+    assert_eq!(fs::read(&spaced).expect("read spaced"), b"space");
 }
 
 #[test]

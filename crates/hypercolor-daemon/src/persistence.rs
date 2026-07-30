@@ -3,7 +3,9 @@
 //! Coordinators order writers inside this process. The daemon's single-instance
 //! guard is the cross-process ownership contract for these files.
 
+#[cfg(not(windows))]
 use std::collections::HashMap;
+#[cfg(not(windows))]
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
@@ -18,15 +20,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Serialize;
 
-#[cfg(windows)]
-use std::ffi::OsString;
-#[cfg(windows)]
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
 use tempfile::NamedTempFile;
 
+#[cfg(not(windows))]
 static DESTINATIONS: LazyLock<Mutex<HashMap<PathBuf, Weak<Destination>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(windows)]
+static DESTINATIONS: LazyLock<Mutex<Vec<RegisteredDestination>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 static RETRY_SUPERVISOR: OnceLock<Result<Arc<RetrySupervisor>, String>> = OnceLock::new();
 #[cfg(feature = "persistence-test-hooks")]
 thread_local! {
@@ -225,6 +226,13 @@ struct Destination {
     injected_replace_failures: AtomicUsize,
 }
 
+#[cfg(windows)]
+#[derive(Debug)]
+struct RegisteredDestination {
+    identity: hypercolor_platform_fs::DestinationIdentity,
+    destination: Weak<Destination>,
+}
+
 #[derive(Debug, Default)]
 struct DestinationState {
     next_generation: u64,
@@ -280,14 +288,41 @@ impl AtomicFileWriter {
                 source,
             })?;
         let canonical_path = canonical_parent.join(file_name);
+
+        #[cfg(windows)]
+        let identity =
+            hypercolor_platform_fs::DestinationIdentity::resolve(&canonical_parent, file_name)
+                .map_err(|source| PersistenceError::ResolveDirectory {
+                    path: canonical_parent.clone(),
+                    source,
+                })?;
+        #[cfg(not(windows))]
         let key = destination_key(&canonical_parent, file_name);
 
         let mut destinations = DESTINATIONS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        destinations.retain(|_, destination| destination.strong_count() > 0);
-        if let Some(destination) = destinations.get(&key).and_then(Weak::upgrade) {
-            return Ok(Self { destination });
+
+        #[cfg(windows)]
+        {
+            destinations.retain(|registered| registered.destination.strong_count() > 0);
+            if let Some(destination) = destinations.iter().find_map(|registered| {
+                registered
+                    .identity
+                    .equivalent(&identity)
+                    .then(|| registered.destination.upgrade())
+                    .flatten()
+            }) {
+                return Ok(Self { destination });
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            destinations.retain(|_, destination| destination.strong_count() > 0);
+            if let Some(destination) = destinations.get(&key).and_then(Weak::upgrade) {
+                return Ok(Self { destination });
+            }
         }
 
         let destination = Arc::new(Destination {
@@ -298,6 +333,13 @@ impl AtomicFileWriter {
             #[cfg(feature = "persistence-test-hooks")]
             injected_replace_failures: AtomicUsize::new(0),
         });
+
+        #[cfg(windows)]
+        destinations.push(RegisteredDestination {
+            identity,
+            destination: Arc::downgrade(&destination),
+        });
+        #[cfg(not(windows))]
         destinations.insert(key, Arc::downgrade(&destination));
         Ok(Self { destination })
     }
@@ -794,12 +836,26 @@ pub fn flush_all(timeout: Duration) -> PersistenceFlushReport {
         let mut destinations = DESTINATIONS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        destinations.retain(|_, destination| destination.strong_count() > 0);
-        destinations
-            .values()
-            .filter_map(Weak::upgrade)
-            .map(|destination| AtomicFileWriter { destination })
-            .collect::<Vec<_>>()
+
+        #[cfg(windows)]
+        {
+            destinations.retain(|registered| registered.destination.strong_count() > 0);
+            destinations
+                .iter()
+                .filter_map(|registered| registered.destination.upgrade())
+                .map(|destination| AtomicFileWriter { destination })
+                .collect::<Vec<_>>()
+        }
+
+        #[cfg(not(windows))]
+        {
+            destinations.retain(|_, destination| destination.strong_count() > 0);
+            destinations
+                .values()
+                .filter_map(Weak::upgrade)
+                .map(|destination| AtomicFileWriter { destination })
+                .collect::<Vec<_>>()
+        }
     };
     let deadline = Instant::now() + timeout;
     let mut report = PersistenceFlushReport::default();
@@ -819,18 +875,6 @@ fn destination_parent(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
-}
-
-#[cfg(windows)]
-fn destination_key(parent: &Path, file_name: &OsStr) -> PathBuf {
-    let normalized = file_name
-        .encode_wide()
-        .map(|unit| match unit {
-            0x41..=0x5a => unit + 0x20,
-            _ => unit,
-        })
-        .collect::<Vec<_>>();
-    parent.join(OsString::from_wide(&normalized))
 }
 
 #[cfg(not(windows))]
