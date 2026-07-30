@@ -8,6 +8,7 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::{EffectErrorFallbackPolicy, HypercolorConfig};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
@@ -23,7 +24,6 @@ use crate::interactive_preview::{
 };
 use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
-use crate::scene_transactions::apply_layout_update;
 use crate::session::{SessionController, current_global_brightness, set_global_brightness};
 use crate::simulators::activate_simulated_displays;
 
@@ -87,6 +87,11 @@ impl DaemonState {
         }
 
         // Spawn the render thread.
+        let initial_canvas_dims = {
+            let spatial = self.spatial_engine.read().await;
+            let layout = spatial.layout();
+            CanvasDims::new(layout.canvas_width, layout.canvas_height)
+        };
         let rt_state = RenderThreadState {
             effect_registry: Arc::clone(&self.effect_registry),
             asset_library: Arc::clone(&self.asset_library),
@@ -106,7 +111,7 @@ impl DaemonState {
             device_settings: Arc::clone(&self.device_settings),
             scene_transactions: self.scene_transactions.clone(),
             screen_capture_configured: config.capture.enabled,
-            canvas_dims: CanvasDims::new(config.daemon.canvas_width, config.daemon.canvas_height),
+            canvas_dims: initial_canvas_dims,
             render_acceleration_mode: self.render_acceleration.effective_mode,
             #[cfg(feature = "wgpu")]
             render_gpu_device: self.render_acceleration.gpu_render_device.clone(),
@@ -413,17 +418,15 @@ impl DaemonState {
 
         // Restore active layout if persisted.
         if let Some(layout_id) = &snapshot.active_layout_id {
-            let layouts = self.layouts.read().await;
-            if let Some(layout) = layouts.get(layout_id) {
-                match apply_layout_update(
-                    &self.spatial_engine,
-                    &self.scene_manager,
-                    &self.scene_transactions,
-                    layout.clone(),
-                )
-                .await
-                {
-                    Ok(()) => {
+            let layout = self.layouts.read().await.get(layout_id).cloned();
+            if let Some(layout) = layout {
+                match SpatialEngine::try_new(layout.clone()) {
+                    Ok(prepared) => {
+                        *self.spatial_engine.write().await = prepared;
+                        self.scene_manager
+                            .write()
+                            .await
+                            .sync_primary_group_layout(&layout);
                         info!(layout_id, layout_name = %layout.name, "Restored active layout");
                     }
                     Err(error) => {
