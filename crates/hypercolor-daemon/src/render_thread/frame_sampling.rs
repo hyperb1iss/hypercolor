@@ -731,8 +731,16 @@ pub(crate) fn resolve_led_sampling(
         let canvas_status = ensure_cpu_sampling_canvas(state, sampling, render_stage);
         match canvas_status {
             CpuSamplingCanvasStatus::Ready => {
-                if let Some(canvas) = render_stage.composed_frame.sampling_canvas.as_ref() {
-                    sampling_engine.sample_into(canvas, sampling.output_artifacts.zones_mut());
+                if let Some(canvas) = render_stage.composed_frame.sampling_canvas.as_ref()
+                    && let Err(error) = sampling_engine
+                        .try_sample_into(canvas, sampling.output_artifacts.zones_mut())
+                {
+                    warn!(%error, "CPU spatial sampling fallback failed; preserving published output");
+                    if can_hold_published_frame {
+                        render_stage.led_sampling_strategy =
+                            LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+                        refresh_reused_frame_metadata = render_stage.screen_retained;
+                    }
                 }
             }
             CpuSamplingCanvasStatus::Unavailable if can_hold_published_frame => {
@@ -747,9 +755,29 @@ pub(crate) fn resolve_led_sampling(
                 warn_cpu_sampling_canvas_unavailable(
                     "CPU spatial sampling fallback has no resident canvas; sampling a black fallback frame",
                 );
-                let black_canvas =
-                    Canvas::new(state.canvas_dims.width(), state.canvas_dims.height());
-                sampling_engine.sample_into(&black_canvas, sampling.output_artifacts.zones_mut());
+                let sampling_succeeded = match Canvas::try_new(
+                    state.canvas_dims.width(),
+                    state.canvas_dims.height(),
+                ) {
+                    Ok(black_canvas) => match sampling_engine
+                        .try_sample_into(&black_canvas, sampling.output_artifacts.zones_mut())
+                    {
+                        Ok(()) => true,
+                        Err(error) => {
+                            warn!(%error, "Black CPU spatial sampling fallback failed; preserving published output");
+                            false
+                        }
+                    },
+                    Err(error) => {
+                        warn!(%error, "Black CPU fallback canvas allocation failed; preserving published output");
+                        false
+                    }
+                };
+                if !sampling_succeeded && can_hold_published_frame {
+                    render_stage.led_sampling_strategy =
+                        LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+                    refresh_reused_frame_metadata = render_stage.screen_retained;
+                }
             }
         }
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());

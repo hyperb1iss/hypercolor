@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::Canvas;
@@ -127,9 +127,14 @@ pub(crate) async fn maybe_sleep_throttle(
     );
     let canvas = Canvas::from_published_surface(&surface);
     let sample_start = Instant::now();
-    scene_snapshot
+    if let Err(error) = scene_snapshot
         .spatial_engine
-        .sample_into(&canvas, output_artifacts.zones_mut());
+        .try_sample_into(&canvas, output_artifacts.zones_mut())
+    {
+        warn!(%error, "Sleep frame sampling failed; preserving the last published output");
+        let mut render_loop = state.render_loop.write().await;
+        return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
+    }
     let zone_colors = output_artifacts.zones();
     let layout = scene_snapshot.spatial_engine.layout();
     let sample_done_at = Instant::now();

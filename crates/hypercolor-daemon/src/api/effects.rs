@@ -312,9 +312,19 @@ async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
     let (layout, canvas, zones) = {
         let spatial = state.spatial_engine.read().await;
         let layout = spatial.layout();
-        let mut canvas = Canvas::new(layout.canvas_width, layout.canvas_height);
+        let Ok(mut canvas) = Canvas::try_new(layout.canvas_width, layout.canvas_height).inspect_err(
+            |error| {
+                warn!(%error, "Static output canvas allocation failed; preserving the last published output");
+            },
+        ) else {
+            return;
+        };
         canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
-        let zones = spatial.sample(&canvas);
+        let Ok(zones) = spatial.try_sample(&canvas).inspect_err(|error| {
+            warn!(%error, "Static output sampling failed; preserving the last published output");
+        }) else {
+            return;
+        };
         (layout, canvas, zones)
     };
     let frame_number = next_black_frame_number(state);
