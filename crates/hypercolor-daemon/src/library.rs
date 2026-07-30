@@ -17,7 +17,7 @@ use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PresetId,
 };
 
-use crate::persistence::write_atomic;
+use crate::persistence::{AtomicFileWriter, AtomicWriteReservation, PersistenceError};
 
 /// Storage-layer errors for library entities.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -46,6 +46,12 @@ pub enum JsonLibraryStoreOpenError {
         path: PathBuf,
         #[source]
         source: serde_json::Error,
+    },
+    #[error("failed to prepare library persistence at {path}: {source}")]
+    PreparePersistence {
+        path: PathBuf,
+        #[source]
+        source: PersistenceError,
     },
 }
 
@@ -173,8 +179,14 @@ enum JsonPersistError {
     Persist {
         path: PathBuf,
         #[source]
-        source: anyhow::Error,
+        source: PersistenceError,
     },
+}
+
+#[derive(Debug)]
+struct PendingLibrarySnapshot {
+    snapshot: LibrarySnapshot,
+    write: AtomicWriteReservation,
 }
 
 /// JSON-backed persistence for library entities.
@@ -184,6 +196,7 @@ enum JsonPersistError {
 #[derive(Debug)]
 pub struct JsonLibraryStore {
     path: PathBuf,
+    writer: AtomicFileWriter,
     data: RwLock<InMemoryLibraryData>,
 }
 
@@ -210,15 +223,29 @@ impl JsonLibraryStore {
         } else {
             InMemoryLibraryData::default()
         };
+        let writer = AtomicFileWriter::new(&path).map_err(|source| {
+            JsonLibraryStoreOpenError::PreparePersistence {
+                path: path.clone(),
+                source,
+            }
+        })?;
 
         Ok(Self {
             path,
+            writer,
             data: RwLock::new(data),
         })
     }
 
-    fn persist_best_effort(&self, snapshot: &LibrarySnapshot) {
-        if let Err(error) = self.persist_snapshot(snapshot) {
+    fn pending_snapshot(&self, data: &InMemoryLibraryData) -> PendingLibrarySnapshot {
+        PendingLibrarySnapshot {
+            snapshot: LibrarySnapshot::from_data(data),
+            write: self.writer.reserve(),
+        }
+    }
+
+    fn persist_best_effort(&self, pending: PendingLibrarySnapshot) {
+        if let Err(error) = self.persist_snapshot(pending) {
             warn!(
                 path = %self.path.display(),
                 %error,
@@ -227,12 +254,17 @@ impl JsonLibraryStore {
         }
     }
 
-    fn persist_snapshot(&self, snapshot: &LibrarySnapshot) -> Result<(), JsonPersistError> {
-        let bytes = serde_json::to_vec_pretty(snapshot).map_err(JsonPersistError::Serialize)?;
-        write_atomic(&self.path, &bytes).map_err(|source| JsonPersistError::Persist {
-            path: self.path.clone(),
-            source,
-        })
+    fn persist_snapshot(&self, pending: PendingLibrarySnapshot) -> Result<(), JsonPersistError> {
+        let bytes =
+            serde_json::to_vec_pretty(&pending.snapshot).map_err(JsonPersistError::Serialize)?;
+        pending
+            .write
+            .write(&bytes)
+            .map_err(|source| JsonPersistError::Persist {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(())
     }
 }
 
@@ -351,28 +383,28 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn upsert_favorite(&self, effect_id: EffectId, added_at_ms: u64) -> FavoriteEffect {
-        let (favorite, snapshot) = {
+        let (favorite, pending) = {
             let mut data = self.data.write().await;
             let favorite = FavoriteEffect {
                 effect_id,
                 added_at_ms,
             };
             data.favorites.insert(effect_id, favorite.clone());
-            (favorite, LibrarySnapshot::from_data(&data))
+            (favorite, self.pending_snapshot(&data))
         };
-        self.persist_best_effort(&snapshot);
+        self.persist_best_effort(pending);
         favorite
     }
 
     async fn remove_favorite(&self, effect_id: EffectId) -> bool {
-        let (removed, snapshot) = {
+        let (removed, pending) = {
             let mut data = self.data.write().await;
             let removed = data.favorites.remove(&effect_id).is_some();
-            let snapshot = removed.then(|| LibrarySnapshot::from_data(&data));
-            (removed, snapshot)
+            let pending = removed.then(|| self.pending_snapshot(&data));
+            (removed, pending)
         };
-        if let Some(snapshot) = snapshot {
-            self.persist_best_effort(&snapshot);
+        if let Some(pending) = pending {
+            self.persist_best_effort(pending);
         }
         removed
     }
@@ -395,40 +427,40 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn insert_preset(&self, preset: EffectPreset) -> Result<(), LibraryStoreError> {
-        let snapshot = {
+        let pending = {
             let mut data = self.data.write().await;
             if data.presets.contains_key(&preset.id) {
                 return Err(LibraryStoreError::PresetConflict(preset.id));
             }
             data.presets.insert(preset.id, preset);
-            LibrarySnapshot::from_data(&data)
+            self.pending_snapshot(&data)
         };
-        self.persist_best_effort(&snapshot);
+        self.persist_best_effort(pending);
         Ok(())
     }
 
     async fn update_preset(&self, preset: EffectPreset) -> Result<(), LibraryStoreError> {
-        let snapshot = {
+        let pending = {
             let mut data = self.data.write().await;
             if !data.presets.contains_key(&preset.id) {
                 return Err(LibraryStoreError::PresetNotFound(preset.id));
             }
             data.presets.insert(preset.id, preset);
-            LibrarySnapshot::from_data(&data)
+            self.pending_snapshot(&data)
         };
-        self.persist_best_effort(&snapshot);
+        self.persist_best_effort(pending);
         Ok(())
     }
 
     async fn remove_preset(&self, id: PresetId) -> bool {
-        let (removed, snapshot) = {
+        let (removed, pending) = {
             let mut data = self.data.write().await;
             let removed = data.presets.remove(&id).is_some();
-            let snapshot = removed.then(|| LibrarySnapshot::from_data(&data));
-            (removed, snapshot)
+            let pending = removed.then(|| self.pending_snapshot(&data));
+            (removed, pending)
         };
-        if let Some(snapshot) = snapshot {
-            self.persist_best_effort(&snapshot);
+        if let Some(pending) = pending {
+            self.persist_best_effort(pending);
         }
         removed
     }
@@ -451,40 +483,40 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn insert_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError> {
-        let snapshot = {
+        let pending = {
             let mut data = self.data.write().await;
             if data.playlists.contains_key(&playlist.id) {
                 return Err(LibraryStoreError::PlaylistConflict(playlist.id));
             }
             data.playlists.insert(playlist.id, playlist);
-            LibrarySnapshot::from_data(&data)
+            self.pending_snapshot(&data)
         };
-        self.persist_best_effort(&snapshot);
+        self.persist_best_effort(pending);
         Ok(())
     }
 
     async fn update_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError> {
-        let snapshot = {
+        let pending = {
             let mut data = self.data.write().await;
             if !data.playlists.contains_key(&playlist.id) {
                 return Err(LibraryStoreError::PlaylistNotFound(playlist.id));
             }
             data.playlists.insert(playlist.id, playlist);
-            LibrarySnapshot::from_data(&data)
+            self.pending_snapshot(&data)
         };
-        self.persist_best_effort(&snapshot);
+        self.persist_best_effort(pending);
         Ok(())
     }
 
     async fn remove_playlist(&self, id: PlaylistId) -> bool {
-        let (removed, snapshot) = {
+        let (removed, pending) = {
             let mut data = self.data.write().await;
             let removed = data.playlists.remove(&id).is_some();
-            let snapshot = removed.then(|| LibrarySnapshot::from_data(&data));
-            (removed, snapshot)
+            let pending = removed.then(|| self.pending_snapshot(&data));
+            (removed, pending)
         };
-        if let Some(snapshot) = snapshot {
-            self.persist_best_effort(&snapshot);
+        if let Some(pending) = pending {
+            self.persist_best_effort(pending);
         }
         removed
     }
@@ -497,8 +529,8 @@ mod tests {
     use super::{InMemoryLibraryStore, JsonLibraryStore, JsonLibraryStoreOpenError, LibraryStore};
     use hypercolor_types::effect::EffectId;
     use hypercolor_types::library::{
-        EffectPlaylist, EffectPreset, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
-        PresetId,
+        EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PlaylistItem, PlaylistItemId,
+        PlaylistItemTarget, PresetId,
     };
     use tempfile::TempDir;
     use uuid::Uuid;
@@ -657,6 +689,41 @@ mod tests {
         assert_eq!(presets[0].id, preset.id);
         assert_eq!(playlists.len(), 1);
         assert_eq!(playlists[0].id, playlist.id);
+    }
+
+    #[tokio::test]
+    async fn json_store_does_not_resurrect_a_superseded_snapshot() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("library.json");
+        let store = JsonLibraryStore::open(path.clone()).expect("open json store");
+        let effect_id = EffectId::new(Uuid::now_v7());
+
+        let older = {
+            let mut data = store.data.write().await;
+            data.favorites.insert(
+                effect_id,
+                FavoriteEffect {
+                    effect_id,
+                    added_at_ms: 1,
+                },
+            );
+            store.pending_snapshot(&data)
+        };
+        let newer = {
+            let mut data = store.data.write().await;
+            data.favorites.remove(&effect_id);
+            store.pending_snapshot(&data)
+        };
+
+        store
+            .persist_snapshot(newer)
+            .expect("persist newer snapshot");
+        store
+            .persist_snapshot(older)
+            .expect("discard older snapshot");
+
+        let reopened = JsonLibraryStore::open(path).expect("reopen json store");
+        assert!(reopened.list_favorites().await.is_empty());
     }
 
     #[test]

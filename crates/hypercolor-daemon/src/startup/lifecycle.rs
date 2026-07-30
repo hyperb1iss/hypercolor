@@ -338,6 +338,17 @@ impl DaemonState {
     }
 
     async fn persist_runtime_session_snapshot(&self) {
+        let pending_save = match runtime_state::reserve_save(&self.runtime_state_path) {
+            Ok(pending_save) => pending_save,
+            Err(error) => {
+                warn!(
+                    path = %self.runtime_state_path.display(),
+                    %error,
+                    "Failed to reserve runtime session snapshot"
+                );
+                return;
+            }
+        };
         let mut snapshot = {
             let scene_manager = self.scene_manager.read().await;
             runtime_state::snapshot_from_scene_manager(&scene_manager)
@@ -354,7 +365,7 @@ impl DaemonState {
         )
         .await;
 
-        if let Err(error) = runtime_state::save(&self.runtime_state_path, &snapshot) {
+        if let Err(error) = runtime_state::save_reserved(pending_save, &snapshot) {
             warn!(
                 path = %self.runtime_state_path.display(),
                 %error,

@@ -14,7 +14,7 @@ use hypercolor_driver_api::DriverHost;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::scene::{SceneId, Zone};
 
-use crate::persistence::write_atomic;
+use crate::persistence::{AtomicFileWriter, AtomicWriteReservation, PersistenceError};
 
 /// Runtime session snapshot persisted to disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -35,6 +35,13 @@ pub struct RuntimeSessionSnapshot {
 
     /// Driver-scoped runtime cache payloads.
     pub driver_runtime_cache: BTreeMap<String, BTreeMap<String, Value>>,
+}
+
+/// A runtime snapshot write ordered at the owning mutation boundary.
+#[derive(Debug)]
+pub struct RuntimeSnapshotSave {
+    path: PathBuf,
+    write: AtomicWriteReservation,
 }
 
 /// Errors produced while loading/saving runtime snapshots.
@@ -58,7 +65,7 @@ pub enum RuntimeSessionError {
     Persist {
         path: PathBuf,
         #[source]
-        source: anyhow::Error,
+        source: PersistenceError,
     },
 }
 
@@ -141,11 +148,36 @@ pub async fn collect_driver_runtime_cache(
 
 /// Persist a runtime snapshot to `path` using atomic replace semantics.
 pub fn save(path: &Path, snapshot: &RuntimeSessionSnapshot) -> Result<(), RuntimeSessionError> {
-    let bytes = serde_json::to_vec_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
-    write_atomic(path, &bytes).map_err(|source| RuntimeSessionError::Persist {
+    let pending = reserve_save(path)?;
+    save_reserved(pending, snapshot)
+}
+
+/// Reserve a runtime snapshot generation before asynchronous assembly begins.
+pub fn reserve_save(path: &Path) -> Result<RuntimeSnapshotSave, RuntimeSessionError> {
+    let writer = AtomicFileWriter::new(path).map_err(|source| RuntimeSessionError::Persist {
         path: path.to_path_buf(),
         source,
+    })?;
+    Ok(RuntimeSnapshotSave {
+        path: path.to_path_buf(),
+        write: writer.reserve(),
     })
+}
+
+/// Serialize and commit a previously reserved runtime snapshot generation.
+pub fn save_reserved(
+    pending: RuntimeSnapshotSave,
+    snapshot: &RuntimeSessionSnapshot,
+) -> Result<(), RuntimeSessionError> {
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
+    pending
+        .write
+        .write(&bytes)
+        .map_err(|source| RuntimeSessionError::Persist {
+            path: pending.path,
+            source,
+        })?;
+    Ok(())
 }
 
 #[cfg(test)]
