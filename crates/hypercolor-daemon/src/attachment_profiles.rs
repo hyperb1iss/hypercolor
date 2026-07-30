@@ -9,6 +9,8 @@ use anyhow::Context;
 use hypercolor_types::attachment::{ComponentSlot, DeviceComponentProfile};
 use hypercolor_types::device::DeviceInfo;
 
+use crate::persistence::write_atomic;
+
 /// Persistent attachment profile store keyed by physical device ID.
 #[derive(Debug, Clone)]
 pub struct ComponentProfileStore {
@@ -72,20 +74,8 @@ impl ComponentProfileStore {
         )
         .context("failed to serialize attachment profile store")?;
 
-        let tmp_path = self.path.with_extension("tmp");
-        fs::write(&tmp_path, payload).with_context(|| {
-            format!(
-                "failed to write temporary attachment profile store {}",
-                tmp_path.display()
-            )
-        })?;
-        fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "failed to move temporary attachment profile store {} into {}",
-                tmp_path.display(),
-                self.path.display()
-            )
-        })?;
+        write_atomic(&self.path, payload.as_bytes())
+            .context("failed to persist attachment profile store")?;
 
         Ok(())
     }

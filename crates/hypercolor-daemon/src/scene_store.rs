@@ -8,6 +8,8 @@ use anyhow::Context;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
+use crate::persistence::write_atomic;
+
 /// JSON-backed named-scene store.
 #[derive(Debug, Clone, Default)]
 pub struct SceneStore {
@@ -53,16 +55,7 @@ impl SceneStore {
 
         let payload =
             serde_json::to_string_pretty(&self.scenes).context("failed to serialize scenes")?;
-        let tmp_path = self.path.with_extension("tmp");
-        fs::write(&tmp_path, payload)
-            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-        fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "failed to move {} into {}",
-                tmp_path.display(),
-                self.path.display()
-            )
-        })?;
+        write_atomic(&self.path, payload.as_bytes()).context("failed to persist scenes")?;
         Ok(())
     }
 

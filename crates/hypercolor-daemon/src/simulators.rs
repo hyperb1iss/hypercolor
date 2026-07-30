@@ -21,6 +21,7 @@ use crate::discovery::{
     sync_registry_state,
 };
 use crate::logical_devices::LogicalDevice;
+use crate::persistence::write_atomic;
 
 pub const SIMULATED_DISPLAY_BACKEND_ID: &str = "simulator";
 const SIMULATED_DISPLAY_FAMILY: &str = "simulator";
@@ -168,20 +169,8 @@ impl SimulatedDisplayStore {
             displays: self.list(),
         })
         .context("failed to serialize simulated displays")?;
-        let tmp_path = self.path.with_extension("tmp");
-        fs::write(&tmp_path, payload).with_context(|| {
-            format!(
-                "failed to write temporary simulated displays {}",
-                tmp_path.display()
-            )
-        })?;
-        fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "failed to move temporary simulated displays {} into {}",
-                tmp_path.display(),
-                self.path.display()
-            )
-        })?;
+        write_atomic(&self.path, payload.as_bytes())
+            .context("failed to persist simulated displays")?;
         Ok(())
     }
 }

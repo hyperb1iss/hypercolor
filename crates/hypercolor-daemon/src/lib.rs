@@ -23,6 +23,7 @@ pub mod mcp;
 pub mod mdns;
 pub mod network;
 pub mod performance;
+pub mod persistence;
 pub mod playlist_runtime;
 pub mod preview_runtime;
 pub mod profile_store;

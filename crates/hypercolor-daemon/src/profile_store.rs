@@ -11,6 +11,8 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::library::PresetId;
 
+use crate::persistence::write_atomic;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveProfileError {
     AmbiguousName(String),
@@ -122,16 +124,7 @@ impl ProfileStore {
 
         let payload =
             serde_json::to_string_pretty(&self.profiles).context("failed to serialize profiles")?;
-        let tmp_path = self.path.with_extension("tmp");
-        fs::write(&tmp_path, payload)
-            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-        fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "failed to move {} into {}",
-                tmp_path.display(),
-                self.path.display()
-            )
-        })?;
+        write_atomic(&self.path, payload.as_bytes()).context("failed to persist profiles")?;
         Ok(())
     }
 

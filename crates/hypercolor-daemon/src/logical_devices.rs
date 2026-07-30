@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_types::device::DeviceId;
 
+use crate::persistence::write_atomic;
+
 /// One logical device mapped onto a physical device LED range.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogicalDevice {
@@ -344,20 +346,7 @@ pub fn save_segments(path: &Path, store: &HashMap<String, LogicalDevice>) -> any
     let payload = serde_json::to_string_pretty(&entries)
         .context("failed to serialize logical device store")?;
 
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, payload).with_context(|| {
-        format!(
-            "failed to write temporary logical device store {}",
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to move temporary logical device store {} into {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
+    write_atomic(path, payload.as_bytes()).context("failed to persist logical device store")?;
 
     Ok(())
 }

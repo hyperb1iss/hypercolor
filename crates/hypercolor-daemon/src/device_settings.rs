@@ -8,6 +8,8 @@ use anyhow::Context;
 use hypercolor_types::controls::ControlValueMap;
 use serde::{Deserialize, Serialize};
 
+use crate::persistence::write_atomic;
+
 fn default_brightness() -> f32 {
     1.0
 }
@@ -196,20 +198,8 @@ impl DeviceSettingsStore {
             driver_controls: self.snapshot.driver_controls.clone(),
         })
         .context("failed to serialize device settings")?;
-        let tmp_path = self.path.with_extension("tmp");
-        fs::write(&tmp_path, payload).with_context(|| {
-            format!(
-                "failed to write temporary device settings {}",
-                tmp_path.display()
-            )
-        })?;
-        fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "failed to move temporary device settings {} into {}",
-                tmp_path.display(),
-                self.path.display()
-            )
-        })?;
+        write_atomic(&self.path, payload.as_bytes())
+            .context("failed to persist device settings")?;
 
         Ok(())
     }

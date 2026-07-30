@@ -10,6 +10,8 @@ use std::path::Path;
 use anyhow::Context;
 use hypercolor_types::spatial::SpatialLayout;
 
+use crate::persistence::write_atomic;
+
 /// Load persisted spatial layouts from disk.
 ///
 /// Missing files return an empty store.
@@ -63,20 +65,7 @@ pub fn save(path: &Path, store: &HashMap<String, SpatialLayout>) -> anyhow::Resu
     let payload =
         serde_json::to_string_pretty(&entries).context("failed to serialize layout store")?;
 
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, payload).with_context(|| {
-        format!(
-            "failed to write temporary layout store {}",
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to move temporary layout store {} into {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
+    write_atomic(path, payload.as_bytes()).context("failed to persist layout store")?;
 
     Ok(())
 }

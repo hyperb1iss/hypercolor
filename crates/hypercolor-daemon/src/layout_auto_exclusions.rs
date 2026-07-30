@@ -10,6 +10,8 @@ use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::Output;
 use serde::{Deserialize, Serialize};
 
+use crate::persistence::write_atomic;
+
 /// Discovery auto-sync exclusion scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LayoutAutoExclusionKey {
@@ -171,20 +173,7 @@ pub fn save(path: &Path, store: &LayoutAutoExclusionStore) -> anyhow::Result<()>
 
     let payload = serde_json::to_string_pretty(&entries)
         .context("failed to serialize layout auto-exclusions")?;
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, payload).with_context(|| {
-        format!(
-            "failed to write temporary layout auto-exclusion file {}",
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to move temporary layout auto-exclusion file {} into {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
+    write_atomic(path, payload.as_bytes()).context("failed to persist layout auto-exclusions")?;
 
     Ok(())
 }

@@ -6,6 +6,8 @@ use std::path::Path;
 
 use anyhow::Context;
 
+use crate::persistence::write_atomic;
+
 /// Load persisted effect layout associations from disk.
 ///
 /// Missing files return an empty map.
@@ -41,21 +43,8 @@ pub fn save(path: &Path, associations: &HashMap<String, String>) -> anyhow::Resu
 
     let payload = serde_json::to_string_pretty(associations)
         .context("failed to serialize effect layout associations")?;
-    let tmp_path = path.with_extension("tmp");
-
-    fs::write(&tmp_path, payload).with_context(|| {
-        format!(
-            "failed to write temporary effect layout association file {}",
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to move temporary effect layout association file {} into {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
+    write_atomic(path, payload.as_bytes())
+        .context("failed to persist effect layout associations")?;
 
     Ok(())
 }
