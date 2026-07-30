@@ -31,6 +31,13 @@ pub struct EffectPool {
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
 }
 
+/// Fully constructed effect-pool changes that can be committed without failure.
+pub struct PreparedEffectPoolReconcile {
+    desired_keys: HashSet<EffectSlotKey>,
+    replacements: HashMap<EffectSlotKey, EffectSlot>,
+    layer_states: Vec<(EffectSlotKey, SceneLayer)>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EffectSlotKey {
     pub group_id: ZoneId,
@@ -76,13 +83,32 @@ impl EffectPool {
         registry: &EffectRegistry,
         display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
     ) -> Result<()> {
-        let desired_keys = desired_effect_layers(groups)
-            .into_iter()
+        let prepared = self.prepare_reconcile(groups, registry, display_descriptors)?;
+        self.commit_reconcile(prepared);
+        Ok(())
+    }
+
+    /// Construct every replacement renderer before changing the live pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an effect is unavailable or its replacement renderer
+    /// cannot be initialized. The live pool is unchanged on failure.
+    pub fn prepare_reconcile(
+        &self,
+        groups: &[Zone],
+        registry: &EffectRegistry,
+        display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
+    ) -> Result<PreparedEffectPoolReconcile> {
+        let desired_layers = desired_effect_layers(groups);
+        let desired_keys = desired_layers
+            .iter()
             .map(|(group, layer)| EffectSlotKey::new(group.id, layer.id))
             .collect::<HashSet<_>>();
-        self.slots.retain(|key, _| desired_keys.contains(key));
+        let mut replacements = HashMap::new();
+        let mut layer_states = Vec::with_capacity(desired_layers.len());
 
-        for (group, layer) in desired_effect_layers(groups) {
+        for (group, layer) in desired_layers {
             let Some(source) = layer_effect_source(&layer) else {
                 continue;
             };
@@ -98,7 +124,13 @@ impl EffectPool {
                 .as_ref()
                 .and_then(|_| display_descriptors.get(&group.id));
             let needs_rebuild = self.slots.get(&key).is_none_or(|slot| {
-                slot.needs_rebuild(resolved_effect_id, entry, display_descriptor)
+                slot.needs_rebuild(
+                    resolved_effect_id,
+                    entry,
+                    display_descriptor,
+                    group.layout.canvas_width,
+                    group.layout.canvas_height,
+                )
             });
             if needs_rebuild {
                 let slot = EffectSlot::build(
@@ -108,16 +140,28 @@ impl EffectPool {
                     self.asset_library.as_ref(),
                     display_descriptor.cloned(),
                 )?;
-                self.slots.insert(key, slot);
-                continue;
+                replacements.insert(key, slot);
             }
+            layer_states.push((key, layer));
+        }
 
+        Ok(PreparedEffectPoolReconcile {
+            desired_keys,
+            replacements,
+            layer_states,
+        })
+    }
+
+    /// Commit a previously prepared reconciliation without fallible work.
+    pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) {
+        self.slots
+            .retain(|key, _| prepared.desired_keys.contains(key));
+        self.slots.extend(prepared.replacements);
+        for (key, layer) in prepared.layer_states {
             if let Some(slot) = self.slots.get_mut(&key) {
                 slot.sync_layer_state(&layer);
             }
         }
-
-        Ok(())
     }
 
     pub fn clear(&mut self) {
@@ -335,6 +379,8 @@ struct EffectSlot {
     registry_modified: SystemTime,
     metadata: EffectMetadata,
     display_descriptor: Option<DisplayDescriptor>,
+    canvas_width: u32,
+    canvas_height: u32,
     renderer: Box<dyn EffectRenderer>,
     controls: HashMap<String, ControlValue>,
     binding_state: HashMap<String, ActiveBindingState>,
@@ -370,6 +416,8 @@ impl EffectSlot {
             registry_modified: entry.modified,
             metadata: entry.metadata.clone(),
             display_descriptor,
+            canvas_width: group.layout.canvas_width,
+            canvas_height: group.layout.canvas_height,
             renderer,
             controls: HashMap::new(),
             binding_state: HashMap::new(),
@@ -385,12 +433,16 @@ impl EffectSlot {
         effect_id: EffectId,
         entry: &EffectEntry,
         display_descriptor: Option<&DisplayDescriptor>,
+        canvas_width: u32,
+        canvas_height: u32,
     ) -> bool {
         self.effect_id != effect_id
             || self.registry_metadata != entry.metadata
             || self.registry_source_path != entry.source_path
             || self.registry_modified != entry.modified
             || self.display_descriptor.as_ref() != display_descriptor
+            || self.canvas_width != canvas_width
+            || self.canvas_height != canvas_height
     }
 
     fn sync_layer_state(&mut self, layer: &SceneLayer) {
@@ -932,6 +984,8 @@ mod tests {
             registry_modified: SystemTime::UNIX_EPOCH,
             metadata: registry_metadata,
             display_descriptor: None,
+            canvas_width: 1,
+            canvas_height: 1,
             renderer: Box::new(DestroySpyRenderer::new(destroyed)),
             controls: HashMap::new(),
             binding_state: HashMap::new(),
@@ -949,6 +1003,8 @@ mod tests {
             registry_modified: SystemTime::UNIX_EPOCH,
             metadata: registry_metadata,
             display_descriptor: None,
+            canvas_width: 1,
+            canvas_height: 1,
             renderer: Box::new(AdvanceSpyRenderer { advanced }),
             controls: HashMap::new(),
             binding_state: HashMap::new(),

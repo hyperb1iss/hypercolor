@@ -1808,6 +1808,55 @@ impl SceneManager {
         changed
     }
 
+    /// Build the active render groups that would result from synchronizing the
+    /// primary layout, without changing scene state.
+    #[must_use]
+    pub fn active_render_groups_for_primary_layout(
+        &self,
+        layout: &SpatialLayout,
+    ) -> (Arc<[Zone]>, u64) {
+        let Some(scene) = self.active_scene() else {
+            return (
+                Arc::clone(&self.active_render_groups),
+                self.active_render_groups_revision,
+            );
+        };
+        if scene_has_custom_led_groups(scene) {
+            return (
+                Arc::clone(&self.active_render_groups),
+                self.active_render_groups_revision,
+            );
+        }
+
+        let mut changed = false;
+        let groups = self
+            .active_render_groups
+            .iter()
+            .cloned()
+            .map(|mut group| {
+                if group.role == ZoneRole::Primary
+                    && group.display_target.is_none()
+                    && group.layout != *layout
+                {
+                    group.layout = layout.clone();
+                    changed = true;
+                }
+                group
+            })
+            .collect::<Vec<_>>();
+        if changed {
+            (
+                groups.into(),
+                self.active_render_groups_revision.saturating_add(1),
+            )
+        } else {
+            (
+                Arc::clone(&self.active_render_groups),
+                self.active_render_groups_revision,
+            )
+        }
+    }
+
     fn active_scene_mut(&mut self) -> Option<&mut Scene> {
         let scene_id = *self.active_scene_id()?;
         self.scenes.get_mut(&scene_id)

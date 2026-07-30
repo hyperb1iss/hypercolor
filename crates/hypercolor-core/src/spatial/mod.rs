@@ -304,7 +304,7 @@ impl SpatialEngine {
     ///
     /// Returns [`SpatialSamplingError`] before changing `zones` when a
     /// summed-area workspace cannot be acquired.
-    pub(crate) fn try_sample_append_into_at(
+    pub fn try_sample_append_into_at(
         &self,
         canvas: &Canvas,
         zones: &mut Vec<ZoneColors>,

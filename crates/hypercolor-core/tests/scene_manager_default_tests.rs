@@ -793,3 +793,18 @@ fn sync_primary_group_layout_is_noop_when_layout_already_matches() {
         "zone revision should not move when nothing changed"
     );
 }
+
+#[test]
+fn primary_layout_candidate_does_not_mutate_live_scene() {
+    let manager = SceneManager::with_default_layout(sample_layout("current"));
+    let live_revision = manager.active_render_groups_revision();
+    let next_layout = sample_layout("candidate");
+
+    let (candidate_groups, candidate_revision) =
+        manager.active_render_groups_for_primary_layout(&next_layout);
+
+    assert_eq!(candidate_revision, live_revision + 1);
+    assert_eq!(candidate_groups[0].layout, next_layout);
+    assert_eq!(manager.active_render_groups_revision(), live_revision);
+    assert_eq!(manager.active_render_groups()[0].layout.id, "layout-current");
+}
