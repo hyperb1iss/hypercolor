@@ -14,7 +14,9 @@ use hypercolor_driver_api::DriverHost;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::scene::{SceneId, Zone};
 
-use crate::persistence::{AtomicFileWriter, AtomicWriteReservation, PersistenceError};
+use crate::persistence::{
+    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
+};
 
 /// Runtime session snapshot persisted to disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -149,7 +151,7 @@ pub async fn collect_driver_runtime_cache(
 /// Persist a runtime snapshot to `path` using atomic replace semantics.
 pub fn save(path: &Path, snapshot: &RuntimeSessionSnapshot) -> Result<(), RuntimeSessionError> {
     let pending = reserve_save(path)?;
-    save_reserved(pending, snapshot)
+    save_reserved(pending, snapshot).map(|_| ())
 }
 
 /// Reserve a runtime snapshot generation before asynchronous assembly begins.
@@ -168,16 +170,16 @@ pub fn reserve_save(path: &Path) -> Result<RuntimeSnapshotSave, RuntimeSessionEr
 pub fn save_reserved(
     pending: RuntimeSnapshotSave,
     snapshot: &RuntimeSessionSnapshot,
-) -> Result<(), RuntimeSessionError> {
+) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
     let bytes = serde_json::to_vec_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
-    pending
+    let outcome = pending
         .write
         .write(&bytes)
         .map_err(|source| RuntimeSessionError::Persist {
             path: pending.path,
             source,
         })?;
-    Ok(())
+    Ok(outcome)
 }
 
 #[cfg(test)]

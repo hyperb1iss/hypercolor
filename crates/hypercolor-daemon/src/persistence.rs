@@ -121,11 +121,52 @@ pub enum PersistenceFlushOutcome {
 }
 
 /// A dirty snapshot could not converge before its flush deadline.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("persistence retry for {path} did not converge: {last_error}")]
 pub struct PersistenceFlushError {
     path: PathBuf,
     last_error: String,
+}
+
+/// Aggregate result of flushing every live persistence destination.
+#[derive(Debug, Default)]
+pub struct PersistenceFlushReport {
+    clean: usize,
+    written: usize,
+    superseded: usize,
+    errors: Vec<PersistenceFlushError>,
+}
+
+impl PersistenceFlushReport {
+    /// Destinations that had no dirty snapshot to flush.
+    #[must_use]
+    pub const fn clean(&self) -> usize {
+        self.clean
+    }
+
+    /// Dirty destinations whose newest snapshot committed.
+    #[must_use]
+    pub const fn written(&self) -> usize {
+        self.written
+    }
+
+    /// Dirty destinations superseded by a newer generation.
+    #[must_use]
+    pub const fn superseded(&self) -> usize {
+        self.superseded
+    }
+
+    /// Destinations that did not converge before the deadline.
+    #[must_use]
+    pub fn errors(&self) -> &[PersistenceFlushError] {
+        &self.errors
+    }
+
+    /// Whether every live destination converged.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.errors.is_empty()
+    }
 }
 
 /// Generation coordinator for one stable destination.
@@ -344,8 +385,10 @@ impl Destination {
                 return;
             }
             retry.pending = None;
+            retry.last_outcome = Some(outcome);
+        } else {
+            retry.last_outcome = None;
         }
-        retry.last_outcome = Some(outcome);
         retry.last_error = None;
         self.retry_changed.notify_all();
     }
@@ -544,6 +587,36 @@ fn try_write(
 /// preparation, or replacement.
 pub fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), PersistenceError> {
     AtomicFileWriter::new(path)?.write(payload).map(|_| ())
+}
+
+/// Flush every live persistence destination within one shared deadline.
+///
+/// Runtime retry workers remain active after this bounded observation returns.
+#[must_use]
+pub fn flush_all(timeout: Duration) -> PersistenceFlushReport {
+    let writers = {
+        let mut destinations = DESTINATIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        destinations.retain(|_, destination| destination.strong_count() > 0);
+        destinations
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(|destination| AtomicFileWriter { destination })
+            .collect::<Vec<_>>()
+    };
+    let deadline = Instant::now() + timeout;
+    let mut report = PersistenceFlushReport::default();
+    for writer in writers {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match writer.flush(remaining) {
+            Ok(PersistenceFlushOutcome::Clean) => report.clean += 1,
+            Ok(PersistenceFlushOutcome::Written) => report.written += 1,
+            Ok(PersistenceFlushOutcome::Superseded) => report.superseded += 1,
+            Err(error) => report.errors.push(error),
+        }
+    }
+    report
 }
 
 fn destination_parent(path: &Path) -> &Path {

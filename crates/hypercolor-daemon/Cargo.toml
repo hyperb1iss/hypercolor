@@ -12,6 +12,10 @@ rust-version.workspace = true
 name = "hypercolor-daemon"
 path = "src/main.rs"
 
+[[test]]
+name = "persistence_flush_tests"
+required-features = ["persistence-test-hooks"]
+
 [lints]
 workspace = true
 

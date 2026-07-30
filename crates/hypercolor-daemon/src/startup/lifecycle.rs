@@ -22,6 +22,7 @@ use crate::display_output::{
 use crate::interactive_preview::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
 };
+use crate::persistence::{self, AtomicWriteOutcome};
 use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::session::{SessionController, current_global_brightness, set_global_brightness};
@@ -32,6 +33,7 @@ use super::discovery_worker::DiscoveryWorkerContext;
 use super::input_status_events::InputStatusEventPublisher;
 
 const USB_HOTPLUG_REMOVAL_RECOVERY_SCAN_DELAY: Duration = Duration::from_secs(2);
+const SHUTDOWN_PERSISTENCE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl DaemonState {
     /// Start all subsystems — render loop, render thread, backend discovery.
@@ -312,9 +314,44 @@ impl DaemonState {
         drop(self.input_status_event_publisher.take());
 
         // 5. Persist the current runtime session before scene cleanup.
-        self.persist_runtime_session_snapshot().await;
-        self.persist_scene_store_snapshot().await;
-        info!("Runtime session snapshot persisted");
+        let runtime_snapshot = self.persist_runtime_session_snapshot().await;
+        let scene_snapshot = self.persist_scene_store_snapshot().await;
+        let flush_report = persistence::flush_all(SHUTDOWN_PERSISTENCE_FLUSH_TIMEOUT);
+        for error in flush_report.errors() {
+            warn!(%error, "Persistence retry did not converge during shutdown");
+        }
+        let persistence_complete =
+            runtime_snapshot.is_ok() && scene_snapshot.is_ok() && flush_report.is_complete();
+        if let (Ok(runtime), Ok(scenes)) = (&runtime_snapshot, &scene_snapshot)
+            && flush_report.is_complete()
+        {
+            info!(
+                ?runtime,
+                ?scenes,
+                clean = flush_report.clean(),
+                committed = flush_report.written(),
+                superseded = flush_report.superseded(),
+                "Shutdown persistence complete"
+            );
+        } else {
+            if let Err(error) = &runtime_snapshot {
+                warn!(
+                    path = %self.runtime_state_path.display(),
+                    %error,
+                    "Runtime session snapshot failed during shutdown"
+                );
+            }
+            if let Err(error) = &scene_snapshot {
+                warn!(%error, "Scene store snapshot failed during shutdown");
+            }
+            warn!(
+                clean = flush_report.clean(),
+                committed = flush_report.written(),
+                superseded = flush_report.superseded(),
+                failed = flush_report.errors().len(),
+                "Shutdown completed with persistence failures"
+            );
+        }
 
         // 6. Scene manager — deactivate current scene.
         {
@@ -333,22 +370,16 @@ impl DaemonState {
                 reason: "signal".to_string(),
             });
 
-        info!("Graceful shutdown complete");
+        if persistence_complete {
+            info!("Graceful shutdown complete");
+        } else {
+            warn!("Graceful shutdown completed with persistence failures");
+        }
         Ok(())
     }
 
-    async fn persist_runtime_session_snapshot(&self) {
-        let pending_save = match runtime_state::reserve_save(&self.runtime_state_path) {
-            Ok(pending_save) => pending_save,
-            Err(error) => {
-                warn!(
-                    path = %self.runtime_state_path.display(),
-                    %error,
-                    "Failed to reserve runtime session snapshot"
-                );
-                return;
-            }
-        };
+    async fn persist_runtime_session_snapshot(&self) -> Result<AtomicWriteOutcome> {
+        let pending_save = runtime_state::reserve_save(&self.runtime_state_path)?;
         let mut snapshot = {
             let scene_manager = self.scene_manager.read().await;
             runtime_state::snapshot_from_scene_manager(&scene_manager)
@@ -365,33 +396,19 @@ impl DaemonState {
         )
         .await;
 
-        if let Err(error) = runtime_state::save_reserved(pending_save, &snapshot) {
-            warn!(
-                path = %self.runtime_state_path.display(),
-                %error,
-                "Failed to persist runtime session snapshot"
-            );
-        }
+        runtime_state::save_reserved(pending_save, &snapshot).map_err(Into::into)
     }
 
-    async fn persist_scene_store_snapshot(&self) {
+    async fn persist_scene_store_snapshot(&self) -> Result<AtomicWriteOutcome> {
         let pending = {
             let scene_manager = self.scene_manager.read().await;
             let store = self.scene_store.read().await;
             store.reserve_save(scene_manager.list().into_iter().cloned())
         };
 
-        let pending = match pending {
-            Ok(pending) => pending,
-            Err(error) => {
-                warn!(%error, "Failed to reserve scene store snapshot");
-                return;
-            }
-        };
+        let pending = pending?;
         let mut store = self.scene_store.write().await;
-        if let Err(error) = store.save_reserved(pending) {
-            warn!(%error, "Failed to persist scene store");
-        }
+        store.save_reserved(pending)
     }
 
     async fn restore_runtime_session_if_configured(&self, config: &HypercolorConfig) {

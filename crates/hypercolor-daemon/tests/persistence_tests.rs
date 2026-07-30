@@ -226,13 +226,34 @@ fn runtime_reservations_prevent_stale_snapshot_resurrection() {
         ..RuntimeSessionSnapshot::default()
     };
 
-    save_reserved(newer, &newer_snapshot).expect("newer snapshot");
-    save_reserved(older, &older_snapshot).expect("stale snapshot");
+    assert_eq!(
+        save_reserved(newer, &newer_snapshot).expect("newer snapshot"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(
+        save_reserved(older, &older_snapshot).expect("stale snapshot"),
+        AtomicWriteOutcome::Superseded
+    );
 
     let loaded = load(&path)
         .expect("load runtime snapshot")
         .expect("runtime snapshot exists");
     assert_eq!(loaded.active_scene_id.as_deref(), Some("newer"));
+}
+
+#[test]
+fn flush_reports_clean_after_a_direct_success() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.write(b"current").expect("write current state");
+
+    assert_eq!(
+        writer
+            .flush(std::time::Duration::from_secs(1))
+            .expect("clean flush"),
+        hypercolor_daemon::persistence::PersistenceFlushOutcome::Clean
+    );
 }
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -288,6 +309,32 @@ fn superseded_completion_cannot_clear_a_newer_dirty_snapshot() {
         .flush(Duration::from_secs(5))
         .expect("newer dirty snapshot should converge");
     assert_eq!(fs::read(&path).expect("read retried state"), b"newest");
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn flush_deadline_reports_a_persistent_failure_without_stopping_retry() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.set_injected_replace_failures(usize::MAX);
+    assert!(matches!(
+        writer.write(b"dirty"),
+        Err(PersistenceError::Replace { .. })
+    ));
+    let started = std::time::Instant::now();
+
+    writer
+        .flush(Duration::from_millis(25))
+        .expect_err("persistent failure should exceed the flush deadline");
+    assert!(started.elapsed() < Duration::from_secs(1));
+
+    writer.set_injected_replace_failures(0);
+    writer.kick();
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("runtime retry remains active after bounded flush");
+    assert_eq!(fs::read(&path).expect("read retried state"), b"dirty");
 }
 
 #[cfg(feature = "persistence-test-hooks")]
