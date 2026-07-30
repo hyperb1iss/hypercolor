@@ -54,6 +54,24 @@ struct GpuPreviewScaleOutput {
     bind_groups: GpuPreviewScaleBindGroups,
 }
 
+enum PreparedPreviewSurfaceChange {
+    Unchanged {
+        scale_output: Option<GpuPreviewScaleOutput>,
+    },
+    Reconfigure {
+        width: u32,
+        height: u32,
+        readback_surfaces: PreparedPreviewReadbackSurfaces,
+        scale_output: Option<GpuPreviewScaleOutput>,
+    },
+    Replace(GpuPreviewSurfaceSet),
+}
+
+enum PreparedPreviewReadbackSurfaces {
+    Cached(usize),
+    Fresh(RenderSurfacePool),
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct CachedPreviewSurface {
     pub(super) key: CachedPreviewSurfaceKey,
@@ -333,31 +351,134 @@ impl GpuSparkleFlinger {
         }
     }
 
-    fn ensure_preview_surface_size(&mut self, width: u32, height: u32) {
-        if self
-            .preview_surfaces
-            .as_ref()
-            .is_some_and(|preview_surfaces| {
-                preview_surfaces.width == width && preview_surfaces.height == height
-            })
+    fn prepare_preview_surface_change(
+        &mut self,
+        width: u32,
+        height: u32,
+        scale_views: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
+    ) -> Result<PreparedPreviewSurfaceChange> {
+        let needs_scale_output = scale_views.is_some()
+            && self.preview_surfaces.as_ref().is_none_or(|surfaces| {
+                !surfaces.fits_request(width, height) || surfaces.scale_output.is_none()
+            });
+        let fail_scale_output =
+            needs_scale_output && self.take_preview_scale_output_failure_injection();
+
+        if let Some(surfaces) = self.preview_surfaces.as_ref()
+            && surfaces.width == width
+            && surfaces.height == height
         {
-            return;
-        }
-        if self.preview_surfaces.is_some() {
-            self.discard_pending_preview_map();
-        }
-        if let Some(preview_surfaces) = self.preview_surfaces.as_mut()
-            && preview_surfaces.fits_request(width, height)
-        {
-            preview_surfaces.reconfigure(width, height);
-            return;
+            let scale_output = scale_views
+                .filter(|_| surfaces.scale_output.is_none())
+                .map(|(front_view, back_view)| {
+                    GpuPreviewScaleOutput::try_new(
+                        &self.device,
+                        &self.pipeline,
+                        front_view,
+                        back_view,
+                        surfaces.capacity_width,
+                        surfaces.capacity_height,
+                        self.max_storage_buffer_binding_size,
+                        fail_scale_output,
+                    )
+                })
+                .transpose()?;
+            return Ok(PreparedPreviewSurfaceChange::Unchanged { scale_output });
         }
 
-        self.preview_surfaces = Some(GpuPreviewSurfaceSet::new(&self.device, width, height));
-        #[cfg(test)]
+        if let Some(surfaces) = self.preview_surfaces.as_ref()
+            && surfaces.fits_request(width, height)
         {
-            self.preview_surface_allocation_count =
-                self.preview_surface_allocation_count.saturating_add(1);
+            let readback_surfaces = surfaces.prepare_reconfiguration(width, height)?;
+            let scale_output = scale_views
+                .filter(|_| surfaces.scale_output.is_none())
+                .map(|(front_view, back_view)| {
+                    GpuPreviewScaleOutput::try_new(
+                        &self.device,
+                        &self.pipeline,
+                        front_view,
+                        back_view,
+                        surfaces.capacity_width,
+                        surfaces.capacity_height,
+                        self.max_storage_buffer_binding_size,
+                        fail_scale_output,
+                    )
+                })
+                .transpose()?;
+            return Ok(PreparedPreviewSurfaceChange::Reconfigure {
+                width,
+                height,
+                readback_surfaces,
+                scale_output,
+            });
+        }
+
+        let mut replacement = GpuPreviewSurfaceSet::try_new(&self.device, width, height)?;
+        if let Some((front_view, back_view)) = scale_views {
+            replacement.scale_output = Some(GpuPreviewScaleOutput::try_new(
+                &self.device,
+                &self.pipeline,
+                front_view,
+                back_view,
+                replacement.capacity_width,
+                replacement.capacity_height,
+                self.max_storage_buffer_binding_size,
+                fail_scale_output,
+            )?);
+            #[cfg(test)]
+            {
+                replacement.preview_bind_group_count = 2;
+            }
+        }
+        Ok(PreparedPreviewSurfaceChange::Replace(replacement))
+    }
+
+    fn commit_preview_surface_change(&mut self, prepared: PreparedPreviewSurfaceChange) {
+        match prepared {
+            PreparedPreviewSurfaceChange::Unchanged { scale_output } => {
+                if let Some(scale_output) = scale_output {
+                    let surfaces = self
+                        .preview_surfaces
+                        .as_mut()
+                        .expect("unchanged preview preparation requires existing surfaces");
+                    surfaces.scale_output = Some(scale_output);
+                    #[cfg(test)]
+                    {
+                        surfaces.preview_bind_group_count =
+                            surfaces.preview_bind_group_count.saturating_add(2);
+                    }
+                }
+            }
+            PreparedPreviewSurfaceChange::Reconfigure {
+                width,
+                height,
+                readback_surfaces,
+                scale_output,
+            } => {
+                self.discard_pending_preview_map();
+                let surfaces = self
+                    .preview_surfaces
+                    .as_mut()
+                    .expect("preview reconfiguration requires existing surfaces");
+                surfaces.commit_reconfiguration(width, height, readback_surfaces);
+                if let Some(scale_output) = scale_output {
+                    surfaces.scale_output = Some(scale_output);
+                    #[cfg(test)]
+                    {
+                        surfaces.preview_bind_group_count =
+                            surfaces.preview_bind_group_count.saturating_add(2);
+                    }
+                }
+            }
+            PreparedPreviewSurfaceChange::Replace(replacement) => {
+                self.discard_pending_preview_map();
+                self.preview_surfaces = Some(replacement);
+                #[cfg(test)]
+                {
+                    self.preview_surface_allocation_count =
+                        self.preview_surface_allocation_count.saturating_add(1);
+                }
+            }
         }
     }
 
@@ -416,8 +537,23 @@ impl GpuSparkleFlinger {
                 request.height,
             )?;
         }
-
-        self.ensure_preview_surface_size(request.width, request.height);
+        let scale_views = direct_source_texture
+            .is_none()
+            .then(|| {
+                let surfaces = self.surfaces.as_ref().context(
+                    "GPU preview scale requested before compositor surfaces were allocated",
+                )?;
+                Ok::<_, anyhow::Error>((surfaces.front.view.clone(), surfaces.back.view.clone()))
+            })
+            .transpose()?;
+        let prepared = self.prepare_preview_surface_change(
+            request.width,
+            request.height,
+            scale_views
+                .as_ref()
+                .map(|(front_view, back_view)| (front_view, back_view)),
+        )?;
+        self.commit_preview_surface_change(prepared);
         let mapped_readback_slot = self
             .pending_preview_map
             .as_ref()
@@ -430,15 +566,6 @@ impl GpuSparkleFlinger {
             drop(encoder);
             self.discard_pending_uploads();
         }
-        let scale_views = direct_source_texture
-            .is_none()
-            .then(|| {
-                let surfaces = self.surfaces.as_ref().context(
-                    "GPU preview scale requested before compositor surfaces were allocated",
-                )?;
-                Ok::<_, anyhow::Error>((surfaces.front.view.clone(), surfaces.back.view.clone()))
-            })
-            .transpose()?;
         let preview_surfaces = self
             .preview_surfaces
             .as_mut()
@@ -469,20 +596,10 @@ impl GpuSparkleFlinger {
                 texture_extent(request.width, request.height),
             );
         } else {
-            let (front_view, back_view) = scale_views
-                .as_ref()
-                .expect("scaled preview paths retain compositor views");
-            preview_surfaces.ensure_scale_output(
-                &self.device,
-                &self.pipeline,
-                &front_view,
-                &back_view,
-                self.max_storage_buffer_binding_size,
-            )?;
             let scale_output = preview_surfaces
                 .scale_output
                 .as_ref()
-                .expect("scaled preview output should exist after admission");
+                .expect("scaled preview output should exist after preparation");
             let params = encode_preview_scale_params(
                 source_width,
                 source_height,
@@ -611,23 +728,39 @@ impl GpuPreviewSurfaceSet {
         counts
     }
 
-    pub(super) fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let padded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-        let readbacks = std::array::from_fn(|slot| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(match slot {
-                    0 => "SparkleFlinger GPU preview readback A",
-                    1 => "SparkleFlinger GPU preview readback B",
-                    _ => "SparkleFlinger GPU preview readback",
-                }),
-                size: u64::from(width)
-                    .saturating_mul(u64::from(height))
-                    .saturating_mul(BYTES_PER_PIXEL as u64),
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            })
-        });
-        Self {
+    pub(super) fn try_new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self> {
+        let padded_bytes_per_row = width
+            .checked_mul(BYTES_PER_PIXEL as u32)
+            .context("GPU preview row byte size overflowed")?;
+        let size = u64::from(padded_bytes_per_row)
+            .checked_mul(u64::from(height))
+            .context("GPU preview readback byte size overflowed")?;
+        let readback_surfaces =
+            RenderSurfacePool::try_new(SurfaceDescriptor::rgba8888(width, height))
+                .context("GPU preview CPU surface allocation failed")?;
+        let readbacks = super::try_create_gpu_resources(
+            device,
+            "GPU preview readback buffer allocation failed",
+            || {
+                std::array::from_fn(|slot| {
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some(match slot {
+                            0 => "SparkleFlinger GPU preview readback A",
+                            1 => "SparkleFlinger GPU preview readback B",
+                            _ => "SparkleFlinger GPU preview readback",
+                        }),
+                        size,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    })
+                })
+            },
+        )?;
+        let mut cached_readback_surfaces = Vec::new();
+        cached_readback_surfaces
+            .try_reserve_exact(MAX_CACHED_PREVIEW_READBACK_POOLS)
+            .context("GPU preview readback cache allocation failed")?;
+        Ok(Self {
             width,
             height,
             capacity_width: width,
@@ -636,8 +769,8 @@ impl GpuPreviewSurfaceSet {
             scale_output: None,
             readbacks,
             next_readback_slot: 0,
-            readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
-            cached_readback_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_READBACK_POOLS),
+            readback_surfaces,
+            cached_readback_surfaces,
             cached_scale_params: None,
             cached_scale_params_offset: None,
             #[cfg(test)]
@@ -648,29 +781,51 @@ impl GpuPreviewSurfaceSet {
             last_readback_bytes: 0,
             #[cfg(test)]
             readback_surface_pool_allocation_count: 1,
-        }
+        })
     }
 
     pub(super) fn fits_request(&self, width: u32, height: u32) -> bool {
         width <= self.capacity_width && height <= self.capacity_height
     }
 
-    pub(super) fn reconfigure(&mut self, width: u32, height: u32) {
-        if self.width == width && self.height == height {
-            return;
-        }
+    fn prepare_reconfiguration(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<PreparedPreviewReadbackSurfaces> {
         let next_request = PreviewSurfaceRequest { width, height };
-        let next_surfaces = self
-            .take_cached_readback_surfaces(next_request)
-            .unwrap_or_else(|| {
+        if let Some(index) = self
+            .cached_readback_surfaces
+            .iter()
+            .position(|cached| cached.request == next_request)
+        {
+            return Ok(PreparedPreviewReadbackSurfaces::Cached(index));
+        }
+        RenderSurfacePool::try_new(SurfaceDescriptor::rgba8888(width, height))
+            .map(PreparedPreviewReadbackSurfaces::Fresh)
+            .context("GPU preview CPU surface reconfiguration failed")
+    }
+
+    fn commit_reconfiguration(
+        &mut self,
+        width: u32,
+        height: u32,
+        prepared: PreparedPreviewReadbackSurfaces,
+    ) {
+        let next_surfaces = match prepared {
+            PreparedPreviewReadbackSurfaces::Cached(index) => {
+                self.cached_readback_surfaces.remove(index).surfaces
+            }
+            PreparedPreviewReadbackSurfaces::Fresh(surfaces) => {
                 #[cfg(test)]
                 {
                     self.readback_surface_pool_allocation_count = self
                         .readback_surface_pool_allocation_count
                         .saturating_add(1);
                 }
-                RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height))
-            });
+                surfaces
+            }
+        };
         let current_request = PreviewSurfaceRequest {
             width: self.width,
             height: self.height,
@@ -704,51 +859,6 @@ impl GpuPreviewSurfaceSet {
         self.scale_output.is_some()
     }
 
-    fn ensure_scale_output(
-        &mut self,
-        device: &wgpu::Device,
-        pipeline: &GpuCompositorPipeline,
-        front_view: &wgpu::TextureView,
-        back_view: &wgpu::TextureView,
-        max_storage_buffer_binding_size: u64,
-    ) -> Result<()> {
-        if self.scale_output.is_some() {
-            return Ok(());
-        }
-        let size = super::ensure_storage_buffer_capacity(
-            max_storage_buffer_binding_size,
-            self.capacity_width,
-            self.capacity_height,
-        )?;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU preview output"),
-            size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let bind_groups =
-            GpuPreviewScaleBindGroups::new(device, pipeline, front_view, back_view, &buffer);
-        self.scale_output = Some(GpuPreviewScaleOutput {
-            buffer,
-            bind_groups,
-        });
-        #[cfg(test)]
-        {
-            self.preview_bind_group_count = self.preview_bind_group_count.saturating_add(2);
-        }
-        Ok(())
-    }
-
-    fn take_cached_readback_surfaces(
-        &mut self,
-        request: PreviewSurfaceRequest,
-    ) -> Option<RenderSurfacePool> {
-        self.cached_readback_surfaces
-            .iter()
-            .position(|cached| cached.request == request)
-            .map(|index| self.cached_readback_surfaces.remove(index).surfaces)
-    }
-
     fn store_cached_readback_surfaces(
         &mut self,
         request: PreviewSurfaceRequest,
@@ -761,12 +871,51 @@ impl GpuPreviewSurfaceSet {
         {
             self.cached_readback_surfaces.remove(index);
         }
+        if self.cached_readback_surfaces.len() >= MAX_CACHED_PREVIEW_READBACK_POOLS {
+            self.cached_readback_surfaces.pop();
+        }
         self.cached_readback_surfaces
             .insert(0, CachedPreviewReadbackSurfaces { request, surfaces });
-        if self.cached_readback_surfaces.len() > MAX_CACHED_PREVIEW_READBACK_POOLS {
-            self.cached_readback_surfaces
-                .truncate(MAX_CACHED_PREVIEW_READBACK_POOLS);
-        }
+    }
+}
+
+impl GpuPreviewScaleOutput {
+    fn try_new(
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        front_view: &wgpu::TextureView,
+        back_view: &wgpu::TextureView,
+        capacity_width: u32,
+        capacity_height: u32,
+        max_storage_buffer_binding_size: u64,
+        fail_after_prepare: bool,
+    ) -> Result<Self> {
+        let size = super::ensure_storage_buffer_capacity(
+            max_storage_buffer_binding_size,
+            capacity_width,
+            capacity_height,
+        )?;
+        let prepared = super::try_create_gpu_resources(
+            device,
+            "GPU preview scale resource allocation failed",
+            || {
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("SparkleFlinger GPU preview output"),
+                    size,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+                let bind_groups = GpuPreviewScaleBindGroups::new(
+                    device, pipeline, front_view, back_view, &buffer,
+                );
+                Self {
+                    buffer,
+                    bind_groups,
+                }
+            },
+        )?;
+        super::reject_injected_gpu_preparation(fail_after_prepare, "preview scale output")?;
+        Ok(prepared)
     }
 }
 

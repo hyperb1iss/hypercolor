@@ -356,11 +356,13 @@ mod tests {
 
     #[test]
     fn compositor_device_limits_request_adapter_resolution_and_buffer_capacity() {
-        let mut adapter_limits = wgpu::Limits::default();
-        adapter_limits.max_texture_dimension_2d = 32_768;
-        adapter_limits.max_buffer_size = 4_u64 * 1024 * 1024 * 1024;
-        adapter_limits.max_storage_buffer_binding_size = u64::from(u32::MAX);
-        adapter_limits.max_bind_groups = 12;
+        let adapter_limits = wgpu::Limits {
+            max_texture_dimension_2d: 32_768,
+            max_buffer_size: 4_u64 * 1024 * 1024 * 1024,
+            max_storage_buffer_binding_size: u64::from(u32::MAX),
+            max_bind_groups: 12,
+            ..wgpu::Limits::default()
+        };
 
         let requested = compositor_device_limits(adapter_limits);
 

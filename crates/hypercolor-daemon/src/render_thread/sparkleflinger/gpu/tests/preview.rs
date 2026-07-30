@@ -142,6 +142,62 @@ fn gpu_active_preview_map_is_reused_on_identical_compose() {
 }
 
 #[test]
+fn gpu_failed_preview_scale_preparation_preserves_last_good_map() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(18))),
+            CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(91)), 0.4),
+        ],
+    );
+    let last_good_request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+
+    compositor
+        .compose(&plan, false, Some(last_good_request))
+        .expect("last-good preview compose should succeed");
+    compositor
+        .submit_pending_preview_work()
+        .expect("last-good preview submit should succeed");
+    assert!(compositor.pending_preview_map.is_some());
+    assert_eq!(compositor.preview_surface_allocation_count, 1);
+
+    compositor.fail_next_preview_scale_output_preparation();
+    let error = compositor
+        .compose(
+            &plan,
+            false,
+            Some(PreviewSurfaceRequest {
+                width: 3,
+                height: 3,
+            }),
+        )
+        .expect_err("injected preview scale preparation should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("injected preview scale output preparation failure")
+    );
+    assert!(compositor.pending_preview_map.is_some());
+    assert_eq!(compositor.preview_surface_allocation_count, 1);
+    let retained = compositor
+        .preview_surfaces
+        .as_ref()
+        .expect("last-good preview surfaces should remain installed");
+    assert_eq!((retained.width, retained.height), (2, 2));
+
+    let preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!((preview.width(), preview.height()), (2, 2));
+}
+
+#[test]
 fn gpu_preview_finalize_can_defer_without_blocking() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,

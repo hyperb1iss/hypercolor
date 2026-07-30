@@ -1385,6 +1385,74 @@ fn gpu_compositor_latches_sampling_canvas_for_animated_gpu_plans() {
 }
 
 #[test]
+fn gpu_failed_sampling_preparation_preserves_last_good_readback() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let first_content = patterned_canvas(27);
+    let second_content = patterned_canvas(83);
+    let mut resized_content = Canvas::new(8, 8);
+    resized_content.fill(Rgba::new(170, 40, 210, 255));
+    let first_frame = compositor
+        .upload_media_canvas_frame(MediaTextureSourceKey::for_test(10), &first_content)
+        .expect("first media upload should succeed");
+    let second_frame = compositor
+        .upload_media_canvas_frame(MediaTextureSourceKey::for_test(11), &second_content)
+        .expect("second media upload should succeed");
+    let resized_frame = compositor
+        .upload_media_canvas_frame(MediaTextureSourceKey::for_test(12), &resized_content)
+        .expect("resized media upload should succeed");
+
+    let first_plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(first_frame)),
+    );
+    compositor
+        .compose(&first_plan, true, None)
+        .expect("last-good sampling compose should succeed");
+
+    compositor.fail_next_sampling_readback_preparation();
+    let resized_plan = CompositionPlan::single(
+        8,
+        8,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(resized_frame)),
+    );
+    let error = compositor
+        .compose(&resized_plan, true, None)
+        .expect_err("injected sampling preparation should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("injected sampling readback preparation failure")
+    );
+
+    compositor
+        .device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .expect("GPU wait for the retained sampling readback should succeed");
+    let second_plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(second_frame)),
+    );
+    let composed = compositor
+        .compose(&second_plan, true, None)
+        .expect("sampling should recover from failed replacement preparation");
+    let sampling_canvas = composed
+        .sampling_canvas
+        .expect("the retained readback should still latch after preparation failure");
+    assert_eq!(
+        sampling_canvas.as_rgba_bytes(),
+        first_content.as_rgba_bytes()
+    );
+}
+
+#[test]
 fn gpu_compositor_scales_preview_surface_to_requested_size() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,

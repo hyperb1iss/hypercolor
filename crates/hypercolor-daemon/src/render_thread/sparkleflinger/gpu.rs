@@ -200,6 +200,32 @@ fn ensure_storage_buffer_capacity(
     Ok(required_bytes)
 }
 
+fn try_create_gpu_resources<T>(
+    device: &wgpu::Device,
+    context: &'static str,
+    create: impl FnOnce() -> T,
+) -> Result<T> {
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let resources = create();
+    let validation_error = pollster::block_on(validation_scope.pop());
+    let internal_error = pollster::block_on(internal_scope.pop());
+    let out_of_memory_error = pollster::block_on(out_of_memory_scope.pop());
+    if let Some(error) = validation_error.or(internal_error).or(out_of_memory_error) {
+        anyhow::bail!("{context}: {error}");
+    }
+    Ok(resources)
+}
+
+fn reject_injected_gpu_preparation(fail_after_prepare: bool, resource: &'static str) -> Result<()> {
+    anyhow::ensure!(
+        !fail_after_prepare,
+        "injected {resource} preparation failure"
+    );
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 struct WindowsScreenBridge {
     interop: D3d11On12ScreenBridge,
@@ -530,6 +556,10 @@ pub(crate) struct GpuSparkleFlinger {
     defer_preview_resolve_once: bool,
     #[cfg(test)]
     defer_preview_map_resolve_once: bool,
+    #[cfg(test)]
+    fail_next_sampling_readback_preparation: bool,
+    #[cfg(test)]
+    fail_next_preview_scale_output_preparation: bool,
 }
 
 struct FrameInFlight {
@@ -884,7 +914,43 @@ impl GpuSparkleFlinger {
             defer_preview_resolve_once: false,
             #[cfg(test)]
             defer_preview_map_resolve_once: false,
+            #[cfg(test)]
+            fail_next_sampling_readback_preparation: false,
+            #[cfg(test)]
+            fail_next_preview_scale_output_preparation: false,
         })
+    }
+
+    fn take_sampling_readback_failure_injection(&mut self) -> bool {
+        #[cfg(test)]
+        {
+            std::mem::take(&mut self.fail_next_sampling_readback_preparation)
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
+    fn take_preview_scale_output_failure_injection(&mut self) -> bool {
+        #[cfg(test)]
+        {
+            std::mem::take(&mut self.fail_next_preview_scale_output_preparation)
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_sampling_readback_preparation(&mut self) {
+        self.fail_next_sampling_readback_preparation = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_preview_scale_output_preparation(&mut self) {
+        self.fail_next_preview_scale_output_preparation = true;
     }
 
     pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {

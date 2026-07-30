@@ -69,30 +69,42 @@ impl SamplingReadbackBuffers {
         max_buffer_size: u64,
         width: u32,
         height: u32,
+        fail_after_prepare: bool,
     ) -> Result<Self> {
         super::ensure_readback_buffer_capacity(max_buffer_size, width, height, true)?;
         let padded_bytes_per_row = padded_bytes_per_row(width);
         let size = u64::from(padded_bytes_per_row)
             .checked_mul(u64::from(height))
             .context("GPU sampling latch readback byte size overflowed")?;
-        Ok(Self {
+        let surfaces = RenderSurfacePool::try_with_slot_count(
+            SurfaceDescriptor::rgba8888(width, height),
+            SAMPLING_READBACK_SURFACE_SLOTS,
+        )
+        .context("GPU sampling latch CPU surface allocation failed")?;
+        let readbacks = super::try_create_gpu_resources(
+            device,
+            "GPU sampling latch buffer allocation failed",
+            || {
+                std::array::from_fn(|_| {
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("SparkleFlinger GPU sampling latch readback"),
+                        size,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    })
+                })
+            },
+        )?;
+        let prepared = Self {
             width,
             height,
             padded_bytes_per_row,
-            readbacks: std::array::from_fn(|_| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("SparkleFlinger GPU sampling latch readback"),
-                    size,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                })
-            }),
+            readbacks,
             next_slot: 0,
-            surfaces: RenderSurfacePool::with_slot_count(
-                SurfaceDescriptor::rgba8888(width, height),
-                SAMPLING_READBACK_SURFACE_SLOTS,
-            ),
-        })
+            surfaces,
+        };
+        super::reject_injected_gpu_preparation(fail_after_prepare, "sampling readback")?;
+        Ok(prepared)
     }
 }
 
@@ -897,8 +909,14 @@ impl GpuSparkleFlinger {
         {
             return Ok(());
         }
-        let replacement =
-            SamplingReadbackBuffers::try_new(&self.device, self.max_buffer_size, width, height)?;
+        let fail_after_prepare = self.take_sampling_readback_failure_injection();
+        let replacement = SamplingReadbackBuffers::try_new(
+            &self.device,
+            self.max_buffer_size,
+            width,
+            height,
+            fail_after_prepare,
+        )?;
         // The pending readback's mapped buffer belongs to the old set; drop
         // it before replacing the buffers.
         self.discard_pending_sampling_readback();
