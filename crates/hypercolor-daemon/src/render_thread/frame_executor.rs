@@ -337,16 +337,29 @@ pub(crate) async fn execute_frame(
                 .frame_policy
                 .sleep_throttle_execution(&mut render_loop);
         }
-        let unassigned_output_plan = UnassignedOutputPlanner::new(
+        let mut unassigned_output_planner = UnassignedOutputPlanner::new(
             &manager,
             &mut render.output_artifacts.unassigned_output_cache,
-        )
-        .plan(
+        );
+        let unassigned_output_plan = match unassigned_output_planner.plan(
             Arc::clone(&layout),
             &scene_snapshot.scene_runtime.unassigned_behavior,
             scene_snapshot.scene_runtime.active_render_groups.as_ref(),
             &render_stage.zone_canvases,
-        );
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                warn!(%error, "Unassigned fallback sampling plan was rejected; using black output");
+                unassigned_output_planner
+                    .plan(
+                        Arc::clone(&layout),
+                        &hypercolor_types::scene::UnassignedBehavior::Off,
+                        scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+                        &render_stage.zone_canvases,
+                    )
+                    .expect("black unassigned output does not construct a sampling plan")
+            }
+        };
         let device_brightness_generation = manager.output_brightness_generation();
         let routing_signature = manager.routed_output_signature(unassigned_output_plan.layout());
         let output_reuse_key = OutputReuseKey::new(

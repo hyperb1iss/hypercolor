@@ -798,6 +798,12 @@ pub(crate) struct CachedUnassignedOutputEntry {
 #[derive(Default)]
 pub(crate) struct UnassignedOutputCache {
     entry: Option<CachedUnassignedOutputEntry>,
+    fallback_spatial_engine: Option<CachedFallbackSpatialEngine>,
+}
+
+struct CachedFallbackSpatialEngine {
+    layout: SpatialLayout,
+    engine: SpatialEngine,
 }
 
 impl UnassignedOutputCache {
@@ -813,6 +819,7 @@ impl UnassignedOutputCache {
         key: UnassignedOutputCacheKey,
         value: CachedUnassignedOutput,
     ) -> CachedUnassignedOutput {
+        self.fallback_spatial_engine = None;
         self.entry = Some(CachedUnassignedOutputEntry {
             key,
             value: value.clone(),
@@ -822,6 +829,22 @@ impl UnassignedOutputCache {
 
     pub(crate) fn clear(&mut self) {
         self.entry = None;
+        self.fallback_spatial_engine = None;
+    }
+
+    pub(crate) fn fallback_spatial_engine(&self, layout: &SpatialLayout) -> Option<SpatialEngine> {
+        self.fallback_spatial_engine
+            .as_ref()
+            .filter(|cached| &cached.layout == layout)
+            .map(|cached| cached.engine.clone())
+    }
+
+    pub(crate) fn store_fallback_spatial_engine(
+        &mut self,
+        layout: SpatialLayout,
+        engine: SpatialEngine,
+    ) {
+        self.fallback_spatial_engine = Some(CachedFallbackSpatialEngine { layout, engine });
     }
 }
 
