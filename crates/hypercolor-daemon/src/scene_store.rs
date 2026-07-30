@@ -75,11 +75,27 @@ impl SceneStore {
 
     /// Commit a previously reserved snapshot and retain it when it wins.
     pub fn save_reserved(&mut self, pending: SceneStoreSave) -> anyhow::Result<AtomicWriteOutcome> {
-        let (outcome, scenes) = persist_reserved(pending)?;
-        if outcome == AtomicWriteOutcome::Written {
-            self.scenes = scenes;
+        let SceneStoreSave { scenes, write } = pending;
+        let payload =
+            serde_json::to_string_pretty(&scenes).context("failed to serialize scenes")?;
+        let previous = std::mem::replace(&mut self.scenes, scenes);
+        match write
+            .write(payload.as_bytes())
+            .context("failed to persist scenes")
+        {
+            Ok(AtomicWriteOutcome::Superseded) => {
+                self.scenes = previous;
+                Ok(AtomicWriteOutcome::Superseded)
+            }
+            Ok(AtomicWriteOutcome::Written) => Ok(AtomicWriteOutcome::Written),
+            Err(error) => Err(error),
         }
-        Ok(outcome)
+    }
+
+    /// Wake a pending retry after a semantic no-op.
+    pub fn kick_persistence(&self) -> Result<(), PersistenceError> {
+        AtomicFileWriter::new(&self.path)?.kick();
+        Ok(())
     }
 
     #[must_use]

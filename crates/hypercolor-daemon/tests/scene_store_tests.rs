@@ -13,6 +13,11 @@ use hypercolor_types::spatial::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::persistence::AtomicFileWriter;
+#[cfg(feature = "persistence-test-hooks")]
+use std::time::Duration;
+
 fn sample_layout(zone_id: &str) -> SpatialLayout {
     SpatialLayout {
         id: format!("layout-{zone_id}"),
@@ -128,6 +133,37 @@ fn scene_store_rejects_an_overtaken_snapshot() {
         .map(|scene| scene.name.as_str())
         .collect::<Vec<_>>();
     assert_eq!(names, vec!["Newer"]);
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn failed_scene_delete_keeps_live_state_and_does_not_resurrect() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let mut store = SceneStore::new(path.clone());
+    store.replace_named_scenes([make_scene("Ephemeral")]);
+    store.save().expect("seed scene store");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.set_injected_replace_failures(usize::MAX);
+    let pending = store
+        .reserve_save(std::iter::empty())
+        .expect("reserve scene deletion");
+
+    assert!(store.save_reserved(pending).is_err());
+    assert!(store.is_empty(), "live scene state remains authoritative");
+
+    writer.set_injected_replace_failures(0);
+    store
+        .kick_persistence()
+        .expect("kick scene persistence retry");
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("scene deletion should converge");
+    assert!(
+        SceneStore::load(&path)
+            .expect("reload scene store")
+            .is_empty()
+    );
 }
 
 #[test]

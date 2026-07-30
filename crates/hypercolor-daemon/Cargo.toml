@@ -19,6 +19,7 @@ workspace = true
 builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/default"]
 media-lottie = ["hypercolor-core/media-lottie"]
 media-video = ["hypercolor-core/media-video"]
+persistence-test-hooks = []
 wgpu = [
     "dep:wgpu",
     "dep:pollster",

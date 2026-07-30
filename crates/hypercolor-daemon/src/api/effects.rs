@@ -610,20 +610,16 @@ pub async fn delete_effect_layout(
     let (removed_layout_id, pending) = {
         let mut links = state.effect_layout_links.write().await;
         let removed = links.remove(&effect_id);
-        let pending = removed
-            .as_ref()
-            .map(|_| effect_layouts::reserve_save(&state.effect_layout_links_path, &links));
+        let pending = effect_layouts::reserve_save(&state.effect_layout_links_path, &links);
         (removed, pending)
     };
 
-    if let Some(pending) = pending {
-        let pending = match pending {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(error.to_string()),
-        };
-        if let Err(error) = save_effect_layout_links(&state, pending) {
-            return ApiError::internal(error);
-        }
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
+    if let Err(error) = save_effect_layout_links(&state, pending) {
+        return ApiError::internal(error);
     }
 
     ApiResponse::ok(serde_json::json!({

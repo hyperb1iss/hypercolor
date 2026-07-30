@@ -1,14 +1,20 @@
 use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Barrier};
+#[cfg(feature = "persistence-test-hooks")]
+use std::time::Duration;
 
 use hypercolor_daemon::effect_layouts;
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
 use hypercolor_daemon::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, PersistenceError, write_atomic,
 };
 use hypercolor_daemon::runtime_state::{RuntimeSessionSnapshot, load, reserve_save, save_reserved};
 use hypercolor_types::device::DeviceId;
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_types::effect::EffectId;
 
 #[test]
 fn atomic_write_replaces_an_existing_file() {
@@ -227,4 +233,148 @@ fn runtime_reservations_prevent_stale_snapshot_resurrection() {
         .expect("load runtime snapshot")
         .expect("runtime snapshot exists");
     assert_eq!(loaded.active_scene_id.as_deref(), Some("newer"));
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn failed_writes_retry_only_the_latest_snapshot() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.write(b"seed").expect("seed snapshot");
+    writer.set_injected_replace_failures(usize::MAX);
+
+    assert!(matches!(
+        writer.write(b"older"),
+        Err(PersistenceError::Replace { .. })
+    ));
+    assert!(matches!(
+        writer.write(b"newest"),
+        Err(PersistenceError::Replace { .. })
+    ));
+
+    writer.set_injected_replace_failures(0);
+    writer.kick();
+    assert_eq!(
+        writer
+            .flush(Duration::from_secs(5))
+            .expect("latest snapshot should converge"),
+        hypercolor_daemon::persistence::PersistenceFlushOutcome::Written
+    );
+    assert_eq!(fs::read(&path).expect("read retried state"), b"newest");
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn superseded_completion_cannot_clear_a_newer_dirty_snapshot() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    let older = writer.reserve();
+    writer.set_injected_replace_failures(usize::MAX);
+
+    assert!(matches!(
+        writer.write(b"newest"),
+        Err(PersistenceError::Replace { .. })
+    ));
+    assert_eq!(
+        older.write(b"older").expect("older write is superseded"),
+        AtomicWriteOutcome::Superseded
+    );
+
+    writer.set_injected_replace_failures(0);
+    writer.kick();
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("newer dirty snapshot should converge");
+    assert_eq!(fs::read(&path).expect("read retried state"), b"newest");
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn failed_logical_device_delete_does_not_resurrect_after_reload() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("logical-devices.json");
+    let physical_device_id = DeviceId::new();
+    let entry = LogicalDevice {
+        id: "segment".to_owned(),
+        physical_device_id,
+        name: "Segment".to_owned(),
+        led_start: 0,
+        led_count: 16,
+        enabled: true,
+        kind: LogicalDeviceKind::Segment,
+    };
+    logical_devices::save_segments(&path, &HashMap::from([("segment".to_owned(), entry)]))
+        .expect("seed logical devices");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.set_injected_replace_failures(usize::MAX);
+
+    let pending = logical_devices::reserve_save_segments(&path, &HashMap::new())
+        .expect("reserve deletion snapshot");
+    assert!(logical_devices::save_reserved_segments(pending).is_err());
+
+    writer.set_injected_replace_failures(0);
+    logical_devices::kick_pending(&path).expect("kick logical-device retry");
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("deletion snapshot should converge");
+    assert!(
+        logical_devices::load_segments(&path)
+            .expect("reload logical devices")
+            .is_empty()
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn failed_runtime_snapshot_create_eventually_converges() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("runtime-state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.set_injected_replace_failures(usize::MAX);
+    let pending = reserve_save(&path).expect("reserve runtime snapshot");
+    let snapshot = RuntimeSessionSnapshot {
+        active_scene_id: Some("created".to_owned()),
+        ..RuntimeSessionSnapshot::default()
+    };
+
+    assert!(save_reserved(pending, &snapshot).is_err());
+
+    writer.set_injected_replace_failures(0);
+    writer.kick();
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("runtime snapshot should converge");
+    assert_eq!(
+        load(&path)
+            .expect("reload runtime snapshot")
+            .expect("runtime snapshot should exist")
+            .active_scene_id
+            .as_deref(),
+        Some("created")
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn library_no_op_retriggers_a_failed_delete() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("library.json");
+    let store = JsonLibraryStore::open(path.clone()).expect("library store");
+    let effect_id = EffectId::new(uuid::Uuid::now_v7());
+    store.upsert_favorite(effect_id, 42).await;
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.set_injected_replace_failures(usize::MAX);
+
+    assert!(store.remove_favorite(effect_id).await);
+    writer.set_injected_replace_failures(0);
+    assert!(!store.remove_favorite(effect_id).await);
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("library deletion should converge");
+    drop(store);
+
+    let reloaded = JsonLibraryStore::open(path).expect("reload library store");
+    assert!(reloaded.list_favorites().await.is_empty());
 }

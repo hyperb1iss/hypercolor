@@ -307,6 +307,9 @@ pub async fn update_logical_device(
         store.get(&id).cloned()
     };
     let Some(existing) = existing else {
+        if let Err(error) = logical_devices::kick_pending(&state.logical_devices_path) {
+            tracing::warn!(%error, "Failed to wake logical-device persistence retry");
+        }
         return ApiError::not_found(format!("Logical device not found: {id}"));
     };
 
@@ -395,6 +398,9 @@ pub async fn delete_logical_device(
         store.get(&id).cloned()
     };
     let Some(existing) = existing else {
+        if let Err(error) = logical_devices::kick_pending(&state.logical_devices_path) {
+            tracing::warn!(%error, "Failed to wake logical-device persistence retry");
+        }
         return ApiError::not_found(format!("Logical device not found: {id}"));
     };
 

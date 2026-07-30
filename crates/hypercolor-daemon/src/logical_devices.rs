@@ -368,6 +368,12 @@ pub fn save_reserved_segments(pending: LogicalDeviceSave) -> anyhow::Result<Atom
         .context("failed to persist logical device store")
 }
 
+/// Wake a pending retry after a semantic no-op.
+pub fn kick_pending(path: &Path) -> Result<(), PersistenceError> {
+    AtomicFileWriter::new(path)?.kick();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

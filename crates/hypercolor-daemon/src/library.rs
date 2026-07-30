@@ -405,6 +405,8 @@ impl LibraryStore for JsonLibraryStore {
         };
         if let Some(pending) = pending {
             self.persist_best_effort(pending);
+        } else {
+            self.writer.kick();
         }
         removed
     }
@@ -430,6 +432,7 @@ impl LibraryStore for JsonLibraryStore {
         let pending = {
             let mut data = self.data.write().await;
             if data.presets.contains_key(&preset.id) {
+                self.writer.kick();
                 return Err(LibraryStoreError::PresetConflict(preset.id));
             }
             data.presets.insert(preset.id, preset);
@@ -443,6 +446,7 @@ impl LibraryStore for JsonLibraryStore {
         let pending = {
             let mut data = self.data.write().await;
             if !data.presets.contains_key(&preset.id) {
+                self.writer.kick();
                 return Err(LibraryStoreError::PresetNotFound(preset.id));
             }
             data.presets.insert(preset.id, preset);
@@ -461,6 +465,8 @@ impl LibraryStore for JsonLibraryStore {
         };
         if let Some(pending) = pending {
             self.persist_best_effort(pending);
+        } else {
+            self.writer.kick();
         }
         removed
     }
@@ -486,6 +492,7 @@ impl LibraryStore for JsonLibraryStore {
         let pending = {
             let mut data = self.data.write().await;
             if data.playlists.contains_key(&playlist.id) {
+                self.writer.kick();
                 return Err(LibraryStoreError::PlaylistConflict(playlist.id));
             }
             data.playlists.insert(playlist.id, playlist);
@@ -499,6 +506,7 @@ impl LibraryStore for JsonLibraryStore {
         let pending = {
             let mut data = self.data.write().await;
             if !data.playlists.contains_key(&playlist.id) {
+                self.writer.kick();
                 return Err(LibraryStoreError::PlaylistNotFound(playlist.id));
             }
             data.playlists.insert(playlist.id, playlist);
@@ -517,6 +525,8 @@ impl LibraryStore for JsonLibraryStore {
         };
         if let Some(pending) = pending {
             self.persist_best_effort(pending);
+        } else {
+            self.writer.kick();
         }
         removed
     }
