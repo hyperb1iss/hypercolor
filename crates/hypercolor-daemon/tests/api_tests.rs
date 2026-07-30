@@ -1941,10 +1941,10 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     assert!(transactions.iter().any(|transaction| {
         matches!(
             transaction,
-            SceneTransaction::ReplaceLayout(layout)
-                if layout.id == "default"
-                    && layout.canvas_width == 1024
-                    && layout.canvas_height == 768
+            SceneTransaction::ReplaceSpatialEngine(engine)
+                if engine.layout().id == "default"
+                    && engine.layout().canvas_width == 1024
+                    && engine.layout().canvas_height == 768
         )
     }));
     assert!(transactions.iter().any(|transaction| {
@@ -8505,8 +8505,10 @@ async fn layout_apply_updates_active_layout() {
     let transactions = state.scene_transactions.drain();
     assert!(matches!(
         transactions.first(),
-        Some(SceneTransaction::ReplaceLayout(layout))
-            if layout.id == layout_id && layout.canvas_width == 640 && layout.canvas_height == 360
+        Some(SceneTransaction::ReplaceSpatialEngine(engine))
+            if engine.layout().id == layout_id
+                && engine.layout().canvas_width == 640
+                && engine.layout().canvas_height == 360
     ));
     assert!(transactions.iter().any(|transaction| {
         matches!(
@@ -8611,6 +8613,45 @@ async fn layout_delete_active_falls_back_to_default_layout() {
 }
 
 #[tokio::test]
+async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
+    let state = Arc::new(isolated_state());
+    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let mut invalid = layout_with_sampling_modes(
+        SamplingMode::Bilinear,
+        SamplingMode::GaussianArea {
+            sigma: 1.0,
+            radius: u32::MAX,
+        },
+    );
+    invalid.id = "invalid-fallback".to_owned();
+    invalid.name = "Invalid Fallback".to_owned();
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(active.id.clone(), active.clone());
+        layouts.insert(invalid.id.clone(), invalid.clone());
+    }
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{}", active.id))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(state.spatial_engine.read().await.layout().as_ref(), &active);
+    let layouts = state.layouts.read().await;
+    assert_eq!(layouts.get(&active.id), Some(&active));
+    assert_eq!(layouts.get(&invalid.id), Some(&invalid));
+    assert!(state.scene_transactions.drain().is_empty());
+}
+
+#[tokio::test]
 async fn layout_create_validates_input() {
     let app = test_app();
 
@@ -8688,6 +8729,44 @@ async fn layout_update_rejects_negative_output_sampling_radii_without_mutating()
 }
 
 #[tokio::test]
+async fn layout_update_rejects_unaddressable_gaussian_without_mutating() {
+    let state = Arc::new(isolated_state());
+    let mut stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
+    stored.zones.clear();
+    state
+        .layouts
+        .write()
+        .await
+        .insert(stored.id.clone(), stored.clone());
+    let invalid = layout_with_sampling_modes(
+        SamplingMode::Bilinear,
+        SamplingMode::GaussianArea {
+            sigma: 1.0,
+            radius: u32::MAX,
+        },
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/layouts/{}", stored.id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "zones": invalid.zones }).to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(state.layouts.read().await[&stored.id], stored);
+    assert!(state.scene_transactions.drain().is_empty());
+}
+
+#[tokio::test]
 async fn layout_update_rejects_invalid_geometry_without_mutating() {
     let state = Arc::new(isolated_state());
     let stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
@@ -8759,6 +8838,19 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
                 radius_x: radius,
                 radius_y: 0.0,
             },
+            SamplingMode::Bilinear,
+        );
+        let response = api::layouts::preview_layout(
+            axum::extract::State(Arc::clone(&state)),
+            axum::Json(layout),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    for sigma in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let layout = layout_with_sampling_modes(
+            SamplingMode::GaussianArea { sigma, radius: 1 },
             SamplingMode::Bilinear,
         );
         let response = api::layouts::preview_layout(

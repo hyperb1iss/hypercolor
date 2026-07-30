@@ -471,7 +471,8 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         &state.scene_transactions,
         active_layout_with_simulator.clone(),
     )
-    .await;
+    .await
+    .expect("valid simulator layout should apply");
 
     {
         let mut manager = state.backend_manager.lock().await;

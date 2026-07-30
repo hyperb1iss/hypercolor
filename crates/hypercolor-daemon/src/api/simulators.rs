@@ -10,6 +10,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use serde::Deserialize;
+use tracing::warn;
 
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::device::DeviceId;
@@ -307,14 +308,16 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
         updated_active
     };
 
-    if let Some(layout) = active_layout {
-        apply_layout_update(
+    if let Some(layout) = active_layout
+        && let Err(error) = apply_layout_update(
             &state.spatial_engine,
             &state.scene_manager,
             &state.scene_transactions,
             layout,
         )
-        .await;
+        .await
+    {
+        warn!(%error, "rejected active layout after simulator pruning");
     }
 
     crate::api::persist_layouts(state).await;

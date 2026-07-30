@@ -4002,9 +4002,9 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
 
     state
         .scene_transactions
-        .push(SceneTransaction::ReplaceLayout(test_layout(vec![
-            point_zone("zone_sample", "mock:sample", 0.75, 0.5),
-        ])));
+        .push(SceneTransaction::ReplaceSpatialEngine(SpatialEngine::new(
+            test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
+        )));
 
     let updated_color = tokio::time::timeout(Duration::from_secs(2), async {
         loop {

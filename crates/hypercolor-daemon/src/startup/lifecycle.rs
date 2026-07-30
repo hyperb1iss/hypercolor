@@ -415,14 +415,21 @@ impl DaemonState {
         if let Some(layout_id) = &snapshot.active_layout_id {
             let layouts = self.layouts.read().await;
             if let Some(layout) = layouts.get(layout_id) {
-                apply_layout_update(
+                match apply_layout_update(
                     &self.spatial_engine,
                     &self.scene_manager,
                     &self.scene_transactions,
                     layout.clone(),
                 )
-                .await;
-                info!(layout_id, layout_name = %layout.name, "Restored active layout");
+                .await
+                {
+                    Ok(()) => {
+                        info!(layout_id, layout_name = %layout.name, "Restored active layout");
+                    }
+                    Err(error) => {
+                        warn!(layout_id, %error, "Rejected persisted active layout");
+                    }
+                }
             } else {
                 debug!(
                     layout_id,

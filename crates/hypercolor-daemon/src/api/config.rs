@@ -1055,13 +1055,17 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
         return false;
     };
 
-    apply_layout_update(
+    if let Err(error) = apply_layout_update(
         &state.spatial_engine,
         &state.scene_manager,
         &state.scene_transactions,
         updated_layout.clone(),
     )
-    .await;
+    .await
+    {
+        warn!(%error, width, height, "Rejected live canvas dimension config");
+        return false;
+    }
 
     let persisted_layout_updated = {
         let mut layouts = state.layouts.write().await;

@@ -2101,13 +2101,27 @@ pub(crate) async fn apply_associated_layout(
     };
 
     if let Some(layout) = layout {
-        apply_layout_update(
+        if let Err(error) = apply_layout_update(
             &state.spatial_engine,
             &state.scene_manager,
             &state.scene_transactions,
             layout.clone(),
         )
-        .await;
+        .await
+        {
+            warn!(
+                effect_id,
+                associated_layout_id,
+                %error,
+                "Rejected associated effect layout"
+            );
+            return Some(EffectLayoutApplyResult {
+                associated_layout_id,
+                resolved: true,
+                applied: false,
+                layout: Some(layout_link_summary(&layout)),
+            });
+        }
         return Some(EffectLayoutApplyResult {
             associated_layout_id,
             resolved: true,

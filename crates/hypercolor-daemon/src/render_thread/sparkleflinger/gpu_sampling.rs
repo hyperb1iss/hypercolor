@@ -204,7 +204,7 @@ impl GpuSamplingPlan {
                                 position,
                                 GpuSampleMethod::Area,
                                 sample.attenuation,
-                                u32::try_from(sample.radius.max(0)).unwrap_or_default(),
+                                sample.radius,
                             )
                         },
                     ));

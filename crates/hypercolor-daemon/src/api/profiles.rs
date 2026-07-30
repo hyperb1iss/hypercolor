@@ -396,7 +396,10 @@ pub(crate) async fn apply_profile_snapshot(
             &state.scene_transactions,
             layout,
         )
-        .await;
+        .await
+        .map_err(|error| {
+            ProfileApplyError::Conflict(format!("profile layout was rejected: {error}"))
+        })?;
 
         let runtime = super::discovery_runtime(state);
         discovery::sync_active_layout_connectivity(&runtime, None).await;

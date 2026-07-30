@@ -131,14 +131,16 @@ pub async fn sync_active_layout_for_renderable_devices(
         return;
     }
 
+    if let Err(error) = apply_layout_update(
+        &runtime.spatial_engine,
+        &runtime.scene_manager,
+        &runtime.scene_transactions,
+        layout.clone(),
+    )
+    .await
     {
-        apply_layout_update(
-            &runtime.spatial_engine,
-            &runtime.scene_manager,
-            &runtime.scene_transactions,
-            layout.clone(),
-        )
-        .await;
+        warn!(%error, "rejected auto-layout repair before persistence");
+        return;
     }
 
     let layouts_snapshot = {

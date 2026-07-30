@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
@@ -263,6 +264,9 @@ pub async fn update_layout(
     if let Some(zones) = zones {
         updated.zones = zones;
     }
+    if let Err(error) = SpatialEngine::try_new(updated.clone()) {
+        return ApiError::validation(error.to_string());
+    }
 
     let summary = LayoutSummary {
         id: updated.id.clone(),
@@ -301,13 +305,16 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
             .clone()
     };
 
-    apply_layout_update(
+    if let Err(error) = apply_layout_update(
         &state.spatial_engine,
         &state.scene_manager,
         &state.scene_transactions,
         layout.clone(),
     )
-    .await;
+    .await
+    {
+        return ApiError::validation(error.to_string());
+    }
     let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
     persist_runtime_session(&state).await;
@@ -332,13 +339,16 @@ pub async fn preview_layout(
         return ApiError::validation(error);
     }
 
-    apply_layout_update(
+    if let Err(error) = apply_layout_update(
         &state.spatial_engine,
         &state.scene_manager,
         &state.scene_transactions,
         layout,
     )
-    .await;
+    .await
+    {
+        return ApiError::validation(error.to_string());
+    }
     let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
 
@@ -360,7 +370,9 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
         }
     };
 
-    layouts.remove(&key);
+    let removed_layout = layouts
+        .remove(&key)
+        .expect("resolved layout key must exist");
     let next_active_layout = if key == active_layout.id {
         let mut candidates: Vec<SpatialLayout> = layouts.values().cloned().collect();
         candidates.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
@@ -374,6 +386,27 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
         None
     };
     drop(layouts);
+
+    if let Some(layout) = next_active_layout {
+        if let Err(error) = apply_layout_update(
+            &state.spatial_engine,
+            &state.scene_manager,
+            &state.scene_transactions,
+            layout,
+        )
+        .await
+        {
+            state
+                .layouts
+                .write()
+                .await
+                .insert(key.clone(), removed_layout);
+            return ApiError::validation(error.to_string());
+        }
+        let runtime = super::discovery_runtime(&state);
+        discovery::sync_active_layout_connectivity(&runtime, None).await;
+        persist_runtime_session(&state).await;
+    }
     let exclusions_changed = {
         let mut exclusions = state.layout_auto_exclusions.write().await;
         exclusions
@@ -382,19 +415,6 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
             ))
             .is_some()
     };
-
-    if let Some(layout) = next_active_layout {
-        apply_layout_update(
-            &state.spatial_engine,
-            &state.scene_manager,
-            &state.scene_transactions,
-            layout,
-        )
-        .await;
-        let runtime = super::discovery_runtime(&state);
-        discovery::sync_active_layout_connectivity(&runtime, None).await;
-        persist_runtime_session(&state).await;
-    }
 
     persist_layouts(&state).await;
     if exclusions_changed {
@@ -506,16 +526,24 @@ pub(crate) fn validate_output_sampling_radii(output: &Output) -> Result<(), Stri
 }
 
 fn validate_sampling_mode_radii(mode: &SamplingMode, field: &str) -> Result<(), String> {
-    let SamplingMode::AreaAverage { radius_x, radius_y } = mode else {
-        return Ok(());
-    };
-
-    for (axis, radius) in [("radius_x", radius_x), ("radius_y", radius_y)] {
-        if !radius.is_finite() || *radius < 0.0 {
-            return Err(format!(
-                "{field} {axis} must be finite and greater than or equal to 0"
-            ));
+    match mode {
+        SamplingMode::AreaAverage { radius_x, radius_y } => {
+            for (axis, radius) in [("radius_x", radius_x), ("radius_y", radius_y)] {
+                if !radius.is_finite() || *radius < 0.0 {
+                    return Err(format!(
+                        "{field} {axis} must be finite and greater than or equal to 0"
+                    ));
+                }
+            }
         }
+        SamplingMode::GaussianArea { sigma, .. } => {
+            if !sigma.is_finite() || *sigma < 0.0 {
+                return Err(format!(
+                    "{field} sigma must be finite and greater than or equal to 0"
+                ));
+            }
+        }
+        SamplingMode::Nearest | SamplingMode::Bilinear => {}
     }
     Ok(())
 }

@@ -61,8 +61,8 @@ pub(crate) async fn execute_frame(
     if let Some((width, height)) = pending_transactions.resize {
         match render.apply_canvas_resize(width, height) {
             Ok(()) => {
-                if let Some(layout) = pending_transactions.layout {
-                    scene.render_state.apply_layout(layout);
+                if let Some(spatial_engine) = pending_transactions.spatial_engine {
+                    scene.render_state.replace_spatial_engine(spatial_engine);
                 }
                 state.canvas_dims.set(width, height);
                 frame_loop.throttle.reset_for_canvas_resize();
@@ -79,8 +79,8 @@ pub(crate) async fn execute_frame(
                 );
             }
         }
-    } else if let Some(layout) = pending_transactions.layout {
-        scene.render_state.apply_layout(layout);
+    } else if let Some(spatial_engine) = pending_transactions.spatial_engine {
+        scene.render_state.replace_spatial_engine(spatial_engine);
     }
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
