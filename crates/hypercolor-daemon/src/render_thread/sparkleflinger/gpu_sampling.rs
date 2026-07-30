@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     mpsc::{self, TryRecvError},
 };
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
@@ -14,8 +15,10 @@ const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
 const SAMPLE_POINT_BYTES: u64 = 32;
 const SAMPLE_READBACK_SLOT_COUNT: usize = 3;
-const SAMPLE_READBACK_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(50);
-const SAMPLE_READBACK_WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+const SAMPLE_READBACK_WAIT_STEP: Duration = Duration::from_millis(50);
+const SAMPLE_READBACK_WAIT_BUDGET: Duration = Duration::from_secs(2);
+const SAMPLE_PREPARATION_RETRY_INITIAL: Duration = Duration::from_millis(25);
+const SAMPLE_PREPARATION_RETRY_MAX: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -122,6 +125,63 @@ struct GpuSamplingAdmissionKey {
     height: u32,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(super) enum GpuSamplingPreparationFailure {
+    #[error("{0}")]
+    Deterministic(String),
+    #[error("{0}")]
+    Transient(String),
+}
+
+impl GpuSamplingPreparationFailure {
+    pub(super) fn deterministic(reason: impl Into<String>) -> Self {
+        Self::Deterministic(reason.into())
+    }
+
+    pub(super) fn transient(reason: impl Into<String>) -> Self {
+        Self::Transient(reason.into())
+    }
+
+    const fn is_transient(&self) -> bool {
+        matches!(self, Self::Transient(_))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GpuSamplingRetry {
+    admission: GpuSamplingAdmissionKey,
+    failure_count: u32,
+    next_attempt_at: Instant,
+    reason: String,
+}
+
+impl GpuSamplingRetry {
+    fn after_failure(
+        admission: GpuSamplingAdmissionKey,
+        reason: String,
+        previous: Option<&Self>,
+    ) -> Self {
+        let failure_count = previous
+            .filter(|retry| retry.admission == admission)
+            .map_or(1, |retry| retry.failure_count.saturating_add(1));
+        let shift = failure_count.saturating_sub(1).min(31);
+        let multiplier = 1_u32 << shift;
+        let delay = SAMPLE_PREPARATION_RETRY_INITIAL
+            .saturating_mul(multiplier)
+            .min(SAMPLE_PREPARATION_RETRY_MAX);
+        Self {
+            admission,
+            failure_count,
+            next_attempt_at: Instant::now() + delay,
+            reason,
+        }
+    }
+
+    fn is_due(&self) -> bool {
+        Instant::now() >= self.next_attempt_at
+    }
+}
+
 struct PreparedGpuSampleBuffers {
     points: wgpu::Buffer,
     output: wgpu::Buffer,
@@ -183,6 +243,7 @@ enum GpuSamplingPreparationKind {
     CpuFallback {
         admission: GpuSamplingAdmissionKey,
         reason: String,
+        cache: GpuSamplingFallbackCache,
     },
     Reuse(GpuSamplingAdmissionKey),
     Replace {
@@ -191,6 +252,11 @@ enum GpuSamplingPreparationKind {
         buffers: Option<PreparedGpuSampleBuffers>,
         area: PreparedGpuArea,
     },
+}
+
+enum GpuSamplingFallbackCache {
+    Deterministic,
+    Retry(GpuSamplingRetry),
 }
 
 impl GpuSamplingPreparation {
@@ -205,8 +271,34 @@ impl GpuSamplingPreparation {
         Self(GpuSamplingPreparationKind::Unsupported)
     }
 
-    fn cpu_fallback(admission: GpuSamplingAdmissionKey, reason: String) -> Self {
-        Self(GpuSamplingPreparationKind::CpuFallback { admission, reason })
+    fn cpu_fallback(
+        admission: GpuSamplingAdmissionKey,
+        failure: GpuSamplingPreparationFailure,
+        previous_retry: Option<&GpuSamplingRetry>,
+    ) -> Self {
+        let reason = failure.to_string();
+        let cache = if failure.is_transient() {
+            GpuSamplingFallbackCache::Retry(GpuSamplingRetry::after_failure(
+                admission,
+                reason.clone(),
+                previous_retry,
+            ))
+        } else {
+            GpuSamplingFallbackCache::Deterministic
+        };
+        Self(GpuSamplingPreparationKind::CpuFallback {
+            admission,
+            reason,
+            cache,
+        })
+    }
+
+    fn wait_for_retry(retry: GpuSamplingRetry) -> Self {
+        Self(GpuSamplingPreparationKind::CpuFallback {
+            admission: retry.admission,
+            reason: retry.reason.clone(),
+            cache: GpuSamplingFallbackCache::Retry(retry),
+        })
     }
 
     const fn reuse(admission: GpuSamplingAdmissionKey) -> Self {
@@ -382,7 +474,8 @@ pub(super) struct GpuSpatialSampler {
     area_resources: Option<GpuAreaResources>,
     area_generation: u64,
     admitted_plan: Option<GpuSamplingAdmissionKey>,
-    cpu_fallback_plan: Option<GpuSamplingAdmissionKey>,
+    deterministic_fallback_plan: Option<GpuSamplingAdmissionKey>,
+    transient_retry: Option<GpuSamplingRetry>,
     dummy_summed_area_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
     cached_params: Option<[u8; SAMPLE_PARAM_BYTES]>,
@@ -506,7 +599,8 @@ impl GpuSpatialSampler {
             area_resources: None,
             area_generation: 0,
             admitted_plan: None,
-            cpu_fallback_plan: None,
+            deterministic_fallback_plan: None,
+            transient_retry: None,
             dummy_summed_area_buffer,
             params_buffer,
             cached_params: None,
@@ -565,11 +659,21 @@ impl GpuSpatialSampler {
         if self.admitted_plan == Some(admission) {
             return GpuSamplingPreparation::reuse(admission);
         }
-        if self.cpu_fallback_plan == Some(admission) {
+        if self.deterministic_fallback_plan == Some(admission) {
             return GpuSamplingPreparation::cpu_fallback(
                 admission,
-                "GPU sampling resources were not admitted for this plan".to_owned(),
+                GpuSamplingPreparationFailure::deterministic(
+                    "GPU sampling resources exceed deterministic device limits",
+                ),
+                None,
             );
+        }
+        if let Some(retry) = self
+            .transient_retry
+            .as_ref()
+            .filter(|retry| retry.admission == admission && !retry.is_due())
+        {
+            return GpuSamplingPreparation::wait_for_retry(retry.clone());
         }
         let Some(plan) = GpuSamplingPlan::from_prepared_zones(prepared_zones) else {
             return GpuSamplingPreparation::unsupported();
@@ -578,14 +682,22 @@ impl GpuSpatialSampler {
         let geometry = match GpuSampleGeometry::try_new(&device.limits(), sample_count) {
             Ok(geometry) => geometry,
             Err(error) => {
-                return GpuSamplingPreparation::cpu_fallback(admission, error.to_string());
+                return GpuSamplingPreparation::cpu_fallback(
+                    admission,
+                    GpuSamplingPreparationFailure::deterministic(error.to_string()),
+                    None,
+                );
             }
         };
         let buffers = if sample_count > self.capacity {
             match try_prepare_sample_buffers(device, geometry) {
                 Ok(buffers) => Some(buffers),
                 Err(error) => {
-                    return GpuSamplingPreparation::cpu_fallback(admission, error.to_string());
+                    return GpuSamplingPreparation::cpu_fallback(
+                        admission,
+                        error,
+                        self.transient_retry.as_ref(),
+                    );
                 }
             }
         } else {
@@ -607,14 +719,21 @@ impl GpuSpatialSampler {
             match self.area_pipeline.try_prepare(device, width, height) {
                 Ok(resources) => PreparedGpuArea::Replace(resources),
                 Err(error) => {
-                    return GpuSamplingPreparation::cpu_fallback(admission, error.to_string());
+                    return GpuSamplingPreparation::cpu_fallback(
+                        admission,
+                        error,
+                        self.transient_retry.as_ref(),
+                    );
                 }
             }
         };
         if self.take_plan_preparation_failure_injection() {
             return GpuSamplingPreparation::cpu_fallback(
                 admission,
-                "injected GPU sampling plan preparation failure".to_owned(),
+                GpuSamplingPreparationFailure::transient(
+                    "injected GPU sampling plan preparation failure",
+                ),
+                self.transient_retry.as_ref(),
             );
         }
         let encoded_points = encode_points(&plan);
@@ -635,11 +754,21 @@ impl GpuSpatialSampler {
         match preparation.0 {
             GpuSamplingPreparationKind::Unsupported => {
                 self.admitted_plan = None;
-                self.cpu_fallback_plan = None;
+                self.deterministic_fallback_plan = None;
+                self.transient_retry = None;
                 self.cached_plan = None;
             }
-            GpuSamplingPreparationKind::CpuFallback { admission, reason } => {
-                if self.cpu_fallback_plan != Some(admission) {
+            GpuSamplingPreparationKind::CpuFallback {
+                admission,
+                reason,
+                cache,
+            } => {
+                if self.deterministic_fallback_plan != Some(admission)
+                    && self
+                        .transient_retry
+                        .as_ref()
+                        .is_none_or(|retry| retry.admission != admission)
+                {
                     tracing::warn!(
                         %reason,
                         width = admission.width,
@@ -648,12 +777,22 @@ impl GpuSpatialSampler {
                     );
                 }
                 self.admitted_plan = None;
-                self.cpu_fallback_plan = Some(admission);
+                match cache {
+                    GpuSamplingFallbackCache::Deterministic => {
+                        self.deterministic_fallback_plan = Some(admission);
+                        self.transient_retry = None;
+                    }
+                    GpuSamplingFallbackCache::Retry(retry) => {
+                        self.deterministic_fallback_plan = None;
+                        self.transient_retry = Some(retry);
+                    }
+                }
                 self.cached_plan = None;
             }
             GpuSamplingPreparationKind::Reuse(admission) => {
                 self.admitted_plan = Some(admission);
-                self.cpu_fallback_plan = None;
+                self.deterministic_fallback_plan = None;
+                self.transient_retry = None;
             }
             GpuSamplingPreparationKind::Replace {
                 admission,
@@ -679,7 +818,8 @@ impl GpuSpatialSampler {
                 }
                 self.cached_plan = Some(plan);
                 self.admitted_plan = Some(admission);
-                self.cpu_fallback_plan = None;
+                self.deterministic_fallback_plan = None;
+                self.transient_retry = None;
             }
         }
     }
@@ -687,6 +827,23 @@ impl GpuSpatialSampler {
     #[cfg(test)]
     pub(super) fn fail_next_plan_preparation(&mut self) {
         self.fail_next_plan_preparation = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn make_transient_retry_due(&mut self) {
+        if let Some(retry) = &mut self.transient_retry {
+            retry.next_attempt_at = Instant::now();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn has_transient_retry(&self) -> bool {
+        self.transient_retry.is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn has_deterministic_fallback(&self) -> bool {
+        self.deterministic_fallback_plan.is_some()
     }
 
     fn take_plan_preparation_failure_injection(&mut self) -> bool {
@@ -1055,7 +1212,7 @@ impl GpuSpatialSampler {
 fn try_prepare_sample_buffers(
     device: &wgpu::Device,
     geometry: GpuSampleGeometry,
-) -> Result<PreparedGpuSampleBuffers> {
+) -> std::result::Result<PreparedGpuSampleBuffers, GpuSamplingPreparationFailure> {
     let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1082,8 +1239,20 @@ fn try_prepare_sample_buffers(
     let validation_error = pollster::block_on(validation_scope.pop());
     let internal_error = pollster::block_on(internal_scope.pop());
     let out_of_memory_error = pollster::block_on(out_of_memory_scope.pop());
-    if let Some(error) = validation_error.or(internal_error).or(out_of_memory_error) {
-        anyhow::bail!("GPU sample buffers could not be admitted: {error}");
+    if let Some(error) = out_of_memory_error {
+        return Err(GpuSamplingPreparationFailure::transient(format!(
+            "GPU sample buffer allocation ran out of memory: {error}"
+        )));
+    }
+    if let Some(error) = internal_error {
+        return Err(GpuSamplingPreparationFailure::transient(format!(
+            "GPU sample buffer allocation hit an internal device error: {error}"
+        )));
+    }
+    if let Some(error) = validation_error {
+        return Err(GpuSamplingPreparationFailure::deterministic(format!(
+            "GPU sample buffers failed device validation: {error}"
+        )));
     }
     Ok(PreparedGpuSampleBuffers {
         points,

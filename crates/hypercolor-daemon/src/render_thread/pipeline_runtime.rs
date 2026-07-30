@@ -1826,6 +1826,11 @@ impl RenderCaches {
             sparkleflinger_preparation.force_cpu_fallback(width, height)?;
             display_sparkleflinger_preparation.force_cpu_fallback(width, height)?;
         }
+        if sampling_preparation.requires_cpu_sampling()
+            || sparkleflinger_preparation.requires_cpu_sampling()
+        {
+            spatial_engine.try_prepare_sampling_canvas(width, height)?;
+        }
         Ok(PreparedCanvasResize {
             render_group_runtime,
             sparkleflinger_preparation,
@@ -1856,7 +1861,10 @@ impl RenderCaches {
         self.output_artifacts.reset_for_canvas_resize();
     }
 
-    pub(crate) fn apply_spatial_sampling_plan(&mut self, spatial_engine: &SpatialEngine) -> bool {
+    pub(crate) fn apply_spatial_sampling_plan(
+        &mut self,
+        spatial_engine: &SpatialEngine,
+    ) -> Result<bool> {
         let layout = spatial_engine.layout();
         let preparation = self.sparkleflinger.prepare_zone_sampling_plan(
             layout.canvas_width,
@@ -1867,8 +1875,12 @@ impl RenderCaches {
         let admitted = preparation.is_admitted();
         #[cfg(not(feature = "wgpu"))]
         let admitted = false;
+        if preparation.requires_cpu_sampling() {
+            spatial_engine
+                .try_prepare_sampling_canvas(layout.canvas_width, layout.canvas_height)?;
+        }
         self.sparkleflinger.apply_zone_sampling_plan(preparation);
-        admitted
+        Ok(admitted)
     }
 
     pub(crate) fn render_surface_snapshot(
@@ -2050,6 +2062,11 @@ impl PipelineRuntime {
             sparkleflinger_preparation.force_cpu_fallback(canvas_width, canvas_height)?;
             display_sparkleflinger_preparation.force_cpu_fallback(canvas_width, canvas_height)?;
         }
+        if sampling_preparation.requires_cpu_sampling()
+            || sparkleflinger_preparation.requires_cpu_sampling()
+        {
+            initial_spatial_engine.try_prepare_sampling_canvas(canvas_width, canvas_height)?;
+        }
         sparkleflinger.apply_canvas_resize(sparkleflinger_preparation);
         sparkleflinger.apply_zone_sampling_plan(sampling_preparation);
         #[cfg(feature = "wgpu")]
@@ -2099,6 +2116,7 @@ impl PipelineRuntime {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::mem::size_of;
     use std::num::{NonZeroU32, NonZeroU64};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -2118,11 +2136,15 @@ mod tests {
         InputData, InputGraphSnapshot, InputManager, InputSource, InteractionData, SourceIssue,
         SourceKind, SourceStatusWriter,
     };
-    use hypercolor_core::spatial::SpatialEngine;
+    use hypercolor_core::spatial::{
+        SpatialEngine, SpatialSamplingCapacity, SpatialSamplingWorkspaceUsage,
+    };
     use hypercolor_types::config::{InteractionRoutePolicy, RenderAccelerationMode};
     use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
     use hypercolor_types::sensor::SystemSnapshot;
-    use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+    use hypercolor_types::spatial::{
+        EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    };
 
     use super::{
         EffectDeltaClock, FrameInputs, InputRouteCache, OutputFrameSource, OutputReuseKey,
@@ -2319,6 +2341,44 @@ mod tests {
             canvas_width: 320,
             canvas_height: 200,
             zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    fn area_layout(width: u32, height: u32) -> SpatialLayout {
+        SpatialLayout {
+            id: "area-test".into(),
+            name: "Area Test".into(),
+            description: None,
+            canvas_width: width,
+            canvas_height: height,
+            zones: vec![Output {
+                id: "zone".into(),
+                name: "zone".into(),
+                device_id: "device:zone".into(),
+                zone_name: None,
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Point,
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: Some(SamplingMode::AreaAverage {
+                    radius_x: 1.0,
+                    radius_y: 1.0,
+                }),
+                edge_behavior: Some(EdgeBehavior::Clamp),
+                shape: None,
+                shape_preset: None,
+                display_order: 0,
+                attachment: None,
+                brightness: None,
+            }],
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
             spaces: None,
@@ -2742,6 +2802,113 @@ mod tests {
                 .to_string()
                 .contains("must be resolved before constructing SparkleFlinger")
         );
+    }
+
+    #[test]
+    fn cpu_sampling_workspace_is_resident_before_runtime_acceptance() {
+        let engine = SpatialEngine::new(area_layout(4, 4));
+        assert_eq!(
+            engine.sampling_workspace_usage(),
+            SpatialSamplingWorkspaceUsage::default()
+        );
+
+        let _runtime = PipelineRuntime::new(
+            4,
+            4,
+            engine.clone(),
+            false,
+            RenderAccelerationMode::Cpu,
+            FpsTier::Full,
+        )
+        .expect("CPU runtime admission should prepare exact area sampling");
+
+        assert_eq!(engine.sampling_workspace_usage().retained_workspaces, 1);
+    }
+
+    #[test]
+    fn spatial_plan_cpu_fallback_is_prepared_before_apply_returns() {
+        let mut runtime = PipelineRuntime::new(
+            4,
+            4,
+            SpatialEngine::new(empty_layout()),
+            false,
+            RenderAccelerationMode::Cpu,
+            FpsTier::Full,
+        )
+        .expect("CPU runtime should initialize");
+        let candidate = SpatialEngine::new(area_layout(4, 4));
+
+        let gpu_admitted = runtime
+            .render
+            .apply_spatial_sampling_plan(&candidate)
+            .expect("CPU fallback workspace should prepare transactionally");
+
+        assert!(!gpu_admitted);
+        assert_eq!(candidate.sampling_workspace_usage().retained_workspaces, 1);
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn transient_gpu_fallback_prepares_cpu_workspace_before_plan_acceptance() {
+        let mut runtime = match PipelineRuntime::new(
+            4,
+            4,
+            SpatialEngine::new(empty_layout()),
+            false,
+            RenderAccelerationMode::Gpu,
+            FpsTier::Full,
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("GPU test environment unavailable: {error}");
+                return;
+            }
+        };
+        let candidate = SpatialEngine::new(area_layout(4, 4));
+        assert!(
+            runtime
+                .render
+                .sparkleflinger
+                .fail_next_gpu_sampling_preparation()
+        );
+
+        let gpu_admitted = runtime
+            .render
+            .apply_spatial_sampling_plan(&candidate)
+            .expect("transient GPU fallback should prepare its CPU workspace");
+
+        assert!(!gpu_admitted);
+        assert_eq!(candidate.sampling_workspace_usage().retained_workspaces, 1);
+    }
+
+    #[test]
+    fn failed_resize_cpu_workspace_preparation_preserves_last_good_workspace() {
+        let initial_bytes = 5 * 5 * size_of::<[u64; 3]>();
+        let engine = SpatialEngine::try_new_with_sampling_capacity(
+            area_layout(4, 4),
+            SpatialSamplingCapacity::new(initial_bytes),
+        )
+        .expect("initial area layout should fit its exact workspace capacity");
+        let mut runtime = PipelineRuntime::new(
+            4,
+            4,
+            engine.clone(),
+            false,
+            RenderAccelerationMode::Cpu,
+            FpsTier::Full,
+        )
+        .expect("initial CPU runtime should prepare its area workspace");
+
+        let active_engine = runtime.scene.render_state.spatial_engine().clone();
+        let Err(error) = runtime.render.prepare_canvas_resize(8, 8, &active_engine) else {
+            panic!("larger fallback workspace must exceed the configured capacity");
+        };
+
+        assert!(error.to_string().contains("capacity is 600 bytes"));
+        assert_eq!(engine.sampling_workspace_usage().retained_workspaces, 1);
+        engine
+            .try_prepare_sampling_canvas(4, 4)
+            .expect("the last-good workspace must remain resident after rejection");
     }
 
     #[test]

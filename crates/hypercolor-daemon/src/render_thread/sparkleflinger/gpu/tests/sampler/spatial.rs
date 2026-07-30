@@ -367,9 +367,11 @@ fn gpu_sampling_admission_rolls_back_retries_and_reuses_resources() {
         radius_y: 2.0,
     });
     replacement_layout.canvas_width = 8;
-    let mut replacement = SpatialEngine::new(replacement_layout.clone());
+    let replacement = SpatialEngine::new(replacement_layout);
     compositor.spatial_sampler.fail_next_plan_preparation();
     assert!(!compositor.can_sample_zone_plan(replacement.sampling_plan().as_ref()));
+    assert!(compositor.spatial_sampler.has_transient_retry());
+    assert!(!compositor.spatial_sampler.has_deterministic_fallback());
     assert_eq!(
         compositor.spatial_sampler.area_generation(),
         initial_area_generation
@@ -380,8 +382,9 @@ fn gpu_sampling_admission_rolls_back_retries_and_reuses_resources() {
     );
     assert!(!compositor.can_sample_zone_plan(replacement.sampling_plan().as_ref()));
 
-    replacement.update_layout(replacement_layout);
+    compositor.spatial_sampler.make_transient_retry_due();
     assert!(compositor.can_sample_zone_plan(replacement.sampling_plan().as_ref()));
+    assert!(!compositor.spatial_sampler.has_transient_retry());
     let retried_area_generation = compositor.spatial_sampler.area_generation();
     let retried_buffer_generation = compositor.spatial_sampler.buffer_generation();
     assert!(retried_area_generation > initial_area_generation);
@@ -396,6 +399,33 @@ fn gpu_sampling_admission_rolls_back_retries_and_reuses_resources() {
         compositor.spatial_sampler.buffer_generation(),
         retried_buffer_generation
     );
+}
+
+#[test]
+fn deterministic_gpu_sampling_limits_are_cached_without_retrying() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let width = compositor
+        .device
+        .limits()
+        .max_texture_dimension_2d
+        .checked_add(1)
+        .expect("texture limit should leave room for an oversized test descriptor");
+    let mut layout = sampling_layout(SamplingMode::AreaAverage {
+        radius_x: 1.0,
+        radius_y: 1.0,
+    });
+    layout.canvas_width = width;
+    layout.canvas_height = 1;
+    let engine = SpatialEngine::new(layout);
+
+    assert!(!compositor.can_sample_zone_plan(engine.sampling_plan().as_ref()));
+    assert!(compositor.spatial_sampler.has_deterministic_fallback());
+    assert!(!compositor.spatial_sampler.has_transient_retry());
+    assert!(!compositor.can_sample_zone_plan(engine.sampling_plan().as_ref()));
+    assert!(compositor.spatial_sampler.has_deterministic_fallback());
 }
 
 #[test]

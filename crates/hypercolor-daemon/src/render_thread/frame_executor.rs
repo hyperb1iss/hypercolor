@@ -98,8 +98,15 @@ pub(crate) async fn execute_frame(
                     state.canvas_dims.set(width, height);
                     frame_loop.throttle.reset_for_canvas_resize();
                     info!(width, height, "Applied live canvas resize");
-                } else {
-                    render.apply_spatial_sampling_plan(&spatial_engine);
+                } else if let Err(error) = render.apply_spatial_sampling_plan(&spatial_engine) {
+                    warn!(
+                        %error,
+                        "Rejected spatial layout because CPU fallback resources could not be prepared"
+                    );
+                    transaction.reject(LayoutTransactionRejection::PreparationFailed {
+                        message: error.to_string(),
+                    });
+                    continue;
                 }
                 scene.render_state.replace_spatial_engine(spatial_engine);
                 transaction.accept();

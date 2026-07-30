@@ -465,6 +465,14 @@ pub(crate) enum SparkleFlingerSamplingPreparation {
 }
 
 impl SparkleFlingerSamplingPreparation {
+    pub(crate) const fn requires_cpu_sampling(&self) -> bool {
+        match self {
+            Self::Cpu => true,
+            #[cfg(feature = "wgpu")]
+            Self::Gpu(preparation) => !preparation.is_admitted(),
+        }
+    }
+
     #[cfg(feature = "wgpu")]
     pub(crate) const fn is_admitted(&self) -> bool {
         match self {
@@ -475,6 +483,16 @@ impl SparkleFlingerSamplingPreparation {
 }
 
 impl SparkleFlingerCanvasPreparation {
+    pub(crate) const fn requires_cpu_sampling(&self) -> bool {
+        match self {
+            Self::Cpu(_) => true,
+            #[cfg(feature = "wgpu")]
+            Self::Gpu(preparation) => !preparation.is_admitted(),
+            #[cfg(feature = "wgpu")]
+            Self::GpuCpuFallback(_) => true,
+        }
+    }
+
     #[cfg(feature = "wgpu")]
     pub(crate) const fn is_admitted(&self) -> bool {
         match self {
@@ -1110,6 +1128,17 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Cpu(_) => false,
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.can_sample_zone_plan(prepared_zones),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn fail_next_gpu_sampling_preparation(&mut self) -> bool {
+        match &mut self.backend {
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.fail_next_sampling_preparation();
+                true
+            }
+            SparkleFlingerBackend::Cpu(_) => false,
         }
     }
 

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use super::gpu_sampling::GpuSampleSource;
+use super::gpu_sampling::{GpuSampleSource, GpuSamplingPreparationFailure};
 
 const SAT_WORKGROUP_SIZE: u32 = 256;
 pub(super) const SAT_VALUE_BYTES: u64 = 24;
@@ -155,8 +155,9 @@ impl GpuAreaPipeline {
         device: &wgpu::Device,
         width: u32,
         height: u32,
-    ) -> Result<GpuAreaResources> {
-        let geometry = GpuAreaGeometry::try_new(device.limits(), width, height)?;
+    ) -> std::result::Result<GpuAreaResources, GpuSamplingPreparationFailure> {
+        let geometry = GpuAreaGeometry::try_new(device.limits(), width, height)
+            .map_err(|error| GpuSamplingPreparationFailure::deterministic(error.to_string()))?;
         let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -164,8 +165,20 @@ impl GpuAreaPipeline {
         let validation_error = pollster::block_on(validation_scope.pop());
         let internal_error = pollster::block_on(internal_scope.pop());
         let out_of_memory_error = pollster::block_on(out_of_memory_scope.pop());
-        if let Some(error) = validation_error.or(internal_error).or(out_of_memory_error) {
-            anyhow::bail!("GPU area summed-area resources could not be admitted: {error}");
+        if let Some(error) = out_of_memory_error {
+            return Err(GpuSamplingPreparationFailure::transient(format!(
+                "GPU area resource allocation ran out of memory: {error}"
+            )));
+        }
+        if let Some(error) = internal_error {
+            return Err(GpuSamplingPreparationFailure::transient(format!(
+                "GPU area resource allocation hit an internal device error: {error}"
+            )));
+        }
+        if let Some(error) = validation_error {
+            return Err(GpuSamplingPreparationFailure::deterministic(format!(
+                "GPU area resources failed device validation: {error}"
+            )));
         }
         Ok(resources)
     }

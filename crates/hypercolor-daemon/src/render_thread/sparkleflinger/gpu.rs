@@ -1168,6 +1168,11 @@ impl GpuSparkleFlinger {
         self.cached_sample_result = None;
     }
 
+    #[cfg(test)]
+    pub(super) fn fail_next_sampling_preparation(&mut self) {
+        self.spatial_sampler.fail_next_plan_preparation();
+    }
+
     pub(crate) fn current_output_frame(&mut self) -> Result<Option<GpuTextureFrame>> {
         self.flush_pending_output_submission()?;
         let Some(surfaces) = self.surfaces.as_ref() else {
