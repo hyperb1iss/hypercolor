@@ -1009,6 +1009,7 @@ pub struct ScreenWorkerPreparationTicket {
     pending_retired_bytes: Arc<AtomicU64>,
     next_allocation_nonce: AtomicU64,
     admission_coordinator: ScreenByteAdmissionCoordinator,
+    admission_reservation: Mutex<Option<ScreenByteReservation>>,
 }
 
 impl ScreenWorkerPreparationTicket {
@@ -1137,10 +1138,62 @@ impl ScreenWorkerPreparationTicket {
         lifetimes: &[ScreenResourceLifetime],
         admission_top_ups: Vec<ScreenByteReservation>,
     ) -> Result<ScreenPreparedWorkerToken, ScreenPlanError> {
-        validate_resource_coverage(self.required_minimums.as_slice(), &exact_ledger)?;
-        let lifetimes = validate_resource_lifetimes(self, &exact_ledger, lifetimes)?;
-        let retained_resources =
-            bind_retained_resources(self.required_minimums.as_slice(), &exact_ledger, &lifetimes)?;
+        let modeled_bytes = self
+            .required_minimums
+            .iter()
+            .try_fold(0_u64, |total, minimum| {
+                total.checked_add(minimum.minimum_bytes)
+            })
+            .expect("ticket minima are a checked subset of staged admission");
+        let mut admission = self
+            .admission_reservation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut reservation =
+            admission
+                .take()
+                .ok_or_else(|| ScreenPlanError::WorkerAdmissionAlreadyTransferred {
+                    source_id: self.source_id.clone(),
+                })?;
+        for top_up in admission_top_ups {
+            if let Err(error) = reservation.absorb(top_up) {
+                *admission = Some(reservation);
+                return Err(ScreenPlanError::SharedAdmission(error));
+            }
+        }
+        let validation = (|| {
+            validate_resource_coverage(self.required_minimums.as_slice(), &exact_ledger)?;
+            let lifetimes = validate_resource_lifetimes(self, &exact_ledger, lifetimes)?;
+            let retained_resources = bind_retained_resources(
+                self.required_minimums.as_slice(),
+                &exact_ledger,
+                &lifetimes,
+            )?;
+            if exact_ledger.total_bytes > reservation.bytes() {
+                let quoted = reservation.bytes().saturating_sub(modeled_bytes);
+                let required = exact_ledger.total_bytes.saturating_sub(modeled_bytes);
+                return Err(ScreenPlanError::UnquotedExactWorkerBytes { required, quoted });
+            }
+            Ok((lifetimes, retained_resources))
+        })();
+        let (lifetimes, retained_resources) = match validation {
+            Ok(validated) => validated,
+            Err(error) => {
+                *admission = Some(reservation);
+                return Err(error);
+            }
+        };
+        reservation
+            .reconcile_down(exact_ledger.total_bytes)
+            .expect("exact worker bytes fit their pre-allocation quote");
+        for lifetime in &lifetimes {
+            let claim = reservation
+                .split_off(lifetime.resource().bytes)
+                .expect("exact worker quote covers every bound allocation")
+                .freeze();
+            lifetime.install_admission_lease(claim);
+        }
+        debug_assert_eq!(reservation.bytes(), 0);
         let binding = ScreenWorkerBinding::new(
             self.source_id.clone(),
             self.plan_generation,
@@ -1159,7 +1212,6 @@ impl ScreenWorkerPreparationTicket {
             exact_ledger,
             retained_resources,
             binding,
-            admission_top_ups,
         })
     }
 }
@@ -1176,7 +1228,6 @@ pub struct ScreenPreparedWorkerToken {
     exact_ledger: ScreenExactResourceLedger,
     retained_resources: ScreenRetainedResourceLedger,
     binding: ScreenWorkerBinding,
-    admission_top_ups: Vec<ScreenByteReservation>,
 }
 
 impl ScreenPreparedWorkerToken {
@@ -1385,6 +1436,16 @@ impl PreparingScreenPlan {
         let worker_nonce =
             NonZeroU64::new(self.next_worker_nonce).ok_or(ScreenPlanError::WorkerNonceExhausted)?;
         self.issued_tickets.insert(source_id.clone(), worker_nonce);
+        let source_admission_bytes = required_minimums
+            .iter()
+            .try_fold(0_u64, |total, minimum| {
+                total.checked_add(minimum.minimum_bytes)
+            })
+            .expect("source minima are a checked subset of staged admission");
+        let source_admission = self
+            .staged_reservation
+            .split_off(source_admission_bytes)
+            .expect("staged admission covers every issued source ticket");
         Ok(ScreenWorkerPreparationTicket {
             source_id: source_id.clone(),
             plan_generation: self.candidate.generation,
@@ -1398,6 +1459,7 @@ impl PreparingScreenPlan {
             pending_retired_bytes: self.base_state.pending_retirement_counter(),
             next_allocation_nonce: AtomicU64::new(0),
             admission_coordinator: self.admission_coordinator.clone(),
+            admission_reservation: Mutex::new(Some(source_admission)),
         })
     }
 
@@ -1526,48 +1588,12 @@ impl PreparingScreenPlan {
                 });
             }
         };
-        let Some(exact_staged_bytes) = self
-            .admission
-            .staged()
-            .publication_retention_bytes()
-            .checked_add(self.admission.staged().publication_subscriber_slot_bytes())
-            .and_then(|bytes| bytes.checked_add(exact_worker_bytes))
-        else {
-            return Err(ScreenPlanArmFailure {
-                error: ScreenPlanError::RetirementAccountingOverflow,
-                preparing: Box::new(self),
-            });
-        };
         let modeled_publication_bytes = self
             .admission
             .staged()
             .publication_retention_bytes()
             .checked_add(self.admission.staged().publication_subscriber_slot_bytes())
             .expect("staged admission ledger has a checked total");
-        let modeled_worker_bytes = self
-            .admission
-            .staged()
-            .total_bytes()
-            .checked_sub(modeled_publication_bytes)
-            .expect("staged publication bytes are a subset of the total");
-        let required_top_up = exact_worker_bytes.saturating_sub(modeled_worker_bytes);
-        let quoted_top_up = self
-            .prepared_tokens
-            .iter()
-            .flat_map(|token| token.admission_top_ups.iter())
-            .try_fold(0_u64, |total, reservation| {
-                total.checked_add(reservation.bytes())
-            })
-            .unwrap_or(u64::MAX);
-        if quoted_top_up < required_top_up {
-            return Err(ScreenPlanArmFailure {
-                error: ScreenPlanError::UnquotedExactWorkerBytes {
-                    required: required_top_up,
-                    quoted: quoted_top_up,
-                },
-                preparing: Box::new(self),
-            });
-        }
         let candidate_retained_resources = match candidate_retained_resources(
             self.base_state.retained_resources(),
             &self.candidate,
@@ -1598,28 +1624,9 @@ impl PreparingScreenPlan {
                 });
             }
         };
-        for token in &mut self.prepared_tokens {
-            for top_up in token.admission_top_ups.drain(..) {
-                self.staged_reservation
-                    .absorb(top_up)
-                    .expect("worker top-up shares the plan coordinator");
-            }
-        }
         self.staged_reservation
-            .reconcile_down(exact_staged_bytes)
-            .expect("preflighted exact resources fit their aggregate quote");
-        for entry in self
-            .prepared_tokens
-            .iter()
-            .flat_map(|token| token.retained_resources.entries.iter())
-        {
-            let claim = self
-                .staged_reservation
-                .split_off(entry.bytes())
-                .expect("exact staged quote covers every worker allocation")
-                .freeze();
-            entry.lifetime.install_admission_lease(claim);
-        }
+            .reconcile_down(modeled_publication_bytes)
+            .expect("issued worker tickets leave only publication admission staged");
         candidate_state
             .install_new_branch_admission(&self.base_state, &mut self.staged_reservation);
         debug_assert_eq!(
@@ -2312,6 +2319,12 @@ pub enum ScreenPlanError {
     #[error("worker source {source_id} already has an issued preparation ticket")]
     WorkerTicketAlreadyIssued {
         /// Source whose ticket was already issued.
+        source_id: CaptureSourceId,
+    },
+    /// A successful worker acknowledgement already consumed this ticket quote.
+    #[error("worker source {source_id} already transferred its admission quote")]
+    WorkerAdmissionAlreadyTransferred {
+        /// Source whose exact lifetime claims are already installed.
         source_id: CaptureSourceId,
     },
     /// Worker token belongs to another complete candidate capability.

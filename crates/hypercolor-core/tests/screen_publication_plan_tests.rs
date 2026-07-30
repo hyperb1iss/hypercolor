@@ -543,6 +543,61 @@ fn shared_admission_moves_from_staged_to_physical_lifetimes() {
 }
 
 #[test]
+fn invalid_worker_acknowledgement_retains_its_combined_quote() {
+    let coordinator =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let mut builder = ScreenPlanBuilder::with_publication_slots_and_admission(
+        ScreenPublicationSlotPolicy::default(),
+        coordinator.clone(),
+    );
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
+    let demand = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            30,
+        ),
+        &source,
+    );
+    let revision = next_demand_revision(&builder);
+    let graph = ScreenInputGraphGeneration::new(92);
+    let mut preparing = builder
+        .prepare(
+            [demand],
+            None,
+            revision,
+            graph,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("candidate should reserve its modeled resources");
+    let ticket = preparing
+        .worker_ticket(&source_id("display-a"))
+        .expect("worker ticket should be issued");
+    let modeled_bytes = ticket
+        .required_minimums()
+        .iter()
+        .map(|minimum| minimum.minimum_bytes())
+        .sum::<u64>();
+    let top_up = ticket
+        .reserve_additional_exact_bytes(7)
+        .expect("worker top-up should fit");
+    let empty = ScreenExactResourceLedger::try_new(std::iter::empty::<ScreenExactResource>())
+        .expect("empty exact ledger is representable");
+
+    assert!(matches!(
+        ticket.acknowledge_with_admission(empty, &[], vec![top_up]),
+        Err(ScreenPlanError::MissingExactResource { .. })
+    ));
+    drop(preparing.abort());
+    assert_eq!(coordinator.snapshot().reserved_bytes(), modeled_bytes + 7);
+    drop(ticket);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+}
+
+#[test]
 fn analyzer_and_plan_preparation_race_on_one_shared_fence() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
     let demand = resolve(
@@ -2526,10 +2581,7 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
             ]),
     )
     .expect("complete ledger with disjoint extras is representable");
-    let with_extras = bind_ledger(&ticket, with_extras)
-        .expect("complete resource set binds")
-        .acknowledge(&ticket)
-        .expect("unique additional accounting entries are accepted");
+    let with_extras = bind_ledger(&ticket, with_extras).expect("complete resource set binds");
     let staged = preparing.admission().staged();
     let staged_worker_bytes = staged.total_bytes()
         - staged.publication_retention_bytes()
@@ -2540,10 +2592,7 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
             + staged.publication_subscriber_slot_bytes(),
         staged.total_bytes()
     );
-    assert_eq!(
-        with_extras.exact_ledger().total_bytes(),
-        staged_worker_bytes + 23
-    );
+    assert_eq!(with_extras.ledger.total_bytes(), staged_worker_bytes + 23);
 
     let wrong_kind =
         ScreenExactResourceLedger::try_new(ticket.required_minimums().iter().enumerate().map(
@@ -2593,27 +2642,15 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
         Err(ScreenPlanError::UnderstatedExactResource { .. })
     ));
 
-    let exact = exact_resources(&ticket)
-        .expect("ticket contract is representable")
+    let with_extras = with_extras
         .acknowledge(&ticket)
-        .expect("exact coverage is accepted");
-    assert_eq!(exact.exact_ledger().total_bytes(), staged_worker_bytes);
-    let overestimated =
-        ScreenExactResourceLedger::try_new(ticket.required_minimums().iter().map(|expected| {
-            ScreenExactResource::try_new(
-                Arc::clone(expected.name()),
-                expected.resource(),
-                expected.minimum_bytes() + 1,
-            )
-            .expect("resource name is valid")
-        }))
-        .expect("overestimated ledger is representable");
-    assert!(
-        bind_ledger(&ticket, overestimated)
-            .expect("overestimated resource set binds")
-            .acknowledge(&ticket)
-            .is_ok()
-    );
+        .expect("unique additional accounting entries are accepted");
+    assert!(matches!(
+        exact_resources(&ticket)
+            .expect("ticket contract is representable")
+            .acknowledge(&ticket),
+        Err(ScreenPlanError::WorkerAdmissionAlreadyTransferred { .. })
+    ));
     preparing
         .acknowledge(with_extras)
         .expect("issued exhaustive token is accepted by its preparation");
@@ -2647,8 +2684,14 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
         ),
         &source,
     );
-    let mut builder = ScreenPlanBuilder::new();
+    let coordinator =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let mut builder = ScreenPlanBuilder::with_publication_slots_and_admission(
+        ScreenPublicationSlotPolicy::default(),
+        coordinator.clone(),
+    );
     commit_demands(&mut builder, [surface], None).expect("surface becomes active");
+    let active_reserved_bytes = coordinator.snapshot().reserved_bytes();
     let active = builder.current().clone();
     let graph = ScreenInputGraphGeneration::new(9);
     let revision = next_demand_revision(&builder);
@@ -2686,8 +2729,14 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
             .expect("extra resource name is valid")]),
     )
     .expect("worker ledger with disjoint staging overhead is representable");
-    let token = bind_ledger(&ticket, ledger)
-        .expect("worker resources bind to the ticket")
+    let bound = bind_ledger(&ticket, ledger).expect("worker resources bind to the ticket");
+    let worker_backing = bound
+        .lifetimes
+        .iter()
+        .find(|lifetime| lifetime.resource().name().as_ref() == "worker-staging-overhead")
+        .expect("worker staging lifetime should be bound")
+        .clone();
+    let token = bound
         .acknowledge(&ticket)
         .expect("required minimums and extra overhead are exhaustive");
     preparing
@@ -2710,6 +2759,16 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
     assert_eq!(abort.prepared_tokens().len(), 1);
     assert_eq!(abort.prepared_tokens()[0].exact_ledger().total_bytes(), 112);
     assert_eq!(builder.current(), active);
+    drop(abort);
+    assert_eq!(
+        coordinator.snapshot().reserved_bytes(),
+        active_reserved_bytes + 16
+    );
+    drop(worker_backing);
+    assert_eq!(
+        coordinator.snapshot().reserved_bytes(),
+        active_reserved_bytes
+    );
 
     let overflow = ScreenExactResourceLedger::try_new([
         ScreenExactResource::try_new("first", ScreenResourceKind::PhysicalPlane, u64::MAX)
