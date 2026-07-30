@@ -77,7 +77,9 @@ pub(crate) use probe::{GpuCompositorProbe, probe_render_device};
 use readback::{CachedReadbackKey, CachedReadbackSurface};
 use sampler::CachedSampleResult;
 pub(crate) use sampler::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
-use screen_upload::{ScreenPublicationUploadPool, ScreenUploadContentKey};
+use screen_upload::{
+    ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadResidencyPolicy,
+};
 use source::{
     CachedGpuSourceCopy, CachedSourceUpload, SourceCopyBindGroupCache, gpu_source_frame,
     write_rgba_texture,
@@ -1296,10 +1298,9 @@ impl GpuCompositorSurfaceSet {
             cached_compose_params: None,
             cached_compose_params_offset: None,
             pending_upload_buffers: PendingUploadBuffers::default(),
-            // wgpu exposes no portable VRAM budget. max_buffer_size provides
-            // a conservative device-derived fence; scoped allocation errors
-            // and native backend memory thresholds remain authoritative.
-            screen_upload_pool: ScreenPublicationUploadPool::new(device.limits().max_buffer_size),
+            screen_upload_pool: ScreenPublicationUploadPool::new(
+                ScreenUploadResidencyPolicy::compositor_pipeline(),
+            ),
             front_contents: None,
             back_contents: None,
             cached_source_upload: None,

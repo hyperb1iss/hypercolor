@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hypercolor_core::types::canvas::BYTES_PER_PIXEL;
+use thiserror::Error;
 
 use super::source::write_rgba_texture;
 use super::{GpuCompositorTexture, GpuTextureFrame, GpuTextureFrameOrigin};
@@ -51,7 +52,7 @@ struct ScreenUploadTexture {
 pub(super) struct ScreenPublicationUploadPool {
     textures: Vec<ScreenUploadTexture>,
     resident_bytes: u64,
-    max_resident_bytes: u64,
+    policy: ScreenUploadResidencyPolicy,
     epoch: u64,
     #[cfg(test)]
     pub(super) allocation_count: usize,
@@ -61,12 +62,40 @@ pub(super) struct ScreenPublicationUploadPool {
     pub(super) upload_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ScreenUploadResidencyPolicy {
+    max_textures: usize,
+}
+
+impl ScreenUploadResidencyPolicy {
+    pub(super) const fn compositor_pipeline() -> Self {
+        Self { max_textures: 2 }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn with_max_textures(max_textures: usize) -> Self {
+        Self {
+            max_textures: if max_textures == 0 { 1 } else { max_textures },
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error(
+    "GPU screen upload pool is saturated at {resident_textures}/{max_textures} textures ({resident_bytes} resident bytes)"
+)]
+pub(super) struct ScreenUploadPoolSaturated {
+    resident_textures: usize,
+    max_textures: usize,
+    resident_bytes: u64,
+}
+
 impl ScreenPublicationUploadPool {
-    pub(super) const fn new(max_resident_bytes: u64) -> Self {
+    pub(super) const fn new(policy: ScreenUploadResidencyPolicy) -> Self {
         Self {
             textures: Vec::new(),
             resident_bytes: 0,
-            max_resident_bytes,
+            policy,
             epoch: 0,
             #[cfg(test)]
             allocation_count: 0,
@@ -103,12 +132,6 @@ impl ScreenPublicationUploadPool {
             content_key.width == width && content_key.height == height,
             "screen upload content identity does not match the uploaded extent"
         );
-        anyhow::ensure!(
-            resident_bytes <= self.max_resident_bytes,
-            "screen upload requires {resident_bytes} resident bytes but the GPU pool capacity is {} bytes",
-            self.max_resident_bytes
-        );
-
         self.reclaim_completed(device)?;
         self.epoch = self.epoch.saturating_add(1);
         let epoch = self.epoch;
@@ -150,7 +173,7 @@ impl ScreenPublicationUploadPool {
             }
             slot
         } else {
-            self.evict_free_textures_for(resident_bytes, &mut release_cached_source)?;
+            self.ensure_texture_slot(&mut release_cached_source)?;
             let texture = try_create_upload_texture(device, width, height)?;
             self.resident_bytes = self
                 .resident_bytes
@@ -187,6 +210,73 @@ impl ScreenPublicationUploadPool {
             gpu_texture_frame(texture, content_key.branch_sequence),
             true,
         ))
+    }
+
+    pub(super) fn preflight_uploads(
+        &mut self,
+        device: &wgpu::Device,
+        content_keys: impl IntoIterator<Item = ScreenUploadContentKey>,
+    ) -> Result<()> {
+        self.reclaim_completed(device)?;
+        let mut projected = self
+            .textures
+            .iter()
+            .map(|texture| {
+                let reusable_after_supersede = matches!(
+                    &texture.state,
+                    UploadTextureState::Free
+                        | UploadTextureState::Encoding {
+                            prior_submission: None
+                        }
+                );
+                (
+                    texture.width,
+                    texture.height,
+                    texture.content_key,
+                    reusable_after_supersede,
+                )
+            })
+            .collect::<Vec<_>>();
+        for content_key in content_keys {
+            if let Some(slot) = projected
+                .iter()
+                .position(|(_, _, key, _)| *key == Some(content_key))
+            {
+                projected[slot].3 = false;
+                continue;
+            }
+            let reusable = projected
+                .iter()
+                .position(|(width, height, _, free)| {
+                    *free && *width == content_key.width && *height == content_key.height
+                })
+                .or_else(|| projected.iter().position(|(_, _, _, free)| *free));
+            if let Some(slot) = reusable {
+                projected[slot] = (
+                    content_key.width,
+                    content_key.height,
+                    Some(content_key),
+                    false,
+                );
+                continue;
+            }
+            if projected.len() < self.policy.max_textures {
+                projected.push((
+                    content_key.width,
+                    content_key.height,
+                    Some(content_key),
+                    false,
+                ));
+                continue;
+            }
+            return Err(ScreenUploadPoolSaturated {
+                resident_textures: projected.len(),
+                max_textures: self.policy.max_textures,
+                resident_bytes: self.resident_bytes,
+            }
+            .into());
+        }
+        Ok(())
     }
 
     pub(super) fn mark_submitted(&mut self, submission_index: wgpu::SubmissionIndex) {
@@ -235,35 +325,34 @@ impl ScreenPublicationUploadPool {
         Ok(())
     }
 
-    fn evict_free_textures_for<F>(
-        &mut self,
-        required_bytes: u64,
-        release_cached_source: &mut F,
-    ) -> Result<()>
+    fn ensure_texture_slot<F>(&mut self, release_cached_source: &mut F) -> Result<()>
     where
         F: FnMut(u64),
     {
-        while self.resident_bytes.saturating_add(required_bytes) > self.max_resident_bytes {
-            let Some(slot) = self
-                .textures
-                .iter()
-                .enumerate()
-                .filter(|(_, texture)| matches!(texture.state, UploadTextureState::Free))
-                .min_by_key(|(_, texture)| texture.last_used_epoch)
-                .map(|(slot, _)| slot)
-            else {
-                anyhow::bail!(
-                    "GPU screen upload pool has {} resident bytes and no completed texture to retire for a {required_bytes}-byte frame",
-                    self.resident_bytes
-                );
-            };
-            let evicted = self.textures.swap_remove(slot);
-            self.resident_bytes = self
-                .resident_bytes
-                .checked_sub(evicted.bytes)
-                .context("screen upload pool byte accounting underflowed")?;
-            release_cached_source(evicted.texture.storage_id);
+        if self.textures.len() < self.policy.max_textures {
+            return Ok(());
         }
+        let Some(slot) = self
+            .textures
+            .iter()
+            .enumerate()
+            .filter(|(_, texture)| matches!(texture.state, UploadTextureState::Free))
+            .min_by_key(|(_, texture)| texture.last_used_epoch)
+            .map(|(slot, _)| slot)
+        else {
+            return Err(ScreenUploadPoolSaturated {
+                resident_textures: self.textures.len(),
+                max_textures: self.policy.max_textures,
+                resident_bytes: self.resident_bytes,
+            }
+            .into());
+        };
+        let evicted = self.textures.swap_remove(slot);
+        self.resident_bytes = self
+            .resident_bytes
+            .checked_sub(evicted.bytes)
+            .context("screen upload pool byte accounting underflowed")?;
+        release_cached_source(evicted.texture.storage_id);
         Ok(())
     }
 

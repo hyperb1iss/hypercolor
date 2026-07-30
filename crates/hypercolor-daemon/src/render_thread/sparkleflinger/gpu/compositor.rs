@@ -21,6 +21,7 @@ use super::preview::{
 use super::readback::{
     CachedReadbackKey, CachedReadbackSurface, copy_mapped_readback_buffer_into_surface,
 };
+use super::screen_upload::ScreenUploadPoolSaturated;
 use super::source::{
     CachedSourceUpload, cached_readback_key, cached_source_upload, copy_frame_into_output_texture,
     copy_gpu_source_frame_into_texture, gpu_source_frame, upload_frame_into_cached_texture,
@@ -33,7 +34,7 @@ use super::{
     ScreenUploadContentKey, padded_bytes_per_row, texture_extent,
 };
 use crate::performance::CompositorBackendKind;
-use crate::render_thread::producer_queue::{GpuTextureFrameOrigin, ProducerFrame};
+use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
 
 const SAMPLING_READBACK_SLOT_COUNT: usize = 2;
 const SAMPLING_READBACK_SURFACE_SLOTS: usize = 3;
@@ -240,7 +241,44 @@ impl GpuSparkleFlinger {
                 pending_output_submission,
             );
         }
-        if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
+        let has_screen_uploads = screen_upload_content_keys(&plan.layers).next().is_some();
+        if has_screen_uploads {
+            self.flush_pending_output_submission()?;
+        }
+        {
+            let surfaces = self
+                .surfaces
+                .as_mut()
+                .expect("surface allocation should succeed before screen upload preflight");
+            if let Err(error) = surfaces
+                .screen_upload_pool
+                .preflight_uploads(&self.device, screen_upload_content_keys(&plan.layers))
+            {
+                return screen_upload_failure_frame(error);
+            }
+        }
+        let surfaces = self
+            .surfaces
+            .as_mut()
+            .expect("surface allocation should succeed before composition");
+        let uploaded_screen_frames =
+            match upload_screen_layers(&self.device, &self.queue, surfaces, &plan.layers) {
+                Ok(uploaded) => uploaded,
+                Err(error) => {
+                    surfaces.discard_pending_uploads();
+                    return screen_upload_failure_frame(error);
+                }
+            };
+        if has_screen_uploads {
+            // The newly encoded uploads must survive preview cleanup. Any
+            // older deferred frame was submitted before preparation, so only
+            // its preview bookkeeping may be retired here.
+            drop(self.supersede_frame_in_flight("screen upload outputs superseded"));
+            self.ready_preview_surface = None;
+            if preview_surface_request.is_none() || requires_cpu_sampling_canvas {
+                self.discard_pending_preview_map();
+            }
+        } else if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
             self.clear_superseded_preview_outputs();
         } else {
             self.discard_superseded_preview_work();
@@ -263,9 +301,13 @@ impl GpuSparkleFlinger {
 
         let mut use_front_as_current = true;
         let mut layers = plan.layers.iter();
+        let mut uploaded_screen_frames = uploaded_screen_frames.into_iter();
         let first_layer = layers
             .next()
             .context("GPU composition requires at least one layer")?;
+        let first_uploaded_screen_frame = uploaded_screen_frames
+            .next()
+            .expect("screen upload preparation should match composition layers");
 
         if first_layer.can_bypass_for_size(plan.width, plan.height) {
             copy_frame_into_output_texture(
@@ -291,36 +333,36 @@ impl GpuSparkleFlinger {
                 encoder.clear_texture(&surfaces.front.texture, &full_range);
                 surfaces.front_contents = None;
             }
-            if let Err(error) = compose_layer_into_gpu(
+            compose_layer_into_gpu(
                 &self.device,
                 &self.queue,
                 &mut self.pipeline,
                 surfaces,
                 &mut encoder,
                 first_layer,
+                first_uploaded_screen_frame.as_ref(),
                 true,
-            ) {
-                surfaces.discard_pending_uploads();
-                return Err(error);
-            }
+            );
             use_front_as_current = false;
         }
 
         for layer in layers {
-            if let Err(error) = compose_layer_into_gpu(
+            let uploaded_screen_frame = uploaded_screen_frames
+                .next()
+                .expect("screen upload preparation should match composition layers");
+            compose_layer_into_gpu(
                 &self.device,
                 &self.queue,
                 &mut self.pipeline,
                 surfaces,
                 &mut encoder,
                 layer,
+                uploaded_screen_frame.as_ref(),
                 use_front_as_current,
-            ) {
-                surfaces.discard_pending_uploads();
-                return Err(error);
-            }
+            );
             use_front_as_current = !use_front_as_current;
         }
+        debug_assert!(uploaded_screen_frames.next().is_none());
 
         let current_output = if use_front_as_current {
             GpuCompositorOutputSurface::Front
@@ -872,8 +914,9 @@ fn compose_layer_into_gpu(
     surfaces: &mut GpuCompositorSurfaceSet,
     encoder: &mut wgpu::CommandEncoder,
     layer: &CompositionLayer,
+    uploaded_screen_frame: Option<&GpuTextureFrame>,
     use_front_as_current: bool,
-) -> Result<()> {
+) {
     let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
         ComposeShaderMode::Replace
     } else {
@@ -896,41 +939,7 @@ fn compose_layer_into_gpu(
         GpuCompositorOutputSurface::Front
     };
 
-    let uploaded_screen_frame = if let ProducerFrame::ScreenPublication(publication) = &layer.frame
-    {
-        let surface = publication.surface();
-        let GpuCompositorSurfaceSet {
-            screen_upload_pool,
-            compose_source_bind_groups,
-            ..
-        } = surfaces;
-        let content_key = ScreenUploadContentKey::new(
-            publication.plan_generation(),
-            publication.branch_sequence(),
-            surface.extent().width(),
-            surface.extent().height(),
-        );
-        let (uploaded, wrote_texture) = screen_upload_pool.upload_rgba(
-            device,
-            queue,
-            surface.extent().width(),
-            surface.extent().height(),
-            surface.pixels(),
-            content_key,
-            |storage_id| compose_source_bind_groups.release_source(storage_id),
-        )?;
-        #[cfg(test)]
-        if wrote_texture {
-            surfaces.source_upload_count = surfaces.source_upload_count.saturating_add(1);
-        }
-        #[cfg(not(test))]
-        let _ = wrote_texture;
-        Some(uploaded)
-    } else {
-        None
-    };
     let gpu_frame = uploaded_screen_frame
-        .as_ref()
         .map(super::source::GpuSourceFrame::Texture)
         .or_else(|| gpu_source_frame(&layer.frame));
 
@@ -963,7 +972,7 @@ fn compose_layer_into_gpu(
                 .as_ref()
                 .and_then(|_| cached_source_upload(&layer.frame)),
         );
-        return Ok(());
+        return;
     }
 
     if gpu_frame.is_none() {
@@ -992,7 +1001,7 @@ fn compose_layer_into_gpu(
                 texture_extent(surfaces.width, surfaces.height),
             );
             set_texture_contents(surfaces, output_surface, cached_source_upload(&layer.frame));
-            return Ok(());
+            return;
         }
     }
 
@@ -1046,7 +1055,7 @@ fn compose_layer_into_gpu(
         };
         dispatch_compose_pass(encoder, pipeline, &bind_group, params_offset, width, height);
         set_texture_contents(surfaces, output_surface, None);
-        return Ok(());
+        return;
     }
 
     let bind_group = if use_front_as_current {
@@ -1063,7 +1072,75 @@ fn compose_layer_into_gpu(
         surfaces.height,
     );
     set_texture_contents(surfaces, output_surface, None);
-    Ok(())
+}
+
+pub(super) fn screen_upload_failure_frame(error: anyhow::Error) -> Result<ComposedFrameSet> {
+    if error.is::<ScreenUploadPoolSaturated>() {
+        tracing::debug!(%error, "retaining GPU output while screen uploads are saturated");
+        return Ok(gpu_composed_without_surfaces());
+    }
+    Err(error)
+}
+
+fn upload_screen_layers(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    surfaces: &mut GpuCompositorSurfaceSet,
+    layers: &[CompositionLayer],
+) -> Result<Vec<Option<GpuTextureFrame>>> {
+    let mut uploaded = Vec::with_capacity(layers.len());
+    for layer in layers {
+        let ProducerFrame::ScreenPublication(publication) = &layer.frame else {
+            uploaded.push(None);
+            continue;
+        };
+        let surface = publication.surface();
+        let GpuCompositorSurfaceSet {
+            screen_upload_pool,
+            compose_source_bind_groups,
+            ..
+        } = surfaces;
+        let content_key = ScreenUploadContentKey::new(
+            publication.plan_generation(),
+            publication.branch_sequence(),
+            surface.extent().width(),
+            surface.extent().height(),
+        );
+        let (frame, wrote_texture) = screen_upload_pool.upload_rgba(
+            device,
+            queue,
+            surface.extent().width(),
+            surface.extent().height(),
+            surface.pixels(),
+            content_key,
+            |storage_id| compose_source_bind_groups.release_source(storage_id),
+        )?;
+        #[cfg(test)]
+        if wrote_texture {
+            surfaces.source_upload_count = surfaces.source_upload_count.saturating_add(1);
+        }
+        #[cfg(not(test))]
+        let _ = wrote_texture;
+        uploaded.push(Some(frame));
+    }
+    Ok(uploaded)
+}
+
+fn screen_upload_content_keys(
+    layers: &[CompositionLayer],
+) -> impl Iterator<Item = ScreenUploadContentKey> + '_ {
+    layers.iter().filter_map(|layer| {
+        let ProducerFrame::ScreenPublication(publication) = &layer.frame else {
+            return None;
+        };
+        let extent = publication.surface().extent();
+        Some(ScreenUploadContentKey::new(
+            publication.plan_generation(),
+            publication.branch_sequence(),
+            extent.width(),
+            extent.height(),
+        ))
+    })
 }
 
 fn dispatch_compose_pass(

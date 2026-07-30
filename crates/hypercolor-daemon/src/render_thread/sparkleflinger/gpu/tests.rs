@@ -22,8 +22,10 @@ use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 use super::CachedGpuSourceCopy;
+use super::compositor::screen_upload_failure_frame;
 use super::screen_upload::{
-    ScreenPublicationUploadPool, ScreenUploadContentKey, resident_frame_bytes,
+    ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
+    ScreenUploadResidencyPolicy, resident_frame_bytes,
 };
 use super::{
     DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight, GpuCanvasAdmission,
@@ -176,7 +178,8 @@ fn screen_upload_pool_reuses_only_completion_retired_textures() {
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
-    let mut pool = ScreenPublicationUploadPool::new(compositor.max_buffer_size);
+    let mut pool =
+        ScreenPublicationUploadPool::new(ScreenUploadResidencyPolicy::compositor_pipeline());
     let pixels = vec![37_u8; 3 * 2 * 4];
 
     let (first, wrote_first) = pool
@@ -233,7 +236,8 @@ fn unchanged_screen_publication_does_not_reupload_when_other_layer_recomposes() 
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
-    let mut pool = ScreenPublicationUploadPool::new(compositor.max_buffer_size);
+    let mut pool =
+        ScreenPublicationUploadPool::new(ScreenUploadResidencyPolicy::compositor_pipeline());
     let pixels = vec![41_u8; 3 * 2 * 4];
     let content_key = screen_upload_key(7, 3, 2);
 
@@ -265,14 +269,15 @@ fn screen_upload_pool_charges_aligned_row_residency() {
 }
 
 #[test]
-fn screen_upload_pool_evicts_completed_descriptors_within_device_fence() {
+fn screen_upload_pool_evicts_completed_descriptors_within_texture_limit() {
     let compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,
         Err(_) => return,
     };
     let device = compositor.device.clone();
     let queue = compositor.queue.clone();
-    let mut pool = ScreenPublicationUploadPool::new(512);
+    let mut pool =
+        ScreenPublicationUploadPool::new(ScreenUploadResidencyPolicy::with_max_textures(1));
     let first_pixels = vec![11_u8; 3 * 2 * 4];
     let (first, _) = pool
         .upload_rgba(
@@ -297,7 +302,7 @@ fn screen_upload_pool_evicts_completed_descriptors_within_device_fence() {
             |_| {},
         )
         .expect_err("encoding textures must not be evicted or reused");
-    assert!(error.to_string().contains("no completed texture"));
+    assert!(error.is::<ScreenUploadPoolSaturated>());
     pool.discard_encoding();
 
     let mut evicted = Vec::new();
@@ -316,6 +321,105 @@ fn screen_upload_pool_evicts_completed_descriptors_within_device_fence() {
     assert_ne!(second.storage_id, first.storage_id);
     assert_eq!(evicted, vec![first.storage_id]);
     assert_eq!(pool.state_counts(), (0, 1, 0));
+    assert_eq!(pool.allocation_count, 2);
+    pool.discard_encoding();
+}
+
+#[test]
+fn screen_upload_pool_allows_pipeline_depth_then_reports_typed_saturation() {
+    let compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let device = compositor.device.clone();
+    let queue = compositor.queue.clone();
+    let mut pool =
+        ScreenPublicationUploadPool::new(ScreenUploadResidencyPolicy::compositor_pipeline());
+    let pixels = vec![47_u8; 3 * 2 * 4];
+    let first_key = screen_upload_key(1, 3, 2);
+    let second_key = screen_upload_key(2, 3, 2);
+    let third_key = screen_upload_key(3, 3, 2);
+
+    pool.preflight_uploads(&device, [first_key, second_key])
+        .expect("two changing frames should fit the projected pipeline");
+    let projected_error = pool
+        .preflight_uploads(&device, [first_key, second_key, third_key])
+        .expect_err("three changing frames should exceed the projected pipeline");
+    assert!(projected_error.is::<ScreenUploadPoolSaturated>());
+
+    let (first, _) = pool
+        .upload_rgba(&device, &queue, 3, 2, &pixels, first_key, |_| {})
+        .expect("first changing frame should enter the upload pipeline");
+    let (second, _) = pool
+        .upload_rgba(&device, &queue, 3, 2, &pixels, second_key, |_| {})
+        .expect("second changing frame should enter the upload pipeline");
+    let error = pool
+        .upload_rgba(&device, &queue, 3, 2, &pixels, third_key, |_| {})
+        .expect_err("a third in-flight texture should hit the explicit pipeline bound");
+
+    assert_ne!(first.storage_id, second.storage_id);
+    assert!(error.is::<ScreenUploadPoolSaturated>());
+    assert_eq!(pool.state_counts(), (0, 2, 0));
+    assert_eq!(pool.allocation_count, 2);
+    let retained = screen_upload_failure_frame(error)
+        .expect("typed saturation should retain the current GPU output");
+    assert_eq!(
+        retained.backend,
+        crate::performance::CompositorBackendKind::Gpu
+    );
+    pool.discard_encoding();
+}
+
+#[test]
+fn screen_upload_pool_reuses_only_matching_free_descriptors() {
+    let compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let device = compositor.device.clone();
+    let queue = compositor.queue.clone();
+    let mut pool =
+        ScreenPublicationUploadPool::new(ScreenUploadResidencyPolicy::compositor_pipeline());
+    let narrow_pixels = vec![29_u8; 3 * 2 * 4];
+    let wide_pixels = vec![83_u8; 65 * 4];
+    let (narrow, _) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            3,
+            2,
+            &narrow_pixels,
+            screen_upload_key(1, 3, 2),
+            |_| {},
+        )
+        .expect("narrow descriptor should upload");
+    let (wide, _) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            65,
+            1,
+            &wide_pixels,
+            screen_upload_key(2, 65, 1),
+            |_| {},
+        )
+        .expect("wide descriptor should upload independently");
+    pool.discard_encoding();
+
+    let (reused, _) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            3,
+            2,
+            &narrow_pixels,
+            screen_upload_key(3, 3, 2),
+            |_| {},
+        )
+        .expect("matching free descriptor should be reused");
+
+    assert_eq!(reused.storage_id, narrow.storage_id);
+    assert_ne!(reused.storage_id, wide.storage_id);
     assert_eq!(pool.allocation_count, 2);
     pool.discard_encoding();
 }
