@@ -46,7 +46,7 @@ mod executor;
 mod resources;
 
 pub(crate) use executor::PreviewWorkerPool;
-use resources::{PreviewCapacityLedger, PreviewResourceLease};
+pub(crate) use resources::{PreviewCapacityLedger, PreviewResourceLease};
 pub use resources::{PreviewCapacitySnapshot, PreviewResourceLedger};
 
 const MAX_PREVIEW_FPS: u32 = 60;
@@ -98,6 +98,7 @@ pub struct InteractivePreviewFrame {
     pub height: u32,
     pub format: PreviewPixelFormat,
     pub surface: PublishedSurface,
+    pub(crate) _resource_lease: PreviewResourceLease,
 }
 
 #[derive(Clone, Debug)]
@@ -227,7 +228,8 @@ struct InteractivePreviewExecutorInner {
 
 struct PreviewLaneEntry {
     publication_id: BrowserInputPublicationId,
-    commands: mpsc::UnboundedSender<PreviewLaneCommand>,
+    commands: mpsc::Sender<PreviewLaneCommand>,
+    cancel: CancellationToken,
     telemetry: Arc<PreviewLaneTelemetry>,
 }
 
@@ -237,6 +239,8 @@ pub struct InteractivePreviewLaneLease {
     executor: Weak<InteractivePreviewExecutorInner>,
     frames: watch::Receiver<Option<Arc<InteractivePreviewFrame>>>,
     spec_generation: watch::Receiver<u64>,
+    retired: watch::Receiver<bool>,
+    cancel: CancellationToken,
     encode_workers: PreviewWorkerPool,
     telemetry: Arc<PreviewLaneTelemetry>,
     closed: bool,
@@ -261,7 +265,8 @@ enum PreviewLaneCommand {
         resources: PreviewResourceLease,
         response: oneshot::Sender<Result<(), String>>,
     },
-    Close,
+    #[cfg(test)]
+    Panic { started: oneshot::Sender<()> },
 }
 
 #[derive(Clone)]
@@ -465,9 +470,11 @@ impl InteractivePreviewExecutor {
             route_diagnostics: ArcSwap::from(initial_diagnostics),
             last_error: ArcSwap::from_pointee(None),
         });
-        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let (command_tx, command_rx) = mpsc::channel(1);
+        let lane_cancel = CancellationToken::new();
         let (frame_tx, frame_rx) = watch::channel(None);
         let (spec_generation_tx, spec_generation_rx) = watch::channel(1);
+        let (retired_tx, retired_rx) = watch::channel(false);
         let id = PreviewLaneId {
             key: attachment.key().clone(),
             publication_id: attachment.publication_id(),
@@ -515,16 +522,20 @@ impl InteractivePreviewExecutor {
                 PreviewLaneEntry {
                     publication_id: id.publication_id,
                     commands: command_tx,
+                    cancel: lane_cancel.clone(),
                     telemetry: Arc::clone(&telemetry),
                 },
             );
         }
         let render_workers = self.inner.render_workers.clone();
+        let lease_cancel = lane_cancel.clone();
         tokio::spawn(run_preview_lane(
             lane,
             command_rx,
             weak_executor,
             render_workers,
+            lane_cancel,
+            retired_tx,
         ));
 
         Ok(InteractivePreviewLaneLease {
@@ -533,6 +544,8 @@ impl InteractivePreviewExecutor {
             executor: Arc::downgrade(&self.inner),
             frames: frame_rx,
             spec_generation: spec_generation_rx,
+            retired: retired_rx,
+            cancel: lease_cancel,
             encode_workers: self.inner.encode_workers.clone(),
             telemetry,
             closed: false,
@@ -639,18 +652,7 @@ impl InteractivePreviewLaneLease {
                 publication_id: self.publication_id,
             })
             .ok_or(InteractivePreviewError::WorkerClosed)?;
-        let (response_tx, response_rx) = oneshot::channel();
-        commands
-            .send(PreviewLaneCommand::Update {
-                spec,
-                resources,
-                response: response_tx,
-            })
-            .map_err(|_| InteractivePreviewError::WorkerClosed)?;
-        response_rx
-            .await
-            .map_err(|_| InteractivePreviewError::WorkerClosed)?
-            .map_err(InteractivePreviewError::Update)
+        request_preview_lane_update(&commands, &self.cancel, spec, resources).await
     }
 
     pub fn close(&mut self) -> bool {
@@ -665,6 +667,40 @@ impl InteractivePreviewLaneLease {
             })
         })
     }
+
+    pub async fn close_and_wait(&mut self) -> bool {
+        let closed = self.close();
+        while !*self.retired.borrow() && self.retired.changed().await.is_ok() {}
+        closed
+    }
+}
+
+async fn request_preview_lane_update(
+    commands: &mpsc::Sender<PreviewLaneCommand>,
+    cancel: &CancellationToken,
+    spec: InteractivePreviewSpec,
+    resources: PreviewResourceLease,
+) -> Result<(), InteractivePreviewError> {
+    let (response_tx, response_rx) = oneshot::channel();
+    let command = PreviewLaneCommand::Update {
+        spec,
+        resources,
+        response: response_tx,
+    };
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Err(InteractivePreviewError::WorkerClosed),
+        result = commands.send(command) => {
+            result.map_err(|_| InteractivePreviewError::WorkerClosed)?;
+        }
+    }
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Err(InteractivePreviewError::WorkerClosed),
+        result = response_rx => result
+            .map_err(|_| InteractivePreviewError::WorkerClosed)?
+            .map_err(InteractivePreviewError::Update),
+    }
 }
 
 impl Drop for InteractivePreviewLaneLease {
@@ -674,32 +710,23 @@ impl Drop for InteractivePreviewLaneLease {
 }
 
 impl InteractivePreviewExecutorInner {
-    fn commands_exact(
-        &self,
-        id: &PreviewLaneId,
-    ) -> Option<mpsc::UnboundedSender<PreviewLaneCommand>> {
+    fn commands_exact(&self, id: &PreviewLaneId) -> Option<mpsc::Sender<PreviewLaneCommand>> {
         lock(&self.lanes).get(&id.key).and_then(|entry| {
             (entry.publication_id == id.publication_id).then(|| entry.commands.clone())
         })
     }
 
     fn close_exact(&self, id: &PreviewLaneId) -> bool {
-        let entry = {
-            let mut lanes = lock(&self.lanes);
-            if lanes
-                .get(&id.key)
-                .is_none_or(|entry| entry.publication_id != id.publication_id)
-            {
-                return false;
-            }
-            lanes.remove(&id.key)
+        let lanes = lock(&self.lanes);
+        let Some(entry) = lanes
+            .get(&id.key)
+            .filter(|entry| entry.publication_id == id.publication_id)
+        else {
+            return false;
         };
-        if let Some(entry) = entry {
-            entry.telemetry.active.store(false, Ordering::Release);
-            let _ = entry.commands.send(PreviewLaneCommand::Close);
-            return true;
-        }
-        false
+        entry.telemetry.active.store(false, Ordering::Release);
+        entry.cancel.cancel();
+        true
     }
 
     fn retire_exact(&self, id: &PreviewLaneId) {
@@ -726,7 +753,7 @@ impl Drop for InteractivePreviewExecutorInner {
             .collect::<Vec<_>>();
         for entry in entries {
             entry.telemetry.active.store(false, Ordering::Release);
-            let _ = entry.commands.send(PreviewLaneCommand::Close);
+            entry.cancel.cancel();
         }
     }
 }
@@ -782,16 +809,26 @@ struct PreviewLaneContext {
 
 async fn run_preview_lane(
     lane: PreviewLane,
-    mut commands: mpsc::UnboundedReceiver<PreviewLaneCommand>,
+    mut commands: mpsc::Receiver<PreviewLaneCommand>,
     executor: Weak<InteractivePreviewExecutorInner>,
     workers: PreviewWorkerPool,
+    cancel: CancellationToken,
+    retired: watch::Sender<bool>,
 ) {
-    let id = lane.id.clone();
+    let _retirement = PreviewLaneRetirementGuard {
+        id: lane.id.clone(),
+        executor,
+        retired,
+        telemetry: Arc::clone(&lane.telemetry),
+        frame_tx: lane.frame_tx.clone(),
+    };
     let mut lane = Some(lane);
     let mut next_frame = Instant::now();
     'run: loop {
         let deadline = tokio::time::Instant::from_std(next_frame);
         let action = tokio::select! {
+            biased;
+            () = cancel.cancelled() => PreviewLaneAction::Stop,
             command = commands.recv() => match command {
                 Some(command) => PreviewLaneAction::Command(command),
                 None => PreviewLaneAction::Stop,
@@ -845,13 +882,27 @@ async fn run_preview_lane(
 
     if let Some(mut lane) = lane {
         lane.telemetry.active.store(false, Ordering::Release);
-        let _ = lane
-            .input
-            .router
-            .remove_consumer(lane.consumer, input_mono_ms());
+        lane.frame_tx.send_replace(None);
+        lane.retained_frame = None;
     }
-    if let Some(executor) = executor.upgrade() {
-        executor.retire_exact(&id);
+}
+
+struct PreviewLaneRetirementGuard {
+    id: PreviewLaneId,
+    executor: Weak<InteractivePreviewExecutorInner>,
+    retired: watch::Sender<bool>,
+    telemetry: Arc<PreviewLaneTelemetry>,
+    frame_tx: watch::Sender<Option<Arc<InteractivePreviewFrame>>>,
+}
+
+impl Drop for PreviewLaneRetirementGuard {
+    fn drop(&mut self) {
+        self.telemetry.active.store(false, Ordering::Release);
+        self.frame_tx.send_replace(None);
+        if let Some(executor) = self.executor.upgrade() {
+            executor.retire_exact(&self.id);
+        }
+        self.retired.send_replace(true);
     }
 }
 
@@ -928,7 +979,11 @@ impl PreviewLane {
                 let _ = response.send(result);
                 true
             }
-            PreviewLaneCommand::Close => false,
+            #[cfg(test)]
+            PreviewLaneCommand::Panic { started } => {
+                let _ = started.send(());
+                panic!("injected preview lane worker panic");
+            }
         }
     }
 
@@ -1042,6 +1097,7 @@ impl PreviewLane {
             height: surface.height(),
             format: self.spec.format,
             surface,
+            _resource_lease: self.resources.clone(),
         });
         self.frame_tx.send_replace(Some(Arc::clone(&frame)));
         self.retained_frame = Some(frame);
@@ -1053,6 +1109,15 @@ impl PreviewLane {
             .store(self.frame_number, Ordering::Relaxed);
         self.telemetry.clear_error();
         self.frame_number = self.frame_number.wrapping_add(1);
+    }
+}
+
+impl Drop for PreviewLane {
+    fn drop(&mut self) {
+        let _ = self
+            .input
+            .router
+            .remove_consumer(self.consumer, input_mono_ms());
     }
 }
 

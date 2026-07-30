@@ -3408,7 +3408,7 @@ async fn interactive_preview_explicit_close_and_drop_are_exactly_once() {
     let (_source, handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, _outbound, _frames) =
-        browser_preview_session(handle.clone(), routing.clone(), executor);
+        browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
     session
         .open("main".to_owned(), interactive_preview_config())
         .await
@@ -3418,18 +3418,27 @@ async fn interactive_preview_explicit_close_and_drop_are_exactly_once() {
         .expect("preview should claim authoritative input");
 
     assert!(matches!(
-        session.close("main".to_owned()),
+        session.close("main".to_owned()).await,
         ServerMessage::InteractivePreviewClosed { closed: true, .. }
     ));
     let generation_after_close = routing.snapshot().generation;
     assert!(matches!(
-        session.close("main".to_owned()),
+        session.close("main".to_owned()).await,
         ServerMessage::InteractivePreviewClosed { closed: false, .. }
     ));
     drop(session);
 
     assert_eq!(routing.snapshot().generation, generation_after_close);
     assert!(handle.registry().snapshot().children().is_empty());
+    assert_eq!(executor.lane_count(), 0);
+    assert_eq!(
+        executor
+            .resource_snapshot()
+            .used
+            .total_bytes()
+            .expect("preview resource ledger should remain representable"),
+        0
+    );
 }
 
 #[tokio::test]
@@ -3465,7 +3474,7 @@ async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication
         )
         .expect("old publication frame should enter the preview router");
 
-    session.close("same".to_owned());
+    session.close("same".to_owned()).await;
     let (_, second_publication, _) = opened_address(
         session
             .open("same".to_owned(), interactive_preview_config())

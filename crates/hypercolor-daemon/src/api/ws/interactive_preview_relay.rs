@@ -10,6 +10,7 @@ use hypercolor_leptos_ext::ws::{
 };
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::preview_encode::{PreviewJpegEncoder, PreviewRawEncoder};
@@ -21,14 +22,45 @@ use crate::preview_runtime::PreviewPixelFormat;
 pub(super) fn spawn_interactive_preview_relay(
     preview_id: String,
     publication_id: BrowserInputPublicationId,
+    frames: watch::Receiver<Option<Arc<InteractivePreviewFrame>>>,
+    spec_generation: watch::Receiver<u64>,
+    workers: crate::interactive_preview::PreviewWorkerPool,
+    outbound: PreviewOutboundSender,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    spawn_interactive_preview_relay_with_encoder(
+        preview_id,
+        publication_id,
+        frames,
+        spec_generation,
+        workers,
+        outbound,
+        cancel,
+        Box::new(InteractivePreviewEncoder::new()),
+    )
+}
+
+fn spawn_interactive_preview_relay_with_encoder(
+    preview_id: String,
+    publication_id: BrowserInputPublicationId,
     mut frames: watch::Receiver<Option<Arc<InteractivePreviewFrame>>>,
     spec_generation: watch::Receiver<u64>,
     workers: crate::interactive_preview::PreviewWorkerPool,
     outbound: PreviewOutboundSender,
+    cancel: CancellationToken,
+    encoder: Box<dyn InteractivePreviewFrameEncoder>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut encoder = Some(InteractivePreviewEncoder::new());
-        while frames.changed().await.is_ok() {
+        let mut encoder = Some(encoder);
+        loop {
+            let changed = tokio::select! {
+                biased;
+                () = cancel.cancelled() => break,
+                changed = frames.changed() => changed,
+            };
+            if changed.is_err() {
+                break;
+            }
             let Some(frame) = frames.borrow_and_update().clone() else {
                 continue;
             };
@@ -62,6 +94,9 @@ pub(super) fn spawn_interactive_preview_relay(
                 break;
             };
             encoder = Some(returned_encoder);
+            if cancel.is_cancelled() {
+                break;
+            }
             let bytes = match encoded {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -72,10 +107,11 @@ pub(super) fn spawn_interactive_preview_relay(
             if frame.spec_generation != *spec_generation.borrow() {
                 continue;
             }
-            if let Err(error) = outbound.publish(
+            if let Err(error) = outbound.publish_with_resource_guard(
                 PreviewStreamId::Interactive(preview_id.clone()),
                 bytes,
                 Some(publication_id),
+                frame._resource_lease.clone(),
             ) {
                 warn!(preview_id, %error, "Rejected interactive preview publication");
             }
@@ -88,6 +124,10 @@ struct InteractivePreviewEncoder {
     jpeg: Option<PreviewJpegEncoder>,
 }
 
+trait InteractivePreviewFrameEncoder: Send {
+    fn encode(&mut self, preview_id: &str, frame: &InteractivePreviewFrame) -> Result<Bytes>;
+}
+
 impl InteractivePreviewEncoder {
     fn new() -> Self {
         Self {
@@ -95,7 +135,9 @@ impl InteractivePreviewEncoder {
             jpeg: None,
         }
     }
+}
 
+impl InteractivePreviewFrameEncoder for InteractivePreviewEncoder {
     fn encode(&mut self, preview_id: &str, frame: &InteractivePreviewFrame) -> Result<Bytes> {
         encode_frame(preview_id, frame, &mut self.raw, &mut self.jpeg)
     }
@@ -153,3 +195,7 @@ const fn wire_format(format: PreviewPixelFormat) -> WirePreviewPixelFormat {
         PreviewPixelFormat::Jpeg => WirePreviewPixelFormat::Jpeg,
     }
 }
+
+#[cfg(test)]
+#[path = "interactive_preview_relay/tests.rs"]
+mod tests;

@@ -9,6 +9,7 @@ use super::{
     PreviewPublication, PreviewPublishOutcome, PreviewSendCursor,
     preview_outbound_channel_with_limits,
 };
+use crate::interactive_preview::{PreviewCapacityLedger, PreviewResourceLedger};
 
 fn next_publication(receiver: &super::PreviewOutboundReceiver) -> PreviewPublication {
     loop {
@@ -53,6 +54,85 @@ fn zone_frame(index: u64) -> (PreviewStreamId, Bytes) {
     .try_encode()
     .expect("zone fixture encodes");
     (PreviewStreamId::Zone { scene_id, zone_id }, encoded)
+}
+
+#[test]
+fn queued_replacement_holds_each_resource_generation_until_transport_releases_it() {
+    let capacity = PreviewCapacityLedger::new(30);
+    let old_lane = capacity
+        .try_reserve(PreviewResourceLedger {
+            metadata_bytes: 10,
+            ..PreviewResourceLedger::default()
+        })
+        .expect("old generation should fit");
+    let old_frame = passive_frame(PreviewFrameChannel::Canvas, 1, 4);
+    let max_publication_bytes = old_frame.len();
+    let (sender, _receiver) = preview_outbound_channel_with_limits(PreviewOutboundLimits {
+        max_publication_bytes,
+        max_connection_bytes: max_publication_bytes,
+    });
+    let stream = PreviewStreamId::Passive(PreviewFrameChannel::Canvas);
+    sender
+        .publish_with_resource_guard(stream.clone(), old_frame, None, old_lane.clone())
+        .expect("old generation should queue");
+    drop(old_lane);
+    assert_eq!(
+        capacity
+            .snapshot()
+            .used
+            .total_bytes()
+            .expect("old generation ledger should remain representable"),
+        10
+    );
+
+    let new_lane = capacity
+        .try_reserve(PreviewResourceLedger {
+            metadata_bytes: 20,
+            ..PreviewResourceLedger::default()
+        })
+        .expect("resize should admit old and new generations transactionally");
+    assert_eq!(
+        capacity
+            .snapshot()
+            .used
+            .total_bytes()
+            .expect("overlap ledger should remain representable"),
+        30
+    );
+    let new_frame = passive_frame(PreviewFrameChannel::Canvas, 2, 4);
+    assert_eq!(
+        sender
+            .publish_with_resource_guard(stream.clone(), new_frame, None, new_lane.clone())
+            .expect("new generation should replace the queued old generation"),
+        PreviewPublishOutcome::Replaced
+    );
+    assert_eq!(
+        capacity
+            .snapshot()
+            .used
+            .total_bytes()
+            .expect("new generation ledger should remain representable"),
+        20
+    );
+
+    drop(new_lane);
+    assert_eq!(
+        capacity
+            .snapshot()
+            .used
+            .total_bytes()
+            .expect("queued new generation should retain its reservation"),
+        20
+    );
+    assert!(sender.cancel(&stream).expect("queued generation cancels"));
+    assert_eq!(
+        capacity
+            .snapshot()
+            .used
+            .total_bytes()
+            .expect("cancelled generation ledger should remain representable"),
+        0
+    );
 }
 
 #[test]
@@ -372,6 +452,7 @@ fn cursor_rejects_more_than_advertised_chunk_count() {
                 + 1
         ]),
         interactive_fence: None,
+        _resource_guard: None,
     };
 
     assert!(matches!(

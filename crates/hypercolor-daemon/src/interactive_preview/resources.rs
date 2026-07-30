@@ -75,9 +75,7 @@ impl PreviewResourceLedger {
                 0
             },
             encoder_workspace_bytes,
-            encoded_transport_bytes: encoded_body_bytes
-                .checked_add(metadata_bytes)
-                .ok_or(PreviewResourceError::Overflow)?,
+            encoded_transport_bytes: encoded_body_bytes,
             metadata_bytes,
         })
     }
@@ -179,8 +177,10 @@ impl PreviewCapacityLedger {
         }
         *used = projected;
         Ok(PreviewResourceLease {
-            capacity: Arc::clone(&self.inner),
-            reserved: requested,
+            reservation: Arc::new(PreviewResourceReservation {
+                capacity: Arc::clone(&self.inner),
+                reserved: requested,
+            }),
         })
     }
 
@@ -204,7 +204,12 @@ pub struct PreviewCapacitySnapshot {
     pub used: PreviewResourceLedger,
 }
 
+#[derive(Clone)]
 pub struct PreviewResourceLease {
+    reservation: Arc<PreviewResourceReservation>,
+}
+
+struct PreviewResourceReservation {
     capacity: Arc<PreviewCapacityInner>,
     reserved: PreviewResourceLedger,
 }
@@ -213,12 +218,12 @@ impl fmt::Debug for PreviewResourceLease {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PreviewResourceLease")
-            .field("reserved", &self.reserved)
+            .field("reserved", &self.reservation.reserved)
             .finish_non_exhaustive()
     }
 }
 
-impl Drop for PreviewResourceLease {
+impl Drop for PreviewResourceReservation {
     fn drop(&mut self) {
         let mut used = self
             .capacity

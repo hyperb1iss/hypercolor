@@ -46,6 +46,7 @@ use super::protocol::{
     SubscriptionState, WsChannel, event_message_parts, should_relay_event,
 };
 use crate::api::AppState;
+use crate::interactive_preview::PreviewResourceLease;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
 use crate::performance::LatestFrameMetrics;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewStreamDemand};
@@ -119,6 +120,7 @@ pub(super) struct PreviewPublication {
     metadata: PreviewPublicationMetadata,
     encoded: Bytes,
     interactive_fence: Option<BrowserInputPublicationId>,
+    _resource_guard: Option<PreviewResourceLease>,
 }
 
 impl PreviewPublication {
@@ -396,7 +398,32 @@ impl PreviewOutboundSender {
         encoded: Bytes,
         interactive_fence: Option<BrowserInputPublicationId>,
     ) -> Result<PreviewPublishOutcome, PreviewOutboundError> {
-        let result = self.publish_inner(stream, encoded, interactive_fence);
+        self.publish_with_optional_resource_guard(stream, encoded, interactive_fence, None)
+    }
+
+    pub(super) fn publish_with_resource_guard(
+        &self,
+        stream: PreviewStreamId,
+        encoded: Bytes,
+        interactive_fence: Option<BrowserInputPublicationId>,
+        resource_guard: PreviewResourceLease,
+    ) -> Result<PreviewPublishOutcome, PreviewOutboundError> {
+        self.publish_with_optional_resource_guard(
+            stream,
+            encoded,
+            interactive_fence,
+            Some(resource_guard),
+        )
+    }
+
+    fn publish_with_optional_resource_guard(
+        &self,
+        stream: PreviewStreamId,
+        encoded: Bytes,
+        interactive_fence: Option<BrowserInputPublicationId>,
+        resource_guard: Option<PreviewResourceLease>,
+    ) -> Result<PreviewPublishOutcome, PreviewOutboundError> {
+        let result = self.publish_inner(stream, encoded, interactive_fence, resource_guard);
         if result.is_err() {
             WS_PREVIEW_PUBLICATION_REJECTED_COUNT.fetch_add(1, Ordering::Relaxed);
         }
@@ -408,6 +435,7 @@ impl PreviewOutboundSender {
         stream: PreviewStreamId,
         encoded: Bytes,
         interactive_fence: Option<BrowserInputPublicationId>,
+        resource_guard: Option<PreviewResourceLease>,
     ) -> Result<PreviewPublishOutcome, PreviewOutboundError> {
         validate_preview_fence(&stream, interactive_fence)?;
         let fields = decode_preview_fields(&stream, &encoded)?;
@@ -500,6 +528,7 @@ impl PreviewOutboundSender {
             },
             encoded,
             interactive_fence,
+            _resource_guard: resource_guard,
         };
         if let Some(previous_publication_id) = state.current.get(&stream).copied() {
             state.record_cancellation(stream.clone(), previous_publication_id);

@@ -20,6 +20,7 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -732,6 +733,7 @@ struct BrowserPreviewBinding {
     attachment: BrowserInputAttachment,
     config: InteractivePreviewConfig,
     lane: InteractivePreviewLaneLease,
+    relay_cancel: CancellationToken,
     relay: JoinHandle<()>,
 }
 
@@ -814,6 +816,7 @@ impl BrowserPreviewSession {
         let publication_id = attachment.publication_id().get();
         let spec_generation = lane.spec_generation_receiver();
         let encode_workers = lane.encode_workers();
+        let relay_cancel = CancellationToken::new();
         let relay = spawn_interactive_preview_relay(
             preview_id.clone(),
             attachment.publication_id(),
@@ -821,6 +824,7 @@ impl BrowserPreviewSession {
             spec_generation,
             encode_workers,
             self.outbound.clone(),
+            relay_cancel.clone(),
         );
         self.previews.insert(
             preview_id.clone(),
@@ -828,6 +832,7 @@ impl BrowserPreviewSession {
                 attachment,
                 config,
                 lane,
+                relay_cancel,
                 relay,
             },
         );
@@ -840,7 +845,11 @@ impl BrowserPreviewSession {
         })
     }
 
-    pub(super) fn close(&mut self, preview_id: String) -> ServerMessage {
+    pub(super) async fn close(&mut self, preview_id: String) -> ServerMessage {
+        let binding = self.previews.remove(&preview_id);
+        if let Some(binding) = &binding {
+            binding.relay_cancel.cancel();
+        }
         if let Err(error) =
             self.outbound
                 .cancel(&hypercolor_leptos_ext::ws::PreviewStreamId::Interactive(
@@ -849,10 +858,12 @@ impl BrowserPreviewSession {
         {
             warn!(%error, %preview_id, "Failed to queue interactive preview cancellation");
         }
-        let closed = self.previews.remove(&preview_id).is_some_and(|binding| {
-            close_preview_binding(&self.interaction_routing, binding);
+        let closed = if let Some(binding) = binding {
+            close_preview_binding_and_wait(&self.interaction_routing, binding).await;
             true
-        });
+        } else {
+            false
+        };
         ServerMessage::InteractivePreviewClosed { preview_id, closed }
     }
 
@@ -933,18 +944,45 @@ impl BrowserPreviewSession {
 impl Drop for BrowserPreviewSession {
     fn drop(&mut self) {
         for (_, binding) in self.previews.drain() {
-            close_preview_binding(&self.interaction_routing, binding);
+            begin_preview_binding_cleanup(&self.interaction_routing, binding);
         }
     }
 }
 
-fn close_preview_binding(
+fn begin_preview_binding_cleanup(
     interaction_routing: &InteractionRoutingControl,
-    mut binding: BrowserPreviewBinding,
+    binding: BrowserPreviewBinding,
 ) {
-    binding.relay.abort();
-    let _ = binding.lane.close();
+    binding.relay_cancel.cancel();
     interaction_routing.close_preview(&binding.attachment);
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        drop(runtime.spawn(finish_preview_binding_cleanup(binding)));
+    } else {
+        let mut lane = binding.lane;
+        binding.relay.abort();
+        let _ = lane.close();
+    }
+}
+
+async fn close_preview_binding_and_wait(
+    interaction_routing: &InteractionRoutingControl,
+    binding: BrowserPreviewBinding,
+) {
+    binding.relay_cancel.cancel();
+    interaction_routing.close_preview(&binding.attachment);
+    finish_preview_binding_cleanup(binding).await;
+}
+
+async fn finish_preview_binding_cleanup(binding: BrowserPreviewBinding) {
+    let BrowserPreviewBinding {
+        mut lane,
+        relay,
+        attachment: _,
+        config: _,
+        relay_cancel: _,
+    } = binding;
+    let _ = relay.await;
+    let _ = lane.close_and_wait().await;
 }
 
 const fn runtime_preview_spec(config: InteractivePreviewConfig) -> RuntimeInteractivePreviewSpec {
@@ -1230,9 +1268,11 @@ async fn handle_client_message(
         }
         ClientMessage::InteractivePreviewClose { preview_id } => {
             let error_preview_id = preview_id.clone();
-            let result = ensure_control_tier(auth_context)
-                .map(|()| browser_previews.close(preview_id))
-                .map_err(|error| scope_preview_error(error, &error_preview_id));
+            let result = match ensure_control_tier(auth_context) {
+                Ok(()) => Ok(browser_previews.close(preview_id).await),
+                Err(error) => Err(error),
+            }
+            .map_err(|error| scope_preview_error(error, &error_preview_id));
             send_protocol_result(socket, result).await;
         }
         ClientMessage::InputInject { preview_id, events } => {

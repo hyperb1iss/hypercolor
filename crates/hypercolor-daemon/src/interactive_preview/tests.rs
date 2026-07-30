@@ -17,12 +17,14 @@ use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tokio::sync::RwLock;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
-    InteractivePreviewFrame, InteractivePreviewSpec, InteractivePreviewTarget, PreviewLaneId,
-    PreviewResourceLedger, ResolvedPreviewScene, advance_deadline, duration_millis_u32,
-    preview_input_demand,
+    InteractivePreviewFrame, InteractivePreviewSpec, InteractivePreviewTarget,
+    PreviewCapacityLedger, PreviewLaneCommand, PreviewLaneId, PreviewResourceLedger,
+    ResolvedPreviewScene, advance_deadline, duration_millis_u32, preview_input_demand,
+    request_preview_lane_update,
 };
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::preview_runtime::PreviewPixelFormat;
@@ -90,6 +92,15 @@ fn lane_resource_bytes(spec: InteractivePreviewSpec) -> u64 {
         .expect("test resource geometry should fit")
         .total_bytes()
         .expect("test resource total should fit")
+}
+
+#[test]
+fn resource_ledger_keeps_transport_payload_and_metadata_disjoint() {
+    let ledger = PreviewResourceLedger::for_lane(spec(4, 3), 8, 6, false, "preview".len())
+        .expect("test resource geometry should fit");
+
+    assert_eq!(ledger.encoded_transport_bytes, 4 * 3 * 4);
+    assert!(ledger.metadata_bytes > 0);
 }
 
 fn scene_manager(color: [f32; 4]) -> SceneManager {
@@ -324,12 +335,124 @@ async fn lanes_render_concurrently_and_own_independent_demand_lifetimes() {
         first.snapshot().consumer_incarnation,
         second.snapshot().consumer_incarnation
     );
-    assert!(first.close());
+    drop(first_frame);
+    drop(second_frame);
+    let resources_with_both = rig.executor.resource_snapshot().used;
+    assert!(first.close_and_wait().await);
     assert!(!first.close());
-    wait_for_preview_demands(&rig.demands, 1).await;
+    assert_eq!(rig.executor.lane_count(), 1);
+    assert_ne!(rig.executor.resource_snapshot().used, resources_with_both);
+    assert_eq!(
+        rig.demands
+            .registration_count(InputPublicationConsumer::Preview),
+        1
+    );
     let _ = next_frame(&mut second_receiver).await;
-    drop(second);
+    let mut second = second;
+    assert!(second.close_and_wait().await);
+    assert_eq!(rig.executor.lane_count(), 0);
+    assert_eq!(
+        rig.executor
+            .resource_snapshot()
+            .used
+            .total_bytes()
+            .expect("resource total should remain representable"),
+        0
+    );
+    assert_eq!(
+        rig.demands
+            .registration_count(InputPublicationConsumer::Preview),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_panic_retires_lane_demand_and_resources_via_raii() {
+    let rig = PreviewTestRig::new([0.3, 0.2, 0.8, 1.0]).await;
+    let attachment = rig.attach(8, "panic");
+    let mut lane = rig
+        .executor
+        .open(&attachment, spec(3, 2))
+        .await
+        .expect("preview lane should open");
+    wait_for_preview_demands(&rig.demands, 1).await;
+    let id = PreviewLaneId {
+        key: attachment.key().clone(),
+        publication_id: attachment.publication_id(),
+    };
+    let commands = rig
+        .executor
+        .inner
+        .commands_exact(&id)
+        .expect("opened lane should accept commands");
+
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    commands
+        .send(PreviewLaneCommand::Panic {
+            started: started_tx,
+        })
+        .await
+        .expect("panic command should reach the worker");
+    started_rx
+        .await
+        .expect("panic command should begin on the worker");
+    let _ = lane.close_and_wait().await;
     wait_for_preview_demands(&rig.demands, 0).await;
+
+    assert_eq!(rig.executor.lane_count(), 0);
+    assert!(!lane.snapshot().active);
+    assert_eq!(
+        rig.executor
+            .resource_snapshot()
+            .used
+            .total_bytes()
+            .expect("resource total should remain representable"),
+        0
+    );
+}
+
+#[tokio::test]
+async fn cancelled_update_never_enters_a_full_lane_mailbox() {
+    let (commands, mut receiver) = tokio::sync::mpsc::channel(1);
+    let (started_tx, _started_rx) = tokio::sync::oneshot::channel();
+    commands
+        .try_send(PreviewLaneCommand::Panic {
+            started: started_tx,
+        })
+        .expect("first command should fill the bounded mailbox");
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let capacity = PreviewCapacityLedger::new(1);
+    let resources = capacity
+        .try_reserve(PreviewResourceLedger {
+            metadata_bytes: 1,
+            ..PreviewResourceLedger::default()
+        })
+        .expect("test update reservation should fit");
+
+    let result = timeout(
+        Duration::from_millis(100),
+        request_preview_lane_update(&commands, &cancel, spec(1, 1), resources),
+    )
+    .await
+    .expect("cancelled update should not wait for mailbox capacity");
+
+    assert!(matches!(
+        result,
+        Err(super::InteractivePreviewError::WorkerClosed)
+    ));
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(PreviewLaneCommand::Panic { .. })
+    ));
+    assert_eq!(
+        capacity
+            .snapshot()
+            .used
+            .total_bytes()
+            .expect("resource total should remain representable"),
+        0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -358,6 +481,25 @@ async fn executor_admits_many_small_lanes_without_spawning_per_lane_workers() {
     assert!(encode_workers >= 1);
     drop(lanes);
     drop(attachments);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lane_control_mailbox_keeps_one_pending_update() {
+    let rig = PreviewTestRig::new([0.2, 0.4, 0.8, 1.0]).await;
+    let attachment = rig.attach(1, "mailbox");
+    let mut lane = rig
+        .executor
+        .open(&attachment, spec(1, 1))
+        .await
+        .expect("preview lane should open");
+    let capacity = super::lock(&rig.executor.inner.lanes)
+        .get(attachment.key())
+        .expect("opened lane should remain indexed")
+        .commands
+        .max_capacity();
+
+    assert_eq!(capacity, 1);
+    assert!(lane.close_and_wait().await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -460,7 +602,7 @@ async fn stale_publication_cannot_close_reopened_lane() {
         key: key.clone(),
         publication_id: old_lane.publication_id(),
     };
-    assert!(old_lane.close());
+    assert!(old_lane.close_and_wait().await);
     assert!(old_attachment.close());
 
     let new_attachment = rig
