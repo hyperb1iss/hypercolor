@@ -185,6 +185,149 @@ fn gpu_sampler_matches_cpu_spatial_sampling_for_area_plans() {
 }
 
 #[test]
+fn gpu_sampler_matches_cpu_area_sampling_with_fade_edges() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let engine = SpatialEngine::new(fade_sampling_layout(SamplingMode::AreaAverage {
+        radius_x: 2.0,
+        radius_y: 1.0,
+    }));
+    let canvas = patterned_canvas(63);
+    let plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(canvas.clone())),
+    );
+    let expected_zones = engine.sample(&canvas);
+
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before faded area sampling");
+    let mut sampled = Vec::new();
+    assert!(
+        compositor
+            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sampler should support attenuated area plans")
+    );
+
+    assert_zone_colors_within(&sampled, &expected_zones, 1);
+}
+
+#[test]
+fn gpu_sampler_matches_cpu_for_anisotropic_area_radii() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
+        radius_x: 3.0,
+        radius_y: 1.0,
+    }));
+    let canvas = patterned_canvas(37);
+    let plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(canvas.clone())),
+    );
+    let expected_zones = engine.sample(&canvas);
+
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before anisotropic area sampling");
+    let mut sampled = Vec::new();
+    assert!(
+        compositor
+            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sampler should support anisotropic area plans")
+    );
+
+    assert_zone_colors_within(&sampled, &expected_zones, 1);
+}
+
+#[test]
+fn gpu_sampler_matches_cpu_for_area_radius_above_u16_at_clamped_borders() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let engine = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
+        radius_x: 65_536.0,
+        radius_y: 1.0,
+    }));
+    let canvas = patterned_canvas(91);
+    let plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(canvas.clone())),
+    );
+    let expected_zones = engine.sample(&canvas);
+
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before large-radius area sampling");
+    let mut sampled = Vec::new();
+    assert!(
+        compositor
+            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sampler should preserve radii above u16")
+    );
+
+    assert_zone_colors_within(&sampled, &expected_zones, 1);
+}
+
+#[test]
+fn gpu_sampling_admission_rolls_back_retries_and_reuses_resources() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let initial = SpatialEngine::new(sampling_layout(SamplingMode::AreaAverage {
+        radius_x: 1.0,
+        radius_y: 1.0,
+    }));
+    assert!(compositor.can_sample_zone_plan(initial.sampling_plan().as_ref()));
+    let initial_area_generation = compositor.spatial_sampler.area_generation();
+    let initial_buffer_generation = compositor.spatial_sampler.buffer_generation();
+
+    let mut replacement_layout = sampling_layout(SamplingMode::AreaAverage {
+        radius_x: 4.0,
+        radius_y: 2.0,
+    });
+    replacement_layout.canvas_width = 8;
+    let mut replacement = SpatialEngine::new(replacement_layout.clone());
+    compositor.spatial_sampler.fail_next_plan_preparation();
+    assert!(!compositor.can_sample_zone_plan(replacement.sampling_plan().as_ref()));
+    assert_eq!(
+        compositor.spatial_sampler.area_generation(),
+        initial_area_generation
+    );
+    assert_eq!(
+        compositor.spatial_sampler.buffer_generation(),
+        initial_buffer_generation
+    );
+    assert!(!compositor.can_sample_zone_plan(replacement.sampling_plan().as_ref()));
+
+    replacement.update_layout(replacement_layout);
+    assert!(compositor.can_sample_zone_plan(replacement.sampling_plan().as_ref()));
+    let retried_area_generation = compositor.spatial_sampler.area_generation();
+    let retried_buffer_generation = compositor.spatial_sampler.buffer_generation();
+    assert!(retried_area_generation > initial_area_generation);
+    assert_eq!(retried_buffer_generation, initial_buffer_generation);
+
+    assert!(compositor.can_sample_zone_plan(replacement.sampling_plan().as_ref()));
+    assert_eq!(
+        compositor.spatial_sampler.area_generation(),
+        retried_area_generation
+    );
+    assert_eq!(
+        compositor.spatial_sampler.buffer_generation(),
+        retried_buffer_generation
+    );
+}
+
+#[test]
 fn gpu_sampler_matches_cpu_when_negative_area_radius_clamps_to_zero() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,
@@ -200,7 +343,11 @@ fn gpu_sampler_matches_cpu_when_negative_area_radius_clamps_to_zero() {
     else {
         panic!("negative area radius should remain an area-sampling plan");
     };
-    assert!(samples.iter().all(|sample| sample.radius == 0));
+    assert!(
+        samples
+            .iter()
+            .all(|sample| sample.radius_x == 0 && sample.radius_y == 0)
+    );
     assert!(compositor.can_sample_zone_plan(prepared.as_ref()));
 
     let plan = CompositionPlan::with_layers(

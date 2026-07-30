@@ -3,6 +3,8 @@ mod face_overlay;
 #[cfg(feature = "wgpu")]
 pub(crate) mod gpu;
 #[cfg(feature = "wgpu")]
+mod gpu_area_sat;
+#[cfg(feature = "wgpu")]
 mod gpu_sampling;
 mod transform;
 
@@ -456,6 +458,22 @@ pub(crate) enum SparkleFlingerCanvasPreparation {
     GpuCpuFallback(cpu::CpuCanvasPreparation),
 }
 
+pub(crate) enum SparkleFlingerSamplingPreparation {
+    Cpu,
+    #[cfg(feature = "wgpu")]
+    Gpu(gpu_sampling::GpuSamplingPreparation),
+}
+
+impl SparkleFlingerSamplingPreparation {
+    #[cfg(feature = "wgpu")]
+    pub(crate) const fn is_admitted(&self) -> bool {
+        match self {
+            Self::Cpu => false,
+            Self::Gpu(preparation) => preparation.is_admitted(),
+        }
+    }
+}
+
 impl SparkleFlingerCanvasPreparation {
     #[cfg(feature = "wgpu")]
     pub(crate) const fn is_admitted(&self) -> bool {
@@ -523,6 +541,40 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    pub(crate) fn prepare_zone_sampling_plan(
+        &mut self,
+        width: u32,
+        height: u32,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> SparkleFlingerSamplingPreparation {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => SparkleFlingerSamplingPreparation::Cpu,
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => SparkleFlingerSamplingPreparation::Gpu(
+                gpu.prepare_zone_sampling_plan(width, height, prepared_zones),
+            ),
+        }
+    }
+
+    pub(crate) fn apply_zone_sampling_plan(
+        &mut self,
+        preparation: SparkleFlingerSamplingPreparation,
+    ) {
+        match (&mut self.backend, preparation) {
+            (SparkleFlingerBackend::Cpu(_), SparkleFlingerSamplingPreparation::Cpu) => {}
+            #[cfg(feature = "wgpu")]
+            (
+                SparkleFlingerBackend::Gpu { gpu, .. },
+                SparkleFlingerSamplingPreparation::Gpu(preparation),
+            ) => gpu.apply_zone_sampling_plan(preparation),
+            #[allow(
+                unreachable_patterns,
+                reason = "the mismatch arm is reachable only in wgpu builds"
+            )]
+            _ => unreachable!("sampling preparation must belong to its SparkleFlinger backend"),
+        }
+    }
+
     pub(crate) fn prepare_canvas_resize(
         &self,
         width: u32,
@@ -1053,8 +1105,8 @@ impl SparkleFlinger {
             reason = "GPU-only parameter still present in the CPU-only build"
         )
     )]
-    pub fn can_sample_zone_plan(&self, prepared_zones: &[PreparedZonePlan]) -> bool {
-        match &self.backend {
+    pub fn can_sample_zone_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
+        match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => false,
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.can_sample_zone_plan(prepared_zones),

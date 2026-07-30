@@ -41,7 +41,9 @@ use crate::render_thread::gpu_device::{GpuRenderDevice, texture_format_name};
 #[cfg(target_os = "windows")]
 use crate::render_thread::producer_queue::WindowsScreenTextureLease;
 use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin};
-use crate::render_thread::sparkleflinger::gpu_sampling::{GpuSamplingPlan, GpuSpatialSampler};
+use crate::render_thread::sparkleflinger::gpu_sampling::{
+    GpuSamplingPlan, GpuSamplingPreparation, GpuSpatialSampler,
+};
 
 mod compositor;
 mod display_finalize;
@@ -1134,8 +1136,36 @@ impl GpuSparkleFlinger {
         }))
     }
 
-    pub(crate) fn can_sample_zone_plan(&self, prepared_zones: &[PreparedZonePlan]) -> bool {
-        GpuSamplingPlan::supports_prepared_zones(prepared_zones)
+    pub(crate) fn can_sample_zone_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
+        let dimensions = self
+            .surfaces
+            .as_ref()
+            .map(|surfaces| (surfaces.width, surfaces.height))
+            .or_else(|| {
+                prepared_zones
+                    .first()
+                    .map(|zone| (zone.prepared_canvas_width, zone.prepared_canvas_height))
+            });
+        let Some((width, height)) = dimensions else {
+            return GpuSamplingPlan::supports_prepared_zones(prepared_zones);
+        };
+        self.spatial_sampler
+            .can_sample_plan(&self.device, width, height, prepared_zones)
+    }
+
+    pub(super) fn prepare_zone_sampling_plan(
+        &mut self,
+        width: u32,
+        height: u32,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> GpuSamplingPreparation {
+        self.spatial_sampler
+            .prepare_plan(&self.device, width, height, prepared_zones)
+    }
+
+    pub(super) fn apply_zone_sampling_plan(&mut self, preparation: GpuSamplingPreparation) {
+        self.spatial_sampler.apply_preparation(preparation);
+        self.cached_sample_result = None;
     }
 
     pub(crate) fn current_output_frame(&mut self) -> Result<Option<GpuTextureFrame>> {

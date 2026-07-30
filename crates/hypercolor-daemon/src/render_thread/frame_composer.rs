@@ -228,11 +228,12 @@ impl ComposeContext<'_> {
         let preview_request = self.preview_surface_request();
         let preview_surface_pressure = self.preview_surface_pressure();
         let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
+        let requires_cpu_sampling_canvas = self.requires_cpu_sampling_canvas();
         let composed = self.compose.sparkleflinger.compose_for_outputs(
             compiled_plan.plan.with_cpu_replay_cacheable(
                 producer_retained && !compiled_plan.metadata.transition_active,
             ),
-            self.requires_cpu_sampling_canvas(),
+            requires_cpu_sampling_canvas,
             preview_request,
         );
         let composition_done_at = Instant::now();
@@ -430,9 +431,10 @@ impl ComposeContext<'_> {
                 let preview_request = self.preview_surface_request();
                 let preview_surface_pressure = self.preview_surface_pressure();
                 let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
+                let requires_cpu_sampling_canvas = self.requires_cpu_sampling_canvas();
                 let composed = self.compose.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan.with_cpu_replay_cacheable(false),
-                    self.requires_cpu_sampling_canvas(),
+                    requires_cpu_sampling_canvas,
                     preview_request,
                 );
                 let composition_bypassed = composed.bypassed;
@@ -571,7 +573,7 @@ impl ComposeContext<'_> {
             })
     }
 
-    fn requires_cpu_sampling_canvas(&self) -> bool {
+    fn requires_cpu_sampling_canvas(&mut self) -> bool {
         requires_cpu_sampling_canvas(
             self.compose
                 .sparkleflinger

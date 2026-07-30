@@ -60,7 +60,10 @@ use super::scene_state::RenderSceneState;
 use super::screen_canvas::screen_data_to_surface;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::PendingDisplayFinalization;
-use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger, SparkleFlingerCanvasPreparation};
+use super::sparkleflinger::{
+    PendingZoneSampling, SparkleFlinger, SparkleFlingerCanvasPreparation,
+    SparkleFlingerSamplingPreparation,
+};
 use super::{RenderThreadState, micros_u32};
 use crate::interaction_routing::InteractionRoutingControl;
 
@@ -1333,6 +1336,7 @@ pub(crate) struct RenderCaches {
 pub(crate) struct PreparedCanvasResize {
     render_group_runtime: ZoneRuntime,
     sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
+    sampling_preparation: SparkleFlingerSamplingPreparation,
     #[cfg(feature = "wgpu")]
     display_sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
 }
@@ -1792,9 +1796,10 @@ impl RenderCaches {
     }
 
     pub(crate) fn prepare_canvas_resize(
-        &self,
+        &mut self,
         width: u32,
         height: u32,
+        spatial_engine: &SpatialEngine,
     ) -> Result<PreparedCanvasResize> {
         let render_group_runtime = match self.render_group_runtime.asset_library() {
             Some(asset_library) => {
@@ -1802,6 +1807,11 @@ impl RenderCaches {
             }
             None => ZoneRuntime::try_new(width, height)?,
         };
+        let sampling_preparation = self.sparkleflinger.prepare_zone_sampling_plan(
+            width,
+            height,
+            spatial_engine.sampling_plan().as_ref(),
+        );
         #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
         let mut sparkleflinger_preparation =
             self.sparkleflinger.prepare_canvas_resize(width, height)?;
@@ -1819,6 +1829,7 @@ impl RenderCaches {
         Ok(PreparedCanvasResize {
             render_group_runtime,
             sparkleflinger_preparation,
+            sampling_preparation,
             #[cfg(feature = "wgpu")]
             display_sparkleflinger_preparation,
         })
@@ -1834,6 +1845,8 @@ impl RenderCaches {
         }
         self.sparkleflinger
             .apply_canvas_resize(prepared.sparkleflinger_preparation);
+        self.sparkleflinger
+            .apply_zone_sampling_plan(prepared.sampling_preparation);
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
             .apply_canvas_resize(prepared.display_sparkleflinger_preparation);
@@ -1841,6 +1854,21 @@ impl RenderCaches {
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.output_artifacts.reset_for_canvas_resize();
+    }
+
+    pub(crate) fn apply_spatial_sampling_plan(&mut self, spatial_engine: &SpatialEngine) -> bool {
+        let layout = spatial_engine.layout();
+        let preparation = self.sparkleflinger.prepare_zone_sampling_plan(
+            layout.canvas_width,
+            layout.canvas_height,
+            spatial_engine.sampling_plan().as_ref(),
+        );
+        #[cfg(feature = "wgpu")]
+        let admitted = preparation.is_admitted();
+        #[cfg(not(feature = "wgpu"))]
+        let admitted = false;
+        self.sparkleflinger.apply_zone_sampling_plan(preparation);
+        admitted
     }
 
     pub(crate) fn render_surface_snapshot(
@@ -2007,6 +2035,11 @@ impl PipelineRuntime {
         #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
         let mut sparkleflinger_preparation =
             sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)?;
+        let sampling_preparation = sparkleflinger.prepare_zone_sampling_plan(
+            canvas_width,
+            canvas_height,
+            initial_spatial_engine.sampling_plan().as_ref(),
+        );
         #[cfg(feature = "wgpu")]
         let mut display_sparkleflinger_preparation =
             display_sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)?;
@@ -2018,6 +2051,7 @@ impl PipelineRuntime {
             display_sparkleflinger_preparation.force_cpu_fallback(canvas_width, canvas_height)?;
         }
         sparkleflinger.apply_canvas_resize(sparkleflinger_preparation);
+        sparkleflinger.apply_zone_sampling_plan(sampling_preparation);
         #[cfg(feature = "wgpu")]
         display_sparkleflinger.apply_canvas_resize(display_sparkleflinger_preparation);
 

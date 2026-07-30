@@ -72,7 +72,7 @@ pub(crate) async fn execute_frame(
                 let needs_resize =
                     state.canvas_dims.width() != width || state.canvas_dims.height() != height;
                 let prepared_resize = if needs_resize {
-                    match render.prepare_canvas_resize(width, height) {
+                    match render.prepare_canvas_resize(width, height, &spatial_engine) {
                         Ok(prepared) => Some(prepared),
                         Err(error) => {
                             warn!(
@@ -98,6 +98,8 @@ pub(crate) async fn execute_frame(
                     state.canvas_dims.set(width, height);
                     frame_loop.throttle.reset_for_canvas_resize();
                     info!(width, height, "Applied live canvas resize");
+                } else {
+                    render.apply_spatial_sampling_plan(&spatial_engine);
                 }
                 scene.render_state.replace_spatial_engine(spatial_engine);
                 transaction.accept();

@@ -2,7 +2,11 @@ struct SamplePoint {
   x: f32,
   y: f32,
   method: u32,
-  extra: u32,
+  attenuation: u32,
+  center_x: u32,
+  center_y: u32,
+  radius_x: u32,
+  radius_y: u32,
 }
 
 struct SampleParams {
@@ -16,6 +20,7 @@ struct SampleParams {
 @group(0) @binding(1) var<storage, read> points: array<SamplePoint>;
 @group(0) @binding(2) var<storage, read_write> output_rgb: array<u32>;
 @group(0) @binding(3) var<uniform> params: SampleParams;
+@group(0) @binding(4) var<storage, read> summed_area: array<vec4<f32>>;
 
 fn srgb_to_linear(channel: f32) -> f32 {
   if (channel <= 0.04045) {
@@ -113,47 +118,55 @@ fn sample_bilinear_linear(position: vec2<f32>) -> vec3<f32> {
   return mix(linear_top, linear_bottom, ty);
 }
 
-fn sample_area_linear(position: vec2<f32>, radius: u32) -> vec3<f32> {
-  let max_x = max(params.width - 1u, 0u);
-  let max_y = max(params.height - 1u, 0u);
-  let center_x = i32(floor(position.x * f32(max_x)));
-  let center_y = i32(floor(position.y * f32(max_y)));
-  let radius_i = i32(radius);
+fn summed_area_at(x: u32, y: u32) -> vec3<f32> {
+  return summed_area[y * params.width + x].rgb;
+}
 
-  var sum = vec3<f32>(0.0, 0.0, 0.0);
-  var count = 0.0;
-  var dy = -radius_i;
-  loop {
-    if (dy > radius_i) {
-      break;
-    }
-    let y = clamp(center_y + dy, 0, i32(max_y));
-    var dx = -radius_i;
-    loop {
-      if (dx > radius_i) {
-        break;
-      }
-      let x = clamp(center_x + dx, 0, i32(max_x));
-      let sample = textureLoad(source_tex, vec2<i32>(x, y), 0).rgb;
-      sum += vec3<f32>(
-        srgb_to_linear(sample.r),
-        srgb_to_linear(sample.g),
-        srgb_to_linear(sample.b),
-      );
-      count += 1.0;
-      dx += 1;
-    }
-    dy += 1;
+fn rectangle_sum(x0: u32, y0: u32, x1: u32, y1: u32) -> vec3<f32> {
+  var sum = summed_area_at(x1, y1);
+  if (x0 > 0u) {
+    sum -= summed_area_at(x0 - 1u, y1);
   }
-  return sum / max(count, 1.0);
+  if (y0 > 0u) {
+    sum -= summed_area_at(x1, y0 - 1u);
+  }
+  if (x0 > 0u && y0 > 0u) {
+    sum += summed_area_at(x0 - 1u, y0 - 1u);
+  }
+  return sum;
 }
 
-fn sample_point_attenuation(point: SamplePoint) -> u32 {
-  return point.extra & 0xffffu;
-}
+fn sample_area_linear_u16(point: SamplePoint) -> vec3<f32> {
+  let max_x = params.width - 1u;
+  let max_y = params.height - 1u;
+  let before_x = min(point.radius_x, point.center_x);
+  let before_y = min(point.radius_y, point.center_y);
+  let after_x = min(point.radius_x, max_x - point.center_x);
+  let after_y = min(point.radius_y, max_y - point.center_y);
+  let start_x = point.center_x - before_x;
+  let start_y = point.center_y - before_y;
+  let end_x = point.center_x + after_x;
+  let end_y = point.center_y + after_y;
+  let repeated_before_x = f32(point.radius_x - before_x);
+  let repeated_before_y = f32(point.radius_y - before_y);
+  let repeated_after_x = f32(point.radius_x - after_x);
+  let repeated_after_y = f32(point.radius_y - after_y);
 
-fn sample_point_radius(point: SamplePoint) -> u32 {
-  return point.extra >> 16u;
+  var sum = rectangle_sum(start_x, start_y, end_x, end_y);
+  sum += rectangle_sum(0u, start_y, 0u, end_y) * repeated_before_x;
+  sum += rectangle_sum(max_x, start_y, max_x, end_y) * repeated_after_x;
+  sum += rectangle_sum(start_x, 0u, end_x, 0u) * repeated_before_y;
+  sum += rectangle_sum(start_x, max_y, end_x, max_y) * repeated_after_y;
+  sum += rectangle_sum(0u, 0u, 0u, 0u) * repeated_before_x * repeated_before_y;
+  sum += rectangle_sum(max_x, 0u, max_x, 0u) * repeated_after_x * repeated_before_y;
+  sum += rectangle_sum(0u, max_y, 0u, max_y) * repeated_before_x * repeated_after_y;
+  sum += rectangle_sum(max_x, max_y, max_x, max_y)
+    * repeated_after_x
+    * repeated_after_y;
+
+  let count_x = f32(point.radius_x) * 2.0 + 1.0;
+  let count_y = f32(point.radius_y) * 2.0 + 1.0;
+  return floor(sum / (count_x * count_y));
 }
 
 @compute @workgroup_size(64)
@@ -175,10 +188,16 @@ fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
   } else if (point.method == 1u) {
     linear_rgb = sample_bilinear_linear(position);
   } else {
-    linear_rgb = sample_area_linear(position, sample_point_radius(point));
+    var linear_u16 = sample_area_linear_u16(point);
+    if (point.attenuation < 256u) {
+      linear_u16 = floor(
+        (linear_u16 * f32(point.attenuation) + vec3<f32>(128.0)) / 256.0
+      );
+    }
+    linear_rgb = linear_u16 / 65535.0;
   }
-  let attenuation = sample_point_attenuation(point);
-  if (attenuation < 256u) {
+  let attenuation = point.attenuation;
+  if (point.method != 2u && attenuation < 256u) {
     linear_rgb *= f32(attenuation) / 256.0;
   }
   output_rgb[index] = encode_linear_rgb(linear_rgb);

@@ -74,7 +74,7 @@ fn screen_plan_turnover_clears_stale_queue_once_per_generation() {
 
 #[test]
 fn composer_requires_cpu_sampling_canvas_for_gaussian_gpu_sampling_plan() {
-    let Ok(sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
         return;
     };
     let spatial_engine = SpatialEngine::new(SpatialLayout {
