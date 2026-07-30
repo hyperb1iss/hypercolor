@@ -22,6 +22,9 @@ use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
 
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 use super::CachedGpuSourceCopy;
+use super::screen_upload::{
+    ScreenPublicationUploadPool, ScreenUploadContentKey, resident_frame_bytes,
+};
 use super::{
     DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight, GpuCanvasAdmission,
     GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
@@ -63,6 +66,166 @@ fn gpu_canvas_admission_uses_device_dimensions_and_buffer_capacity() {
         gpu_canvas_admission(16_384, 1024, 128, 3),
         GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::FullFrameBufferCapacity)
     );
+}
+
+const fn screen_upload_key(
+    branch_sequence: u64,
+    width: u32,
+    height: u32,
+) -> ScreenUploadContentKey {
+    ScreenUploadContentKey::new(1, branch_sequence, width, height)
+}
+
+#[test]
+fn screen_upload_pool_reuses_only_completion_retired_textures() {
+    let compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let device = compositor.device.clone();
+    let queue = compositor.queue.clone();
+    let mut pool = ScreenPublicationUploadPool::new(compositor.max_buffer_size);
+    let pixels = vec![37_u8; 3 * 2 * 4];
+
+    let (first, wrote_first) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            3,
+            2,
+            &pixels,
+            screen_upload_key(1, 3, 2),
+            |_| {},
+        )
+        .expect("unaligned-width screen upload should succeed");
+    assert!(wrote_first);
+    assert_eq!(pool.state_counts(), (0, 1, 0));
+    assert_eq!(pool.allocation_count, 1);
+
+    let submission_index = queue.submit(std::iter::empty());
+    pool.mark_submitted(submission_index.clone());
+    assert_eq!(pool.state_counts(), (0, 0, 1));
+    pool.discard_encoding();
+    assert_eq!(pool.state_counts(), (0, 0, 1));
+
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission_index),
+            timeout: None,
+        })
+        .expect("screen upload submission should complete");
+    let (second, wrote_second) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            3,
+            2,
+            &pixels,
+            screen_upload_key(2, 3, 2),
+            |_| {},
+        )
+        .expect("completed screen upload texture should be reusable");
+    assert!(wrote_second);
+    assert_eq!(second.storage_id, first.storage_id);
+    assert_eq!(pool.state_counts(), (0, 1, 0));
+    assert_eq!(pool.allocation_count, 1);
+    assert_eq!(pool.reuse_count, 1);
+    pool.discard_encoding();
+}
+
+#[test]
+fn unchanged_screen_publication_does_not_reupload_when_other_layer_recomposes() {
+    let compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let device = compositor.device.clone();
+    let queue = compositor.queue.clone();
+    let mut pool = ScreenPublicationUploadPool::new(compositor.max_buffer_size);
+    let pixels = vec![41_u8; 3 * 2 * 4];
+    let content_key = screen_upload_key(7, 3, 2);
+
+    let (first, wrote_first) = pool
+        .upload_rgba(&device, &queue, 3, 2, &pixels, content_key, |_| {})
+        .expect("initial screen publication should upload");
+    assert!(wrote_first);
+    let first_submission = queue.submit(std::iter::empty());
+    pool.mark_submitted(first_submission);
+
+    let (recomposed, wrote_recomposed) = pool
+        .upload_rgba(&device, &queue, 3, 2, &pixels, content_key, |_| {})
+        .expect("unchanged screen publication should remain GPU-resident");
+    assert!(!wrote_recomposed);
+    assert_eq!(recomposed.storage_id, first.storage_id);
+    assert_eq!(pool.upload_count, 1);
+    assert_eq!(pool.state_counts(), (0, 1, 0));
+
+    let recomposed_submission = queue.submit(std::iter::empty());
+    pool.mark_submitted(recomposed_submission);
+    assert_eq!(pool.state_counts(), (0, 0, 1));
+}
+
+#[test]
+fn screen_upload_pool_charges_aligned_row_residency() {
+    assert_eq!(resident_frame_bytes(3, 2).expect("extent is valid"), 512);
+    assert_eq!(resident_frame_bytes(64, 2).expect("extent is valid"), 512);
+    assert_eq!(resident_frame_bytes(65, 2).expect("extent is valid"), 1024);
+}
+
+#[test]
+fn screen_upload_pool_evicts_completed_descriptors_within_device_fence() {
+    let compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let device = compositor.device.clone();
+    let queue = compositor.queue.clone();
+    let mut pool = ScreenPublicationUploadPool::new(512);
+    let first_pixels = vec![11_u8; 3 * 2 * 4];
+    let (first, _) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            3,
+            2,
+            &first_pixels,
+            screen_upload_key(1, 3, 2),
+            |_| {},
+        )
+        .expect("first descriptor should fit the pool fence");
+    let second_pixels = vec![23_u8; 65 * 4];
+    let error = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            65,
+            1,
+            &second_pixels,
+            screen_upload_key(2, 65, 1),
+            |_| {},
+        )
+        .expect_err("encoding textures must not be evicted or reused");
+    assert!(error.to_string().contains("no completed texture"));
+    pool.discard_encoding();
+
+    let mut evicted = Vec::new();
+    let (second, _) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            65,
+            1,
+            &second_pixels,
+            screen_upload_key(2, 65, 1),
+            |storage_id| evicted.push(storage_id),
+        )
+        .expect("completed descriptor should be evicted for a new shape");
+
+    assert_ne!(second.storage_id, first.storage_id);
+    assert_eq!(evicted, vec![first.storage_id]);
+    assert_eq!(pool.state_counts(), (0, 1, 0));
+    assert_eq!(pool.allocation_count, 2);
+    pool.discard_encoding();
 }
 
 fn solid_canvas_with_size(width: u32, height: u32, color: Rgba) -> Canvas {

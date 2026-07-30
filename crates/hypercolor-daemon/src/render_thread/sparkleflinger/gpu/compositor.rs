@@ -30,7 +30,7 @@ use super::telemetry::record_gpu_source_upload_skipped;
 use super::{
     COMPOSE_PARAM_BYTES, COMPOSE_WORKGROUP_HEIGHT, COMPOSE_WORKGROUP_WIDTH,
     GpuCompositorOutputSurface, GpuCompositorPipeline, GpuCompositorSurfaceSet, GpuSparkleFlinger,
-    padded_bytes_per_row, texture_extent,
+    ScreenUploadContentKey, padded_bytes_per_row, texture_extent,
 };
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::{GpuTextureFrameOrigin, ProducerFrame};
@@ -275,7 +275,7 @@ impl GpuSparkleFlinger {
                 encoder.clear_texture(&surfaces.front.texture, &full_range);
                 surfaces.front_contents = None;
             }
-            compose_layer_into_gpu(
+            if let Err(error) = compose_layer_into_gpu(
                 &self.device,
                 &self.queue,
                 &mut self.pipeline,
@@ -283,12 +283,15 @@ impl GpuSparkleFlinger {
                 &mut encoder,
                 first_layer,
                 true,
-            );
+            ) {
+                surfaces.discard_pending_uploads();
+                return Err(error);
+            }
             use_front_as_current = false;
         }
 
         for layer in layers {
-            compose_layer_into_gpu(
+            if let Err(error) = compose_layer_into_gpu(
                 &self.device,
                 &self.queue,
                 &mut self.pipeline,
@@ -296,7 +299,10 @@ impl GpuSparkleFlinger {
                 &mut encoder,
                 layer,
                 use_front_as_current,
-            );
+            ) {
+                surfaces.discard_pending_uploads();
+                return Err(error);
+            }
             use_front_as_current = !use_front_as_current;
         }
 
@@ -320,8 +326,8 @@ impl GpuSparkleFlinger {
             && preview_request_matches_plan(preview_surface_request, plan.width, plan.height)
         {
             let cached_surface = cached.surface.clone();
-            self.queue.submit(Some(encoder.finish()));
-            self.clear_pending_upload_buffers();
+            let submission_index = self.queue.submit(Some(encoder.finish()));
+            self.finish_pending_uploads(submission_index);
             self.release_retired_uniform_slots();
             return Ok(gpu_composed_from_surface(
                 cached_surface,
@@ -782,7 +788,7 @@ impl GpuSparkleFlinger {
         let used_bytes = u64::from(buffers.padded_bytes_per_row).saturating_mul(u64::from(height));
         let readback = buffers.readbacks[slot].clone();
         let submission_index = self.queue.submit(Some(encoder.finish()));
-        self.clear_pending_upload_buffers();
+        self.finish_pending_uploads(submission_index.clone());
         self.release_retired_uniform_slots();
         let (sender, receiver) = mpsc::channel::<std::result::Result<(), wgpu::BufferAsyncError>>();
         readback
@@ -803,8 +809,8 @@ impl GpuSparkleFlinger {
 
     fn submit_sampling_encoder(&mut self, encoder: Option<wgpu::CommandEncoder>) {
         if let Some(encoder) = encoder {
-            self.queue.submit(Some(encoder.finish()));
-            self.clear_pending_upload_buffers();
+            let submission_index = self.queue.submit(Some(encoder.finish()));
+            self.finish_pending_uploads(submission_index);
             self.release_retired_uniform_slots();
         }
     }
@@ -852,7 +858,7 @@ fn compose_layer_into_gpu(
     encoder: &mut wgpu::CommandEncoder,
     layer: &CompositionLayer,
     use_front_as_current: bool,
-) {
+) -> Result<()> {
     let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
         ComposeShaderMode::Replace
     } else {
@@ -875,11 +881,51 @@ fn compose_layer_into_gpu(
         GpuCompositorOutputSurface::Front
     };
 
-    if let Some(frame) = gpu_source_frame(&layer.frame)
+    let uploaded_screen_frame = if let ProducerFrame::ScreenPublication(publication) = &layer.frame
+    {
+        let surface = publication.surface();
+        let GpuCompositorSurfaceSet {
+            screen_upload_pool,
+            compose_source_bind_groups,
+            ..
+        } = surfaces;
+        let content_key = ScreenUploadContentKey::new(
+            publication.plan_generation(),
+            publication.branch_sequence(),
+            surface.extent().width(),
+            surface.extent().height(),
+        );
+        let (uploaded, wrote_texture) = screen_upload_pool.upload_rgba(
+            device,
+            queue,
+            surface.extent().width(),
+            surface.extent().height(),
+            surface.pixels(),
+            content_key,
+            |storage_id| compose_source_bind_groups.release_source(storage_id),
+        )?;
+        #[cfg(test)]
+        if wrote_texture {
+            surfaces.source_upload_count = surfaces.source_upload_count.saturating_add(1);
+        }
+        #[cfg(not(test))]
+        let _ = wrote_texture;
+        Some(uploaded)
+    } else {
+        None
+    };
+    let gpu_frame = uploaded_screen_frame
+        .as_ref()
+        .map(super::source::GpuSourceFrame::Texture)
+        .or_else(|| gpu_source_frame(&layer.frame));
+
+    if let Some(frame) = gpu_frame.as_ref()
         && shader_mode == ComposeShaderMode::Replace
         && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
     {
-        record_gpu_source_upload_skipped();
+        if uploaded_screen_frame.is_none() {
+            record_gpu_source_upload_skipped();
+        }
         let output = if use_front_as_current {
             &surfaces.back
         } else {
@@ -892,14 +938,18 @@ fn compose_layer_into_gpu(
             encoder,
             &mut surfaces.pending_upload_buffers,
             &mut surfaces.source_copy_bind_groups,
-            &frame,
+            frame,
             output,
         );
-        set_texture_contents(surfaces, output_surface, None);
-        return;
+        set_texture_contents(
+            surfaces,
+            output_surface,
+            uploaded_screen_frame
+                .as_ref()
+                .and_then(|_| cached_source_upload(&layer.frame)),
+        );
+        return Ok(());
     }
-
-    let gpu_frame = gpu_source_frame(&layer.frame);
 
     if gpu_frame.is_none() {
         upload_frame_into_source_texture(device, encoder, surfaces, &layer.frame);
@@ -927,7 +977,7 @@ fn compose_layer_into_gpu(
                 texture_extent(surfaces.width, surfaces.height),
             );
             set_texture_contents(surfaces, output_surface, cached_source_upload(&layer.frame));
-            return;
+            return Ok(());
         }
     }
 
@@ -947,8 +997,10 @@ fn compose_layer_into_gpu(
     {
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
     }
-    if let Some(frame) = gpu_frame {
-        record_gpu_source_upload_skipped();
+    if let Some(frame) = gpu_frame.as_ref() {
+        if uploaded_screen_frame.is_none() {
+            record_gpu_source_upload_skipped();
+        }
         let (width, height) = (surfaces.width, surfaces.height);
         let bind_group = {
             let GpuCompositorSurfaceSet {
@@ -968,6 +1020,7 @@ fn compose_layer_into_gpu(
             compose_source_bind_groups.get_or_create(
                 device,
                 pipeline,
+                frame.cached_display_source_copy().storage_id,
                 source_view,
                 use_front_as_current,
                 current_view,
@@ -978,7 +1031,7 @@ fn compose_layer_into_gpu(
         };
         dispatch_compose_pass(encoder, pipeline, &bind_group, params_offset, width, height);
         set_texture_contents(surfaces, output_surface, None);
-        return;
+        return Ok(());
     }
 
     let bind_group = if use_front_as_current {
@@ -995,6 +1048,7 @@ fn compose_layer_into_gpu(
         surfaces.height,
     );
     set_texture_contents(surfaces, output_surface, None);
+    Ok(())
 }
 
 fn dispatch_compose_pass(
@@ -1042,6 +1096,7 @@ pub(super) struct ComposeSourceBindGroupCache {
 }
 
 struct CachedComposeSourceBindGroup {
+    source_storage_id: u64,
     source_view: wgpu::TextureView,
     front_as_current: bool,
     bind_group: wgpu::BindGroup,
@@ -1056,6 +1111,7 @@ impl ComposeSourceBindGroupCache {
         &mut self,
         device: &wgpu::Device,
         pipeline: &GpuCompositorPipeline,
+        source_storage_id: u64,
         source_view: &wgpu::TextureView,
         front_as_current: bool,
         current_view: &wgpu::TextureView,
@@ -1083,6 +1139,7 @@ impl ComposeSourceBindGroupCache {
             self.entries.remove(0);
         }
         self.entries.push(CachedComposeSourceBindGroup {
+            source_storage_id,
             source_view: source_view.clone(),
             front_as_current,
             bind_group: bind_group.clone(),
@@ -1090,6 +1147,11 @@ impl ComposeSourceBindGroupCache {
             screen_target_lifetime: screen_target_lifetime.cloned(),
         });
         bind_group
+    }
+
+    fn release_source(&mut self, source_storage_id: u64) {
+        self.entries
+            .retain(|entry| entry.source_storage_id != source_storage_id);
     }
 
     #[cfg(target_os = "windows")]

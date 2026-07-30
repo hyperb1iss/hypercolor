@@ -52,6 +52,7 @@ mod preview;
 mod probe;
 mod readback;
 mod sampler;
+mod screen_upload;
 mod source;
 mod telemetry;
 
@@ -76,6 +77,7 @@ pub(crate) use probe::{GpuCompositorProbe, probe_render_device};
 use readback::{CachedReadbackKey, CachedReadbackSurface};
 use sampler::CachedSampleResult;
 pub(crate) use sampler::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
+use screen_upload::{ScreenPublicationUploadPool, ScreenUploadContentKey};
 use source::{
     CachedGpuSourceCopy, CachedSourceUpload, SourceCopyBindGroupCache, gpu_source_frame,
     write_rgba_texture,
@@ -691,6 +693,7 @@ pub(crate) struct GpuCompositorSurfaceSet {
     cached_compose_params: Option<[u8; COMPOSE_PARAM_BYTES]>,
     cached_compose_params_offset: Option<u32>,
     pending_upload_buffers: PendingUploadBuffers,
+    screen_upload_pool: ScreenPublicationUploadPool,
     front_contents: Option<CachedSourceUpload>,
     back_contents: Option<CachedSourceUpload>,
     cached_source_upload: Option<CachedSourceUpload>,
@@ -1155,7 +1158,9 @@ impl GpuSparkleFlinger {
             debug_assert_eq!(frame.generation, self.output_generation);
             let submission_index = frame.submit(&self.queue);
             debug_assert!(submission_index.is_some());
-            self.clear_pending_upload_buffers();
+            if let Some(submission_index) = submission_index {
+                self.finish_pending_uploads(submission_index);
+            }
             self.release_retired_uniform_slots();
         }
         Ok(())
@@ -1208,9 +1213,15 @@ impl GpuSparkleFlinger {
             .is_some_and(FrameInFlight::is_building)
     }
 
-    pub(super) fn clear_pending_upload_buffers(&mut self) {
+    pub(super) fn finish_pending_uploads(&mut self, submission_index: wgpu::SubmissionIndex) {
         if let Some(surfaces) = self.surfaces.as_mut() {
-            surfaces.pending_upload_buffers.clear();
+            surfaces.finish_pending_uploads(submission_index);
+        }
+    }
+
+    pub(super) fn discard_pending_uploads(&mut self) {
+        if let Some(surfaces) = self.surfaces.as_mut() {
+            surfaces.discard_pending_uploads();
         }
     }
 
@@ -1256,6 +1267,16 @@ impl fmt::Debug for GpuSparkleFlinger {
 }
 
 impl GpuCompositorSurfaceSet {
+    fn finish_pending_uploads(&mut self, submission_index: wgpu::SubmissionIndex) {
+        self.pending_upload_buffers.clear();
+        self.screen_upload_pool.mark_submitted(submission_index);
+    }
+
+    fn discard_pending_uploads(&mut self) {
+        self.pending_upload_buffers.clear();
+        self.screen_upload_pool.discard_encoding();
+    }
+
     fn try_new(
         device: &wgpu::Device,
         pipeline: &GpuCompositorPipeline,
@@ -1281,6 +1302,10 @@ impl GpuCompositorSurfaceSet {
             cached_compose_params: None,
             cached_compose_params_offset: None,
             pending_upload_buffers: PendingUploadBuffers::default(),
+            // wgpu exposes no portable VRAM budget. max_buffer_size provides
+            // a conservative device-derived fence; scoped allocation errors
+            // and native backend memory thresholds remain authoritative.
+            screen_upload_pool: ScreenPublicationUploadPool::new(device.limits().max_buffer_size),
             front_contents: None,
             back_contents: None,
             cached_source_upload: None,

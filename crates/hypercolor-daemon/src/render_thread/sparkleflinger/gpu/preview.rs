@@ -169,12 +169,11 @@ impl GpuSparkleFlinger {
             return Ok(());
         }
         let (frame_in_flight, queue) = (&mut self.frame_in_flight, &self.queue);
-        let submitted = frame_in_flight
+        let submission_index = frame_in_flight
             .as_mut()
-            .and_then(|frame| frame.submit(queue))
-            .is_some();
-        if submitted {
-            self.clear_pending_upload_buffers();
+            .and_then(|frame| frame.submit(queue));
+        if let Some(submission_index) = submission_index {
+            self.finish_pending_uploads(submission_index);
             self.release_retired_uniform_slots();
         }
         if self.pending_preview_map.is_some() {
@@ -197,7 +196,7 @@ impl GpuSparkleFlinger {
     pub(super) fn clear_superseded_preview_outputs(&mut self) {
         drop(self.supersede_frame_in_flight("preview outputs superseded"));
         self.ready_preview_surface = None;
-        self.clear_pending_upload_buffers();
+        self.discard_pending_uploads();
     }
 
     pub(super) fn discard_superseded_preview_work(&mut self) {
@@ -394,7 +393,7 @@ impl GpuSparkleFlinger {
                 self.stage_frame_in_flight(encoder, None);
             }
             drop(self.supersede_frame_in_flight("cached preview served instead"));
-            self.clear_pending_upload_buffers();
+            self.discard_pending_uploads();
             return Ok(gpu_composed_with_preview_surface(cached));
         }
 
@@ -426,7 +425,7 @@ impl GpuSparkleFlinger {
             self.supersede_frame_in_flight("preview restaged over retained frame")
         {
             drop(encoder);
-            self.clear_pending_upload_buffers();
+            self.discard_pending_uploads();
         }
         let preview_surfaces = self
             .preview_surfaces
