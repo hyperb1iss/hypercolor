@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,8 +8,9 @@ use hypercolor_core::input::screen::{
     ArmedScreenPlan, CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureDynamicRange,
     CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat,
     CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
-    CommittedScreenPlan, InputPublicationDemandRevision, KnownCaptureColorimetry, PhysicalOrigin,
-    PixelExtent, PixelRect, PlatformGpuApi, RegisteredScreenBranchDemand,
+    CommittedScreenPlan, CpuExactReductionAdmissionError, CpuExactReductionComputeCapacity,
+    CpuExactReductionWorkPlan, InputPublicationDemandRevision, KnownCaptureColorimetry,
+    PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi, RegisteredScreenBranchDemand,
     ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
     ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan,
     ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBranchDeliveryLifecycle,
@@ -37,6 +38,13 @@ mod native_target_support;
 
 fn non_zero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("test values are non-zero")
+}
+
+fn exact_compute_capacity(units_per_worker_second: u64) -> CpuExactReductionComputeCapacity {
+    CpuExactReductionComputeCapacity::new(
+        NonZeroUsize::MIN,
+        NonZeroU64::new(units_per_worker_second).expect("test compute capacity is non-zero"),
+    )
 }
 
 fn gpu_device() -> ScreenPhysicalGpuDeviceIdentity {
@@ -248,6 +256,33 @@ fn resolve(
             ScreenExecutorColorCapabilities::new(capabilities, capabilities),
         )
         .expect("test publication request resolves")
+}
+
+fn exact_surface_demand(
+    source: &ResolvedScreenSource,
+    width: u32,
+    height: u32,
+    filter: ScreenReductionFilter,
+    requested_hz: u32,
+) -> ResolvedScreenBranchDemand {
+    resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::bounded(
+                Some(non_zero(width)),
+                Some(non_zero(height)),
+                ScreenUpscalePolicy::Never,
+            ),
+            ScreenAspectPolicy::Contain,
+            profile(ScreenProcessingProfileConfig {
+                reduction_filter: filter,
+                ..ScreenProcessingProfileConfig::default()
+            }),
+            requested_hz,
+        ),
+        source,
+    )
 }
 
 fn output_extent(descriptor: &ResolvedScreenPublicationDescriptor) -> PixelExtent {
@@ -5095,4 +5130,177 @@ fn cover_geometry_remains_exact_at_u32_extremes() {
     assert_eq!(region.width().denominator().get(), maximum);
     assert_eq!(region.height().numerator(), maximum - 1);
     assert_eq!(region.height().denominator().get(), 1);
+}
+
+#[test]
+fn exact_cpu_work_sums_multiple_reductions_at_independent_cadences() {
+    let source = resolved_source(
+        ScreenSourceSelector::Configured,
+        "exact-work-sum",
+        3840,
+        2160,
+    );
+    let nearest = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Nearest, 30);
+    let bilinear = exact_surface_demand(&source, 320, 180, ScreenReductionFilter::Bilinear, 60);
+    let mut builder = ScreenPlanBuilder::new();
+    let plan = commit_demands(&mut builder, [nearest, bilinear], None)
+        .expect("independent exact reductions commit");
+
+    let work =
+        CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
+            .expect("exact work is representable");
+
+    assert_eq!(work.cpu_reduction_count(), 2);
+    assert_eq!(work.terms().nearest_target_pixel_hz, 640 * 360 * 30);
+    assert_eq!(work.terms().bilinear_target_pixel_hz, 320 * 180 * 60);
+}
+
+#[test]
+fn exact_area_work_charges_source_footprint_and_target_pixels() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "exact-area", 3840, 2160);
+    let area = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Area, 30);
+    let mut builder = ScreenPlanBuilder::new();
+    let plan = commit_demands(&mut builder, [area], None).expect("area reduction commits");
+
+    let work =
+        CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
+            .expect("area work is representable");
+
+    assert_eq!(work.terms().area_source_sample_hz, 3840 * 2160 * 30);
+    assert_eq!(work.terms().area_target_pixel_hz, 640 * 360 * 30);
+}
+
+#[test]
+fn exact_area_work_counts_fractional_support_for_every_target_cell() {
+    let source = resolved_source(
+        ScreenSourceSelector::Configured,
+        "exact-area-overlap",
+        3840,
+        2160,
+    );
+    let area = exact_surface_demand(&source, 3839, 2159, ScreenReductionFilter::Area, 30);
+    let mut builder = ScreenPlanBuilder::new();
+    let plan = commit_demands(&mut builder, [area], None).expect("area reduction commits");
+
+    let work =
+        CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
+            .expect("fractional area work is representable");
+
+    assert_eq!(work.terms().area_source_sample_hz, 7_676_u64 * 4_318 * 30);
+    assert_eq!(work.terms().area_target_pixel_hz, 3_838 * 2_159 * 30);
+}
+
+#[test]
+fn exact_nearest_and_bilinear_keep_distinct_target_costs() {
+    let source = resolved_source(
+        ScreenSourceSelector::Configured,
+        "exact-filter-cost",
+        1920,
+        1080,
+    );
+    let nearest = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Nearest, 30);
+    let bilinear = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Bilinear, 30);
+    let mut nearest_builder = ScreenPlanBuilder::new();
+    let mut bilinear_builder = ScreenPlanBuilder::new();
+
+    let nearest_plan =
+        commit_demands(&mut nearest_builder, [nearest], None).expect("nearest commits");
+    let nearest_work =
+        CpuExactReductionWorkPlan::try_for_source(&nearest_plan, &source.epoch().source_id, |_| {
+            true
+        })
+        .expect("nearest work is representable");
+    let bilinear_plan =
+        commit_demands(&mut bilinear_builder, [bilinear], None).expect("bilinear commits");
+    let bilinear_work = CpuExactReductionWorkPlan::try_for_source(
+        &bilinear_plan,
+        &source.epoch().source_id,
+        |_| true,
+    )
+    .expect("bilinear work is representable");
+
+    assert_eq!(
+        nearest_work.terms().nearest_target_pixel_hz,
+        bilinear_work.terms().bilinear_target_pixel_hz
+    );
+    assert!(
+        bilinear_work.weighted_work_units_per_second()
+            > nearest_work.weighted_work_units_per_second()
+    );
+}
+
+#[test]
+fn exact_cpu_work_excludes_native_gpu_and_pre_reduced_routes() {
+    let mut config = source_config_parts(1920, 1080);
+    config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
+        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        gpu_device(),
+        4,
+        9,
+    );
+    let source = resolved_source_with_config(
+        ScreenSourceSelector::Configured,
+        "exact-gpu-exclusion",
+        1,
+        1,
+        config,
+    );
+    let cpu = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Bilinear, 60);
+    let native = resolve(
+        &registered_with_executor(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::SourceNative(native_target(91)),
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            60,
+        ),
+        &source,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let plan = commit_demands(&mut builder, [cpu, native], None)
+        .expect("CPU and native GPU reductions commit");
+
+    let cpu = CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
+        .expect("CPU route work is representable");
+    let gpu =
+        CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| false)
+            .expect("GPU-routed work is representable");
+
+    assert_eq!(cpu.cpu_reduction_count(), 1);
+    assert_eq!(gpu.cpu_reduction_count(), 0);
+    assert_eq!(gpu.weighted_work_units_per_second(), 0);
+}
+
+#[test]
+fn exact_cpu_compute_admits_boundary_and_rejects_one_under() {
+    let source = resolved_source(
+        ScreenSourceSelector::Configured,
+        "exact-boundary",
+        3840,
+        2160,
+    );
+    let area = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Area, 30);
+    let mut builder = ScreenPlanBuilder::new();
+    let plan = commit_demands(&mut builder, [area], None).expect("area reduction commits");
+    let work =
+        CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
+            .expect("exact work is representable");
+    let required = work.weighted_work_units_per_second();
+
+    assert_eq!(
+        work.clone().admit(exact_compute_capacity(required)),
+        Ok(work.clone())
+    );
+    assert!(matches!(
+        work.admit(exact_compute_capacity(required - 1)),
+        Err(CpuExactReductionAdmissionError::ComputeCapacityExceeded {
+            required_weighted_work_units_per_second,
+            available_weighted_work_units_per_second,
+            ..
+        }) if required_weighted_work_units_per_second == required
+            && available_weighted_work_units_per_second == required - 1
+    ));
 }

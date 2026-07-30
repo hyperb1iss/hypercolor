@@ -10,10 +10,10 @@ use hypercolor_core::input::screen::sector::{
 use hypercolor_core::input::screen::smooth::TemporalSmoother;
 use hypercolor_core::input::screen::{
     CaptureConfig, ColorTuning, MAX_REPRESENTABLE_CAPTURE_FPS, PixelExtent,
-    ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenCaptureInput,
+    ScreenAnalysisResourcePlan, ScreenCaptureInput,
 };
 use hypercolor_core::input::{InputData, InputSource};
-use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, SurfaceResourceError};
+use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -414,7 +414,6 @@ fn analysis_resource_plan_uses_checked_byte_admission_without_axis_caps() {
     );
     assert!(ScreenAnalysisResourcePlan::try_new(256, 2, 30, exact - 1).is_err());
     assert_eq!(unconstrained.grid_cells(), 512);
-    assert_eq!(unconstrained.frame_work_units(), 1_536);
 }
 
 #[test]
@@ -428,53 +427,6 @@ fn analysis_constructor_rejects_grid_above_installed_capacity() {
     let extent = PixelExtent::new(1, 1).expect("extent is non-empty");
 
     assert!(ScreenCaptureInput::with_requested_extent(config, extent).is_err());
-}
-
-#[test]
-fn analysis_resource_plan_rejects_work_above_installed_executor_capacity() {
-    let error =
-        ScreenAnalysisResourcePlan::try_new(u32::MAX, 2, MAX_REPRESENTABLE_CAPTURE_FPS, u64::MAX)
-            .expect_err("extreme work cannot monopolize the installed executor");
-
-    assert!(matches!(
-        error,
-        SurfaceResourceError::AnalysisWorkCapacityExceeded { .. }
-    ));
-}
-
-#[test]
-fn analysis_compute_admission_scales_across_fps_and_worker_capacity() {
-    let two_workers =
-        ScreenAnalysisComputeCapacity::new(2, 300).expect("explicit compute capacity is non-empty");
-    let four_workers =
-        ScreenAnalysisComputeCapacity::new(4, 300).expect("explicit compute capacity is non-empty");
-
-    let exact =
-        ScreenAnalysisResourcePlan::try_new_with_compute_capacity(10, 10, 2, u64::MAX, two_workers)
-            .expect("two workers admit the exact per-frame boundary");
-    assert_eq!(exact.frame_work_units(), exact.frame_work_capacity());
-    assert!(
-        ScreenAnalysisResourcePlan::try_new_with_compute_capacity(
-            10,
-            10,
-            3,
-            u64::MAX,
-            two_workers,
-        )
-        .is_err()
-    );
-    let worker_scaled = ScreenAnalysisResourcePlan::try_new_with_compute_capacity(
-        10,
-        10,
-        4,
-        u64::MAX,
-        four_workers,
-    )
-    .expect("doubling workers offsets doubling FPS");
-    assert_eq!(
-        worker_scaled.frame_work_capacity(),
-        exact.frame_work_capacity()
-    );
 }
 
 // ── Temporal Smoothing: Step Change ──────────────────────────────────────

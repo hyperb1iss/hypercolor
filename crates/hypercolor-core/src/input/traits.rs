@@ -704,6 +704,21 @@ pub trait InputSource: Send {
         Ok(None)
     }
 
+    /// Quote the compatibility-analysis work for one screen-capture demand.
+    fn screen_analysis_work_plan(
+        &self,
+        _demand: crate::input::screen::ScreenCaptureDemand,
+    ) -> anyhow::Result<Option<crate::input::screen::ScreenAnalysisWorkPlan>> {
+        Ok(None)
+    }
+
+    /// Return caller-calibrated compatibility-analysis capacity, when installed.
+    fn screen_analysis_compute_capacity(
+        &self,
+    ) -> Option<crate::input::screen::ScreenAnalysisComputeCapacity> {
+        None
+    }
+
     /// Apply typed screen publication demand.
     ///
     /// Active demand carries the analyzed publication extent independently of

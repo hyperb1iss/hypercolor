@@ -61,18 +61,6 @@ pub enum SurfaceResourceError {
     },
 
     #[error(
-        "screen analysis needs {requested_work_units} work units per frame for {width}x{height} sectors at {target_fps} FPS; {worker_count} workers admit {capacity_work_units}"
-    )]
-    AnalysisWorkCapacityExceeded {
-        width: u32,
-        height: u32,
-        target_fps: u32,
-        requested_work_units: u64,
-        capacity_work_units: u64,
-        worker_count: u64,
-    },
-
-    #[error(
         "surface pool byte length overflows addressable memory for {slot_count} slots of {width}x{height}"
     )]
     PoolByteLengthOverflow {

@@ -17,6 +17,7 @@
 
 mod admission;
 mod cadence;
+mod compute;
 mod coordinator;
 mod demand;
 mod fanout;
@@ -43,6 +44,12 @@ pub use admission::{
 };
 pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
+};
+pub use compute::{
+    CpuExactReductionAdmissionError, CpuExactReductionComputeCapacity, CpuExactReductionWorkPlan,
+    CpuExactReductionWorkTerms, ScreenAnalysisAdmissionError, ScreenAnalysisComputeCapacity,
+    ScreenAnalysisComputeLane, ScreenAnalysisFrameWork, ScreenAnalysisWorkPlan,
+    ScreenComputeCapacityPolicy,
 };
 pub(crate) use coordinator::PendingScreenWorkerPreparation;
 pub use coordinator::{
@@ -148,7 +155,6 @@ use std::fmt::Write as _;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use thiserror::Error;
 
 /// Requested screen publication state for downstream render consumers.
 ///
@@ -344,57 +350,11 @@ pub struct ScreenAnalysisResourcePlan {
     retained_bytes: u64,
     extent_retained_bytes: u64,
     transient_bytes: u64,
-    frame_work_units: u64,
-    frame_work_capacity: u64,
-    worker_count: u64,
     max_zone_id_bytes: usize,
     zone_snapshot_slot_bytes: u64,
 }
 
 const ZONE_SNAPSHOT_SLOT_COUNT: usize = 3;
-/// Baseline grid-cell visits admitted per Rayon worker-second.
-///
-/// One analyzed cell consumes three visits: source analysis, policy analysis,
-/// and publication copy. This baseline admits an 8.3-million-cell grid at
-/// 60 FPS on 16 workers while still scaling the ceiling with installed CPU.
-pub const SCREEN_ANALYSIS_WORK_UNITS_PER_WORKER_SECOND: u64 = 120_000_000;
-
-/// Installed or caller-supplied compute fence for screen grid analysis.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScreenAnalysisComputeCapacity {
-    worker_count: u64,
-    work_units_per_worker_second: u64,
-}
-
-impl ScreenAnalysisComputeCapacity {
-    /// Construct a non-empty compute fence.
-    #[must_use]
-    pub const fn new(worker_count: u64, work_units_per_worker_second: u64) -> Option<Self> {
-        if worker_count == 0 || work_units_per_worker_second == 0 {
-            return None;
-        }
-        Some(Self {
-            worker_count,
-            work_units_per_worker_second,
-        })
-    }
-
-    /// Capacity of the Rayon executor used by [`SectorGrid`].
-    #[must_use]
-    pub fn installed() -> Self {
-        Self {
-            worker_count: u64::try_from(rayon::current_num_threads()).unwrap_or(u64::MAX),
-            work_units_per_worker_second: SCREEN_ANALYSIS_WORK_UNITS_PER_WORKER_SECOND,
-        }
-    }
-
-    fn frame_capacity(self, target_fps: u32) -> u64 {
-        self.work_units_per_worker_second
-            .saturating_mul(self.worker_count)
-            .checked_div(u64::from(target_fps))
-            .unwrap_or(0)
-    }
-}
 
 struct PreparedZoneSnapshot {
     zones: Arc<Vec<ZoneColors>>,
@@ -416,64 +376,16 @@ impl ScreenAnalysisResourcePlan {
         capacity_bytes: u64,
     ) -> Result<Self, SurfaceResourceError> {
         let extent = PixelExtent::new(1, 1).expect("unit analysis extent is non-empty");
-        Self::try_new_for_extent_with_compute_capacity(
-            grid_cols,
-            grid_rows,
-            target_fps,
-            extent,
-            capacity_bytes,
-            ScreenAnalysisComputeCapacity::installed(),
-        )
+        Self::try_new_for_extent(grid_cols, grid_rows, target_fps, extent, capacity_bytes)
     }
 
     /// Build a complete grid and publication-extent resource plan.
     pub fn try_new_for_extent(
         grid_cols: u32,
         grid_rows: u32,
-        target_fps: u32,
+        _target_fps: u32,
         requested_extent: PixelExtent,
         capacity_bytes: u64,
-    ) -> Result<Self, SurfaceResourceError> {
-        Self::try_new_for_extent_with_compute_capacity(
-            grid_cols,
-            grid_rows,
-            target_fps,
-            requested_extent,
-            capacity_bytes,
-            ScreenAnalysisComputeCapacity::installed(),
-        )
-    }
-
-    /// Build a plan against explicit memory and compute fences.
-    ///
-    /// This is the embedding override for calibrated or externally managed
-    /// executors; ordinary callers should use [`Self::try_new`].
-    pub fn try_new_with_compute_capacity(
-        grid_cols: u32,
-        grid_rows: u32,
-        target_fps: u32,
-        capacity_bytes: u64,
-        compute_capacity: ScreenAnalysisComputeCapacity,
-    ) -> Result<Self, SurfaceResourceError> {
-        let extent = PixelExtent::new(1, 1).expect("unit analysis extent is non-empty");
-        Self::try_new_for_extent_with_compute_capacity(
-            grid_cols,
-            grid_rows,
-            target_fps,
-            extent,
-            capacity_bytes,
-            compute_capacity,
-        )
-    }
-
-    /// Build a complete plan against explicit memory and compute fences.
-    pub fn try_new_for_extent_with_compute_capacity(
-        grid_cols: u32,
-        grid_rows: u32,
-        target_fps: u32,
-        requested_extent: PixelExtent,
-        capacity_bytes: u64,
-        compute_capacity: ScreenAnalysisComputeCapacity,
     ) -> Result<Self, SurfaceResourceError> {
         if grid_cols == 0 || grid_rows == 0 {
             return Err(SurfaceResourceError::EmptyDimensions {
@@ -580,38 +492,12 @@ impl ScreenAnalysisResourcePlan {
                 capacity_bytes,
             });
         }
-        let frame_work_units =
-            grid_cells_u64
-                .checked_mul(3)
-                .ok_or(SurfaceResourceError::ByteLengthOverflow {
-                    width: grid_cols,
-                    height: grid_rows,
-                })?;
-        let worker_count = compute_capacity.worker_count;
-        let frame_work_capacity = if target_fps == 0 || target_fps > MAX_REPRESENTABLE_CAPTURE_FPS {
-            u64::MAX
-        } else {
-            compute_capacity.frame_capacity(target_fps)
-        };
-        if frame_work_units > frame_work_capacity {
-            return Err(SurfaceResourceError::AnalysisWorkCapacityExceeded {
-                width: grid_cols,
-                height: grid_rows,
-                target_fps,
-                requested_work_units: frame_work_units,
-                capacity_work_units: frame_work_capacity,
-                worker_count,
-            });
-        }
         Ok(Self {
             grid_cells,
             extent_pixels,
             retained_bytes,
             extent_retained_bytes,
             transient_bytes,
-            frame_work_units,
-            frame_work_capacity,
-            worker_count,
             max_zone_id_bytes,
             zone_snapshot_slot_bytes,
         })
@@ -661,21 +547,6 @@ impl ScreenAnalysisResourcePlan {
     pub const fn peak_bytes(self) -> u64 {
         self.retained_bytes + self.transient_bytes
     }
-
-    #[must_use]
-    pub const fn frame_work_units(self) -> u64 {
-        self.frame_work_units
-    }
-
-    #[must_use]
-    pub const fn frame_work_capacity(self) -> u64 {
-        self.frame_work_capacity
-    }
-
-    #[must_use]
-    pub const fn worker_count(self) -> u64 {
-        self.worker_count
-    }
 }
 
 fn decimal_digits(value: u32) -> usize {
@@ -684,14 +555,6 @@ fn decimal_digits(value: u32) -> usize {
     } else {
         usize::try_from(value.ilog10()).expect("u32 digit count fits usize") + 1
     }
-}
-
-#[derive(Debug, Error)]
-pub enum ScreenCaptureConfigError {
-    #[error(transparent)]
-    Cadence(#[from] CaptureCadenceError),
-    #[error(transparent)]
-    Resource(#[from] SurfaceResourceError),
 }
 
 /// Largest size within `max_width` x `max_height` that keeps `width` x
@@ -841,6 +704,10 @@ pub struct ScreenCaptureInput {
 
     policy_pixels: Vec<[u8; 3]>,
 
+    analysis_compute_capacity: Option<ScreenAnalysisComputeCapacity>,
+
+    analysis_work_plan: Option<ScreenAnalysisWorkPlan>,
+
     /// Whether the source is actively capturing.
     running: bool,
 
@@ -875,13 +742,18 @@ impl ScreenCaptureInput {
     pub fn with_requested_extent(
         config: CaptureConfig,
         requested_extent: PixelExtent,
-    ) -> Result<Self, SurfaceResourceError> {
+    ) -> Result<Self, ScreenAnalysisAdmissionError> {
         let capacity = ScreenAdmissionCapacity::new(
             config.analysis_memory_bytes,
             config.analysis_memory_bytes,
         );
         let admission_coordinator = ScreenByteAdmissionCoordinator::new(capacity);
-        Self::with_requested_extent_and_admission(config, requested_extent, admission_coordinator)
+        Self::with_requested_extent_and_optional_compute_capacity(
+            config,
+            requested_extent,
+            admission_coordinator,
+            None,
+        )
     }
 
     /// Create screen analysis against a shared source-level byte fence.
@@ -889,7 +761,63 @@ impl ScreenCaptureInput {
         config: CaptureConfig,
         requested_extent: PixelExtent,
         admission_coordinator: ScreenByteAdmissionCoordinator,
-    ) -> Result<Self, SurfaceResourceError> {
+    ) -> Result<Self, ScreenAnalysisAdmissionError> {
+        Self::with_requested_extent_and_optional_compute_capacity(
+            config,
+            requested_extent,
+            admission_coordinator,
+            None,
+        )
+    }
+
+    /// Create screen analysis with explicit publication and compute capacity.
+    ///
+    /// This constructor lets embedders supply capacity calibrated for their
+    /// worker environment while preserving the complete requested workload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when storage for the requested extent cannot be
+    /// admitted before construction.
+    pub fn with_requested_extent_and_compute_capacity(
+        config: CaptureConfig,
+        requested_extent: PixelExtent,
+        analysis_compute_capacity: ScreenAnalysisComputeCapacity,
+    ) -> Result<Self, ScreenAnalysisAdmissionError> {
+        let capacity = ScreenAdmissionCapacity::new(
+            config.analysis_memory_bytes,
+            config.analysis_memory_bytes,
+        );
+        let admission_coordinator = ScreenByteAdmissionCoordinator::new(capacity);
+        Self::with_requested_extent_and_optional_compute_capacity(
+            config,
+            requested_extent,
+            admission_coordinator,
+            Some(analysis_compute_capacity),
+        )
+    }
+
+    /// Create screen analysis against shared memory and calibrated compute fences.
+    pub fn with_requested_extent_admission_and_compute_capacity(
+        config: CaptureConfig,
+        requested_extent: PixelExtent,
+        admission_coordinator: ScreenByteAdmissionCoordinator,
+        analysis_compute_capacity: ScreenAnalysisComputeCapacity,
+    ) -> Result<Self, ScreenAnalysisAdmissionError> {
+        Self::with_requested_extent_and_optional_compute_capacity(
+            config,
+            requested_extent,
+            admission_coordinator,
+            Some(analysis_compute_capacity),
+        )
+    }
+
+    fn with_requested_extent_and_optional_compute_capacity(
+        config: CaptureConfig,
+        requested_extent: PixelExtent,
+        admission_coordinator: ScreenByteAdmissionCoordinator,
+        analysis_compute_capacity: Option<ScreenAnalysisComputeCapacity>,
+    ) -> Result<Self, ScreenAnalysisAdmissionError> {
         let prepared =
             prepare_analysis_resources(&config, requested_extent, &admission_coordinator)?;
         let PreparedAnalysisResources {
@@ -922,6 +850,8 @@ impl ScreenCaptureInput {
             downscale_pool,
             requested_extent,
             policy_pixels,
+            analysis_compute_capacity,
+            analysis_work_plan: None,
             running: false,
             frame_width: 0,
             frame_height: 0,
@@ -955,7 +885,7 @@ impl ScreenCaptureInput {
         frame: &[u8],
         width: u32,
         height: u32,
-    ) -> Result<bool, SurfaceResourceError> {
+    ) -> Result<bool, ScreenAnalysisAdmissionError> {
         self.push_frame_at(frame, width, height, Instant::now())
     }
 
@@ -965,7 +895,26 @@ impl ScreenCaptureInput {
         width: u32,
         height: u32,
         acquired_at: Instant,
-    ) -> Result<bool, SurfaceResourceError> {
+    ) -> Result<bool, ScreenAnalysisAdmissionError> {
+        let Ok(input_extent) = PixelExtent::new(width, height) else {
+            return Ok(false);
+        };
+        let Some(expected_frame_len) = usize::try_from(width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .and_then(|stride| usize::try_from(height).ok()?.checked_mul(stride))
+        else {
+            return Ok(false);
+        };
+        if frame.len() < expected_frame_len {
+            return Ok(false);
+        }
+        if self
+            .analysis_work_plan
+            .is_none_or(|plan| plan.input_extent() != input_extent)
+        {
+            self.admit_frame_extent(input_extent)?;
+        }
         if !self.analysis_grid.try_update(
             frame,
             width,
@@ -1079,7 +1028,7 @@ impl ScreenCaptureInput {
     pub fn set_requested_extent(
         &mut self,
         requested_extent: PixelExtent,
-    ) -> Result<(), SurfaceResourceError> {
+    ) -> Result<(), ScreenAnalysisAdmissionError> {
         if self.requested_extent == requested_extent {
             return Ok(());
         }
@@ -1088,7 +1037,21 @@ impl ScreenCaptureInput {
             requested_extent,
             &self.admission_coordinator,
         )?;
+        let analysis_work_plan = self
+            .analysis_work_plan
+            .map(|plan| {
+                admit_analysis_work(
+                    ScreenAnalysisWorkPlan::try_new(
+                        plan.input_extent(),
+                        requested_extent,
+                        &self.config,
+                    )?,
+                    self.analysis_compute_capacity,
+                )
+            })
+            .transpose()?;
         self.install_prepared_analysis(prepared, requested_extent);
+        self.analysis_work_plan = analysis_work_plan;
         Ok(())
     }
 
@@ -1096,6 +1059,30 @@ impl ScreenCaptureInput {
     #[must_use]
     pub const fn requested_extent(&self) -> PixelExtent {
         self.requested_extent
+    }
+
+    /// Admit a frame-storage extent before compatibility analysis begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed rejection when the complete requested resolution,
+    /// output, grid, and cadence exceed caller-calibrated compute throughput.
+    pub fn admit_frame_extent(
+        &mut self,
+        input_extent: PixelExtent,
+    ) -> Result<ScreenAnalysisWorkPlan, ScreenAnalysisAdmissionError> {
+        let plan = admit_analysis_work(
+            ScreenAnalysisWorkPlan::try_new(input_extent, self.requested_extent, &self.config)?,
+            self.analysis_compute_capacity,
+        )?;
+        self.analysis_work_plan = Some(plan);
+        Ok(plan)
+    }
+
+    /// Currently admitted compatibility-analysis workload.
+    #[must_use]
+    pub const fn analysis_work_plan(&self) -> Option<ScreenAnalysisWorkPlan> {
+        self.analysis_work_plan
     }
 
     /// Apply new analysis settings to a running pipeline.
@@ -1111,24 +1098,42 @@ impl ScreenCaptureInput {
     pub fn apply_settings(
         &mut self,
         config: CaptureConfig,
-    ) -> Result<(), ScreenCaptureConfigError> {
+    ) -> Result<(), ScreenAnalysisAdmissionError> {
         CaptureCadence::new(config.target_fps)?;
-        if config.grid_cols != self.config.grid_cols
+        let prepared = if config.grid_cols != self.config.grid_cols
             || config.grid_rows != self.config.grid_rows
             || config.target_fps != self.config.target_fps
             || config.analysis_memory_bytes != self.config.analysis_memory_bytes
         {
-            let prepared = prepare_analysis_resources(
+            Some(prepare_analysis_resources(
                 &config,
                 self.requested_extent,
                 &self.admission_coordinator,
-            )?;
+            )?)
+        } else {
+            None
+        };
+        let analysis_work_plan = self
+            .analysis_work_plan
+            .map(|plan| {
+                admit_analysis_work(
+                    ScreenAnalysisWorkPlan::try_new(
+                        plan.input_extent(),
+                        self.requested_extent,
+                        &config,
+                    )?,
+                    self.analysis_compute_capacity,
+                )
+            })
+            .transpose()?;
+        if let Some(prepared) = prepared {
             self.install_prepared_analysis(prepared, self.requested_extent);
         }
         self.smoother.set_alpha(config.smoothing_alpha);
         self.smoother
             .set_scene_cut_threshold(config.scene_cut_threshold);
         self.config = config;
+        self.analysis_work_plan = analysis_work_plan;
         Ok(())
     }
 
@@ -1254,6 +1259,16 @@ impl InputSource for ScreenCaptureInput {
     }
 }
 
+fn admit_analysis_work(
+    plan: ScreenAnalysisWorkPlan,
+    capacity: Option<ScreenAnalysisComputeCapacity>,
+) -> Result<ScreenAnalysisWorkPlan, ScreenAnalysisAdmissionError> {
+    match capacity {
+        Some(capacity) => plan.admit(capacity),
+        None => Ok(plan),
+    }
+}
+
 #[derive(Clone, Copy)]
 struct FrameRegion {
     x: u32,
@@ -1279,20 +1294,20 @@ impl FrameRegion {
         rows: u32,
         bars: LetterboxBars,
     ) -> Option<Self> {
-        let sector_width = width.checked_div(cols)?;
-        let sector_height = height.checked_div(rows)?;
-        let x = bars.left.checked_mul(sector_width)?;
-        let y = bars.top.checked_mul(sector_height)?;
-        let right = if bars.right == 0 {
-            width
-        } else {
-            cols.checked_sub(bars.right)?.checked_mul(sector_width)?
-        };
-        let bottom = if bars.bottom == 0 {
-            height
-        } else {
-            rows.checked_sub(bars.bottom)?.checked_mul(sector_height)?
-        };
+        if width == 0 || height == 0 || cols == 0 || rows == 0 {
+            return None;
+        }
+        let first_col = bars.left;
+        let last_col = cols.checked_sub(bars.right)?.checked_sub(1)?;
+        let first_row = bars.top;
+        let last_row = rows.checked_sub(bars.bottom)?.checked_sub(1)?;
+        if first_col > last_col || first_row > last_row {
+            return None;
+        }
+        let x = sector::proportional_bounds(first_col, cols, width).0;
+        let right = sector::proportional_bounds(last_col, cols, width).1;
+        let y = sector::proportional_bounds(first_row, rows, height).0;
+        let bottom = sector::proportional_bounds(last_row, rows, height).1;
         let width = right.checked_sub(x)?;
         let height = bottom.checked_sub(y)?;
         (width > 0 && height > 0).then_some(Self {

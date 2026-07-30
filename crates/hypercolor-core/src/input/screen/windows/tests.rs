@@ -1,4 +1,4 @@
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -11,9 +11,10 @@ use hypercolor_windows_capture::{
 
 use super::{
     ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactPublicationShared,
-    WindowsPublicationSource, WindowsScreenCaptureInput, WorkerCaptureSchedule, WorkerCommand,
-    capture_epoch, capture_freshness, capture_geometry, capture_gpu_descriptor,
-    capture_gpu_reduction_descriptor, capture_issue, native_capture_extent, record_capture_health,
+    WindowsPhysicalReductionRoute, WindowsPublicationSource, WindowsScreenCaptureInput,
+    WorkerCaptureSchedule, WorkerCommand, capture_epoch, capture_freshness, capture_geometry,
+    capture_gpu_descriptor, capture_gpu_reduction_descriptor, capture_issue,
+    classify_windows_physical_reduction, native_capture_extent, record_capture_health,
     resolve_windows_publication_branch, settle_inactive_capture, windows_gpu_attempt_at,
     windows_gpu_candidate_admission, windows_gpu_preparation_gate, windows_gpu_retry_at,
 };
@@ -21,8 +22,9 @@ use crate::input::screen::{
     CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureSourceId,
     CaptureStorage, CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent,
-    RawCaptureSurface, RegisteredScreenBranchDemand, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenByteAdmissionCoordinator, ScreenCaptureDemand, ScreenExtentRequest,
+    RawCaptureSurface, RegisteredScreenBranchDemand, ScreenAdmissionCapacity,
+    ScreenAnalysisComputeCapacity, ScreenAspectPolicy, ScreenByteAdmissionCoordinator,
+    ScreenCaptureDemand, ScreenComputeCapacityPolicy, ScreenExtentRequest,
     ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
     ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
     ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutor,
@@ -170,8 +172,16 @@ fn publication_demand(
     executor: ScreenPublicationExecutorRequest,
     filter: ScreenReductionFilter,
 ) -> RegisteredScreenBranchDemand {
-    let mut profile =
-        ScreenProcessingProfileConfig::exact_encoded_identity(CapturePixelFormat::Rgba8);
+    publication_demand_with_format(selector, executor, filter, CapturePixelFormat::Rgba8)
+}
+
+fn publication_demand_with_format(
+    selector: ScreenSourceSelector,
+    executor: ScreenPublicationExecutorRequest,
+    filter: ScreenReductionFilter,
+    pixel_format: CapturePixelFormat,
+) -> RegisteredScreenBranchDemand {
+    let mut profile = ScreenProcessingProfileConfig::exact_encoded_identity(pixel_format);
     profile.reduction_filter = filter;
     RegisteredScreenBranchDemand::new(
         ScreenPublicationRequest::new(
@@ -371,6 +381,88 @@ fn unsupported_native_filter_falls_back_to_exact_cpu_bgra() {
     assert_eq!(reduced.source_rotation(), DisplayRotation::Clockwise90);
     assert_eq!(reduced.output_extent().width(), 3840);
     assert_eq!(reduced.output_extent().height(), 2160);
+}
+
+#[test]
+fn exact_reduction_route_charges_only_work_that_can_execute_on_cpu() {
+    let source = publication_source();
+    let pre_reduced = publication_demand(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationExecutorRequest::SourceNative(native_target()),
+        ScreenReductionFilter::Area,
+    );
+    let pre_reduced = resolve_windows_publication_branch(&source, &pre_reduced)
+        .expect("GPU-reduced CPU publication resolves")
+        .expect("configured source owns the branch");
+    assert_eq!(
+        classify_windows_physical_reduction(
+            pre_reduced.descriptor().physical(),
+            &source,
+            capture_freshness(pre_reduced.requested_hz()),
+        ),
+        WindowsPhysicalReductionRoute::GuaranteedGpuPreReduced
+    );
+
+    let cpu = publication_demand_with_format(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationExecutorRequest::Cpu,
+        ScreenReductionFilter::Nearest,
+        CapturePixelFormat::Bgra8,
+    );
+    let cpu = resolve_windows_publication_branch(&source, &cpu)
+        .expect("CPU publication resolves")
+        .expect("configured source owns the branch");
+    assert_eq!(
+        classify_windows_physical_reduction(
+            cpu.descriptor().physical(),
+            &source,
+            capture_freshness(cpu.requested_hz()),
+        ),
+        WindowsPhysicalReductionRoute::Cpu
+    );
+}
+
+#[test]
+fn large_native_source_admits_the_gpu_reduced_analysis_plane() {
+    let mut source = publication_source();
+    source.native_extent = extent(15_360, 8_640);
+    source.logical_extent = source.native_extent;
+    source.rotation = CaptureRotation::Identity;
+    let input = WindowsScreenCaptureInput::new(CaptureConfig::default());
+    input.exact.replace_source(Some(source));
+
+    let prepared = input
+        .prepare_active_settings(CaptureConfig::default(), 0, active_demand())
+        .expect("the reduced compatibility plane is admitted");
+    let analysis = prepared
+        .analyzer
+        .analysis_work_plan()
+        .expect("known topology pre-admits analysis work");
+
+    assert_eq!(analysis.input_extent(), extent(640, 480));
+}
+
+#[test]
+fn calibrated_analysis_capacity_rejects_known_work_before_preparation() {
+    let capacity = ScreenAnalysisComputeCapacity::new_split(
+        NonZeroUsize::MIN,
+        NonZeroU64::MIN,
+        NonZeroU64::MIN,
+    );
+    let policy = ScreenComputeCapacityPolicy::calibrated(capacity, NonZeroU64::MIN);
+    let mut source = publication_source();
+    source.native_extent = extent(15_360, 8_640);
+    source.logical_extent = source.native_extent;
+    let input =
+        WindowsScreenCaptureInput::with_compute_capacity_policy(CaptureConfig::default(), policy);
+    input.exact.replace_source(Some(source));
+
+    let Err(error) = input.prepare_active_settings(CaptureConfig::default(), 0, active_demand())
+    else {
+        panic!("caller-calibrated capacity must reject known excess work");
+    };
+
+    assert!(error.to_string().contains("weighted work units/s"));
 }
 
 #[test]

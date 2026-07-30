@@ -11,6 +11,31 @@ use thiserror::Error;
 
 use super::CaptureTransferFunction;
 
+#[cfg(test)]
+mod tests;
+
+const SECTOR_TASKS_PER_WORKER: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SectorChunkPlan {
+    cells_per_chunk: usize,
+    scheduled_chunks: usize,
+}
+
+fn prepare_sector_chunk_plan(total_cells: usize, worker_count: usize) -> Option<SectorChunkPlan> {
+    if total_cells == 0 || worker_count == 0 {
+        return None;
+    }
+    let target_chunks = worker_count
+        .checked_mul(SECTOR_TASKS_PER_WORKER)?
+        .min(total_cells);
+    let cells_per_chunk = total_cells.div_ceil(target_chunks);
+    Some(SectorChunkPlan {
+        cells_per_chunk,
+        scheduled_chunks: total_cells.div_ceil(cells_per_chunk),
+    })
+}
+
 /// Preallocated row/column luminance scratch for dynamic content-bar detection.
 #[derive(Clone, Debug)]
 pub struct PreparedLetterboxDetector {
@@ -360,33 +385,41 @@ impl SectorGrid {
         self.cols = cols;
         self.rows = rows;
         self.colors.resize(total_sectors, [0, 0, 0]);
+        let Some(chunk_plan) =
+            prepare_sector_chunk_plan(total_sectors, rayon::current_num_threads())
+        else {
+            return false;
+        };
         let cols_usize = usize::try_from(cols).expect("validated sector columns fit usize");
 
         self.colors
-            .par_iter_mut()
+            .par_chunks_mut(chunk_plan.cells_per_chunk)
             .enumerate()
-            .for_each(|(index, color)| {
-                let r = u32::try_from(index / cols_usize).expect("validated sector row fits u32");
-                let c =
-                    u32::try_from(index % cols_usize).expect("validated sector column fits u32");
-                let (y_start, y_end) = proportional_sector_bounds(r, height, rows)
-                    .expect("validated sector row has source bounds");
-                let (x_start, x_end) = proportional_sector_bounds(c, width, cols)
-                    .expect("validated sector column has source bounds");
-                let (sum_r, sum_g, sum_b, count) =
-                    accumulate_region(frame, stride, x_start, x_end, y_start, y_end);
+            .for_each(|(chunk_index, chunk)| {
+                let first_cell = chunk_index * chunk_plan.cells_per_chunk;
+                for (chunk_offset, color) in chunk.iter_mut().enumerate() {
+                    let cell_index = first_cell + chunk_offset;
+                    let r = u32::try_from(cell_index / cols_usize)
+                        .expect("sector row is bounded by a u32 grid extent");
+                    let c = u32::try_from(cell_index % cols_usize)
+                        .expect("sector column is bounded by a u32 grid extent");
+                    let (y_start, y_end) = proportional_bounds(r, rows, height);
+                    let (x_start, x_end) = proportional_bounds(c, cols, width);
+                    let (sum_r, sum_g, sum_b, count) =
+                        accumulate_region(frame, stride, x_start, x_end, y_start, y_end);
 
-                #[expect(
-                    clippy::cast_precision_loss,
-                    clippy::as_conversions,
-                    reason = "pixel count is always safely representable as f32"
-                )]
-                let n_f = count.max(1) as f32;
-                *color = [
-                    linear_to_srgb_u8((sum_r / n_f) / 255.0),
-                    linear_to_srgb_u8((sum_g / n_f) / 255.0),
-                    linear_to_srgb_u8((sum_b / n_f) / 255.0),
-                ];
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        clippy::as_conversions,
+                        reason = "pixel count is always safely representable as f32"
+                    )]
+                    let n_f = count.max(1) as f32;
+                    *color = [
+                        linear_to_srgb_u8((sum_r / n_f) / 255.0),
+                        linear_to_srgb_u8((sum_g / n_f) / 255.0),
+                        linear_to_srgb_u8((sum_b / n_f) / 255.0),
+                    ];
+                }
             });
 
         true
@@ -637,11 +670,17 @@ pub fn proportional_sector_bounds(index: u32, extent: u32, divisions: u32) -> Op
     if extent == 0 || divisions == 0 || index >= divisions {
         return None;
     }
+    Some(proportional_bounds(index, divisions, extent))
+}
+
+pub(super) fn proportional_bounds(index: u32, divisions: u32, extent: u32) -> (u32, u32) {
     let start = u64::from(index) * u64::from(extent) / u64::from(divisions);
-    let end = (u64::from(index) + 1) * u64::from(extent) / u64::from(divisions);
-    let start = u32::try_from(start).expect("scaled sector start fits source extent");
-    let end = u32::try_from(end).expect("scaled sector end fits source extent");
-    Some((start, end.max(start.saturating_add(1)).min(extent)))
+    let proportional_end = (u64::from(index) + 1) * u64::from(extent) / u64::from(divisions);
+    let end = proportional_end.max(start + 1).min(u64::from(extent));
+    (
+        u32::try_from(start).expect("proportional sector start fits the source extent"),
+        u32::try_from(end).expect("proportional sector end fits the source extent"),
+    )
 }
 
 // ── LetterboxBars ─────────────────────────────────────────────────────────

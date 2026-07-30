@@ -39,23 +39,25 @@ use crate::input::screen::{
     CaptureCadenceError, CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureCursor,
     CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
     CaptureGeometry, CapturePacer, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, CpuReductionExecutor,
-    PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
-    PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity,
-    ScreenAnalysisResourcePlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
-    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
-    ScreenCaptureDemand, ScreenCaptureInput, ScreenColorTransformCapabilities,
-    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
-    ScreenGpuSurfacePayload, ScreenNativePreparationPayload, ScreenNativeTargetPreparation,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken,
-    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
-    ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation,
-    ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
+    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, CpuExactReductionWorkPlan,
+    CpuReductionExecutor, PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
+    PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate, RawCaptureSurface,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorTransform,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAnalysisAdmissionError, ScreenAnalysisComputeCapacity,
+    ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity,
+    ScreenBranchPayload, ScreenBranchPublisher, ScreenByteAdmissionCoordinator,
+    ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
+    ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
+    ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
+    ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
+    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
+    ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
@@ -66,7 +68,6 @@ use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
 };
-use crate::types::canvas::SurfaceResourceError;
 
 /// How long a worker waits on DXGI before checking its command channel.
 ///
@@ -102,6 +103,7 @@ pub struct ResolvedCaptureSource {
 /// Settings shared between the input source handle and the capture worker.
 struct SharedSettings {
     config: Mutex<VersionedCaptureConfig>,
+    compute_capacity_policy: ScreenComputeCapacityPolicy,
     demand: Mutex<ScreenCaptureDemand>,
     admission_coordinator: ScreenByteAdmissionCoordinator,
     generation: AtomicU64,
@@ -351,6 +353,17 @@ impl ExactPublicationShared {
         )?);
         *executor = Some(Arc::clone(&prepared));
         Ok(prepared)
+    }
+
+    fn cpu_worker_count(&self) -> NonZeroUsize {
+        self.cpu_executor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or_else(
+                || thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+                |executor| executor.worker_count(),
+            )
     }
 
     fn next_gpu_descriptor_id(&self) -> anyhow::Result<GpuSurfaceDescriptorId> {
@@ -727,7 +740,11 @@ impl WindowsScreenCaptureInput {
             config.analysis_memory_bytes,
             config.analysis_memory_bytes,
         );
-        Self::with_admission_coordinator(config, ScreenByteAdmissionCoordinator::new(capacity))
+        Self::with_admission_and_compute_capacity(
+            config,
+            ScreenByteAdmissionCoordinator::new(capacity),
+            ScreenComputeCapacityPolicy::UNBOUNDED,
+        )
     }
 
     /// Create a Windows source inside an existing process-wide screen byte fence.
@@ -736,12 +753,44 @@ impl WindowsScreenCaptureInput {
         config: CaptureConfig,
         admission_coordinator: ScreenByteAdmissionCoordinator,
     ) -> Self {
+        Self::with_admission_and_compute_capacity(
+            config,
+            admission_coordinator,
+            ScreenComputeCapacityPolicy::UNBOUNDED,
+        )
+    }
+
+    /// Create a source with caller-calibrated compatibility and exact CPU fences.
+    #[must_use]
+    pub fn with_compute_capacity_policy(
+        config: CaptureConfig,
+        compute_capacity_policy: ScreenComputeCapacityPolicy,
+    ) -> Self {
+        let capacity = ScreenAdmissionCapacity::new(
+            config.analysis_memory_bytes,
+            config.analysis_memory_bytes,
+        );
+        Self::with_admission_and_compute_capacity(
+            config,
+            ScreenByteAdmissionCoordinator::new(capacity),
+            compute_capacity_policy,
+        )
+    }
+
+    /// Create a source with shared memory and caller-calibrated CPU fences.
+    #[must_use]
+    pub fn with_admission_and_compute_capacity(
+        config: CaptureConfig,
+        admission_coordinator: ScreenByteAdmissionCoordinator,
+        compute_capacity_policy: ScreenComputeCapacityPolicy,
+    ) -> Self {
         Self {
             settings: Arc::new(SharedSettings {
                 config: Mutex::new(VersionedCaptureConfig {
                     value: config,
                     source_generation: 0,
                 }),
+                compute_capacity_policy,
                 demand: Mutex::new(ScreenCaptureDemand::Inactive),
                 admission_coordinator,
                 generation: AtomicU64::new(0),
@@ -1033,11 +1082,22 @@ impl WindowsScreenCaptureInput {
             .requested_extent()
             .expect("active Windows capture settings carry an extent");
         let cadence = CaptureCadence::new(config.target_fps)?;
-        let analyzer = ScreenCaptureInput::with_requested_extent_and_admission(
+        let source_is_known = source_generation == self.settings.snapshot().source_generation
+            && self.exact.source().is_some();
+        if source_is_known && let Some(capacity) = self.settings.compute_capacity_policy.analysis()
+        {
+            ScreenAnalysisWorkPlan::try_new(requested_extent, requested_extent, &config)?
+                .admit(capacity)?;
+        }
+        let mut analyzer = build_analyzer_for_extent(
             config.clone(),
             requested_extent,
             self.settings.admission_coordinator.clone(),
+            self.settings.compute_capacity_policy,
         )?;
+        if source_is_known {
+            analyzer.admit_frame_extent(requested_extent)?;
+        }
         Ok(PreparedWorkerSettings {
             config,
             cadence,
@@ -1122,10 +1182,11 @@ impl WindowsScreenCaptureInput {
             .map(|requested_extent| -> anyhow::Result<_> {
                 let config = self.settings.snapshot().config;
                 let cadence = CaptureCadence::new(config.target_fps)?;
-                let analyzer = ScreenCaptureInput::with_requested_extent_and_admission(
+                let analyzer = build_analyzer_for_extent(
                     config,
                     requested_extent,
                     self.settings.admission_coordinator.clone(),
+                    self.settings.compute_capacity_policy,
                 )?;
                 Ok((analyzer, cadence))
             })
@@ -1381,6 +1442,25 @@ impl InputSource for WindowsScreenCaptureInput {
             requested_extent,
             u64::MAX,
         )?))
+    }
+
+    fn screen_analysis_work_plan(
+        &self,
+        demand: ScreenCaptureDemand,
+    ) -> anyhow::Result<Option<ScreenAnalysisWorkPlan>> {
+        let Some(requested_extent) = demand.requested_extent() else {
+            return Ok(None);
+        };
+        let config = self.settings.snapshot().config;
+        Ok(Some(ScreenAnalysisWorkPlan::try_new(
+            requested_extent,
+            requested_extent,
+            &config,
+        )?))
+    }
+
+    fn screen_analysis_compute_capacity(&self) -> Option<ScreenAnalysisComputeCapacity> {
+        self.settings.compute_capacity_policy.analysis()
     }
 
     fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
@@ -1712,6 +1792,39 @@ fn physical_capture_freshness(
         .ok_or_else(|| anyhow!("Windows physical reduction has no logical consumers"))
 }
 
+fn windows_physical_reduction_executes_on_cpu(
+    plan: &crate::input::screen::ScreenCapturePlan,
+    descriptor: &ScreenPhysicalReductionDescriptor,
+    source: &WindowsPublicationSource,
+) -> bool {
+    let Ok(freshness) = physical_capture_freshness(plan, descriptor) else {
+        return true;
+    };
+    matches!(
+        classify_windows_physical_reduction(descriptor, source, freshness),
+        WindowsPhysicalReductionRoute::Cpu
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsPhysicalReductionRoute {
+    Cpu,
+    GuaranteedGpuPreReduced,
+}
+
+fn classify_windows_physical_reduction(
+    descriptor: &ScreenPhysicalReductionDescriptor,
+    source: &WindowsPublicationSource,
+    freshness: Duration,
+) -> WindowsPhysicalReductionRoute {
+    let probe_id = GpuSurfaceDescriptorId::new(NonZeroU64::MIN);
+    if capture_gpu_reduction_descriptor(descriptor, source, probe_id, freshness).is_ok() {
+        WindowsPhysicalReductionRoute::GuaranteedGpuPreReduced
+    } else {
+        WindowsPhysicalReductionRoute::Cpu
+    }
+}
+
 const fn screen_gpu_identity(adapter: GpuAdapterLuid) -> ScreenPhysicalGpuDeviceIdentity {
     ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
         low_part: adapter.low_part(),
@@ -1812,15 +1925,38 @@ fn build_worker_analyzer(
     config: &CaptureConfig,
     demand: ScreenCaptureDemand,
     admission_coordinator: ScreenByteAdmissionCoordinator,
-) -> Result<ScreenCaptureInput, SurfaceResourceError> {
+    compute_capacity_policy: ScreenComputeCapacityPolicy,
+) -> Result<ScreenCaptureInput, ScreenAnalysisAdmissionError> {
     let requested_extent = demand
         .requested_extent()
         .expect("an active Windows capture worker carries an extent");
-    ScreenCaptureInput::with_requested_extent_and_admission(
+    build_analyzer_for_extent(
         config.clone(),
         requested_extent,
         admission_coordinator,
+        compute_capacity_policy,
     )
+}
+
+fn build_analyzer_for_extent(
+    config: CaptureConfig,
+    requested_extent: PixelExtent,
+    admission_coordinator: ScreenByteAdmissionCoordinator,
+    compute_capacity_policy: ScreenComputeCapacityPolicy,
+) -> Result<ScreenCaptureInput, ScreenAnalysisAdmissionError> {
+    match compute_capacity_policy.analysis() {
+        Some(capacity) => ScreenCaptureInput::with_requested_extent_admission_and_compute_capacity(
+            config,
+            requested_extent,
+            admission_coordinator,
+            capacity,
+        ),
+        None => ScreenCaptureInput::with_requested_extent_and_admission(
+            config,
+            requested_extent,
+            admission_coordinator,
+        ),
+    }
 }
 
 fn prepare_windows_exact_runtime(
@@ -1829,6 +1965,7 @@ fn prepare_windows_exact_runtime(
     source: Option<&WindowsPublicationSource>,
     exact: &ExactPublicationShared,
     hub: &ScreenPublicationHub,
+    compute_capacity_policy: ScreenComputeCapacityPolicy,
 ) -> anyhow::Result<(ScreenPreparedWorkerToken, Option<WindowsExactRuntime>)> {
     let candidate = ticket.candidate_plan();
     let source_branches = candidate
@@ -1858,6 +1995,45 @@ fn prepare_windows_exact_runtime(
         .ok_or_else(|| anyhow!("Windows duplication session is unavailable for preparation"))?;
     let slot_count = NonZeroU32::new(hub.committed_state().slot_policy().total_slots())
         .ok_or_else(|| anyhow!("Windows exact publication slot count must be nonzero"))?;
+
+    let cpu_source = source_branches
+        .iter()
+        .copied()
+        .find(|branch| {
+            matches!(
+                branch.descriptor().executor(),
+                ScreenPublicationExecutor::Cpu
+            )
+        })
+        .map(|cpu_branch| -> anyhow::Result<_> {
+            let resolved_source = ResolvedScreenSource::new(
+                ScreenSourceSelector::Exact(source.epoch.source_id.clone()),
+                source.epoch.clone(),
+                cpu_branch.descriptor().source().clone(),
+            );
+            let worker_count = exact.cpu_worker_count();
+            let compute_plan = CpuExactReductionWorkPlan::try_for_source(
+                candidate,
+                ticket.source_id(),
+                |descriptor| {
+                    windows_physical_reduction_executes_on_cpu(candidate, descriptor, source)
+                },
+            )?;
+            let capacity = compute_capacity_policy.exact(worker_count);
+            let compute_plan = match capacity {
+                Some(capacity) => compute_plan.admit(capacity)?,
+                None => compute_plan,
+            };
+            debug!(
+                cpu_reductions = compute_plan.cpu_reduction_count(),
+                weighted_work_units_per_second = compute_plan.weighted_work_units_per_second(),
+                workers = worker_count.get(),
+                capacity_enforced = capacity.is_some(),
+                "planned Windows exact CPU reduction compute"
+            );
+            Ok(resolved_source)
+        })
+        .transpose()?;
 
     let gpu_branches = source_branches
         .iter()
@@ -1932,18 +2108,7 @@ fn prepare_windows_exact_runtime(
         Some(PendingWindowsGpuRuntime { plan, routes })
     };
 
-    let cpu_branch = source_branches.iter().copied().find(|branch| {
-        matches!(
-            branch.descriptor().executor(),
-            ScreenPublicationExecutor::Cpu
-        )
-    });
-    let cpu = if let Some(cpu_branch) = cpu_branch {
-        let resolved_source = ResolvedScreenSource::new(
-            ScreenSourceSelector::Exact(source.epoch.source_id.clone()),
-            source.epoch.clone(),
-            cpu_branch.descriptor().source().clone(),
-        );
+    let cpu = if let Some(resolved_source) = cpu_source {
         let executor = exact.cpu_executor()?;
         let batch = executor.prepare_batch(&resolved_source, candidate)?;
         let workspace = batch.prepare_materialization_workspace(candidate)?;
@@ -2280,6 +2445,7 @@ fn prepare_exact_command(
     completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
     duplicator: Option<&DesktopDuplicator>,
     exact: &ExactPublicationShared,
+    compute_capacity_policy: ScreenComputeCapacityPolicy,
     runtimes: &mut Vec<WindowsExactRuntime>,
 ) {
     let result = exact
@@ -2290,7 +2456,14 @@ fn prepare_exact_command(
         .ok_or_else(|| anyhow!("Windows exact publication hub is unavailable"))
         .and_then(|hub| {
             let source = exact.source();
-            prepare_windows_exact_runtime(ticket, duplicator, source.as_ref(), exact, hub.as_ref())
+            prepare_windows_exact_runtime(
+                ticket,
+                duplicator,
+                source.as_ref(),
+                exact,
+                hub.as_ref(),
+                compute_capacity_policy,
+            )
         });
     match result {
         Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
@@ -2858,17 +3031,21 @@ fn run_worker(
     let mut source_generation = initial_settings.source_generation;
     let mut demand = initial_settings.demand;
     let mut generation = settings.generation.load(Ordering::Acquire);
-    let mut analyzer =
-        match build_worker_analyzer(&config, demand, settings.admission_coordinator.clone()) {
-            Ok(analyzer) => analyzer,
-            Err(error) => {
-                if let Some(status) = status_session.load() {
-                    status.unavailable(screen_resource_issue(&error));
-                }
-                let _ = ready.send(Err(error.to_string()));
-                return;
+    let mut analyzer = match build_worker_analyzer(
+        &config,
+        demand,
+        settings.admission_coordinator.clone(),
+        settings.compute_capacity_policy,
+    ) {
+        Ok(analyzer) => analyzer,
+        Err(error) => {
+            if let Some(status) = status_session.load() {
+                status.unavailable(screen_resource_issue(&error));
             }
-        };
+            let _ = ready.send(Err(error.to_string()));
+            return;
+        }
+    };
     if ready.send(Ok(())).is_err() {
         return;
     }
@@ -2878,6 +3055,7 @@ fn run_worker(
     let mut open_failure_logged = false;
     let mut resource_failure_logged = false;
     let mut analysis_failure_latched = false;
+    let mut rejected_analysis_work = None;
     let mut failed_settings_generation = None;
     let mut settings_retry_at = Instant::now();
     let mut exact_runtimes = Vec::new();
@@ -2956,6 +3134,7 @@ fn run_worker(
                     completion,
                     duplicator.as_ref(),
                     exact,
+                    settings.compute_capacity_policy,
                     &mut exact_runtimes,
                 ),
                 Ok(WorkerCommand::ReapExact { completion }) => {
@@ -3000,6 +3179,7 @@ fn run_worker(
                 &next_settings.config,
                 next_settings.demand,
                 settings.admission_coordinator.clone(),
+                settings.compute_capacity_policy,
             ) {
                 Ok(next_analyzer) => {
                     let previous_source = config.source.clone();
@@ -3110,6 +3290,7 @@ fn run_worker(
                             completion,
                             duplicator.as_ref(),
                             exact,
+                            settings.compute_capacity_policy,
                             &mut exact_runtimes,
                         ),
                         Ok(WorkerCommand::ReapExact { completion }) => {
@@ -3178,6 +3359,34 @@ fn run_worker(
                     thread::sleep(FRAME_WAIT);
                 }
                 continue;
+            }
+        }
+
+        let analysis_extent = demand
+            .requested_extent()
+            .expect("active Windows capture demand carries an extent");
+        let analysis_revision = (analysis_extent, generation);
+        if rejected_analysis_work == Some(analysis_revision) {
+            clear_capture_publication(publication);
+            thread::sleep(FRAME_WAIT);
+            continue;
+        }
+        if analyzer
+            .analysis_work_plan()
+            .is_none_or(|plan| plan.input_extent() != analysis_extent)
+        {
+            match analyzer.admit_frame_extent(analysis_extent) {
+                Ok(_) => rejected_analysis_work = None,
+                Err(error) => {
+                    clear_capture_publication(publication);
+                    warn!(%error, "Windows compatibility screen analysis exceeds admitted CPU compute");
+                    if let Some(status) = status_session.load() {
+                        status.unavailable(screen_analysis_admission_issue(&error));
+                    }
+                    rejected_analysis_work = Some(analysis_revision);
+                    thread::sleep(FRAME_WAIT);
+                    continue;
+                }
             }
         }
 
@@ -3349,6 +3558,7 @@ fn run_worker(
                         completion,
                         duplicator.as_ref(),
                         exact,
+                        settings.compute_capacity_policy,
                         &mut exact_runtimes,
                     ),
                     Ok(WorkerCommand::ReapExact { completion }) => {
@@ -3567,6 +3777,7 @@ fn drain_commands(
                 completion,
                 duplicator.as_ref(),
                 exact,
+                settings.compute_capacity_policy,
                 exact_runtimes,
             ),
             Ok(WorkerCommand::ReapExact { completion }) => {
@@ -3737,12 +3948,20 @@ fn capture_issue(error: &CaptureError) -> SourceIssue {
     }
 }
 
-fn screen_resource_issue(error: &SurfaceResourceError) -> SourceIssue {
-    SourceIssue::new(
-        "windows_capture_resource_exhausted",
-        error.to_string(),
-        true,
-    )
+fn screen_resource_issue(error: &ScreenAnalysisAdmissionError) -> SourceIssue {
+    screen_analysis_admission_issue(error)
+}
+
+fn screen_analysis_admission_issue(error: &ScreenAnalysisAdmissionError) -> SourceIssue {
+    let code = if matches!(
+        error,
+        ScreenAnalysisAdmissionError::ComputeCapacityExceeded { .. }
+    ) {
+        "windows_screen_analysis_compute_capacity_exceeded"
+    } else {
+        "windows_capture_resource_exhausted"
+    };
+    SourceIssue::new(code, error.to_string(), true)
 }
 
 fn reduction_issue(telemetry: &ReductionTelemetry) -> Option<SourceIssue> {

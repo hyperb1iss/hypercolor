@@ -321,12 +321,21 @@ impl PreparedCpuSamplingPlan {
     pub(crate) fn logical_y_area(&self, target_y: u32) -> CpuStorageSpan {
         self.logical_y.cell_span(target_y)
     }
+
+    pub(crate) fn area_sample_visits(&self) -> Result<u64, CpuSamplingError> {
+        let horizontal = self.logical_x.area_sample_visits()?;
+        let vertical = self.logical_y.area_sample_visits()?;
+        horizontal
+            .checked_mul(vertical)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)
+    }
 }
 
 #[derive(Clone, Debug)]
 struct ExactAxisGrid {
     storage_axis: CpuStorageAxis,
     storage_extent: u32,
+    target_len: u32,
     denominator: NonZeroU128,
     start_units: u128,
     half_step_units: u128,
@@ -390,6 +399,7 @@ impl ExactAxisGrid {
         Ok(Self {
             storage_axis,
             storage_extent,
+            target_len,
             denominator,
             start_units,
             half_step_units,
@@ -436,6 +446,88 @@ impl ExactAxisGrid {
 
     fn cell_span(&self, index: u32) -> CpuStorageSpan {
         CpuStorageSpan::new(self.edge(index), self.edge(index + 1), self.storage_extent)
+    }
+
+    fn area_sample_visits(&self) -> Result<u64, CpuSamplingError> {
+        let target_len = self.target_len;
+        let complete =
+            CpuStorageSpan::new(self.edge(0), self.edge(target_len), self.storage_extent);
+        let union = u64::from(complete.end - complete.start);
+        if target_len == 1 {
+            return Ok(union);
+        }
+
+        let first = self.edge(0).numerator;
+        let second = self.edge(1).numerator;
+        let step = first.abs_diff(second);
+        let low = first.min(self.edge(target_len).numerator);
+        let internal_count = u128::from(target_len - 1);
+        let first_internal = low
+            .checked_add(step)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let denominator = self.denominator.get();
+        let floors = floor_sum(internal_count, denominator, step, first_internal)?;
+        let floors_before = floor_sum(
+            internal_count,
+            denominator,
+            step,
+            first_internal
+                .checked_sub(1)
+                .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?,
+        )?;
+        let integer_boundaries = floors
+            .checked_sub(floors_before)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        let fractional_boundaries = internal_count
+            .checked_sub(integer_boundaries)
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        u64::try_from(
+            u128::from(union)
+                .checked_add(fractional_boundaries)
+                .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?,
+        )
+        .map_err(|_| CpuSamplingError::GeometryArithmeticOverflow)
+    }
+}
+
+fn floor_sum(
+    mut count: u128,
+    mut denominator: u128,
+    mut step: u128,
+    mut origin: u128,
+) -> Result<u128, CpuSamplingError> {
+    let mut sum = 0_u128;
+    loop {
+        if step >= denominator {
+            let quotient = step / denominator;
+            let triangular = count
+                .checked_sub(1)
+                .and_then(|count_minus_one| count.checked_mul(count_minus_one))
+                .map(|product| product / 2)
+                .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+            sum = quotient
+                .checked_mul(triangular)
+                .and_then(|term| sum.checked_add(term))
+                .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+            step %= denominator;
+        }
+        if origin >= denominator {
+            sum = (origin / denominator)
+                .checked_mul(count)
+                .and_then(|term| sum.checked_add(term))
+                .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+            origin %= denominator;
+        }
+        let maximum = step
+            .checked_mul(count)
+            .and_then(|value| value.checked_add(origin))
+            .ok_or(CpuSamplingError::GeometryArithmeticOverflow)?;
+        if maximum < denominator {
+            return Ok(sum);
+        }
+        count = maximum / denominator;
+        origin = maximum % denominator;
+        std::mem::swap(&mut denominator, &mut step);
     }
 }
 

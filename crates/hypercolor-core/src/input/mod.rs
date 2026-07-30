@@ -1049,7 +1049,7 @@ impl InputManager {
         &self,
         config: screen::CaptureConfig,
         requested_extent: screen::PixelExtent,
-    ) -> Result<screen::ScreenCaptureInput, crate::types::canvas::SurfaceResourceError> {
+    ) -> Result<screen::ScreenCaptureInput, screen::ScreenAnalysisAdmissionError> {
         screen::ScreenCaptureInput::with_requested_extent_and_admission(
             config,
             requested_extent,
@@ -1118,6 +1118,27 @@ impl InputManager {
             return Ok(None);
         };
         source.screen_analysis_resource_plan(self.current_screen_capture_demand())
+    }
+
+    /// Return the complete compatibility-analysis workload for current demand.
+    pub fn screen_analysis_work_plan(
+        &self,
+    ) -> anyhow::Result<Option<screen::ScreenAnalysisWorkPlan>> {
+        let Some(source) = self.sources.iter().find(|source| source.is_screen_source()) else {
+            return Ok(None);
+        };
+        source.screen_analysis_work_plan(self.current_screen_capture_demand())
+    }
+
+    /// Return calibrated compatibility-analysis capacity, when configured.
+    #[must_use]
+    pub fn screen_analysis_compute_capacity(
+        &self,
+    ) -> Option<screen::ScreenAnalysisComputeCapacity> {
+        self.sources
+            .iter()
+            .find(|source| source.is_screen_source())
+            .and_then(|source| source.screen_analysis_compute_capacity())
     }
 
     /// Return the manager's authoritative current screen-capture demand.

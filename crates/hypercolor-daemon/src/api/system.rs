@@ -11,7 +11,9 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
 #[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::{PixelExtent, ScreenAnalysisResourcePlan};
+use hypercolor_core::input::screen::{
+    PixelExtent, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan,
+};
 use hypercolor_core::input::{SourceFreshness, SourceIssue, SourceKind, SourceState, SourceStatus};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -98,9 +100,13 @@ pub struct ScreenCaptureCapacityStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analysis_peak_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_frame_work_units: Option<u64>,
+    pub analysis_weighted_work_units_per_frame: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub analysis_frame_work_capacity: Option<u64>,
+    pub analysis_weighted_work_units_per_second: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_parallel_capacity_per_second: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_serial_capacity_per_second: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analysis_worker_count: Option<u64>,
 }
@@ -815,6 +821,8 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
             let resource_snapshot = input_manager.screen_admission_coordinator().snapshot();
             let demand = input_manager.screen_capture_demand();
             let analysis = input_manager.screen_analysis_resource_plan().ok().flatten();
+            let analysis_work = input_manager.screen_analysis_work_plan().ok().flatten();
+            let analysis_compute = input_manager.screen_analysis_compute_capacity();
             let extent = demand.requested_extent();
             ScreenCaptureCapacityStatus {
                 windows_admission_enforced: true,
@@ -832,11 +840,17 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
                 analysis_height: extent.map(PixelExtent::height),
                 analysis_retained_bytes: analysis.map(ScreenAnalysisResourcePlan::retained_bytes),
                 analysis_peak_bytes: analysis.map(ScreenAnalysisResourcePlan::peak_bytes),
-                analysis_frame_work_units: analysis
-                    .map(ScreenAnalysisResourcePlan::frame_work_units),
-                analysis_frame_work_capacity: analysis
-                    .map(ScreenAnalysisResourcePlan::frame_work_capacity),
-                analysis_worker_count: analysis.map(ScreenAnalysisResourcePlan::worker_count),
+                analysis_weighted_work_units_per_frame: analysis_work
+                    .map(ScreenAnalysisWorkPlan::weighted_work_units_per_frame),
+                analysis_weighted_work_units_per_second: analysis_work
+                    .map(ScreenAnalysisWorkPlan::weighted_work_units_per_second),
+                analysis_parallel_capacity_per_second: analysis_compute.and_then(
+                    ScreenAnalysisComputeCapacity::total_parallel_weighted_work_units_per_second,
+                ),
+                analysis_serial_capacity_per_second: analysis_compute
+                    .map(|capacity| capacity.serial_weighted_work_units_per_second().get()),
+                analysis_worker_count: analysis_compute
+                    .and_then(|capacity| u64::try_from(capacity.worker_count().get()).ok()),
             }
         }
         #[cfg(not(target_os = "windows"))]
@@ -854,8 +868,10 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
             analysis_height: None,
             analysis_retained_bytes: None,
             analysis_peak_bytes: None,
-            analysis_frame_work_units: None,
-            analysis_frame_work_capacity: None,
+            analysis_weighted_work_units_per_frame: None,
+            analysis_weighted_work_units_per_second: None,
+            analysis_parallel_capacity_per_second: None,
+            analysis_serial_capacity_per_second: None,
             analysis_worker_count: None,
         }
     };
