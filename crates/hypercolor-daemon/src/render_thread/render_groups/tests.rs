@@ -194,6 +194,51 @@ fn custom_group_plan_failure_preserves_every_installed_spatial_plan() {
     ));
 }
 
+#[test]
+fn abandoned_prepared_group_resources_preserve_the_installed_generation() {
+    let mut runtime = ZoneRuntime::try_new(4, 4).expect("small runtime should construct");
+    let mut live_group = sample_group(4, 4);
+    make_color_fill_group(&mut live_group);
+    live_group.layout.zones.push(point_zone("live"));
+    let live_dependency = SceneDependencyKey::new(1, 1);
+    runtime
+        .reconcile(
+            std::slice::from_ref(&live_group),
+            Some(SceneId::DEFAULT),
+            live_dependency,
+            &EffectRegistry::default(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("live group should reconcile");
+    let live_plan = runtime.combined_led_spatial_engine.sampling_plan();
+
+    let mut candidate_group = sample_group(8, 8);
+    make_color_fill_group(&mut candidate_group);
+    candidate_group.layout.zones.push(point_zone("candidate"));
+    let prepared = runtime
+        .prepare_reconcile_for_scene_dimensions(
+            std::slice::from_ref(&candidate_group),
+            Some(SceneId::DEFAULT),
+            SceneDependencyKey::new(2, 1),
+            &EffectRegistry::default(),
+            &HashMap::new(),
+            None,
+            8,
+            8,
+        )
+        .expect("candidate resources should fully prepare");
+    drop(prepared);
+
+    assert_eq!(runtime.reconciled_dependency_key, Some(live_dependency));
+    assert_eq!(runtime.scene_width, 4);
+    assert_eq!(runtime.scene_height, 4);
+    assert!(Arc::ptr_eq(
+        &live_plan,
+        &runtime.combined_led_spatial_engine.sampling_plan()
+    ));
+}
+
 fn sample_group(width: u32, height: u32) -> Zone {
     Zone {
         id: ZoneId::new(),

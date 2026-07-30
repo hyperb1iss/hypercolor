@@ -35,18 +35,40 @@ pub(crate) struct LayerRuntimeRegistry {
     pending: Vec<PendingLayerHealthEvent>,
 }
 
+pub(crate) struct PreparedLayerRuntimeRegistry {
+    states: HashMap<LayerRuntimeKey, LayerRuntimeState>,
+    pending: Vec<PendingLayerHealthEvent>,
+}
+
 impl LayerRuntimeRegistry {
-    pub(crate) fn reconcile(&mut self, active_scene_id: Option<SceneId>, groups: &[Zone]) {
+    pub(crate) fn prepare_reconcile(
+        &self,
+        active_scene_id: Option<SceneId>,
+        groups: &[Zone],
+    ) -> Result<PreparedLayerRuntimeRegistry, std::collections::TryReserveError> {
         let scene_id = active_scene_id.unwrap_or(SceneId::DEFAULT);
         let active_keys = active_layer_keys(groups);
-        self.states.retain(|key, state| {
-            if !active_keys.contains(key) {
-                return false;
+        let mut states = HashMap::new();
+        states.try_reserve(active_keys.len())?;
+        for (key, state) in &self.states {
+            if active_keys.contains(key) && state.scene_id == scene_id {
+                states.insert(*key, state.clone());
             }
-            state.scene_id == scene_id
-        });
-        self.pending
-            .retain(|event| active_keys.contains(&event.key) && event.scene_id == scene_id);
+        }
+        let mut pending = Vec::new();
+        pending.try_reserve(self.pending.len())?;
+        pending.extend(
+            self.pending
+                .iter()
+                .filter(|event| active_keys.contains(&event.key) && event.scene_id == scene_id)
+                .cloned(),
+        );
+        Ok(PreparedLayerRuntimeRegistry { states, pending })
+    }
+
+    pub(crate) fn commit_reconcile(&mut self, prepared: PreparedLayerRuntimeRegistry) {
+        self.states = prepared.states;
+        self.pending = prepared.pending;
     }
 
     pub(crate) fn clear(&mut self) {
@@ -240,7 +262,10 @@ mod tests {
             LayerHealth::Active,
         );
 
-        registry.reconcile(Some(SceneId::DEFAULT), &[]);
+        let prepared = registry
+            .prepare_reconcile(Some(SceneId::DEFAULT), &[])
+            .expect("empty layer runtime should prepare");
+        registry.commit_reconcile(prepared);
 
         assert_eq!(registry.len(), 0);
         assert_eq!(registry.health(key), None);

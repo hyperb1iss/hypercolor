@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use thiserror::Error;
@@ -29,6 +29,8 @@ pub enum LayoutUpdateError {
     Coordinator(String),
     #[error("layout persistence failed: {0}")]
     Persistence(String),
+    #[error("renderer stopped after persistence and rollback failed: {0}")]
+    PersistenceRollback(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -37,6 +39,19 @@ pub struct LayoutTransactionToken(u64);
 #[derive(Debug, Clone)]
 pub struct PreparedLayoutUpdate {
     spatial_engine: SpatialEngine,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LayoutPersistenceState {
+    pub(crate) layout: SpatialLayout,
+    pub(crate) active_scene_id: Option<SceneId>,
+    pub(crate) active_render_groups: Arc<[Zone]>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum LayoutPersistencePhase {
+    Commit(LayoutPersistenceState),
+    Rollback(LayoutPersistenceState),
 }
 
 impl PreparedLayoutUpdate {
@@ -64,6 +79,7 @@ pub struct PrepareLayoutTransaction {
     active_render_groups: Arc<[Zone]>,
     active_render_groups_revision: u64,
     unassigned_behavior: UnassignedBehavior,
+    activation: LayoutActivationControl,
     acknowledgment: oneshot::Sender<Result<(), LayoutTransactionRejection>>,
 }
 
@@ -98,6 +114,10 @@ impl PrepareLayoutTransaction {
         &self.unassigned_behavior
     }
 
+    pub(crate) fn activation(&self) -> LayoutActivationControl {
+        self.activation.clone()
+    }
+
     pub(crate) fn is_cancelled(&self) -> bool {
         self.acknowledgment.is_closed()
     }
@@ -108,39 +128,107 @@ impl PrepareLayoutTransaction {
     }
 
     #[doc(hidden)]
+    pub fn accept_and_commit_for_test(self) {
+        let activation = self.activation();
+        self.accept();
+        activation.commit();
+        activation.complete(Ok(()));
+    }
+
+    #[doc(hidden)]
     pub fn reject(self, rejection: LayoutTransactionRejection) {
         let _ = self.acknowledgment.send(Err(rejection));
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayoutActivationDecision {
+    Pending,
+    Commit,
+    Abort,
+}
+
+const ACTIVATION_PENDING: u8 = 0;
+const ACTIVATION_COMMIT: u8 = 1;
+const ACTIVATION_ABORT: u8 = 2;
 
 #[derive(Debug)]
-pub struct ResolveLayoutTransaction {
-    token: LayoutTransactionToken,
-    acknowledgment: oneshot::Sender<Result<(), LayoutTransactionRejection>>,
+struct LayoutActivationState {
+    decision: AtomicU8,
+    completion: StdMutex<Option<oneshot::Sender<Result<(), LayoutTransactionRejection>>>>,
 }
 
-impl ResolveLayoutTransaction {
-    #[must_use]
-    pub const fn token(&self) -> LayoutTransactionToken {
-        self.token
+#[derive(Debug, Clone)]
+pub(crate) struct LayoutActivationControl {
+    state: Arc<LayoutActivationState>,
+}
+
+impl LayoutActivationControl {
+    fn new() -> (Self, LayoutActivationReceipt) {
+        let (completion, receipt) = oneshot::channel();
+        (
+            Self {
+                state: Arc::new(LayoutActivationState {
+                    decision: AtomicU8::new(ACTIVATION_PENDING),
+                    completion: StdMutex::new(Some(completion)),
+                }),
+            },
+            LayoutActivationReceipt(receipt),
+        )
     }
 
-    #[doc(hidden)]
-    pub fn accept(self) {
-        let _ = self.acknowledgment.send(Ok(()));
+    pub(crate) fn decision(&self) -> LayoutActivationDecision {
+        match self.state.decision.load(Ordering::Acquire) {
+            ACTIVATION_COMMIT => LayoutActivationDecision::Commit,
+            ACTIVATION_ABORT => LayoutActivationDecision::Abort,
+            _ => LayoutActivationDecision::Pending,
+        }
     }
 
-    #[doc(hidden)]
-    pub fn reject(self, rejection: LayoutTransactionRejection) {
-        let _ = self.acknowledgment.send(Err(rejection));
+    fn commit(&self) {
+        let _ = self.state.decision.compare_exchange(
+            ACTIVATION_PENDING,
+            ACTIVATION_COMMIT,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn abort(&self) {
+        let _ = self.state.decision.compare_exchange(
+            ACTIVATION_PENDING,
+            ACTIVATION_ABORT,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(crate) fn complete(&self, result: Result<(), LayoutTransactionRejection>) {
+        if let Some(completion) = self
+            .state
+            .completion
+            .lock()
+            .expect("layout activation completion should lock")
+            .take()
+        {
+            let _ = completion.send(result);
+        }
+    }
+}
+
+struct LayoutActivationReceipt(oneshot::Receiver<Result<(), LayoutTransactionRejection>>);
+
+impl LayoutActivationReceipt {
+    async fn wait(self) -> Result<(), LayoutTransactionRejection> {
+        self.0
+            .await
+            .unwrap_or(Err(LayoutTransactionRejection::RendererStopped))
     }
 }
 
 #[derive(Debug)]
 pub enum SceneTransaction {
     PrepareLayout(PrepareLayoutTransaction),
-    CommitLayout(ResolveLayoutTransaction),
-    AbortLayout(ResolveLayoutTransaction),
     SetScreenCaptureConfigured(bool),
 }
 
@@ -200,8 +288,9 @@ impl SceneTransactionQueue {
         active_render_groups: Arc<[Zone]>,
         active_render_groups_revision: u64,
         unassigned_behavior: UnassignedBehavior,
-    ) -> Result<LayoutTransactionReceipt, LayoutTransactionRejection> {
+    ) -> Result<PreparedLayoutSubmission, LayoutTransactionRejection> {
         let (acknowledgment, receipt) = oneshot::channel();
+        let (activation, completion) = LayoutActivationControl::new();
         self.push(SceneTransaction::PrepareLayout(PrepareLayoutTransaction {
             token,
             spatial_engine,
@@ -209,27 +298,14 @@ impl SceneTransactionQueue {
             active_render_groups,
             active_render_groups_revision,
             unassigned_behavior,
+            activation: activation.clone(),
             acknowledgment,
         }))?;
-        Ok(LayoutTransactionReceipt(receipt))
-    }
-
-    fn submit_layout_resolution(
-        &self,
-        token: LayoutTransactionToken,
-        commit: bool,
-    ) -> Result<LayoutTransactionReceipt, LayoutTransactionRejection> {
-        let (acknowledgment, receipt) = oneshot::channel();
-        let transaction = ResolveLayoutTransaction {
-            token,
-            acknowledgment,
-        };
-        self.push(if commit {
-            SceneTransaction::CommitLayout(transaction)
-        } else {
-            SceneTransaction::AbortLayout(transaction)
-        })?;
-        Ok(LayoutTransactionReceipt(receipt))
+        Ok(PreparedLayoutSubmission {
+            preparation: LayoutTransactionReceipt(receipt),
+            activation,
+            completion,
+        })
     }
 
     fn next_layout_token(&self) -> LayoutTransactionToken {
@@ -277,10 +353,6 @@ impl SceneTransactionQueue {
                 SceneTransaction::PrepareLayout(transaction) => {
                     transaction.reject(LayoutTransactionRejection::RendererStopped);
                 }
-                SceneTransaction::CommitLayout(transaction)
-                | SceneTransaction::AbortLayout(transaction) => {
-                    transaction.reject(LayoutTransactionRejection::RendererStopped);
-                }
                 SceneTransaction::SetScreenCaptureConfigured(_) => {}
             }
         }
@@ -306,6 +378,12 @@ impl SceneTransactionQueue {
 }
 
 struct LayoutTransactionReceipt(oneshot::Receiver<Result<(), LayoutTransactionRejection>>);
+
+struct PreparedLayoutSubmission {
+    preparation: LayoutTransactionReceipt,
+    activation: LayoutActivationControl,
+    completion: LayoutActivationReceipt,
+}
 
 impl LayoutTransactionReceipt {
     async fn wait(self) -> Result<(), LayoutTransactionRejection> {
@@ -333,16 +411,16 @@ pub async fn apply_prepared_layout_update_under_guard(
     .await
 }
 
-pub async fn apply_prepared_layout_update_under_guard_with_persistence<F, Fut>(
+pub(crate) async fn apply_prepared_layout_update_under_guard_with_persistence<F, Fut>(
     spatial_engine: Arc<RwLock<SpatialEngine>>,
     scene_manager: Arc<RwLock<SceneManager>>,
     scene_transactions: SceneTransactionQueue,
     guard: &LayoutUpdateGuard,
     prepared: PreparedLayoutUpdate,
-    persist: F,
+    mut persist: F,
 ) -> Result<(), LayoutUpdateError>
 where
-    F: FnOnce(SpatialLayout) -> Fut + Send + 'static,
+    F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
     let retained_guard = guard.clone();
@@ -351,6 +429,12 @@ where
         let mut manager = scene_manager.write().await;
         let mut authoritative_spatial_engine = spatial_engine.write().await;
         let prepared_engine = prepared.into_spatial_engine();
+        let rollback_engine = authoritative_spatial_engine.clone();
+        let rollback_state = LayoutPersistenceState {
+            layout: authoritative_spatial_engine.layout().as_ref().clone(),
+            active_scene_id: manager.active_scene_id().copied(),
+            active_render_groups: manager.active_render_groups(),
+        };
         let (active_render_groups, active_render_groups_revision) =
             manager.active_render_groups_for_primary_layout(prepared_engine.layout().as_ref());
         let active_scene_id = manager.active_scene_id().copied();
@@ -359,30 +443,41 @@ where
             .map(|scene| scene.unassigned_behavior.clone())
             .unwrap_or_default();
         let token = scene_transactions.next_layout_token();
-        let receipt = scene_transactions.submit_layout_preparation(
+        let submission = scene_transactions.submit_layout_preparation(
             token,
             prepared_engine.clone(),
             active_scene_id,
-            active_render_groups,
+            Arc::clone(&active_render_groups),
             active_render_groups_revision,
             unassigned_behavior,
         )?;
-        receipt.wait().await?;
-        if let Err(error) = persist(prepared_engine.layout().as_ref().clone()).await {
-            if let Ok(receipt) = scene_transactions.submit_layout_resolution(token, false) {
-                let _ = receipt.wait().await;
-            }
+        submission.preparation.wait().await?;
+        let commit_state = LayoutPersistenceState {
+            layout: prepared_engine.layout().as_ref().clone(),
+            active_scene_id,
+            active_render_groups: Arc::clone(&active_render_groups),
+        };
+        if let Err(error) = persist(LayoutPersistencePhase::Commit(commit_state)).await {
+            submission.activation.abort();
+            let _ = submission.completion.wait().await;
             return Err(LayoutUpdateError::Persistence(error.to_string()));
-        }
-        let commit = scene_transactions.submit_layout_resolution(token, true)?;
-        if let Err(error) = commit.wait().await {
-            if let Ok(receipt) = scene_transactions.submit_layout_resolution(token, false) {
-                let _ = receipt.wait().await;
-            }
-            return Err(error.into());
         }
         manager.sync_primary_group_layout(prepared_engine.layout().as_ref());
         *authoritative_spatial_engine = prepared_engine;
+        submission.activation.commit();
+        let renderer_result = submission.completion.wait().await;
+        if let Err(error) = renderer_result {
+            manager.sync_primary_group_layout(rollback_engine.layout().as_ref());
+            *authoritative_spatial_engine = rollback_engine;
+            if let Err(rollback_error) =
+                persist(LayoutPersistencePhase::Rollback(rollback_state)).await
+            {
+                return Err(LayoutUpdateError::PersistenceRollback(format!(
+                    "{error}; {rollback_error}"
+                )));
+            }
+            return Err(error.into());
+        }
         drop(retained_guard);
         Ok::<(), LayoutUpdateError>(())
     })

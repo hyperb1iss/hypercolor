@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -33,9 +33,8 @@ pub struct EffectPool {
 
 /// Fully constructed effect-pool changes that can be committed without failure.
 pub struct PreparedEffectPoolReconcile {
-    desired_keys: HashSet<EffectSlotKey>,
-    replacements: HashMap<EffectSlotKey, EffectSlot>,
-    layer_states: Vec<(EffectSlotKey, SceneLayer)>,
+    slots: HashMap<EffectSlotKey, EffectSlot>,
+    layer_states: HashMap<EffectSlotKey, SceneLayer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -101,12 +100,10 @@ impl EffectPool {
         display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
     ) -> Result<PreparedEffectPoolReconcile> {
         let desired_layers = desired_effect_layers(groups);
-        let desired_keys = desired_layers
-            .iter()
-            .map(|(group, layer)| EffectSlotKey::new(group.id, layer.id))
-            .collect::<HashSet<_>>();
-        let mut replacements = HashMap::new();
-        let mut layer_states = Vec::with_capacity(desired_layers.len());
+        let mut slots = HashMap::new();
+        slots.try_reserve(desired_layers.len())?;
+        let mut layer_states = HashMap::new();
+        layer_states.try_reserve(desired_layers.len())?;
 
         for (group, layer) in desired_layers {
             let Some(source) = layer_effect_source(&layer) else {
@@ -140,28 +137,38 @@ impl EffectPool {
                     self.asset_library.as_ref(),
                     display_descriptor.cloned(),
                 )?;
-                replacements.insert(key, slot);
+                slots.insert(key, slot);
             }
-            layer_states.push((key, layer));
+            layer_states.insert(key, layer);
         }
 
         Ok(PreparedEffectPoolReconcile {
-            desired_keys,
-            replacements,
+            slots,
             layer_states,
         })
     }
 
     /// Commit a previously prepared reconciliation without fallible work.
     pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) {
-        self.slots
-            .retain(|key, _| prepared.desired_keys.contains(key));
-        self.slots.extend(prepared.replacements);
-        for (key, layer) in prepared.layer_states {
-            if let Some(slot) = self.slots.get_mut(&key) {
-                slot.sync_layer_state(&layer);
+        let PreparedEffectPoolReconcile {
+            mut slots,
+            layer_states,
+        } = prepared;
+        for (key, mut slot) in std::mem::take(&mut self.slots) {
+            if slots.contains_key(&key) {
+                continue;
+            }
+            if let Some(layer) = layer_states.get(&key) {
+                slot.sync_layer_state(layer);
+                slots.insert(key, slot);
             }
         }
+        for (key, slot) in &mut slots {
+            if let Some(layer) = layer_states.get(key) {
+                slot.sync_layer_state(layer);
+            }
+        }
+        self.slots = slots;
     }
 
     pub fn clear(&mut self) {

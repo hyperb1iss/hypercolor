@@ -991,18 +991,9 @@ pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
 }
 
 /// Persist the current runtime session snapshot (active scene, layout, brightness, and discovery state).
-pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
-    let pending_save = match runtime_state::reserve_save(&state.runtime_state_path) {
-        Ok(pending_save) => pending_save,
-        Err(error) => {
-            warn!(
-                path = %state.runtime_state_path.display(),
-                %error,
-                "Failed to reserve runtime session snapshot"
-            );
-            return;
-        }
-    };
+pub(crate) async fn build_runtime_session_snapshot(
+    state: &AppState,
+) -> runtime_state::RuntimeSessionSnapshot {
     let mut snapshot = {
         let scene_manager = state.scene_manager.read().await;
         runtime_state::snapshot_from_scene_manager(&scene_manager)
@@ -1019,6 +1010,22 @@ pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
         state.driver_host.as_ref(),
     )
     .await;
+    snapshot
+}
+
+pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
+    let pending_save = match runtime_state::reserve_save(&state.runtime_state_path) {
+        Ok(pending_save) => pending_save,
+        Err(error) => {
+            warn!(
+                path = %state.runtime_state_path.display(),
+                %error,
+                "Failed to reserve runtime session snapshot"
+            );
+            return;
+        }
+    };
+    let snapshot = build_runtime_session_snapshot(state).await;
 
     if let Err(error) = save_scene_store_snapshot(state).await {
         warn!(%error, "Failed to persist scene store before runtime snapshot save");

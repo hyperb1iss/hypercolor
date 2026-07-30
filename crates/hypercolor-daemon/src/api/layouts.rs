@@ -11,15 +11,22 @@ use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::SurfaceDescriptor;
+use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{persist_layout_auto_exclusions, persist_layouts, persist_runtime_session};
+use crate::api::{
+    build_runtime_session_snapshot, persist_layout_auto_exclusions, persist_layouts,
+    persist_runtime_session,
+};
 use crate::discovery;
 use crate::layout_auto_exclusions;
-use crate::scene_transactions::apply_layout_update;
+use crate::scene_transactions::{
+    LayoutPersistencePhase, PreparedLayoutUpdate, apply_layout_update,
+    apply_prepared_layout_update_under_guard_with_persistence,
+};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -305,11 +312,34 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
             .clone()
     };
 
-    if let Err(error) = apply_layout_update(
-        &state.spatial_engine,
-        &state.scene_manager,
-        &state.scene_transactions,
-        layout.clone(),
+    let guard = state.scene_transactions.acquire_layout_update_guard().await;
+    let prepared = match PreparedLayoutUpdate::try_new(layout.clone()) {
+        Ok(prepared) => prepared,
+        Err(error) => return ApiError::validation(error.to_string()),
+    };
+    let runtime_snapshot = build_runtime_session_snapshot(state.as_ref()).await;
+    let runtime_state_path = state.runtime_state_path.clone();
+    if let Err(error) = apply_prepared_layout_update_under_guard_with_persistence(
+        Arc::clone(&state.spatial_engine),
+        Arc::clone(&state.scene_manager),
+        state.scene_transactions.clone(),
+        &guard,
+        prepared,
+        move |phase| {
+            let mut snapshot = runtime_snapshot.clone();
+            let path = runtime_state_path.clone();
+            async move {
+                let transaction_state = match phase {
+                    LayoutPersistencePhase::Commit(state)
+                    | LayoutPersistencePhase::Rollback(state) => state,
+                };
+                snapshot.active_layout_id = Some(transaction_state.layout.id);
+                if transaction_state.active_scene_id == Some(SceneId::DEFAULT) {
+                    snapshot.default_scene_groups = transaction_state.active_render_groups.to_vec();
+                }
+                crate::runtime_state::save(&path, &snapshot).map_err(anyhow::Error::from)
+            }
+        },
     )
     .await
     {
@@ -317,7 +347,6 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
     }
     let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
-    persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "layout": layout,

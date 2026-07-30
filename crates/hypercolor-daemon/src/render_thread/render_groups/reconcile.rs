@@ -8,6 +8,7 @@ use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
+use super::super::layer_runtime::PreparedLayerRuntimeRegistry;
 use super::ZoneRuntime;
 use super::group_state::{
     combine_led_group_layouts, combined_led_state, desired_media_asset_ids,
@@ -30,15 +31,18 @@ struct PreparedSpatialState {
 
 pub(crate) struct PreparedZoneReconcile {
     effect_pool: PreparedEffectPoolReconcile,
+    layer_runtime: PreparedLayerRuntimeRegistry,
     spatial: PreparedSpatialState,
-    replacement_canvases: HashMap<ZoneId, Canvas>,
-    replacement_projections: HashMap<ZoneId, super::projection::CachedGroupProjection>,
-    replacement_direct_pools: HashMap<ZoneId, RenderSurfacePool>,
-    desired_group_ids: HashSet<ZoneId>,
+    target_canvases: HashMap<ZoneId, Canvas>,
+    scene_projection_cache: HashMap<ZoneId, super::projection::CachedGroupProjection>,
+    direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
+    media_producers: HashMap<hypercolor_types::asset::AssetId, super::model::CachedMediaProducer>,
+    retained_direct_group_frames: HashMap<ZoneId, super::model::RetainedDirectGroupFrame>,
+    retained_materialized_group_frames:
+        HashMap<ZoneId, super::model::RetainedMaterializedGroupFrame>,
     desired_media_ids: HashSet<hypercolor_types::asset::AssetId>,
     scene_group_ids: HashSet<ZoneId>,
     direct_group_ids: HashSet<ZoneId>,
-    active_scene_id: Option<SceneId>,
     dependency_key: SceneDependencyKey,
 }
 
@@ -113,7 +117,7 @@ impl ZoneRuntime {
             display_descriptors,
             authoritative_spatial_engine,
         )?;
-        self.commit_reconcile(prepared, groups);
+        self.commit_reconcile(prepared);
         Ok(())
     }
 
@@ -162,7 +166,9 @@ impl ZoneRuntime {
         let effect_pool =
             self.effect_pool
                 .prepare_reconcile(groups, registry, display_descriptors)?;
-        let desired_group_ids = groups.iter().map(|group| group.id).collect::<HashSet<_>>();
+        let layer_runtime = self
+            .layer_runtime
+            .prepare_reconcile(active_scene_id, groups)?;
         let desired_media_ids = desired_media_asset_ids(groups);
         let scene_group_ids = groups
             .iter()
@@ -174,9 +180,18 @@ impl ZoneRuntime {
             .filter(|group| group_publishes_direct_canvas(group))
             .map(|group| group.id)
             .collect::<HashSet<_>>();
-        let mut replacement_canvases = HashMap::new();
-        let mut replacement_projections = HashMap::new();
-        let mut replacement_direct_pools = HashMap::new();
+        let mut target_canvases = HashMap::new();
+        target_canvases.try_reserve(scene_group_ids.len())?;
+        let mut scene_projection_cache = HashMap::new();
+        scene_projection_cache.try_reserve(scene_group_ids.len())?;
+        let mut direct_surface_pools = HashMap::new();
+        direct_surface_pools.try_reserve(direct_group_ids.len())?;
+        let mut media_producers = HashMap::new();
+        media_producers.try_reserve(desired_media_ids.len())?;
+        let mut retained_direct_group_frames = HashMap::new();
+        retained_direct_group_frames.try_reserve(direct_group_ids.len())?;
+        let mut retained_materialized_group_frames = HashMap::new();
+        retained_materialized_group_frames.try_reserve(direct_group_ids.len())?;
 
         for group in groups {
             if group_contributes_to_scene_canvas(group) {
@@ -185,7 +200,7 @@ impl ZoneRuntime {
                         || canvas.height() != group.layout.canvas_height
                 });
                 if needs_canvas {
-                    replacement_canvases.insert(
+                    target_canvases.insert(
                         group.id,
                         Canvas::try_new(group.layout.canvas_width, group.layout.canvas_height)?,
                     );
@@ -200,7 +215,7 @@ impl ZoneRuntime {
                                 || projection.layout != group.layout
                         });
                 if needs_projection {
-                    replacement_projections.insert(
+                    scene_projection_cache.insert(
                         group.id,
                         build_group_projection(group, scene_width, scene_height),
                     );
@@ -225,53 +240,89 @@ impl ZoneRuntime {
                     pool.try_dequeue()?
                         .expect("new direct surface pool must expose an initial slot")
                         .release();
-                    replacement_direct_pools.insert(group.id, pool);
+                    direct_surface_pools.insert(group.id, pool);
                 }
             }
         }
 
         Ok(PreparedZoneReconcile {
             effect_pool,
+            layer_runtime,
             spatial,
-            replacement_canvases,
-            replacement_projections,
-            replacement_direct_pools,
-            desired_group_ids,
+            target_canvases,
+            scene_projection_cache,
+            direct_surface_pools,
+            media_producers,
+            retained_direct_group_frames,
+            retained_materialized_group_frames,
             desired_media_ids,
             scene_group_ids,
             direct_group_ids,
-            active_scene_id,
             dependency_key,
         })
     }
 
-    pub(crate) fn commit_reconcile(&mut self, prepared: PreparedZoneReconcile, groups: &[Zone]) {
-        self.effect_pool.commit_reconcile(prepared.effect_pool);
-        self.layer_runtime
-            .reconcile(prepared.active_scene_id, groups);
-        self.media_producers
-            .retain(|asset_id, _| prepared.desired_media_ids.contains(asset_id));
-        self.target_canvases
-            .retain(|group_id, _| prepared.scene_group_ids.contains(group_id));
-        self.scene_projection_cache
-            .retain(|group_id, _| prepared.scene_group_ids.contains(group_id));
-        self.spatial_engines
-            .retain(|group_id, _| prepared.desired_group_ids.contains(group_id));
-        self.direct_surface_pools
-            .retain(|group_id, _| prepared.direct_group_ids.contains(group_id));
-        self.retained_direct_group_frames
-            .retain(|group_id, _| prepared.direct_group_ids.contains(group_id));
-        self.retained_materialized_group_frames
-            .retain(|group_id, _| prepared.direct_group_ids.contains(group_id));
-        self.target_canvases.extend(prepared.replacement_canvases);
-        self.scene_projection_cache
-            .extend(prepared.replacement_projections);
-        self.direct_surface_pools
-            .extend(prepared.replacement_direct_pools);
-        self.spatial_engines = prepared.spatial.engines;
-        self.combined_led_layout = prepared.spatial.combined_layout;
-        self.combined_led_spatial_engine = prepared.spatial.combined_engine;
-        self.reconciled_dependency_key = Some(prepared.dependency_key);
+    pub(crate) fn commit_reconcile(&mut self, prepared: PreparedZoneReconcile) {
+        let PreparedZoneReconcile {
+            effect_pool,
+            layer_runtime,
+            spatial,
+            mut target_canvases,
+            mut scene_projection_cache,
+            mut direct_surface_pools,
+            mut media_producers,
+            mut retained_direct_group_frames,
+            mut retained_materialized_group_frames,
+            desired_media_ids,
+            scene_group_ids,
+            direct_group_ids,
+            dependency_key,
+        } = prepared;
+        self.effect_pool.commit_reconcile(effect_pool);
+        self.layer_runtime.commit_reconcile(layer_runtime);
+        for (asset_id, producer) in std::mem::take(&mut self.media_producers) {
+            if desired_media_ids.contains(&asset_id) {
+                media_producers.insert(asset_id, producer);
+            }
+        }
+        for (group_id, canvas) in std::mem::take(&mut self.target_canvases) {
+            if scene_group_ids.contains(&group_id) && !target_canvases.contains_key(&group_id) {
+                target_canvases.insert(group_id, canvas);
+            }
+        }
+        for (group_id, projection) in std::mem::take(&mut self.scene_projection_cache) {
+            if scene_group_ids.contains(&group_id)
+                && !scene_projection_cache.contains_key(&group_id)
+            {
+                scene_projection_cache.insert(group_id, projection);
+            }
+        }
+        for (group_id, pool) in std::mem::take(&mut self.direct_surface_pools) {
+            if direct_group_ids.contains(&group_id) && !direct_surface_pools.contains_key(&group_id)
+            {
+                direct_surface_pools.insert(group_id, pool);
+            }
+        }
+        for (group_id, frame) in std::mem::take(&mut self.retained_direct_group_frames) {
+            if direct_group_ids.contains(&group_id) {
+                retained_direct_group_frames.insert(group_id, frame);
+            }
+        }
+        for (group_id, frame) in std::mem::take(&mut self.retained_materialized_group_frames) {
+            if direct_group_ids.contains(&group_id) {
+                retained_materialized_group_frames.insert(group_id, frame);
+            }
+        }
+        self.media_producers = media_producers;
+        self.target_canvases = target_canvases;
+        self.scene_projection_cache = scene_projection_cache;
+        self.direct_surface_pools = direct_surface_pools;
+        self.retained_direct_group_frames = retained_direct_group_frames;
+        self.retained_materialized_group_frames = retained_materialized_group_frames;
+        self.spatial_engines = spatial.engines;
+        self.combined_led_layout = spatial.combined_layout;
+        self.combined_led_spatial_engine = spatial.combined_engine;
+        self.reconciled_dependency_key = Some(dependency_key);
     }
 
     fn prepare_spatial_state(

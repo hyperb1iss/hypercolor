@@ -170,6 +170,40 @@ fn failed_effect_pool_preparation_preserves_live_slots() {
 }
 
 #[test]
+fn abandoned_prepared_effect_pool_keeps_live_slots_renderable() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let live_group = render_group(ZoneId::new(), solid_id);
+    let candidate_group = render_group(ZoneId::new(), solid_id);
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        std::slice::from_ref(&live_group),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live group should reconcile");
+
+    let prepared = pool
+        .prepare_reconcile(&[candidate_group], &registry, &HashMap::new())
+        .expect("candidate should fully prepare");
+    drop(prepared);
+
+    assert_eq!(pool.slot_count(), 1);
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_group_into(
+        &live_group,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("live slot should survive an abandoned prepared replacement");
+}
+
+#[test]
 fn effect_pool_hot_swaps_effects_for_same_group() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");

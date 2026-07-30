@@ -33,9 +33,9 @@ use hypercolor_types::config::RenderAccelerationMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::scene::SceneId;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
-use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 use std::sync::Arc;
@@ -68,7 +68,7 @@ use super::sparkleflinger::{
 };
 use super::{RenderThreadState, micros_u32};
 use crate::interaction_routing::InteractionRoutingControl;
-use crate::scene_transactions::LayoutTransactionToken;
+use crate::scene_transactions::{LayoutActivationControl, LayoutTransactionRejection};
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
 const BACKGROUND_INPUT_HZ: u32 = 1;
@@ -1379,14 +1379,23 @@ pub(crate) struct PreparedCanvasResize {
 }
 
 pub(crate) struct PreparedLayoutActivation {
-    pub(crate) token: LayoutTransactionToken,
     pub(crate) spatial_engine: SpatialEngine,
-    pub(crate) active_render_groups: Arc<[Zone]>,
     pub(crate) prepared_resize: Option<PreparedCanvasResize>,
     pub(crate) sampling_preparation: Option<SparkleFlingerSamplingPreparation>,
     pub(crate) prepared_groups: PreparedZoneReconcile,
+    pub(crate) activation: LayoutActivationControl,
     pub(crate) width: u32,
     pub(crate) height: u32,
+}
+
+impl Drop for RenderCaches {
+    fn drop(&mut self) {
+        if let Some(prepared) = self.pending_layout_activation.take() {
+            prepared
+                .activation
+                .complete(Err(LayoutTransactionRejection::RendererStopped));
+        }
+    }
 }
 
 #[derive(Debug, Default)]

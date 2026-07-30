@@ -805,10 +805,8 @@ async fn request_with_layout_ack(
                     match transaction {
                         SceneTransaction::PrepareLayout(transaction) => {
                             applied.push(transaction.spatial_engine().layout().as_ref().clone());
-                            transaction.accept();
+                            transaction.accept_and_commit_for_test();
                         }
-                        SceneTransaction::CommitLayout(transaction)
-                        | SceneTransaction::AbortLayout(transaction) => transaction.accept(),
                         transaction => deferred.push(transaction),
                     }
                 }

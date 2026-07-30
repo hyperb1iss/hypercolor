@@ -32,7 +32,9 @@ use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_gene
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::OutputFrameSourceKind;
-use crate::scene_transactions::{LayoutTransactionRejection, SceneTransaction};
+use crate::scene_transactions::{
+    LayoutActivationDecision, LayoutTransactionRejection, SceneTransaction,
+};
 
 #[expect(
     clippy::too_many_lines,
@@ -58,6 +60,39 @@ pub(crate) async fn execute_frame(
         SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
+
+    if let Some(prepared) = render.pending_layout_activation.take() {
+        match prepared.activation.decision() {
+            LayoutActivationDecision::Pending => {
+                render.pending_layout_activation = Some(prepared);
+            }
+            LayoutActivationDecision::Abort => {
+                prepared.activation.complete(Ok(()));
+            }
+            LayoutActivationDecision::Commit => {
+                let activation = prepared.activation.clone();
+                if let Some(prepared_resize) = prepared.prepared_resize {
+                    render.commit_canvas_resize(prepared_resize);
+                    state.canvas_dims.set(prepared.width, prepared.height);
+                    frame_loop.throttle.reset_for_canvas_resize();
+                    info!(
+                        width = prepared.width,
+                        height = prepared.height,
+                        "Applied live canvas resize"
+                    );
+                } else if let Some(sampling_preparation) = prepared.sampling_preparation {
+                    render.commit_spatial_sampling_plan(sampling_preparation);
+                }
+                render
+                    .render_group_runtime
+                    .commit_reconcile(prepared.prepared_groups);
+                scene
+                    .render_state
+                    .replace_spatial_engine(prepared.spatial_engine);
+                activation.complete(Ok(()));
+            }
+        }
+    }
 
     for transaction in state.scene_transactions.drain() {
         match transaction {
@@ -146,93 +181,36 @@ pub(crate) async fn execute_frame(
                             width,
                             height,
                         )?;
-                    Ok::<_, anyhow::Error>((
-                        candidate_groups,
-                        prepared_resize,
-                        sampling_preparation,
-                        prepared_groups,
-                    ))
+                    Ok::<_, anyhow::Error>((prepared_resize, sampling_preparation, prepared_groups))
                 }
                 .await;
-                let (candidate_groups, prepared_resize, sampling_preparation, prepared_groups) =
-                    match preparation {
-                        Ok(prepared) => prepared,
-                        Err(error) => {
-                            warn!(
-                                %error,
-                                requested_width = width,
-                                requested_height = height,
-                                active_width = state.canvas_dims.width(),
-                                active_height = state.canvas_dims.height(),
-                                "Rejected live layout because render resources could not be prepared"
-                            );
-                            transaction.reject(LayoutTransactionRejection::PreparationFailed {
-                                message: error.to_string(),
-                            });
-                            continue;
-                        }
-                    };
+                let (prepared_resize, sampling_preparation, prepared_groups) = match preparation {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        warn!(
+                            %error,
+                            requested_width = width,
+                            requested_height = height,
+                            active_width = state.canvas_dims.width(),
+                            active_height = state.canvas_dims.height(),
+                            "Rejected live layout because render resources could not be prepared"
+                        );
+                        transaction.reject(LayoutTransactionRejection::PreparationFailed {
+                            message: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
                 render.pending_layout_activation = Some(PreparedLayoutActivation {
-                    token: transaction.token(),
                     spatial_engine,
-                    active_render_groups: candidate_groups,
                     prepared_resize,
                     sampling_preparation,
                     prepared_groups,
+                    activation: transaction.activation(),
                     width,
                     height,
                 });
                 transaction.accept();
-            }
-            SceneTransaction::CommitLayout(transaction) => {
-                let Some(prepared) = render.pending_layout_activation.take() else {
-                    transaction.reject(LayoutTransactionRejection::PreparationFailed {
-                        message: "layout preparation token is no longer active".to_owned(),
-                    });
-                    continue;
-                };
-                if prepared.token != transaction.token() {
-                    render.pending_layout_activation = Some(prepared);
-                    transaction.reject(LayoutTransactionRejection::PreparationFailed {
-                        message: "layout preparation token does not match".to_owned(),
-                    });
-                    continue;
-                }
-
-                if let Some(prepared_resize) = prepared.prepared_resize {
-                    render.commit_canvas_resize(prepared_resize);
-                    state.canvas_dims.set(prepared.width, prepared.height);
-                    frame_loop.throttle.reset_for_canvas_resize();
-                    info!(
-                        width = prepared.width,
-                        height = prepared.height,
-                        "Applied live canvas resize"
-                    );
-                } else if let Some(sampling_preparation) = prepared.sampling_preparation {
-                    render.commit_spatial_sampling_plan(sampling_preparation);
-                }
-                render.render_group_runtime.commit_reconcile(
-                    prepared.prepared_groups,
-                    prepared.active_render_groups.as_ref(),
-                );
-                scene
-                    .render_state
-                    .replace_spatial_engine(prepared.spatial_engine);
-                transaction.accept();
-            }
-            SceneTransaction::AbortLayout(transaction) => {
-                let matches_pending = render
-                    .pending_layout_activation
-                    .as_ref()
-                    .is_some_and(|prepared| prepared.token == transaction.token());
-                if matches_pending {
-                    render.pending_layout_activation = None;
-                    transaction.accept();
-                } else {
-                    transaction.reject(LayoutTransactionRejection::PreparationFailed {
-                        message: "layout preparation token is no longer active".to_owned(),
-                    });
-                }
             }
         }
     }
