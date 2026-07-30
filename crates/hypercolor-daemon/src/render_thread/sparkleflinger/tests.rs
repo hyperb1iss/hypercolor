@@ -27,6 +27,28 @@ fn screen_plan_generation_turnover_runs_once_per_observed_change() {
     assert!(sparkleflinger.synchronize_screen_plan_generation(11));
 }
 
+#[test]
+fn alternate_preview_allocation_failure_drops_only_the_preview() {
+    let mut preview_surface_pool = super::new_preview_surface_pool();
+    let request = PreviewSurfaceRequest {
+        width: u32::MAX,
+        height: u32::MAX,
+    };
+
+    assert!(
+        super::scaled_preview_surface_from_rgba(
+            &[16, 32, 48, 255],
+            1,
+            1,
+            request,
+            &mut preview_surface_pool,
+        )
+        .is_none()
+    );
+    assert_eq!(preview_surface_pool.descriptor().width, 1);
+    assert_eq!(preview_surface_pool.descriptor().height, 1);
+}
+
 fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(2, 2);
     canvas.fill(color);

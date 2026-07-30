@@ -206,21 +206,33 @@ fn oversized_gpu_canvas_commits_to_cpu_fallback_without_a_global_cap() {
         .expect("GPU backend should expose its texture limit")
         .checked_add(1)
         .expect("GPU texture limits leave room for a CPU-only test extent");
-    let preparation = sparkleflinger.prepare_canvas_resize(width, 1);
+    let preparation = sparkleflinger
+        .prepare_canvas_resize(width, 1)
+        .expect("CPU fallback resources should admit the oversized canvas");
     assert!(!preparation.is_admitted());
     sparkleflinger.apply_canvas_resize(preparation);
     assert!(!sparkleflinger.supports_gpu_output_frames());
 
-    let mut canvas = Canvas::new(width, 1);
-    canvas.fill(Rgba::new(12, 34, 56, 255));
+    let mut base = Canvas::new(width, 1);
+    base.fill(Rgba::new(12, 34, 56, 255));
+    let mut overlay = Canvas::new(width, 1);
+    overlay.fill(Rgba::new(220, 40, 80, 128));
     let composed = sparkleflinger.compose_for_outputs(
-        CompositionPlan::single(
+        CompositionPlan::with_layers(
             width,
             1,
-            CompositionLayer::replace(ProducerFrame::Canvas(canvas)),
+            vec![
+                CompositionLayer::replace(ProducerFrame::Surface(
+                    PublishedSurface::from_owned_canvas(base, 1, 1),
+                )),
+                CompositionLayer::alpha(
+                    ProducerFrame::Surface(PublishedSurface::from_owned_canvas(overlay, 2, 1)),
+                    0.5,
+                ),
+            ],
         ),
         true,
-        None,
+        Some(PreviewSurfaceRequest { width, height: 1 }),
     );
 
     assert_eq!(composed.backend, CompositorBackendKind::GpuFallback);
@@ -231,6 +243,82 @@ fn oversized_gpu_canvas_commits_to_cpu_fallback_without_a_global_cap() {
             .width(),
         width
     );
+    assert_eq!(
+        composed
+            .sampling_surface
+            .expect("prepared CPU composition pool should publish immediately")
+            .width(),
+        width
+    );
+    assert!(
+        composed.preview_surface.is_none(),
+        "a full-size preview should share the published sampling surface"
+    );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn failed_cpu_fallback_preparation_preserves_live_gpu_canvas() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let initial = sparkleflinger
+        .prepare_canvas_resize(4, 4)
+        .expect("small GPU canvas should prepare");
+    assert!(initial.is_admitted());
+    sparkleflinger.apply_canvas_resize(initial);
+
+    let Err(error) = sparkleflinger.prepare_canvas_resize(u32::MAX, u32::MAX) else {
+        panic!("unaddressable CPU fallback resources must reject the resize");
+    };
+    assert!(error.to_string().contains("overflows addressable memory"));
+    assert!(sparkleflinger.supports_gpu_output_frames());
+
+    let mut canvas = Canvas::new(4, 4);
+    canvas.fill(Rgba::new(24, 72, 120, 255));
+    let composed = sparkleflinger.compose_for_outputs(
+        CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(canvas)),
+        ),
+        false,
+        None,
+    );
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn joint_cpu_fallback_preparation_failure_leaves_both_gpu_canvases_live() {
+    let Ok(mut primary) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let Ok(mut display) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    for sparkleflinger in [&mut primary, &mut display] {
+        let preparation = sparkleflinger
+            .prepare_canvas_resize(4, 4)
+            .expect("small GPU canvas should prepare");
+        sparkleflinger.apply_canvas_resize(preparation);
+    }
+
+    let mut primary_preparation = primary
+        .prepare_canvas_resize(4, 4)
+        .expect("primary GPU replacement should prepare");
+    let mut display_preparation = display
+        .prepare_canvas_resize(4, 4)
+        .expect("display GPU replacement should prepare");
+    primary_preparation
+        .force_cpu_fallback(4, 4)
+        .expect("primary CPU fallback should prepare");
+    let Err(_) = display_preparation.force_cpu_fallback(u32::MAX, u32::MAX) else {
+        panic!("display CPU fallback should reject an unaddressable canvas");
+    };
+
+    assert!(primary.supports_gpu_output_frames());
+    assert!(display.supports_gpu_output_frames());
 }
 
 #[cfg(feature = "wgpu")]

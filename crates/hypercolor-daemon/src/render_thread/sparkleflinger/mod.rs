@@ -449,26 +449,31 @@ pub struct SparkleFlinger {
 }
 
 pub(crate) enum SparkleFlingerCanvasPreparation {
-    Cpu,
+    Cpu(cpu::CpuCanvasPreparation),
     #[cfg(feature = "wgpu")]
     Gpu(gpu::GpuCanvasPreparation),
+    #[cfg(feature = "wgpu")]
+    GpuCpuFallback(cpu::CpuCanvasPreparation),
 }
 
 impl SparkleFlingerCanvasPreparation {
     #[cfg(feature = "wgpu")]
     pub(crate) const fn is_admitted(&self) -> bool {
         match self {
-            Self::Cpu => true,
+            Self::Cpu(_) => true,
             #[cfg(feature = "wgpu")]
             Self::Gpu(preparation) => preparation.is_admitted(),
+            #[cfg(feature = "wgpu")]
+            Self::GpuCpuFallback(_) => false,
         }
     }
 
     #[cfg(feature = "wgpu")]
-    pub(crate) fn force_cpu_fallback(&mut self) {
+    pub(crate) fn force_cpu_fallback(&mut self, width: u32, height: u32) -> Result<()> {
         if matches!(self, Self::Gpu(_)) {
-            *self = Self::Gpu(gpu::GpuCanvasPreparation::cpu_fallback());
+            *self = Self::GpuCpuFallback(cpu::CpuCanvasPreparation::try_new(width, height)?);
         }
+        Ok(())
     }
 }
 
@@ -522,26 +527,52 @@ impl SparkleFlinger {
         &self,
         width: u32,
         height: u32,
-    ) -> SparkleFlingerCanvasPreparation {
-        #[cfg(not(feature = "wgpu"))]
-        let _ = (width, height);
+    ) -> Result<SparkleFlingerCanvasPreparation> {
         match &self.backend {
-            SparkleFlingerBackend::Cpu(_) => SparkleFlingerCanvasPreparation::Cpu,
+            SparkleFlingerBackend::Cpu(_) => Ok(SparkleFlingerCanvasPreparation::Cpu(
+                cpu::CpuCanvasPreparation::try_new(width, height)?,
+            )),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                SparkleFlingerCanvasPreparation::Gpu(gpu.prepare_canvas_resize(width, height))
+                let preparation = gpu.prepare_canvas_resize(width, height);
+                if preparation.is_admitted() {
+                    Ok(SparkleFlingerCanvasPreparation::Gpu(preparation))
+                } else {
+                    Ok(SparkleFlingerCanvasPreparation::GpuCpuFallback(
+                        cpu::CpuCanvasPreparation::try_new(width, height)?,
+                    ))
+                }
             }
         }
     }
 
     pub(crate) fn apply_canvas_resize(&mut self, preparation: SparkleFlingerCanvasPreparation) {
         match (&mut self.backend, preparation) {
-            (SparkleFlingerBackend::Cpu(_), SparkleFlingerCanvasPreparation::Cpu) => {}
+            (
+                SparkleFlingerBackend::Cpu(cpu),
+                SparkleFlingerCanvasPreparation::Cpu(preparation),
+            ) => preparation.apply(
+                cpu,
+                &mut self.preview_surface_pool,
+                &mut self.composition_surface_pool,
+            ),
             #[cfg(feature = "wgpu")]
             (
                 SparkleFlingerBackend::Gpu { gpu, .. },
                 SparkleFlingerCanvasPreparation::Gpu(preparation),
             ) => gpu.apply_canvas_resize(preparation),
+            #[cfg(feature = "wgpu")]
+            (
+                SparkleFlingerBackend::Gpu { gpu, cpu_fallback },
+                SparkleFlingerCanvasPreparation::GpuCpuFallback(preparation),
+            ) => {
+                gpu.apply_canvas_resize(gpu::GpuCanvasPreparation::cpu_fallback());
+                preparation.apply(
+                    cpu_fallback,
+                    &mut self.preview_surface_pool,
+                    &mut self.composition_surface_pool,
+                );
+            }
             #[allow(
                 unreachable_patterns,
                 reason = "the mismatch arm is reachable only in wgpu builds"
@@ -1358,9 +1389,9 @@ fn dequeue_preview_lease(
 ) -> Option<SurfaceLease<'_>> {
     let descriptor = SurfaceDescriptor::rgba8888(request.width, request.height);
     if preview_surface_pool.descriptor() != descriptor {
-        *preview_surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+        *preview_surface_pool = RenderSurfacePool::try_with_slot_count(descriptor, 2).ok()?;
     }
-    preview_surface_pool.dequeue()
+    preview_surface_pool.try_dequeue().ok().flatten()
 }
 
 #[cfg(test)]

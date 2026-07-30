@@ -2,7 +2,7 @@ use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_opaque_normal_rgba_pixels_in_place, blend_rgba_pixels_in_place,
 };
 use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceResourceError,
 };
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 
@@ -18,6 +18,36 @@ use crate::render_thread::producer_queue::ProducerFrame;
 #[derive(Debug, Default)]
 pub(super) struct CpuSparkleFlinger {
     cached_composition: Option<CachedCpuComposition>,
+}
+
+pub(crate) struct CpuCanvasPreparation {
+    flinger: CpuSparkleFlinger,
+    preview_surface_pool: RenderSurfacePool,
+    composition_surface_pool: RenderSurfacePool,
+}
+
+impl CpuCanvasPreparation {
+    pub(super) fn try_new(width: u32, height: u32) -> Result<Self, SurfaceResourceError> {
+        let descriptor = SurfaceDescriptor::rgba8888(width, height);
+        let preview_surface_pool = RenderSurfacePool::try_with_slot_count(descriptor, 2)?;
+        let composition_surface_pool = RenderSurfacePool::try_with_slot_count(descriptor, 2)?;
+        Ok(Self {
+            flinger: CpuSparkleFlinger::new(),
+            preview_surface_pool,
+            composition_surface_pool,
+        })
+    }
+
+    pub(super) fn apply(
+        self,
+        flinger: &mut CpuSparkleFlinger,
+        preview_surface_pool: &mut RenderSurfacePool,
+        composition_surface_pool: &mut RenderSurfacePool,
+    ) {
+        *flinger = self.flinger;
+        *preview_surface_pool = self.preview_surface_pool;
+        *composition_surface_pool = self.composition_surface_pool;
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -1774,17 +1774,17 @@ impl RenderCaches {
         };
         #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
         let mut sparkleflinger_preparation =
-            self.sparkleflinger.prepare_canvas_resize(width, height);
+            self.sparkleflinger.prepare_canvas_resize(width, height)?;
         #[cfg(feature = "wgpu")]
         let mut display_sparkleflinger_preparation = self
             .display_sparkleflinger
-            .prepare_canvas_resize(width, height);
+            .prepare_canvas_resize(width, height)?;
         #[cfg(feature = "wgpu")]
         if !sparkleflinger_preparation.is_admitted()
             || !display_sparkleflinger_preparation.is_admitted()
         {
-            sparkleflinger_preparation.force_cpu_fallback();
-            display_sparkleflinger_preparation.force_cpu_fallback();
+            sparkleflinger_preparation.force_cpu_fallback(width, height)?;
+            display_sparkleflinger_preparation.force_cpu_fallback(width, height)?;
         }
         self.deferred_sampling
             .clear_for_canvas_resize(&mut self.sparkleflinger);
@@ -1968,16 +1968,16 @@ impl PipelineRuntime {
             SparkleFlinger::new_with_gpu_device(render_acceleration_mode, render_gpu_device)?;
         #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
         let mut sparkleflinger_preparation =
-            sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height);
+            sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)?;
         #[cfg(feature = "wgpu")]
         let mut display_sparkleflinger_preparation =
-            display_sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height);
+            display_sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)?;
         #[cfg(feature = "wgpu")]
         if !sparkleflinger_preparation.is_admitted()
             || !display_sparkleflinger_preparation.is_admitted()
         {
-            sparkleflinger_preparation.force_cpu_fallback();
-            display_sparkleflinger_preparation.force_cpu_fallback();
+            sparkleflinger_preparation.force_cpu_fallback(canvas_width, canvas_height)?;
+            display_sparkleflinger_preparation.force_cpu_fallback(canvas_width, canvas_height)?;
         }
         sparkleflinger.apply_canvas_resize(sparkleflinger_preparation);
         #[cfg(feature = "wgpu")]
