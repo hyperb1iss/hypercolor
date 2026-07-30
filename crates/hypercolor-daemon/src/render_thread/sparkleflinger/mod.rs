@@ -445,6 +445,7 @@ enum SparkleFlingerBackend {
 pub struct SparkleFlinger {
     backend: SparkleFlingerBackend,
     screen_plan_generation: Option<u64>,
+    active_preview_request: Option<PreviewSurfaceRequest>,
     preview_surface_pool: RenderSurfacePool,
     composition_surface_pool: RenderSurfacePool,
     face_overlay_surface_pool: RenderSurfacePool,
@@ -598,13 +599,14 @@ impl SparkleFlinger {
         width: u32,
         height: u32,
     ) -> Result<SparkleFlingerCanvasPreparation> {
+        let active_preview_request = self.active_preview_request;
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(SparkleFlingerCanvasPreparation::Cpu(
                 cpu::CpuCanvasPreparation::try_new(width, height)?,
             )),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                let preparation = gpu.prepare_canvas_resize(width, height);
+                let preparation = gpu.prepare_canvas_resize(width, height, active_preview_request);
                 if preparation.is_admitted() {
                     Ok(SparkleFlingerCanvasPreparation::Gpu(preparation))
                 } else {
@@ -706,6 +708,7 @@ impl SparkleFlinger {
         Self {
             backend: SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
             screen_plan_generation: None,
+            active_preview_request: None,
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
@@ -739,6 +742,7 @@ impl SparkleFlinger {
         Ok(Self {
             backend,
             screen_plan_generation: None,
+            active_preview_request: None,
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
@@ -759,13 +763,16 @@ impl SparkleFlinger {
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
     ) -> ComposedFrameSet {
-        match &mut self.backend {
-            SparkleFlingerBackend::Cpu(backend) => backend.compose_with_surface_pools(
-                plan,
-                requires_cpu_sampling_canvas,
-                preview_surface_request,
-                &mut self.preview_surface_pool,
-                &mut self.composition_surface_pool,
+        let (composed, commit_preview_request) = match &mut self.backend {
+            SparkleFlingerBackend::Cpu(backend) => (
+                backend.compose_with_surface_pools(
+                    plan,
+                    requires_cpu_sampling_canvas,
+                    preview_surface_request,
+                    &mut self.preview_surface_pool,
+                    &mut self.composition_surface_pool,
+                ),
+                true,
             ),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
@@ -778,43 +785,54 @@ impl SparkleFlinger {
                     None
                 };
                 match gpu_compose_result {
-                    Some(Ok(composed)) => return composed,
+                    Some(Ok(composed)) => (composed, true),
                     Some(Err(error)) if contains_gpu_frames => {
                         tracing::warn!(
                             %error,
                             "GPU producer composition failed; refusing CPU readback fallback"
                         );
-                        return gpu_frame_without_cpu_fallback(
-                            failure_width,
-                            failure_height,
-                            preview_surface_request,
-                            &mut self.preview_surface_pool,
-                        );
+                        (
+                            gpu_frame_without_cpu_fallback(
+                                failure_width,
+                                failure_height,
+                                preview_surface_request,
+                                &mut self.preview_surface_pool,
+                            ),
+                            false,
+                        )
                     }
                     None if contains_gpu_frames => {
                         tracing::warn!(
                             "Unsupported GPU producer plan; refusing CPU readback fallback"
                         );
-                        return gpu_frame_without_cpu_fallback(
-                            failure_width,
-                            failure_height,
+                        (
+                            gpu_frame_without_cpu_fallback(
+                                failure_width,
+                                failure_height,
+                                preview_surface_request,
+                                &mut self.preview_surface_pool,
+                            ),
+                            false,
+                        )
+                    }
+                    Some(Err(_)) | None => {
+                        let mut composed = cpu_fallback.compose_with_surface_pools(
+                            plan,
+                            requires_cpu_sampling_canvas,
                             preview_surface_request,
                             &mut self.preview_surface_pool,
+                            &mut self.composition_surface_pool,
                         );
+                        composed.backend = CompositorBackendKind::GpuFallback;
+                        (composed, true)
                     }
-                    Some(Err(_)) | None => {}
                 }
-                let mut composed = cpu_fallback.compose_with_surface_pools(
-                    plan,
-                    requires_cpu_sampling_canvas,
-                    preview_surface_request,
-                    &mut self.preview_surface_pool,
-                    &mut self.composition_surface_pool,
-                );
-                composed.backend = CompositorBackendKind::GpuFallback;
-                composed
             }
+        };
+        if commit_preview_request {
+            self.active_preview_request = preview_surface_request;
         }
+        composed
     }
 
     #[cfg(feature = "wgpu")]
@@ -978,6 +996,7 @@ impl SparkleFlinger {
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.discard_preview_work(),
         }
+        self.active_preview_request = preview_surface_request;
 
         ComposedFrameSet {
             sampling_canvas: None,

@@ -998,6 +998,7 @@ impl GpuSparkleFlinger {
         &mut self,
         width: u32,
         height: u32,
+        active_preview_request: Option<super::PreviewSurfaceRequest>,
     ) -> GpuCanvasPreparation {
         let admission = gpu_canvas_admission(self.probe.max_texture_dimension_2d, width, height);
         match admission {
@@ -1012,7 +1013,7 @@ impl GpuSparkleFlinger {
                 return GpuCanvasPreparation::CpuFallback;
             }
         }
-        match self.prepare_gpu_canvas_generation(width, height) {
+        match self.prepare_gpu_canvas_generation(width, height, active_preview_request) {
             Ok(generation) => GpuCanvasPreparation::Gpu(generation),
             Err(error) => {
                 tracing::warn!(
@@ -1031,19 +1032,13 @@ impl GpuSparkleFlinger {
         &mut self,
         width: u32,
         height: u32,
+        active_preview_request: Option<super::PreviewSurfaceRequest>,
     ) -> Result<GpuCanvasGeneration> {
         let surfaces =
             GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height)?;
         let sampling_readback_buffers =
             self.prepare_sampling_readback_buffers_for_canvas_resize(width, height)?;
-        let preview_request =
-            self.preview_surfaces
-                .as_ref()
-                .map(|preview| super::PreviewSurfaceRequest {
-                    width: preview.width,
-                    height: preview.height,
-                });
-        let preview_surfaces = preview_request
+        let preview_surfaces = active_preview_request
             .map(|request| {
                 let scale_views = preview::preview_requires_scale(request, width, height)
                     .then_some((&surfaces.front.view, &surfaces.back.view));

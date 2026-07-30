@@ -10,6 +10,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
 };
+use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
@@ -40,19 +41,59 @@ use super::{
     NativeScreenCopyFailurePolicy, native_screen_copy_failure_policy,
     screen_storage_requires_cache_turnover, validate_windows_plan_generation,
 };
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::{GpuTextureFrameOrigin, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
 use crate::render_thread::sparkleflinger::{
     CompositionLayer, CompositionPlan, DisplayFinalizeCacheKey, DisplayFinalizeParams,
-    PreviewSurfaceRequest, cpu::CpuSparkleFlinger,
+    PreviewSurfaceRequest, SparkleFlinger, SparkleFlingerBackend, cpu::CpuSparkleFlinger,
 };
 
 fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(4, 4);
     canvas.fill(color);
     canvas
+}
+
+fn bypass_surface_plan(width: u32, height: u32) -> CompositionPlan {
+    CompositionPlan::single(
+        width,
+        height,
+        CompositionLayer::replace(ProducerFrame::Surface(slot_surface_with_size(
+            width,
+            height,
+            Rgba::new(32, 96, 224, 255),
+        ))),
+    )
+}
+
+fn layered_surface_plan(width: u32, height: u32) -> CompositionPlan {
+    CompositionPlan::with_layers(
+        width,
+        height,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Surface(slot_surface_with_size(
+                width,
+                height,
+                Rgba::new(240, 48, 96, 255),
+            ))),
+            CompositionLayer::alpha(
+                ProducerFrame::Surface(slot_surface_with_size(
+                    width,
+                    height,
+                    Rgba::new(24, 128, 208, 255),
+                )),
+                0.35,
+            ),
+        ],
+    )
+}
+
+fn gpu_backend_mut(sparkleflinger: &mut SparkleFlinger) -> &mut GpuSparkleFlinger {
+    match &mut sparkleflinger.backend {
+        SparkleFlingerBackend::Gpu { gpu, .. } => gpu,
+        SparkleFlingerBackend::Cpu(_) => panic!("test requires the GPU backend"),
+    }
 }
 
 #[test]
@@ -84,7 +125,7 @@ fn frame_boundary_preview_preparation_failure_preserves_active_generation() {
     let Ok(mut compositor) = GpuSparkleFlinger::new() else {
         return;
     };
-    let initial = compositor.prepare_canvas_resize(4, 4);
+    let initial = compositor.prepare_canvas_resize(4, 4, None);
     assert!(initial.is_admitted());
     compositor.apply_canvas_resize(initial);
     let plan = CompositionPlan::with_layers(
@@ -113,7 +154,14 @@ fn frame_boundary_preview_preparation_failure_preserves_active_generation() {
     assert!(compositor.has_pending_output_submission());
 
     compositor.fail_next_preview_scale_output_preparation();
-    let rejected = compositor.prepare_canvas_resize(8, 8);
+    let rejected = compositor.prepare_canvas_resize(
+        8,
+        8,
+        Some(PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        }),
+    );
     assert!(!rejected.is_admitted());
     assert_eq!(
         compositor
@@ -131,7 +179,14 @@ fn frame_boundary_preview_preparation_failure_preserves_active_generation() {
             })
     );
 
-    let prepared = compositor.prepare_canvas_resize(8, 8);
+    let prepared = compositor.prepare_canvas_resize(
+        8,
+        8,
+        Some(PreviewSurfaceRequest {
+            width: 2,
+            height: 2,
+        }),
+    );
     assert!(prepared.is_admitted());
     compositor.apply_canvas_resize(prepared);
     assert_eq!(
@@ -156,7 +211,7 @@ fn frame_boundary_equal_extent_preview_preserves_concrete_request() {
     let Ok(mut compositor) = GpuSparkleFlinger::new() else {
         return;
     };
-    let initial = compositor.prepare_canvas_resize(64, 4);
+    let initial = compositor.prepare_canvas_resize(64, 4, None);
     assert!(initial.is_admitted());
     compositor.apply_canvas_resize(initial);
     let fixed_request = PreviewSurfaceRequest {
@@ -189,7 +244,7 @@ fn frame_boundary_equal_extent_preview_preserves_concrete_request() {
     );
 
     compositor.fail_next_preview_scale_output_preparation();
-    let rejected = compositor.prepare_canvas_resize(128, 8);
+    let rejected = compositor.prepare_canvas_resize(128, 8, Some(fixed_request));
     assert!(!rejected.is_admitted());
     assert_eq!(
         compositor
@@ -198,7 +253,7 @@ fn frame_boundary_equal_extent_preview_preserves_concrete_request() {
         Some((64, 4))
     );
 
-    let prepared = compositor.prepare_canvas_resize(128, 8);
+    let prepared = compositor.prepare_canvas_resize(128, 8, Some(fixed_request));
     assert!(prepared.is_admitted());
     compositor.apply_canvas_resize(prepared);
     assert!(
@@ -236,11 +291,307 @@ fn frame_boundary_equal_extent_preview_preserves_concrete_request() {
 }
 
 #[test]
+fn active_preview_request_bypass_is_prepared_before_resize() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let initial = sparkleflinger
+        .prepare_canvas_resize(64, 4)
+        .expect("initial GPU canvas should prepare");
+    assert!(initial.is_admitted());
+    sparkleflinger.apply_canvas_resize(initial);
+    let fixed_request = PreviewSurfaceRequest {
+        width: 64,
+        height: 4,
+    };
+    let composed =
+        sparkleflinger.compose_for_outputs(bypass_surface_plan(64, 4), false, Some(fixed_request));
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+    assert_eq!(sparkleflinger.active_preview_request, Some(fixed_request));
+    assert!(
+        gpu_backend_mut(&mut sparkleflinger)
+            .preview_surfaces
+            .is_none()
+    );
+
+    gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation();
+    let rejected = sparkleflinger
+        .prepare_canvas_resize(128, 8)
+        .expect("CPU fallback should prepare after injected GPU rejection");
+    assert!(!rejected.is_admitted());
+    assert_eq!(sparkleflinger.active_preview_request, Some(fixed_request));
+    assert_eq!(
+        gpu_backend_mut(&mut sparkleflinger)
+            .surface_snapshot()
+            .map(|snapshot| (snapshot.width, snapshot.height)),
+        Some((64, 4))
+    );
+
+    let prepared = sparkleflinger
+        .prepare_canvas_resize(128, 8)
+        .expect("retry should prepare the complete GPU generation");
+    assert!(prepared.is_admitted());
+    sparkleflinger.apply_canvas_resize(prepared);
+    assert!(
+        gpu_backend_mut(&mut sparkleflinger)
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| {
+                surfaces.width == fixed_request.width
+                    && surfaces.height == fixed_request.height
+                    && surfaces.has_scale_output()
+            })
+    );
+
+    gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation();
+    let composed =
+        sparkleflinger.compose_for_outputs(bypass_surface_plan(128, 8), false, Some(fixed_request));
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+    assert!(!composed.gpu_readback_failed);
+    assert!(gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation);
+    gpu_backend_mut(&mut sparkleflinger).discard_preview_work();
+}
+
+#[test]
+fn active_preview_request_successful_none_clears() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let initial = sparkleflinger
+        .prepare_canvas_resize(64, 4)
+        .expect("initial GPU canvas should prepare");
+    assert!(initial.is_admitted());
+    sparkleflinger.apply_canvas_resize(initial);
+    let request = PreviewSurfaceRequest {
+        width: 64,
+        height: 4,
+    };
+    let plan = bypass_surface_plan(64, 4);
+    let composed = sparkleflinger.compose_for_outputs(plan.clone(), false, Some(request));
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+    assert_eq!(sparkleflinger.active_preview_request, Some(request));
+
+    let composed = sparkleflinger.compose_for_outputs(plan, false, None);
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+    assert_eq!(sparkleflinger.active_preview_request, None);
+
+    gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation();
+    assert!(
+        sparkleflinger
+            .prepare_canvas_resize(128, 8)
+            .expect("GPU resize without preview should prepare")
+            .is_admitted()
+    );
+    assert!(gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation);
+}
+
+#[test]
+fn active_preview_request_failed_compose_retains_last_good() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let initial = sparkleflinger
+        .prepare_canvas_resize(64, 4)
+        .expect("initial GPU canvas should prepare");
+    assert!(initial.is_admitted());
+    sparkleflinger.apply_canvas_resize(initial);
+    let retained_request = PreviewSurfaceRequest {
+        width: 64,
+        height: 4,
+    };
+    let composed = sparkleflinger.compose_for_outputs(
+        bypass_surface_plan(64, 4),
+        false,
+        Some(retained_request),
+    );
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+
+    let mut canvas = Canvas::new(64, 4);
+    canvas.fill(Rgba::new(80, 160, 224, 255));
+    let gpu_frame = sparkleflinger
+        .upload_canvas_frame(&canvas)
+        .expect("GPU frame should upload");
+    gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation();
+    let rejected_request = PreviewSurfaceRequest {
+        width: 32,
+        height: 2,
+    };
+    let composed = sparkleflinger.compose_for_outputs(
+        CompositionPlan::with_layers(
+            64,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::GpuTexture(gpu_frame)),
+                CompositionLayer::alpha(
+                    ProducerFrame::Surface(slot_surface_with_size(
+                        64,
+                        4,
+                        Rgba::new(224, 48, 112, 255),
+                    )),
+                    0.25,
+                ),
+            ],
+        ),
+        false,
+        Some(rejected_request),
+    );
+    assert_eq!(composed.backend, CompositorBackendKind::GpuFallback);
+    assert!(composed.gpu_readback_failed);
+    assert_eq!(
+        sparkleflinger.active_preview_request,
+        Some(retained_request)
+    );
+    assert!(
+        gpu_backend_mut(&mut sparkleflinger)
+            .preview_surfaces
+            .is_none()
+    );
+}
+
+#[test]
+fn active_preview_request_replaces_stale_surface_on_resize() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let initial = sparkleflinger
+        .prepare_canvas_resize(64, 4)
+        .expect("initial GPU canvas should prepare");
+    assert!(initial.is_admitted());
+    sparkleflinger.apply_canvas_resize(initial);
+    let stale_request = PreviewSurfaceRequest {
+        width: 32,
+        height: 2,
+    };
+    let composed =
+        sparkleflinger.compose_for_outputs(layered_surface_plan(64, 4), false, Some(stale_request));
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+    assert!(
+        gpu_backend_mut(&mut sparkleflinger)
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| {
+                surfaces.width == stale_request.width && surfaces.height == stale_request.height
+            })
+    );
+
+    let active_request = PreviewSurfaceRequest {
+        width: 64,
+        height: 4,
+    };
+    let composed =
+        sparkleflinger.compose_for_outputs(bypass_surface_plan(64, 4), false, Some(active_request));
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+    assert_eq!(sparkleflinger.active_preview_request, Some(active_request));
+    assert!(
+        gpu_backend_mut(&mut sparkleflinger)
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| {
+                surfaces.width == stale_request.width && surfaces.height == stale_request.height
+            })
+    );
+
+    let prepared = sparkleflinger
+        .prepare_canvas_resize(128, 8)
+        .expect("resize should prepare the authoritative request");
+    assert!(prepared.is_admitted());
+    sparkleflinger.apply_canvas_resize(prepared);
+    assert!(
+        gpu_backend_mut(&mut sparkleflinger)
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| {
+                surfaces.width == active_request.width
+                    && surfaces.height == active_request.height
+                    && surfaces.has_scale_output()
+            })
+    );
+}
+
+#[test]
+fn active_preview_request_cpu_fallback_change_survives_gpu_readmission() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let initial = sparkleflinger
+        .prepare_canvas_resize(64, 4)
+        .expect("initial GPU canvas should prepare");
+    assert!(initial.is_admitted());
+    sparkleflinger.apply_canvas_resize(initial);
+    let old_request = PreviewSurfaceRequest {
+        width: 64,
+        height: 4,
+    };
+    let composed =
+        sparkleflinger.compose_for_outputs(bypass_surface_plan(64, 4), false, Some(old_request));
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+
+    let fallback_width = sparkleflinger
+        .max_texture_dimension_2d()
+        .expect("GPU backend should expose its texture limit")
+        .checked_add(1)
+        .expect("GPU texture limit should leave a CPU fallback extent");
+    let fallback = sparkleflinger
+        .prepare_canvas_resize(fallback_width, 1)
+        .expect("CPU fallback canvas should prepare");
+    assert!(!fallback.is_admitted());
+    sparkleflinger.apply_canvas_resize(fallback);
+    let fallback_request = PreviewSurfaceRequest {
+        width: 32,
+        height: 1,
+    };
+    let composed = sparkleflinger.compose_for_outputs(
+        bypass_surface_plan(fallback_width, 1),
+        false,
+        Some(fallback_request),
+    );
+    assert_eq!(composed.backend, CompositorBackendKind::GpuFallback);
+    assert!(!composed.gpu_readback_failed);
+    assert_eq!(
+        sparkleflinger.active_preview_request,
+        Some(fallback_request)
+    );
+
+    gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation();
+    let rejected = sparkleflinger
+        .prepare_canvas_resize(128, 8)
+        .expect("CPU fallback should prepare after injected GPU rejection");
+    assert!(!rejected.is_admitted());
+
+    let prepared = sparkleflinger
+        .prepare_canvas_resize(128, 8)
+        .expect("GPU re-admission should prepare the fallback request");
+    assert!(prepared.is_admitted());
+    sparkleflinger.apply_canvas_resize(prepared);
+    assert!(
+        gpu_backend_mut(&mut sparkleflinger)
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| {
+                surfaces.width == fallback_request.width
+                    && surfaces.height == fallback_request.height
+                    && surfaces.has_scale_output()
+            })
+    );
+
+    gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation();
+    let composed = sparkleflinger.compose_for_outputs(
+        bypass_surface_plan(128, 8),
+        false,
+        Some(fallback_request),
+    );
+    assert_eq!(composed.backend, CompositorBackendKind::Gpu);
+    assert!(!composed.gpu_readback_failed);
+    assert!(gpu_backend_mut(&mut sparkleflinger).fail_next_preview_scale_output_preparation);
+    gpu_backend_mut(&mut sparkleflinger).discard_preview_work();
+}
+
+#[test]
 fn frame_boundary_sampling_preparation_failure_preserves_active_generation() {
     let Ok(mut compositor) = GpuSparkleFlinger::new() else {
         return;
     };
-    let initial = compositor.prepare_canvas_resize(4, 4);
+    let initial = compositor.prepare_canvas_resize(4, 4, None);
     assert!(initial.is_admitted());
     compositor.apply_canvas_resize(initial);
     let frame = compositor
@@ -257,7 +608,7 @@ fn frame_boundary_sampling_preparation_failure_preserves_active_generation() {
     assert_eq!(compositor.sampling_latch.buffer_extent(), Some((4, 4)));
 
     compositor.fail_next_sampling_readback_preparation();
-    let rejected = compositor.prepare_canvas_resize(8, 8);
+    let rejected = compositor.prepare_canvas_resize(8, 8, None);
     assert!(!rejected.is_admitted());
     assert_eq!(
         compositor
@@ -267,7 +618,7 @@ fn frame_boundary_sampling_preparation_failure_preserves_active_generation() {
     );
     assert_eq!(compositor.sampling_latch.buffer_extent(), Some((4, 4)));
 
-    let prepared = compositor.prepare_canvas_resize(8, 8);
+    let prepared = compositor.prepare_canvas_resize(8, 8, None);
     assert!(prepared.is_admitted());
     compositor.apply_canvas_resize(prepared);
     assert_eq!(
@@ -284,7 +635,7 @@ fn frame_boundary_resize_retains_prepared_screen_upload_descriptors() {
     let Ok(mut compositor) = GpuSparkleFlinger::new() else {
         return;
     };
-    let initial = compositor.prepare_canvas_resize(4, 4);
+    let initial = compositor.prepare_canvas_resize(4, 4, None);
     assert!(initial.is_admitted());
     compositor.apply_canvas_resize(initial);
     let device = compositor.device.clone();
@@ -306,7 +657,7 @@ fn frame_boundary_resize_retains_prepared_screen_upload_descriptors() {
         texture.storage_id
     };
 
-    let prepared = compositor.prepare_canvas_resize(8, 8);
+    let prepared = compositor.prepare_canvas_resize(8, 8, None);
     assert!(prepared.is_admitted());
     compositor.apply_canvas_resize(prepared);
     let pool = &mut compositor
