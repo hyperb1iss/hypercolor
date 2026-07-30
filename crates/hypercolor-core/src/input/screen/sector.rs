@@ -6,6 +6,7 @@
 //! backend dependency.
 
 use crate::types::canvas::{Rgb, linear_to_srgb_u8, srgb_u8_to_linear};
+use rayon::prelude::*;
 use thiserror::Error;
 
 use super::CaptureTransferFunction;
@@ -306,37 +307,72 @@ impl SectorGrid {
     ) -> Option<Self> {
         let cols = cols.max(1);
         let rows = rows.max(1);
-        let total_sectors = usize::try_from(cols)
-            .ok()?
-            .checked_mul(usize::try_from(rows).ok()?)?;
-        let stride = usize::try_from(width).ok()?.checked_mul(4)?;
-        let expected_len = usize::try_from(height).ok()?.checked_mul(stride)?;
-        if width == 0 || height == 0 || frame.len() < expected_len {
-            return None;
-        }
+        let mut grid = Self::try_with_capacity(cols, rows)?;
+        grid.try_update(frame, width, height, cols, rows)
+            .then_some(grid)
+    }
 
+    /// Reserve reusable storage for at most `cols * rows` sectors.
+    #[must_use]
+    pub fn try_with_capacity(cols: u32, rows: u32) -> Option<Self> {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        let total_sectors = checked_sector_count(cols, rows)?;
         let mut colors = Vec::new();
         colors.try_reserve_exact(total_sectors).ok()?;
+        Some(Self { cols, rows, colors })
+    }
 
-        let sector_w = width / cols;
-        let sector_h = height / rows;
+    /// Recompute a grid in place without growing beyond prepared capacity.
+    pub fn try_update(
+        &mut self,
+        frame: &[u8],
+        width: u32,
+        height: u32,
+        cols: u32,
+        rows: u32,
+    ) -> bool {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        let Some(total_sectors) = checked_sector_count(cols, rows) else {
+            return false;
+        };
+        let Some(stride) = usize::try_from(width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+        else {
+            return false;
+        };
+        let Some(expected_len) = usize::try_from(height)
+            .ok()
+            .and_then(|height| height.checked_mul(stride))
+        else {
+            return false;
+        };
+        if width == 0
+            || height == 0
+            || frame.len() < expected_len
+            || self.colors.capacity() < total_sectors
+        {
+            return false;
+        }
 
-        for r in 0..rows {
-            let y_start = r * sector_h;
-            let y_end = if r == rows - 1 {
-                height
-            } else {
-                (r + 1) * sector_h
-            };
+        self.cols = cols;
+        self.rows = rows;
+        self.colors.resize(total_sectors, [0, 0, 0]);
+        let cols_usize = usize::try_from(cols).expect("validated sector columns fit usize");
 
-            for c in 0..cols {
-                let x_start = c * sector_w;
-                let x_end = if c == cols - 1 {
-                    width
-                } else {
-                    (c + 1) * sector_w
-                };
-
+        self.colors
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(index, color)| {
+                let r = u32::try_from(index / cols_usize).expect("validated sector row fits u32");
+                let c =
+                    u32::try_from(index % cols_usize).expect("validated sector column fits u32");
+                let (y_start, y_end) = proportional_sector_bounds(r, height, rows)
+                    .expect("validated sector row has source bounds");
+                let (x_start, x_end) = proportional_sector_bounds(c, width, cols)
+                    .expect("validated sector column has source bounds");
                 let (sum_r, sum_g, sum_b, count) =
                     accumulate_region(frame, stride, x_start, x_end, y_start, y_end);
 
@@ -346,15 +382,14 @@ impl SectorGrid {
                     reason = "pixel count is always safely representable as f32"
                 )]
                 let n_f = count.max(1) as f32;
-                colors.push([
+                *color = [
                     linear_to_srgb_u8((sum_r / n_f) / 255.0),
                     linear_to_srgb_u8((sum_g / n_f) / 255.0),
                     linear_to_srgb_u8((sum_b / n_f) / 255.0),
-                ]);
-            }
-        }
+                ];
+            });
 
-        Some(Self { cols, rows, colors })
+        true
     }
 
     /// Number of columns in the grid.
@@ -379,12 +414,25 @@ impl SectorGrid {
     ///
     /// Returns black if coordinates are out of bounds.
     #[must_use]
-    #[allow(clippy::as_conversions)]
     pub fn get(&self, col: u32, row: u32) -> [u8; 3] {
         if col >= self.cols || row >= self.rows {
             return [0, 0, 0];
         }
-        let idx = (row * self.cols + col) as usize;
+        let Some(idx) = usize::try_from(row)
+            .ok()
+            .and_then(|row| {
+                usize::try_from(self.cols)
+                    .ok()
+                    .and_then(|cols| row.checked_mul(cols))
+            })
+            .and_then(|offset| {
+                usize::try_from(col)
+                    .ok()
+                    .and_then(|col| offset.checked_add(col))
+            })
+        else {
+            return [0, 0, 0];
+        };
         self.colors.get(idx).copied().unwrap_or([0, 0, 0])
     }
 
@@ -392,6 +440,11 @@ impl SectorGrid {
     #[must_use]
     pub fn colors(&self) -> &[[u8; 3]] {
         &self.colors
+    }
+
+    #[must_use]
+    pub fn color_capacity(&self) -> usize {
+        self.colors.capacity()
     }
 
     /// Map sector grid to zone IDs, producing one `(zone_id, [r, g, b])` per sector.
@@ -450,7 +503,6 @@ impl SectorGrid {
     ///
     /// Returns `None` if bars consume the entire grid (degenerate case).
     #[must_use]
-    #[allow(clippy::as_conversions)]
     pub fn crop_letterbox(&self, bars: &LetterboxBars) -> Option<Self> {
         let top = bars.top.min(self.rows);
         let bottom = bars.bottom.min(self.rows.saturating_sub(top));
@@ -464,7 +516,11 @@ impl SectorGrid {
             return None;
         }
 
-        let mut colors = Vec::with_capacity((new_rows * new_cols) as usize);
+        let capacity = usize::try_from(new_rows)
+            .ok()?
+            .checked_mul(usize::try_from(new_cols).ok()?)?;
+        let mut colors = Vec::new();
+        colors.try_reserve_exact(capacity).ok()?;
         for r in top..(self.rows - bottom) {
             for c in left..(self.cols - right) {
                 colors.push(self.get(c, r));
@@ -568,6 +624,24 @@ impl SectorGrid {
         colors.resize(total_sectors, [0, 0, 0]);
         Self { cols, rows, colors }
     }
+}
+
+fn checked_sector_count(cols: u32, rows: u32) -> Option<usize> {
+    usize::try_from(cols)
+        .ok()?
+        .checked_mul(usize::try_from(rows).ok()?)
+}
+
+#[must_use]
+pub fn proportional_sector_bounds(index: u32, extent: u32, divisions: u32) -> Option<(u32, u32)> {
+    if extent == 0 || divisions == 0 || index >= divisions {
+        return None;
+    }
+    let start = u64::from(index) * u64::from(extent) / u64::from(divisions);
+    let end = (u64::from(index) + 1) * u64::from(extent) / u64::from(divisions);
+    let start = u32::try_from(start).expect("scaled sector start fits source extent");
+    let end = u32::try_from(end).expect("scaled sector end fits source extent");
+    Some((start, end.max(start.saturating_add(1)).min(extent)))
 }
 
 // ── LetterboxBars ─────────────────────────────────────────────────────────

@@ -4,11 +4,16 @@
 
 use std::time::Duration;
 
-use hypercolor_core::input::screen::sector::{LetterboxBars, SectorGrid};
+use hypercolor_core::input::screen::sector::{
+    LetterboxBars, SectorGrid, proportional_sector_bounds,
+};
 use hypercolor_core::input::screen::smooth::TemporalSmoother;
-use hypercolor_core::input::screen::{CaptureConfig, ColorTuning, PixelExtent, ScreenCaptureInput};
+use hypercolor_core::input::screen::{
+    CaptureConfig, ColorTuning, MAX_REPRESENTABLE_CAPTURE_FPS, PixelExtent,
+    ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenCaptureInput,
+};
 use hypercolor_core::input::{InputData, InputSource};
-use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
+use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, SurfaceResourceError};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -366,6 +371,112 @@ fn zone_mapping_1x1_grid() {
     assert_eq!(zones[0].1, [42, 42, 42]);
 }
 
+#[test]
+fn oversubscribed_grid_samples_every_sector_from_source_pixels() {
+    let frame = vec![255, 0, 0, 255, 0, 0, 255, 255];
+    let grid = SectorGrid::try_compute(&frame, 2, 1, 4, 1).expect("grid is admitted");
+
+    assert_eq!(
+        grid.colors(),
+        &[[255, 0, 0], [255, 0, 0], [0, 0, 255], [0, 0, 255]]
+    );
+}
+
+#[test]
+fn proportional_sector_bounds_handle_u32_max_geometry() {
+    assert_eq!(
+        proportional_sector_bounds(u32::MAX - 1, u32::MAX, u32::MAX),
+        Some((u32::MAX - 1, u32::MAX))
+    );
+    assert_eq!(proportional_sector_bounds(0, 1, 4), Some((0, 1)));
+}
+
+#[test]
+fn sector_grid_updates_reuse_prepared_color_storage() {
+    let mut grid = SectorGrid::try_with_capacity(8, 6).expect("grid storage is prepared");
+    let capacity = grid.color_capacity();
+    let frame = solid_frame(8, 6, 10, 20, 30);
+
+    assert!(grid.try_update(&frame, 8, 6, 8, 6));
+    assert!(grid.try_update(&frame, 8, 6, 4, 3));
+    assert_eq!(grid.color_capacity(), capacity);
+}
+
+#[test]
+fn analysis_resource_plan_uses_checked_byte_admission_without_axis_caps() {
+    let unconstrained = ScreenAnalysisResourcePlan::try_new(256, 2, 30, u64::MAX)
+        .expect("wide grid arithmetic is valid");
+    let exact = unconstrained.peak_bytes();
+
+    assert_eq!(
+        ScreenAnalysisResourcePlan::try_new(256, 2, 30, exact),
+        Ok(unconstrained)
+    );
+    assert!(ScreenAnalysisResourcePlan::try_new(256, 2, 30, exact - 1).is_err());
+    assert_eq!(unconstrained.grid_cells(), 512);
+    assert_eq!(unconstrained.frame_work_units(), 1_536);
+}
+
+#[test]
+fn analysis_constructor_rejects_grid_above_installed_capacity() {
+    let config = CaptureConfig {
+        grid_cols: 256,
+        grid_rows: 2,
+        analysis_memory_bytes: 1,
+        ..CaptureConfig::default()
+    };
+    let extent = PixelExtent::new(1, 1).expect("extent is non-empty");
+
+    assert!(ScreenCaptureInput::with_requested_extent(config, extent).is_err());
+}
+
+#[test]
+fn analysis_resource_plan_rejects_work_above_installed_executor_capacity() {
+    let error =
+        ScreenAnalysisResourcePlan::try_new(u32::MAX, 2, MAX_REPRESENTABLE_CAPTURE_FPS, u64::MAX)
+            .expect_err("extreme work cannot monopolize the installed executor");
+
+    assert!(matches!(
+        error,
+        SurfaceResourceError::AnalysisWorkCapacityExceeded { .. }
+    ));
+}
+
+#[test]
+fn analysis_compute_admission_scales_across_fps_and_worker_capacity() {
+    let two_workers =
+        ScreenAnalysisComputeCapacity::new(2, 300).expect("explicit compute capacity is non-empty");
+    let four_workers =
+        ScreenAnalysisComputeCapacity::new(4, 300).expect("explicit compute capacity is non-empty");
+
+    let exact =
+        ScreenAnalysisResourcePlan::try_new_with_compute_capacity(10, 10, 2, u64::MAX, two_workers)
+            .expect("two workers admit the exact per-frame boundary");
+    assert_eq!(exact.frame_work_units(), exact.frame_work_capacity());
+    assert!(
+        ScreenAnalysisResourcePlan::try_new_with_compute_capacity(
+            10,
+            10,
+            3,
+            u64::MAX,
+            two_workers,
+        )
+        .is_err()
+    );
+    let worker_scaled = ScreenAnalysisResourcePlan::try_new_with_compute_capacity(
+        10,
+        10,
+        4,
+        u64::MAX,
+        four_workers,
+    )
+    .expect("doubling workers offsets doubling FPS");
+    assert_eq!(
+        worker_scaled.frame_work_capacity(),
+        exact.frame_work_capacity()
+    );
+}
+
 // ── Temporal Smoothing: Step Change ──────────────────────────────────────
 
 #[test]
@@ -688,6 +799,40 @@ fn screen_capture_input_reuses_downscale_surface_pool_after_warmup() {
 }
 
 #[test]
+fn screen_zone_snapshots_reuse_three_prepared_slots_without_growth() {
+    let mut input = ScreenCaptureInput::new(CaptureConfig::default());
+    input.start().expect("screen input starts");
+    let frame = solid_frame(8, 6, 30, 60, 90);
+
+    let mut snapshots = Vec::new();
+    for _ in 0..3 {
+        assert!(input.push_frame(&frame, 8, 6).expect("frame is admitted"));
+        let InputData::Screen(mut snapshot) = input.sample().expect("snapshot publishes") else {
+            panic!("expected screen data");
+        };
+        snapshot.canvas_downscale = None;
+        snapshots.push(snapshot);
+    }
+
+    assert!(
+        !input
+            .push_frame(&frame, 8, 6)
+            .expect("pool exhaustion is a valid latest-value drop")
+    );
+    let reclaimed_pointer = snapshots[0].zone_colors.as_ptr();
+    snapshots.remove(0);
+    assert!(
+        input
+            .push_frame(&frame, 8, 6)
+            .expect("released slot is reusable")
+    );
+    let InputData::Screen(reused) = input.sample().expect("reused snapshot publishes") else {
+        panic!("expected screen data");
+    };
+    assert_eq!(reused.zone_colors.as_ptr(), reclaimed_pointer);
+}
+
+#[test]
 fn screen_capture_input_zone_ids_in_screen_data() {
     let config = CaptureConfig {
         grid_cols: 2,
@@ -824,7 +969,7 @@ fn temporal_smoother_rejects_invalid_grid_math_transactionally() {
     let mut overflowing = [[255, 0, 255]];
     smoother.apply_for_elapsed_grid(
         &mut overflowing,
-        u32::MAX,
+        MAX_REPRESENTABLE_CAPTURE_FPS,
         u32::MAX,
         Duration::from_millis(16),
     );

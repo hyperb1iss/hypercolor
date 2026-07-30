@@ -3,8 +3,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::{
-    ScreenExactResource, ScreenExactResourceLedger, ScreenPlanError, ScreenPreparedWorkerToken,
-    ScreenResourceLifetime, ScreenWorkerPreparationTicket,
+    ScreenByteReservation, ScreenExactResource, ScreenExactResourceLedger, ScreenPlanError,
+    ScreenPreparedWorkerToken, ScreenResourceLifetime, ScreenWorkerPreparationTicket,
 };
 
 /// Ticket-scoped construction of one exhaustive exact worker ledger.
@@ -13,6 +13,7 @@ pub struct ScreenWorkerExactLedgerBuilder {
     ticket: ScreenWorkerPreparationTicket,
     reported_bytes: Vec<Option<u64>>,
     additional_resources: Vec<ScreenExactResource>,
+    admission_top_ups: Vec<ScreenByteReservation>,
 }
 
 impl ScreenWorkerExactLedgerBuilder {
@@ -33,7 +34,21 @@ impl ScreenWorkerExactLedgerBuilder {
             ticket,
             reported_bytes,
             additional_resources: Vec::new(),
+            admission_top_ups: Vec::new(),
         })
+    }
+
+    /// Reserve unmodeled exact bytes before allocating their backing storage.
+    pub fn preflight_additional_bytes(
+        &mut self,
+        bytes: u64,
+    ) -> Result<(), ScreenWorkerLedgerBuildError> {
+        let reservation = self.ticket.reserve_additional_exact_bytes(bytes)?;
+        self.admission_top_ups
+            .try_reserve(1)
+            .map_err(|_| ScreenWorkerLedgerBuildError::AllocationFailed)?;
+        self.admission_top_ups.push(reservation);
+        Ok(())
     }
 
     /// Source- and transaction-bound worker ticket being reported.
@@ -231,7 +246,11 @@ impl ScreenWorkerExactLedgerBuilder {
             resources.push(resource);
         }
         let exact_ledger = ScreenExactResourceLedger::try_new(resources)?;
-        let token = self.ticket.acknowledge(exact_ledger, &lifetimes)?;
+        let token = self.ticket.acknowledge_with_admission(
+            exact_ledger,
+            &lifetimes,
+            self.admission_top_ups,
+        )?;
         Ok(ScreenWorkerExactLedger { token, lifetimes })
     }
 }

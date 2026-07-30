@@ -690,6 +690,15 @@ pub struct CaptureConfig {
     #[serde(default = "defaults::capture_grid_rows")]
     pub grid_rows: u32,
 
+    /// Process-memory byte budget shared by analysis and screen publications.
+    ///
+    /// When omitted, the daemon snapshots currently available host memory
+    /// during startup. The analyzer reserves its peak first and publication
+    /// plans consume the remainder. Dimensions remain unconstrained; checked
+    /// memory and compute admission determine whether a configuration fits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_memory_bytes: Option<u64>,
+
     /// Temporal smoothing factor (0.0 = frozen, 1.0 = raw).
     #[serde(default = "defaults::capture_smoothing")]
     pub smoothing: f32,
@@ -770,13 +779,19 @@ pub enum CaptureConfigValidationError {
         /// Rejected value.
         value: u32,
     },
-    /// A grid dimension is outside the indexed publication format.
-    #[error("capture.{field} must be in 1..=64, got {value}")]
+    /// A grid dimension is empty.
+    #[error("capture.{field} must be non-zero, got {value}")]
     GridDimension {
         /// Config field name.
         field: &'static str,
         /// Rejected value.
         value: u32,
+    },
+    /// An explicit publication-memory budget is empty.
+    #[error("capture.publication_memory_bytes must be non-zero, got {value}")]
+    PublicationMemoryBudget {
+        /// Rejected byte budget.
+        value: u64,
     },
     /// A floating-point setting is non-finite or outside its semantic range.
     #[error("capture.{field} must be finite and in {min}..={max}, got {value}")]
@@ -826,6 +841,9 @@ impl CaptureConfig {
         }
         validate_grid_dimension("grid_cols", self.grid_cols)?;
         validate_grid_dimension("grid_rows", self.grid_rows)?;
+        if self.publication_memory_bytes == Some(0) {
+            return Err(CaptureConfigValidationError::PublicationMemoryBudget { value: 0 });
+        }
         validate_capture_float("smoothing", self.smoothing, 0.0, 1.0)?;
         validate_capture_float("scene_cut_threshold", self.scene_cut_threshold, 0.0, 765.0)?;
         validate_capture_float("letterbox_threshold", self.letterbox_threshold, 0.0, 1.0)?;
@@ -844,7 +862,7 @@ fn validate_grid_dimension(
     field: &'static str,
     value: u32,
 ) -> Result<(), CaptureConfigValidationError> {
-    if (1..=64).contains(&value) {
+    if value != 0 {
         Ok(())
     } else {
         Err(CaptureConfigValidationError::GridDimension { field, value })
@@ -918,6 +936,7 @@ impl Default for CaptureConfig {
             capture_fps: defaults::capture_fps(),
             grid_cols: defaults::capture_grid_cols(),
             grid_rows: defaults::capture_grid_rows(),
+            publication_memory_bytes: None,
             smoothing: defaults::capture_smoothing(),
             scene_cut_threshold: defaults::capture_scene_cut_threshold(),
             letterbox: false,

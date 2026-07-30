@@ -51,6 +51,7 @@ pub use status::{
 pub use traits::{
     InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
     InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,
+    ScreenZoneColors,
 };
 pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
@@ -250,6 +251,7 @@ pub struct InputManager {
     screen_publication_resolution_revision: u64,
     committed_screen_publication_resolution_revision: Option<u64>,
     screen_plan_builder: screen::ScreenPlanBuilder,
+    screen_resource_capacity: screen::ScreenAdmissionCapacity,
     screen_publication_capacity: screen::ScreenAdmissionCapacity,
     interaction_capture_active: Option<bool>,
     sensor_poller: Option<SensorPoller>,
@@ -473,6 +475,7 @@ impl InputManager {
             screen_publication_resolution_revision: 0,
             committed_screen_publication_resolution_revision: None,
             screen_plan_builder: screen::ScreenPlanBuilder::new(),
+            screen_resource_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
             screen_publication_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
             interaction_capture_active: None,
             sensor_poller: None,
@@ -968,9 +971,49 @@ impl InputManager {
         self.screen_plan_builder.publication_hub()
     }
 
+    /// Shared byte admission authority for preconstructed screen resources.
+    #[must_use]
+    pub fn screen_admission_coordinator(&self) -> screen::ScreenByteAdmissionCoordinator {
+        self.screen_plan_builder.admission_coordinator()
+    }
+
     /// Set the process and backend byte fences used for future exact plans.
-    pub fn set_screen_publication_capacity(&mut self, capacity: screen::ScreenAdmissionCapacity) {
+    pub fn set_screen_publication_capacity(
+        &mut self,
+        capacity: screen::ScreenAdmissionCapacity,
+    ) -> Result<(), screen::ScreenByteAdmissionError> {
+        self.screen_plan_builder
+            .admission_coordinator()
+            .try_set_capacity(capacity)?;
+        self.screen_resource_capacity = capacity;
         self.screen_publication_capacity = capacity;
+        Ok(())
+    }
+
+    /// Atomically install the total capture fence and its post-analysis remainder.
+    pub fn set_screen_capacity_plan(
+        &mut self,
+        total: screen::ScreenAdmissionCapacity,
+        publication: screen::ScreenAdmissionCapacity,
+    ) -> Result<(), screen::ScreenByteAdmissionError> {
+        self.screen_plan_builder
+            .admission_coordinator()
+            .try_set_capacity(publication)?;
+        self.screen_resource_capacity = total;
+        self.screen_publication_capacity = publication;
+        Ok(())
+    }
+
+    /// Return the total byte fences shared by analysis and publication.
+    #[must_use]
+    pub const fn screen_resource_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.screen_resource_capacity
+    }
+
+    /// Return the byte fences installed for screen publication admission.
+    #[must_use]
+    pub const fn screen_publication_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.screen_publication_capacity
     }
 
     /// Refresh the process-wide revision of exact screen source metadata.
@@ -1124,7 +1167,7 @@ impl InputManager {
             compatibility.as_ref(),
             demand.revision(),
             demand.graph_generation(),
-            self.screen_publication_capacity,
+            self.screen_publication_capacity(),
         )?;
 
         let required_sources = preparing.required_sources().to_vec();

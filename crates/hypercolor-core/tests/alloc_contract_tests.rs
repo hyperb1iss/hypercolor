@@ -127,6 +127,24 @@ fn steady_screen_push_control() -> [(Stats, Stats); 3] {
     ]
 }
 
+fn steady_screen_sample_control() -> (Stats, Stats) {
+    let mut input = ScreenCaptureInput::new(CaptureConfig::default());
+    input.start().expect("screen input should start");
+    let frame = patterned_rgba_frame(64, 48);
+    input
+        .push_frame(&frame, 64, 48)
+        .expect("warm screen frame remains admitted");
+    drop(input.sample().expect("warm screen sample succeeds"));
+
+    let sample = |input: &mut ScreenCaptureInput| {
+        let mut region = Region::new(GLOBAL);
+        region.reset();
+        drop(black_box(input).sample().expect("screen sample succeeds"));
+        region.change()
+    };
+    (sample(&mut input), sample(&mut input))
+}
+
 fn smoother_round(
     smoother: &mut TemporalSmoother,
     colors: &mut [[u8; 3]],
@@ -658,17 +676,21 @@ fn counting_allocator_is_active_and_scoped() {
     }
 
     for (first_screen_push, second_screen_push) in steady_screen_push_control() {
-        assert_eq!(first_screen_push, second_screen_push);
+        assert_eq!(second_screen_push, first_screen_push);
         assert_eq!(first_screen_push.reallocations, 0);
         assert!(
-            first_screen_push.allocations <= 16 * 9 + 5,
-            "steady screen push exceeded the zone strings plus five publication containers: {first_screen_push:?}"
+            first_screen_push.allocations <= 2,
+            "parallel scheduling must stay constant, not scale per zone: {first_screen_push:?}"
         );
         assert!(
-            first_screen_push.bytes_allocated <= 12 * 1_024,
-            "steady screen push copied or rebuilt large frame state: {first_screen_push:?}"
+            first_screen_push.bytes_allocated <= 128,
+            "screen analysis allocated frame-sized state after warmup: {first_screen_push:?}"
         );
     }
+
+    let (first_screen_sample, second_screen_sample) = steady_screen_sample_control();
+    assert_eq!(first_screen_sample, Stats::default());
+    assert_eq!(second_screen_sample, first_screen_sample);
 
     let (first_route, second_route) = steady_router_resolution_control();
     assert_eq!(first_route, Stats::default());

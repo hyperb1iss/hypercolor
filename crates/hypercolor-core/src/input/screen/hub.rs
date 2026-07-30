@@ -3,7 +3,7 @@
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -17,7 +17,8 @@ use super::plan::{
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat,
     CaptureTransferFunction, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
-    ResolvedScreenPublicationDescriptor, ScreenPublicationKind, ScreenPublicationResidency,
+    ResolvedScreenPublicationDescriptor, ScreenByteLease, ScreenPublicationKind,
+    ScreenPublicationResidency,
 };
 
 const SURFACE_PIXEL_BYTES: u64 = 4;
@@ -888,6 +889,7 @@ struct ScreenBranchEntry {
     retired: AtomicBool,
     allocation_bytes: u64,
     retirement_charge: Arc<ScreenRetirementCharge>,
+    admission_lease: OnceLock<ScreenByteLease>,
 }
 
 impl ScreenBranchEntry {
@@ -931,7 +933,16 @@ impl ScreenBranchEntry {
             retired: AtomicBool::new(false),
             allocation_bytes,
             retirement_charge,
+            admission_lease: OnceLock::new(),
         })
+    }
+
+    fn install_admission_lease(&self, lease: ScreenByteLease) {
+        let installed = self.admission_lease.set(lease);
+        assert!(
+            installed.is_ok(),
+            "publication pool admission installs once"
+        );
     }
 
     fn lock_runtime(&self) -> MutexGuard<'_, ScreenBranchRuntime> {
@@ -1307,6 +1318,23 @@ impl ScreenCommittedState {
 
     pub(crate) fn pending_retirement_counter(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.pending_retired_bytes)
+    }
+
+    pub(crate) fn install_new_branch_admission(
+        &self,
+        base: &Self,
+        reservation: &mut super::ScreenByteReservation,
+    ) {
+        for branch in self.branches.iter().filter(|branch| {
+            base.branch(&branch.entry.descriptor)
+                .is_none_or(|active| !Arc::ptr_eq(&active.entry, &branch.entry))
+        }) {
+            let claim = reservation
+                .split_off(branch.entry.allocation_bytes)
+                .expect("exact staged quote covers every new publication pool")
+                .freeze();
+            branch.entry.install_admission_lease(claim);
+        }
     }
 
     /// Fixed slot policy represented by this snapshot.

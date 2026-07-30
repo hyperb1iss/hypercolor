@@ -11,6 +11,7 @@ use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::PublishedSurface;
 use crate::types::event::{TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
+use std::ops::Deref;
 use std::sync::Arc;
 
 // ── InputData ──────────────────────────────────────────────────────────────
@@ -355,6 +356,46 @@ pub struct MotionAggregate {
 
 // ── ScreenData ─────────────────────────────────────────────────────────────
 
+/// Shared immutable view over one prepared screen-zone snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenZoneColors {
+    storage: Arc<Vec<ZoneColors>>,
+    len: usize,
+}
+
+impl ScreenZoneColors {
+    pub(crate) fn from_prepared(storage: Arc<Vec<ZoneColors>>, len: usize) -> Option<Self> {
+        (len <= storage.len()).then_some(Self { storage, len })
+    }
+}
+
+impl From<Vec<ZoneColors>> for ScreenZoneColors {
+    fn from(storage: Vec<ZoneColors>) -> Self {
+        let len = storage.len();
+        Self {
+            storage: Arc::new(storage),
+            len,
+        }
+    }
+}
+
+impl Deref for ScreenZoneColors {
+    type Target = [ZoneColors];
+
+    fn deref(&self) -> &Self::Target {
+        &self.storage[..self.len]
+    }
+}
+
+impl<'a> IntoIterator for &'a ScreenZoneColors {
+    type Item = &'a ZoneColors;
+    type IntoIter = std::slice::Iter<'a, ZoneColors>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Captured screen region colors, one entry per monitored zone.
 ///
 /// Screen capture sources produce this when grabbing display regions
@@ -362,7 +403,7 @@ pub struct MotionAggregate {
 #[derive(Debug, Clone)]
 pub struct ScreenData {
     /// Per-zone color data extracted from screen regions.
-    pub zone_colors: Vec<ZoneColors>,
+    pub zone_colors: ScreenZoneColors,
     /// Grid width used when deriving `zone_colors`.
     pub grid_width: u32,
     /// Grid height used when deriving `zone_colors`.
@@ -382,7 +423,7 @@ impl ScreenData {
     #[must_use]
     pub fn from_zones(zone_colors: Vec<ZoneColors>, grid_width: u32, grid_height: u32) -> Self {
         Self {
-            zone_colors,
+            zone_colors: zone_colors.into(),
             grid_width,
             grid_height,
             canvas_downscale: None,

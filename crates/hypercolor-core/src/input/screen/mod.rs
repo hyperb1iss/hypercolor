@@ -15,6 +15,7 @@
 //! The capture backend feeds raw pixel buffers. Everything downstream is
 //! backend-agnostic and testable with synthetic data.
 
+mod admission;
 mod cadence;
 mod coordinator;
 mod demand;
@@ -36,6 +37,10 @@ pub mod wayland;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+pub use admission::{
+    ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteAdmissionSnapshot,
+    ScreenByteLease, ScreenByteReservation,
+};
 pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
 };
@@ -122,7 +127,7 @@ pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
     CpuStorageCoordinate,
 };
-pub use sector::{LetterboxBars, SectorGrid};
+pub use sector::{LetterboxBars, SectorGrid, proportional_sector_bounds};
 pub use smooth::TemporalSmoother;
 pub use tune::ColorTuning;
 #[cfg(target_os = "linux")]
@@ -132,14 +137,18 @@ pub use windows::WindowsScreenCaptureFixture;
 #[cfg(target_os = "windows")]
 pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
 
-use crate::input::traits::{InputData, InputSource, ScreenData};
+use crate::input::traits::{InputData, InputSource, ScreenData, ScreenZoneColors};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::canvas::{
     DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
-    SurfaceDescriptor, SurfaceResourceError,
+    SurfaceDescriptor, SurfaceResourceError, SurfaceResourceOwner,
 };
 use crate::types::event::ZoneColors;
+use std::fmt::Write as _;
+use std::mem::size_of;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 
 /// Requested screen publication state for downstream render consumers.
 ///
@@ -280,6 +289,9 @@ pub struct CaptureConfig {
     /// Sector grid rows (vertical divisions). Default: 6.
     pub grid_rows: u32,
 
+    /// Maximum retained plus peak transient bytes admitted for grid analysis.
+    pub analysis_memory_bytes: u64,
+
     /// Temporal smoothing factor (0.0 = frozen, 1.0 = raw). Default: 0.3.
     pub smoothing_alpha: f32,
 
@@ -312,6 +324,7 @@ impl Default for CaptureConfig {
             target_fps: 30,
             grid_cols: 8,
             grid_rows: 6,
+            analysis_memory_bytes: u64::MAX,
             smoothing_alpha: 0.3,
             scene_cut_threshold: 100.0,
             letterbox_threshold: 0.02,
@@ -321,6 +334,345 @@ impl Default for CaptureConfig {
             source: "auto".to_owned(),
         }
     }
+}
+
+/// Checked retained, transient, and work ledger for one analysis grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenAnalysisResourcePlan {
+    grid_cells: usize,
+    extent_pixels: usize,
+    retained_bytes: u64,
+    extent_retained_bytes: u64,
+    transient_bytes: u64,
+    frame_work_units: u64,
+    frame_work_capacity: u64,
+    worker_count: u64,
+    max_zone_id_bytes: usize,
+}
+
+const ZONE_SNAPSHOT_SLOT_COUNT: usize = 3;
+/// Baseline grid-cell visits admitted per Rayon worker-second.
+///
+/// One analyzed cell consumes three visits: source analysis, policy analysis,
+/// and publication copy. This baseline admits an 8.3-million-cell grid at
+/// 60 FPS on 16 workers while still scaling the ceiling with installed CPU.
+pub const SCREEN_ANALYSIS_WORK_UNITS_PER_WORKER_SECOND: u64 = 120_000_000;
+
+/// Installed or caller-supplied compute fence for screen grid analysis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenAnalysisComputeCapacity {
+    worker_count: u64,
+    work_units_per_worker_second: u64,
+}
+
+impl ScreenAnalysisComputeCapacity {
+    /// Construct a non-empty compute fence.
+    #[must_use]
+    pub const fn new(worker_count: u64, work_units_per_worker_second: u64) -> Option<Self> {
+        if worker_count == 0 || work_units_per_worker_second == 0 {
+            return None;
+        }
+        Some(Self {
+            worker_count,
+            work_units_per_worker_second,
+        })
+    }
+
+    /// Capacity of the Rayon executor used by [`SectorGrid`].
+    #[must_use]
+    pub fn installed() -> Self {
+        Self {
+            worker_count: u64::try_from(rayon::current_num_threads()).unwrap_or(u64::MAX),
+            work_units_per_worker_second: SCREEN_ANALYSIS_WORK_UNITS_PER_WORKER_SECOND,
+        }
+    }
+
+    fn frame_capacity(self, target_fps: u32) -> u64 {
+        self.work_units_per_worker_second
+            .saturating_mul(self.worker_count)
+            .checked_div(u64::from(target_fps))
+            .unwrap_or(0)
+    }
+}
+
+struct PreparedZoneSnapshot {
+    zones: Arc<Vec<ZoneColors>>,
+    cols: u32,
+    rows: u32,
+}
+
+impl ScreenAnalysisResourcePlan {
+    /// Build a resource plan and admit it against a byte fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a checked geometry or capacity error without dimensional caps.
+    pub fn try_new(
+        grid_cols: u32,
+        grid_rows: u32,
+        target_fps: u32,
+        capacity_bytes: u64,
+    ) -> Result<Self, SurfaceResourceError> {
+        let extent = PixelExtent::new(1, 1).expect("unit analysis extent is non-empty");
+        Self::try_new_for_extent_with_compute_capacity(
+            grid_cols,
+            grid_rows,
+            target_fps,
+            extent,
+            capacity_bytes,
+            ScreenAnalysisComputeCapacity::installed(),
+        )
+    }
+
+    /// Build a complete grid and publication-extent resource plan.
+    pub fn try_new_for_extent(
+        grid_cols: u32,
+        grid_rows: u32,
+        target_fps: u32,
+        requested_extent: PixelExtent,
+        capacity_bytes: u64,
+    ) -> Result<Self, SurfaceResourceError> {
+        Self::try_new_for_extent_with_compute_capacity(
+            grid_cols,
+            grid_rows,
+            target_fps,
+            requested_extent,
+            capacity_bytes,
+            ScreenAnalysisComputeCapacity::installed(),
+        )
+    }
+
+    /// Build a plan against explicit memory and compute fences.
+    ///
+    /// This is the embedding override for calibrated or externally managed
+    /// executors; ordinary callers should use [`Self::try_new`].
+    pub fn try_new_with_compute_capacity(
+        grid_cols: u32,
+        grid_rows: u32,
+        target_fps: u32,
+        capacity_bytes: u64,
+        compute_capacity: ScreenAnalysisComputeCapacity,
+    ) -> Result<Self, SurfaceResourceError> {
+        let extent = PixelExtent::new(1, 1).expect("unit analysis extent is non-empty");
+        Self::try_new_for_extent_with_compute_capacity(
+            grid_cols,
+            grid_rows,
+            target_fps,
+            extent,
+            capacity_bytes,
+            compute_capacity,
+        )
+    }
+
+    /// Build a complete plan against explicit memory and compute fences.
+    pub fn try_new_for_extent_with_compute_capacity(
+        grid_cols: u32,
+        grid_rows: u32,
+        target_fps: u32,
+        requested_extent: PixelExtent,
+        capacity_bytes: u64,
+        compute_capacity: ScreenAnalysisComputeCapacity,
+    ) -> Result<Self, SurfaceResourceError> {
+        if grid_cols == 0 || grid_rows == 0 {
+            return Err(SurfaceResourceError::EmptyDimensions {
+                width: grid_cols,
+                height: grid_rows,
+            });
+        }
+        let grid_cells_u64 = u64::from(grid_cols)
+            .checked_mul(u64::from(grid_rows))
+            .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                width: grid_cols,
+                height: grid_rows,
+            })?;
+        let grid_cells = usize::try_from(grid_cells_u64).map_err(|_| {
+            SurfaceResourceError::ByteLengthOverflow {
+                width: grid_cols,
+                height: grid_rows,
+            }
+        })?;
+        let max_zone_id_bytes = "screen:sector_".len()
+            + decimal_digits(grid_rows.saturating_sub(1))
+            + 1
+            + decimal_digits(grid_cols.saturating_sub(1));
+        let sector_grid_bytes = size_of::<[u8; 3]>().checked_mul(2).ok_or(
+            SurfaceResourceError::ByteLengthOverflow {
+                width: grid_cols,
+                height: grid_rows,
+            },
+        )?;
+        let snapshot_cell_bytes = size_of::<ZoneColors>()
+            .checked_add(max_zone_id_bytes)
+            .and_then(|bytes| bytes.checked_add(size_of::<[u8; 3]>()))
+            .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                width: grid_cols,
+                height: grid_rows,
+            })?;
+        let retained_per_cell = u64::try_from(
+            snapshot_cell_bytes
+                .checked_mul(ZONE_SNAPSHOT_SLOT_COUNT)
+                .and_then(|bytes| bytes.checked_add(sector_grid_bytes))
+                .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                    width: grid_cols,
+                    height: grid_rows,
+                })?,
+        )
+        .map_err(|_| SurfaceResourceError::ByteLengthOverflow {
+            width: grid_cols,
+            height: grid_rows,
+        })?;
+        let grid_retained_bytes = grid_cells_u64.checked_mul(retained_per_cell).ok_or(
+            SurfaceResourceError::ByteLengthOverflow {
+                width: grid_cols,
+                height: grid_rows,
+            },
+        )?;
+        let extent_pixels_u64 = u64::from(requested_extent.width())
+            .checked_mul(u64::from(requested_extent.height()))
+            .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                width: requested_extent.width(),
+                height: requested_extent.height(),
+            })?;
+        let extent_pixels = usize::try_from(extent_pixels_u64).map_err(|_| {
+            SurfaceResourceError::ByteLengthOverflow {
+                width: requested_extent.width(),
+                height: requested_extent.height(),
+            }
+        })?;
+        let extent_retained_bytes =
+            extent_pixels_u64
+                .checked_mul(39)
+                .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                    width: requested_extent.width(),
+                    height: requested_extent.height(),
+                })?;
+        let retained_bytes = grid_retained_bytes
+            .checked_add(extent_retained_bytes)
+            .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                width: requested_extent.width(),
+                height: requested_extent.height(),
+            })?;
+        let transient_bytes = 0;
+        let requested_bytes = retained_bytes.checked_add(transient_bytes).ok_or(
+            SurfaceResourceError::ByteLengthOverflow {
+                width: grid_cols,
+                height: grid_rows,
+            },
+        )?;
+        if requested_bytes > capacity_bytes {
+            return Err(SurfaceResourceError::AnalysisCapacityExceeded {
+                width: grid_cols,
+                height: grid_rows,
+                requested_bytes,
+                capacity_bytes,
+            });
+        }
+        let frame_work_units =
+            grid_cells_u64
+                .checked_mul(3)
+                .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                    width: grid_cols,
+                    height: grid_rows,
+                })?;
+        let worker_count = compute_capacity.worker_count;
+        let frame_work_capacity = if target_fps == 0 || target_fps > MAX_REPRESENTABLE_CAPTURE_FPS {
+            u64::MAX
+        } else {
+            compute_capacity.frame_capacity(target_fps)
+        };
+        if frame_work_units > frame_work_capacity {
+            return Err(SurfaceResourceError::AnalysisWorkCapacityExceeded {
+                width: grid_cols,
+                height: grid_rows,
+                target_fps,
+                requested_work_units: frame_work_units,
+                capacity_work_units: frame_work_capacity,
+                worker_count,
+            });
+        }
+        Ok(Self {
+            grid_cells,
+            extent_pixels,
+            retained_bytes,
+            extent_retained_bytes,
+            transient_bytes,
+            frame_work_units,
+            frame_work_capacity,
+            worker_count,
+            max_zone_id_bytes,
+        })
+    }
+
+    #[must_use]
+    pub const fn grid_cells(self) -> usize {
+        self.grid_cells
+    }
+
+    #[must_use]
+    pub const fn extent_pixels(self) -> usize {
+        self.extent_pixels
+    }
+
+    #[must_use]
+    pub const fn extent_retained_bytes(self) -> u64 {
+        self.extent_retained_bytes
+    }
+
+    #[must_use]
+    pub const fn surface_backing_bytes(self) -> u64 {
+        (self.extent_retained_bytes / 39) * 12
+    }
+
+    #[must_use]
+    pub const fn non_surface_retained_bytes(self) -> u64 {
+        self.retained_bytes - self.surface_backing_bytes()
+    }
+
+    #[must_use]
+    pub const fn retained_bytes(self) -> u64 {
+        self.retained_bytes
+    }
+
+    #[must_use]
+    pub const fn transient_bytes(self) -> u64 {
+        self.transient_bytes
+    }
+
+    #[must_use]
+    pub const fn peak_bytes(self) -> u64 {
+        self.retained_bytes + self.transient_bytes
+    }
+
+    #[must_use]
+    pub const fn frame_work_units(self) -> u64 {
+        self.frame_work_units
+    }
+
+    #[must_use]
+    pub const fn frame_work_capacity(self) -> u64 {
+        self.frame_work_capacity
+    }
+
+    #[must_use]
+    pub const fn worker_count(self) -> u64 {
+        self.worker_count
+    }
+}
+
+fn decimal_digits(value: u32) -> usize {
+    if value == 0 {
+        1
+    } else {
+        usize::try_from(value.ilog10()).expect("u32 digit count fits usize") + 1
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ScreenCaptureConfigError {
+    #[error(transparent)]
+    Cadence(#[from] CaptureCadenceError),
+    #[error(transparent)]
+    Resource(#[from] SurfaceResourceError),
 }
 
 /// Largest size within `max_width` x `max_height` that keeps `width` x
@@ -441,11 +793,23 @@ pub struct ScreenCaptureInput {
 
     capture_processor: CaptureFrameProcessor,
 
-    /// Latest processed zone colors (after grid + smoothing).
-    latest_colors: Option<Vec<[u8; 3]>>,
+    analysis_grid: SectorGrid,
 
-    /// Latest zone IDs corresponding to `latest_colors`.
-    latest_zone_ids: Vec<String>,
+    policy_grid: SectorGrid,
+
+    zone_snapshot_pool: Vec<PreparedZoneSnapshot>,
+
+    latest_zone_colors: Option<Arc<Vec<ZoneColors>>>,
+
+    latest_zone_count: usize,
+
+    analysis_resource_plan: ScreenAnalysisResourcePlan,
+
+    admission_coordinator: ScreenByteAdmissionCoordinator,
+
+    analysis_lease: ScreenByteLease,
+
+    surface_resource_owner: Arc<dyn SurfaceResourceOwner>,
 
     /// Effective sector dimensions after letterbox cropping.
     latest_grid_width: u32,
@@ -495,21 +859,47 @@ impl ScreenCaptureInput {
         config: CaptureConfig,
         requested_extent: PixelExtent,
     ) -> Result<Self, SurfaceResourceError> {
-        let smoother = TemporalSmoother::try_new_for_grid(
-            config.smoothing_alpha,
-            config.scene_cut_threshold,
-            requested_extent.width(),
-            requested_extent.height(),
-        )?;
-        let downscale_pool = prepare_downscale_pool(requested_extent)?;
-        let policy_pixels = prepare_policy_pixels(requested_extent)?;
+        let capacity = ScreenAdmissionCapacity::new(
+            config.analysis_memory_bytes,
+            config.analysis_memory_bytes,
+        );
+        let admission_coordinator = ScreenByteAdmissionCoordinator::new(capacity);
+        Self::with_requested_extent_and_admission(config, requested_extent, admission_coordinator)
+    }
+
+    /// Create screen analysis against a shared source-level byte fence.
+    pub fn with_requested_extent_and_admission(
+        config: CaptureConfig,
+        requested_extent: PixelExtent,
+        admission_coordinator: ScreenByteAdmissionCoordinator,
+    ) -> Result<Self, SurfaceResourceError> {
+        let prepared =
+            prepare_analysis_resources(&config, requested_extent, &admission_coordinator)?;
+        let PreparedAnalysisResources {
+            analysis_resource_plan,
+            analysis_grid,
+            policy_grid,
+            zone_snapshot_pool,
+            smoother,
+            downscale_pool,
+            policy_pixels,
+            analysis_lease,
+            surface_resource_owner,
+        } = prepared;
 
         Ok(Self {
             config,
             smoother,
             capture_processor: CaptureFrameProcessor::default(),
-            latest_colors: None,
-            latest_zone_ids: Vec::new(),
+            analysis_grid,
+            policy_grid,
+            zone_snapshot_pool,
+            latest_zone_colors: None,
+            latest_zone_count: 0,
+            analysis_resource_plan,
+            admission_coordinator,
+            analysis_lease,
+            surface_resource_owner,
             latest_grid_width: 0,
             latest_grid_height: 0,
             latest_canvas_downscale: None,
@@ -560,42 +950,48 @@ impl ScreenCaptureInput {
         height: u32,
         acquired_at: Instant,
     ) -> Result<bool, SurfaceResourceError> {
-        let Some(grid) = SectorGrid::try_compute(
+        if !self.analysis_grid.try_update(
             frame,
             width,
             height,
             self.config.grid_cols,
             self.config.grid_rows,
-        ) else {
+        ) {
             return Ok(false);
-        };
+        }
 
         let letterbox = if self.config.letterbox_enabled {
-            grid.detect_letterbox(self.config.letterbox_threshold)
+            self.analysis_grid
+                .detect_letterbox(self.config.letterbox_threshold)
         } else {
             LetterboxBars::default()
         };
 
-        let (effective_grid, region) = if letterbox.has_bars() {
-            grid.crop_letterbox(&letterbox).map_or_else(
-                || (grid.clone(), FrameRegion::full(width, height)),
-                |cropped| {
-                    let region = FrameRegion::from_letterbox(
-                        width,
-                        height,
-                        grid.cols(),
-                        grid.rows(),
-                        letterbox,
-                    )
-                    .unwrap_or_else(|| FrameRegion::full(width, height));
-                    (cropped, region)
-                },
+        let effective_cols = self
+            .analysis_grid
+            .cols()
+            .saturating_sub(letterbox.left.saturating_add(letterbox.right));
+        let effective_rows = self
+            .analysis_grid
+            .rows()
+            .saturating_sub(letterbox.top.saturating_add(letterbox.bottom));
+        let region = if letterbox.has_bars() && effective_cols > 0 && effective_rows > 0 {
+            FrameRegion::from_letterbox(
+                width,
+                height,
+                self.analysis_grid.cols(),
+                self.analysis_grid.rows(),
+                letterbox,
             )
+            .unwrap_or_else(|| FrameRegion::full(width, height))
         } else {
-            (grid, FrameRegion::full(width, height))
+            FrameRegion::full(width, height)
         };
-        let effective_cols = effective_grid.cols();
-        let effective_rows = effective_grid.rows();
+        let (effective_cols, effective_rows) = if region.width == width && region.height == height {
+            (self.analysis_grid.cols(), self.analysis_grid.rows())
+        } else {
+            (effective_cols, effective_rows)
+        };
         let (downscale_width, downscale_height) = fit_within(
             region.width,
             region.height,
@@ -621,29 +1017,35 @@ impl ScreenCaptureInput {
             &mut self.policy_pixels,
             elapsed,
             reset_smoother,
+            &self.surface_resource_owner,
         )?
         else {
             return Ok(false);
         };
-        let Some(policy_grid) = SectorGrid::try_compute(
+        if !self.policy_grid.try_update(
             canvas_downscale.rgba_bytes(),
             canvas_downscale.width(),
             canvas_downscale.height(),
             effective_cols,
             effective_rows,
+        ) {
+            return Ok(false);
+        }
+        let Some(zone_colors) = prepare_zone_snapshot(
+            &mut self.zone_snapshot_pool,
+            self.policy_grid.colors(),
+            effective_cols,
+            effective_rows,
         ) else {
             return Ok(false);
         };
-        let zone_data = policy_grid.to_zone_colors();
-        let colors = zone_data.iter().map(|(_, color)| *color).collect();
-        let zone_ids = zone_data.into_iter().map(|(id, _)| id).collect();
 
         self.smoother.commit_staged();
         self.latest_canvas_downscale = Some(canvas_downscale);
         self.latest_grid_width = effective_cols;
         self.latest_grid_height = effective_rows;
-        self.latest_zone_ids = zone_ids;
-        self.latest_colors = Some(colors);
+        self.latest_zone_colors = Some(zone_colors);
+        self.latest_zone_count = self.policy_grid.sector_count();
         self.letterbox = letterbox;
         self.frame_width = width;
         self.frame_height = height;
@@ -666,19 +1068,27 @@ impl ScreenCaptureInput {
         if self.requested_extent == requested_extent {
             return Ok(());
         }
-        let downscale_pool = prepare_downscale_pool(requested_extent)?;
-        let policy_pixels = prepare_policy_pixels(requested_extent)?;
-        let smoother = TemporalSmoother::try_new_for_grid(
-            self.config.smoothing_alpha,
-            self.config.scene_cut_threshold,
-            requested_extent.width(),
-            requested_extent.height(),
+        let prepared = prepare_analysis_resources(
+            &self.config,
+            requested_extent,
+            &self.admission_coordinator,
         )?;
-        self.downscale_pool = downscale_pool;
-        self.policy_pixels = policy_pixels;
-        self.smoother = smoother;
-        self.requested_extent = requested_extent;
-        self.latest_canvas_downscale = None;
+        self.install_prepared_analysis(prepared, requested_extent);
+        Ok(())
+    }
+
+    /// Rebind this analyzer to a manager-owned shared byte coordinator.
+    pub fn set_admission_coordinator(
+        &mut self,
+        coordinator: ScreenByteAdmissionCoordinator,
+    ) -> Result<(), SurfaceResourceError> {
+        if self.admission_coordinator.is_same(&coordinator) {
+            return Ok(());
+        }
+        let prepared =
+            prepare_analysis_resources(&self.config, self.requested_extent, &coordinator)?;
+        self.admission_coordinator = coordinator;
+        self.install_prepared_analysis(prepared, self.requested_extent);
         Ok(())
     }
 
@@ -698,10 +1108,22 @@ impl ScreenCaptureInput {
     ///
     /// Returns an error without changing the active settings when the capture
     /// cadence is not representable by the scheduler clock.
-    pub fn apply_settings(&mut self, config: CaptureConfig) -> Result<(), CaptureCadenceError> {
+    pub fn apply_settings(
+        &mut self,
+        config: CaptureConfig,
+    ) -> Result<(), ScreenCaptureConfigError> {
         CaptureCadence::new(config.target_fps)?;
-        if config.grid_cols != self.config.grid_cols || config.grid_rows != self.config.grid_rows {
-            self.smoother.reset();
+        if config.grid_cols != self.config.grid_cols
+            || config.grid_rows != self.config.grid_rows
+            || config.target_fps != self.config.target_fps
+            || config.analysis_memory_bytes != self.config.analysis_memory_bytes
+        {
+            let prepared = prepare_analysis_resources(
+                &config,
+                self.requested_extent,
+                &self.admission_coordinator,
+            )?;
+            self.install_prepared_analysis(prepared, self.requested_extent);
         }
         self.smoother.set_alpha(config.smoothing_alpha);
         self.smoother
@@ -721,6 +1143,34 @@ impl ScreenCaptureInput {
     pub fn frame_dimensions(&self) -> (u32, u32) {
         (self.frame_width, self.frame_height)
     }
+
+    #[must_use]
+    pub const fn analysis_resource_plan(&self) -> ScreenAnalysisResourcePlan {
+        self.analysis_resource_plan
+    }
+
+    fn install_prepared_analysis(
+        &mut self,
+        prepared: PreparedAnalysisResources,
+        requested_extent: PixelExtent,
+    ) {
+        self.analysis_grid = prepared.analysis_grid;
+        self.policy_grid = prepared.policy_grid;
+        self.zone_snapshot_pool = prepared.zone_snapshot_pool;
+        self.smoother = prepared.smoother;
+        self.downscale_pool = prepared.downscale_pool;
+        self.policy_pixels = prepared.policy_pixels;
+        self.analysis_resource_plan = prepared.analysis_resource_plan;
+        self.analysis_lease = prepared.analysis_lease;
+        self.surface_resource_owner = prepared.surface_resource_owner;
+        self.requested_extent = requested_extent;
+        self.latest_zone_colors = None;
+        self.latest_zone_count = 0;
+        self.latest_canvas_downscale = None;
+        self.latest_grid_width = 0;
+        self.latest_grid_height = 0;
+        self.smoother.reset();
+    }
 }
 
 impl InputSource for ScreenCaptureInput {
@@ -737,7 +1187,8 @@ impl InputSource for ScreenCaptureInput {
         self.status.begin_session()?;
         self.running = true;
         self.smoother.reset();
-        self.latest_colors = None;
+        self.latest_zone_colors = None;
+        self.latest_zone_count = 0;
         self.latest_grid_width = 0;
         self.latest_grid_height = 0;
         self.latest_canvas_downscale = None;
@@ -748,7 +1199,8 @@ impl InputSource for ScreenCaptureInput {
 
     fn stop(&mut self) {
         self.running = false;
-        self.latest_colors = None;
+        self.latest_zone_colors = None;
+        self.latest_zone_count = 0;
         self.latest_grid_width = 0;
         self.latest_grid_height = 0;
         self.latest_canvas_downscale = None;
@@ -758,19 +1210,9 @@ impl InputSource for ScreenCaptureInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        let Some(ref colors) = self.latest_colors else {
+        let Some(zone_colors) = self.latest_zone_colors.as_ref() else {
             return Ok(InputData::None);
         };
-
-        let zone_colors: Vec<ZoneColors> = self
-            .latest_zone_ids
-            .iter()
-            .zip(colors.iter())
-            .map(|(zone_id, rgb)| ZoneColors {
-                zone_id: zone_id.clone(),
-                colors: vec![*rgb],
-            })
-            .collect();
 
         if self.status_frame_generation != self.frame_generation {
             if let (Some(status), Some(acquired_at)) =
@@ -783,7 +1225,11 @@ impl InputSource for ScreenCaptureInput {
         }
 
         Ok(InputData::Screen(ScreenData {
-            zone_colors,
+            zone_colors: ScreenZoneColors::from_prepared(
+                Arc::clone(zone_colors),
+                self.latest_zone_count,
+            )
+            .expect("published zone count fits prepared snapshot storage"),
             grid_width: self.latest_grid_width,
             grid_height: self.latest_grid_height,
             canvas_downscale: self.latest_canvas_downscale.clone(),
@@ -800,6 +1246,10 @@ impl InputSource for ScreenCaptureInput {
 
     fn is_running(&self) -> bool {
         self.running
+    }
+
+    fn is_screen_source(&self) -> bool {
+        true
     }
 
     fn source_status_handle(&self) -> Option<SourceStatusHandle> {
@@ -861,14 +1311,181 @@ impl FrameRegion {
     }
 }
 
+struct PreparedAnalysisResources {
+    analysis_resource_plan: ScreenAnalysisResourcePlan,
+    analysis_grid: SectorGrid,
+    policy_grid: SectorGrid,
+    zone_snapshot_pool: Vec<PreparedZoneSnapshot>,
+    smoother: TemporalSmoother,
+    downscale_pool: RenderSurfacePool,
+    policy_pixels: Vec<[u8; 3]>,
+    analysis_lease: ScreenByteLease,
+    surface_resource_owner: Arc<dyn SurfaceResourceOwner>,
+}
+
+fn prepare_analysis_resources(
+    config: &CaptureConfig,
+    requested_extent: PixelExtent,
+    coordinator: &ScreenByteAdmissionCoordinator,
+) -> Result<PreparedAnalysisResources, SurfaceResourceError> {
+    let plan = ScreenAnalysisResourcePlan::try_new_for_extent(
+        config.grid_cols,
+        config.grid_rows,
+        config.target_fps,
+        requested_extent,
+        config.analysis_memory_bytes,
+    )?;
+    let mut reservation = coordinator
+        .try_acquire(plan.peak_bytes())
+        .map_err(|error| {
+            let available = match error {
+                ScreenByteAdmissionError::CapacityExceeded {
+                    available_bytes, ..
+                } => available_bytes,
+                ScreenByteAdmissionError::CapacityShrinkRejected {
+                    requested_capacity, ..
+                } => requested_capacity,
+                ScreenByteAdmissionError::RevisionExhausted => 0,
+            };
+            SurfaceResourceError::AnalysisCapacityExceeded {
+                width: config.grid_cols,
+                height: config.grid_rows,
+                requested_bytes: plan.peak_bytes(),
+                capacity_bytes: available,
+            }
+        })?;
+    let analysis_grid = prepare_sector_grid(config, plan)?;
+    let policy_grid = prepare_sector_grid(config, plan)?;
+    let zone_snapshot_pool = prepare_zone_snapshot_pool(config, plan)?;
+    let smoother = TemporalSmoother::try_new_for_grid(
+        config.smoothing_alpha,
+        config.scene_cut_threshold,
+        requested_extent.width(),
+        requested_extent.height(),
+    )?;
+    let downscale_pool = prepare_downscale_pool(requested_extent)?;
+    let policy_pixels = prepare_policy_pixels(requested_extent)?;
+    let surface_reservation = reservation
+        .split_off(plan.surface_backing_bytes())
+        .expect("surface bytes are a checked subset of the aggregate quote");
+    let analysis_lease = reservation.freeze();
+    let surface_lease = surface_reservation.freeze();
+    let surface_resource_owner: Arc<dyn SurfaceResourceOwner> = Arc::new(surface_lease);
+    Ok(PreparedAnalysisResources {
+        analysis_resource_plan: plan,
+        analysis_grid,
+        policy_grid,
+        zone_snapshot_pool,
+        smoother,
+        downscale_pool,
+        policy_pixels,
+        analysis_lease,
+        surface_resource_owner,
+    })
+}
+
 fn prepare_downscale_pool(extent: PixelExtent) -> Result<RenderSurfacePool, SurfaceResourceError> {
     let descriptor = SurfaceDescriptor::rgba8888(extent.width(), extent.height());
-    let mut pool = RenderSurfacePool::try_with_lazy_slot_count(descriptor, 2)?;
-    let lease = pool
-        .try_dequeue()?
-        .expect("new screen downscale pool has an available slot");
-    lease.release();
-    Ok(pool)
+    RenderSurfacePool::try_with_lazy_slot_count_and_cap(
+        descriptor,
+        ZONE_SNAPSHOT_SLOT_COUNT,
+        ZONE_SNAPSHOT_SLOT_COUNT,
+    )
+}
+
+fn analysis_allocation_error(
+    config: &CaptureConfig,
+    plan: ScreenAnalysisResourcePlan,
+) -> SurfaceResourceError {
+    SurfaceResourceError::AllocationFailed {
+        width: config.grid_cols,
+        height: config.grid_rows,
+        byte_len: usize::try_from(plan.retained_bytes).unwrap_or(usize::MAX),
+    }
+}
+
+fn prepare_sector_grid(
+    config: &CaptureConfig,
+    plan: ScreenAnalysisResourcePlan,
+) -> Result<SectorGrid, SurfaceResourceError> {
+    SectorGrid::try_with_capacity(config.grid_cols, config.grid_rows)
+        .ok_or_else(|| analysis_allocation_error(config, plan))
+}
+
+fn prepare_zone_snapshot_pool(
+    config: &CaptureConfig,
+    plan: ScreenAnalysisResourcePlan,
+) -> Result<Vec<PreparedZoneSnapshot>, SurfaceResourceError> {
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(ZONE_SNAPSHOT_SLOT_COUNT)
+        .map_err(|_| analysis_allocation_error(config, plan))?;
+    for _ in 0..ZONE_SNAPSHOT_SLOT_COUNT {
+        let mut zones = Vec::new();
+        zones
+            .try_reserve_exact(plan.grid_cells)
+            .map_err(|_| analysis_allocation_error(config, plan))?;
+        for row in 0..config.grid_rows {
+            for col in 0..config.grid_cols {
+                let mut zone_id = String::new();
+                zone_id
+                    .try_reserve_exact(plan.max_zone_id_bytes)
+                    .map_err(|_| analysis_allocation_error(config, plan))?;
+                write!(zone_id, "screen:sector_{row}_{col}")
+                    .map_err(|_| analysis_allocation_error(config, plan))?;
+                let mut colors = Vec::new();
+                colors
+                    .try_reserve_exact(1)
+                    .map_err(|_| analysis_allocation_error(config, plan))?;
+                colors.push([0, 0, 0]);
+                zones.push(ZoneColors { zone_id, colors });
+            }
+        }
+        slots.push(PreparedZoneSnapshot {
+            zones: Arc::new(zones),
+            cols: config.grid_cols,
+            rows: config.grid_rows,
+        });
+    }
+    Ok(slots)
+}
+
+fn prepare_zone_snapshot(
+    slots: &mut [PreparedZoneSnapshot],
+    colors: &[[u8; 3]],
+    cols: u32,
+    rows: u32,
+) -> Option<Arc<Vec<ZoneColors>>> {
+    let slot = slots
+        .iter_mut()
+        .find(|slot| Arc::strong_count(&slot.zones) == 1)?;
+    let zones =
+        Arc::get_mut(&mut slot.zones).expect("uniquely owned zone snapshot slot is mutable");
+    if zones.len() < colors.len() {
+        return None;
+    }
+    if slot.cols != cols || slot.rows != rows {
+        let mut index = 0_usize;
+        for row in 0..rows {
+            for col in 0..cols {
+                let zone = zones.get_mut(index)?;
+                zone.zone_id.clear();
+                if write!(zone.zone_id, "screen:sector_{row}_{col}").is_err() {
+                    return None;
+                }
+                index += 1;
+            }
+        }
+        if index != colors.len() {
+            return None;
+        }
+        slot.cols = cols;
+        slot.rows = rows;
+    }
+    for (zone, color) in zones.iter_mut().zip(colors) {
+        zone.colors[0] = *color;
+    }
+    Some(Arc::clone(&slot.zones))
 }
 
 fn prepare_policy_pixels(extent: PixelExtent) -> Result<Vec<[u8; 3]>, SurfaceResourceError> {
@@ -913,6 +1530,7 @@ fn downscale_frame(
     policy_pixels: &mut Vec<[u8; 3]>,
     elapsed: Duration,
     reset_smoother: bool,
+    surface_resource_owner: &Arc<dyn SurfaceResourceOwner>,
 ) -> Result<Option<PublishedSurface>, SurfaceResourceError> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
         return Ok(None);
@@ -958,16 +1576,14 @@ fn downscale_frame(
     }
 
     let descriptor = SurfaceDescriptor::rgba8888(target_width, target_height);
-    if surface_pool.descriptor() != descriptor {
-        let extent = PixelExtent::new(target_width, target_height)
-            .expect("downscale target dimensions are non-empty");
-        let prepared = prepare_downscale_pool(extent)?;
-        *surface_pool = prepared;
-    }
-
-    let Some(mut lease) = surface_pool.try_dequeue()? else {
+    let Some(mut lease) = surface_pool.try_dequeue_bounded_for_descriptor(descriptor)? else {
         return Ok(None);
     };
+    if !lease.canvas_mut().has_resource_owner() {
+        lease
+            .canvas_mut()
+            .set_resource_owner(Arc::clone(surface_resource_owner));
+    }
     if !copy_downscaled_rgba(
         frame,
         width,

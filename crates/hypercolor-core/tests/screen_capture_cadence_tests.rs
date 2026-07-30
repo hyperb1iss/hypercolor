@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 use hypercolor_core::input::InputSource;
 use hypercolor_core::input::screen::{
     CaptureCadence, CaptureCadenceError, CaptureConfig, MAX_REPRESENTABLE_CAPTURE_FPS,
-    ScreenCaptureInput,
+    ScreenCaptureConfigError, ScreenCaptureInput,
 };
+use hypercolor_types::canvas::SurfaceResourceError;
 
 #[test]
 fn cadence_rejects_only_unrepresentable_scheduler_requests() {
@@ -91,7 +92,31 @@ fn generic_live_reconfiguration_rejects_invalid_cadence_transactionally() {
 
     assert!(matches!(
         error,
-        CaptureCadenceError::ClockResolutionExceeded { .. }
+        ScreenCaptureConfigError::Cadence(CaptureCadenceError::ClockResolutionExceeded { .. })
+    ));
+    assert_eq!(input.config(), &baseline);
+}
+
+#[test]
+fn generic_live_reconfiguration_readmits_compute_when_fps_changes() {
+    let baseline = CaptureConfig {
+        grid_cols: 64,
+        grid_rows: 64,
+        ..CaptureConfig::default()
+    };
+    let mut input = ScreenCaptureInput::new(baseline.clone());
+    let mut rejected = baseline.clone();
+    rejected.target_fps = 1_000_000;
+
+    let error = input
+        .apply_settings(rejected)
+        .expect_err("higher FPS must re-enter compute admission");
+
+    assert!(matches!(
+        error,
+        ScreenCaptureConfigError::Resource(
+            SurfaceResourceError::AnalysisWorkCapacityExceeded { .. }
+        )
     ));
     assert_eq!(input.config(), &baseline);
 }

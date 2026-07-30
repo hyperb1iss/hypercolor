@@ -103,6 +103,7 @@ fn capture_defaults_match_spec() {
     assert_eq!(c.capture_fps, 30);
     assert_eq!(c.grid_cols, 8);
     assert_eq!(c.grid_rows, 6);
+    assert_eq!(c.publication_memory_bytes, None);
     assert!((c.smoothing - 0.3).abs() < f32::EPSILON);
     assert!((c.scene_cut_threshold - 100.0).abs() < f32::EPSILON);
     // Off by default: desktops are not letterboxed, and dark desktop content
@@ -155,17 +156,30 @@ fn capture_config_rejects_zero_cadence() {
 }
 
 #[test]
-fn capture_config_rejects_invalid_grid_and_float_values() {
+fn capture_config_accepts_arbitrary_nonzero_grid_dimensions() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let config = CaptureConfig {
+        grid_cols: u32::MAX,
+        grid_rows: 256,
+        ..CaptureConfig::default()
+    };
+    config
+        .validate_for_platform(platform)
+        .expect("grid dimensions are governed by byte admission, not axis caps");
+}
+
+#[test]
+fn capture_config_rejects_empty_grid_and_invalid_float_values() {
     let platform = CapturePlatform::WindowsDesktopDuplication;
     let mut config = CaptureConfig {
-        grid_cols: 65,
+        grid_cols: 0,
         ..CaptureConfig::default()
     };
     assert!(matches!(
         config.validate_for_platform(platform),
         Err(CaptureConfigValidationError::GridDimension {
             field: "grid_cols",
-            value: 65
+            value: 0
         })
     ));
 
@@ -185,6 +199,24 @@ fn capture_config_rejects_invalid_grid_and_float_values() {
         config.validate_for_platform(platform),
         Err(CaptureConfigValidationError::FloatRange { field: "gamma", .. })
     ));
+}
+
+#[test]
+fn capture_config_accepts_optional_nonzero_publication_memory_budget() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let mut config = CaptureConfig {
+        publication_memory_bytes: Some(1),
+        ..CaptureConfig::default()
+    };
+    config
+        .validate_for_platform(platform)
+        .expect("one-byte explicit budget is semantically valid");
+
+    config.publication_memory_bytes = Some(0);
+    assert_eq!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::PublicationMemoryBudget { value: 0 })
+    );
 }
 
 #[test]

@@ -1,32 +1,34 @@
 use std::cmp::Ordering;
 use std::num::{NonZeroU32, NonZeroU64};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    ArmedScreenPlan, CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch,
-    CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar,
-    CaptureRotation, CaptureSourceId, CaptureTransferFunction, CommittedScreenPlan,
-    InputPublicationDemandRevision, KnownCaptureColorimetry, PhysicalOrigin, PixelExtent,
-    PixelRect, PlatformGpuApi, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenBranchDeliveryLifecycle, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
-    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenCompatibilitySelection,
-    ScreenContentBarsPolicy, ScreenContinuityError, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExactResource, ScreenExactResourceLedger, ScreenExecutorColorCapabilities,
-    ScreenExtentRequest, ScreenGridPolicy, ScreenHdrPolicy, ScreenInputGraphGeneration,
-    ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationColorimetry,
-    ScreenPublicationError, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
-    ScreenPublicationFreshness, ScreenPublicationHealth, ScreenPublicationHubError,
-    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
-    ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenReductionFilter,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSceneCutPolicy,
-    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSurfacePayload,
-    ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
-    ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ArmedScreenPlan, CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureDynamicRange,
+    CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat,
+    CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
+    CommittedScreenPlan, InputPublicationDemandRevision, KnownCaptureColorimetry, PhysicalOrigin,
+    PixelExtent, PixelRect, PlatformGpuApi, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan,
+    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBranchDeliveryLifecycle,
+    ScreenBranchPayload, ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenCaptureInput,
+    ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenColorTuning,
+    ScreenCompatibilitySelection, ScreenContentBarsPolicy, ScreenContinuityError,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExactResource, ScreenExactResourceLedger,
+    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenGridPolicy, ScreenHdrPolicy,
+    ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenNativeExecutionTarget,
+    ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
+    ScreenPlanError, ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationFreshness, ScreenPublicationHealth,
+    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
+    ScreenPublicationRequest, ScreenPublicationResidency, ScreenPublicationSlotPolicy,
+    ScreenReductionFilter, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenSurfacePayload, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
+    ScreenUnknownColorPolicy, ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerPreparationTicket, ScreenZonesPayload, SourceScale,
 };
 
@@ -255,6 +257,7 @@ fn output_extent(descriptor: &ResolvedScreenPublicationDescriptor) -> PixelExten
 struct BoundExactResources {
     ledger: ScreenExactResourceLedger,
     lifetimes: Vec<ScreenResourceLifetime>,
+    admission_top_ups: Vec<hypercolor_core::input::screen::ScreenByteReservation>,
 }
 
 impl BoundExactResources {
@@ -262,8 +265,12 @@ impl BoundExactResources {
         self,
         ticket: &ScreenWorkerPreparationTicket,
     ) -> Result<hypercolor_core::input::screen::ScreenPreparedWorkerToken, ScreenPlanError> {
-        let Self { ledger, lifetimes } = self;
-        ticket.acknowledge(ledger, &lifetimes)
+        let Self {
+            ledger,
+            lifetimes,
+            admission_top_ups,
+        } = self;
+        ticket.acknowledge_with_admission(ledger, &lifetimes, admission_top_ups)
     }
 }
 
@@ -294,12 +301,29 @@ fn bind_ledger(
     ticket: &ScreenWorkerPreparationTicket,
     ledger: ScreenExactResourceLedger,
 ) -> Result<BoundExactResources, ScreenPlanError> {
+    let modeled = ticket
+        .required_minimums()
+        .iter()
+        .try_fold(0_u64, |total, minimum| {
+            total.checked_add(minimum.minimum_bytes())
+        })
+        .expect("test minimum ledger is checked");
+    let top_up = ledger.total_bytes().saturating_sub(modeled);
+    let admission_top_ups = if top_up == 0 {
+        Vec::new()
+    } else {
+        vec![ticket.reserve_additional_exact_bytes(top_up)?]
+    };
     let lifetimes = ledger
         .resources()
         .iter()
         .map(|resource| ticket.bind_resource_lifetime(resource))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(BoundExactResources { ledger, lifetimes })
+    Ok(BoundExactResources {
+        ledger,
+        lifetimes,
+        admission_top_ups,
+    })
 }
 
 fn required_scope(
@@ -466,6 +490,145 @@ fn reclaim_committed(committed: CommittedScreenPlan) -> ScreenCapturePlan {
         .try_reclaim()
         .expect("unobserved retired test pools reclaim immediately");
     plan
+}
+
+#[test]
+fn shared_admission_moves_from_staged_to_physical_lifetimes() {
+    let coordinator =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let mut builder = ScreenPlanBuilder::with_publication_slots_and_admission(
+        ScreenPublicationSlotPolicy::default(),
+        coordinator.clone(),
+    );
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
+    let demand = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            30,
+        ),
+        &source,
+    );
+    let revision = next_demand_revision(&builder);
+    let graph = ScreenInputGraphGeneration::new(91);
+    let preparing = builder
+        .prepare(
+            [demand.clone()],
+            None,
+            revision,
+            graph,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("candidate should reserve its modeled resources");
+    let staged_bytes = preparing.admission().staged().total_bytes();
+    assert_eq!(coordinator.snapshot().reserved_bytes(), staged_bytes);
+    drop(preparing.abort());
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+
+    commit_demands(&mut builder, [demand], None).expect("candidate should commit");
+    let committed_bytes = coordinator.snapshot().reserved_bytes();
+    assert!(committed_bytes > 0);
+
+    let retired = commit_demands_with_retirement(&mut builder, [])
+        .expect("empty candidate should retire the source");
+    let (_, retirement) = retired.into_parts();
+    assert_eq!(coordinator.snapshot().reserved_bytes(), committed_bytes);
+    retirement
+        .try_reclaim()
+        .expect("unobserved exact resources should reclaim");
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+}
+
+#[test]
+fn analyzer_and_plan_preparation_race_on_one_shared_fence() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
+    let demand = resolve(
+        &registered(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            default_profile(),
+            30,
+        ),
+        &source,
+    );
+    let mut sizing_builder = ScreenPlanBuilder::new();
+    let sizing = sizing_builder
+        .prepare(
+            [demand.clone()],
+            None,
+            InputPublicationDemandRevision::new(1),
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("sizing plan should prepare");
+    let plan_bytes = sizing.admission().staged().total_bytes();
+    drop(sizing.abort());
+    let extent = pixel_extent(8, 8);
+    let config = CaptureConfig {
+        grid_cols: 2,
+        grid_rows: 2,
+        analysis_memory_bytes: u64::MAX,
+        ..CaptureConfig::default()
+    };
+    let analyzer_bytes = ScreenAnalysisResourcePlan::try_new_for_extent(
+        config.grid_cols,
+        config.grid_rows,
+        config.target_fps,
+        extent,
+        u64::MAX,
+    )
+    .expect("analyzer quote should fit")
+    .peak_bytes();
+    let capacity = plan_bytes.max(analyzer_bytes);
+    assert!(capacity < plan_bytes + analyzer_bytes);
+    let coordinator =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(capacity, capacity));
+    let start = Arc::new(Barrier::new(3));
+    let finish = Arc::new(Barrier::new(3));
+
+    let analyzer_coordinator = coordinator.clone();
+    let analyzer_start = Arc::clone(&start);
+    let analyzer_finish = Arc::clone(&finish);
+    let analyzer = thread::spawn(move || {
+        analyzer_start.wait();
+        let result = ScreenCaptureInput::with_requested_extent_and_admission(
+            config,
+            extent,
+            analyzer_coordinator,
+        );
+        analyzer_finish.wait();
+        result.is_ok()
+    });
+    let plan_coordinator = coordinator.clone();
+    let plan_start = Arc::clone(&start);
+    let plan_finish = Arc::clone(&finish);
+    let plan = thread::spawn(move || {
+        let mut builder = ScreenPlanBuilder::with_publication_slots_and_admission(
+            ScreenPublicationSlotPolicy::default(),
+            plan_coordinator,
+        );
+        plan_start.wait();
+        let result = builder.prepare(
+            [demand],
+            None,
+            InputPublicationDemandRevision::new(1),
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        );
+        plan_finish.wait();
+        result.is_ok()
+    });
+    start.wait();
+    finish.wait();
+    let analyzer_won = analyzer.join().expect("analyzer thread should finish");
+    let plan_won = plan.join().expect("plan thread should finish");
+    assert_ne!(analyzer_won, plan_won);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
 }
 
 fn arm_demands(

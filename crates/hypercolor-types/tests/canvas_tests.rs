@@ -1,5 +1,8 @@
 //! Comprehensive tests for canvas, color, blend mode, and color space types.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use hypercolor_types::canvas::{
     BYTES_PER_PIXEL, BlendMode, Canvas, ColorFormat, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH,
     Oklab, Oklch, PublishedSurface, RenderSurfacePool, Rgb, Rgba, RgbaF32, SamplingMethod,
@@ -860,6 +863,69 @@ fn render_surface_pool_falls_back_to_realloc_when_at_cap() {
 }
 
 #[test]
+fn bounded_render_surface_pool_reports_pressure_without_reallocating() {
+    let descriptor = SurfaceDescriptor::rgba8888(2, 2);
+    let mut pool = RenderSurfacePool::with_slot_count_and_cap(descriptor, 3, 3);
+    let mut pinned = Vec::new();
+    for frame_number in 1..=3 {
+        let lease = pool
+            .try_dequeue_bounded()
+            .expect("bounded dequeue remains fallible")
+            .expect("configured slot is available");
+        pinned.push(lease.submit(frame_number, 10));
+    }
+
+    assert!(
+        pool.try_dequeue_bounded()
+            .expect("pressure is not an allocation error")
+            .is_none()
+    );
+    assert_eq!(pool.slot_count(), 3);
+    assert_eq!(pool.grown_slots(), 0);
+    assert_eq!(pool.saturation_reallocs(), 0);
+
+    drop(pinned.pop());
+    assert!(
+        pool.try_dequeue_bounded()
+            .expect("released storage is reusable")
+            .is_some()
+    );
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn bounded_descriptor_replacement_drops_free_backing_before_allocation() {
+    let original = SurfaceDescriptor::rgba8888(1, 1);
+    let mut pool = RenderSurfacePool::with_slot_count_and_cap(original, 1, 1);
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut lease = pool.dequeue().expect("initial slot should be available");
+    lease
+        .canvas_mut()
+        .set_resource_owner(Arc::new(CountingSurfaceOwner(Arc::clone(&drops))));
+    lease.release();
+
+    let over_isize_capacity = SurfaceDescriptor::rgba8888(u32::MAX, 536_870_913);
+    let result = pool.try_dequeue_bounded_for_descriptor(over_isize_capacity);
+
+    assert!(matches!(
+        result,
+        Err(SurfaceResourceError::AllocationFailed {
+            width: u32::MAX,
+            height: 536_870_913,
+            ..
+        })
+    ));
+    assert_eq!(drops.load(Ordering::Acquire), 1);
+    assert_eq!(pool.descriptor(), original);
+    assert_eq!(pool.materialized_slot_count(), 0);
+    assert!(
+        pool.try_dequeue_bounded_for_descriptor(original)
+            .expect("vacated slot can be materialized again")
+            .is_some()
+    );
+}
+
+#[test]
 fn render_surface_pool_prefers_reclaimed_slots_over_growing() {
     let descriptor = SurfaceDescriptor::rgba8888(2, 2);
     let mut pool = RenderSurfacePool::with_slot_count_and_cap(descriptor, 1, 4);
@@ -1402,4 +1468,56 @@ fn oklab_to_linear_srgb_known_values() {
     assert!(black.r.abs() < 0.01);
     assert!(black.g.abs() < 0.01);
     assert!(black.b.abs() < 0.01);
+}
+
+#[derive(Debug)]
+struct CountingSurfaceOwner(Arc<AtomicUsize>);
+
+impl Drop for CountingSurfaceOwner {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::Release);
+    }
+}
+
+#[test]
+fn owner_backed_canvas_into_vec_returns_a_detached_copy() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_resource_owner(Arc::new(CountingSurfaceOwner(Arc::clone(&drops))));
+
+    let (pixels, copied) = canvas.into_rgba_bytes_with_copy_info();
+
+    assert!(copied);
+    assert_eq!(pixels.len(), 16);
+    assert_eq!(drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn owner_backed_shared_canvas_detaches_before_mutation() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_resource_owner(Arc::new(CountingSurfaceOwner(Arc::clone(&drops))));
+    let surface = PublishedSurface::from_owned_canvas(canvas, 0, 0);
+    let mut alias = Canvas::from_published_surface(&surface);
+
+    alias.as_rgba_bytes_mut()[0] = 77;
+    assert_eq!(surface.rgba_bytes()[0], 0);
+    assert_eq!(drops.load(Ordering::Acquire), 0);
+    drop(surface);
+    assert_eq!(drops.load(Ordering::Acquire), 1);
+    assert_eq!(alias.as_rgba_bytes()[0], 77);
+}
+
+#[test]
+fn published_canvas_alias_retains_owner_until_the_alias_drops() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_resource_owner(Arc::new(CountingSurfaceOwner(Arc::clone(&drops))));
+    let surface = PublishedSurface::from_owned_canvas(canvas, 0, 0);
+    let alias = Canvas::from_published_surface(&surface);
+
+    drop(surface);
+    assert_eq!(drops.load(Ordering::Acquire), 0);
+    drop(alias);
+    assert_eq!(drops.load(Ordering::Acquire), 1);
 }

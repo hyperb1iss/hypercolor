@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use thiserror::Error;
 
@@ -14,8 +14,9 @@ use super::hub::{
 use super::reducer::branch_requires_materialization;
 use super::{
     CaptureSourceId, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ScreenPhysicalReductionDescriptor, ScreenPublicationExecutor, ScreenPublicationKind,
-    ScreenPublicationResidency,
+    ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteLease,
+    ScreenByteReservation, ScreenPhysicalReductionDescriptor, ScreenPublicationExecutor,
+    ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const TARGET_PIXEL_BYTES: u64 = 4;
@@ -657,6 +658,7 @@ struct ScreenResourceLifetimeInner {
     allocation_nonce: NonZeroU64,
     resource: ScreenExactResource,
     retirement_charge: Arc<ScreenRetirementCharge>,
+    admission_lease: OnceLock<ScreenByteLease>,
 }
 
 /// Ticket-bound ownership handle for one exact worker allocation.
@@ -699,6 +701,11 @@ impl ScreenResourceLifetime {
 
     pub(crate) fn arm_retirement(&self) {
         self.inner.retirement_charge.arm();
+    }
+
+    pub(crate) fn install_admission_lease(&self, lease: ScreenByteLease) {
+        let installed = self.inner.admission_lease.set(lease);
+        assert!(installed.is_ok(), "exact resource admission installs once");
     }
 }
 
@@ -1001,6 +1008,7 @@ pub struct ScreenWorkerPreparationTicket {
     required_minimums: Arc<Vec<ScreenRequiredResourceMinimum>>,
     pending_retired_bytes: Arc<AtomicU64>,
     next_allocation_nonce: AtomicU64,
+    admission_coordinator: ScreenByteAdmissionCoordinator,
 }
 
 impl ScreenWorkerPreparationTicket {
@@ -1087,8 +1095,22 @@ impl ScreenWorkerPreparationTicket {
                     Arc::clone(&self.pending_retired_bytes),
                     resource.bytes,
                 )),
+                admission_lease: OnceLock::new(),
             }),
         })
+    }
+
+    /// Reserve worker bytes not covered by deterministic planner minima.
+    ///
+    /// The returned unique quote must be retained through acknowledgement and
+    /// acquired before the corresponding backing allocation begins.
+    pub fn reserve_additional_exact_bytes(
+        &self,
+        bytes: u64,
+    ) -> Result<ScreenByteReservation, ScreenPlanError> {
+        self.admission_coordinator
+            .try_acquire(bytes)
+            .map_err(ScreenPlanError::SharedAdmission)
     }
 
     /// Attest an exhaustive, disjoint worker ledger and bind it into a token.
@@ -1104,6 +1126,16 @@ impl ScreenWorkerPreparationTicket {
         &self,
         exact_ledger: ScreenExactResourceLedger,
         lifetimes: &[ScreenResourceLifetime],
+    ) -> Result<ScreenPreparedWorkerToken, ScreenPlanError> {
+        self.acknowledge_with_admission(exact_ledger, lifetimes, Vec::new())
+    }
+
+    /// Acknowledge resources whose unmodeled bytes were quoted before backing allocation.
+    pub fn acknowledge_with_admission(
+        &self,
+        exact_ledger: ScreenExactResourceLedger,
+        lifetimes: &[ScreenResourceLifetime],
+        admission_top_ups: Vec<ScreenByteReservation>,
     ) -> Result<ScreenPreparedWorkerToken, ScreenPlanError> {
         validate_resource_coverage(self.required_minimums.as_slice(), &exact_ledger)?;
         let lifetimes = validate_resource_lifetimes(self, &exact_ledger, lifetimes)?;
@@ -1127,6 +1159,7 @@ impl ScreenWorkerPreparationTicket {
             exact_ledger,
             retained_resources,
             binding,
+            admission_top_ups,
         })
     }
 }
@@ -1143,6 +1176,7 @@ pub struct ScreenPreparedWorkerToken {
     exact_ledger: ScreenExactResourceLedger,
     retained_resources: ScreenRetainedResourceLedger,
     binding: ScreenWorkerBinding,
+    admission_top_ups: Vec<ScreenByteReservation>,
 }
 
 impl ScreenPreparedWorkerToken {
@@ -1205,6 +1239,8 @@ pub struct PreparingScreenPlan {
     next_worker_nonce: u64,
     prepared_tokens: Vec<ScreenPreparedWorkerToken>,
     activation: Arc<ScreenWorkerActivationLatch>,
+    staged_reservation: ScreenByteReservation,
+    admission_coordinator: ScreenByteAdmissionCoordinator,
 }
 
 #[derive(Debug)]
@@ -1361,6 +1397,7 @@ impl PreparingScreenPlan {
             required_minimums,
             pending_retired_bytes: self.base_state.pending_retirement_counter(),
             next_allocation_nonce: AtomicU64::new(0),
+            admission_coordinator: self.admission_coordinator.clone(),
         })
     }
 
@@ -1436,7 +1473,7 @@ impl PreparingScreenPlan {
     /// This pure boundary does not install platform resources; runtime workers
     /// consume the retained opaque tokens when integrating the transition.
     pub fn arm(
-        self,
+        mut self,
         observed_plan_generation: ScreenPlanGeneration,
         observed_demand_revision: InputPublicationDemandRevision,
         observed_graph_generation: ScreenInputGraphGeneration,
@@ -1489,6 +1526,48 @@ impl PreparingScreenPlan {
                 });
             }
         };
+        let Some(exact_staged_bytes) = self
+            .admission
+            .staged()
+            .publication_retention_bytes()
+            .checked_add(self.admission.staged().publication_subscriber_slot_bytes())
+            .and_then(|bytes| bytes.checked_add(exact_worker_bytes))
+        else {
+            return Err(ScreenPlanArmFailure {
+                error: ScreenPlanError::RetirementAccountingOverflow,
+                preparing: Box::new(self),
+            });
+        };
+        let modeled_publication_bytes = self
+            .admission
+            .staged()
+            .publication_retention_bytes()
+            .checked_add(self.admission.staged().publication_subscriber_slot_bytes())
+            .expect("staged admission ledger has a checked total");
+        let modeled_worker_bytes = self
+            .admission
+            .staged()
+            .total_bytes()
+            .checked_sub(modeled_publication_bytes)
+            .expect("staged publication bytes are a subset of the total");
+        let required_top_up = exact_worker_bytes.saturating_sub(modeled_worker_bytes);
+        let quoted_top_up = self
+            .prepared_tokens
+            .iter()
+            .flat_map(|token| token.admission_top_ups.iter())
+            .try_fold(0_u64, |total, reservation| {
+                total.checked_add(reservation.bytes())
+            })
+            .unwrap_or(u64::MAX);
+        if quoted_top_up < required_top_up {
+            return Err(ScreenPlanArmFailure {
+                error: ScreenPlanError::UnquotedExactWorkerBytes {
+                    required: required_top_up,
+                    quoted: quoted_top_up,
+                },
+                preparing: Box::new(self),
+            });
+        }
         let candidate_retained_resources = match candidate_retained_resources(
             self.base_state.retained_resources(),
             &self.candidate,
@@ -1519,6 +1598,35 @@ impl PreparingScreenPlan {
                 });
             }
         };
+        for token in &mut self.prepared_tokens {
+            for top_up in token.admission_top_ups.drain(..) {
+                self.staged_reservation
+                    .absorb(top_up)
+                    .expect("worker top-up shares the plan coordinator");
+            }
+        }
+        self.staged_reservation
+            .reconcile_down(exact_staged_bytes)
+            .expect("preflighted exact resources fit their aggregate quote");
+        for entry in self
+            .prepared_tokens
+            .iter()
+            .flat_map(|token| token.retained_resources.entries.iter())
+        {
+            let claim = self
+                .staged_reservation
+                .split_off(entry.bytes())
+                .expect("exact staged quote covers every worker allocation")
+                .freeze();
+            entry.lifetime.install_admission_lease(claim);
+        }
+        candidate_state
+            .install_new_branch_admission(&self.base_state, &mut self.staged_reservation);
+        debug_assert_eq!(
+            self.staged_reservation.bytes(),
+            0,
+            "exact staged admission is exhausted into physical lifetimes"
+        );
         self.activation.arm();
         Ok(ArmedScreenPlan {
             base_state: self.base_state,
@@ -1738,6 +1846,7 @@ impl ScreenPlanAbort {
 pub struct ScreenPlanBuilder {
     next_transaction_id: u64,
     publication_hub: Arc<ScreenPublicationHub>,
+    admission_coordinator: ScreenByteAdmissionCoordinator,
 }
 
 impl Default for ScreenPlanBuilder {
@@ -1759,6 +1868,7 @@ impl ScreenPlanBuilder {
         Self {
             next_transaction_id: 0,
             publication_hub: Arc::new(ScreenPublicationHub::new(slot_policy)),
+            admission_coordinator: ScreenByteAdmissionCoordinator::default(),
         }
     }
 
@@ -1768,7 +1878,40 @@ impl ScreenPlanBuilder {
         Self {
             next_transaction_id: 0,
             publication_hub,
+            admission_coordinator: ScreenByteAdmissionCoordinator::default(),
         }
+    }
+
+    /// Construct around shared publication and byte-admission authorities.
+    #[must_use]
+    pub fn with_admission_coordinator(
+        publication_hub: Arc<ScreenPublicationHub>,
+        admission_coordinator: ScreenByteAdmissionCoordinator,
+    ) -> Self {
+        Self {
+            next_transaction_id: 0,
+            publication_hub,
+            admission_coordinator,
+        }
+    }
+
+    /// Construct with explicit publication slots and shared byte admission.
+    #[must_use]
+    pub fn with_publication_slots_and_admission(
+        slot_policy: ScreenPublicationSlotPolicy,
+        admission_coordinator: ScreenByteAdmissionCoordinator,
+    ) -> Self {
+        Self {
+            next_transaction_id: 0,
+            publication_hub: Arc::new(ScreenPublicationHub::new(slot_policy)),
+            admission_coordinator,
+        }
+    }
+
+    /// Shared source-level byte admission authority.
+    #[must_use]
+    pub fn admission_coordinator(&self) -> ScreenByteAdmissionCoordinator {
+        self.admission_coordinator.clone()
     }
 
     /// Current immutable active plan snapshot.
@@ -1840,6 +1983,10 @@ impl ScreenPlanBuilder {
             base_state.slot_policy(),
             capacity,
         )?;
+        let staged_reservation = self
+            .admission_coordinator
+            .try_acquire(admission.staged().total_bytes())
+            .map_err(ScreenPlanError::SharedAdmission)?;
         let source_resource_contracts = required_source_minimums(base_state.plan(), &candidate)?;
         let mut required_sources = Vec::new();
         required_sources
@@ -1872,6 +2019,8 @@ impl ScreenPlanBuilder {
             next_worker_nonce: 0,
             prepared_tokens: Vec::new(),
             activation: Arc::new(ScreenWorkerActivationLatch::new()),
+            staged_reservation,
+            admission_coordinator: self.admission_coordinator.clone(),
         })
     }
 
@@ -1957,6 +2106,14 @@ impl ScreenPlanBuilder {
 /// Failure to canonicalize, admit, or transition a screen plan.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ScreenPlanError {
+    /// The process-wide source and publication byte fence rejected a quote.
+    #[error(transparent)]
+    SharedAdmission(#[from] ScreenByteAdmissionError),
+    /// Worker backing exceeded planner minima without a pre-allocation quote.
+    #[error(
+        "exact worker resources need {required} additional bytes but only {quoted} bytes were preflighted"
+    )]
+    UnquotedExactWorkerBytes { required: u64, quoted: u64 },
     /// Memory for a candidate plan structure could not be reserved.
     #[error("failed to allocate the candidate screen publication plan")]
     AllocationFailed,

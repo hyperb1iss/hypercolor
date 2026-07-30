@@ -12,6 +12,15 @@ use std::sync::{Arc, LazyLock, OnceLock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Opaque lifetime owner retained with one admitted surface backing.
+///
+/// Higher-level crates use this seam to keep resource reservations alive for
+/// exactly as long as a canvas backing can still be observed. The types crate
+/// deliberately does not prescribe the accounting implementation.
+pub trait SurfaceResourceOwner: std::fmt::Debug + Send + Sync {}
+
+impl<T> SurfaceResourceOwner for T where T: std::fmt::Debug + Send + Sync {}
+
 // ── Canvas Constants ───────────────────────────────────────────────────────
 
 /// The default canvas width used by the render pipeline.
@@ -39,6 +48,28 @@ pub enum SurfaceResourceError {
         width: u32,
         height: u32,
         byte_len: usize,
+    },
+
+    #[error(
+        "screen analysis needs {requested_bytes} bytes for {width}x{height} sectors; capacity is {capacity_bytes} bytes"
+    )]
+    AnalysisCapacityExceeded {
+        width: u32,
+        height: u32,
+        requested_bytes: u64,
+        capacity_bytes: u64,
+    },
+
+    #[error(
+        "screen analysis needs {requested_work_units} work units per frame for {width}x{height} sectors at {target_fps} FPS; {worker_count} workers admit {capacity_work_units}"
+    )]
+    AnalysisWorkCapacityExceeded {
+        width: u32,
+        height: u32,
+        target_fps: u32,
+        requested_work_units: u64,
+        capacity_work_units: u64,
+        worker_count: u64,
     },
 
     #[error(
@@ -536,6 +567,8 @@ pub struct Canvas {
     pixels: Arc<Vec<u8>>,
 
     storage_id: u64,
+
+    resource_owner: Option<Arc<dyn SurfaceResourceOwner>>,
 }
 
 impl Canvas {
@@ -567,6 +600,7 @@ impl Canvas {
             height,
             pixels: Arc::new(pixels),
             storage_id: next_published_surface_storage_id(),
+            resource_owner: None,
         })
     }
 
@@ -607,6 +641,7 @@ impl Canvas {
             height,
             pixels: Arc::new(pixels),
             storage_id: next_published_surface_storage_id(),
+            resource_owner: None,
         })
     }
 
@@ -638,6 +673,7 @@ impl Canvas {
             height,
             pixels: Arc::new(data),
             storage_id: next_published_surface_storage_id(),
+            resource_owner: None,
         })
     }
 
@@ -649,7 +685,19 @@ impl Canvas {
             height: surface.height(),
             pixels: Arc::clone(surface.storage.cpu_rgba()),
             storage_id: surface.storage.id(),
+            resource_owner: surface.storage.resource_owner().cloned(),
         }
+    }
+
+    /// Retain an opaque resource owner with this backing and future aliases.
+    pub fn set_resource_owner(&mut self, owner: Arc<dyn SurfaceResourceOwner>) {
+        self.resource_owner = Some(owner);
+    }
+
+    /// Whether this backing carries an external resource owner.
+    #[must_use]
+    pub fn has_resource_owner(&self) -> bool {
+        self.resource_owner.is_some()
     }
 
     /// Copy a published surface into this canvas without invalidating readers.
@@ -729,7 +777,15 @@ impl Canvas {
     /// Consume the canvas and report whether ownership required a backing clone.
     #[must_use]
     pub fn into_rgba_bytes_with_copy_info(self) -> (Vec<u8>, bool) {
-        match Arc::try_unwrap(self.pixels) {
+        let Self {
+            pixels,
+            resource_owner,
+            ..
+        } = self;
+        if resource_owner.is_some() {
+            return (pixels.as_ref().clone(), true);
+        }
+        match Arc::try_unwrap(pixels) {
             Ok(pixels) => (pixels, false),
             Err(pixels) => (pixels.as_ref().clone(), true),
         }
@@ -795,6 +851,10 @@ impl Canvas {
     }
 
     fn pixels_mut(&mut self) -> &mut Vec<u8> {
+        if self.resource_owner.is_some() && Arc::strong_count(&self.pixels) > 1 {
+            self.pixels = Arc::new(self.pixels.as_ref().clone());
+            self.resource_owner = None;
+        }
         self.storage_id = next_published_surface_storage_id();
         Arc::make_mut(&mut self.pixels)
     }
@@ -1007,6 +1067,7 @@ enum PublishedSurfaceStorage {
         id: u64,
         rgba: Arc<Vec<u8>>,
         content_digest: Arc<OnceLock<u64>>,
+        resource_owner: Option<Arc<dyn SurfaceResourceOwner>>,
     },
 }
 
@@ -1016,11 +1077,16 @@ pub enum PublishedSurfaceStorageIdentity {
 }
 
 impl PublishedSurfaceStorage {
-    fn new_cpu_rgba(id: u64, rgba: Arc<Vec<u8>>) -> Self {
+    fn new_cpu_rgba(
+        id: u64,
+        rgba: Arc<Vec<u8>>,
+        resource_owner: Option<Arc<dyn SurfaceResourceOwner>>,
+    ) -> Self {
         Self::CpuRgba {
             id,
             rgba,
             content_digest: Arc::new(OnceLock::new()),
+            resource_owner,
         }
     }
 
@@ -1039,6 +1105,12 @@ impl PublishedSurfaceStorage {
     fn id(&self) -> u64 {
         match self {
             Self::CpuRgba { id, .. } => *id,
+        }
+    }
+
+    fn resource_owner(&self) -> Option<&Arc<dyn SurfaceResourceOwner>> {
+        match self {
+            Self::CpuRgba { resource_owner, .. } => resource_owner.as_ref(),
         }
     }
 
@@ -1077,6 +1149,7 @@ impl PublishedSurface {
             storage: PublishedSurfaceStorage::new_cpu_rgba(
                 EMPTY_PUBLISHED_SURFACE_STORAGE_ID,
                 Arc::new(Vec::new()),
+                None,
             ),
         }
     }
@@ -1092,6 +1165,7 @@ impl PublishedSurface {
             storage: PublishedSurfaceStorage::new_cpu_rgba(
                 next_published_surface_storage_id(),
                 Arc::new(canvas.as_rgba_bytes().to_vec()),
+                None,
             ),
         }
     }
@@ -1128,6 +1202,7 @@ impl PublishedSurface {
             storage: PublishedSurfaceStorage::new_cpu_rgba(
                 next_published_surface_storage_id(),
                 Arc::new(rgba),
+                None,
             ),
         }
     }
@@ -1150,6 +1225,7 @@ impl PublishedSurface {
             height,
             pixels,
             storage_id,
+            resource_owner,
         } = canvas;
         let descriptor = SurfaceDescriptor::rgba8888(width, height);
         (
@@ -1158,7 +1234,7 @@ impl PublishedSurface {
                 generation: 0,
                 frame_number,
                 timestamp_ms,
-                storage: PublishedSurfaceStorage::new_cpu_rgba(storage_id, pixels),
+                storage: PublishedSurfaceStorage::new_cpu_rgba(storage_id, pixels, resource_owner),
             },
             false,
         )
@@ -1348,6 +1424,7 @@ impl SurfaceSlot {
                 canvas.width() != descriptor.width || canvas.height() != descriptor.height
             });
         if needs_realloc {
+            drop(self.canvas.take());
             self.canvas = Some(Canvas::try_new(descriptor.width, descriptor.height)?);
         }
 
@@ -1657,6 +1734,37 @@ impl RenderSurfacePool {
 
     /// Fallible dequeue for pools whose descriptor or fan-out is runtime-negotiated.
     pub fn try_dequeue(&mut self) -> Result<Option<SurfaceLease<'_>>, SurfaceResourceError> {
+        self.try_dequeue_descriptor(self.descriptor, true)
+    }
+
+    /// Fallible dequeue that never replaces storage still pinned by readers.
+    ///
+    /// The pool may materialize configured slots and grow to `max_slots`, but
+    /// returns `None` once every bounded slot is pinned or dequeued.
+    pub fn try_dequeue_bounded(
+        &mut self,
+    ) -> Result<Option<SurfaceLease<'_>>, SurfaceResourceError> {
+        self.try_dequeue_descriptor(self.descriptor, false)
+    }
+
+    /// Fallible bounded dequeue for a runtime-selected descriptor.
+    ///
+    /// Descriptor churn reuses only unpinned slots. Published readers keep
+    /// their old backing while still counting against the same global slot
+    /// bound, so alternating aspect ratios cannot create hidden generations.
+    pub fn try_dequeue_bounded_for_descriptor(
+        &mut self,
+        descriptor: SurfaceDescriptor,
+    ) -> Result<Option<SurfaceLease<'_>>, SurfaceResourceError> {
+        descriptor.try_non_empty_byte_len()?;
+        self.try_dequeue_descriptor(descriptor, false)
+    }
+
+    fn try_dequeue_descriptor(
+        &mut self,
+        descriptor: SurfaceDescriptor,
+        replace_pinned: bool,
+    ) -> Result<Option<SurfaceLease<'_>>, SurfaceResourceError> {
         self.reclaim_published_slots();
 
         for offset in 0..self.slots.len() {
@@ -1665,10 +1773,11 @@ impl RenderSurfacePool {
                 continue;
             }
 
-            let _ = self.slots[index].try_begin_dequeue(self.descriptor)?;
+            let _ = self.slots[index].try_begin_dequeue(descriptor)?;
+            self.descriptor = descriptor;
             self.next_slot = (index + 1) % self.slots.len();
             return Ok(Some(SurfaceLease {
-                descriptor: self.descriptor,
+                descriptor,
                 slot: &mut self.slots[index],
             }));
         }
@@ -1679,35 +1788,41 @@ impl RenderSurfacePool {
                 continue;
             }
 
-            let _ = self.slots[index].try_begin_dequeue(self.descriptor)?;
+            let _ = self.slots[index].try_begin_dequeue(descriptor)?;
+            self.descriptor = descriptor;
             self.next_slot = (index + 1) % self.slots.len();
             return Ok(Some(SurfaceLease {
-                descriptor: self.descriptor,
+                descriptor,
                 slot: &mut self.slots[index],
             }));
         }
 
         if self.slots.len() < self.max_slots {
             let slot_count = self.slots.len() + 1;
-            let pool_byte_len = checked_pool_byte_len(self.descriptor, slot_count)?;
-            let mut fresh = SurfaceSlot::try_new(self.descriptor)?;
-            let _ = fresh.try_begin_dequeue(self.descriptor)?;
+            let pool_byte_len = checked_pool_byte_len(descriptor, slot_count)?;
+            let mut fresh = SurfaceSlot::try_new(descriptor)?;
+            let _ = fresh.try_begin_dequeue(descriptor)?;
             self.slots
                 .try_reserve(1)
                 .map_err(|_| SurfaceResourceError::PoolAllocationFailed {
-                    width: self.descriptor.width,
-                    height: self.descriptor.height,
+                    width: descriptor.width,
+                    height: descriptor.height,
                     slot_count,
                     byte_len: pool_byte_len,
                 })?;
             self.slots.push(fresh);
             self.grown_slots = self.grown_slots.saturating_add(1);
             let index = self.slots.len() - 1;
+            self.descriptor = descriptor;
             self.next_slot = (index + 1) % self.slots.len();
             return Ok(Some(SurfaceLease {
-                descriptor: self.descriptor,
+                descriptor,
                 slot: &mut self.slots[index],
             }));
+        }
+
+        if !replace_pinned {
+            return Ok(None);
         }
 
         for offset in 0..self.slots.len() {
@@ -1716,12 +1831,13 @@ impl RenderSurfacePool {
                 continue;
             }
 
-            if self.slots[index].try_begin_dequeue(self.descriptor)? {
+            if self.slots[index].try_begin_dequeue(descriptor)? {
                 self.saturation_reallocs = self.saturation_reallocs.saturating_add(1);
             }
+            self.descriptor = descriptor;
             self.next_slot = (index + 1) % self.slots.len();
             return Ok(Some(SurfaceLease {
-                descriptor: self.descriptor,
+                descriptor,
                 slot: &mut self.slots[index],
             }));
         }
@@ -1813,6 +1929,7 @@ impl SurfaceLease<'_> {
             storage: PublishedSurfaceStorage::new_cpu_rgba(
                 canvas.storage_id,
                 Arc::clone(&canvas.pixels),
+                canvas.resource_owner.clone(),
             ),
         }
     }

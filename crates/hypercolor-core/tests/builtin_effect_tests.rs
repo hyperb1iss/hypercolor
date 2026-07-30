@@ -137,7 +137,7 @@ fn make_screen_data() -> ScreenData {
     }
 
     ScreenData {
-        zone_colors: Vec::new(),
+        zone_colors: Vec::new().into(),
         grid_width: 0,
         grid_height: 0,
         canvas_downscale: Some(PublishedSurface::from_owned_canvas(canvas, 0, 0)),
