@@ -1772,6 +1772,20 @@ impl RenderCaches {
             }
             None => ZoneRuntime::try_new(width, height)?,
         };
+        #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
+        let mut sparkleflinger_preparation =
+            self.sparkleflinger.prepare_canvas_resize(width, height);
+        #[cfg(feature = "wgpu")]
+        let mut display_sparkleflinger_preparation = self
+            .display_sparkleflinger
+            .prepare_canvas_resize(width, height);
+        #[cfg(feature = "wgpu")]
+        if !sparkleflinger_preparation.is_admitted()
+            || !display_sparkleflinger_preparation.is_admitted()
+        {
+            sparkleflinger_preparation.force_cpu_fallback();
+            display_sparkleflinger_preparation.force_cpu_fallback();
+        }
         self.deferred_sampling
             .clear_for_canvas_resize(&mut self.sparkleflinger);
         #[cfg(feature = "wgpu")]
@@ -1779,6 +1793,11 @@ impl RenderCaches {
             self.display_sparkleflinger
                 .discard_pending_display_finalization(pending.pending);
         }
+        self.sparkleflinger
+            .apply_canvas_resize(sparkleflinger_preparation);
+        #[cfg(feature = "wgpu")]
+        self.display_sparkleflinger
+            .apply_canvas_resize(display_sparkleflinger_preparation);
         self.render_group_runtime = render_group_runtime;
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
@@ -1939,6 +1958,31 @@ impl PipelineRuntime {
         input_demands: InputPublicationDemandHandle,
         interaction_routing: InteractionRoutingControl,
     ) -> Result<Self> {
+        let mut sparkleflinger = SparkleFlinger::new_with_gpu_device(
+            render_acceleration_mode,
+            #[cfg(feature = "wgpu")]
+            render_gpu_device.clone(),
+        )?;
+        #[cfg(feature = "wgpu")]
+        let mut display_sparkleflinger =
+            SparkleFlinger::new_with_gpu_device(render_acceleration_mode, render_gpu_device)?;
+        #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
+        let mut sparkleflinger_preparation =
+            sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height);
+        #[cfg(feature = "wgpu")]
+        let mut display_sparkleflinger_preparation =
+            display_sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height);
+        #[cfg(feature = "wgpu")]
+        if !sparkleflinger_preparation.is_admitted()
+            || !display_sparkleflinger_preparation.is_admitted()
+        {
+            sparkleflinger_preparation.force_cpu_fallback();
+            display_sparkleflinger_preparation.force_cpu_fallback();
+        }
+        sparkleflinger.apply_canvas_resize(sparkleflinger_preparation);
+        #[cfg(feature = "wgpu")]
+        display_sparkleflinger.apply_canvas_resize(display_sparkleflinger_preparation);
+
         Ok(Self {
             scene: SceneSnapshotState::new(initial_spatial_engine, screen_capture_configured),
             frame_loop: FrameLoopState {
@@ -1957,17 +2001,9 @@ impl PipelineRuntime {
             render: RenderCaches {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
-                sparkleflinger: SparkleFlinger::new_with_gpu_device(
-                    render_acceleration_mode,
-                    #[cfg(feature = "wgpu")]
-                    render_gpu_device.clone(),
-                )?,
+                sparkleflinger,
                 #[cfg(feature = "wgpu")]
-                display_sparkleflinger: SparkleFlinger::new_with_gpu_device(
-                    render_acceleration_mode,
-                    #[cfg(feature = "wgpu")]
-                    render_gpu_device,
-                )?,
+                display_sparkleflinger,
                 #[cfg(feature = "wgpu")]
                 display_finalize_runtime: DisplayFinalizeRuntime::default(),
                 deferred_sampling: DeferredSamplingState::default(),

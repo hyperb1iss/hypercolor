@@ -448,6 +448,30 @@ pub struct SparkleFlinger {
     face_overlay_surface_pool: RenderSurfacePool,
 }
 
+pub(crate) enum SparkleFlingerCanvasPreparation {
+    Cpu,
+    #[cfg(feature = "wgpu")]
+    Gpu(gpu::GpuCanvasPreparation),
+}
+
+impl SparkleFlingerCanvasPreparation {
+    #[cfg(feature = "wgpu")]
+    pub(crate) const fn is_admitted(&self) -> bool {
+        match self {
+            Self::Cpu => true,
+            #[cfg(feature = "wgpu")]
+            Self::Gpu(preparation) => preparation.is_admitted(),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn force_cpu_fallback(&mut self) {
+        if matches!(self, Self::Gpu(_)) {
+            *self = Self::Gpu(gpu::GpuCanvasPreparation::cpu_fallback());
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SparkleFlingerSurfacePoolCounts {
     pub(crate) preview: SurfaceStateCounts,
@@ -494,6 +518,38 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    pub(crate) fn prepare_canvas_resize(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> SparkleFlingerCanvasPreparation {
+        #[cfg(not(feature = "wgpu"))]
+        let _ = (width, height);
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => SparkleFlingerCanvasPreparation::Cpu,
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                SparkleFlingerCanvasPreparation::Gpu(gpu.prepare_canvas_resize(width, height))
+            }
+        }
+    }
+
+    pub(crate) fn apply_canvas_resize(&mut self, preparation: SparkleFlingerCanvasPreparation) {
+        match (&mut self.backend, preparation) {
+            (SparkleFlingerBackend::Cpu(_), SparkleFlingerCanvasPreparation::Cpu) => {}
+            #[cfg(feature = "wgpu")]
+            (
+                SparkleFlingerBackend::Gpu { gpu, .. },
+                SparkleFlingerCanvasPreparation::Gpu(preparation),
+            ) => gpu.apply_canvas_resize(preparation),
+            #[allow(
+                unreachable_patterns,
+                reason = "the mismatch arm is reachable only in wgpu builds"
+            )]
+            _ => unreachable!("canvas preparation must belong to its SparkleFlinger backend"),
+        }
+    }
+
     pub(crate) fn synchronize_screen_plan_generation(&mut self, generation: u64) -> bool {
         let previous = self.screen_plan_generation.replace(generation);
         let changed = previous.is_some_and(|previous| previous != generation);
@@ -701,7 +757,15 @@ impl SparkleFlinger {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => false,
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { .. } => true,
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.canvas_gpu_admitted(),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn max_texture_dimension_2d(&self) -> Option<u32> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.max_texture_dimension_2d()),
         }
     }
 

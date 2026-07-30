@@ -197,6 +197,44 @@ fn sparkleflinger_refuses_gpu_frame_cpu_readback_fallback() {
 
 #[cfg(feature = "wgpu")]
 #[test]
+fn oversized_gpu_canvas_commits_to_cpu_fallback_without_a_global_cap() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let width = sparkleflinger
+        .max_texture_dimension_2d()
+        .expect("GPU backend should expose its texture limit")
+        .checked_add(1)
+        .expect("GPU texture limits leave room for a CPU-only test extent");
+    let preparation = sparkleflinger.prepare_canvas_resize(width, 1);
+    assert!(!preparation.is_admitted());
+    sparkleflinger.apply_canvas_resize(preparation);
+    assert!(!sparkleflinger.supports_gpu_output_frames());
+
+    let mut canvas = Canvas::new(width, 1);
+    canvas.fill(Rgba::new(12, 34, 56, 255));
+    let composed = sparkleflinger.compose_for_outputs(
+        CompositionPlan::single(
+            width,
+            1,
+            CompositionLayer::replace(ProducerFrame::Canvas(canvas)),
+        ),
+        true,
+        None,
+    );
+
+    assert_eq!(composed.backend, CompositorBackendKind::GpuFallback);
+    assert_eq!(
+        composed
+            .sampling_canvas
+            .expect("CPU fallback should preserve the requested canvas")
+            .width(),
+        width
+    );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
 fn sparkleflinger_gpu_readback_failure_composes_black() {
     let mut preview_surface_pool = new_preview_surface_pool();
     let composed = gpu_frame_without_cpu_fallback(

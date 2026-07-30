@@ -23,10 +23,11 @@ use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
 #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
 use super::CachedGpuSourceCopy;
 use super::{
-    DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight,
-    GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame, GpuSparkleFlinger,
-    GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES, MEDIA_UPLOAD_TEXTURE_RING_LEN,
-    MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap, PendingPreviewReadback,
+    DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight, GpuCanvasAdmission,
+    GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
+    GpuSparkleFlinger, GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES,
+    MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap,
+    PendingPreviewReadback, gpu_canvas_admission,
 };
 #[cfg(target_os = "windows")]
 use super::{
@@ -46,6 +47,22 @@ fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(4, 4);
     canvas.fill(color);
     canvas
+}
+
+#[test]
+fn gpu_canvas_admission_uses_device_dimensions_and_buffer_capacity() {
+    assert!(matches!(
+        gpu_canvas_admission(16_384, 256 * 1024 * 1024, 3840, 2160),
+        GpuCanvasAdmission::Gpu { .. }
+    ));
+    assert_eq!(
+        gpu_canvas_admission(8192, u64::MAX, 8193, 1),
+        GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::TextureDimension)
+    );
+    assert_eq!(
+        gpu_canvas_admission(16_384, 1024, 128, 3),
+        GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::FullFrameBufferCapacity)
+    );
 }
 
 fn solid_canvas_with_size(width: u32, height: u32, color: Rgba) -> Canvas {
@@ -400,15 +417,13 @@ fn dx12_compositor_exposes_one_renderer_bound_screen_target() {
         Ok(compositor) => compositor,
         Err(_) => return,
     };
-    let info = compositor._render_device.info();
-
-    if matches!(info.backend, wgpu::Backend::Dx12) {
+    if compositor.probe.backend == "dx12" {
         let target = compositor
             .screen_native_execution_target()
             .expect("DX12 compositor should expose a D3D11On12 target");
         assert_eq!(
             target.max_texture_dimension().get(),
-            info.max_texture_dimension_2d
+            compositor.probe.max_texture_dimension_2d
         );
     } else {
         assert!(compositor.screen_native_execution_target().is_none());

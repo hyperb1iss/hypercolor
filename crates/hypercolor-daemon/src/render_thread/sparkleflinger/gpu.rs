@@ -99,6 +99,80 @@ static NEXT_GPU_TEXTURE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(target_os = "windows")]
 static NEXT_SCREEN_TARGET_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GpuCanvasFallbackReason {
+    InvalidExtent,
+    TextureDimension,
+    FullFrameBufferCapacity,
+    ResourceAllocation,
+}
+
+impl GpuCanvasFallbackReason {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::InvalidExtent => "canvas extent is empty or not representable",
+            Self::TextureDimension => "canvas extent exceeds the GPU texture dimension limit",
+            Self::FullFrameBufferCapacity => {
+                "canvas extent exceeds the GPU full-frame buffer capacity"
+            }
+            Self::ResourceAllocation => "GPU canvas resources could not be admitted",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GpuCanvasAdmission {
+    Gpu { full_frame_buffer_bytes: u64 },
+    CpuFallback(GpuCanvasFallbackReason),
+}
+
+pub(crate) enum GpuCanvasPreparation {
+    Gpu(GpuCompositorSurfaceSet),
+    CpuFallback,
+}
+
+impl GpuCanvasPreparation {
+    pub(super) const fn is_admitted(&self) -> bool {
+        matches!(self, Self::Gpu(_))
+    }
+
+    pub(super) const fn cpu_fallback() -> Self {
+        Self::CpuFallback
+    }
+}
+
+fn gpu_canvas_admission(
+    max_texture_dimension_2d: u32,
+    max_buffer_size: u64,
+    width: u32,
+    height: u32,
+) -> GpuCanvasAdmission {
+    if width == 0 || height == 0 {
+        return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::InvalidExtent);
+    }
+    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
+        return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::TextureDimension);
+    }
+    let Some(bytes_per_row) = width.checked_mul(BYTES_PER_PIXEL as u32) else {
+        return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::InvalidExtent);
+    };
+    let Some(padded_bytes_per_row) = bytes_per_row
+        .checked_add(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1)
+        .map(|value| {
+            value / wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+        })
+    else {
+        return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::InvalidExtent);
+    };
+    let full_frame_buffer_bytes = u64::from(padded_bytes_per_row) * u64::from(height);
+    if full_frame_buffer_bytes > max_buffer_size {
+        return GpuCanvasAdmission::CpuFallback(GpuCanvasFallbackReason::FullFrameBufferCapacity);
+    }
+    GpuCanvasAdmission::Gpu {
+        full_frame_buffer_bytes,
+    }
+}
+
 #[cfg(target_os = "windows")]
 struct WindowsScreenBridge {
     interop: D3d11On12ScreenBridge,
@@ -393,6 +467,8 @@ pub(crate) struct GpuSparkleFlinger {
     device: wgpu::Device,
     queue: wgpu::Queue,
     probe: GpuCompositorProbe,
+    max_buffer_size: u64,
+    canvas_gpu_admitted: bool,
     pipeline: GpuCompositorPipeline,
     spatial_sampler: GpuSpatialSampler,
     surfaces: Option<GpuCompositorSurfaceSet>,
@@ -603,7 +679,7 @@ impl Drop for FrameInFlight {
     }
 }
 
-struct GpuCompositorSurfaceSet {
+pub(crate) struct GpuCompositorSurfaceSet {
     width: u32,
     height: u32,
     front: GpuCompositorTexture,
@@ -729,6 +805,7 @@ impl GpuSparkleFlinger {
         }
         let device = render_device.device().clone();
         let queue = render_device.queue().clone();
+        let max_buffer_size = device.limits().max_buffer_size;
 
         let pipeline = GpuCompositorPipeline::new(&device);
         let spatial_sampler = GpuSpatialSampler::new(&device);
@@ -741,6 +818,8 @@ impl GpuSparkleFlinger {
             device,
             queue,
             probe,
+            max_buffer_size,
+            canvas_gpu_admitted: true,
             pipeline,
             spatial_sampler,
             surfaces: None,
@@ -778,8 +857,16 @@ impl GpuSparkleFlinger {
     }
 
     pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {
-        plan.width > 0
-            && plan.height > 0
+        self.canvas_gpu_admitted
+            && matches!(
+                gpu_canvas_admission(
+                    self.probe.max_texture_dimension_2d,
+                    self.max_buffer_size,
+                    plan.width,
+                    plan.height,
+                ),
+                GpuCanvasAdmission::Gpu { .. }
+            )
             && !plan.layers.is_empty()
             && plan.layers.iter().all(|layer| {
                 gpu_source_frame(&layer.frame).is_some()
@@ -787,9 +874,85 @@ impl GpuSparkleFlinger {
             })
     }
 
+    pub(super) const fn canvas_gpu_admitted(&self) -> bool {
+        self.canvas_gpu_admitted
+    }
+
+    #[cfg(test)]
+    pub(super) const fn max_texture_dimension_2d(&self) -> u32 {
+        self.probe.max_texture_dimension_2d
+    }
+
     #[cfg(target_os = "windows")]
     pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
+        if !self.canvas_gpu_admitted {
+            return None;
+        }
         self.screen_target.as_ref()
+    }
+
+    pub(super) fn prepare_canvas_resize(&self, width: u32, height: u32) -> GpuCanvasPreparation {
+        let admission = gpu_canvas_admission(
+            self.probe.max_texture_dimension_2d,
+            self.max_buffer_size,
+            width,
+            height,
+        );
+        let full_frame_buffer_bytes = match admission {
+            GpuCanvasAdmission::Gpu {
+                full_frame_buffer_bytes,
+            } => full_frame_buffer_bytes,
+            GpuCanvasAdmission::CpuFallback(reason) => {
+                tracing::info!(
+                    width,
+                    height,
+                    reason = reason.message(),
+                    "using CPU compositor for canvas extent"
+                );
+                return GpuCanvasPreparation::CpuFallback;
+            }
+        };
+        match GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height) {
+            Ok(surfaces) => GpuCanvasPreparation::Gpu(surfaces),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    width,
+                    height,
+                    full_frame_buffer_bytes,
+                    reason = GpuCanvasFallbackReason::ResourceAllocation.message(),
+                    "using CPU compositor after GPU canvas admission failed"
+                );
+                GpuCanvasPreparation::CpuFallback
+            }
+        }
+    }
+
+    pub(super) fn apply_canvas_resize(&mut self, preparation: GpuCanvasPreparation) {
+        self.discard_pending_preview_map();
+        self.clear_sampling_readback_latch();
+        drop(self.supersede_frame_in_flight("canvas resize committed"));
+        self.surfaces = match preparation {
+            GpuCanvasPreparation::Gpu(surfaces) => {
+                self.canvas_gpu_admitted = true;
+                Some(surfaces)
+            }
+            GpuCanvasPreparation::CpuFallback => {
+                self.canvas_gpu_admitted = false;
+                None
+            }
+        };
+        self.preview_surfaces = None;
+        self.current_output = None;
+        self.cached_composition_key = None;
+        self.cached_readback_surface = None;
+        self.cached_preview_surfaces.clear();
+        self.pending_preview_map = None;
+        self.ready_preview_surface = None;
+        self.cached_sample_result = None;
+        self.spatial_sampler.clear_bind_groups();
+        #[cfg(target_os = "windows")]
+        self.release_native_screen_caches();
     }
 
     #[cfg(target_os = "windows")]
@@ -1093,17 +1256,20 @@ impl fmt::Debug for GpuSparkleFlinger {
 }
 
 impl GpuCompositorSurfaceSet {
-    fn new(
+    fn try_new(
         device: &wgpu::Device,
         pipeline: &GpuCompositorPipeline,
         width: u32,
         height: u32,
-    ) -> Self {
+    ) -> Result<Self> {
+        let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let front = GpuCompositorTexture::new(device, width, height, "SparkleFlinger Front");
         let back = GpuCompositorTexture::new(device, width, height, "SparkleFlinger Back");
         let source = GpuCompositorTexture::new(device, width, height, "SparkleFlinger Source");
 
-        Self {
+        let surfaces = Self {
             width,
             height,
             bind_groups: GpuCompositorBindGroups::new(device, pipeline, &front, &back, &source),
@@ -1126,7 +1292,14 @@ impl GpuCompositorSurfaceSet {
             compose_dispatch_count: 0,
             #[cfg(test)]
             compose_param_write_count: 0,
+        };
+        let validation_error = pollster::block_on(validation_scope.pop());
+        let internal_error = pollster::block_on(internal_scope.pop());
+        let out_of_memory_error = pollster::block_on(out_of_memory_scope.pop());
+        if let Some(error) = validation_error.or(internal_error).or(out_of_memory_error) {
+            anyhow::bail!("GPU compositor surface allocation failed: {error}");
         }
+        Ok(surfaces)
     }
 
     fn snapshot(&self) -> GpuCompositorSurfaceSnapshot {

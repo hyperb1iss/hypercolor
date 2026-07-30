@@ -163,7 +163,7 @@ impl GpuSparkleFlinger {
         ) {
             self.discard_superseded_preview_work();
         }
-        self.ensure_surface_size(plan.width, plan.height);
+        self.try_ensure_surface_size(plan.width, plan.height)?;
         if let Some(key) = readback_key.as_ref()
             && self.current_output.is_some()
             && self.cached_composition_key.as_ref() == Some(key)
@@ -339,7 +339,7 @@ impl GpuSparkleFlinger {
         )
     }
 
-    pub(crate) fn ensure_surface_size(&mut self, width: u32, height: u32) {
+    pub(crate) fn try_ensure_surface_size(&mut self, width: u32, height: u32) -> Result<()> {
         if matches!(
             self.surfaces,
             Some(GpuCompositorSurfaceSet {
@@ -348,18 +348,24 @@ impl GpuSparkleFlinger {
                 ..
             }) if current_width == width && current_height == height
         ) {
-            return;
+            return Ok(());
+        }
+        let admission = super::gpu_canvas_admission(
+            self.probe.max_texture_dimension_2d,
+            self.max_buffer_size,
+            width,
+            height,
+        );
+        if let super::GpuCanvasAdmission::CpuFallback(reason) = admission {
+            anyhow::bail!("{}", reason.message());
         }
 
+        let replacement =
+            GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height)?;
         self.discard_pending_preview_map();
         self.clear_sampling_readback_latch();
         drop(self.supersede_frame_in_flight("compositor surfaces resized"));
-        self.surfaces = Some(GpuCompositorSurfaceSet::new(
-            &self.device,
-            &self.pipeline,
-            width,
-            height,
-        ));
+        self.surfaces = Some(replacement);
         self.preview_surfaces = None;
         self.current_output = None;
         self.cached_composition_key = None;
@@ -369,6 +375,7 @@ impl GpuSparkleFlinger {
         self.ready_preview_surface = None;
         self.cached_sample_result = None;
         self.spatial_sampler.clear_bind_groups();
+        Ok(())
     }
 
     fn layer_reuses_current_output_texture(
@@ -466,7 +473,7 @@ impl GpuSparkleFlinger {
         }
 
         self.discard_superseded_preview_work();
-        self.ensure_surface_size(plan.width, plan.height);
+        self.try_ensure_surface_size(plan.width, plan.height)?;
         if let Some(surfaces) = self.surfaces.as_mut() {
             upload_frame_into_cached_texture(
                 &self.queue,

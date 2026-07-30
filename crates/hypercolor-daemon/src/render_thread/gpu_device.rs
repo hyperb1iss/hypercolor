@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+const GPU_RESOURCE_CREATION_BUDGET_PERCENT: u8 = 80;
+const GPU_DEVICE_LOSS_BUDGET_PERCENT: u8 = 95;
+
 #[derive(Debug, Clone)]
 pub struct GpuRenderDevice {
     inner: Arc<GpuRenderDeviceInner>,
@@ -54,6 +57,10 @@ impl GpuRenderDevice {
             allow(unused_mut)
         )]
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        instance_descriptor.memory_budget_thresholds = wgpu::MemoryBudgetThresholds {
+            for_resource_creation: Some(GPU_RESOURCE_CREATION_BUDGET_PERCENT),
+            for_device_loss: Some(GPU_DEVICE_LOSS_BUDGET_PERCENT),
+        };
         #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
         if matches!(
             backend_preference,

@@ -7,11 +7,15 @@ fn gpu_compositor_reuses_matching_surface_sizes() {
         Err(_) => return,
     };
 
-    compositor.ensure_surface_size(640, 480);
+    compositor
+        .try_ensure_surface_size(640, 480)
+        .expect("test surface allocation should succeed");
     let first = compositor
         .surface_snapshot()
         .expect("surface allocation should publish a snapshot");
-    compositor.ensure_surface_size(640, 480);
+    compositor
+        .try_ensure_surface_size(640, 480)
+        .expect("same-size surface reuse should succeed");
     let second = compositor
         .surface_snapshot()
         .expect("surface snapshot should remain available");
@@ -32,7 +36,9 @@ fn gpu_resize_clears_ready_preview_surface() {
         0,
     ));
 
-    compositor.ensure_surface_size(8, 8);
+    compositor
+        .try_ensure_surface_size(8, 8)
+        .expect("test surface allocation should succeed");
 
     assert!(compositor.ready_preview_surface.is_none());
 }
@@ -60,7 +66,9 @@ fn gpu_resize_clears_sampling_bind_groups() {
 
     assert!(compositor.spatial_sampler.cached_bind_group_count() > 0);
 
-    compositor.ensure_surface_size(8, 8);
+    compositor
+        .try_ensure_surface_size(8, 8)
+        .expect("same-size surface reuse should succeed");
 
     assert_eq!(compositor.spatial_sampler.cached_bind_group_count(), 0);
 }
