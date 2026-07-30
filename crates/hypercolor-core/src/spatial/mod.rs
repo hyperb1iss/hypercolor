@@ -76,7 +76,7 @@ pub enum SpatialSamplingError {
         height: u32,
         entry_count: usize,
     },
-    /// The checked workspace exceeds the caller's resource budget.
+    /// The aggregate workspace pool exceeds the caller's resource budget.
     #[error(
         "summed-area workspace for {width}x{height} requires {required_bytes} bytes, capacity is {capacity_bytes} bytes"
     )]
@@ -88,7 +88,7 @@ pub enum SpatialSamplingError {
     },
 }
 
-/// Resource budget for reusable frame-sampling workspaces.
+/// Aggregate resource budget for reusable frame-sampling workspaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpatialSamplingCapacity {
     max_area_workspace_bytes: usize,
@@ -111,6 +111,18 @@ impl SpatialSamplingCapacity {
     pub const fn max_area_workspace_bytes(self) -> usize {
         self.max_area_workspace_bytes
     }
+}
+
+/// Current retained memory usage of the summed-area workspace pool.
+///
+/// Retained workspaces include both idle workspaces and workspaces leased by
+/// concurrent frame samplers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpatialSamplingWorkspaceUsage {
+    /// Number of retained summed-area workspaces.
+    pub retained_workspaces: usize,
+    /// Bytes occupied by all retained summed-area tables.
+    pub retained_bytes: usize,
 }
 
 /// Return whether a layout zone represents a display viewport instead of LEDs.
@@ -352,6 +364,19 @@ impl SpatialEngine {
         self.area_workspaces
             .as_ref()
             .map_or(Ok(()), |pool| pool.try_prepare(width, height))
+    }
+
+    /// Report the retained summed-area workspace count and byte usage.
+    #[must_use]
+    pub fn sampling_workspace_usage(&self) -> SpatialSamplingWorkspaceUsage {
+        let (retained_workspaces, retained_bytes) = self
+            .area_workspaces
+            .as_ref()
+            .map_or((0, 0), |pool| pool.usage());
+        SpatialSamplingWorkspaceUsage {
+            retained_workspaces,
+            retained_bytes,
+        }
     }
 
     /// Replace the active layout and recompute all LED positions.

@@ -1,5 +1,5 @@
 use std::ops::Deref;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
 
@@ -9,14 +9,25 @@ use crate::spatial::{PreparedAreaSample, SpatialSamplingCapacity, SpatialSamplin
 #[derive(Debug)]
 pub(crate) struct AreaWorkspacePool {
     state: Mutex<AreaWorkspacePoolState>,
+    allocation_ready: Condvar,
     capacity: SpatialSamplingCapacity,
 }
 
 #[derive(Debug)]
 struct AreaWorkspacePoolState {
     available: Vec<SummedAreaWorkspace>,
+    resident_descriptors: Vec<WorkspaceDescriptor>,
+    allocating_descriptors: Vec<WorkspaceDescriptor>,
+    resident_bytes: usize,
+    reserved_bytes: usize,
     leased: usize,
     reserved: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WorkspaceDescriptor {
+    width: u32,
+    height: u32,
 }
 
 impl AreaWorkspacePool {
@@ -25,7 +36,9 @@ impl AreaWorkspacePool {
         height: u32,
         capacity: SpatialSamplingCapacity,
     ) -> Result<Arc<Self>, SpatialSamplingError> {
-        let workspace = SummedAreaWorkspace::try_new(width, height, capacity)?;
+        let geometry = WorkspaceGeometry::try_new(width, height)?;
+        validate_aggregate_capacity(0, 0, geometry, capacity)?;
+        let workspace = SummedAreaWorkspace::try_new(geometry)?;
         let mut available = Vec::new();
         available.try_reserve_exact(1).map_err(|_| {
             SpatialSamplingError::AreaWorkspaceAllocation {
@@ -35,12 +48,27 @@ impl AreaWorkspacePool {
             }
         })?;
         available.push(workspace);
+        let descriptor = geometry.descriptor();
+        let mut resident_descriptors = Vec::new();
+        resident_descriptors.try_reserve_exact(1).map_err(|_| {
+            SpatialSamplingError::AreaWorkspaceAllocation {
+                width,
+                height,
+                entry_count: geometry.entry_count,
+            }
+        })?;
+        resident_descriptors.push(descriptor);
         Ok(Arc::new(Self {
             state: Mutex::new(AreaWorkspacePoolState {
                 available,
+                resident_descriptors,
+                allocating_descriptors: Vec::new(),
+                resident_bytes: geometry.byte_len,
+                reserved_bytes: 0,
                 leased: 0,
                 reserved: 0,
             }),
+            allocation_ready: Condvar::new(),
             capacity,
         }))
     }
@@ -51,40 +79,54 @@ impl AreaWorkspacePool {
     ) -> Result<AreaWorkspaceLease, SpatialSamplingError> {
         let width = canvas.width();
         let height = canvas.height();
-        let mut state = self.lock_state();
-        let matching = state
-            .available
-            .iter()
-            .position(|workspace| workspace.matches(width, height));
-        let workspace = match matching {
-            Some(index) => Some(state.available.swap_remove(index)),
-            None => state.available.pop(),
-        };
-        if workspace.is_none() {
-            reserve_pool_slot(&mut state, width, height)?;
-        }
-        state.leased += 1;
-        drop(state);
+        let geometry = WorkspaceGeometry::try_new(width, height)?;
+        let descriptor = geometry.descriptor();
 
-        let mut workspace = match workspace {
-            Some(workspace) => workspace,
-            None => match SummedAreaWorkspace::try_new(width, height, self.capacity) {
+        loop {
+            let mut state = self.lock_state();
+            if let Some(index) = state
+                .available
+                .iter()
+                .position(|workspace| workspace.matches(width, height))
+            {
+                let mut workspace = state.available.swap_remove(index);
+                state.leased += 1;
+                drop(state);
+                workspace.rebuild(canvas);
+                return Ok(AreaWorkspaceLease {
+                    pool: Arc::clone(self),
+                    workspace: Some(workspace),
+                });
+            }
+            if state.allocating_descriptors.contains(&descriptor) {
+                drop(self.wait_for_allocation(state));
+                continue;
+            }
+            reserve_allocation(&mut state, geometry, self.capacity)?;
+            drop(state);
+
+            let allocation = SummedAreaWorkspace::try_new(geometry);
+            let mut state = self.lock_state();
+            finish_reservation(&mut state, descriptor, geometry);
+            let mut workspace = match allocation {
                 Ok(workspace) => workspace,
                 Err(error) => {
-                    self.cancel_lease();
+                    drop(state);
+                    self.allocation_ready.notify_all();
                     return Err(error);
                 }
-            },
-        };
-        if let Err(error) = workspace.try_resize(width, height, self.capacity) {
-            self.checkin(workspace);
-            return Err(error);
+            };
+            state.resident_bytes += geometry.byte_len;
+            state.resident_descriptors.push(descriptor);
+            state.leased += 1;
+            drop(state);
+            self.allocation_ready.notify_all();
+            workspace.rebuild(canvas);
+            return Ok(AreaWorkspaceLease {
+                pool: Arc::clone(self),
+                workspace: Some(workspace),
+            });
         }
-        workspace.rebuild(canvas);
-        Ok(AreaWorkspaceLease {
-            pool: Arc::clone(self),
-            workspace: Some(workspace),
-        })
     }
 
     pub(crate) fn try_prepare(
@@ -92,29 +134,45 @@ impl AreaWorkspacePool {
         width: u32,
         height: u32,
     ) -> Result<(), SpatialSamplingError> {
-        let mut state = self.lock_state();
-        if state
-            .available
-            .iter()
-            .any(|workspace| workspace.matches(width, height))
-        {
-            return Ok(());
-        }
-        reserve_pool_slot(&mut state, width, height)?;
-        state.reserved += 1;
-        drop(state);
+        let geometry = WorkspaceGeometry::try_new(width, height)?;
+        let descriptor = geometry.descriptor();
 
-        let workspace = match SummedAreaWorkspace::try_new(width, height, self.capacity) {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                self.cancel_reservation();
-                return Err(error);
+        loop {
+            let mut state = self.lock_state();
+            if state.resident_descriptors.contains(&descriptor) {
+                return Ok(());
             }
-        };
-        let mut state = self.lock_state();
-        state.reserved -= 1;
-        state.available.push(workspace);
-        Ok(())
+            if state.allocating_descriptors.contains(&descriptor) {
+                drop(self.wait_for_allocation(state));
+                continue;
+            }
+            reserve_allocation(&mut state, geometry, self.capacity)?;
+            drop(state);
+
+            let allocation = SummedAreaWorkspace::try_new(geometry);
+            let mut state = self.lock_state();
+            finish_reservation(&mut state, descriptor, geometry);
+            match allocation {
+                Ok(workspace) => {
+                    state.resident_bytes += geometry.byte_len;
+                    state.resident_descriptors.push(descriptor);
+                    state.available.push(workspace);
+                    drop(state);
+                    self.allocation_ready.notify_all();
+                    return Ok(());
+                }
+                Err(error) => {
+                    drop(state);
+                    self.allocation_ready.notify_all();
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn usage(&self) -> (usize, usize) {
+        let state = self.lock_state();
+        (state.resident_descriptors.len(), state.resident_bytes)
     }
 
     fn checkin(&self, workspace: SummedAreaWorkspace) {
@@ -123,12 +181,13 @@ impl AreaWorkspacePool {
         state.available.push(workspace);
     }
 
-    fn cancel_lease(&self) {
-        self.lock_state().leased -= 1;
-    }
-
-    fn cancel_reservation(&self) {
-        self.lock_state().reserved -= 1;
+    fn wait_for_allocation<'a>(
+        &self,
+        state: MutexGuard<'a, AreaWorkspacePoolState>,
+    ) -> MutexGuard<'a, AreaWorkspacePoolState> {
+        self.allocation_ready
+            .wait(state)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn lock_state(&self) -> MutexGuard<'_, AreaWorkspacePoolState> {
@@ -138,29 +197,98 @@ impl AreaWorkspacePool {
     }
 }
 
-fn reserve_pool_slot(
+fn reserve_allocation(
     state: &mut AreaWorkspacePoolState,
-    width: u32,
-    height: u32,
+    geometry: WorkspaceGeometry,
+    capacity: SpatialSamplingCapacity,
 ) -> Result<(), SpatialSamplingError> {
+    validate_aggregate_capacity(
+        state.resident_bytes,
+        state.reserved_bytes,
+        geometry,
+        capacity,
+    )?;
     let required_slots = state
         .available
         .len()
         .saturating_add(state.leased)
         .saturating_add(state.reserved)
         .saturating_add(1);
-    if state.available.capacity() >= required_slots {
-        return Ok(());
+    if state.available.capacity() < required_slots {
+        state
+            .available
+            .try_reserve_exact(required_slots - state.available.len())
+            .map_err(|_| allocation_error(geometry))?;
     }
-    let geometry = WorkspaceGeometry::try_new(width, height)?;
+    let required_descriptors = state
+        .resident_descriptors
+        .len()
+        .saturating_add(state.reserved)
+        .saturating_add(1);
+    if state.resident_descriptors.capacity() < required_descriptors {
+        state
+            .resident_descriptors
+            .try_reserve_exact(required_descriptors - state.resident_descriptors.len())
+            .map_err(|_| allocation_error(geometry))?;
+    }
     state
-        .available
-        .try_reserve_exact(required_slots - state.available.len())
-        .map_err(|_| SpatialSamplingError::AreaWorkspaceAllocation {
-            width,
-            height,
-            entry_count: geometry.entry_count,
-        })
+        .allocating_descriptors
+        .try_reserve_exact(1)
+        .map_err(|_| allocation_error(geometry))?;
+    state.reserved += 1;
+    state.reserved_bytes += geometry.byte_len;
+    state.allocating_descriptors.push(geometry.descriptor());
+    Ok(())
+}
+
+fn finish_reservation(
+    state: &mut AreaWorkspacePoolState,
+    descriptor: WorkspaceDescriptor,
+    geometry: WorkspaceGeometry,
+) {
+    let index = state
+        .allocating_descriptors
+        .iter()
+        .position(|candidate| *candidate == descriptor)
+        .expect("active allocation must retain its descriptor reservation");
+    state.allocating_descriptors.swap_remove(index);
+    state.reserved -= 1;
+    state.reserved_bytes -= geometry.byte_len;
+}
+
+fn validate_aggregate_capacity(
+    resident_bytes: usize,
+    reserved_bytes: usize,
+    geometry: WorkspaceGeometry,
+    capacity: SpatialSamplingCapacity,
+) -> Result<(), SpatialSamplingError> {
+    let capacity_bytes = capacity.max_area_workspace_bytes();
+    let required_bytes = resident_bytes
+        .checked_add(reserved_bytes)
+        .and_then(|bytes| bytes.checked_add(geometry.byte_len))
+        .ok_or(SpatialSamplingError::AreaWorkspaceCapacityExceeded {
+            width: geometry.width,
+            height: geometry.height,
+            required_bytes: usize::MAX,
+            capacity_bytes,
+        })?;
+    if required_bytes > capacity_bytes {
+        return Err(SpatialSamplingError::AreaWorkspaceCapacityExceeded {
+            width: geometry.width,
+            height: geometry.height,
+            required_bytes,
+            capacity_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn allocation_error(geometry: WorkspaceGeometry) -> SpatialSamplingError {
+    SpatialSamplingError::AreaWorkspaceAllocation {
+        width: geometry.width,
+        height: geometry.height,
+        entry_count: geometry.entry_count,
+    }
 }
 
 #[derive(Debug)]
@@ -196,39 +324,14 @@ pub(crate) struct SummedAreaWorkspace {
 }
 
 impl SummedAreaWorkspace {
-    fn try_new(
-        width: u32,
-        height: u32,
-        capacity: SpatialSamplingCapacity,
-    ) -> Result<Self, SpatialSamplingError> {
-        let geometry = WorkspaceGeometry::try_new(width, height)?;
-        geometry.validate_capacity(capacity)?;
+    fn try_new(geometry: WorkspaceGeometry) -> Result<Self, SpatialSamplingError> {
         let sums = allocate_sums(geometry)?;
         Ok(Self {
-            width,
-            height,
+            width: geometry.width,
+            height: geometry.height,
             stride: geometry.stride,
             sums,
         })
-    }
-
-    fn try_resize(
-        &mut self,
-        width: u32,
-        height: u32,
-        capacity: SpatialSamplingCapacity,
-    ) -> Result<(), SpatialSamplingError> {
-        if self.matches(width, height) {
-            return Ok(());
-        }
-        let geometry = WorkspaceGeometry::try_new(width, height)?;
-        geometry.validate_capacity(capacity)?;
-        let sums = allocate_sums(geometry)?;
-        self.width = width;
-        self.height = height;
-        self.stride = geometry.stride;
-        self.sums = sums;
-        Ok(())
     }
 
     fn matches(&self, width: u32, height: u32) -> bool {
@@ -372,20 +475,11 @@ impl WorkspaceGeometry {
         })
     }
 
-    fn validate_capacity(
-        self,
-        capacity: SpatialSamplingCapacity,
-    ) -> Result<(), SpatialSamplingError> {
-        let capacity_bytes = capacity.max_area_workspace_bytes();
-        if self.byte_len > capacity_bytes {
-            return Err(SpatialSamplingError::AreaWorkspaceCapacityExceeded {
-                width: self.width,
-                height: self.height,
-                required_bytes: self.byte_len,
-                capacity_bytes,
-            });
+    fn descriptor(self) -> WorkspaceDescriptor {
+        WorkspaceDescriptor {
+            width: self.width,
+            height: self.height,
         }
-        Ok(())
     }
 }
 

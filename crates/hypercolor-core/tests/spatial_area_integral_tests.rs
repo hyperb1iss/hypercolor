@@ -1,6 +1,8 @@
+use std::sync::{Arc, Barrier};
+
 use hypercolor_core::spatial::{
     PreparedAreaSample, PreparedZoneSamples, SpatialEngine, SpatialPlanError,
-    SpatialSamplingCapacity, SpatialSamplingError,
+    SpatialSamplingCapacity, SpatialSamplingError, SpatialSamplingWorkspaceUsage,
 };
 use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb, srgb_to_linear};
 use hypercolor_types::spatial::{
@@ -115,6 +117,12 @@ fn normalized_coordinate(coordinate: u32, dimension: u32) -> f32 {
     }
 }
 
+fn workspace_bytes(width: u32, height: u32) -> usize {
+    usize::try_from(width + 1).expect("test width fits usize")
+        * usize::try_from(height + 1).expect("test height fits usize")
+        * std::mem::size_of::<[u64; 3]>()
+}
+
 #[test]
 fn summed_area_matches_scalar_clamped_sampling_for_rectangular_radii() {
     let radii = [(0.0, 0.0), (1.0, 0.0), (0.0, 2.0), (1.0, 2.0), (3.0, 1.0)];
@@ -212,7 +220,7 @@ fn capacity_rejection_preserves_the_canonical_workspace_and_outputs() {
         Err(SpatialSamplingError::AreaWorkspaceCapacityExceeded {
             width: 8,
             height: 8,
-            required_bytes: 9 * 9 * 24,
+            required_bytes: 3 * 3 * 24 + 9 * 9 * 24,
             capacity_bytes: 512,
         })
     );
@@ -223,7 +231,7 @@ fn capacity_rejection_preserves_the_canonical_workspace_and_outputs() {
         Err(SpatialSamplingError::AreaWorkspaceCapacityExceeded {
             width: 8,
             height: 8,
-            required_bytes: 9 * 9 * 24,
+            required_bytes: 3 * 3 * 24 + 9 * 9 * 24,
             capacity_bytes: 512,
         })
     );
@@ -255,5 +263,137 @@ fn capacity_rejection_preserves_the_canonical_workspace_and_outputs() {
             required_bytes: 9 * 9 * 24,
             capacity_bytes: 512,
         })
+    );
+}
+
+#[test]
+fn concurrent_same_descriptor_preparation_retains_one_candidate() {
+    let canonical_bytes = workspace_bytes(2, 2);
+    let candidate_bytes = workspace_bytes(8, 8);
+    let capacity = SpatialSamplingCapacity::new(canonical_bytes + candidate_bytes);
+    let engine = Arc::new(
+        SpatialEngine::try_new_with_sampling_capacity(
+            layout(
+                vec![point_zone(
+                    "area".into(),
+                    NormalizedPosition::new(0.5, 0.5),
+                    1.0,
+                    1.0,
+                )],
+                2,
+                2,
+            ),
+            capacity,
+        )
+        .expect("canonical workspace fits capacity"),
+    );
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        SpatialSamplingWorkspaceUsage {
+            retained_workspaces: 1,
+            retained_bytes: canonical_bytes,
+        }
+    );
+
+    let barrier = Arc::new(Barrier::new(3));
+    let results = std::thread::scope(|scope| {
+        let first_engine = Arc::clone(&engine);
+        let first_barrier = Arc::clone(&barrier);
+        let first = scope.spawn(move || {
+            first_barrier.wait();
+            first_engine.try_prepare_sampling_canvas(8, 8)
+        });
+        let second_engine = Arc::clone(&engine);
+        let second_barrier = Arc::clone(&barrier);
+        let second = scope.spawn(move || {
+            second_barrier.wait();
+            second_engine.try_prepare_sampling_canvas(8, 8)
+        });
+        barrier.wait();
+        [
+            first.join().expect("first preparation thread succeeds"),
+            second.join().expect("second preparation thread succeeds"),
+        ]
+    });
+
+    assert_eq!(results, [Ok(()), Ok(())]);
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        SpatialSamplingWorkspaceUsage {
+            retained_workspaces: 2,
+            retained_bytes: canonical_bytes + candidate_bytes,
+        }
+    );
+}
+
+#[test]
+fn concurrent_acquisitions_share_one_aggregate_capacity_budget() {
+    let canonical_bytes = workspace_bytes(2, 2);
+    let candidate_bytes = workspace_bytes(3, 5);
+    assert_eq!(candidate_bytes, workspace_bytes(5, 3));
+    let capacity_bytes = canonical_bytes + candidate_bytes;
+    let engine = Arc::new(
+        SpatialEngine::try_new_with_sampling_capacity(
+            layout(
+                vec![point_zone(
+                    "area".into(),
+                    NormalizedPosition::new(0.5, 0.5),
+                    1.0,
+                    1.0,
+                )],
+                2,
+                2,
+            ),
+            SpatialSamplingCapacity::new(capacity_bytes),
+        )
+        .expect("canonical workspace fits capacity"),
+    );
+
+    let first_canvas = patterned_canvas(3, 5);
+    let second_canvas = patterned_canvas(5, 3);
+    let barrier = Arc::new(Barrier::new(3));
+    let results = std::thread::scope(|scope| {
+        let first_engine = Arc::clone(&engine);
+        let first_barrier = Arc::clone(&barrier);
+        let first = scope.spawn(move || {
+            first_barrier.wait();
+            first_engine.try_sample(&first_canvas).map(drop)
+        });
+        let second_engine = Arc::clone(&engine);
+        let second_barrier = Arc::clone(&barrier);
+        let second = scope.spawn(move || {
+            second_barrier.wait();
+            second_engine.try_sample(&second_canvas).map(drop)
+        });
+        barrier.wait();
+        [
+            first.join().expect("first preparation thread succeeds"),
+            second.join().expect("second preparation thread succeeds"),
+        ]
+    });
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let error = results
+        .iter()
+        .find_map(|result| result.as_ref().err())
+        .expect("one descriptor must exceed the shared capacity");
+    let SpatialSamplingError::AreaWorkspaceCapacityExceeded {
+        width,
+        height,
+        required_bytes,
+        capacity_bytes: actual_capacity,
+    } = error
+    else {
+        panic!("unexpected preparation error: {error}");
+    };
+    assert!([(*width, *height)] == [(3, 5)] || [(*width, *height)] == [(5, 3)]);
+    assert_eq!(*required_bytes, canonical_bytes + candidate_bytes * 2);
+    assert_eq!(*actual_capacity, capacity_bytes);
+    assert_eq!(
+        engine.sampling_workspace_usage(),
+        SpatialSamplingWorkspaceUsage {
+            retained_workspaces: 2,
+            retained_bytes: capacity_bytes,
+        }
     );
 }
