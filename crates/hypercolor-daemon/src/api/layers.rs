@@ -25,8 +25,8 @@ use crate::api::control_values::json_to_control_value;
 use crate::api::effects::normalize_control_payload;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{
-    AppState, persist_runtime_session, publish_render_group_changed, save_scene_store_snapshot,
-    scenes,
+    AppState, admit_scene_store_snapshot, persist_runtime_session, publish_render_group_changed,
+    save_admitted_scene_store_snapshot, scene_store_coordinator, scenes,
 };
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -189,24 +189,39 @@ pub async fn create_layer(
     {
         return response;
     }
-    let (scene_id, group) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, group, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
         };
-        match manager.insert_scene_group_layer(
+        let rollback = manager.clone();
+        let result = match manager.insert_scene_group_layer(
             scene_id,
             group_id,
             layer,
             query.index,
             expected_version,
         ) {
-            Ok((group, _version)) => (scene_id, group.clone()),
+            Ok((group, _version)) => group.clone(),
             Err(error) => return layer_mutation_error(error),
-        }
+        };
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
+            }
+        };
+        (scene_id, result, pending)
     };
-    if let Err(response) =
-        finalize_layer_mutation(&state, scene_id, &group, LayerStackChangeKind::Created).await
+    if let Err(response) = finalize_layer_mutation(
+        &state,
+        pending,
+        scene_id,
+        &group,
+        LayerStackChangeKind::Created,
+    )
+    .await
     {
         return response;
     }
@@ -232,7 +247,8 @@ pub async fn broadcast_media_layer(
     {
         return response;
     }
-    let (scene_id, groups) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, groups, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -245,13 +261,27 @@ pub async fn broadcast_media_layer(
             return ApiError::not_found(format!("Zone not found: {group_id}"));
         }
         let inserts = body.into_layer_inserts();
-        match manager.insert_scene_group_layers_batch(scene_id, inserts) {
-            Ok(groups) => (scene_id, groups),
+        let rollback = manager.clone();
+        let groups = match manager.insert_scene_group_layers_batch(scene_id, inserts) {
+            Ok(groups) => groups,
             Err(error) => return layer_mutation_error(error),
-        }
+        };
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
+            }
+        };
+        (scene_id, groups, pending)
     };
-    if let Err(response) =
-        finalize_layer_mutations(&state, scene_id, &groups, LayerStackChangeKind::Created).await
+    if let Err(response) = finalize_layer_mutations(
+        &state,
+        pending,
+        scene_id,
+        &groups,
+        LayerStackChangeKind::Created,
+    )
+    .await
     {
         return response;
     }
@@ -285,24 +315,39 @@ pub async fn update_layer(
     {
         return response;
     }
-    let (scene_id, group) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, group, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
         };
-        match manager.update_scene_group_layer(
+        let rollback = manager.clone();
+        let group = match manager.update_scene_group_layer(
             scene_id,
             group_id,
             layer_id,
             body.into_layer(),
             expected_version,
         ) {
-            Ok((group, _version)) => (scene_id, group.clone()),
+            Ok((group, _version)) => group.clone(),
             Err(error) => return layer_mutation_error(error),
-        }
+        };
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
+            }
+        };
+        (scene_id, group, pending)
     };
-    if let Err(response) =
-        finalize_layer_mutation(&state, scene_id, &group, LayerStackChangeKind::Updated).await
+    if let Err(response) = finalize_layer_mutation(
+        &state,
+        pending,
+        scene_id,
+        &group,
+        LayerStackChangeKind::Updated,
+    )
+    .await
     {
         return response;
     }
@@ -324,18 +369,38 @@ pub async fn delete_layer(
         Ok(version) => version,
         Err(message) => return ApiError::bad_request(message),
     };
-    let (scene_id, group) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, group, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
         };
-        match manager.remove_scene_group_layer(scene_id, group_id, layer_id, expected_version) {
-            Ok((group, _version)) => (scene_id, group.clone()),
+        let rollback = manager.clone();
+        let group = match manager.remove_scene_group_layer(
+            scene_id,
+            group_id,
+            layer_id,
+            expected_version,
+        ) {
+            Ok((group, _version)) => group.clone(),
             Err(error) => return layer_mutation_error(error),
-        }
+        };
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
+            }
+        };
+        (scene_id, group, pending)
     };
-    if let Err(response) =
-        finalize_layer_mutation(&state, scene_id, &group, LayerStackChangeKind::Removed).await
+    if let Err(response) = finalize_layer_mutation(
+        &state,
+        pending,
+        scene_id,
+        &group,
+        LayerStackChangeKind::Removed,
+    )
+    .await
     {
         return response;
     }
@@ -355,23 +420,38 @@ pub async fn reorder_layers(
         Ok(version) => version,
         Err(message) => return ApiError::bad_request(message),
     };
-    let (scene_id, group) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, group, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
         };
-        match manager.reorder_scene_group_layers(
+        let rollback = manager.clone();
+        let group = match manager.reorder_scene_group_layers(
             scene_id,
             group_id,
             body.layer_ids,
             expected_version,
         ) {
-            Ok((group, _version)) => (scene_id, group.clone()),
+            Ok((group, _version)) => group.clone(),
             Err(error) => return layer_mutation_error(error),
-        }
+        };
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
+            }
+        };
+        (scene_id, group, pending)
     };
-    if let Err(response) =
-        finalize_layer_mutation(&state, scene_id, &group, LayerStackChangeKind::Reordered).await
+    if let Err(response) = finalize_layer_mutation(
+        &state,
+        pending,
+        scene_id,
+        &group,
+        LayerStackChangeKind::Reordered,
+    )
+    .await
     {
         return response;
     }
@@ -434,9 +514,11 @@ pub async fn patch_layer_controls(
         );
     }
 
-    let group = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (group, pending) = {
         let mut manager = state.scene_manager.write().await;
-        match manager.patch_scene_layer_effect_controls(
+        let rollback = manager.clone();
+        let group = match manager.patch_scene_layer_effect_controls(
             scene_id,
             group_id,
             layer_id,
@@ -445,10 +527,18 @@ pub async fn patch_layer_controls(
         ) {
             Ok((group, _version)) => group.clone(),
             Err(error) => return layer_mutation_error(error),
-        }
+        };
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return ApiError::internal(format!("Failed to persist layer stack: {error}"));
+            }
+        };
+        (group, pending)
     };
     if let Err(response) = finalize_layer_mutation(
         &state,
+        pending,
         scene_id,
         &group,
         LayerStackChangeKind::ControlsPatched,
@@ -560,11 +650,12 @@ fn find_group(manager: &SceneManager, scene_id: SceneId, group_id: ZoneId) -> Op
 
 async fn finalize_layer_mutation(
     state: &Arc<AppState>,
+    pending: crate::scene_store::SceneStoreSave,
     scene_id: SceneId,
     group: &Zone,
     kind: LayerStackChangeKind,
 ) -> Result<(), Response> {
-    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
         return Err(ApiError::internal(format!(
             "Failed to persist layer stack: {error}"
         )));
@@ -587,11 +678,12 @@ async fn finalize_layer_mutation(
 
 async fn finalize_layer_mutations(
     state: &Arc<AppState>,
+    pending: crate::scene_store::SceneStoreSave,
     scene_id: SceneId,
     groups: &[Zone],
     kind: LayerStackChangeKind,
 ) -> Result<(), Response> {
-    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
         return Err(ApiError::internal(format!(
             "Failed to persist layer stack: {error}"
         )));

@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 use super::{ToolDefinition, ToolError, default_output_schema};
 use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
+use crate::api::{
+    AppState, admit_scene_store_snapshot, publish_render_group_changed,
+    save_admitted_scene_store_snapshot, save_runtime_session_snapshot, scene_store_coordinator,
+};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::event::ZoneChangeKind;
@@ -94,7 +97,8 @@ pub(super) async fn handle_set_display_face_with_state(
     }
 
     if clear {
-        let (active_scene_id, previous_group, cleared_group) = {
+        let coordinator = scene_store_coordinator(state).await;
+        let (active_scene_id, previous_group, cleared_group, pending) = {
             let mut scene_manager = state.scene_manager.write().await;
             let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
                 .map_err(|error| ToolError::Conflict(error.message("removing a display face")))?;
@@ -102,6 +106,7 @@ pub(super) async fn handle_set_display_face_with_state(
                 .active_scene()
                 .and_then(|scene| scene.display_group_for(device_id))
                 .cloned();
+            let rollback = scene_manager.clone();
             let cleared_group = scene_manager
                 .clear_display_group_assignment(
                     device_id,
@@ -110,8 +115,15 @@ pub(super) async fn handle_set_display_face_with_state(
                 )
                 .map_err(|error| ToolError::Internal(error.to_string()))?
                 .clone();
-            (active_scene_id, previous_group, cleared_group)
+            let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
+                .map_err(|error| {
+                    ToolError::Internal(format!("failed to persist scenes: {error}"))
+                })?;
+            (active_scene_id, previous_group, cleared_group, pending)
         };
+        save_admitted_scene_store_snapshot(state, pending)
+            .await
+            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
         let change_kind = if previous_group.is_some() {
             ZoneChangeKind::Updated
         } else {
@@ -160,7 +172,8 @@ pub(super) async fn handle_set_display_face_with_state(
         effect
     };
 
-    let (active_scene_id, group, change_kind) = {
+    let coordinator = scene_store_coordinator(state).await;
+    let (active_scene_id, group, change_kind, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
             .map_err(|error| ToolError::Conflict(error.message("assigning a display face")))?;
@@ -173,6 +186,7 @@ pub(super) async fn handle_set_display_face_with_state(
         } else {
             ZoneChangeKind::Created
         };
+        let rollback = scene_manager.clone();
         let group = scene_manager
             .upsert_display_group(
                 device_id,
@@ -194,8 +208,13 @@ pub(super) async fn handle_set_display_face_with_state(
             )
             .ok_or_else(|| ToolError::Internal("failed to set display face composition".into()))?
             .clone();
-        (active_scene_id, group, change_kind)
+        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
+            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
+        (active_scene_id, group, change_kind, pending)
     };
+    save_admitted_scene_store_snapshot(state, pending)
+        .await
+        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
     publish_render_group_changed(state, active_scene_id, &group, change_kind);
     save_runtime_session_snapshot(state).await;
 
@@ -245,11 +264,10 @@ async fn handle_default_scope(
     if clear {
         let removed = {
             let mut store = state.display_preferences.write().await;
-            let removed = store.remove(device_id).is_some();
-            if removed && let Err(error) = store.save() {
-                tracing::warn!(%error, "Failed to persist display preferences");
-            }
-            removed
+            store
+                .remove(device_id)
+                .map_err(|error| ToolError::Internal(error.to_string()))?
+                .is_some()
         };
         let (was_live, scene_id, cleared_zone) = {
             let mut scene_manager = state.scene_manager.write().await;
@@ -314,20 +332,19 @@ async fn handle_default_scope(
 
     {
         let mut store = state.display_preferences.write().await;
-        store.set(
-            device_id,
-            crate::display_preferences::DisplayPreference {
-                // Blend over the live effect by default; Replace is opt-in
-                // via the composition controls for face-only looks.
-                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
-                controls,
-                effect_id: effect.id,
-                opacity: 1.0,
-            },
-        );
-        if let Err(error) = store.save() {
-            tracing::warn!(%error, "Failed to persist display preferences");
-        }
+        store
+            .set(
+                device_id,
+                crate::display_preferences::DisplayPreference {
+                    // Blend over the live effect by default; Replace is opt-in
+                    // via the composition controls for face-only looks.
+                    blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+                    controls,
+                    effect_id: effect.id,
+                    opacity: 1.0,
+                },
+            )
+            .map_err(|error| ToolError::Internal(error.to_string()))?;
     }
     let Some(group) =
         crate::api::displays::apply_display_preference_overlay(state, device_id).await

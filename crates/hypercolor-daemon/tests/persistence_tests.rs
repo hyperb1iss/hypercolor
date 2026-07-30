@@ -4,6 +4,10 @@ use std::sync::{Arc, Barrier};
 #[cfg(feature = "persistence-test-hooks")]
 use std::time::Duration;
 
+#[cfg(feature = "persistence-test-hooks")]
+use axum::body::Body;
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
 use hypercolor_daemon::effect_layouts;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
@@ -11,10 +15,14 @@ use hypercolor_daemon::logical_devices::{self, LogicalDevice, LogicalDeviceKind}
 use hypercolor_daemon::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, PersistenceError, write_atomic,
 };
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::profile_store::{Profile, ProfileStore};
 use hypercolor_daemon::runtime_state::{RuntimeSessionSnapshot, load, reserve_save, save_reserved};
 use hypercolor_types::device::DeviceId;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_types::effect::EffectId;
+#[cfg(feature = "persistence-test-hooks")]
+use tower::ServiceExt;
 
 #[test]
 fn atomic_write_replaces_an_existing_file() {
@@ -349,6 +357,45 @@ async fn cancelled_async_snapshot_assembly_preserves_the_older_dirty_payload() {
     );
 }
 
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn runtime_serialization_failure_preserves_the_older_dirty_payload() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("runtime-state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    let older = RuntimeSessionSnapshot {
+        active_scene_id: Some("generation-one".to_owned()),
+        ..RuntimeSessionSnapshot::default()
+    };
+    writer.set_injected_replace_failures(usize::MAX);
+    let older_save = reserve_save(&path).expect("older reservation");
+    assert!(save_reserved(older_save, &older).is_err());
+
+    let newer_save = reserve_save(&path).expect("newer reservation");
+    hypercolor_daemon::persistence::set_injected_serialization_failures(1);
+    let newer = RuntimeSessionSnapshot {
+        active_scene_id: Some("generation-two".to_owned()),
+        ..RuntimeSessionSnapshot::default()
+    };
+    assert!(matches!(
+        save_reserved(newer_save, &newer),
+        Err(hypercolor_daemon::runtime_state::RuntimeSessionError::Serialize(_))
+    ));
+
+    writer.set_injected_replace_failures(0);
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("older runtime snapshot should converge");
+    assert_eq!(
+        load(&path)
+            .expect("load runtime snapshot")
+            .expect("runtime snapshot exists")
+            .active_scene_id
+            .as_deref(),
+        Some("generation-one")
+    );
+}
+
 #[test]
 fn dropped_admitted_payload_is_retained_by_the_shared_supervisor() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -364,6 +411,141 @@ fn dropped_admitted_payload_is_retained_by_the_shared_supervisor() {
         hypercolor_daemon::persistence::PersistenceFlushOutcome::Written
     );
     assert_eq!(fs::read(&path).expect("read retained payload"), b"retained");
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn scene_creation_rolls_back_when_serialization_fails_before_admission() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let data_dir = directory.path().join("data");
+    let state = Arc::new(hypercolor_daemon::api::AppState::new_with_data_dir(
+        data_dir,
+    ));
+    let app = hypercolor_daemon::api::build_router(Arc::clone(&state), None);
+    hypercolor_daemon::persistence::set_injected_serialization_failures(1);
+
+    let response = app
+        .oneshot(
+            http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"must-rollback"}"#))
+                .expect("scene request"),
+        )
+        .await
+        .expect("scene response");
+
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+    let manager = state.scene_manager.read().await;
+    assert!(
+        manager
+            .list()
+            .into_iter()
+            .all(|scene| scene.name != "must-rollback")
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn library_mutation_rolls_back_when_serialization_fails_before_admission() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("library.json");
+    let store = JsonLibraryStore::open(path).expect("library store");
+    let retained = EffectId::new(uuid::Uuid::now_v7());
+    let rejected = EffectId::new(uuid::Uuid::now_v7());
+    store
+        .upsert_favorite(retained, 1)
+        .await
+        .expect("seed favorite");
+    hypercolor_daemon::persistence::set_injected_serialization_failures(1);
+
+    let error = store
+        .upsert_favorite(rejected, 2)
+        .await
+        .expect_err("serialization failure should reject mutation");
+
+    assert!(matches!(
+        error,
+        hypercolor_daemon::library::LibraryStoreError::Persistence(_)
+    ));
+    let favorites = store.list_favorites().await;
+    assert_eq!(favorites.len(), 1);
+    assert_eq!(favorites[0].effect_id, retained);
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn profile_mutation_rolls_back_when_serialization_fails_before_admission() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("profiles.json");
+    let mut store = ProfileStore::new(path).expect("profile store");
+    store
+        .insert(Profile::named("retained", "Retained"))
+        .expect("seed profile");
+    hypercolor_daemon::persistence::set_injected_serialization_failures(1);
+
+    store
+        .insert(Profile::named("rejected", "Rejected"))
+        .expect_err("serialization failure should reject mutation");
+
+    assert!(store.get("retained").is_some());
+    assert!(store.get("rejected").is_none());
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
+fn display_preference_rolls_back_when_serialization_fails_before_admission() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("display-preferences.json");
+    let mut store = DisplayPreferencesStore::new(path).expect("display preference store");
+    let device_id = DeviceId::new();
+    let retained_effect = EffectId::new(uuid::Uuid::now_v7());
+    store
+        .set(
+            device_id,
+            DisplayPreference {
+                effect_id: retained_effect,
+                controls: HashMap::new(),
+                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+                opacity: 1.0,
+            },
+        )
+        .expect("seed display preference");
+    hypercolor_daemon::persistence::set_injected_serialization_failures(1);
+
+    store
+        .set(
+            device_id,
+            DisplayPreference {
+                effect_id: EffectId::new(uuid::Uuid::now_v7()),
+                controls: HashMap::new(),
+                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+                opacity: 1.0,
+            },
+        )
+        .expect_err("serialization failure should reject mutation");
+
+    assert_eq!(
+        store.get(device_id).map(|preference| preference.effect_id),
+        Some(retained_effect)
+    );
+}
+
+#[test]
+fn writer_construction_failure_occurs_before_candidate_mutation() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let blocked_parent = directory.path().join("not-a-directory");
+    fs::write(&blocked_parent, b"file").expect("blocking file");
+    let live = HashMap::from([("effect".to_owned(), "current".to_owned())]);
+    let mut candidate = live.clone();
+    candidate.insert("effect".to_owned(), "rejected".to_owned());
+
+    let error = effect_layouts::writer(&blocked_parent.join("links.json"))
+        .expect_err("writer construction should fail");
+
+    assert!(matches!(error, PersistenceError::CreateDirectory { .. }));
+    assert_eq!(live.get("effect").map(String::as_str), Some("current"));
 }
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -491,13 +673,26 @@ async fn library_no_op_retriggers_a_failed_delete() {
     let path = directory.path().join("library.json");
     let store = JsonLibraryStore::open(path.clone()).expect("library store");
     let effect_id = EffectId::new(uuid::Uuid::now_v7());
-    store.upsert_favorite(effect_id, 42).await;
+    store
+        .upsert_favorite(effect_id, 42)
+        .await
+        .expect("upsert favorite");
     let writer = AtomicFileWriter::new(&path).expect("atomic writer");
     writer.set_injected_replace_failures(usize::MAX);
 
-    assert!(store.remove_favorite(effect_id).await);
+    assert!(
+        store
+            .remove_favorite(effect_id)
+            .await
+            .expect("remove favorite")
+    );
     writer.set_injected_replace_failures(0);
-    assert!(!store.remove_favorite(effect_id).await);
+    assert!(
+        !store
+            .remove_favorite(effect_id)
+            .await
+            .expect("remove missing favorite")
+    );
     writer
         .flush(Duration::from_secs(5))
         .expect("library deletion should converge");

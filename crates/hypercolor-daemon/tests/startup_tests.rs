@@ -960,7 +960,7 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
 #[tokio::test]
 async fn named_scenes_persist_across_restart() {
     let guard = TestDataDirGuard::new().await;
-    let mut store = SceneStore::new(guard.scenes_path());
+    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let named_scene = hypercolor_core::scene::make_scene("Movie Night");
     let named_scene_id = named_scene.id;
     store.replace_named_scenes([named_scene]);
@@ -1213,7 +1213,7 @@ async fn runtime_state_captures_default_scene_groups() {
 #[tokio::test]
 async fn daemon_start_restores_named_active_scene_and_default_groups() {
     let guard = TestDataDirGuard::new().await;
-    let mut store = SceneStore::new(guard.scenes_path());
+    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let named_scene = hypercolor_core::scene::make_scene("Focus");
     let named_scene_id = named_scene.id;
     store.replace_named_scenes([named_scene]);

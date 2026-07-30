@@ -15,6 +15,8 @@ use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::DisplayFaceBlendMode;
 use serde::{Deserialize, Serialize};
 
+use crate::persistence::{AtomicFileWriter, serialize_json_pretty};
+
 fn default_opacity() -> f32 {
     1.0
 }
@@ -36,16 +38,27 @@ pub struct DisplayPreference {
 pub struct DisplayPreferencesStore {
     preferences: HashMap<DeviceId, DisplayPreference>,
     path: PathBuf,
+    writer: AtomicFileWriter,
 }
 
 impl DisplayPreferencesStore {
     /// Create an empty store for the given file path.
-    #[must_use]
-    pub fn new(path: PathBuf) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the persistence destination cannot be prepared.
+    pub fn new(path: PathBuf) -> anyhow::Result<Self> {
+        let writer = AtomicFileWriter::new(&path).with_context(|| {
+            format!(
+                "failed to prepare display preferences store at {}",
+                path.display()
+            )
+        })?;
+        Ok(Self {
             preferences: HashMap::new(),
             path,
-        }
+            writer,
+        })
     }
 
     /// Load the store, returning an empty one when the file does not exist.
@@ -55,7 +68,7 @@ impl DisplayPreferencesStore {
     /// Returns an error when the file exists but cannot be read or parsed.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         if !path.exists() {
-            return Ok(Self::new(path.to_path_buf()));
+            return Self::new(path.to_path_buf());
         }
 
         let raw = fs::read_to_string(path).with_context(|| {
@@ -75,6 +88,12 @@ impl DisplayPreferencesStore {
         Ok(Self {
             preferences,
             path: path.to_path_buf(),
+            writer: AtomicFileWriter::new(path).with_context(|| {
+                format!(
+                    "failed to prepare display preferences store at {}",
+                    path.display()
+                )
+            })?,
         })
     }
 
@@ -93,14 +112,15 @@ impl DisplayPreferencesStore {
                 )
             })?;
         }
-        let raw = serde_json::to_string_pretty(&self.preferences)
+        let raw = serialize_json_pretty(&self.preferences)
             .context("failed to serialize display preferences")?;
-        fs::write(&self.path, raw).with_context(|| {
+        self.writer.write(&raw).with_context(|| {
             format!(
-                "failed to write display preferences store at {}",
+                "failed to persist display preferences at {}",
                 self.path.display()
             )
-        })
+        })?;
+        Ok(())
     }
 
     #[must_use]
@@ -108,17 +128,56 @@ impl DisplayPreferencesStore {
         self.preferences.get(&device_id)
     }
 
-    pub fn set(&mut self, device_id: DeviceId, preference: DisplayPreference) {
-        self.preferences.insert(device_id, preference);
+    /// Serialize and admit an assignment before changing the live store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the candidate snapshot cannot be serialized.
+    pub fn set(
+        &mut self,
+        device_id: DeviceId,
+        preference: DisplayPreference,
+    ) -> anyhow::Result<()> {
+        let mut candidate = self.preferences.clone();
+        candidate.insert(device_id, preference);
+        self.install_candidate(candidate)
     }
 
-    pub fn remove(&mut self, device_id: DeviceId) -> Option<DisplayPreference> {
-        self.preferences.remove(&device_id)
+    /// Serialize and admit a removal before changing the live store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the candidate snapshot cannot be serialized.
+    pub fn remove(&mut self, device_id: DeviceId) -> anyhow::Result<Option<DisplayPreference>> {
+        let mut candidate = self.preferences.clone();
+        let removed = candidate.remove(&device_id);
+        if removed.is_some() {
+            self.install_candidate(candidate)?;
+        }
+        Ok(removed)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (DeviceId, &DisplayPreference)> {
         self.preferences
             .iter()
             .map(|(device_id, preference)| (*device_id, preference))
+    }
+
+    fn install_candidate(
+        &mut self,
+        candidate: HashMap<DeviceId, DisplayPreference>,
+    ) -> anyhow::Result<()> {
+        let payload =
+            serialize_json_pretty(&candidate).context("failed to serialize display preferences")?;
+        let pending = self.writer.reserve().admit(payload);
+        self.preferences = candidate;
+        if let Err(error) = pending.commit() {
+            tracing::warn!(
+                path = %self.path.display(),
+                %error,
+                "Failed to persist display preferences; retry remains active"
+            );
+        }
+        Ok(())
     }
 }

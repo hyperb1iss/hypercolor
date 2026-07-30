@@ -8,8 +8,8 @@ use crate::api::scenes::{
     scene_media_admission_violation_details,
 };
 use crate::api::{
-    AppState, publish_active_scene_changed, save_runtime_session_snapshot,
-    save_scene_store_snapshot,
+    AppState, admit_scene_store_snapshot, publish_active_scene_changed,
+    save_admitted_scene_store_snapshot, save_runtime_session_snapshot, scene_store_coordinator,
 };
 use hypercolor_core::scene::make_scene;
 use hypercolor_types::event::SceneChangeReason;
@@ -389,13 +389,17 @@ pub(super) async fn handle_create_scene_with_state(
         .insert("trigger_type".to_owned(), trigger_type.to_owned());
 
     let scene_id = scene.id.to_string();
-    {
+    let coordinator = scene_store_coordinator(state).await;
+    let pending = {
         let mut scene_manager = state.scene_manager.write().await;
+        let rollback = scene_manager.clone();
         scene_manager
             .create(scene)
             .map_err(|error| ToolError::Internal(format!("failed to create scene: {error}")))?;
-    }
-    save_scene_store_snapshot(state)
+        admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
+            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?
+    };
+    save_admitted_scene_store_snapshot(state, pending)
         .await
         .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
 

@@ -12,7 +12,11 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "persistence-test-hooks")]
+use std::cell::Cell;
+#[cfg(feature = "persistence-test-hooks")]
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use serde::Serialize;
 
 #[cfg(windows)]
 use std::ffi::OsString;
@@ -24,6 +28,10 @@ use tempfile::NamedTempFile;
 static DESTINATIONS: LazyLock<Mutex<HashMap<PathBuf, Weak<Destination>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static RETRY_SUPERVISOR: OnceLock<Result<Arc<RetrySupervisor>, String>> = OnceLock::new();
+#[cfg(feature = "persistence-test-hooks")]
+thread_local! {
+    static INJECTED_SERIALIZATION_FAILURES: Cell<usize> = const { Cell::new(0) };
+}
 const RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// The stage at which an atomic persistence operation failed.
@@ -34,6 +42,15 @@ pub enum PersistenceError {
     InitializeRetrySupervisor {
         /// Worker initialization failure.
         detail: String,
+    },
+    /// A complete snapshot could not be serialized before admission.
+    #[error("failed to serialize {subject} snapshot: {source}")]
+    SerializeSnapshot {
+        /// Store or domain whose snapshot failed.
+        subject: &'static str,
+        /// JSON serialization failure.
+        #[source]
+        source: serde_json::Error,
     },
     /// The destination has no file-name component.
     #[error("persistence destination has no file name: {path}")]
@@ -737,6 +754,35 @@ fn try_write(
 /// preparation, or replacement.
 pub fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), PersistenceError> {
     AtomicFileWriter::new(path)?.write(payload).map(|_| ())
+}
+
+/// Serialize a complete persistence snapshot before admitting its bytes.
+///
+/// # Errors
+///
+/// Returns the JSON serialization failure without changing destination
+/// freshness.
+pub fn serialize_json_pretty<T>(value: &T) -> Result<Vec<u8>, serde_json::Error>
+where
+    T: Serialize + ?Sized,
+{
+    #[cfg(feature = "persistence-test-hooks")]
+    if INJECTED_SERIALIZATION_FAILURES.with(|remaining| {
+        let count = remaining.get();
+        remaining.set(count.saturating_sub(1));
+        count > 0
+    }) {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "injected persistence serialization failure",
+        )));
+    }
+    serde_json::to_vec_pretty(value)
+}
+
+/// Inject serialization failures for deterministic persistence tests.
+#[cfg(feature = "persistence-test-hooks")]
+pub fn set_injected_serialization_failures(count: usize) {
+    INJECTED_SERIALIZATION_FAILURES.with(|remaining| remaining.set(count));
 }
 
 /// Flush every live persistence destination within one shared deadline.

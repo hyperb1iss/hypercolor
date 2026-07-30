@@ -61,7 +61,7 @@ fn scene_store_round_trips_named_scenes() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
 
-    let mut store = SceneStore::new(path.clone());
+    let mut store = SceneStore::new(path.clone()).expect("scene store");
     store.replace_named_scenes([make_scene("Movie Night"), make_scene("Focus")]);
     store.save().expect("scene store should save");
 
@@ -85,7 +85,7 @@ fn scene_store_sync_from_manager_filters_default_scene() {
     let named_scene_id = named_scene.id;
     manager.create(named_scene).expect("scene should create");
 
-    let mut store = SceneStore::new(path);
+    let mut store = SceneStore::new(path).expect("scene store");
     store.sync_from_manager(&manager);
 
     assert_eq!(store.len(), 1);
@@ -103,7 +103,7 @@ fn scene_store_sync_from_manager_filters_default_scene() {
 fn scene_store_rejects_an_overtaken_snapshot() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
-    let mut store = SceneStore::new(path.clone());
+    let mut store = SceneStore::new(path.clone()).expect("scene store");
     let older = make_scene("Older");
     let newer = make_scene("Newer");
 
@@ -140,7 +140,7 @@ fn scene_store_rejects_an_overtaken_snapshot() {
 fn failed_scene_delete_keeps_live_state_and_does_not_resurrect() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
-    let mut store = SceneStore::new(path.clone());
+    let mut store = SceneStore::new(path.clone()).expect("scene store");
     store.replace_named_scenes([make_scene("Ephemeral")]);
     store.save().expect("seed scene store");
     let writer = AtomicFileWriter::new(&path).expect("atomic writer");

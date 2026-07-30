@@ -395,7 +395,7 @@ impl AppState {
                 cause = %error.root_cause(),
                 "Failed to load profiles; starting with empty store"
             );
-            ProfileStore::new(profiles_path)
+            ProfileStore::new(profiles_path).expect("profile persistence should initialize")
         });
         let device_settings_path = data_dir.join("device-settings.json");
         let device_settings =
@@ -438,6 +438,7 @@ impl AppState {
                 "Failed to load scenes; starting with empty store"
             );
             SceneStore::new(scenes_path)
+                .expect("default app state should prepare scene persistence")
         });
         let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store.list().cloned() {
@@ -481,8 +482,10 @@ impl AppState {
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
         let display_preferences_path = data_dir.join("display-preferences.json");
         let display_preferences = Arc::new(RwLock::new(
-            DisplayPreferencesStore::load(&display_preferences_path)
-                .unwrap_or_else(|_| DisplayPreferencesStore::new(display_preferences_path)),
+            DisplayPreferencesStore::load(&display_preferences_path).unwrap_or_else(|_| {
+                DisplayPreferencesStore::new(display_preferences_path)
+                    .expect("display preference persistence should initialize")
+            }),
         ));
         let device_settings = Arc::new(RwLock::new(device_settings));
         let simulated_displays = Arc::new(RwLock::new(simulated_displays));
@@ -629,7 +632,7 @@ impl AppState {
                 cause = %error.root_cause(),
                 "Failed to load profiles; starting with empty store"
             );
-            ProfileStore::new(profiles_path)
+            ProfileStore::new(profiles_path).expect("profile persistence should initialize")
         });
         let driver_host = Arc::clone(&daemon.driver_host);
         let driver_registry = Arc::clone(&daemon.driver_registry);
@@ -732,6 +735,36 @@ pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Resul
     store.save_reserved(pending).map(|_| ())
 }
 
+pub(crate) async fn scene_store_coordinator(state: &AppState) -> SceneStore {
+    state.scene_store.read().await.clone()
+}
+
+pub(crate) fn admit_scene_store_snapshot(
+    coordinator: &SceneStore,
+    manager: &mut SceneManager,
+    rollback: SceneManager,
+) -> anyhow::Result<crate::scene_store::SceneStoreSave> {
+    match coordinator.reserve_save(manager.list().into_iter().cloned()) {
+        Ok(pending) => Ok(pending),
+        Err(error) => {
+            *manager = rollback;
+            Err(error.into())
+        }
+    }
+}
+
+pub(crate) async fn save_admitted_scene_store_snapshot(
+    state: &AppState,
+    pending: crate::scene_store::SceneStoreSave,
+) -> anyhow::Result<()> {
+    state
+        .scene_store
+        .write()
+        .await
+        .save_reserved(pending)
+        .map(|_| ())
+}
+
 pub(crate) fn publish_render_group_changed(
     state: &AppState,
     scene_id: SceneId,
@@ -752,6 +785,7 @@ pub(crate) fn publish_render_group_changed(
 pub(crate) enum ActiveSceneMutationError {
     NoActiveScene,
     SnapshotLocked { scene_name: String },
+    Persistence { message: String },
 }
 
 impl ActiveSceneMutationError {
@@ -762,6 +796,7 @@ impl ActiveSceneMutationError {
             Self::SnapshotLocked { scene_name } => format!(
                 "Active scene '{scene_name}' is in snapshot mode; return to Default or deactivate it before {action}"
             ),
+            Self::Persistence { message } => message.clone(),
         }
     }
 
@@ -769,6 +804,7 @@ impl ActiveSceneMutationError {
         match self {
             Self::NoActiveScene => ApiError::internal(self.message(action)),
             Self::SnapshotLocked { .. } => ApiError::conflict(self.message(action)),
+            Self::Persistence { .. } => ApiError::internal(self.message(action)),
         }
     }
 }
@@ -812,7 +848,8 @@ async fn clear_active_scene_effect_groups(
 ) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
     let effect = resolve_effect_ref_for_fallback(state, effect_id).await;
 
-    let (scene_id, cleared_groups) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, cleared_groups, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
         let group_ids = scene_manager
@@ -835,14 +872,22 @@ async fn clear_active_scene_effect_groups(
             return Ok(None);
         }
 
+        let rollback = scene_manager.clone();
         let mut cleared_groups = Vec::with_capacity(group_ids.len());
         for group_id in group_ids {
             if let Some(group) = scene_manager.clear_group_effect(group_id).cloned() {
                 cleared_groups.push(group);
             }
         }
-        (scene_id, cleared_groups)
+        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
+            .map_err(|error| ActiveSceneMutationError::Persistence {
+                message: error.to_string(),
+            })?;
+        (scene_id, cleared_groups, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        warn!(%error, "Failed to persist effect fallback; retry remains active");
+    }
 
     if cleared_groups.is_empty() {
         return Ok(None);
@@ -885,12 +930,25 @@ pub(crate) async fn prune_scene_display_groups_for_device(
     state: &Arc<AppState>,
     device_id: DeviceId,
 ) {
-    let removed_groups = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (removed_groups, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
-        scene_manager.remove_display_groups_for_device(device_id)
+        let rollback = scene_manager.clone();
+        let removed = scene_manager.remove_display_groups_for_device(device_id);
+        if removed.is_empty() {
+            return;
+        }
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                warn!(%error, %device_id, "Failed to prepare display-group pruning persistence");
+                return;
+            }
+        };
+        (removed, pending)
     };
-    if removed_groups.is_empty() {
-        return;
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        warn!(%error, %device_id, "Failed to persist display-group pruning; retry remains active");
     }
 
     for (scene_id, group) in &removed_groups {

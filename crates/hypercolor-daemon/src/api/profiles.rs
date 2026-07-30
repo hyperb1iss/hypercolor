@@ -158,8 +158,7 @@ pub async fn create_profile(
             return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
         }
     }
-    profiles.insert(profile.clone());
-    if let Err(error) = profiles.save() {
+    if let Err(error) = profiles.insert(profile.clone()) {
         return ApiError::internal(format!("Failed to persist profile store: {error}"));
     }
 
@@ -210,8 +209,7 @@ pub async fn update_profile(
             return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
         }
     }
-    profiles.insert(profile.clone());
-    if let Err(error) = profiles.save() {
+    if let Err(error) = profiles.insert(profile.clone()) {
         return ApiError::internal(format!("Failed to persist profile store: {error}"));
     }
 
@@ -232,10 +230,13 @@ pub async fn delete_profile(
         }
     };
 
-    profiles.remove(&key);
-    if let Err(error) = profiles.save() {
-        return ApiError::internal(format!("Failed to persist profile store: {error}"));
-    }
+    let removed = match profiles.remove(&key) {
+        Ok(removed) => removed.is_some(),
+        Err(error) => {
+            return ApiError::internal(format!("Failed to persist profile store: {error}"));
+        }
+    };
+    debug_assert!(removed, "resolved profile key must exist");
 
     ApiResponse::ok(serde_json::json!({
         "id": key,
@@ -316,14 +317,18 @@ pub(crate) async fn apply_profile_snapshot(
         .map_err(ProfileApplyError::Internal)?;
     let current_layout = crate::api::effects::resolve_full_scope_layout(state).await;
 
-    if let Some(prepared_primary) = prepared_primary {
-        let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
-            &prepared_primary.metadata,
-            &prepared_primary.controls,
-        );
-        let active_layout = layout.clone().unwrap_or_else(|| current_layout.clone());
-        {
-            let mut scene_manager = state.scene_manager.write().await;
+    let has_scene_mutation = prepared_primary.is_some() || !prepared_displays.is_empty();
+    let pending = if has_scene_mutation {
+        let coordinator = crate::api::scene_store_coordinator(state).await;
+        let mut scene_manager = state.scene_manager.write().await;
+        let rollback = scene_manager.clone();
+
+        if let Some(prepared_primary) = prepared_primary {
+            let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
+                &prepared_primary.metadata,
+                &prepared_primary.controls,
+            );
+            let active_layout = layout.clone().unwrap_or_else(|| current_layout.clone());
             scene_manager
                 .upsert_primary_group(
                     &prepared_primary.metadata,
@@ -337,19 +342,16 @@ pub(crate) async fn apply_profile_snapshot(
                         prepared_primary.metadata.name
                     ))
                 })?;
+
+            if !rejected_controls.is_empty() {
+                warn!(
+                    profile_id = %profile.id,
+                    rejected_controls = ?rejected_controls,
+                    "Profile apply skipped one or more invalid control values"
+                );
+            }
         }
 
-        if !rejected_controls.is_empty() {
-            warn!(
-                profile_id = %profile.id,
-                rejected_controls = ?rejected_controls,
-                "Profile apply skipped one or more invalid control values"
-            );
-        }
-    }
-
-    if !prepared_displays.is_empty() {
-        let mut scene_manager = state.scene_manager.write().await;
         for prepared_display in prepared_displays {
             let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
                 &prepared_display.metadata,
@@ -387,6 +389,18 @@ pub(crate) async fn apply_profile_snapshot(
                 );
             }
         }
+
+        let pending =
+            crate::api::admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
+                .map_err(|error| ProfileApplyError::Internal(error.to_string()))?;
+        Some(pending)
+    } else {
+        None
+    };
+    if let Some(pending) = pending {
+        crate::api::save_admitted_scene_store_snapshot(state, pending)
+            .await
+            .map_err(|error| ProfileApplyError::Internal(error.to_string()))?;
     }
 
     if let Some(layout) = layout {

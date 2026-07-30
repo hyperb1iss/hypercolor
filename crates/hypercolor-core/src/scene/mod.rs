@@ -130,7 +130,7 @@ pub struct ZoneMetaPatch {
 /// Owns the scene store, the priority stack, and the active transition
 /// state. The render loop calls into the manager each frame to advance
 /// transitions and resolve the effective zone assignments.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SceneManager {
     /// All registered scenes, keyed by [`SceneId`].
     scenes: HashMap<SceneId, Scene>,

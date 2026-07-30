@@ -40,7 +40,7 @@ pub struct StackEntry {
 ///
 /// Equal-priority entries maintain FIFO ordering: the *most recently*
 /// pushed entry wins within the same priority tier.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PriorityStack {
     /// Active scene entries, maintained in sorted order.
     entries: Vec<StackEntry>,

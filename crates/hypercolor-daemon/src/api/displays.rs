@@ -22,7 +22,10 @@ use crate::api::devices;
 use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope::ApiError;
 use crate::api::envelope::ApiResponse;
-use crate::api::{active_scene_id_for_runtime_mutation, publish_render_group_changed};
+use crate::api::{
+    active_scene_id_for_runtime_mutation, admit_scene_store_snapshot, publish_render_group_changed,
+    save_admitted_scene_store_snapshot, scene_store_coordinator,
+};
 use crate::display_frames::DisplayFrameSnapshot;
 
 #[derive(Debug, Clone, Serialize)]
@@ -186,6 +189,7 @@ pub(crate) async fn sync_active_display_surfaces(state: &Arc<AppState>) -> bool 
         return false;
     }
 
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
     let mut scene_manager = state.scene_manager.write().await;
     let Some(active_scene) = scene_manager.active_scene() else {
         return false;
@@ -194,6 +198,7 @@ pub(crate) async fn sync_active_display_surfaces(state: &Arc<AppState>) -> bool 
         return false;
     }
 
+    let rollback = scene_manager.clone();
     let mut changed = false;
     for (device_id, device_name, layout) in displays {
         let before_revision = scene_manager
@@ -211,7 +216,21 @@ pub(crate) async fn sync_active_display_surfaces(state: &Arc<AppState>) -> bool 
         changed |= after_revision != before_revision;
     }
 
-    changed
+    if !changed {
+        return false;
+    }
+    let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+        Ok(pending) => pending,
+        Err(error) => {
+            warn!(%error, "Failed to prepare display surface persistence");
+            return false;
+        }
+    };
+    drop(scene_manager);
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        warn!(%error, "Failed to persist display surfaces; retry remains active");
+    }
+    true
 }
 
 /// `GET /api/v1/displays/{id}/preview.jpg` — latest composited frame for a display.
@@ -353,9 +372,10 @@ pub async fn set_display_face(
         };
         {
             let mut store = state.display_preferences.write().await;
-            store.set(device_id, preference);
-            if let Err(error) = store.save() {
-                warn!(%error, "Failed to persist display preferences");
+            if let Err(error) = store.set(device_id, preference) {
+                return ApiError::internal(format!(
+                    "Failed to prepare display preference persistence: {error}"
+                ));
             }
         }
         let Some(zone) = apply_display_preference_overlay(state.as_ref(), device_id).await else {
@@ -393,7 +413,8 @@ pub async fn set_display_face(
         let store = state.display_preferences.read().await;
         store.get(device_id).is_some()
     };
-    let (scene_id, response, change_kind) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, response, change_kind, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let active_scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
@@ -408,6 +429,7 @@ pub async fn set_display_face(
         } else {
             ZoneChangeKind::Created
         };
+        let rollback = scene_manager.clone();
         let group = match scene_manager.upsert_display_group(
             device_id,
             tracked.info.name.as_str(),
@@ -434,7 +456,7 @@ pub async fn set_display_face(
             compact_display_face_assignment_group(group.clone())
         };
 
-        (
+        let result = (
             active_scene_id,
             DisplayFaceResponse {
                 default_assigned,
@@ -446,8 +468,16 @@ pub async fn set_display_face(
                 scene_id: active_scene_id.to_string(),
             },
             change_kind,
-        )
+        );
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
+        };
+        (result.0, result.1, result.2, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    }
 
     publish_render_group_changed(state.as_ref(), scene_id, &response.group, change_kind);
     crate::api::persist_runtime_session(&state).await;
@@ -492,9 +522,10 @@ pub async fn patch_display_face_composition(
             }
             updated.blend_mode = target.blend_mode;
             updated.opacity = target.opacity;
-            store.set(device_id, updated);
-            if let Err(error) = store.save() {
-                warn!(%error, "Failed to persist display preferences");
+            if let Err(error) = store.set(device_id, updated) {
+                return ApiError::internal(format!(
+                    "Failed to prepare display preference persistence: {error}"
+                ));
             }
         }
         return match current_default_face_assignment(state.as_ref(), device_id).await {
@@ -516,6 +547,7 @@ pub async fn patch_display_face_composition(
         };
     }
 
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
     let (scene_id, response) = {
         let (active_scene_id, group, effect) =
             match current_display_face_assignment(state.as_ref(), device_id).await {
@@ -525,11 +557,12 @@ pub async fn patch_display_face_composition(
                 }
                 Err(response) => return response,
             };
-        {
+        let pending = {
             let mut scene_manager = state.scene_manager.write().await;
             if let Err(error) = active_scene_id_for_runtime_mutation(&scene_manager) {
                 return error.api_response("updating display face composition");
             }
+            let rollback = scene_manager.clone();
             if scene_manager
                 .patch_display_group_target(group.id, body.blend_mode, body.opacity)
                 .is_none()
@@ -538,6 +571,15 @@ pub async fn patch_display_face_composition(
                     "No display face is assigned to device {device_id}"
                 ));
             }
+            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    return ApiError::internal(format!("Failed to persist scene: {error}"));
+                }
+            }
+        };
+        if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+            return ApiError::internal(format!("Failed to persist scene: {error}"));
         }
         let refreshed_group = match current_display_face_assignment(state.as_ref(), device_id).await
         {
@@ -595,11 +637,14 @@ pub async fn delete_display_face(
     if query.scope == DisplayFaceScope::Default {
         let removed = {
             let mut store = state.display_preferences.write().await;
-            let removed = store.remove(device_id).is_some();
-            if removed && let Err(error) = store.save() {
-                warn!(%error, "Failed to persist display preferences");
+            match store.remove(device_id) {
+                Ok(removed) => removed.is_some(),
+                Err(error) => {
+                    return ApiError::internal(format!(
+                        "Failed to prepare display preference persistence: {error}"
+                    ));
+                }
             }
-            removed
         };
         let (was_live, scene_id, cleared_zone) = {
             let mut scene_manager = state.scene_manager.write().await;
@@ -637,12 +682,14 @@ pub async fn delete_display_face(
         ));
     };
 
-    let (scene_id, previous_group, cleared_group) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, previous_group, cleared_group, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let active_scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
             Err(error) => return error.api_response("removing a display face"),
         };
+        let rollback = scene_manager.clone();
         let previous_group = scene_manager
             .active_scene()
             .and_then(|scene| scene.display_group_for(device_id))
@@ -658,8 +705,15 @@ pub async fn delete_display_face(
                 return ApiError::internal(format!("Failed to update active scene: {error}"));
             }
         };
-        (active_scene_id, previous_group, cleared_group)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
+        };
+        (active_scene_id, previous_group, cleared_group, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    }
 
     if previous_group.is_some() {
         publish_render_group_changed(
@@ -740,9 +794,10 @@ pub async fn patch_display_face_controls(
             };
             let mut updated = preference;
             updated.controls.extend(normalized_controls);
-            store.set(device_id, updated);
-            if let Err(error) = store.save() {
-                warn!(%error, "Failed to persist display preferences");
+            if let Err(error) = store.set(device_id, updated) {
+                return ApiError::internal(format!(
+                    "Failed to prepare display preference persistence: {error}"
+                ));
             }
         }
         return match current_default_face_assignment(state.as_ref(), device_id).await {
@@ -765,6 +820,7 @@ pub async fn patch_display_face_controls(
     }
 
     let mut rejected: Vec<String> = Vec::new();
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
     let (scene_id, response, effect_name) = {
         let (active_scene_id, group, effect) =
             match current_display_face_assignment(state.as_ref(), device_id).await {
@@ -777,11 +833,12 @@ pub async fn patch_display_face_controls(
         let (normalized_controls, invalid) =
             crate::api::effects::normalize_control_payload(&effect, &controls_object);
         rejected.extend(invalid);
-        {
+        let pending = {
             let mut scene_manager = state.scene_manager.write().await;
             if let Err(error) = active_scene_id_for_runtime_mutation(&scene_manager) {
                 return error.api_response("updating display face controls");
             }
+            let rollback = scene_manager.clone();
             if scene_manager
                 .patch_group_controls(group.id, normalized_controls)
                 .is_none()
@@ -790,6 +847,15 @@ pub async fn patch_display_face_controls(
                     "No display face is assigned to device {device_id}"
                 ));
             }
+            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    return ApiError::internal(format!("Failed to persist scene: {error}"));
+                }
+            }
+        };
+        if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+            return ApiError::internal(format!("Failed to persist scene: {error}"));
         }
         let effect_name = effect.name.clone();
         let refreshed_group = match current_display_face_assignment(state.as_ref(), device_id).await

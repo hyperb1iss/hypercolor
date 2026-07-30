@@ -11,7 +11,10 @@ use crate::api::effects::{
     normalize_control_payload, resolve_full_scope_layout, stop_active_effect_and_quiesce_output,
     wake_output_for_effect_start,
 };
-use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
+use crate::api::{
+    AppState, admit_scene_store_snapshot, publish_render_group_changed,
+    save_admitted_scene_store_snapshot, save_runtime_session_snapshot, scene_store_coordinator,
+};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::event::{ChangeTrigger, HypercolorEvent, ZoneChangeKind};
 
@@ -325,7 +328,8 @@ pub(super) async fn handle_set_effect_with_state(
         .await
         .map(|(_, effect)| effect_ref(&effect));
     let full_scope_layout = resolve_full_scope_layout(state).await;
-    let (scene_id, group, change_kind) = {
+    let coordinator = scene_store_coordinator(state).await;
+    let (scene_id, group, change_kind, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
             .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
@@ -338,6 +342,7 @@ pub(super) async fn handle_set_effect_with_state(
         } else {
             ZoneChangeKind::Created
         };
+        let rollback = scene_manager.clone();
         let group = scene_manager
             .upsert_primary_group(
                 &best_match.effect,
@@ -351,8 +356,13 @@ pub(super) async fn handle_set_effect_with_state(
                 ))
             })?
             .clone();
-        (scene_id, group, change_kind)
+        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
+            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
+        (scene_id, group, change_kind, pending)
     };
+    save_admitted_scene_store_snapshot(state, pending)
+        .await
+        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
     state.event_bus.publish(HypercolorEvent::EffectStarted {
         effect: effect_ref(&best_match.effect),
         trigger: ChangeTrigger::Mcp,
@@ -516,6 +526,9 @@ pub(super) async fn handle_stop_effect_with_state(
                 error.message("stopping the active effect"),
             ));
         }
+        Err(StopActiveEffectError::Persistence(error)) => {
+            return Err(ToolError::Internal(error));
+        }
     };
 
     Ok(json!({
@@ -578,7 +591,8 @@ pub(super) async fn handle_set_color_with_state(
         controls.insert("brightness".to_owned(), ControlValue::Float(brightness));
     }
     let full_scope_layout = resolve_full_scope_layout(state).await;
-    let (scene_id, group, change_kind) = {
+    let coordinator = scene_store_coordinator(state).await;
+    let (scene_id, group, change_kind, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
             .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
@@ -591,6 +605,7 @@ pub(super) async fn handle_set_color_with_state(
         } else {
             ZoneChangeKind::Created
         };
+        let rollback = scene_manager.clone();
         let group = scene_manager
             .upsert_primary_group(&solid_effect, controls.clone(), None, full_scope_layout)
             .map_err(|error| {
@@ -599,8 +614,13 @@ pub(super) async fn handle_set_color_with_state(
                 ))
             })?
             .clone();
-        (scene_id, group, change_kind)
+        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
+            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
+        (scene_id, group, change_kind, pending)
     };
+    save_admitted_scene_store_snapshot(state, pending)
+        .await
+        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
     state.event_bus.publish(HypercolorEvent::EffectStarted {
         effect: effect_ref(&solid_effect),
         trigger: ChangeTrigger::Mcp,

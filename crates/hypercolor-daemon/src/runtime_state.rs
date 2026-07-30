@@ -16,6 +16,7 @@ use hypercolor_types::scene::{SceneId, Zone};
 
 use crate::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
+    serialize_json_pretty,
 };
 
 /// Runtime session snapshot persisted to disk.
@@ -171,14 +172,16 @@ pub fn save_reserved(
     pending: RuntimeSnapshotSave,
     snapshot: &RuntimeSessionSnapshot,
 ) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
-    let bytes = serde_json::to_vec_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
-    let outcome = pending
-        .write
-        .write(&bytes)
-        .map_err(|source| RuntimeSessionError::Persist {
-            path: pending.path,
-            source,
-        })?;
+    let bytes = serialize_json_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
+    let outcome =
+        pending
+            .write
+            .admit(bytes)
+            .commit()
+            .map_err(|source| RuntimeSessionError::Persist {
+                path: pending.path,
+                source,
+            })?;
     Ok(outcome)
 }
 

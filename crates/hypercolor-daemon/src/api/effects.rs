@@ -40,7 +40,8 @@ use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{
-    ActiveSceneMutationError, active_scene_id_for_runtime_mutation, publish_render_group_changed,
+    ActiveSceneMutationError, active_scene_id_for_runtime_mutation, admit_scene_store_snapshot,
+    publish_render_group_changed, save_admitted_scene_store_snapshot, scene_store_coordinator,
 };
 use crate::discovery;
 use crate::effect_layouts;
@@ -101,6 +102,7 @@ pub(crate) enum StopActiveEffectError {
     NoActiveEffect,
     ActiveScene(ActiveSceneMutationError),
     ActiveGroupMissing,
+    Persistence(String),
 }
 
 impl From<ActiveSceneMutationError> for StopActiveEffectError {
@@ -137,14 +139,25 @@ pub(crate) async fn stop_active_effect_and_quiesce_output(
         return Err(StopActiveEffectError::NoActiveEffect);
     };
 
-    let (scene_id, cleared_group) = {
+    let coordinator = scene_store_coordinator(state).await;
+    let (scene_id, cleared_group, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
+        let rollback = scene_manager.clone();
         let Some(cleared_group) = scene_manager.clear_group_effect(group.id).cloned() else {
             return Err(StopActiveEffectError::ActiveGroupMissing);
         };
-        (scene_id, cleared_group)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return Err(StopActiveEffectError::Persistence(error.to_string()));
+            }
+        };
+        (scene_id, cleared_group, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state, pending).await {
+        warn!(%error, "Failed to persist stopped effect; retry remains active");
+    }
 
     let effect = effect_ref(&previous_effect);
     state.event_bus.publish(HypercolorEvent::EffectStopped {
@@ -570,10 +583,21 @@ pub async fn set_effect_layout(
     };
 
     let effect_id = effect.id.to_string();
+    let writer = match effect_layouts::writer(&state.effect_layout_links_path) {
+        Ok(writer) => writer,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
     let pending = {
         let mut links = state.effect_layout_links.write().await;
-        links.insert(effect_id.clone(), layout.id.clone());
-        effect_layouts::reserve_save(&state.effect_layout_links_path, &links)
+        let mut candidate = links.clone();
+        candidate.insert(effect_id.clone(), layout.id.clone());
+        match effect_layouts::reserve_save_with(&writer, &candidate) {
+            Ok(pending) => {
+                *links = candidate;
+                Ok(pending)
+            }
+            Err(error) => Err(error),
+        }
     };
     let pending = match pending {
         Ok(pending) => pending,
@@ -606,11 +630,19 @@ pub async fn delete_effect_layout(
         meta
     };
     let effect_id = effect.id.to_string();
+    let writer = match effect_layouts::writer(&state.effect_layout_links_path) {
+        Ok(writer) => writer,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
 
     let (removed_layout_id, pending) = {
         let mut links = state.effect_layout_links.write().await;
-        let removed = links.remove(&effect_id);
-        let pending = effect_layouts::reserve_save(&state.effect_layout_links_path, &links);
+        let mut candidate = links.clone();
+        let removed = candidate.remove(&effect_id);
+        let pending = effect_layouts::reserve_save_with(&writer, &candidate);
+        if pending.is_ok() {
+            *links = candidate;
+        }
         (removed, pending)
     };
 
@@ -745,7 +777,8 @@ pub async fn apply_effect(
             Err(response) => return *response,
         };
 
-    let (scene_id, group, change_kind, named_target, previous_effect_id) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, group, change_kind, named_target, previous_effect_id, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
@@ -773,7 +806,8 @@ pub async fn apply_effect(
                 .and_then(|group| group.effect_id)
         });
 
-        if let Some(group_id) = named_target {
+        let rollback = scene_manager.clone();
+        let result = if let Some(group_id) = named_target {
             let group = match scene_manager.apply_effect_to_group(
                 group_id,
                 &metadata,
@@ -820,8 +854,16 @@ pub async fn apply_effect(
                 named_target,
                 previous_effect_id,
             )
-        }
+        };
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
+        };
+        (result.0, result.1, result.2, result.3, result.4, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    }
     let previous_effect = match previous_effect_id {
         Some(effect_id) => {
             let registry = state.effect_registry.read().await;
@@ -949,6 +991,7 @@ pub async fn pause_effect(State(state): State<Arc<AppState>>) -> Response {
         Err(StopActiveEffectError::ActiveScene(error)) => {
             return error.api_response("pausing the active effect");
         }
+        Err(StopActiveEffectError::Persistence(error)) => return ApiError::internal(error),
     };
 
     ApiResponse::ok(serde_json::json!({
@@ -972,6 +1015,7 @@ pub async fn resume_effect(State(state): State<Arc<AppState>>) -> Response {
         Err(StopActiveEffectError::ActiveScene(error)) => {
             return error.api_response("resuming the active effect");
         }
+        Err(StopActiveEffectError::Persistence(error)) => return ApiError::internal(error),
     };
 
     ApiResponse::ok(serde_json::json!({
@@ -993,6 +1037,7 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
         Err(StopActiveEffectError::ActiveScene(error)) => {
             return error.api_response("stopping the active effect");
         }
+        Err(StopActiveEffectError::Persistence(error)) => return ApiError::internal(error),
     };
 
     ApiResponse::ok(serde_json::json!({
@@ -1028,12 +1073,14 @@ pub async fn update_current_controls(
     rejected.extend(invalid);
     applied.extend(normalized.clone());
     let previous_values = resolved_control_values(&active_meta, &group);
-    let (scene_id, updated_group) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, updated_group, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
             Err(error) => return error.api_response("updating active effect controls"),
         };
+        let rollback = scene_manager.clone();
         let updated_group = match scene_manager.patch_effect_controls_with_precondition(
             group.id,
             Some(active_meta.id),
@@ -1053,8 +1100,15 @@ pub async fn update_current_controls(
                 );
             }
         };
-        (scene_id, updated_group)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
+        };
+        (scene_id, updated_group, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    }
 
     if !rejected.is_empty() {
         warn!(
@@ -1144,13 +1198,15 @@ pub async fn update_effect_controls(
     // `expected_effect_id` to the scene manager turns a concurrent
     // effect-swap into a `GroupMissing` error instead of a silent
     // overwrite. See `SceneManager::patch_effect_controls_with_precondition`.
-    let (scene_id, updated_group, new_version) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, updated_group, new_version, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
             Err(error) => return error.api_response("updating effect controls"),
         };
-        match scene_manager.patch_effect_controls_with_precondition(
+        let rollback = scene_manager.clone();
+        let result = match scene_manager.patch_effect_controls_with_precondition(
             group.id,
             Some(effect_id),
             normalized,
@@ -1168,8 +1224,16 @@ pub async fn update_effect_controls(
                     "zone has multiple matching effect layers; use the layer controls endpoint",
                 );
             }
-        }
+        };
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
+        };
+        (result.0, result.1, result.2, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    }
 
     if !rejected.is_empty() {
         warn!(
@@ -1301,7 +1365,8 @@ pub async fn set_current_control_binding(
         Ok(normalized) => normalized,
         Err(error) => return ApiError::validation(error),
     };
-    let (scene_id, updated_group) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, updated_group, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
@@ -1309,14 +1374,22 @@ pub async fn set_current_control_binding(
                 return error.api_response("updating an active effect control binding");
             }
         };
+        let rollback = scene_manager.clone();
         let Some(updated_group) = scene_manager
             .set_group_control_binding(group.id, control_id.clone(), normalized.clone())
             .cloned()
         else {
             return ApiError::not_found("No effect is currently active");
         };
-        (scene_id, updated_group)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
+        };
+        (scene_id, updated_group, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    }
 
     publish_render_group_changed(
         state.as_ref(),
@@ -1357,20 +1430,29 @@ pub async fn reset_controls(
         return ApiError::not_found("No effect is active in the target zone");
     };
     let previous_values = resolved_control_values(&meta, &group);
-    let (scene_id, updated_group) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, updated_group, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
             Err(error) => return error.api_response("resetting active effect controls"),
         };
+        let rollback = scene_manager.clone();
         let Some(updated_group) = scene_manager
             .reset_group_controls(group.id, default_control_values(&meta))
             .cloned()
         else {
             return ApiError::not_found("No effect is currently active");
         };
-        (scene_id, updated_group)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
+        };
+        (scene_id, updated_group, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    }
     publish_render_group_changed(
         state.as_ref(),
         scene_id,

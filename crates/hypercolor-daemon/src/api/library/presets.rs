@@ -17,6 +17,9 @@ use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::{
+    admit_scene_store_snapshot, save_admitted_scene_store_snapshot, scene_store_coordinator,
+};
 
 use super::{
     ActivateEffectError, ActivationResult, activate_effect_with_controls, normalize_tags,
@@ -183,7 +186,11 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
         return ApiError::not_found(format!("Preset not found: {id}"));
     };
 
-    if !state.library_store.remove_preset(preset_id).await {
+    let removed = match state.library_store.remove_preset(preset_id).await {
+        Ok(removed) => removed,
+        Err(error) => return store_error_to_response(&error),
+    };
+    if !removed {
         return ApiError::not_found(format!("Preset not found: {id}"));
     }
 
@@ -258,11 +265,13 @@ pub async fn apply_preset(
         else {
             return ApiError::not_found("No effect is currently active");
         };
-        {
+        let coordinator = scene_store_coordinator(state.as_ref()).await;
+        let pending = {
             let mut scene_manager = state.scene_manager.write().await;
             if let Err(error) = crate::api::active_scene_id_for_runtime_mutation(&scene_manager) {
                 return ApiError::conflict(error.message("applying a preset"));
             }
+            let rollback = scene_manager.clone();
             if scene_manager
                 .reset_group_controls(
                     group.id,
@@ -279,6 +288,15 @@ pub async fn apply_preset(
                 return ApiError::not_found("No effect is currently active");
             }
             let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
+            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    return ApiError::internal(format!("Failed to persist scene: {error}"));
+                }
+            }
+        };
+        if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+            return ApiError::internal(format!("Failed to persist scene: {error}"));
         }
 
         ActivationResult {
@@ -296,8 +314,26 @@ pub async fn apply_preset(
                 if let Some((group, _)) =
                     crate::api::effects::active_primary_effect(state.as_ref()).await
                 {
+                    let coordinator = scene_store_coordinator(state.as_ref()).await;
                     let mut scene_manager = state.scene_manager.write().await;
+                    let rollback = scene_manager.clone();
                     let _ = scene_manager.set_group_preset_id(group.id, Some(preset.id));
+                    let pending = match admit_scene_store_snapshot(
+                        &coordinator,
+                        &mut scene_manager,
+                        rollback,
+                    ) {
+                        Ok(pending) => pending,
+                        Err(error) => {
+                            return ApiError::internal(format!("Failed to persist scene: {error}"));
+                        }
+                    };
+                    drop(scene_manager);
+                    if let Err(error) =
+                        save_admitted_scene_store_snapshot(state.as_ref(), pending).await
+                    {
+                        return ApiError::internal(format!("Failed to persist scene: {error}"));
+                    }
                 }
                 activation
             }
@@ -339,12 +375,14 @@ async fn apply_preset_to_zone(
     let (applied, rejected) =
         crate::api::effects::normalize_control_values(metadata, &preset.controls);
 
-    let (scene_id, group, previous_effect_id) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, group, previous_effect_id, pending) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match crate::api::active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
             Err(error) => return ApiError::conflict(error.message("applying a preset")),
         };
+        let rollback = scene_manager.clone();
         let previous_effect_id = scene_manager
             .active_scene()
             .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
@@ -380,8 +418,15 @@ async fn apply_preset_to_zone(
         else {
             return ApiError::not_found("Zone not found in active scene");
         };
-        (scene_id, group, previous_effect_id)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
+        };
+        (scene_id, group, previous_effect_id, pending)
     };
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    }
 
     if previous_effect_id != Some(metadata.id) {
         let previous = match previous_effect_id {

@@ -7,14 +7,14 @@ use std::path::Path;
 use anyhow::Context;
 
 use crate::persistence::{
-    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, PersistenceError,
+    serialize_json_pretty,
 };
 
 /// Effect-layout snapshot reserved at its owning mutation boundary.
 #[derive(Debug)]
 pub struct EffectLayoutSave {
-    associations: HashMap<String, String>,
-    write: AtomicWriteReservation,
+    write: AdmittedAtomicWrite,
 }
 
 /// Load persisted effect layout associations from disk.
@@ -49,21 +49,33 @@ pub fn save(path: &Path, associations: &HashMap<String, String>) -> anyhow::Resu
 pub fn reserve_save(
     path: &Path,
     associations: &HashMap<String, String>,
-) -> Result<EffectLayoutSave, PersistenceError> {
+) -> anyhow::Result<EffectLayoutSave> {
     let writer = AtomicFileWriter::new(path)?;
+    reserve_save_with(&writer, associations)
+}
+
+/// Initialize an effect-layout writer before its owning mutation begins.
+pub fn writer(path: &Path) -> Result<AtomicFileWriter, PersistenceError> {
+    AtomicFileWriter::new(path)
+}
+
+/// Serialize and admit an effect-layout snapshot while its mutation lock is held.
+pub fn reserve_save_with(
+    writer: &AtomicFileWriter,
+    associations: &HashMap<String, String>,
+) -> anyhow::Result<EffectLayoutSave> {
+    let payload = serialize_json_pretty(associations)
+        .context("failed to serialize effect layout associations")?;
     Ok(EffectLayoutSave {
-        associations: associations.clone(),
-        write: writer.reserve(),
+        write: writer.reserve().admit(payload),
     })
 }
 
 /// Commit a previously reserved effect-layout snapshot.
 pub fn save_reserved(pending: EffectLayoutSave) -> anyhow::Result<AtomicWriteOutcome> {
-    let payload = serde_json::to_string_pretty(&pending.associations)
-        .context("failed to serialize effect layout associations")?;
     let outcome = pending
         .write
-        .write(payload.as_bytes())
+        .commit()
         .context("failed to persist effect layout associations")?;
     Ok(outcome)
 }

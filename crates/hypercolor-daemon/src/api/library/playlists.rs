@@ -189,6 +189,14 @@ pub async fn delete_playlist(
         return ApiError::not_found(format!("Playlist not found: {id}"));
     };
 
+    let removed = match state.library_store.remove_playlist(playlist_id).await {
+        Ok(removed) => removed,
+        Err(error) => return store_error_to_response(&error),
+    };
+    if !removed {
+        return ApiError::not_found(format!("Playlist not found: {id}"));
+    }
+
     let active = {
         let mut runtime = state.playlist_runtime.lock().await;
         let should_stop = runtime
@@ -202,10 +210,6 @@ pub async fn delete_playlist(
         }
     };
     stop_runtime(active);
-
-    if !state.library_store.remove_playlist(playlist_id).await {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
-    }
 
     ApiResponse::ok(serde_json::json!({
         "id": playlist_id.to_string(),

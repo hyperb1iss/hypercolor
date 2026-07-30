@@ -212,15 +212,19 @@ impl DaemonState {
 
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
-        let scene_store_inner = SceneStore::load(&scenes_path).unwrap_or_else(|error| {
-            warn!(
-                path = %scenes_path.display(),
-                %error,
-                cause = %error.root_cause(),
-                "Failed to load scenes; starting with empty store"
-            );
-            SceneStore::new(scenes_path.clone())
-        });
+        let scene_store_inner = match SceneStore::load(&scenes_path) {
+            Ok(store) => store,
+            Err(error) => {
+                warn!(
+                    path = %scenes_path.display(),
+                    %error,
+                    cause = %error.root_cause(),
+                    "Failed to load scenes; starting with empty store"
+                );
+                SceneStore::new(scenes_path.clone())
+                    .context("failed to prepare empty scene persistence")?
+            }
+        };
         let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store_inner.list().cloned() {
             if let Err(error) = scene_manager_inner.create(scene) {
@@ -342,8 +346,11 @@ impl DaemonState {
         // ── Display Preferences Store ─────────────────────────────
         let display_preferences_path = ConfigManager::data_dir().join("display-preferences.json");
         let display_preferences_inner =
-            crate::display_preferences::DisplayPreferencesStore::load(&display_preferences_path)
-                .unwrap_or_else(|error| {
+            match crate::display_preferences::DisplayPreferencesStore::load(
+                &display_preferences_path,
+            ) {
+                Ok(store) => store,
+                Err(error) => {
                     warn!(
                         path = %display_preferences_path.display(),
                         %error,
@@ -352,7 +359,9 @@ impl DaemonState {
                     crate::display_preferences::DisplayPreferencesStore::new(
                         display_preferences_path,
                     )
-                });
+                    .context("failed to prepare empty display preference persistence")?
+                }
+            };
         let display_preferences = Arc::new(RwLock::new(display_preferences_inner));
         info!("Display preferences store ready");
 

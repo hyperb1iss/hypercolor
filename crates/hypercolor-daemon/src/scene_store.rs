@@ -9,37 +9,42 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
 use crate::persistence::{
-    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, PersistenceError,
+    serialize_json_pretty,
 };
 
 /// Named-scene snapshot reserved at its owning scene-manager boundary.
 #[derive(Debug)]
 pub struct SceneStoreSave {
     scenes: HashMap<SceneId, Scene>,
-    write: AtomicWriteReservation,
+    write: AdmittedAtomicWrite,
 }
 
 /// JSON-backed named-scene store.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SceneStore {
-    path: PathBuf,
+    writer: AtomicFileWriter,
     scenes: HashMap<SceneId, Scene>,
 }
 
 impl SceneStore {
     /// Create an empty store rooted at `path`.
-    #[must_use]
-    pub fn new(path: PathBuf) -> Self {
-        Self {
-            path,
+    pub fn new(path: PathBuf) -> Result<Self, PersistenceError> {
+        let writer = AtomicFileWriter::new(&path)?;
+        Ok(Self {
+            writer,
             scenes: HashMap::new(),
-        }
+        })
     }
 
     /// Load an existing store or create an empty one when absent.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let writer = AtomicFileWriter::new(path)?;
         if !path.exists() {
-            return Ok(Self::new(path.to_path_buf()));
+            return Ok(Self {
+                writer,
+                scenes: HashMap::new(),
+            });
         }
 
         let raw = fs::read_to_string(path)
@@ -47,10 +52,7 @@ impl SceneStore {
         let scenes = serde_json::from_str::<HashMap<SceneId, Scene>>(&raw)
             .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
 
-        let mut store = Self {
-            path: path.to_path_buf(),
-            scenes,
-        };
+        let mut store = Self { writer, scenes };
         store.normalize();
         Ok(store)
     }
@@ -66,23 +68,24 @@ impl SceneStore {
     where
         I: IntoIterator<Item = Scene>,
     {
-        let writer = AtomicFileWriter::new(&self.path)?;
+        let scenes = named_scenes(scenes);
+        let payload = serialize_json_pretty(&scenes).map_err(|source| {
+            PersistenceError::SerializeSnapshot {
+                subject: "named scenes",
+                source,
+            }
+        })?;
         Ok(SceneStoreSave {
-            scenes: named_scenes(scenes),
-            write: writer.reserve(),
+            scenes,
+            write: self.writer.reserve().admit(payload),
         })
     }
 
     /// Commit a previously reserved snapshot and retain it when it wins.
     pub fn save_reserved(&mut self, pending: SceneStoreSave) -> anyhow::Result<AtomicWriteOutcome> {
         let SceneStoreSave { scenes, write } = pending;
-        let payload =
-            serde_json::to_string_pretty(&scenes).context("failed to serialize scenes")?;
         let previous = std::mem::replace(&mut self.scenes, scenes);
-        match write
-            .write(payload.as_bytes())
-            .context("failed to persist scenes")
-        {
+        match write.commit().context("failed to persist scenes") {
             Ok(AtomicWriteOutcome::Superseded) => {
                 self.scenes = previous;
                 Ok(AtomicWriteOutcome::Superseded)
@@ -94,7 +97,7 @@ impl SceneStore {
 
     /// Wake a pending retry after a semantic no-op.
     pub fn kick_persistence(&self) -> Result<(), PersistenceError> {
-        AtomicFileWriter::new(&self.path)?.kick();
+        self.writer.kick();
         Ok(())
     }
 
@@ -154,11 +157,6 @@ where
 fn persist_reserved(
     pending: SceneStoreSave,
 ) -> anyhow::Result<(AtomicWriteOutcome, HashMap<SceneId, Scene>)> {
-    let payload =
-        serde_json::to_string_pretty(&pending.scenes).context("failed to serialize scenes")?;
-    let outcome = pending
-        .write
-        .write(payload.as_bytes())
-        .context("failed to persist scenes")?;
+    let outcome = pending.write.commit().context("failed to persist scenes")?;
     Ok((outcome, pending.scenes))
 }

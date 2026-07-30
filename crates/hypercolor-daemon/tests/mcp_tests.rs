@@ -25,6 +25,7 @@ use hypercolor_daemon::mcp::tools::{
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store::SceneStore;
+use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -49,6 +50,31 @@ use uuid::Uuid;
 
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct LayoutAcknowledger(tokio::task::JoinHandle<()>);
+
+impl Drop for LayoutAcknowledger {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn spawn_layout_acknowledger(queue: SceneTransactionQueue) -> LayoutAcknowledger {
+    LayoutAcknowledger(tokio::spawn(async move {
+        let _consumer = queue.consumer();
+        loop {
+            for transaction in queue.drain() {
+                match transaction {
+                    SceneTransaction::ApplyLayout(transaction) => transaction.accept(),
+                    transaction => queue
+                        .push(transaction)
+                        .expect("test transaction queue should remain open"),
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }))
+}
 
 async fn spawn_router(router: axum::Router) -> (Client, String) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -456,7 +482,7 @@ async fn insert_test_profile(
         active_preset_id: None,
     });
     profile.layout_id = None;
-    profiles.insert(profile);
+    profiles.insert(profile).expect("seed profile");
 }
 
 fn scenes_path(state: &AppState) -> PathBuf {
@@ -1364,6 +1390,7 @@ async fn stateful_set_profile_persists_runtime_snapshot() {
 async fn stateful_set_profile_preserves_primary_assignment_when_custom_zones_exist() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
+    let _layout_acknowledger = spawn_layout_acknowledger(state.scene_transactions.clone());
     let existing = insert_test_effect(&state, "Current").await;
     let effect = insert_test_effect(&state, "Movie Night").await;
     let expected_layout = seed_multi_zone_primary_assignment(&state, &existing).await;
@@ -1387,7 +1414,7 @@ async fn stateful_set_profile_preserves_primary_assignment_when_custom_zones_exi
             active_preset_id: None,
         });
         profile.layout_id = Some(profile_layout.id);
-        profiles.insert(profile);
+        profiles.insert(profile).expect("seed profile");
     }
 
     execute_tool_with_state(

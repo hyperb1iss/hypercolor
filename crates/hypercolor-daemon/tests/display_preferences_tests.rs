@@ -357,8 +357,10 @@ fn store_round_trips_preferences_to_disk() {
         opacity: 0.8,
     };
 
-    let mut store = DisplayPreferencesStore::new(path.clone());
-    store.set(device_id, preference.clone());
+    let mut store = DisplayPreferencesStore::new(path.clone()).expect("store should initialize");
+    store
+        .set(device_id, preference.clone())
+        .expect("preference should be admitted");
     store.save().expect("store should save");
 
     let reloaded = DisplayPreferencesStore::load(&path).expect("store should load");

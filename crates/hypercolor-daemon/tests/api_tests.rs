@@ -40,6 +40,8 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::types::event::InputButtonState;
 use hypercolor_daemon::api::{self, AppState};
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::library::JsonLibraryStore;
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
@@ -7134,7 +7136,8 @@ async fn library_playlist_activate_replaces_previous_runtime() {
 
 #[tokio::test]
 async fn library_delete_active_playlist_stops_runtime() {
-    let state = Arc::new(isolated_state());
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -7203,6 +7206,90 @@ async fn library_delete_active_playlist_stops_runtime() {
         .await
         .expect("failed to execute request");
     assert_eq!(active_response.status(), StatusCode::NOT_FOUND);
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn library_delete_keeps_active_playlist_when_persistence_admission_fails() {
+    let (mut state, tempdir) = isolated_state_with_tempdir();
+    state.library_store = Arc::new(
+        JsonLibraryStore::open(tempdir.path().join("library.json")).expect("JSON library store"),
+    );
+    let state = Arc::new(state);
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"must_keep_playing",
+                        "items":[{
+                            "target":{"type":"effect","effect":"solid_color"},
+                            "duration_ms":10000
+                        }]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let playlist_id = create_json["data"]["id"]
+        .as_str()
+        .expect("playlist id should be string")
+        .to_owned();
+
+    let activate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/playlists/{playlist_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(activate_response.status(), StatusCode::OK);
+    hypercolor_daemon::persistence::set_injected_serialization_failures(1);
+
+    let delete_response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/library/playlists/{playlist_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(delete_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        state
+            .playlist_runtime
+            .lock()
+            .await
+            .active
+            .as_ref()
+            .map(|active| active.playlist_id.to_string()),
+        Some(playlist_id.clone())
+    );
+    assert!(
+        state
+            .library_store
+            .list_playlists()
+            .await
+            .iter()
+            .any(|playlist| playlist.id.to_string() == playlist_id)
+    );
 }
 
 // ── Scenes ───────────────────────────────────────────────────────────────
@@ -7652,7 +7739,8 @@ async fn scene_deactivate_on_default_is_noop() {
     reason = "profile lifecycle coverage is clearer as one end-to-end integration test"
 )]
 async fn profile_crud_lifecycle() {
-    let state = Arc::new(isolated_state());
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     insert_test_effect(&state, "solid_color").await;
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
@@ -8084,8 +8172,12 @@ async fn profile_lookup_returns_conflict_for_ambiguous_name() {
     let state = Arc::new(isolated_state());
     {
         let mut profiles = state.profiles.write().await;
-        profiles.insert(Profile::named("prof_alpha", "Evening"));
-        profiles.insert(Profile::named("prof_beta", "evening"));
+        profiles
+            .insert(Profile::named("prof_alpha", "Evening"))
+            .expect("seed first profile");
+        profiles
+            .insert(Profile::named("prof_beta", "evening"))
+            .expect("seed second profile");
     }
 
     let app = test_app_with_state(state);
@@ -8115,7 +8207,9 @@ async fn apply_profile_rejects_unimplemented_transition_requests() {
     let state = Arc::new(isolated_state());
     {
         let mut profiles = state.profiles.write().await;
-        profiles.insert(Profile::named("prof_evening", "Evening"));
+        profiles
+            .insert(Profile::named("prof_evening", "Evening"))
+            .expect("seed profile");
     }
 
     let app = test_app_with_state(state);
@@ -8149,7 +8243,7 @@ async fn apply_profile_conflicts_when_snapshot_scene_is_active() {
         let mut profiles = state.profiles.write().await;
         let mut profile = Profile::named("prof_evening", "Evening");
         profile.brightness = Some(40);
-        profiles.insert(profile);
+        profiles.insert(profile).expect("seed profile");
     }
     activate_empty_test_scene_with_mode(&state, "Focus", SceneMutationMode::Snapshot).await;
 
@@ -8223,7 +8317,7 @@ async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
             active_preset_id: None,
         });
         profile.layout_id = Some("layout_profile".to_owned());
-        profiles.insert(profile);
+        profiles.insert(profile).expect("seed profile");
     }
 
     let app = test_app_with_state(Arc::clone(&state));

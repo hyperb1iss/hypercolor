@@ -21,7 +21,8 @@ use hypercolor_types::scene::{
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{
-    persist_runtime_session, publish_active_scene_changed, save_scene_store_snapshot,
+    admit_scene_store_snapshot, persist_runtime_session, publish_active_scene_changed,
+    save_admitted_scene_store_snapshot, scene_store_coordinator,
 };
 
 const MEDIA_SOFT_PRODUCER_COST_US: u64 = 60_000;
@@ -170,14 +171,20 @@ pub async fn create_scene(
     };
 
     let scene_id = scene.id;
-    {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let pending = {
         let mut manager = state.scene_manager.write().await;
+        let rollback = manager.clone();
         if let Err(e) = manager.create(scene) {
             return ApiError::conflict(format!("Failed to create scene: {e}"));
         }
-    }
+        match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist scenes: {error}")),
+        }
+    };
 
-    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
         return ApiError::internal(format!("Failed to persist scenes: {error}"));
     }
 
@@ -197,6 +204,7 @@ pub async fn update_scene(
     Path(id): Path<String>,
     Json(body): Json<UpdateSceneRequest>,
 ) -> Response {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
     let mut manager = state.scene_manager.write().await;
     let Some(scene_id) = resolve_scene_id(&manager, &id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
@@ -232,12 +240,17 @@ pub async fn update_scene(
         mutation_mode: updated.mutation_mode,
     };
 
+    let rollback = manager.clone();
     if let Err(e) = manager.update(updated) {
         return ApiError::internal(format!("Failed to update scene: {e}"));
     }
+    let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::internal(format!("Failed to persist scenes: {error}")),
+    };
     drop(manager);
 
-    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
         return ApiError::internal(format!("Failed to persist scenes: {error}"));
     }
 
@@ -253,6 +266,7 @@ pub async fn update_scene(
 
 /// `DELETE /api/v1/scenes/:id` — Delete a scene.
 pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
     let mut manager = state.scene_manager.write().await;
     let Some(scene_id) = resolve_scene_id(&manager, &id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
@@ -261,14 +275,19 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
         return ApiError::conflict("Default scene cannot be deleted".to_owned());
     }
     let previous_active_scene = manager.active_scene_id().copied();
+    let rollback = manager.clone();
 
     if let Err(e) = manager.delete(&scene_id) {
         return ApiError::not_found(format!("Scene not found: {e}"));
     }
     let current_active_scene = manager.active_scene().cloned();
+    let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+        Ok(pending) => pending,
+        Err(error) => return ApiError::internal(format!("Failed to persist scenes: {error}")),
+    };
     drop(manager);
 
-    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
         return ApiError::internal(format!("Failed to persist scenes: {error}"));
     }
     persist_runtime_session(&state).await;

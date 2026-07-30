@@ -94,6 +94,10 @@ pub async fn add_favorite(
         .library_store
         .upsert_favorite(effect.id, unix_epoch_ms())
         .await;
+    let favorite = match favorite {
+        Ok(favorite) => favorite,
+        Err(error) => return super::store_error_to_response(&error),
+    };
 
     ApiResponse::ok(serde_json::json!({
         "favorite": FavoriteSummary {
@@ -118,7 +122,11 @@ pub async fn remove_favorite(
         effect
     };
 
-    if !state.library_store.remove_favorite(effect.id).await {
+    let removed = match state.library_store.remove_favorite(effect.id).await {
+        Ok(removed) => removed,
+        Err(error) => return super::store_error_to_response(&error),
+    };
+    if !removed {
         return ApiError::not_found("Favorite effect not found");
     }
 

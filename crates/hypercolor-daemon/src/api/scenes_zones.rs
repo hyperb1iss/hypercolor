@@ -15,8 +15,8 @@ use hypercolor_types::spatial::{Output, SpatialLayout};
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::layouts::{validate_layout_sampling_radii, validate_output_sampling_radii};
 use crate::api::{
-    AppState, persist_runtime_session, publish_render_group_changed, save_scene_store_snapshot,
-    scenes,
+    AppState, admit_scene_store_snapshot, persist_runtime_session, publish_render_group_changed,
+    save_admitted_scene_store_snapshot, scene_store_coordinator, scenes,
 };
 use crate::layout_auto_exclusions;
 
@@ -63,7 +63,8 @@ pub async fn create_zone(
         (layout.canvas_width, layout.canvas_height)
     };
 
-    let (scene_id, zone, groups_revision) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, zone, groups_revision, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -71,6 +72,7 @@ pub async fn create_zone(
         if let Some(response) = check_groups_revision(&manager, scene_id, expected_revision) {
             return response;
         }
+        let rollback = manager.clone();
         let group_id =
             match manager.create_render_group(&scene_id, body.name, body.color, fallback_canvas) {
                 Ok(group_id) => group_id,
@@ -82,11 +84,17 @@ pub async fn create_zone(
         let Some(zone) = find_group_in_scene(scene, group_id) else {
             return ApiError::not_found(format!("Zone not found: {group_id}"));
         };
-        (scene_id, zone.clone(), scene.groups_revision)
+        let zone = zone.clone();
+        let groups_revision = scene.groups_revision;
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist zones: {error}")),
+        };
+        (scene_id, zone, groups_revision, pending)
     };
 
     if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &zone, ZoneChangeKind::Created).await
+        finalize_zone_mutation(&state, pending, scene_id, &zone, ZoneChangeKind::Created).await
     {
         return response;
     }
@@ -129,7 +137,8 @@ pub async fn update_zone(
     let structural = body.make_primary == Some(true);
     let patch = zone_update_patch(body);
 
-    let (scene_id, zone, groups_revision) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, zone, groups_revision, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -139,6 +148,7 @@ pub async fn update_zone(
         {
             return response;
         }
+        let rollback = manager.clone();
         let zone = match manager.update_render_group_meta(&scene_id, zone_id, patch) {
             Ok(zone) => zone,
             Err(error) => return zone_mutation_error(error),
@@ -147,11 +157,15 @@ pub async fn update_zone(
             .get(&scene_id)
             .map(|scene| scene.groups_revision)
             .unwrap_or_default();
-        (scene_id, zone, groups_revision)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist zones: {error}")),
+        };
+        (scene_id, zone, groups_revision, pending)
     };
 
     if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &zone, ZoneChangeKind::Updated).await
+        finalize_zone_mutation(&state, pending, scene_id, &zone, ZoneChangeKind::Updated).await
     {
         return response;
     }
@@ -171,7 +185,8 @@ pub async fn delete_zone(
         Err(message) => return ApiError::bad_request(message),
     };
 
-    let (scene_id, zone, groups_revision) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, zone, groups_revision, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -186,6 +201,7 @@ pub async fn delete_zone(
         else {
             return ApiError::not_found(format!("Zone not found: {zone_id}"));
         };
+        let rollback = manager.clone();
         if let Err(error) = manager.delete_render_group(&scene_id, zone_id) {
             return zone_mutation_error(error);
         }
@@ -193,11 +209,15 @@ pub async fn delete_zone(
             .get(&scene_id)
             .map(|scene| scene.groups_revision)
             .unwrap_or_default();
-        (scene_id, zone, groups_revision)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist zones: {error}")),
+        };
+        (scene_id, zone, groups_revision, pending)
     };
 
     if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &zone, ZoneChangeKind::Removed).await
+        finalize_zone_mutation(&state, pending, scene_id, &zone, ZoneChangeKind::Removed).await
     {
         return response;
     }
@@ -241,7 +261,8 @@ pub async fn assign_devices(
         OutputPlacement::AutoGrid
     };
 
-    let (scene_id, previous_groups, zones, target_group, groups_revision) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, previous_groups, zones, target_group, groups_revision, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -262,6 +283,7 @@ pub async fn assign_devices(
                 return ApiError::not_found(format!("Device zone not found: {device_zone_id}"));
             }
         };
+        let rollback = manager.clone();
         for device_zone in device_zones {
             if let Err(error) =
                 manager.assign_device_zone(&scene_id, zone_id, device_zone, placement)
@@ -275,17 +297,28 @@ pub async fn assign_devices(
         let Some(target_group) = find_group_in_scene(scene, zone_id) else {
             return ApiError::not_found(format!("Zone not found: {zone_id}"));
         };
-        (
+        let result = (
             scene_id,
             previous_groups,
             scene.groups.clone(),
             target_group.clone(),
             scene.groups_revision,
-        )
+        );
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist zones: {error}")),
+        };
+        (result.0, result.1, result.2, result.3, result.4, pending)
     };
 
-    if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &target_group, ZoneChangeKind::Updated).await
+    if let Err(response) = finalize_zone_mutation(
+        &state,
+        pending,
+        scene_id,
+        &target_group,
+        ZoneChangeKind::Updated,
+    )
+    .await
     {
         return response;
     }
@@ -306,7 +339,8 @@ pub async fn unassign_device(
         Err(message) => return ApiError::bad_request(message),
     };
 
-    let (scene_id, previous_groups, zones, target_group, groups_revision) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, previous_groups, zones, target_group, groups_revision, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -329,6 +363,7 @@ pub async fn unassign_device(
             return ApiError::not_found(format!("Device zone not found: {device_zone_id}"));
         }
         let previous_groups = scene.groups.clone();
+        let rollback = manager.clone();
         if let Err(error) = manager.unassign_device_zone(&scene_id, &device_zone_id) {
             return zone_mutation_error(error);
         }
@@ -338,17 +373,28 @@ pub async fn unassign_device(
         let Some(target_group) = find_group_in_scene(scene, zone_id) else {
             return ApiError::not_found(format!("Zone not found: {zone_id}"));
         };
-        (
+        let result = (
             scene_id,
             previous_groups,
             scene.groups.clone(),
             target_group.clone(),
             scene.groups_revision,
-        )
+        );
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist zones: {error}")),
+        };
+        (result.0, result.1, result.2, result.3, result.4, pending)
     };
 
-    if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &target_group, ZoneChangeKind::Updated).await
+    if let Err(response) = finalize_zone_mutation(
+        &state,
+        pending,
+        scene_id,
+        &target_group,
+        ZoneChangeKind::Updated,
+    )
+    .await
     {
         return response;
     }
@@ -377,7 +423,8 @@ pub async fn update_zone_layout(
         Err(message) => return ApiError::bad_request(message),
     };
 
-    let (scene_id, zone, groups_revision) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, zone, groups_revision, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -385,6 +432,7 @@ pub async fn update_zone_layout(
         if let Some(response) = check_groups_revision(&manager, scene_id, expected_revision) {
             return response;
         }
+        let rollback = manager.clone();
         let zone = match manager.update_zone_layout(&scene_id, zone_id, layout) {
             Ok(zone) => zone,
             Err(error) => return zone_mutation_error(error),
@@ -393,11 +441,15 @@ pub async fn update_zone_layout(
             .get(&scene_id)
             .map(|scene| scene.groups_revision)
             .unwrap_or_default();
-        (scene_id, zone, groups_revision)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => return ApiError::internal(format!("Failed to persist zones: {error}")),
+        };
+        (scene_id, zone, groups_revision, pending)
     };
 
     if let Err(response) =
-        finalize_zone_mutation(&state, scene_id, &zone, ZoneChangeKind::Updated).await
+        finalize_zone_mutation(&state, pending, scene_id, &zone, ZoneChangeKind::Updated).await
     {
         return response;
     }
@@ -416,7 +468,8 @@ pub async fn update_unassigned_behavior(
         Err(message) => return ApiError::bad_request(message),
     };
 
-    let (scene_id, behavior, groups_revision) = {
+    let coordinator = scene_store_coordinator(state.as_ref()).await;
+    let (scene_id, behavior, groups_revision, pending) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
@@ -424,6 +477,7 @@ pub async fn update_unassigned_behavior(
         if let Some(response) = check_groups_revision(&manager, scene_id, expected_revision) {
             return response;
         }
+        let rollback = manager.clone();
         let behavior = match manager.set_unassigned_behavior(&scene_id, body.unassigned_behavior) {
             Ok(behavior) => behavior,
             Err(error) => return zone_mutation_error(error),
@@ -432,10 +486,17 @@ pub async fn update_unassigned_behavior(
             .get(&scene_id)
             .map(|scene| scene.groups_revision)
             .unwrap_or_default();
-        (scene_id, behavior, groups_revision)
+        let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return ApiError::internal(format!("Failed to persist scene settings: {error}"));
+            }
+        };
+        (scene_id, behavior, groups_revision, pending)
     };
 
-    if let Err(response) = finalize_scene_settings_mutation(&state, scene_id, groups_revision).await
+    if let Err(response) =
+        finalize_scene_settings_mutation(&state, pending, scene_id, groups_revision).await
     {
         return response;
     }
@@ -588,11 +649,12 @@ fn check_groups_revision(
 
 async fn finalize_zone_mutation(
     state: &Arc<AppState>,
+    pending: crate::scene_store::SceneStoreSave,
     scene_id: SceneId,
     group: &Zone,
     kind: ZoneChangeKind,
 ) -> Result<(), Response> {
-    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
         return Err(ApiError::internal(format!(
             "Failed to persist zones: {error}"
         )));
@@ -606,10 +668,11 @@ async fn finalize_zone_mutation(
 
 async fn finalize_scene_settings_mutation(
     state: &Arc<AppState>,
+    pending: crate::scene_store::SceneStoreSave,
     scene_id: SceneId,
     groups_revision: u64,
 ) -> Result<(), Response> {
-    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
         return Err(ApiError::internal(format!(
             "Failed to persist scene settings: {error}"
         )));

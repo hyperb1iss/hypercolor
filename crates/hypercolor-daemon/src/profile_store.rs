@@ -11,7 +11,7 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::library::PresetId;
 
-use crate::persistence::write_atomic;
+use crate::persistence::{AtomicFileWriter, serialize_json_pretty};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveProfileError {
@@ -80,26 +80,33 @@ impl Profile {
 }
 
 /// JSON-backed profile store.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ProfileStore {
     path: PathBuf,
     profiles: HashMap<String, Profile>,
+    writer: AtomicFileWriter,
 }
 
 impl ProfileStore {
     /// Create an empty store rooted at `path`.
-    #[must_use]
-    pub fn new(path: PathBuf) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the persistence destination cannot be prepared.
+    pub fn new(path: PathBuf) -> anyhow::Result<Self> {
+        let writer = AtomicFileWriter::new(&path)
+            .with_context(|| format!("failed to prepare profiles at {}", path.display()))?;
+        Ok(Self {
             path,
             profiles: HashMap::new(),
-        }
+            writer,
+        })
     }
 
     /// Load an existing store or create an empty one when absent.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         if !path.exists() {
-            return Ok(Self::new(path.to_path_buf()));
+            return Self::new(path.to_path_buf());
         }
 
         let raw = fs::read_to_string(path)
@@ -110,6 +117,8 @@ impl ProfileStore {
         let mut store = Self {
             path: path.to_path_buf(),
             profiles,
+            writer: AtomicFileWriter::new(path)
+                .with_context(|| format!("failed to prepare profiles at {}", path.display()))?,
         };
         store.normalize();
         Ok(store)
@@ -123,8 +132,10 @@ impl ProfileStore {
         }
 
         let payload =
-            serde_json::to_string_pretty(&self.profiles).context("failed to serialize profiles")?;
-        write_atomic(&self.path, payload.as_bytes()).context("failed to persist profiles")?;
+            serialize_json_pretty(&self.profiles).context("failed to serialize profiles")?;
+        self.writer
+            .write(&payload)
+            .context("failed to persist profiles")?;
         Ok(())
     }
 
@@ -173,13 +184,44 @@ impl ProfileStore {
         }
     }
 
-    pub fn insert(&mut self, profile: Profile) {
+    /// Serialize and admit an upsert before changing the live store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the candidate snapshot cannot be serialized.
+    pub fn insert(&mut self, profile: Profile) -> anyhow::Result<()> {
         let profile = profile.normalized();
-        self.profiles.insert(profile.id.clone(), profile);
+        let mut candidate = self.profiles.clone();
+        candidate.insert(profile.id.clone(), profile);
+        self.install_candidate(candidate)
     }
 
-    pub fn remove(&mut self, key: &str) -> Option<Profile> {
-        self.profiles.remove(key)
+    /// Serialize and admit a removal before changing the live store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the candidate snapshot cannot be serialized.
+    pub fn remove(&mut self, key: &str) -> anyhow::Result<Option<Profile>> {
+        let mut candidate = self.profiles.clone();
+        let removed = candidate.remove(key);
+        if removed.is_some() {
+            self.install_candidate(candidate)?;
+        }
+        Ok(removed)
+    }
+
+    fn install_candidate(&mut self, candidate: HashMap<String, Profile>) -> anyhow::Result<()> {
+        let payload = serialize_json_pretty(&candidate).context("failed to serialize profiles")?;
+        let pending = self.writer.reserve().admit(payload);
+        self.profiles = candidate;
+        if let Err(error) = pending.commit() {
+            tracing::warn!(
+                path = %self.path.display(),
+                %error,
+                "Failed to persist profiles; retry remains active"
+            );
+        }
+        Ok(())
     }
 
     fn normalize(&mut self) {

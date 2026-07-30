@@ -76,14 +76,21 @@ pub(crate) async fn activate_effect_with_controls(
         spatial.layout().as_ref().clone()
     };
 
-    {
+    let coordinator = crate::api::scene_store_coordinator(state.as_ref()).await;
+    let pending = {
         let mut scene_manager = state.scene_manager.write().await;
         crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
             .map_err(|error| ActivateEffectError::Conflict(error.message("applying an effect")))?;
+        let rollback = scene_manager.clone();
         scene_manager
             .upsert_primary_group(metadata, controls.clone(), None, layout)
             .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
-    }
+        crate::api::admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
+            .map_err(|error| ActivateEffectError::Activation(error.to_string()))?
+    };
+    crate::api::save_admitted_scene_store_snapshot(state.as_ref(), pending)
+        .await
+        .map_err(|error| ActivateEffectError::Activation(error.to_string()))?;
     crate::api::persist_runtime_session(state).await;
 
     Ok(ActivationResult {
@@ -109,6 +116,7 @@ pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> axum::respon
         LibraryStoreError::PlaylistConflict(id) => {
             ApiError::conflict(format!("Playlist already exists: {id}"))
         }
+        LibraryStoreError::Persistence(message) => ApiError::internal(message.clone()),
     }
 }
 

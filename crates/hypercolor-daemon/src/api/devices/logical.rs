@@ -203,11 +203,19 @@ pub async fn create_logical_device(
 
     let physical_layout_id = ensure_default_logical_entry(&state, &tracked.info).await;
     let physical_led_count = tracked.info.total_led_count();
+    let writer = match logical_devices::writer(&state.logical_devices_path) {
+        Ok(writer) => writer,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
 
     let (created, pending) = {
         let mut store = state.logical_devices.write().await;
-        let logical_id =
-            logical_devices::allocate_segment_id(&store, &physical_layout_id, &normalized_name);
+        let mut candidate_store = store.clone();
+        let logical_id = logical_devices::allocate_segment_id(
+            &candidate_store,
+            &physical_layout_id,
+            &normalized_name,
+        );
         let entry = LogicalDevice {
             id: logical_id.clone(),
             physical_device_id: physical_id,
@@ -218,18 +226,21 @@ pub async fn create_logical_device(
             kind: LogicalDeviceKind::Segment,
         };
         if let Err(error) =
-            logical_devices::validate_entry(&store, &entry, physical_led_count, None)
+            logical_devices::validate_entry(&candidate_store, &entry, physical_led_count, None)
         {
             return ApiError::validation(error);
         }
 
-        store.insert(logical_id.clone(), entry);
-        logical_devices::reconcile_default_enabled(&mut store, physical_id);
-        let created = store
+        candidate_store.insert(logical_id.clone(), entry);
+        logical_devices::reconcile_default_enabled(&mut candidate_store, physical_id);
+        let created = candidate_store
             .get(&logical_id)
             .expect("created logical device must exist")
             .clone();
-        let pending = logical_devices::reserve_save_segments(&state.logical_devices_path, &store);
+        let pending = logical_devices::reserve_save_segments_with(&writer, &candidate_store);
+        if pending.is_ok() {
+            *store = candidate_store;
+        }
         (created, pending)
     };
 
@@ -329,6 +340,10 @@ pub async fn update_logical_device(
         ));
     };
     let physical_led_count = tracked.info.total_led_count();
+    let writer = match logical_devices::writer(&state.logical_devices_path) {
+        Ok(writer) => writer,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
 
     let (updated, pending) = {
         let mut candidate = existing.clone();
@@ -349,18 +364,28 @@ pub async fn update_logical_device(
         }
 
         let mut store = state.logical_devices.write().await;
-        if let Err(error) =
-            logical_devices::validate_entry(&store, &candidate, physical_led_count, Some(&id))
-        {
+        let mut candidate_store = store.clone();
+        if let Err(error) = logical_devices::validate_entry(
+            &candidate_store,
+            &candidate,
+            physical_led_count,
+            Some(&id),
+        ) {
             return ApiError::validation(error);
         }
-        store.insert(id.clone(), candidate);
-        logical_devices::reconcile_default_enabled(&mut store, existing.physical_device_id);
-        let updated = store
+        candidate_store.insert(id.clone(), candidate);
+        logical_devices::reconcile_default_enabled(
+            &mut candidate_store,
+            existing.physical_device_id,
+        );
+        let updated = candidate_store
             .get(&id)
             .expect("updated logical device must exist")
             .clone();
-        let pending = logical_devices::reserve_save_segments(&state.logical_devices_path, &store);
+        let pending = logical_devices::reserve_save_segments_with(&writer, &candidate_store);
+        if pending.is_ok() {
+            *store = candidate_store;
+        }
         (updated, pending)
     };
 
@@ -407,11 +432,22 @@ pub async fn delete_logical_device(
     if existing.kind == LogicalDeviceKind::Default {
         return ApiError::conflict("Cannot delete the default logical device");
     }
+    let writer = match logical_devices::writer(&state.logical_devices_path) {
+        Ok(writer) => writer,
+        Err(error) => return ApiError::internal(error.to_string()),
+    };
     let pending = {
         let mut store = state.logical_devices.write().await;
-        store.remove(&id);
-        logical_devices::reconcile_default_enabled(&mut store, existing.physical_device_id);
-        logical_devices::reserve_save_segments(&state.logical_devices_path, &store)
+        let mut candidate = store.clone();
+        candidate.remove(&id);
+        logical_devices::reconcile_default_enabled(&mut candidate, existing.physical_device_id);
+        match logical_devices::reserve_save_segments_with(&writer, &candidate) {
+            Ok(pending) => {
+                *store = candidate;
+                Ok(pending)
+            }
+            Err(error) => Err(error),
+        }
     };
 
     let pending = match pending {

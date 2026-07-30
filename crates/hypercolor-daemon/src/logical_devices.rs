@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 use hypercolor_types::device::DeviceId;
 
 use crate::persistence::{
-    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, PersistenceError,
+    serialize_json_pretty,
 };
 
 /// Logical-device snapshot reserved at its owning mutation boundary.
 #[derive(Debug)]
 pub struct LogicalDeviceSave {
-    entries: Vec<LogicalDevice>,
-    write: AtomicWriteReservation,
+    write: AdmittedAtomicWrite,
 }
 
 /// One logical device mapped onto a physical device LED range.
@@ -344,27 +344,39 @@ pub fn save_segments(path: &Path, store: &HashMap<String, LogicalDevice>) -> any
 pub fn reserve_save_segments(
     path: &Path,
     store: &HashMap<String, LogicalDevice>,
-) -> Result<LogicalDeviceSave, PersistenceError> {
+) -> anyhow::Result<LogicalDeviceSave> {
+    let writer = AtomicFileWriter::new(path)?;
+    reserve_save_segments_with(&writer, store)
+}
+
+/// Initialize a logical-device writer before its owning mutation begins.
+pub fn writer(path: &Path) -> Result<AtomicFileWriter, PersistenceError> {
+    AtomicFileWriter::new(path)
+}
+
+/// Serialize and admit logical segments while their mutation lock is held.
+pub fn reserve_save_segments_with(
+    writer: &AtomicFileWriter,
+    store: &HashMap<String, LogicalDevice>,
+) -> anyhow::Result<LogicalDeviceSave> {
     let mut entries: Vec<LogicalDevice> = store
         .values()
         .filter(|entry| entry.kind == LogicalDeviceKind::Segment)
         .cloned()
         .collect();
     entries.sort_by(|left, right| left.id.cmp(&right.id));
-    let writer = AtomicFileWriter::new(path)?;
+    let payload =
+        serialize_json_pretty(&entries).context("failed to serialize logical device store")?;
     Ok(LogicalDeviceSave {
-        entries,
-        write: writer.reserve(),
+        write: writer.reserve().admit(payload),
     })
 }
 
 /// Commit a previously reserved logical-device snapshot.
 pub fn save_reserved_segments(pending: LogicalDeviceSave) -> anyhow::Result<AtomicWriteOutcome> {
-    let payload = serde_json::to_string_pretty(&pending.entries)
-        .context("failed to serialize logical device store")?;
     pending
         .write
-        .write(payload.as_bytes())
+        .commit()
         .context("failed to persist logical device store")
 }
 
