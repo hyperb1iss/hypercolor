@@ -8,7 +8,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -23,11 +23,18 @@ use tempfile::NamedTempFile;
 
 static DESTINATIONS: LazyLock<Mutex<HashMap<PathBuf, Weak<Destination>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static RETRY_SUPERVISOR: OnceLock<Result<Arc<RetrySupervisor>, String>> = OnceLock::new();
 const RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// The stage at which an atomic persistence operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
+    /// The shared persistence retry supervisor could not be initialized.
+    #[error("failed to initialize persistence retry supervisor: {detail}")]
+    InitializeRetrySupervisor {
+        /// Worker initialization failure.
+        detail: String,
+    },
     /// The destination has no file-name component.
     #[error("persistence destination has no file name: {path}")]
     InvalidDestination {
@@ -182,26 +189,32 @@ pub struct AtomicWriteReservation {
     generation: u64,
 }
 
+/// A complete payload admitted as the newest durable intent for one destination.
+#[derive(Debug)]
+pub struct AdmittedAtomicWrite {
+    destination: Arc<Destination>,
+    generation: u64,
+    payload: Arc<[u8]>,
+    armed: bool,
+}
+
 #[derive(Debug)]
 struct Destination {
     path: PathBuf,
     parent: PathBuf,
     state: Mutex<DestinationState>,
-    retry: Mutex<RetryState>,
-    retry_changed: Condvar,
+    state_changed: Condvar,
     #[cfg(feature = "persistence-test-hooks")]
     injected_replace_failures: AtomicUsize,
 }
 
 #[derive(Debug, Default)]
 struct DestinationState {
-    latest_generation: u64,
-}
-
-#[derive(Debug, Default)]
-struct RetryState {
+    next_generation: u64,
+    latest_admitted_generation: u64,
     pending: Option<PendingRetry>,
-    worker_running: bool,
+    active_generation: Option<u64>,
+    foreground_generation: Option<u64>,
     last_outcome: Option<AtomicWriteOutcome>,
     last_error: Option<String>,
 }
@@ -212,6 +225,18 @@ struct PendingRetry {
     payload: Arc<[u8]>,
 }
 
+#[derive(Debug)]
+struct RetrySupervisor {
+    queue: Mutex<Vec<ScheduledRetry>>,
+    queue_changed: Condvar,
+}
+
+#[derive(Debug)]
+struct ScheduledRetry {
+    destination: Arc<Destination>,
+    due: Instant,
+}
+
 impl AtomicFileWriter {
     /// Resolve `path` to a process-stable destination coordinator.
     ///
@@ -220,6 +245,7 @@ impl AtomicFileWriter {
     /// Returns a typed filesystem error when the destination directory cannot
     /// be created or resolved.
     pub fn new(path: &Path) -> Result<Self, PersistenceError> {
+        retry_supervisor()?;
         let file_name = path
             .file_name()
             .filter(|name| !name.is_empty())
@@ -251,8 +277,7 @@ impl AtomicFileWriter {
             path: canonical_path,
             parent: canonical_parent,
             state: Mutex::new(DestinationState::default()),
-            retry: Mutex::new(RetryState::default()),
-            retry_changed: Condvar::new(),
+            state_changed: Condvar::new(),
             #[cfg(feature = "persistence-test-hooks")]
             injected_replace_failures: AtomicUsize::new(0),
         });
@@ -268,13 +293,13 @@ impl AtomicFileWriter {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.latest_generation = state
-            .latest_generation
+        state.next_generation = state
+            .next_generation
             .checked_add(1)
             .expect("persistence generation must not exhaust u64");
         AtomicWriteReservation {
             destination: Arc::clone(&self.destination),
-            generation: state.latest_generation,
+            generation: state.next_generation,
         }
     }
 
@@ -290,8 +315,8 @@ impl AtomicFileWriter {
     /// Wake this destination's retry worker when a semantic no-op observes
     /// previously dirty state.
     pub fn kick(&self) {
-        self.destination.start_retry_worker();
-        self.destination.retry_changed.notify_all();
+        self.destination.schedule_retry(Duration::ZERO);
+        self.destination.state_changed.notify_all();
     }
 
     /// Wait for this destination's newest dirty snapshot to converge.
@@ -305,29 +330,30 @@ impl AtomicFileWriter {
     ) -> Result<PersistenceFlushOutcome, PersistenceFlushError> {
         self.kick();
         let deadline = Instant::now() + timeout;
-        let mut retry = self
+        let mut state = self
             .destination
-            .retry
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while retry.pending.is_some() || retry.worker_running {
+        while state.pending.is_some() || state.active_generation.is_some() {
             let now = Instant::now();
             if now >= deadline {
-                return Err(self.destination.flush_error(&retry));
+                return Err(self.destination.flush_error(&state));
             }
             let wait = deadline.saturating_duration_since(now);
             let (next, result) = self
                 .destination
-                .retry_changed
-                .wait_timeout(retry, wait)
+                .state_changed
+                .wait_timeout(state, wait)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            retry = next;
-            if result.timed_out() && (retry.pending.is_some() || retry.worker_running) {
-                return Err(self.destination.flush_error(&retry));
+            state = next;
+            if result.timed_out() && (state.pending.is_some() || state.active_generation.is_some())
+            {
+                return Err(self.destination.flush_error(&state));
             }
         }
 
-        Ok(match retry.last_outcome.take() {
+        Ok(match state.last_outcome.take() {
             Some(AtomicWriteOutcome::Written) => PersistenceFlushOutcome::Written,
             Some(AtomicWriteOutcome::Superseded) => PersistenceFlushOutcome::Superseded,
             None => PersistenceFlushOutcome::Clean,
@@ -344,181 +370,305 @@ impl AtomicFileWriter {
 }
 
 impl Destination {
-    fn queue_retry(self: &Arc<Self>, generation: u64, payload: Arc<[u8]>, error: String) {
-        let should_spawn = {
-            let mut retry = self
-                .retry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let accepts_generation = retry
-                .pending
-                .as_ref()
-                .is_none_or(|pending| generation >= pending.generation);
-            if accepts_generation {
-                retry.pending = Some(PendingRetry {
-                    generation,
-                    payload,
-                });
-                retry.last_outcome = None;
-                retry.last_error = Some(error);
-            }
-            if retry.pending.is_some() && !retry.worker_running {
-                retry.worker_running = true;
-                true
-            } else {
-                false
-            }
-        };
-        self.retry_changed.notify_all();
-        if should_spawn {
-            self.spawn_retry_worker();
-        }
-    }
-
-    fn complete_generation(&self, generation: u64, outcome: AtomicWriteOutcome) {
-        let mut retry = self
-            .retry
+    fn admit(self: &Arc<Self>, generation: u64, payload: Arc<[u8]>) {
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(pending) = retry.pending.as_ref() {
-            if pending.generation > generation {
-                return;
-            }
-            retry.pending = None;
-            retry.last_outcome = Some(outcome);
-        } else {
-            retry.last_outcome = None;
+        if generation > state.latest_admitted_generation {
+            state.latest_admitted_generation = generation;
+            state.pending = Some(PendingRetry {
+                generation,
+                payload,
+            });
+            state.foreground_generation = Some(generation);
+            state.last_outcome = None;
+            state.last_error = None;
         }
-        retry.last_error = None;
-        self.retry_changed.notify_all();
+        self.state_changed.notify_all();
     }
 
-    fn start_retry_worker(self: &Arc<Self>) {
-        let should_spawn = {
-            let mut retry = self
-                .retry
+    fn begin_foreground(&self, generation: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if generation != state.latest_admitted_generation {
+                if state.foreground_generation == Some(generation) {
+                    state.foreground_generation = None;
+                }
+                self.state_changed.notify_all();
+                return false;
+            }
+            if state.active_generation.is_none() {
+                state.active_generation = Some(generation);
+                if state.foreground_generation == Some(generation) {
+                    state.foreground_generation = None;
+                }
+                return true;
+            }
+            state = self
+                .state_changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn finish_attempt(
+        self: &Arc<Self>,
+        generation: u64,
+        result: &Result<AtomicWriteOutcome, PersistenceError>,
+        retry_attempt: bool,
+    ) {
+        let retry_needed = {
+            let mut state = self
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if retry.pending.is_some() && !retry.worker_running {
-                retry.worker_running = true;
-                true
-            } else {
-                false
+            if state.active_generation == Some(generation) {
+                state.active_generation = None;
             }
+            match result {
+                Ok(AtomicWriteOutcome::Written) => {
+                    if state.pending.as_ref().map(|pending| pending.generation) == Some(generation)
+                    {
+                        state.pending = None;
+                    }
+                    state.last_outcome = retry_attempt.then_some(AtomicWriteOutcome::Written);
+                    state.last_error = None;
+                }
+                Ok(AtomicWriteOutcome::Superseded) => {
+                    state.last_outcome = retry_attempt.then_some(AtomicWriteOutcome::Superseded);
+                }
+                Err(error) => {
+                    state.last_error = Some(error.to_string());
+                }
+            }
+            self.state_changed.notify_all();
+            state.pending.is_some()
+                && state.active_generation.is_none()
+                && state.foreground_generation.is_none()
         };
-        if should_spawn {
-            self.spawn_retry_worker();
+        if retry_needed {
+            self.schedule_retry(RETRY_DELAY);
         }
     }
 
-    fn spawn_retry_worker(self: &Arc<Self>) {
-        let destination = Arc::clone(self);
-        if let Err(error) = std::thread::Builder::new()
-            .name("hypercolor-persistence-retry".to_owned())
-            .spawn(move || retry_loop(destination))
-        {
-            let mut retry = self
-                .retry
+    fn retry_once(self: &Arc<Self>) -> Option<Duration> {
+        let pending = {
+            let mut state = self
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            retry.worker_running = false;
-            retry.last_error = Some(format!("failed to start persistence retry worker: {error}"));
-            self.retry_changed.notify_all();
+            if state.foreground_generation.is_some() || state.active_generation.is_some() {
+                return state.pending.as_ref().map(|_| RETRY_DELAY);
+            }
+            let pending = state.pending.clone()?;
+            state.active_generation = Some(pending.generation);
+            pending
+        };
+
+        let result = try_write(self, pending.generation, &pending.payload);
+        self.finish_attempt(pending.generation, &result, true);
+        if result.is_err() {
+            Some(RETRY_DELAY)
+        } else {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.pending.as_ref().map(|_| Duration::ZERO)
         }
     }
 
-    fn flush_error(&self, retry: &RetryState) -> PersistenceFlushError {
+    fn schedule_retry(self: &Arc<Self>, delay: Duration) {
+        let has_pending = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending
+            .is_some();
+        if has_pending {
+            retry_supervisor()
+                .expect("destination exists only after retry supervisor initialization")
+                .schedule(Arc::clone(self), delay);
+        }
+    }
+
+    fn flush_error(&self, state: &DestinationState) -> PersistenceFlushError {
         PersistenceFlushError {
             path: self.path.clone(),
-            last_error: retry
+            last_error: state
                 .last_error
                 .clone()
-                .unwrap_or_else(|| "retry worker did not finish before the deadline".to_owned()),
+                .unwrap_or_else(|| "dirty snapshot did not finish before the deadline".to_owned()),
         }
     }
 }
 
 impl AtomicWriteReservation {
-    /// Prepare this payload and replace the destination unless a newer
-    /// reservation exists.
+    /// Admit a complete payload as this destination's newest durable intent.
+    #[must_use]
+    pub fn admit(self, payload: Vec<u8>) -> AdmittedAtomicWrite {
+        let payload = Arc::<[u8]>::from(payload);
+        self.destination
+            .admit(self.generation, Arc::clone(&payload));
+        AdmittedAtomicWrite {
+            destination: self.destination,
+            generation: self.generation,
+            payload,
+            armed: true,
+        }
+    }
+
+    /// Admit this payload and replace the destination unless newer admitted
+    /// bytes exist.
     ///
     /// # Errors
     ///
     /// Returns the typed stage error from payload preparation or replacement.
     pub fn write(self, payload: &[u8]) -> Result<AtomicWriteOutcome, PersistenceError> {
-        let result = try_write(&self.destination, self.generation, payload);
-        match &result {
-            Ok(outcome) => self
-                .destination
-                .complete_generation(self.generation, *outcome),
-            Err(error) => self.destination.queue_retry(
-                self.generation,
-                Arc::<[u8]>::from(payload),
-                error.to_string(),
-            ),
+        self.admit(payload.to_vec()).commit()
+    }
+}
+
+impl AdmittedAtomicWrite {
+    /// Attempt the admitted replacement. Failures remain retained by the
+    /// shared retry supervisor.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed preparation or replacement error from this attempt.
+    pub fn commit(mut self) -> Result<AtomicWriteOutcome, PersistenceError> {
+        self.armed = false;
+        if !self.destination.begin_foreground(self.generation) {
+            return Ok(AtomicWriteOutcome::Superseded);
         }
+        let result = try_write(&self.destination, self.generation, &self.payload);
+        self.destination
+            .finish_attempt(self.generation, &result, false);
         result
     }
 }
 
-fn retry_loop(destination: Arc<Destination>) {
-    loop {
-        let pending = {
-            let mut retry = destination
-                .retry
+impl Drop for AdmittedAtomicWrite {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        {
+            let mut state = self
+                .destination
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(pending) = retry.pending.clone() else {
-                retry.worker_running = false;
-                destination.retry_changed.notify_all();
-                return;
-            };
-            pending
-        };
+            if state.foreground_generation == Some(self.generation) {
+                state.foreground_generation = None;
+            }
+            self.destination.state_changed.notify_all();
+        }
+        self.destination.schedule_retry(Duration::ZERO);
+    }
+}
 
-        let result = try_write(&destination, pending.generation, &pending.payload);
-        let mut retry = destination
-            .retry
+impl RetrySupervisor {
+    fn start() -> Result<Arc<Self>, String> {
+        let supervisor = Arc::new(Self {
+            queue: Mutex::new(Vec::new()),
+            queue_changed: Condvar::new(),
+        });
+        let worker_count =
+            std::thread::available_parallelism().map_or(2, |count| count.get().max(2));
+        let mut running = 0;
+        let mut last_error = None;
+        for index in 0..worker_count {
+            let worker = Arc::clone(&supervisor);
+            match std::thread::Builder::new()
+                .name(format!("hypercolor-persistence-{index}"))
+                .spawn(move || retry_worker(worker))
+            {
+                Ok(_) => running += 1,
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if running == 0 {
+            Err(last_error.map_or_else(
+                || "no persistence retry workers started".to_owned(),
+                |error| error.to_string(),
+            ))
+        } else {
+            Ok(supervisor)
+        }
+    }
+
+    fn schedule(&self, destination: Arc<Destination>, delay: Duration) {
+        let due = Instant::now() + delay;
+        let mut queue = self
+            .queue
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if retry.pending.as_ref().map(|current| current.generation) != Some(pending.generation) {
-            continue;
+        if let Some(existing) = queue
+            .iter_mut()
+            .find(|job| Arc::ptr_eq(&job.destination, &destination))
+        {
+            existing.due = existing.due.min(due);
+        } else {
+            queue.push(ScheduledRetry { destination, due });
         }
-        match result {
-            Ok(outcome) => {
-                retry.pending = None;
-                retry.last_outcome = Some(outcome);
-                retry.last_error = None;
-                destination.retry_changed.notify_all();
-            }
-            Err(error) => {
-                retry.last_error = Some(error.to_string());
-                destination.retry_changed.notify_all();
-                let (next, _) = destination
-                    .retry_changed
-                    .wait_timeout(retry, RETRY_DELAY)
+        self.queue_changed.notify_one();
+    }
+
+    fn next(&self) -> Arc<Destination> {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if let Some((index, job)) = queue.iter().enumerate().min_by_key(|(_, job)| job.due) {
+                let now = Instant::now();
+                if job.due <= now {
+                    return queue.swap_remove(index).destination;
+                }
+                let wait = job.due.saturating_duration_since(now);
+                let (next, _) = self
+                    .queue_changed
+                    .wait_timeout(queue, wait)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                drop(next);
+                queue = next;
+            } else {
+                queue = self
+                    .queue_changed
+                    .wait(queue)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
+        }
+    }
+}
+
+fn retry_supervisor() -> Result<&'static Arc<RetrySupervisor>, PersistenceError> {
+    RETRY_SUPERVISOR
+        .get_or_init(RetrySupervisor::start)
+        .as_ref()
+        .map_err(|detail| PersistenceError::InitializeRetrySupervisor {
+            detail: detail.clone(),
+        })
+}
+
+fn retry_worker(supervisor: Arc<RetrySupervisor>) {
+    loop {
+        let destination = supervisor.next();
+        if let Some(delay) = destination.retry_once() {
+            supervisor.schedule(destination, delay);
         }
     }
 }
 
 fn try_write(
-    destination: &Destination,
+    destination: &Arc<Destination>,
     generation: u64,
     payload: &[u8],
 ) -> Result<AtomicWriteOutcome, PersistenceError> {
-    {
-        let state = destination
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if generation != state.latest_generation {
-            return Ok(AtomicWriteOutcome::Superseded);
-        }
-    }
-
     let mut temporary = NamedTempFile::new_in(&destination.parent).map_err(|source| {
         PersistenceError::CreateTemporary {
             path: destination.path.clone(),
@@ -543,7 +693,7 @@ fn try_write(
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if generation != state.latest_generation {
+    if generation != state.latest_admitted_generation {
         return Ok(AtomicWriteOutcome::Superseded);
     }
 

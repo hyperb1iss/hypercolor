@@ -287,6 +287,87 @@ fn failed_writes_retry_only_the_latest_snapshot() {
 
 #[cfg(feature = "persistence-test-hooks")]
 #[test]
+fn dropped_reservation_cannot_supersede_an_older_dirty_snapshot() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.set_injected_replace_failures(usize::MAX);
+
+    assert!(matches!(
+        writer.write(b"generation-one"),
+        Err(PersistenceError::Replace { .. })
+    ));
+    let abandoned_generation_two = writer.reserve();
+    writer
+        .flush(Duration::from_millis(25))
+        .expect_err("generation one should remain dirty while replacement fails");
+    drop(abandoned_generation_two);
+
+    writer.set_injected_replace_failures(0);
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("generation one should converge after restoring replacement");
+    assert_eq!(
+        fs::read(&path).expect("read restored snapshot"),
+        b"generation-one"
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn cancelled_async_snapshot_assembly_preserves_the_older_dirty_payload() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+    writer.set_injected_replace_failures(usize::MAX);
+    assert!(matches!(
+        writer.write(b"generation-one"),
+        Err(PersistenceError::Replace { .. })
+    ));
+
+    let reservation = writer.reserve();
+    let assembly = tokio::spawn(async move {
+        std::future::pending::<()>().await;
+        reservation.write(b"generation-two")
+    });
+    tokio::task::yield_now().await;
+    assembly.abort();
+    assert!(
+        assembly
+            .await
+            .expect_err("assembly should be cancelled")
+            .is_cancelled()
+    );
+
+    writer.set_injected_replace_failures(0);
+    writer
+        .flush(Duration::from_secs(5))
+        .expect("older dirty payload should survive assembly cancellation");
+    assert_eq!(
+        fs::read(&path).expect("read restored snapshot"),
+        b"generation-one"
+    );
+}
+
+#[test]
+fn dropped_admitted_payload_is_retained_by_the_shared_supervisor() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+
+    drop(writer.reserve().admit(b"retained".to_vec()));
+
+    assert_eq!(
+        writer
+            .flush(Duration::from_secs(5))
+            .expect("admitted payload should converge"),
+        hypercolor_daemon::persistence::PersistenceFlushOutcome::Written
+    );
+    assert_eq!(fs::read(&path).expect("read retained payload"), b"retained");
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[test]
 fn superseded_completion_cannot_clear_a_newer_dirty_snapshot() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("state.json");
