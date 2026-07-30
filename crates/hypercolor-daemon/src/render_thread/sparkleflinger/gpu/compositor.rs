@@ -64,10 +64,18 @@ struct SamplingReadbackBuffers {
 }
 
 impl SamplingReadbackBuffers {
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn try_new(
+        device: &wgpu::Device,
+        max_buffer_size: u64,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        super::ensure_readback_buffer_capacity(max_buffer_size, width, height, true)?;
         let padded_bytes_per_row = padded_bytes_per_row(width);
-        let size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(height));
-        Self {
+        let size = u64::from(padded_bytes_per_row)
+            .checked_mul(u64::from(height))
+            .context("GPU sampling latch readback byte size overflowed")?;
+        Ok(Self {
             width,
             height,
             padded_bytes_per_row,
@@ -84,7 +92,7 @@ impl SamplingReadbackBuffers {
                 SurfaceDescriptor::rgba8888(width, height),
                 SAMPLING_READBACK_SURFACE_SLOTS,
             ),
-        }
+        })
     }
 }
 
@@ -168,6 +176,16 @@ impl GpuSparkleFlinger {
                 request.height,
                 false,
             )?;
+            if super::preview::preview_requires_scale(request, plan.width, plan.height) {
+                super::ensure_storage_buffer_capacity(
+                    self.max_storage_buffer_binding_size,
+                    request.width,
+                    request.height,
+                )?;
+            }
+        }
+        if requires_cpu_sampling_canvas && readback_key.is_none() {
+            self.ensure_sampling_readback_buffers(plan.width, plan.height)?;
         }
 
         if matches!(
@@ -879,12 +897,12 @@ impl GpuSparkleFlinger {
         {
             return Ok(());
         }
-        super::ensure_readback_buffer_capacity(self.max_buffer_size, width, height, true)?;
+        let replacement =
+            SamplingReadbackBuffers::try_new(&self.device, self.max_buffer_size, width, height)?;
         // The pending readback's mapped buffer belongs to the old set; drop
         // it before replacing the buffers.
         self.discard_pending_sampling_readback();
-        self.sampling_latch.buffers =
-            Some(SamplingReadbackBuffers::new(&self.device, width, height));
+        self.sampling_latch.buffers = Some(replacement);
         Ok(())
     }
 
@@ -1102,6 +1120,7 @@ fn upload_screen_layers(
         } = surfaces;
         let content_key = ScreenUploadContentKey::new(
             publication.plan_generation(),
+            publication.descriptor_identity(),
             publication.branch_sequence(),
             surface.extent().width(),
             surface.extent().height(),
@@ -1136,6 +1155,7 @@ fn screen_upload_content_keys(
         let extent = publication.surface().extent();
         Some(ScreenUploadContentKey::new(
             publication.plan_generation(),
+            publication.descriptor_identity(),
             publication.branch_sequence(),
             extent.width(),
             extent.height(),

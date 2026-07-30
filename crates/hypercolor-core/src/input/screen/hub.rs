@@ -23,6 +23,16 @@ use super::{
 
 const SURFACE_PIXEL_BYTES: u64 = 4;
 const ZONE_COLOR_BYTES: u64 = 3;
+static NEXT_SCREEN_BRANCH_DESCRIPTOR_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_screen_branch_descriptor_identity() -> Result<NonZeroU64, ScreenPlanError> {
+    let identity = NEXT_SCREEN_BRANCH_DESCRIPTOR_ID
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| ScreenPlanError::GenerationExhausted)?;
+    Ok(NonZeroU64::new(identity).expect("screen branch descriptor identities start at one"))
+}
 
 /// Fixed publication-version capacity admitted for every committed branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -754,6 +764,7 @@ impl Drop for ScreenRetirementCharge {
 /// One immutable publication accepted into a preallocated branch slot.
 #[derive(Debug)]
 pub struct ScreenBranchPublication {
+    descriptor_identity: NonZeroU64,
     committed_plan_generation: ScreenPlanGeneration,
     worker_plan_generation: ScreenPlanGeneration,
     source_epoch: CaptureEpoch,
@@ -770,11 +781,13 @@ pub struct ScreenBranchPublication {
 impl ScreenBranchPublication {
     fn try_placeholder(
         descriptor: &ResolvedScreenPublicationDescriptor,
+        descriptor_identity: NonZeroU64,
         worker_plan_generation: ScreenPlanGeneration,
         retirement_charge: Arc<ScreenRetirementCharge>,
     ) -> Result<Self, ScreenPlanError> {
         let now = Instant::now();
         Ok(Self {
+            descriptor_identity,
             committed_plan_generation: worker_plan_generation,
             worker_plan_generation,
             source_epoch: descriptor.source_epoch().clone(),
@@ -793,6 +806,12 @@ impl ScreenBranchPublication {
     #[must_use]
     pub const fn plan_generation(&self) -> ScreenPlanGeneration {
         self.committed_plan_generation
+    }
+
+    /// Stable identity of the descriptor branch that owns this publication.
+    #[must_use]
+    pub const fn descriptor_identity(&self) -> NonZeroU64 {
+        self.descriptor_identity
     }
 
     /// Worker binding generation that produced this publication.
@@ -909,12 +928,14 @@ impl ScreenBranchEntry {
             allocation_bytes,
         ));
         let mut slots = Vec::new();
+        let descriptor_identity = next_screen_branch_descriptor_identity()?;
         slots
             .try_reserve_exact(slot_count)
             .map_err(|_| ScreenPlanError::AllocationFailed)?;
         for _ in 0..slot_count {
             slots.push(Some(Arc::new(ScreenBranchPublication::try_placeholder(
                 &descriptor,
+                descriptor_identity,
                 worker_plan_generation,
                 Arc::clone(&retirement_charge),
             )?)));

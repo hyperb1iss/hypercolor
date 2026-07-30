@@ -27,10 +27,9 @@ pub(super) struct GpuPreviewSurfaceSet {
     pub(super) capacity_width: u32,
     pub(super) capacity_height: u32,
     pub(super) padded_bytes_per_row: u32,
-    pub(super) output_buffer: wgpu::Buffer,
+    scale_output: Option<GpuPreviewScaleOutput>,
     readbacks: [wgpu::Buffer; PREVIEW_READBACK_SLOT_COUNT],
     next_readback_slot: usize,
-    pub(super) bind_groups: GpuPreviewScaleBindGroups,
     pub(super) readback_surfaces: RenderSurfacePool,
     cached_readback_surfaces: Vec<CachedPreviewReadbackSurfaces>,
     pub(super) cached_scale_params: Option<[u8; PREVIEW_SCALE_PARAM_BYTES]>,
@@ -48,6 +47,11 @@ pub(super) struct GpuPreviewSurfaceSet {
 pub(super) struct GpuPreviewScaleBindGroups {
     pub(super) front_to_preview: wgpu::BindGroup,
     pub(super) back_to_preview: wgpu::BindGroup,
+}
+
+struct GpuPreviewScaleOutput {
+    buffer: wgpu::Buffer,
+    bind_groups: GpuPreviewScaleBindGroups,
 }
 
 #[derive(Debug, Clone)]
@@ -329,7 +333,7 @@ impl GpuSparkleFlinger {
         }
     }
 
-    fn ensure_preview_surface_size(&mut self, width: u32, height: u32) -> Result<()> {
+    fn ensure_preview_surface_size(&mut self, width: u32, height: u32) {
         if self
             .preview_surfaces
             .as_ref()
@@ -337,7 +341,7 @@ impl GpuSparkleFlinger {
                 preview_surfaces.width == width && preview_surfaces.height == height
             })
         {
-            return Ok(());
+            return;
         }
         if self.preview_surfaces.is_some() {
             self.discard_pending_preview_map();
@@ -346,30 +350,15 @@ impl GpuSparkleFlinger {
             && preview_surfaces.fits_request(width, height)
         {
             preview_surfaces.reconfigure(width, height);
-            return Ok(());
+            return;
         }
 
-        let (front_view, back_view) = {
-            let surfaces = self.surfaces.as_ref().context(
-                "GPU preview surfaces requested before compositor surfaces were allocated",
-            )?;
-            (surfaces.front.view.clone(), surfaces.back.view.clone())
-        };
-
-        self.preview_surfaces = Some(GpuPreviewSurfaceSet::new(
-            &self.device,
-            &self.pipeline,
-            &front_view,
-            &back_view,
-            width,
-            height,
-        ));
+        self.preview_surfaces = Some(GpuPreviewSurfaceSet::new(&self.device, width, height));
         #[cfg(test)]
         {
             self.preview_surface_allocation_count =
                 self.preview_surface_allocation_count.saturating_add(1);
         }
-        Ok(())
     }
 
     pub(super) fn stage_preview_surface_readback(
@@ -420,8 +409,15 @@ impl GpuSparkleFlinger {
         } else {
             None
         };
+        if direct_source_texture.is_none() {
+            super::ensure_storage_buffer_capacity(
+                self.max_storage_buffer_binding_size,
+                request.width,
+                request.height,
+            )?;
+        }
 
-        self.ensure_preview_surface_size(request.width, request.height)?;
+        self.ensure_preview_surface_size(request.width, request.height);
         let mapped_readback_slot = self
             .pending_preview_map
             .as_ref()
@@ -434,6 +430,15 @@ impl GpuSparkleFlinger {
             drop(encoder);
             self.discard_pending_uploads();
         }
+        let scale_views = direct_source_texture
+            .is_none()
+            .then(|| {
+                let surfaces = self.surfaces.as_ref().context(
+                    "GPU preview scale requested before compositor surfaces were allocated",
+                )?;
+                Ok::<_, anyhow::Error>((surfaces.front.view.clone(), surfaces.back.view.clone()))
+            })
+            .transpose()?;
         let preview_surfaces = self
             .preview_surfaces
             .as_mut()
@@ -464,6 +469,20 @@ impl GpuSparkleFlinger {
                 texture_extent(request.width, request.height),
             );
         } else {
+            let (front_view, back_view) = scale_views
+                .as_ref()
+                .expect("scaled preview paths retain compositor views");
+            preview_surfaces.ensure_scale_output(
+                &self.device,
+                &self.pipeline,
+                &front_view,
+                &back_view,
+                self.max_storage_buffer_binding_size,
+            )?;
+            let scale_output = preview_surfaces
+                .scale_output
+                .as_ref()
+                .expect("scaled preview output should exist after admission");
             let params = encode_preview_scale_params(
                 source_width,
                 source_height,
@@ -499,8 +518,8 @@ impl GpuSparkleFlinger {
                 write.offset
             };
             let bind_group = match current_output {
-                GpuCompositorOutputSurface::Front => &preview_surfaces.bind_groups.front_to_preview,
-                GpuCompositorOutputSurface::Back => &preview_surfaces.bind_groups.back_to_preview,
+                GpuCompositorOutputSurface::Front => &scale_output.bind_groups.front_to_preview,
+                GpuCompositorOutputSurface::Back => &scale_output.bind_groups.back_to_preview,
             };
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("SparkleFlinger GPU preview scale pass"),
@@ -515,7 +534,7 @@ impl GpuSparkleFlinger {
             );
             drop(pass);
             encoder.copy_buffer_to_buffer(
-                &preview_surfaces.output_buffer,
+                &scale_output.buffer,
                 0,
                 preview_surfaces.readback(readback_slot),
                 0,
@@ -592,23 +611,8 @@ impl GpuPreviewSurfaceSet {
         counts
     }
 
-    pub(super) fn new(
-        device: &wgpu::Device,
-        pipeline: &GpuCompositorPipeline,
-        front_view: &wgpu::TextureView,
-        back_view: &wgpu::TextureView,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub(super) fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let padded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
-        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU preview output"),
-            size: u64::from(width)
-                .saturating_mul(u64::from(height))
-                .saturating_mul(BYTES_PER_PIXEL as u64),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
         let readbacks = std::array::from_fn(|slot| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(match slot {
@@ -629,16 +633,9 @@ impl GpuPreviewSurfaceSet {
             capacity_width: width,
             capacity_height: height,
             padded_bytes_per_row,
+            scale_output: None,
             readbacks,
             next_readback_slot: 0,
-            bind_groups: GpuPreviewScaleBindGroups::new(
-                device,
-                pipeline,
-                front_view,
-                back_view,
-                &output_buffer,
-            ),
-            output_buffer,
             readback_surfaces: RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height)),
             cached_readback_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_READBACK_POOLS),
             cached_scale_params: None,
@@ -646,7 +643,7 @@ impl GpuPreviewSurfaceSet {
             #[cfg(test)]
             scale_param_write_count: 0,
             #[cfg(test)]
-            preview_bind_group_count: 2,
+            preview_bind_group_count: 0,
             #[cfg(test)]
             last_readback_bytes: 0,
             #[cfg(test)]
@@ -700,6 +697,46 @@ impl GpuPreviewSurfaceSet {
 
     pub(super) fn readback(&self, slot: usize) -> &wgpu::Buffer {
         &self.readbacks[slot]
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_scale_output(&self) -> bool {
+        self.scale_output.is_some()
+    }
+
+    fn ensure_scale_output(
+        &mut self,
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        front_view: &wgpu::TextureView,
+        back_view: &wgpu::TextureView,
+        max_storage_buffer_binding_size: u64,
+    ) -> Result<()> {
+        if self.scale_output.is_some() {
+            return Ok(());
+        }
+        let size = super::ensure_storage_buffer_capacity(
+            max_storage_buffer_binding_size,
+            self.capacity_width,
+            self.capacity_height,
+        )?;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU preview output"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let bind_groups =
+            GpuPreviewScaleBindGroups::new(device, pipeline, front_view, back_view, &buffer);
+        self.scale_output = Some(GpuPreviewScaleOutput {
+            buffer,
+            bind_groups,
+        });
+        #[cfg(test)]
+        {
+            self.preview_bind_group_count = self.preview_bind_group_count.saturating_add(2);
+        }
+        Ok(())
     }
 
     fn take_cached_readback_surfaces(
@@ -776,6 +813,19 @@ pub(super) fn preview_request_matches_plan(
     height: u32,
 ) -> bool {
     request.is_none_or(|request| request.width == width && request.height == height)
+}
+
+pub(super) fn preview_requires_scale(
+    request: PreviewSurfaceRequest,
+    source_width: u32,
+    source_height: u32,
+) -> bool {
+    request.width != source_width
+        || request.height != source_height
+        || !request
+            .width
+            .saturating_mul(BYTES_PER_PIXEL as u32)
+            .is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
 }
 
 fn create_preview_scale_bind_group(

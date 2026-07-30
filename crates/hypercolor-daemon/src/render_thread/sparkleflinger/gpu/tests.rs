@@ -32,7 +32,8 @@ use super::{
     GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
     GpuSparkleFlinger, GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES,
     MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap,
-    PendingPreviewReadback, ensure_readback_buffer_capacity, gpu_canvas_admission,
+    PendingPreviewReadback, ensure_readback_buffer_capacity, ensure_storage_buffer_capacity,
+    gpu_canvas_admission,
 };
 #[cfg(target_os = "windows")]
 use super::{
@@ -69,6 +70,12 @@ fn gpu_canvas_admission_uses_only_texture_capability() {
         ensure_readback_buffer_capacity(1536, 128, 3, true)
             .expect("readback should fit its exact device limit"),
         1536
+    );
+    assert!(ensure_storage_buffer_capacity(1024, 32, 16).is_err());
+    assert_eq!(
+        ensure_storage_buffer_capacity(2048, 32, 16)
+            .expect("storage output should fit its exact binding limit"),
+        2048
     );
 }
 
@@ -163,11 +170,12 @@ fn texture_composition_survives_scoped_full_frame_readback_rejection() {
 }
 
 const fn screen_upload_key(
+    descriptor_identity: u64,
     branch_sequence: u64,
     width: u32,
     height: u32,
 ) -> ScreenUploadContentKey {
-    ScreenUploadContentKey::new(1, branch_sequence, width, height)
+    ScreenUploadContentKey::new(1, descriptor_identity, branch_sequence, width, height)
 }
 
 #[test]
@@ -189,7 +197,7 @@ fn screen_upload_pool_reuses_only_completion_retired_textures() {
             3,
             2,
             &pixels,
-            screen_upload_key(1, 3, 2),
+            screen_upload_key(1, 1, 3, 2),
             |_| {},
         )
         .expect("unaligned-width screen upload should succeed");
@@ -216,7 +224,7 @@ fn screen_upload_pool_reuses_only_completion_retired_textures() {
             3,
             2,
             &pixels,
-            screen_upload_key(2, 3, 2),
+            screen_upload_key(1, 2, 3, 2),
             |_| {},
         )
         .expect("completed screen upload texture should be reusable");
@@ -239,7 +247,7 @@ fn unchanged_screen_publication_does_not_reupload_when_other_layer_recomposes() 
     let mut pool =
         ScreenPublicationUploadPool::new(ScreenUploadResidencyPolicy::compositor_pipeline());
     let pixels = vec![41_u8; 3 * 2 * 4];
-    let content_key = screen_upload_key(7, 3, 2);
+    let content_key = screen_upload_key(1, 7, 3, 2);
 
     let (first, wrote_first) = pool
         .upload_rgba(&device, &queue, 3, 2, &pixels, content_key, |_| {})
@@ -259,6 +267,47 @@ fn unchanged_screen_publication_does_not_reupload_when_other_layer_recomposes() 
     let recomposed_submission = queue.submit(std::iter::empty());
     pool.mark_submitted(recomposed_submission);
     assert_eq!(pool.state_counts(), (0, 0, 1));
+}
+
+#[test]
+fn screen_upload_pool_fences_distinct_branches_with_matching_sequences() {
+    let compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let device = compositor.device.clone();
+    let queue = compositor.queue.clone();
+    let mut pool =
+        ScreenPublicationUploadPool::new(ScreenUploadResidencyPolicy::compositor_pipeline());
+    let first_pixels = vec![19_u8; 3 * 2 * 4];
+    let second_pixels = vec![91_u8; 3 * 2 * 4];
+
+    let (first, first_wrote) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            3,
+            2,
+            &first_pixels,
+            screen_upload_key(17, 1, 3, 2),
+            |_| {},
+        )
+        .expect("first branch should enter the upload pipeline");
+    let (second, second_wrote) = pool
+        .upload_rgba(
+            &device,
+            &queue,
+            3,
+            2,
+            &second_pixels,
+            screen_upload_key(23, 1, 3, 2),
+            |_| {},
+        )
+        .expect("second branch should not reuse the first branch texture");
+
+    assert!(first_wrote && second_wrote);
+    assert_ne!(first.storage_id, second.storage_id);
+    pool.discard_encoding();
 }
 
 #[test]
@@ -286,7 +335,7 @@ fn screen_upload_pool_evicts_completed_descriptors_within_texture_limit() {
             3,
             2,
             &first_pixels,
-            screen_upload_key(1, 3, 2),
+            screen_upload_key(1, 1, 3, 2),
             |_| {},
         )
         .expect("first descriptor should fit the pool fence");
@@ -298,7 +347,7 @@ fn screen_upload_pool_evicts_completed_descriptors_within_texture_limit() {
             65,
             1,
             &second_pixels,
-            screen_upload_key(2, 65, 1),
+            screen_upload_key(1, 2, 65, 1),
             |_| {},
         )
         .expect_err("encoding textures must not be evicted or reused");
@@ -313,7 +362,7 @@ fn screen_upload_pool_evicts_completed_descriptors_within_texture_limit() {
             65,
             1,
             &second_pixels,
-            screen_upload_key(2, 65, 1),
+            screen_upload_key(1, 2, 65, 1),
             |storage_id| evicted.push(storage_id),
         )
         .expect("completed descriptor should be evicted for a new shape");
@@ -336,9 +385,9 @@ fn screen_upload_pool_allows_pipeline_depth_then_reports_typed_saturation() {
     let mut pool =
         ScreenPublicationUploadPool::new(ScreenUploadResidencyPolicy::compositor_pipeline());
     let pixels = vec![47_u8; 3 * 2 * 4];
-    let first_key = screen_upload_key(1, 3, 2);
-    let second_key = screen_upload_key(2, 3, 2);
-    let third_key = screen_upload_key(3, 3, 2);
+    let first_key = screen_upload_key(1, 1, 3, 2);
+    let second_key = screen_upload_key(1, 2, 3, 2);
+    let third_key = screen_upload_key(1, 3, 3, 2);
 
     pool.preflight_uploads(&device, [first_key, second_key])
         .expect("two changing frames should fit the projected pipeline");
@@ -389,7 +438,7 @@ fn screen_upload_pool_reuses_only_matching_free_descriptors() {
             3,
             2,
             &narrow_pixels,
-            screen_upload_key(1, 3, 2),
+            screen_upload_key(1, 1, 3, 2),
             |_| {},
         )
         .expect("narrow descriptor should upload");
@@ -400,7 +449,7 @@ fn screen_upload_pool_reuses_only_matching_free_descriptors() {
             65,
             1,
             &wide_pixels,
-            screen_upload_key(2, 65, 1),
+            screen_upload_key(1, 2, 65, 1),
             |_| {},
         )
         .expect("wide descriptor should upload independently");
@@ -413,7 +462,7 @@ fn screen_upload_pool_reuses_only_matching_free_descriptors() {
             3,
             2,
             &narrow_pixels,
-            screen_upload_key(3, 3, 2),
+            screen_upload_key(1, 3, 3, 2),
             |_| {},
         )
         .expect("matching free descriptor should be reused");
@@ -1458,6 +1507,13 @@ fn gpu_full_size_preview_uses_texture_copy_for_aligned_rows() {
             .expect("preview surfaces should be allocated")
             .scale_param_write_count,
         0
+    );
+    assert!(
+        compositor
+            .preview_surfaces
+            .as_ref()
+            .is_some_and(|surfaces| !surfaces.has_scale_output()),
+        "direct texture copies should not allocate preview storage output"
     );
 
     let preview_surface = resolve_preview_surface_blocking(&mut compositor);

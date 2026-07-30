@@ -122,6 +122,11 @@ impl ScreenPublicationFrame {
     pub(crate) fn branch_sequence(&self) -> u64 {
         self.publication.branch_sequence().get()
     }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn descriptor_identity(&self) -> u64 {
+        self.publication.descriptor_identity().get()
+    }
 }
 
 impl ProducerFrame {

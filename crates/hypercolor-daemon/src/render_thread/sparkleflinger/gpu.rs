@@ -184,6 +184,22 @@ fn ensure_readback_buffer_capacity(
     Ok(required_bytes)
 }
 
+fn ensure_storage_buffer_capacity(
+    max_storage_buffer_binding_size: u64,
+    width: u32,
+    height: u32,
+) -> Result<u64> {
+    let required_bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL as u64))
+        .context("GPU storage buffer byte size overflowed")?;
+    anyhow::ensure!(
+        required_bytes <= max_storage_buffer_binding_size,
+        "GPU storage buffer for {width}x{height} requires {required_bytes} bytes but the device supports {max_storage_buffer_binding_size} bytes per storage binding"
+    );
+    Ok(required_bytes)
+}
+
 #[cfg(target_os = "windows")]
 struct WindowsScreenBridge {
     interop: D3d11On12ScreenBridge,
@@ -479,6 +495,7 @@ pub(crate) struct GpuSparkleFlinger {
     queue: wgpu::Queue,
     probe: GpuCompositorProbe,
     max_buffer_size: u64,
+    max_storage_buffer_binding_size: u64,
     canvas_gpu_admitted: bool,
     pipeline: GpuCompositorPipeline,
     spatial_sampler: GpuSpatialSampler,
@@ -818,6 +835,7 @@ impl GpuSparkleFlinger {
         let device = render_device.device().clone();
         let queue = render_device.queue().clone();
         let max_buffer_size = device.limits().max_buffer_size;
+        let max_storage_buffer_binding_size = device.limits().max_storage_buffer_binding_size;
 
         let pipeline = GpuCompositorPipeline::new(&device);
         let spatial_sampler = GpuSpatialSampler::new(&device);
@@ -831,6 +849,7 @@ impl GpuSparkleFlinger {
             queue,
             probe,
             max_buffer_size,
+            max_storage_buffer_binding_size,
             canvas_gpu_admitted: true,
             pipeline,
             spatial_sampler,

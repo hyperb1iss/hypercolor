@@ -22,6 +22,7 @@ enum CachedCpuSourceStorage {
     PublishedSurface(PublishedSurfaceStorageIdentity),
     ScreenPublication {
         plan_generation: u64,
+        descriptor_identity: u64,
         branch_sequence: u64,
     },
 }
@@ -548,6 +549,7 @@ pub(super) fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSource
         ProducerFrame::ScreenPublication(publication) => Some(CachedSourceUpload {
             storage: CachedCpuSourceStorage::ScreenPublication {
                 plan_generation: publication.plan_generation(),
+                descriptor_identity: publication.descriptor_identity(),
                 branch_sequence: publication.branch_sequence(),
             },
             generation: 0,

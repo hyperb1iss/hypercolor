@@ -18,6 +18,7 @@ enum UploadTextureState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ScreenUploadContentKey {
     plan_generation: u64,
+    descriptor_identity: u64,
     branch_sequence: u64,
     width: u32,
     height: u32,
@@ -26,12 +27,14 @@ pub(super) struct ScreenUploadContentKey {
 impl ScreenUploadContentKey {
     pub(super) const fn new(
         plan_generation: u64,
+        descriptor_identity: u64,
         branch_sequence: u64,
         width: u32,
         height: u32,
     ) -> Self {
         Self {
             plan_generation,
+            descriptor_identity,
             branch_sequence,
             width,
             height,
