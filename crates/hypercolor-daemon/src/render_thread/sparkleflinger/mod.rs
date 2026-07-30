@@ -560,6 +560,7 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    #[cfg_attr(not(feature = "wgpu"), allow(unused_variables))]
     pub(crate) fn prepare_zone_sampling_plan(
         &mut self,
         width: u32,
