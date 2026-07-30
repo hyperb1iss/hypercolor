@@ -17,6 +17,8 @@ use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PresetId,
 };
 
+use crate::persistence::write_atomic;
+
 /// Storage-layer errors for library entities.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LibraryStoreError {
@@ -167,23 +169,11 @@ impl InMemoryLibraryStore {
 enum JsonPersistError {
     #[error("failed to serialize snapshot: {0}")]
     Serialize(#[source] serde_json::Error),
-    #[error("failed to create snapshot directory {path}: {source}")]
-    CreateDir {
+    #[error("failed to persist snapshot file {path}: {source}")]
+    Persist {
         path: PathBuf,
         #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to write temporary snapshot {path}: {source}")]
-    WriteTemp {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to replace snapshot file {path}: {source}")]
-    Replace {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
+        source: anyhow::Error,
     },
 }
 
@@ -238,25 +228,11 @@ impl JsonLibraryStore {
     }
 
     fn persist_snapshot(&self, snapshot: &LibrarySnapshot) -> Result<(), JsonPersistError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| JsonPersistError::CreateDir {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-
         let bytes = serde_json::to_vec_pretty(snapshot).map_err(JsonPersistError::Serialize)?;
-        let tmp_path = self.path.with_extension("json.tmp");
-
-        std::fs::write(&tmp_path, bytes).map_err(|source| JsonPersistError::WriteTemp {
-            path: tmp_path.clone(),
-            source,
-        })?;
-        std::fs::rename(&tmp_path, &self.path).map_err(|source| JsonPersistError::Replace {
+        write_atomic(&self.path, &bytes).map_err(|source| JsonPersistError::Persist {
             path: self.path.clone(),
             source,
-        })?;
-        Ok(())
+        })
     }
 }
 

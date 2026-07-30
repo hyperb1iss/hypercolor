@@ -4,8 +4,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,8 +14,7 @@ use hypercolor_driver_api::DriverHost;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::scene::{SceneId, Zone};
 
-/// Process-local counter to guarantee per-save temp file uniqueness.
-static SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+use crate::persistence::write_atomic;
 
 /// Runtime session snapshot persisted to disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -57,23 +54,11 @@ pub enum RuntimeSessionError {
     },
     #[error("failed to serialize runtime snapshot: {0}")]
     Serialize(#[source] serde_json::Error),
-    #[error("failed to create runtime snapshot directory {path}: {source}")]
-    CreateDir {
+    #[error("failed to persist runtime snapshot {path}: {source}")]
+    Persist {
         path: PathBuf,
         #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to write temporary runtime snapshot {path}: {source}")]
-    WriteTemp {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to replace runtime snapshot {path}: {source}")]
-    Replace {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
+        source: anyhow::Error,
     },
 }
 
@@ -156,40 +141,11 @@ pub async fn collect_driver_runtime_cache(
 
 /// Persist a runtime snapshot to `path` using atomic replace semantics.
 pub fn save(path: &Path, snapshot: &RuntimeSessionSnapshot) -> Result<(), RuntimeSessionError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| RuntimeSessionError::CreateDir {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-
     let bytes = serde_json::to_vec_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
-    let tmp_path = unique_temp_path(path);
-
-    std::fs::write(&tmp_path, bytes).map_err(|source| RuntimeSessionError::WriteTemp {
-        path: tmp_path.clone(),
-        source,
-    })?;
-    std::fs::rename(&tmp_path, path).map_err(|source| RuntimeSessionError::Replace {
+    write_atomic(path, &bytes).map_err(|source| RuntimeSessionError::Persist {
         path: path.to_path_buf(),
         source,
-    })?;
-    Ok(())
-}
-
-fn unique_temp_path(path: &Path) -> PathBuf {
-    let counter = SNAPSHOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-    let pid = std::process::id();
-
-    let file_name = path.file_name().map_or_else(
-        || "runtime-state.json".to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-
-    path.with_file_name(format!("{file_name}.tmp-{pid}-{nanos}-{counter}"))
+    })
 }
 
 #[cfg(test)]
