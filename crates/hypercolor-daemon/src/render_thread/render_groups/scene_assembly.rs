@@ -26,14 +26,10 @@ impl ZoneRuntime {
         sparkleflinger: &mut SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<ZoneResult> {
-        self.reconcile(
-            context.groups,
-            context.active_scene_id,
-            context.dependency_key,
-            context.registry,
-            context.display_group_descriptors,
-            context.authoritative_spatial_engine,
-        )?;
+        anyhow::ensure!(
+            !self.needs_reconcile(context.dependency_key),
+            "render-group resources were not admitted before scene rendering"
+        );
         #[cfg(feature = "wgpu")]
         sparkleflinger.begin_media_upload_frame();
 
@@ -45,6 +41,17 @@ impl ZoneRuntime {
 
         let mut rendered_groups = RenderedGroupPassOutput::default();
         let project_scene_with_sparkleflinger = sparkleflinger.supports_gpu_output_frames()
+            && context
+                .groups
+                .iter()
+                .filter(|group| group_contributes_to_scene_canvas(group))
+                .all(|group| {
+                    sparkleflinger.has_projected_group_resource(
+                        group.id,
+                        group.layout.canvas_width,
+                        group.layout.canvas_height,
+                    )
+                })
             && groups_support_projection_composition(context.groups, &self.scene_projection_cache);
         let projected_scene = self.render_scene_contributor_frames(
             context,
@@ -64,6 +71,7 @@ impl ZoneRuntime {
             && !projected_scene.cpu_replay_complete
         {
             if let Some(retained) = self.reuse_last_good_scene() {
+                let _ = sparkleflinger.restore_scene_frame(&retained.scene_frame)?;
                 self.clear_effect_error();
                 return Ok(retained);
             }
@@ -157,6 +165,7 @@ impl ZoneRuntime {
         else {
             return Ok(None);
         };
+        let scene_frame = sparkleflinger.stabilize_scene_frame(scene_frame)?;
         record_producer_frame(&scene_frame);
         rendered_groups.record_render_elapsed(render_start);
 

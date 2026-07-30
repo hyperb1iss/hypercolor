@@ -16,6 +16,7 @@ use super::group_state::{
 };
 use super::projection::build_group_projection;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
+use crate::render_thread::sparkleflinger::{ProjectedGroupTextureRequirement, SparkleFlinger};
 
 /// Initial slot count for per-group direct-canvas pools (HTML-face zones).
 /// Same failure mode as the scene surface pool, but at smaller canvas sizes; still
@@ -43,10 +44,55 @@ pub(crate) struct PreparedZoneReconcile {
     desired_media_ids: HashSet<hypercolor_types::asset::AssetId>,
     scene_group_ids: HashSet<ZoneId>,
     direct_group_ids: HashSet<ZoneId>,
+    projected_group_texture_requirements: Vec<ProjectedGroupTextureRequirement>,
     dependency_key: SceneDependencyKey,
 }
 
+impl PreparedZoneReconcile {
+    pub(crate) fn projected_group_texture_requirements(
+        &self,
+    ) -> &[ProjectedGroupTextureRequirement] {
+        &self.projected_group_texture_requirements
+    }
+}
+
 impl ZoneRuntime {
+    pub(crate) fn needs_reconcile(&self, dependency_key: SceneDependencyKey) -> bool {
+        self.reconciled_dependency_key != Some(dependency_key)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "frame-boundary admission needs the complete candidate scene state"
+    )]
+    pub(crate) fn admit_reconcile(
+        &mut self,
+        groups: &[Zone],
+        active_scene_id: Option<SceneId>,
+        dependency_key: SceneDependencyKey,
+        registry: &EffectRegistry,
+        display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
+        authoritative_spatial_engine: Option<&SpatialEngine>,
+        sparkleflinger: &mut SparkleFlinger,
+    ) -> Result<()> {
+        if !self.needs_reconcile(dependency_key) {
+            return Ok(());
+        }
+        let prepared = self.prepare_reconcile(
+            groups,
+            active_scene_id,
+            dependency_key,
+            registry,
+            display_descriptors,
+            authoritative_spatial_engine,
+        )?;
+        let projected = sparkleflinger
+            .prepare_projected_scene_resources(prepared.projected_group_texture_requirements())?;
+        sparkleflinger.apply_projected_scene_resources(projected);
+        self.commit_reconcile(prepared);
+        Ok(())
+    }
+
     pub(crate) fn effect_registry_snapshot(
         &mut self,
         registry: &EffectRegistry,
@@ -96,6 +142,7 @@ impl ZoneRuntime {
             || self.reconciled_dependency_key.is_some()
     }
 
+    #[cfg(test)]
     pub(super) fn reconcile(
         &mut self,
         groups: &[Zone],
@@ -192,9 +239,16 @@ impl ZoneRuntime {
         retained_direct_group_frames.try_reserve(direct_group_ids.len())?;
         let mut retained_materialized_group_frames = HashMap::new();
         retained_materialized_group_frames.try_reserve(direct_group_ids.len())?;
+        let mut projected_group_texture_requirements = Vec::new();
+        projected_group_texture_requirements.try_reserve(scene_group_ids.len())?;
 
         for group in groups {
             if group_contributes_to_scene_canvas(group) {
+                projected_group_texture_requirements.push(ProjectedGroupTextureRequirement {
+                    group_id: group.id,
+                    width: group.layout.canvas_width,
+                    height: group.layout.canvas_height,
+                });
                 let needs_canvas = self.target_canvases.get(&group.id).is_none_or(|canvas| {
                     canvas.width() != group.layout.canvas_width
                         || canvas.height() != group.layout.canvas_height
@@ -258,6 +312,7 @@ impl ZoneRuntime {
             desired_media_ids,
             scene_group_ids,
             direct_group_ids,
+            projected_group_texture_requirements,
             dependency_key,
         })
     }
@@ -276,6 +331,7 @@ impl ZoneRuntime {
             desired_media_ids,
             scene_group_ids,
             direct_group_ids,
+            projected_group_texture_requirements: _,
             dependency_key,
         } = prepared;
         self.effect_pool.commit_reconcile(effect_pool);

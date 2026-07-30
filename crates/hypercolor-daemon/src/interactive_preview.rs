@@ -1139,7 +1139,11 @@ impl PreviewLaneCandidate {
     ) -> Result<Self, String> {
         let zone_runtime =
             preview_zone_runtime(scene.canvas_width, scene.canvas_height, asset_library)?;
-        let (sparkleflinger, backend) = create_preview_compositor(acceleration);
+        let (mut sparkleflinger, backend) = create_preview_compositor(acceleration);
+        let canvas = sparkleflinger
+            .prepare_canvas_resize(scene.canvas_width, scene.canvas_height)
+            .map_err(|error| error.to_string())?;
+        sparkleflinger.apply_canvas_resize(canvas);
         Ok(Self {
             zone_runtime,
             sparkleflinger,

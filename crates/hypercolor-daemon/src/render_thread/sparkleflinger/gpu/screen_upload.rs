@@ -411,6 +411,7 @@ fn gpu_texture_frame(texture: &ScreenUploadTexture, content_generation: u64) -> 
         origin: GpuTextureFrameOrigin::ProducerTexture,
         texture: texture.texture.texture.clone(),
         view: texture.texture.view.clone(),
+        _immutable_lease: None,
         #[cfg(target_os = "windows")]
         windows_screen_lease: None,
     }

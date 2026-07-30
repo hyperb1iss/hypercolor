@@ -226,7 +226,11 @@ impl ZoneRuntime {
                 );
             }
         }
-        Ok(composed_frame_to_producer_frame(composed, sparkleflinger))
+        Ok(composed_frame_to_producer_frame(
+            composed,
+            sparkleflinger,
+            false,
+        ))
     }
 
     fn render_media_layer_frame(

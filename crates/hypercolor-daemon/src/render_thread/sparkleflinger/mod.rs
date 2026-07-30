@@ -45,6 +45,13 @@ use crate::render_thread::sparkleflinger::gpu::{
 use super::producer_queue::ProducerFrame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProjectedGroupTextureRequirement {
+    pub(crate) group_id: ZoneId,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompositionMode {
     Replace,
     Alpha,
@@ -307,6 +314,16 @@ impl CompositionLayer {
             && self.opacity >= 1.0
             && !self.needs_processing_for_size(width, height)
     }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn gpu_frame_identity_for_test(
+        &self,
+    ) -> Option<(u64, u64, super::producer_queue::GpuTextureFrameOrigin)> {
+        let ProducerFrame::GpuTexture(frame) = &self.frame else {
+            return None;
+        };
+        Some((frame.storage_id, frame.content_generation, frame.origin))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -477,13 +494,19 @@ impl SparkleFlingerSamplingPreparation {
         }
     }
 
-    #[cfg(feature = "wgpu")]
+    #[cfg(all(test, feature = "wgpu"))]
     pub(crate) const fn is_admitted(&self) -> bool {
         match self {
             Self::Cpu => false,
             Self::Gpu(preparation) => preparation.is_admitted(),
         }
     }
+}
+
+pub(crate) enum SparkleFlingerProjectedScenePreparation {
+    Cpu,
+    #[cfg(feature = "wgpu")]
+    Gpu(gpu::GpuProjectedScenePreparation),
 }
 
 impl SparkleFlingerCanvasPreparation {
@@ -728,6 +751,13 @@ impl SparkleFlinger {
         )
     }
 
+    #[cfg(all(test, feature = "wgpu", target_os = "windows"))]
+    pub(crate) fn new_required_dx12_for_test() -> Result<Self> {
+        let render_device =
+            GpuRenderDevice::new_dx12_required("SparkleFlinger required DX12 test compositor")?;
+        Self::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(render_device))
+    }
+
     pub(crate) fn new_with_gpu_device(
         mode: RenderAccelerationMode,
         #[cfg(feature = "wgpu")] render_device: Option<GpuRenderDevice>,
@@ -882,6 +912,91 @@ impl SparkleFlinger {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the wrapper preserves the fallible GPU admission contract in CPU-only builds"
+    )]
+    pub(crate) fn prepare_projected_scene_resources(
+        &self,
+        requirements: &[ProjectedGroupTextureRequirement],
+    ) -> Result<SparkleFlingerProjectedScenePreparation> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => {
+                let _ = requirements;
+                Ok(SparkleFlingerProjectedScenePreparation::Cpu)
+            }
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu
+                .prepare_projected_scene_resources(requirements)
+                .map(SparkleFlingerProjectedScenePreparation::Gpu),
+        }
+    }
+
+    pub(crate) fn apply_projected_scene_resources(
+        &mut self,
+        preparation: SparkleFlingerProjectedScenePreparation,
+    ) {
+        match (&mut self.backend, preparation) {
+            (SparkleFlingerBackend::Cpu(_), SparkleFlingerProjectedScenePreparation::Cpu) => {}
+            #[cfg(feature = "wgpu")]
+            (
+                SparkleFlingerBackend::Gpu { gpu, .. },
+                SparkleFlingerProjectedScenePreparation::Gpu(preparation),
+            ) => gpu.apply_projected_scene_resources(preparation),
+            #[cfg(feature = "wgpu")]
+            _ => unreachable!("projection preparation must belong to its SparkleFlinger backend"),
+        }
+    }
+
+    pub(crate) fn has_projected_group_resource(
+        &self,
+        group_id: ZoneId,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => {
+                let _ = (group_id, width, height);
+                false
+            }
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.has_projected_group_resource(group_id, width, height)
+            }
+        }
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the wrapper preserves the fallible GPU snapshot contract in CPU-only builds"
+    )]
+    pub(crate) fn stabilize_projected_group_frame(
+        &mut self,
+        group_id: ZoneId,
+        frame: ProducerFrame,
+    ) -> Result<ProducerFrame> {
+        #[cfg(feature = "wgpu")]
+        {
+            return match (&mut self.backend, frame) {
+                (
+                    SparkleFlingerBackend::Gpu { gpu, .. },
+                    ProducerFrame::GpuTexture(gpu_frame),
+                ) if gpu_frame.origin
+                    == crate::render_thread::producer_queue::GpuTextureFrameOrigin::CompositorOutput =>
+                {
+                    gpu.snapshot_projected_group_frame(group_id, gpu_frame)
+                        .map(ProducerFrame::GpuTexture)
+                }
+                (_, frame) => Ok(frame),
+            };
+        }
+        #[cfg(not(feature = "wgpu"))]
+        {
+            let _ = group_id;
+            Ok(frame)
+        }
+    }
+
     pub(crate) fn supports_gpu_output_frames(&self) -> bool {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => false,
@@ -895,6 +1010,22 @@ impl SparkleFlinger {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => None,
             SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.max_texture_dimension_2d()),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn gpu_backend_name_for_test(&self) -> Option<&str> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.backend_name()),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn snapshot_texture_allocation_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.snapshot_texture_allocation_count()),
         }
     }
 
@@ -1193,6 +1324,54 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Cpu(_) => Ok(None),
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.current_output_frame(),
         }
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the wrapper preserves the fallible GPU snapshot contract in CPU-only builds"
+    )]
+    pub(crate) fn stabilize_scene_frame(&mut self, frame: ProducerFrame) -> Result<ProducerFrame> {
+        #[cfg(feature = "wgpu")]
+        {
+            return match (&mut self.backend, frame) {
+                (SparkleFlingerBackend::Gpu { gpu, .. }, ProducerFrame::GpuTexture(gpu_frame)) => {
+                    gpu.snapshot_scene_frame(gpu_frame)
+                        .map(ProducerFrame::GpuTexture)
+                }
+                (_, frame) => Ok(frame),
+            };
+        }
+        #[cfg(not(feature = "wgpu"))]
+        {
+            Ok(frame)
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn immutable_current_output_frame(&mut self) -> Result<Option<ProducerFrame>> {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            return gpu
+                .snapshot_current_output_frame()
+                .map(|frame| frame.map(ProducerFrame::GpuTexture));
+        }
+        Ok(None)
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the wrapper preserves the fallible GPU restore contract in CPU-only builds"
+    )]
+    pub(crate) fn restore_scene_frame(&mut self, frame: &ProducerFrame) -> Result<bool> {
+        #[cfg(feature = "wgpu")]
+        if let (SparkleFlingerBackend::Gpu { gpu, .. }, ProducerFrame::GpuTexture(gpu_frame)) =
+            (&mut self.backend, frame)
+        {
+            gpu.restore_scene_frame(gpu_frame)?;
+            return Ok(true);
+        }
+        #[cfg(not(feature = "wgpu"))]
+        let _ = frame;
+        Ok(false)
     }
 
     #[cfg(all(test, feature = "wgpu"))]

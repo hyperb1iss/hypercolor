@@ -144,6 +144,11 @@ impl ZoneRuntime {
                 output.record_render_elapsed(render_start);
                 continue;
             };
+            let frame = if project_scene_with_sparkleflinger {
+                sparkleflinger.stabilize_projected_group_frame(group.id, frame)?
+            } else {
+                frame
+            };
             if project_scene_with_sparkleflinger
                 && let Some(projection) = self.scene_projection_cache.get(&group.id)
                 && let Some(layers) = projection_composition_layers_for_group(

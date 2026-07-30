@@ -1386,6 +1386,8 @@ pub(crate) struct PreparedLayoutActivation {
     pub(crate) prepared_resize: Option<PreparedCanvasResize>,
     pub(crate) sampling_preparation: Option<SparkleFlingerSamplingPreparation>,
     pub(crate) prepared_groups: PreparedZoneReconcile,
+    pub(crate) prepared_projected_scene:
+        super::sparkleflinger::SparkleFlingerProjectedScenePreparation,
     pub(crate) activation: LayoutActivationControl,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -1560,6 +1562,20 @@ impl ComposeRuntime<'_> {
         let delta_secs = self
             .effect_delta_clock
             .take_render_delta(dependency_key, frame_delta);
+
+        if let Err(error) = self.render_group_runtime.admit_reconcile(
+            scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+            scene_snapshot.scene_runtime.active_scene_id,
+            dependency_key,
+            registry,
+            &scene_snapshot
+                .scene_runtime
+                .active_display_group_descriptors,
+            Some(&scene_snapshot.spatial_engine),
+            self.sparkleflinger,
+        ) {
+            return (Err(error), false);
+        }
 
         let zones = self.output_artifacts.zones_mut();
         let context = RenderSceneContext {

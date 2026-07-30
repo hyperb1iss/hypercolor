@@ -8,8 +8,8 @@ use gif::{Encoder, Frame, Repeat};
 use hypercolor_core::asset::AssetTypeHint;
 use hypercolor_core::asset::{AssetLibrary, AssetUploadOptions};
 use hypercolor_core::bus::DisplayGroupViewport;
-use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::effect::builtin::register_builtin_effects;
+use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::audio::AudioData;
@@ -508,10 +508,20 @@ fn render_scene_for_test_with_screen_and_sparkleflinger(
         net: None,
         lighting: None,
     };
+    let dependency_key = SceneDependencyKey::new(groups_revision, registry.generation());
+    runtime.admit_reconcile(
+        groups,
+        Some(SceneId::DEFAULT),
+        dependency_key,
+        registry,
+        &HashMap::new(),
+        None,
+        sparkleflinger,
+    )?;
     let context = RenderSceneContext {
         groups,
         active_scene_id: Some(SceneId::DEFAULT),
-        dependency_key: SceneDependencyKey::new(groups_revision, registry.generation()),
+        dependency_key,
         elapsed_ms,
         display_group_target_fps,
         display_group_descriptors: &HashMap::new(),

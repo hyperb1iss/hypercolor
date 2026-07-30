@@ -79,6 +79,7 @@ pub(crate) async fn execute_frame(
                     prepared_resize,
                     sampling_preparation,
                     prepared_groups,
+                    prepared_projected_scene,
                     activation,
                     width,
                     height,
@@ -100,6 +101,9 @@ pub(crate) async fn execute_frame(
                         } else if let Some(sampling_preparation) = sampling_preparation {
                             render.commit_spatial_sampling_plan(sampling_preparation);
                         }
+                        render
+                            .sparkleflinger
+                            .apply_projected_scene_resources(prepared_projected_scene);
                         render
                             .render_group_runtime
                             .commit_reconcile(prepared_groups);
@@ -202,10 +206,24 @@ pub(crate) async fn execute_frame(
                             width,
                             height,
                         )?;
-                    Ok::<_, anyhow::Error>((prepared_resize, sampling_preparation, prepared_groups))
+                    let prepared_projected_scene =
+                        render.sparkleflinger.prepare_projected_scene_resources(
+                            prepared_groups.projected_group_texture_requirements(),
+                        )?;
+                    Ok::<_, anyhow::Error>((
+                        prepared_resize,
+                        sampling_preparation,
+                        prepared_groups,
+                        prepared_projected_scene,
+                    ))
                 }
                 .await;
-                let (prepared_resize, sampling_preparation, prepared_groups) = match preparation {
+                let (
+                    prepared_resize,
+                    sampling_preparation,
+                    prepared_groups,
+                    prepared_projected_scene,
+                ) = match preparation {
                     Ok(prepared) => prepared,
                     Err(error) => {
                         warn!(
@@ -230,6 +248,7 @@ pub(crate) async fn execute_frame(
                     prepared_resize,
                     sampling_preparation,
                     prepared_groups,
+                    prepared_projected_scene,
                     activation: transaction.activation(),
                     width,
                     height,

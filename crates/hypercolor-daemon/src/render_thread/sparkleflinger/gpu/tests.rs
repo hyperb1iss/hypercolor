@@ -1709,6 +1709,122 @@ fn gpu_compositor_passthroughs_current_output_texture() {
 }
 
 #[test]
+fn gpu_compositor_rejects_stale_mutable_output_handles() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let preparation = compositor.prepare_canvas_resize(4, 4);
+    assert!(preparation.is_admitted());
+    compositor.apply_canvas_resize(preparation);
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(17))),
+            ),
+            false,
+            None,
+        )
+        .expect("first GPU output should compose");
+    let stale = compositor
+        .current_output_frame()
+        .expect("first output should submit")
+        .expect("first output should exist");
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(23))),
+            ),
+            false,
+            None,
+        )
+        .expect("second GPU output should compose");
+    let stale_plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(stale)),
+    );
+
+    assert!(!compositor.supports_plan(&stale_plan));
+    let error = compositor
+        .compose(&stale_plan, false, None)
+        .expect_err("stale mutable output must not be sampled");
+    assert!(error.to_string().contains("aliases compositor storage"));
+}
+
+#[test]
+fn immutable_scene_pool_covers_two_overlapping_generations_without_growth() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let preparation = compositor.prepare_canvas_resize(4, 4);
+    assert!(preparation.is_admitted());
+    compositor.apply_canvas_resize(preparation);
+    let allocations = compositor.snapshot_texture_allocation_count();
+
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(31))),
+            ),
+            false,
+            None,
+        )
+        .expect("first generation should compose");
+    let first = compositor
+        .snapshot_current_output_frame()
+        .expect("first generation should snapshot")
+        .expect("first generation should exist");
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(37))),
+            ),
+            false,
+            None,
+        )
+        .expect("second generation should compose");
+    let second = compositor
+        .snapshot_current_output_frame()
+        .expect("second generation should snapshot")
+        .expect("second generation should exist");
+    assert_ne!(first.storage_id, second.storage_id);
+
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(41))),
+            ),
+            false,
+            None,
+        )
+        .expect("third current output should compose");
+    assert!(
+        compositor.snapshot_current_output_frame().is_err(),
+        "a third overlapping lease is outside the serial executor ownership bound"
+    );
+    let first_storage_id = first.storage_id;
+    drop(first);
+    let recycled = compositor
+        .snapshot_current_output_frame()
+        .expect("released generation should make its slot reusable")
+        .expect("recycled generation should exist");
+    assert_eq!(recycled.storage_id, first_storage_id);
+    assert_eq!(compositor.snapshot_texture_allocation_count(), allocations);
+}
+
+#[test]
 fn gpu_compositor_does_not_passthrough_producer_texture() {
     let Some(mut compositor) = gpu_test_compositor() else {
         return;

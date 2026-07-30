@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(feature = "wgpu")]
+use crate::render_thread::producer_queue::GpuTextureFrameOrigin;
+#[cfg(feature = "wgpu")]
+use crate::render_thread::sparkleflinger::CompositionLayer;
+
 #[test]
 fn single_group_preview_publishes_surface_frame() {
     let mut runtime = ZoneRuntime::new(4, 4);
@@ -546,14 +551,13 @@ fn projected_contributors_refresh_current_cpu_replay() {
     let interaction = InteractionData::default();
     let sensors = SystemSnapshot::empty();
     let target_fps = HashMap::new();
-    let descriptors = HashMap::new();
     let context = RenderSceneContext {
         groups: std::slice::from_ref(&group),
         active_scene_id: Some(SceneId::DEFAULT),
         dependency_key,
         elapsed_ms: 0,
         display_group_target_fps: &target_fps,
-        display_group_descriptors: &descriptors,
+        display_group_descriptors: &HashMap::new(),
         registry: &registry,
         authoritative_spatial_engine: None,
         inputs: ZoneFrameInputs {
@@ -828,6 +832,7 @@ fn gpu_projected_scene_frame_stays_gpu_resident() {
     let mut group = sample_group(8, 8);
     group.layout.zones = vec![zone];
     group.layout.default_sampling_mode = SamplingMode::Nearest;
+    admit_projected_scene_resources(&mut sparkleflinger, std::slice::from_ref(&group), 8, 8);
     let projection =
         build_group_projection(&group, 8, 8).expect("projection metadata should allocate");
     let layers = projection_composition_layers_for_group(
@@ -848,6 +853,128 @@ fn gpu_projected_scene_frame_stays_gpu_resident() {
 
 #[cfg(feature = "wgpu")]
 #[test]
+fn two_gpu_resident_groups_produce_stable_projected_scene_frame() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let groups = gpu_projection_groups();
+    let dependency_key = SceneDependencyKey::new(1, registry.generation());
+    let mut runtime = ZoneRuntime::new(4, 4);
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            dependency_key,
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("GPU group projection resources should reconcile");
+    let allocations_after_admission = sparkleflinger
+        .snapshot_texture_allocation_count_for_test()
+        .expect("required GPU compositor should expose snapshot allocations");
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let target_fps = HashMap::new();
+    let context = RenderSceneContext {
+        groups: &groups,
+        active_scene_id: Some(SceneId::DEFAULT),
+        dependency_key,
+        elapsed_ms: 0,
+        display_group_target_fps: &target_fps,
+        display_group_descriptors: &HashMap::new(),
+        registry: &registry,
+        authoritative_spatial_engine: None,
+        inputs: ZoneFrameInputs {
+            delta_secs: 1.0 / 60.0,
+            audio: &audio,
+            interaction: &interaction,
+            screen: None,
+            sensors: &sensors,
+            input_availability: InputSourceAvailability::default(),
+            media: None,
+            net: None,
+            lighting: None,
+        },
+    };
+    let mut output = super::super::render_pass::RenderedGroupPassOutput::default();
+
+    let projected = runtime
+        .render_scene_contributor_frames(context, &mut sparkleflinger, true, &mut output)
+        .expect("GPU-resident groups should render for projection");
+    let identities = projected
+        .layers
+        .iter()
+        .map(|layer| {
+            layer
+                .gpu_frame_identity_for_test()
+                .expect("each projected group should remain GPU-resident")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(identities.len(), 2);
+    assert!(
+        identities
+            .iter()
+            .all(|identity| identity.2 == GpuTextureFrameOrigin::ProjectionSnapshot)
+    );
+    assert_ne!(identities[0].0, identities[1].0);
+    assert!(!projected.cpu_replay_complete);
+    let scene_frame = runtime
+        .compose_projected_scene_frame(projected.layers, &mut sparkleflinger)
+        .expect("two stable GPU group frames should produce a projected scene");
+    let ProducerFrame::GpuTexture(scene_gpu_frame) = &scene_frame else {
+        panic!("projected scene should stay GPU-resident")
+    };
+    assert_eq!(
+        scene_gpu_frame.origin,
+        GpuTextureFrameOrigin::ImmutableSnapshot
+    );
+    let first_pixels = sample_full_gpu_canvas(&mut sparkleflinger, 4, 4);
+    assert_eq!(first_pixels[0], [255, 0, 0]);
+    assert_eq!(first_pixels[5], [0, 0, 255]);
+    assert_eq!(first_pixels[10], [0, 0, 255]);
+    assert_eq!(first_pixels[15], [255, 0, 0]);
+
+    let mut second_output = super::super::render_pass::RenderedGroupPassOutput::default();
+    let second = runtime
+        .render_scene_contributor_frames(context, &mut sparkleflinger, true, &mut second_output)
+        .expect("projected group snapshots should remain reusable");
+    let second_identities = second
+        .layers
+        .iter()
+        .map(|layer| {
+            layer
+                .gpu_frame_identity_for_test()
+                .expect("reused projected groups should remain GPU-resident")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(second_identities.len(), identities.len());
+    for (first, second) in identities.iter().zip(&second_identities) {
+        assert_eq!(first.0, second.0);
+        assert!(second.1 > first.1);
+    }
+    let second_scene = runtime
+        .compose_projected_scene_frame(second.layers, &mut sparkleflinger)
+        .expect("second projected scene should use the second leased generation");
+    assert!(matches!(second_scene, ProducerFrame::GpuTexture(_)));
+    assert_eq!(
+        sample_full_gpu_canvas(&mut sparkleflinger, 4, 4),
+        first_pixels
+    );
+    assert_eq!(
+        sparkleflinger.snapshot_texture_allocation_count_for_test(),
+        Some(allocations_after_admission),
+        "steady-state projection must not allocate GPU textures"
+    );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
 fn failed_gpu_projection_reuses_last_good_scene_across_dependency_change() {
     let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
         return;
@@ -856,28 +983,43 @@ fn failed_gpu_projection_reuses_last_good_scene_across_dependency_change() {
     let groups = gpu_projection_groups();
     let mut runtime = ZoneRuntime::new(4, 4);
     let mut zones = Vec::new();
-    let Some(first_frame) = sparkleflinger.upload_canvas_frame(&patterned_source_canvas(4, 4))
-    else {
-        panic!("required GPU test should upload the retained scene")
+    let first = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &groups,
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zones,
+        None,
+        &mut sparkleflinger,
+    )
+    .expect("initial GPU projection should render and retain");
+    let ProducerFrame::GpuTexture(first_frame) = &first.scene_frame else {
+        panic!("initial retained scene should stay GPU-resident")
     };
-    let retained_result = ZoneResult {
-        scene_frame: ProducerFrame::GpuTexture(first_frame.clone()),
-        group_canvases: Vec::new(),
-        zone_canvases: Vec::new(),
-        active_group_canvas_ids: Vec::new(),
-        led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
-            runtime.combined_led_spatial_engine.clone(),
+    assert_eq!(first_frame.origin, GpuTextureFrameOrigin::ImmutableSnapshot);
+    let first_identity = (first_frame.storage_id, first_frame.content_generation);
+    let first_pixels = sample_full_gpu_canvas(&mut sparkleflinger, 4, 4);
+    let LedSamplingStrategy::SparkleFlinger(first_led_engine) = &first.led_sampling_strategy else {
+        panic!("initial GPU scene should retain its SAT sampling plan")
+    };
+    let first_leds = sample_gpu_plan(&mut sparkleflinger, first_led_engine);
+
+    let mut intervening = Canvas::new(4, 4);
+    intervening.fill(Rgba::new(0, 255, 0, 255));
+    let _ = sparkleflinger.compose_for_outputs(
+        CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(intervening)),
         ),
-        producer_full_frame_copy: FullFrameCopyMetrics::default(),
-        render_us: 0,
-        sample_us: 0,
-        scene_compose_us: 0,
-        logical_layer_count: 2,
-    };
-    runtime.retain_frame(
-        SceneDependencyKey::new(1, registry.generation()),
-        &retained_result,
-        &zones,
+        false,
+        None,
+    );
+    assert_eq!(
+        sample_full_gpu_canvas(&mut sparkleflinger, 4, 4)[0],
+        [0, 255, 0]
     );
 
     let changed_dependency_key = SceneDependencyKey::new(2, registry.generation());
@@ -895,19 +1037,26 @@ fn failed_gpu_projection_reuses_last_good_scene_across_dependency_change() {
         &mut sparkleflinger,
     )
     .expect("failed projection should reuse the retained scene");
-    let ProducerFrame::GpuTexture(retained_frame) = retained.scene_frame else {
+    let ProducerFrame::GpuTexture(retained_frame) = &retained.scene_frame else {
         panic!("failed projection should not materialize stale CPU targets")
     };
 
-    assert_eq!(retained_frame.storage_id, first_frame.storage_id);
     assert_eq!(
-        retained_frame.content_generation,
-        first_frame.content_generation
+        (retained_frame.storage_id, retained_frame.content_generation),
+        first_identity
     );
-    assert!(matches!(
-        retained.led_sampling_strategy,
-        LedSamplingStrategy::SparkleFlinger(_)
-    ));
+    assert_eq!(
+        sample_full_gpu_canvas(&mut sparkleflinger, 4, 4),
+        first_pixels
+    );
+    let LedSamplingStrategy::SparkleFlinger(retained_led_engine) = &retained.led_sampling_strategy
+    else {
+        panic!("retained GPU scene should preserve its SAT sampling plan")
+    };
+    assert_eq!(
+        sample_gpu_plan(&mut sparkleflinger, retained_led_engine),
+        first_leds
+    );
     assert!(runtime.reuse_scene(changed_dependency_key).is_none());
 }
 
@@ -946,9 +1095,167 @@ fn first_gpu_projection_failure_returns_typed_error_without_partial_cpu_scene() 
 }
 
 #[cfg(feature = "wgpu")]
+#[test]
+fn projected_scene_resources_allocate_only_during_admission_changes() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let mut groups = gpu_projection_groups();
+    let initial_allocations = sparkleflinger
+        .snapshot_texture_allocation_count_for_test()
+        .expect("required GPU compositor should expose snapshot allocations");
+    let requirements = projected_group_requirements(&groups);
+    let prepared = sparkleflinger
+        .prepare_projected_scene_resources(&requirements)
+        .expect("initial group snapshots should prepare");
+    sparkleflinger.apply_projected_scene_resources(prepared);
+    let stable_allocations = initial_allocations + groups.len();
+    assert_eq!(
+        sparkleflinger.snapshot_texture_allocation_count_for_test(),
+        Some(stable_allocations)
+    );
+
+    let prepared = sparkleflinger
+        .prepare_projected_scene_resources(&requirements)
+        .expect("unchanged group snapshots should prepare by reuse");
+    sparkleflinger.apply_projected_scene_resources(prepared);
+    assert_eq!(
+        sparkleflinger.snapshot_texture_allocation_count_for_test(),
+        Some(stable_allocations)
+    );
+
+    groups[1].layout.canvas_width = 2;
+    groups[1].layout.canvas_height = 2;
+    let resized_requirements = projected_group_requirements(&groups);
+    let prepared = sparkleflinger
+        .prepare_projected_scene_resources(&resized_requirements)
+        .expect("changed group extent should prepare one replacement snapshot");
+    sparkleflinger.apply_projected_scene_resources(prepared);
+    assert_eq!(
+        sparkleflinger.snapshot_texture_allocation_count_for_test(),
+        Some(stable_allocations + 1)
+    );
+
+    let canvas = sparkleflinger
+        .prepare_canvas_resize(8, 8)
+        .expect("resized scene snapshot generations should prepare");
+    sparkleflinger.apply_canvas_resize(canvas);
+    let prepared = sparkleflinger
+        .prepare_projected_scene_resources(&resized_requirements)
+        .expect("scene resize should preserve independent group snapshots");
+    sparkleflinger.apply_projected_scene_resources(prepared);
+    assert_eq!(
+        sparkleflinger.snapshot_texture_allocation_count_for_test(),
+        Some(stable_allocations + 3),
+        "scene resize should allocate only its two immutable generations"
+    );
+
+    let prepared = sparkleflinger
+        .prepare_projected_scene_resources(&resized_requirements[..1])
+        .expect("group removal should prepare without allocation");
+    sparkleflinger.apply_projected_scene_resources(prepared);
+    assert_eq!(
+        sparkleflinger.snapshot_texture_allocation_count_for_test(),
+        Some(stable_allocations + 3)
+    );
+    let prepared = sparkleflinger
+        .prepare_projected_scene_resources(&resized_requirements)
+        .expect("re-added group should prepare one snapshot");
+    sparkleflinger.apply_projected_scene_resources(prepared);
+    assert_eq!(
+        sparkleflinger.snapshot_texture_allocation_count_for_test(),
+        Some(stable_allocations + 4)
+    );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn initial_and_switched_scenes_admit_gpu_projection_before_rendering() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let initial_groups = gpu_projection_groups();
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut zones = Vec::new();
+    let initial = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &initial_groups,
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zones,
+        None,
+        &mut sparkleflinger,
+    )
+    .expect("initial scene should admit GPU projection before its first render");
+    assert!(matches!(
+        initial.scene_frame,
+        ProducerFrame::GpuTexture(ref frame)
+            if frame.origin == GpuTextureFrameOrigin::ImmutableSnapshot
+    ));
+    assert!(initial_groups.iter().all(|group| {
+        sparkleflinger.has_projected_group_resource(
+            group.id,
+            group.layout.canvas_width,
+            group.layout.canvas_height,
+        )
+    }));
+
+    let switched_groups = gpu_projection_groups();
+    let switched = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &switched_groups,
+        2,
+        16,
+        &HashMap::new(),
+        &registry,
+        &mut zones,
+        None,
+        &mut sparkleflinger,
+    )
+    .expect("scene switch should admit its GPU projection before rendering");
+    assert!(matches!(
+        switched.scene_frame,
+        ProducerFrame::GpuTexture(ref frame)
+            if frame.origin == GpuTextureFrameOrigin::ImmutableSnapshot
+    ));
+    assert!(switched_groups.iter().all(|group| {
+        sparkleflinger.has_projected_group_resource(
+            group.id,
+            group.layout.canvas_width,
+            group.layout.canvas_height,
+        )
+    }));
+    assert_eq!(
+        sample_full_gpu_canvas(&mut sparkleflinger, 4, 4)[5],
+        [0, 0, 255]
+    );
+}
+
+#[cfg(feature = "wgpu")]
 fn required_gpu_sparkleflinger() -> Option<SparkleFlinger> {
-    match SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu) {
-        Ok(sparkleflinger) => Some(sparkleflinger),
+    #[cfg(target_os = "windows")]
+    let result = SparkleFlinger::new_required_dx12_for_test();
+    #[cfg(not(target_os = "windows"))]
+    let result = SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu);
+    match result {
+        Ok(mut sparkleflinger) => {
+            if std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_some() {
+                assert_eq!(
+                    sparkleflinger.gpu_backend_name_for_test(),
+                    Some("dx12"),
+                    "mandatory Windows GPU projection tests must exercise DX12"
+                );
+            }
+            let canvas = sparkleflinger
+                .prepare_canvas_resize(4, 4)
+                .expect("required GPU test canvas should prepare");
+            assert!(canvas.is_admitted());
+            sparkleflinger.apply_canvas_resize(canvas);
+            Some(sparkleflinger)
+        }
         Err(error) => {
             assert!(
                 std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
@@ -957,6 +1264,87 @@ fn required_gpu_sparkleflinger() -> Option<SparkleFlinger> {
             None
         }
     }
+}
+
+#[cfg(feature = "wgpu")]
+fn sample_full_gpu_canvas(
+    sparkleflinger: &mut SparkleFlinger,
+    width: u32,
+    height: u32,
+) -> Vec<[u8; 3]> {
+    let mut zone = point_zone("gpu_scene_pixels");
+    zone.size = NormalizedPosition::new(1.0, 1.0);
+    zone.topology = LedTopology::Matrix {
+        width,
+        height,
+        serpentine: false,
+        start_corner: Corner::TopLeft,
+    };
+    zone.sampling_mode = Some(SamplingMode::Nearest);
+    zone.edge_behavior = Some(EdgeBehavior::Clamp);
+    let engine = SpatialEngine::new(SpatialLayout {
+        id: "gpu-scene-pixels".into(),
+        name: "GPU Scene Pixels".into(),
+        description: None,
+        canvas_width: width,
+        canvas_height: height,
+        zones: vec![zone],
+        default_sampling_mode: SamplingMode::Nearest,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    });
+    sample_gpu_plan(sparkleflinger, &engine)
+        .into_iter()
+        .next()
+        .expect("full-canvas sampling should produce one zone")
+        .colors
+}
+
+#[cfg(feature = "wgpu")]
+fn sample_gpu_plan(sparkleflinger: &mut SparkleFlinger, engine: &SpatialEngine) -> Vec<ZoneColors> {
+    let mut sampled = Vec::new();
+    assert!(
+        sparkleflinger
+            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sampling should complete")
+    );
+    sampled
+}
+
+#[cfg(feature = "wgpu")]
+fn admit_projected_scene_resources(
+    sparkleflinger: &mut SparkleFlinger,
+    groups: &[Zone],
+    width: u32,
+    height: u32,
+) {
+    let canvas = sparkleflinger
+        .prepare_canvas_resize(width, height)
+        .expect("GPU scene canvas resources should prepare");
+    assert!(canvas.is_admitted());
+    sparkleflinger.apply_canvas_resize(canvas);
+    let requirements = projected_group_requirements(groups);
+    let projected = sparkleflinger
+        .prepare_projected_scene_resources(&requirements)
+        .expect("GPU projected scene resources should prepare");
+    sparkleflinger.apply_projected_scene_resources(projected);
+}
+
+#[cfg(feature = "wgpu")]
+fn projected_group_requirements(
+    groups: &[Zone],
+) -> Vec<super::super::super::sparkleflinger::ProjectedGroupTextureRequirement> {
+    groups
+        .iter()
+        .map(
+            |group| super::super::super::sparkleflinger::ProjectedGroupTextureRequirement {
+                group_id: group.id,
+                width: group.layout.canvas_width,
+                height: group.layout.canvas_height,
+            },
+        )
+        .collect()
 }
 
 #[cfg(feature = "wgpu")]

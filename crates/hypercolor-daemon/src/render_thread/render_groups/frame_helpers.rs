@@ -177,8 +177,10 @@ pub(super) fn transparent_black_frame(
 
 pub(super) fn opaque_black_frame(
     cache: &mut StaticLayerSurfaceCache,
+    width: u32,
+    height: u32,
 ) -> anyhow::Result<ProducerFrame> {
-    cache.frame(1, 1, Rgba::BLACK)
+    cache.frame(width, height, Rgba::BLACK)
 }
 
 pub(super) fn media_layer_producer_frame(
@@ -216,7 +218,11 @@ pub(super) fn media_mime_prefers_gpu_texture(mime_type: &str) -> bool {
 pub(super) fn composed_frame_to_producer_frame(
     composed: ComposedFrameSet,
     sparkleflinger: &mut SparkleFlinger,
+    immutable_gpu_output: bool,
 ) -> Option<ProducerFrame> {
+    #[cfg(not(feature = "wgpu"))]
+    let _ = immutable_gpu_output;
+
     let frame = composed
         .sampling_surface
         .map(ProducerFrame::Surface)
@@ -226,6 +232,12 @@ pub(super) fn composed_frame_to_producer_frame(
     #[cfg(feature = "wgpu")]
     let frame = frame.or_else(|| {
         if composed.backend == CompositorBackendKind::Gpu && !composed.gpu_readback_failed {
+            if immutable_gpu_output {
+                return sparkleflinger
+                    .immutable_current_output_frame()
+                    .ok()
+                    .flatten();
+            }
             return sparkleflinger
                 .current_output_frame()
                 .ok()

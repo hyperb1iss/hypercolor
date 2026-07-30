@@ -193,6 +193,10 @@ impl GpuSparkleFlinger {
                 None,
             );
         }
+        anyhow::ensure!(
+            !self.plan_samples_compositor_storage(plan),
+            "GPU composition source aliases compositor storage after its generation changed"
+        );
         if plan.layers.len() == 1
             && let Some(layer) = plan.layers.first()
             && layer.is_bypass_candidate()
@@ -571,7 +575,7 @@ impl GpuSparkleFlinger {
         .map(Some)
     }
 
-    fn layer_reuses_current_output_texture(
+    pub(super) fn layer_reuses_current_output_texture(
         &self,
         layer: &CompositionLayer,
         width: u32,

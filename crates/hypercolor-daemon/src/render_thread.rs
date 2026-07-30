@@ -125,6 +125,15 @@ impl InteractivePreviewZoneRuntime {
         sparkleflinger: &mut sparkleflinger::SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
     ) -> anyhow::Result<ProducerFrame> {
+        self.0.admit_reconcile(
+            context.groups,
+            context.active_scene_id,
+            context.dependency_key,
+            context.registry,
+            context.display_group_descriptors,
+            context.authoritative_spatial_engine,
+            sparkleflinger,
+        )?;
         self.0
             .render_scene(context, sparkleflinger, zones)
             .map(|rendered| rendered.scene_frame)

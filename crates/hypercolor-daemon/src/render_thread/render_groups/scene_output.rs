@@ -95,7 +95,12 @@ impl ZoneRuntime {
         layers.insert(
             0,
             CompositionLayer::replace_opaque(
-                opaque_black_frame(&mut self.static_layer_surface_cache).ok()?,
+                opaque_black_frame(
+                    &mut self.static_layer_surface_cache,
+                    self.scene_width,
+                    self.scene_height,
+                )
+                .ok()?,
             ),
         );
         let plan = CompositionPlan::with_layers(self.scene_width, self.scene_height, layers)
@@ -103,7 +108,7 @@ impl ZoneRuntime {
         let requires_cpu_sampling_canvas = !sparkleflinger.supports_gpu_output_frames();
         let composed =
             sparkleflinger.compose_for_outputs(plan.clone(), requires_cpu_sampling_canvas, None);
-        if let Some(frame) = composed_frame_to_producer_frame(composed, sparkleflinger) {
+        if let Some(frame) = composed_frame_to_producer_frame(composed, sparkleflinger, true) {
             record_producer_frame(&frame);
             return Some(frame);
         }
