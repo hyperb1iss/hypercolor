@@ -156,6 +156,7 @@ pub struct ScreenCapacityPreparation {
     expected_plan_generation: screen::ScreenPlanGeneration,
     expected_demand_revision: screen::InputPublicationDemandRevision,
     expected_resource_capacity_revision: u64,
+    expected_capacity_generation: u64,
     expected_total_capacity: screen::ScreenAdmissionCapacity,
     total_capacity: screen::ScreenAdmissionCapacity,
     publication_capacity: screen::ScreenAdmissionCapacity,
@@ -215,6 +216,9 @@ pub enum ScreenReconfigurationConflict {
     /// The shared physical resource fence changed after preparation began.
     #[error("screen resource capacity changed while reconfiguration was prepared")]
     ResourceCapacityChanged,
+    /// The configured analysis/publication split changed after preparation began.
+    #[error("screen capacity policy changed while reconfiguration was prepared")]
+    CapacityPolicyChanged,
     /// The prepared replacement does not match the plan.
     #[error("prepared screen source does not match the reconfiguration plan")]
     InvalidReplacement,
@@ -312,6 +316,7 @@ pub struct InputManager {
     screen_total_capacity: screen::ScreenAdmissionCapacity,
     screen_publication_capacity: screen::ScreenAdmissionCapacity,
     screen_capacity_enforced: bool,
+    screen_capacity_generation: u64,
     interaction_capture_active: Option<bool>,
     sensor_poller: Option<SensorPoller>,
     sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
@@ -538,6 +543,7 @@ impl InputManager {
             screen_total_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
             screen_publication_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
             screen_capacity_enforced: false,
+            screen_capacity_generation: 0,
             interaction_capture_active: None,
             sensor_poller: None,
             sensor_snapshot_rx: None,
@@ -1075,6 +1081,10 @@ impl InputManager {
         self.screen_total_capacity = total;
         self.screen_publication_capacity = publication;
         self.screen_capacity_enforced = true;
+        self.screen_capacity_generation = self
+            .screen_capacity_generation
+            .checked_add(1)
+            .expect("screen capacity policy generation exhausted");
         Ok(())
     }
 
@@ -1174,6 +1184,7 @@ impl InputManager {
             expected_plan_generation: plan.generation(),
             expected_demand_revision: plan.demand_revision(),
             expected_resource_capacity_revision: resource_snapshot.capacity_revision(),
+            expected_capacity_generation: self.screen_capacity_generation,
             expected_total_capacity: self.screen_total_capacity,
             total_capacity,
             publication_capacity,
@@ -1208,6 +1219,9 @@ impl InputManager {
         {
             return Err(ScreenReconfigurationConflict::ResourceCapacityChanged);
         }
+        if self.screen_capacity_generation != preparation.expected_capacity_generation {
+            return Err(ScreenReconfigurationConflict::CapacityPolicyChanged);
+        }
         Ok(())
     }
 
@@ -1223,6 +1237,10 @@ impl InputManager {
         self.validate_screen_capacity(&preparation)?;
         self.screen_total_capacity = preparation.total_capacity;
         self.screen_publication_capacity = preparation.publication_capacity;
+        self.screen_capacity_generation = self
+            .screen_capacity_generation
+            .checked_add(1)
+            .expect("screen capacity policy generation exhausted");
         Ok(())
     }
 

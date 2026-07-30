@@ -16,10 +16,10 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
-    InputManager, InputSource, MediaSource, NetSource, ScreenData, SourceFreshness, SourceIssue,
-    SourceKind, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
-    SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
-    SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
+    InputManager, InputSource, MediaSource, NetSource, ScreenData, ScreenReconfigurationConflict,
+    SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot,
+    SourceSessionWriter, SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
+    SourceStatusWriter, SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
@@ -1369,6 +1369,42 @@ fn manager_constructs_screen_analysis_inside_its_total_byte_fence() {
     );
     drop(input);
     assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+}
+
+#[test]
+fn stale_capacity_preparations_cannot_overwrite_a_committed_split() {
+    let physical = ScreenAdmissionCapacity::new(1_000, 1_000);
+    let total = ScreenAdmissionCapacity::new(100, 100);
+
+    for commit_newer_first in [true, false] {
+        let mut manager = InputManager::new();
+        manager
+            .set_screen_capacity_plan(physical, total, total)
+            .expect("empty manager should accept its capacity policy");
+        let earlier = manager
+            .prepare_screen_capacity_plan(total, 10)
+            .expect("first split should prepare")
+            .expect("capacity enforcement is installed");
+        let later = manager
+            .prepare_screen_capacity_plan(total, 20)
+            .expect("second split should prepare")
+            .expect("capacity enforcement is installed");
+        let (committed, stale, expected) = if commit_newer_first {
+            (later, earlier, ScreenAdmissionCapacity::new(80, 80))
+        } else {
+            (earlier, later, ScreenAdmissionCapacity::new(90, 90))
+        };
+
+        manager
+            .commit_screen_capacity(committed)
+            .expect("first committed token should win");
+        assert_eq!(manager.screen_publication_capacity(), expected);
+        assert!(matches!(
+            manager.commit_screen_capacity(stale),
+            Err(ScreenReconfigurationConflict::CapacityPolicyChanged)
+        ));
+        assert_eq!(manager.screen_publication_capacity(), expected);
+    }
 }
 
 #[test]
