@@ -25,6 +25,20 @@ pub(super) struct RenderedGroupPassOutput {
     pub(super) producer_full_frame_copy: FullFrameCopyMetrics,
 }
 
+pub(super) struct ProjectedSceneFrames {
+    pub(super) layers: Vec<CompositionLayer>,
+    pub(super) cpu_replay_complete: bool,
+}
+
+impl Default for ProjectedSceneFrames {
+    fn default() -> Self {
+        Self {
+            layers: Vec::new(),
+            cpu_replay_complete: true,
+        }
+    }
+}
+
 impl RenderedGroupPassOutput {
     pub(super) fn record_render_elapsed(&mut self, render_start: Instant) {
         self.render_us = self
@@ -93,8 +107,8 @@ impl ZoneRuntime {
         sparkleflinger: &mut SparkleFlinger,
         project_scene_with_sparkleflinger: bool,
         output: &mut RenderedGroupPassOutput,
-    ) -> Result<Vec<CompositionLayer>> {
-        let mut projected_scene_layers = Vec::new();
+    ) -> Result<ProjectedSceneFrames> {
+        let mut projected_scene = ProjectedSceneFrames::default();
         for group in context.groups {
             if !group_is_active(group) || group_publishes_direct_canvas(group) {
                 continue;
@@ -140,7 +154,15 @@ impl ZoneRuntime {
                     self.scene_height,
                 )
             {
-                projected_scene_layers.extend(layers);
+                projected_scene.layers.extend(layers);
+                if !copy_producer_frame_to_canvas(
+                    frame,
+                    target,
+                    &mut output.producer_full_frame_copy,
+                )? {
+                    target.clear();
+                    projected_scene.cpu_replay_complete = false;
+                }
                 output.record_render_elapsed(render_start);
                 continue;
             }
@@ -156,7 +178,7 @@ impl ZoneRuntime {
             output.record_render_elapsed(render_start);
         }
 
-        Ok(projected_scene_layers)
+        Ok(projected_scene)
     }
 
     pub(super) fn render_display_group_frames(

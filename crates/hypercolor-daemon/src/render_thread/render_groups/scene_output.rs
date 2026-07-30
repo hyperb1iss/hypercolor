@@ -83,6 +83,10 @@ impl ZoneRuntime {
         mut layers: Vec<CompositionLayer>,
         sparkleflinger: &mut SparkleFlinger,
     ) -> Option<ProducerFrame> {
+        #[cfg(all(test, feature = "wgpu"))]
+        if std::mem::take(&mut self.fail_next_projected_scene_composition) {
+            return None;
+        }
         if layers.is_empty() {
             return None;
         }
@@ -105,6 +109,11 @@ impl ZoneRuntime {
         }
 
         None
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn fail_next_projected_scene_composition_for_test(&mut self) {
+        self.fail_next_projected_scene_composition = true;
     }
 
     #[cfg(test)]

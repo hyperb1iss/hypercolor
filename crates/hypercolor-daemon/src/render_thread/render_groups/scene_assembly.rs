@@ -13,7 +13,9 @@ use super::ZoneRuntime;
 use super::group_state::{
     enabled_layer_count, group_contributes_to_scene_canvas, scene_logical_layer_count,
 };
-use super::model::{GroupFrameRequirements, RenderSceneContext, ZoneResult};
+use super::model::{
+    GpuProjectionReplayUnavailable, GroupFrameRequirements, RenderSceneContext, ZoneResult,
+};
 use super::projection::groups_support_projection_composition;
 use super::render_pass::RenderedGroupPassOutput;
 
@@ -44,7 +46,7 @@ impl ZoneRuntime {
         let mut rendered_groups = RenderedGroupPassOutput::default();
         let project_scene_with_sparkleflinger = sparkleflinger.supports_gpu_output_frames()
             && groups_support_projection_composition(context.groups, &self.scene_projection_cache);
-        let projected_scene_layers = self.render_scene_contributor_frames(
+        let projected_scene = self.render_scene_contributor_frames(
             context,
             sparkleflinger,
             project_scene_with_sparkleflinger,
@@ -52,25 +54,40 @@ impl ZoneRuntime {
         )?;
         self.render_display_group_frames(context, sparkleflinger, None, &mut rendered_groups)?;
         let logical_layer_count = scene_logical_layer_count(context.groups);
+        let scene_compose_start = Instant::now();
+        let projected_scene_frame = project_scene_with_sparkleflinger
+            .then(|| self.compose_projected_scene_frame(projected_scene.layers, sparkleflinger))
+            .flatten();
+        let mut scene_compose_us = micros_u32(scene_compose_start.elapsed());
+        if project_scene_with_sparkleflinger
+            && projected_scene_frame.is_none()
+            && !projected_scene.cpu_replay_complete
+        {
+            if let Some(retained) = self.reuse_last_good_scene() {
+                self.clear_effect_error();
+                return Ok(retained);
+            }
+            return Err(GpuProjectionReplayUnavailable.into());
+        }
         let use_gpu_scene_sampling =
-            project_scene_with_sparkleflinger && !self.combined_led_layout.zones.is_empty();
+            projected_scene_frame.is_some() && !self.combined_led_layout.zones.is_empty();
         let sample_us = if use_gpu_scene_sampling {
+            zones.clear();
             0
         } else {
             let sample_start = Instant::now();
             self.sample_scene_group_led_zones(context.groups, zones)?;
             micros_u32(sample_start.elapsed())
         };
-        let scene_compose_start = Instant::now();
-        let scene_frame = if project_scene_with_sparkleflinger {
-            match self.compose_projected_scene_frame(projected_scene_layers, sparkleflinger) {
-                Some(frame) => frame,
-                None => self.compose_scene_frame(context.groups)?,
-            }
+        let scene_frame = if let Some(frame) = projected_scene_frame {
+            frame
         } else {
-            self.compose_scene_frame(context.groups)?
+            let fallback_compose_start = Instant::now();
+            let frame = self.compose_scene_frame(context.groups)?;
+            scene_compose_us =
+                scene_compose_us.saturating_add(micros_u32(fallback_compose_start.elapsed()));
+            frame
         };
-        let scene_compose_us = micros_u32(scene_compose_start.elapsed());
         let led_sampling_strategy = if use_gpu_scene_sampling {
             LedSamplingStrategy::SparkleFlinger(self.combined_led_spatial_engine.clone())
         } else {

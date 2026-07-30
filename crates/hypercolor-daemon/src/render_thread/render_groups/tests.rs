@@ -473,13 +473,37 @@ fn render_scene_for_test_with_screen(
     screen: Option<&ScreenData>,
 ) -> Result<ZoneResult> {
     let mut sparkleflinger = SparkleFlinger::cpu();
+    render_scene_for_test_with_screen_and_sparkleflinger(
+        runtime,
+        groups,
+        groups_revision,
+        elapsed_ms,
+        display_group_target_fps,
+        registry,
+        zones,
+        screen,
+        &mut sparkleflinger,
+    )
+}
+
+fn render_scene_for_test_with_screen_and_sparkleflinger(
+    runtime: &mut ZoneRuntime,
+    groups: &[Zone],
+    groups_revision: u64,
+    elapsed_ms: u64,
+    display_group_target_fps: &HashMap<ZoneId, u32>,
+    registry: &EffectRegistry,
+    zones: &mut Vec<ZoneColors>,
+    screen: Option<&ScreenData>,
+    sparkleflinger: &mut SparkleFlinger,
+) -> Result<ZoneResult> {
     let inputs = ZoneFrameInputs {
         delta_secs: 1.0 / 60.0,
         audio: &AudioData::silence(),
         interaction: &InteractionData::default(),
         screen,
         sensors: &SystemSnapshot::empty(),
-        input_availability: Default::default(),
+        input_availability: InputSourceAvailability::default(),
         media: None,
         net: None,
         lighting: None,
@@ -495,7 +519,7 @@ fn render_scene_for_test_with_screen(
         authoritative_spatial_engine: None,
         inputs,
     };
-    runtime.render_scene(context, &mut sparkleflinger, zones)
+    runtime.render_scene(context, sparkleflinger, zones)
 }
 
 fn blit_general_zone_projection(

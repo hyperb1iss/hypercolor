@@ -64,6 +64,10 @@ pub(crate) struct ZoneResult {
     pub logical_layer_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("GPU scene projection failed without a complete CPU replay or retained scene")]
+pub(crate) struct GpuProjectionReplayUnavailable;
+
 #[derive(Clone, Copy)]
 pub(crate) struct ZoneFrameInputs<'a> {
     pub(crate) delta_secs: f32,

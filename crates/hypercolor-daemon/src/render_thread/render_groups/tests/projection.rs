@@ -520,6 +520,74 @@ fn projected_composition_layers_match_nearest_projection() {
 }
 
 #[test]
+fn projected_contributors_refresh_current_cpu_replay() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = EffectRegistry::default();
+    let mut group = sample_group(4, 4);
+    make_color_fill_group(&mut group);
+    let mut zone = point_zone("cpu_replay");
+    zone.size = NormalizedPosition::new(1.0, 1.0);
+    zone.sampling_mode = Some(SamplingMode::Nearest);
+    zone.edge_behavior = Some(EdgeBehavior::Clamp);
+    group.layout.zones = vec![zone];
+    group.layout.default_sampling_mode = SamplingMode::Nearest;
+    let dependency_key = SceneDependencyKey::new(1, registry.generation());
+    runtime
+        .reconcile(
+            std::slice::from_ref(&group),
+            Some(SceneId::DEFAULT),
+            dependency_key,
+            &registry,
+            &HashMap::new(),
+            None,
+        )
+        .expect("projection resources should reconcile");
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let target_fps = HashMap::new();
+    let descriptors = HashMap::new();
+    let context = RenderSceneContext {
+        groups: std::slice::from_ref(&group),
+        active_scene_id: Some(SceneId::DEFAULT),
+        dependency_key,
+        elapsed_ms: 0,
+        display_group_target_fps: &target_fps,
+        display_group_descriptors: &descriptors,
+        registry: &registry,
+        authoritative_spatial_engine: None,
+        inputs: ZoneFrameInputs {
+            delta_secs: 1.0 / 60.0,
+            audio: &audio,
+            interaction: &interaction,
+            screen: None,
+            sensors: &sensors,
+            input_availability: InputSourceAvailability::default(),
+            media: None,
+            net: None,
+            lighting: None,
+        },
+    };
+    let mut sparkleflinger = SparkleFlinger::cpu();
+    let mut output = super::super::render_pass::RenderedGroupPassOutput::default();
+
+    let projected = runtime
+        .render_scene_contributor_frames(context, &mut sparkleflinger, true, &mut output)
+        .expect("projected contributor should render");
+
+    assert!(!projected.layers.is_empty());
+    assert!(projected.cpu_replay_complete);
+    assert_eq!(
+        runtime
+            .target_canvases
+            .get(&group.id)
+            .expect("group target should remain installed")
+            .get_pixel(0, 0),
+        Rgba::new(255, 0, 0, 255)
+    );
+}
+
+#[test]
 fn projected_composition_matches_rotated_scaled_translated_zone() {
     let mut zone = point_zone("zone_transformed_composition");
     zone.position = NormalizedPosition::new(0.35, 0.6);
@@ -776,4 +844,142 @@ fn gpu_projected_scene_frame_stays_gpu_resident() {
         .expect("GPU projection should export the current output frame");
 
     assert!(matches!(frame, ProducerFrame::GpuTexture(_)));
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn failed_gpu_projection_reuses_last_good_scene_across_dependency_change() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let groups = gpu_projection_groups();
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut zones = Vec::new();
+    let Some(first_frame) = sparkleflinger.upload_canvas_frame(&patterned_source_canvas(4, 4))
+    else {
+        panic!("required GPU test should upload the retained scene")
+    };
+    let retained_result = ZoneResult {
+        scene_frame: ProducerFrame::GpuTexture(first_frame.clone()),
+        group_canvases: Vec::new(),
+        zone_canvases: Vec::new(),
+        active_group_canvas_ids: Vec::new(),
+        led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
+            runtime.combined_led_spatial_engine.clone(),
+        ),
+        producer_full_frame_copy: FullFrameCopyMetrics::default(),
+        render_us: 0,
+        sample_us: 0,
+        scene_compose_us: 0,
+        logical_layer_count: 2,
+    };
+    runtime.retain_frame(
+        SceneDependencyKey::new(1, registry.generation()),
+        &retained_result,
+        &zones,
+    );
+
+    let changed_dependency_key = SceneDependencyKey::new(2, registry.generation());
+    assert!(runtime.reuse_scene(changed_dependency_key).is_none());
+    runtime.fail_next_projected_scene_composition_for_test();
+    let retained = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &groups,
+        2,
+        16,
+        &HashMap::new(),
+        &registry,
+        &mut zones,
+        None,
+        &mut sparkleflinger,
+    )
+    .expect("failed projection should reuse the retained scene");
+    let ProducerFrame::GpuTexture(retained_frame) = retained.scene_frame else {
+        panic!("failed projection should not materialize stale CPU targets")
+    };
+
+    assert_eq!(retained_frame.storage_id, first_frame.storage_id);
+    assert_eq!(
+        retained_frame.content_generation,
+        first_frame.content_generation
+    );
+    assert!(matches!(
+        retained.led_sampling_strategy,
+        LedSamplingStrategy::SparkleFlinger(_)
+    ));
+    assert!(runtime.reuse_scene(changed_dependency_key).is_none());
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn first_gpu_projection_failure_returns_typed_error_without_partial_cpu_scene() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let groups = gpu_projection_groups();
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut zones = Vec::new();
+    runtime.fail_next_projected_scene_composition_for_test();
+
+    let Err(error) = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &groups,
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zones,
+        None,
+        &mut sparkleflinger,
+    ) else {
+        panic!("first unreplayable GPU projection failure must not publish partial CPU output")
+    };
+
+    assert!(
+        error
+            .downcast_ref::<super::super::model::GpuProjectionReplayUnavailable>()
+            .is_some()
+    );
+    assert!(runtime.retained_frame.is_none());
+}
+
+#[cfg(feature = "wgpu")]
+fn required_gpu_sparkleflinger() -> Option<SparkleFlinger> {
+    match SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu) {
+        Ok(sparkleflinger) => Some(sparkleflinger),
+        Err(error) => {
+            assert!(
+                std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                "GPU projection test was required but initialization failed: {error}"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn gpu_projection_groups() -> [Zone; 2] {
+    let mut back = sample_group(4, 4);
+    make_color_fill_group(&mut back);
+    let mut back_zone = point_zone("back");
+    back_zone.size = NormalizedPosition::new(1.0, 1.0);
+    back_zone.sampling_mode = Some(SamplingMode::Nearest);
+    back_zone.edge_behavior = Some(EdgeBehavior::Clamp);
+    back.layout.zones = vec![back_zone];
+    back.layout.default_sampling_mode = SamplingMode::Nearest;
+    let mut front = sample_group(4, 4);
+    make_color_fill_group(&mut front);
+    let LayerSource::ColorFill { rgba } = &mut front.layers[0].source else {
+        unreachable!("color-fill helper should create a color layer")
+    };
+    *rgba = [0.0, 0.0, 1.0, 1.0];
+    let mut front_zone = point_zone("front");
+    front_zone.size = NormalizedPosition::new(0.5, 0.5);
+    front_zone.sampling_mode = Some(SamplingMode::Nearest);
+    front_zone.edge_behavior = Some(EdgeBehavior::Clamp);
+    front.layout.zones = vec![front_zone];
+    front.layout.default_sampling_mode = SamplingMode::Nearest;
+    [back, front]
 }

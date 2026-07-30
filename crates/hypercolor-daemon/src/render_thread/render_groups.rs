@@ -111,6 +111,8 @@ pub(crate) struct ZoneRuntime {
     empty_led_spatial_engine: SpatialEngine,
     scene_width: u32,
     scene_height: u32,
+    #[cfg(all(test, feature = "wgpu"))]
+    fail_next_projected_scene_composition: bool,
 }
 
 pub(crate) struct PreparedSceneResize {
@@ -208,6 +210,8 @@ impl ZoneRuntime {
             empty_led_spatial_engine,
             scene_width,
             scene_height,
+            #[cfg(all(test, feature = "wgpu"))]
+            fail_next_projected_scene_composition: false,
         })
     }
 
