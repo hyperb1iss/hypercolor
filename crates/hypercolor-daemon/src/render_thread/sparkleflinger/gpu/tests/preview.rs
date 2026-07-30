@@ -1,4 +1,5 @@
 use super::*;
+use crate::render_thread::sparkleflinger::gpu::source::cached_readback_key;
 
 #[test]
 fn gpu_scaled_preview_reuses_cached_surface_across_size_flips() {
@@ -49,6 +50,49 @@ fn gpu_scaled_preview_reuses_cached_surface_across_size_flips() {
     assert!(compositor.pending_preview_readback().is_none());
     assert!(!compositor.has_pending_output_submission());
     assert!(compositor.cached_preview_surfaces.len() >= 2);
+}
+
+#[test]
+fn gpu_scaled_preview_tracks_compositor_texture_identity_across_size_flips() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+    let plan = |size, color| {
+        CompositionPlan::with_layers(
+            size,
+            size,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Surface(slot_surface_with_size(
+                    size, size, color,
+                ))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Surface(slot_surface_with_size(size, size, color)),
+                    0.35,
+                ),
+            ],
+        )
+    };
+
+    for (size, color) in [
+        (4, Rgba::new(255, 32, 0, 255)),
+        (8, Rgba::new(32, 64, 255, 255)),
+        (4, Rgba::new(40, 220, 96, 255)),
+    ] {
+        compositor
+            .compose(&plan(size, color), false, Some(request))
+            .expect("resized preview compose should succeed");
+        let preview = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!((preview.width(), preview.height()), (2, 2));
+        assert_eq!(
+            &preview.rgba_bytes()[0..4],
+            &[color.r, color.g, color.b, color.a]
+        );
+    }
 }
 
 #[test]
@@ -195,6 +239,214 @@ fn gpu_failed_preview_scale_preparation_preserves_last_good_map() {
 
     let preview = resolve_preview_surface_blocking(&mut compositor);
     assert_eq!((preview.width(), preview.height()), (2, 2));
+}
+
+#[test]
+fn gpu_failed_preview_preparation_preserves_encoded_readback() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let color = Rgba::new(255, 32, 0, 255);
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(color))),
+            CompositionLayer::alpha(ProducerFrame::Canvas(solid_canvas(color)), 0.35),
+        ],
+    );
+    let retained_request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+
+    compositor
+        .compose(&plan, false, Some(retained_request))
+        .expect("first preview should remain encoded without submission");
+    let retained_frame = compositor
+        .frame_in_flight
+        .as_ref()
+        .expect("first preview should own an encoded frame");
+    assert!(retained_frame.is_building());
+    assert!(
+        retained_frame
+            .preview_readback()
+            .is_some_and(|readback| readback.matches_request(retained_request))
+    );
+
+    compositor.fail_next_preview_scale_output_preparation();
+    let error = compositor
+        .compose(
+            &plan,
+            false,
+            Some(PreviewSurfaceRequest {
+                width: 3,
+                height: 3,
+            }),
+        )
+        .expect_err("late preview allocation should fail before retirement");
+    assert!(
+        error
+            .to_string()
+            .contains("injected preview scale output preparation failure")
+    );
+    let retained_frame = compositor
+        .frame_in_flight
+        .as_ref()
+        .expect("failed allocation must preserve the encoded frame");
+    assert!(retained_frame.is_building());
+    assert!(
+        retained_frame
+            .preview_readback()
+            .is_some_and(|readback| readback.matches_request(retained_request))
+    );
+
+    compositor
+        .submit_pending_preview_work()
+        .expect("retained preview should still submit");
+    let preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!((preview.width(), preview.height()), (2, 2));
+    assert_eq!(&preview.rgba_bytes()[0..4], &[255, 32, 0, 255]);
+}
+
+#[test]
+fn gpu_failed_bypass_resize_preserves_encoded_preview() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let retained_request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+    let retained_plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(27))),
+            CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(91)), 0.35),
+        ],
+    );
+
+    compositor
+        .compose(&retained_plan, false, Some(retained_request))
+        .expect("retained preview should remain encoded without submission");
+    assert!(
+        compositor
+            .frame_in_flight
+            .as_ref()
+            .is_some_and(FrameInFlight::is_building)
+    );
+
+    let rejected_width = compositor.probe.max_texture_dimension_2d.saturating_add(1);
+    let rejected_plan = CompositionPlan::single(
+        rejected_width,
+        4,
+        CompositionLayer::replace(ProducerFrame::Surface(slot_surface(Rgba::new(
+            12, 34, 56, 255,
+        )))),
+    );
+    let error = compositor
+        .compose(
+            &rejected_plan,
+            false,
+            Some(PreviewSurfaceRequest {
+                width: rejected_width,
+                height: 4,
+            }),
+        )
+        .expect_err("oversized bypass surface should fail admission");
+    assert!(
+        error
+            .to_string()
+            .contains("exceeds the GPU texture dimension limit")
+    );
+    let retained_frame = compositor
+        .frame_in_flight
+        .as_ref()
+        .expect("failed bypass admission must preserve the encoded preview");
+    assert!(retained_frame.is_building());
+    assert!(
+        retained_frame
+            .preview_readback()
+            .is_some_and(|readback| readback.matches_request(retained_request))
+    );
+
+    compositor
+        .submit_pending_preview_work()
+        .expect("retained preview should still submit");
+    let preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!((preview.width(), preview.height()), (2, 2));
+}
+
+#[test]
+fn gpu_failed_preview_preparation_preserves_composition_cache_until_retry() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let first_color = Rgba::new(255, 32, 0, 255);
+    let second_color = Rgba::new(32, 64, 255, 255);
+    let first_plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(first_color))),
+            CompositionLayer::alpha(ProducerFrame::Canvas(solid_canvas(first_color)), 0.35),
+        ],
+    );
+    let second_plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(second_color))),
+            CompositionLayer::alpha(ProducerFrame::Canvas(solid_canvas(second_color)), 0.35),
+        ],
+    );
+
+    compositor
+        .compose(
+            &first_plan,
+            false,
+            Some(PreviewSurfaceRequest {
+                width: 2,
+                height: 2,
+            }),
+        )
+        .expect("first preview compose should succeed");
+    let _ = resolve_preview_surface_blocking(&mut compositor);
+    let first_key = compositor.cached_composition_key.clone();
+    let first_generation = compositor.output_generation;
+    assert_eq!(first_key, cached_readback_key(&first_plan));
+
+    let next_request = PreviewSurfaceRequest {
+        width: 3,
+        height: 3,
+    };
+    compositor.fail_next_preview_scale_output_preparation();
+    let error = compositor
+        .compose(&second_plan, false, Some(next_request))
+        .expect_err("new-content preview allocation should fail before cache publication");
+    assert!(
+        error
+            .to_string()
+            .contains("injected preview scale output preparation failure")
+    );
+    assert_eq!(compositor.cached_composition_key, first_key);
+    assert_eq!(compositor.output_generation, first_generation);
+
+    compositor
+        .compose(&second_plan, false, Some(next_request))
+        .expect("retry should compose and publish the new content");
+    assert_eq!(
+        compositor.cached_composition_key,
+        cached_readback_key(&second_plan)
+    );
+    assert_eq!(compositor.output_generation, first_generation + 1);
+    let preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!((preview.width(), preview.height()), (3, 3));
+    assert_eq!(&preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
 }
 
 #[test]

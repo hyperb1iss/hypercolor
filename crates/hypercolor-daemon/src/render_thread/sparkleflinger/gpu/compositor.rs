@@ -16,7 +16,8 @@ use super::frame_set::{
     gpu_composed_from_surface, gpu_composed_with_preview_surface, gpu_composed_without_surfaces,
 };
 use super::preview::{
-    CachedPreviewSurfaceKey, bypass_preview_surface, preview_request_matches_plan,
+    CachedPreviewSurfaceKey, PreparedPreviewSurfaceChange, bypass_preview_surface,
+    preview_request_matches_plan, preview_requires_scale,
 };
 use super::readback::{
     CachedReadbackKey, CachedReadbackSurface, copy_mapped_readback_buffer_into_surface,
@@ -158,6 +159,7 @@ impl GpuSparkleFlinger {
                 requires_cpu_sampling_canvas,
                 preview_surface_request,
                 None,
+                None,
             );
         }
         if plan.layers.len() == 1
@@ -196,22 +198,15 @@ impl GpuSparkleFlinger {
                 )?;
             }
         }
-        if requires_cpu_sampling_canvas && readback_key.is_none() {
-            self.ensure_sampling_readback_buffers(plan.width, plan.height)?;
-        }
-
-        if matches!(
-            self.surfaces,
-            Some(GpuCompositorSurfaceSet {
-                width: current_width,
-                height: current_height,
-                ..
-            }) if current_width != plan.width || current_height != plan.height
-        ) {
-            self.discard_superseded_preview_work();
-        }
-        self.try_ensure_surface_size(plan.width, plan.height)?;
-        if let Some(key) = readback_key.as_ref()
+        let mut prepared_surface_replacement =
+            self.prepare_surface_size(plan.width, plan.height)?;
+        let prepared_sampling_readback = if requires_cpu_sampling_canvas && readback_key.is_none() {
+            self.prepare_sampling_readback_buffers(plan.width, plan.height)?
+        } else {
+            None
+        };
+        if prepared_surface_replacement.is_none()
+            && let Some(key) = readback_key.as_ref()
             && self.current_output.is_some()
             && self.cached_composition_key.as_ref() == Some(key)
         {
@@ -254,6 +249,14 @@ impl GpuSparkleFlinger {
             {
                 return Ok(gpu_composed_without_surfaces());
             }
+            let prepared_preview_surface = self.prepare_preview_for_surfaces(
+                plan.width,
+                plan.height,
+                preview_surface_request,
+                requires_cpu_sampling_canvas,
+                None,
+                false,
+            )?;
             let pending_output_submission =
                 self.supersede_frame_in_flight("current output readback restaged");
             if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
@@ -269,36 +272,56 @@ impl GpuSparkleFlinger {
                 requires_cpu_sampling_canvas,
                 preview_surface_request,
                 pending_output_submission,
+                prepared_preview_surface,
             );
         }
+        let reuse_cached_readback = readback_key.as_ref().is_some_and(|key| {
+            self.cached_readback_surface.as_ref().is_some_and(|cached| {
+                cached.key.as_ref() == Some(key)
+                    && preview_request_matches_plan(
+                        preview_surface_request,
+                        plan.width,
+                        plan.height,
+                    )
+            })
+        });
+        let prepared_preview_surface = if reuse_cached_readback {
+            None
+        } else {
+            self.prepare_preview_for_surfaces(
+                plan.width,
+                plan.height,
+                preview_surface_request,
+                requires_cpu_sampling_canvas,
+                prepared_surface_replacement.as_ref(),
+                prepared_surface_replacement.is_some(),
+            )?
+        };
         let has_screen_uploads = screen_upload_content_keys(&plan.layers).next().is_some();
         if has_screen_uploads {
             self.flush_pending_output_submission()?;
         }
-        {
-            let surfaces = self
-                .surfaces
+        let uploaded_screen_frames = {
+            let surfaces = prepared_surface_replacement
                 .as_mut()
-                .expect("surface allocation should succeed before screen upload preflight");
+                .or(self.surfaces.as_mut())
+                .expect("surface preparation should succeed before screen upload admission");
             if let Err(error) = surfaces
                 .screen_upload_pool
                 .preflight_uploads(&self.device, screen_upload_content_keys(&plan.layers))
             {
                 return screen_upload_failure_frame(error);
             }
-        }
-        let surfaces = self
-            .surfaces
-            .as_mut()
-            .expect("surface allocation should succeed before composition");
-        let uploaded_screen_frames =
             match upload_screen_layers(&self.device, &self.queue, surfaces, &plan.layers) {
                 Ok(uploaded) => uploaded,
                 Err(error) => {
                     surfaces.discard_pending_uploads();
                     return screen_upload_failure_frame(error);
                 }
-            };
+            }
+        };
+        self.commit_surface_size(prepared_surface_replacement);
+        self.commit_sampling_readback_buffers(prepared_sampling_readback);
         if has_screen_uploads {
             // The newly encoded uploads must survive preview cleanup. Any
             // older deferred frame was submitted before preparation, so only
@@ -430,10 +453,22 @@ impl GpuSparkleFlinger {
             requires_cpu_sampling_canvas,
             preview_surface_request,
             Some(encoder),
+            prepared_preview_surface,
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn try_ensure_surface_size(&mut self, width: u32, height: u32) -> Result<()> {
+        let replacement = self.prepare_surface_size(width, height)?;
+        self.commit_surface_size(replacement);
+        Ok(())
+    }
+
+    fn prepare_surface_size(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<GpuCompositorSurfaceSet>> {
         if matches!(
             self.surfaces,
             Some(GpuCompositorSurfaceSet {
@@ -442,7 +477,7 @@ impl GpuSparkleFlinger {
                 ..
             }) if current_width == width && current_height == height
         ) {
-            return Ok(());
+            return Ok(None);
         }
         let admission =
             super::gpu_canvas_admission(self.probe.max_texture_dimension_2d, width, height);
@@ -450,8 +485,13 @@ impl GpuSparkleFlinger {
             anyhow::bail!("{}", reason.message());
         }
 
-        let replacement =
-            GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height)?;
+        GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height).map(Some)
+    }
+
+    fn commit_surface_size(&mut self, replacement: Option<GpuCompositorSurfaceSet>) {
+        let Some(replacement) = replacement else {
+            return;
+        };
         self.discard_pending_preview_map();
         self.clear_sampling_readback_latch();
         drop(self.supersede_frame_in_flight("compositor surfaces resized"));
@@ -465,7 +505,39 @@ impl GpuSparkleFlinger {
         self.ready_preview_surface = None;
         self.cached_sample_result = None;
         self.spatial_sampler.clear_bind_groups();
-        Ok(())
+    }
+
+    fn prepare_preview_for_surfaces(
+        &mut self,
+        source_width: u32,
+        source_height: u32,
+        request: Option<PreviewSurfaceRequest>,
+        requires_cpu_sampling_canvas: bool,
+        prepared_surfaces: Option<&GpuCompositorSurfaceSet>,
+        force_replace: bool,
+    ) -> Result<Option<PreparedPreviewSurfaceChange>> {
+        if requires_cpu_sampling_canvas {
+            return Ok(None);
+        }
+        let Some(request) = request else {
+            return Ok(None);
+        };
+        let scale_views = if preview_requires_scale(request, source_width, source_height) {
+            let surfaces = prepared_surfaces
+                .or(self.surfaces.as_ref())
+                .context("GPU preview preparation requires compositor surfaces")?;
+            Some((surfaces.front.view.clone(), surfaces.back.view.clone()))
+        } else {
+            None
+        };
+        self.prepare_preview_surface_readback(
+            source_width,
+            source_height,
+            request,
+            scale_views,
+            force_replace,
+        )
+        .map(Some)
     }
 
     fn layer_reuses_current_output_texture(
@@ -562,8 +634,11 @@ impl GpuSparkleFlinger {
             }
         }
 
-        self.discard_superseded_preview_work();
-        self.try_ensure_surface_size(plan.width, plan.height)?;
+        let prepared_surface_replacement = self.prepare_surface_size(plan.width, plan.height)?;
+        if prepared_surface_replacement.is_none() {
+            self.discard_superseded_preview_work();
+        }
+        self.commit_surface_size(prepared_surface_replacement);
         if let Some(surfaces) = self.surfaces.as_mut() {
             upload_frame_into_cached_texture(
                 &self.queue,
@@ -627,6 +702,7 @@ impl GpuSparkleFlinger {
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
         encoder: Option<wgpu::CommandEncoder>,
+        prepared_preview_surface: Option<PreparedPreviewSurfaceChange>,
     ) -> Result<ComposedFrameSet> {
         if requires_cpu_sampling_canvas {
             // Keyed (all-CPU) plans keep their historical behavior: the keyed
@@ -655,6 +731,7 @@ impl GpuSparkleFlinger {
                 request,
                 cache_as_full_size,
                 encoder,
+                prepared_preview_surface,
             );
         }
         if let Some(encoder) = encoder {
@@ -900,27 +977,43 @@ impl GpuSparkleFlinger {
         }
     }
 
-    fn ensure_sampling_readback_buffers(&mut self, width: u32, height: u32) -> Result<()> {
+    fn prepare_sampling_readback_buffers(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<SamplingReadbackBuffers>> {
         if self
             .sampling_latch
             .buffers
             .as_ref()
             .is_some_and(|buffers| buffers.width == width && buffers.height == height)
         {
-            return Ok(());
+            return Ok(None);
         }
         let fail_after_prepare = self.take_sampling_readback_failure_injection();
-        let replacement = SamplingReadbackBuffers::try_new(
+        SamplingReadbackBuffers::try_new(
             &self.device,
             self.max_buffer_size,
             width,
             height,
             fail_after_prepare,
-        )?;
+        )
+        .map(Some)
+    }
+
+    fn commit_sampling_readback_buffers(&mut self, replacement: Option<SamplingReadbackBuffers>) {
+        let Some(replacement) = replacement else {
+            return;
+        };
         // The pending readback's mapped buffer belongs to the old set; drop
         // it before replacing the buffers.
         self.discard_pending_sampling_readback();
         self.sampling_latch.buffers = Some(replacement);
+    }
+
+    fn ensure_sampling_readback_buffers(&mut self, width: u32, height: u32) -> Result<()> {
+        let replacement = self.prepare_sampling_readback_buffers(width, height)?;
+        self.commit_sampling_readback_buffers(replacement);
         Ok(())
     }
 

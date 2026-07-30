@@ -54,7 +54,9 @@ struct GpuPreviewScaleOutput {
     bind_groups: GpuPreviewScaleBindGroups,
 }
 
-enum PreparedPreviewSurfaceChange {
+pub(super) struct PreparedPreviewSurfaceChange(PreparedPreviewSurfaceChangeKind);
+
+enum PreparedPreviewSurfaceChangeKind {
     Unchanged {
         scale_output: Option<GpuPreviewScaleOutput>,
     },
@@ -356,15 +358,18 @@ impl GpuSparkleFlinger {
         width: u32,
         height: u32,
         scale_views: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
+        force_replace: bool,
     ) -> Result<PreparedPreviewSurfaceChange> {
         let needs_scale_output = scale_views.is_some()
-            && self.preview_surfaces.as_ref().is_none_or(|surfaces| {
-                !surfaces.fits_request(width, height) || surfaces.scale_output.is_none()
-            });
+            && (force_replace
+                || self.preview_surfaces.as_ref().is_none_or(|surfaces| {
+                    !surfaces.fits_request(width, height) || surfaces.scale_output.is_none()
+                }));
         let fail_scale_output =
             needs_scale_output && self.take_preview_scale_output_failure_injection();
 
-        if let Some(surfaces) = self.preview_surfaces.as_ref()
+        if !force_replace
+            && let Some(surfaces) = self.preview_surfaces.as_ref()
             && surfaces.width == width
             && surfaces.height == height
         {
@@ -383,10 +388,13 @@ impl GpuSparkleFlinger {
                     )
                 })
                 .transpose()?;
-            return Ok(PreparedPreviewSurfaceChange::Unchanged { scale_output });
+            return Ok(PreparedPreviewSurfaceChange(
+                PreparedPreviewSurfaceChangeKind::Unchanged { scale_output },
+            ));
         }
 
-        if let Some(surfaces) = self.preview_surfaces.as_ref()
+        if !force_replace
+            && let Some(surfaces) = self.preview_surfaces.as_ref()
             && surfaces.fits_request(width, height)
         {
             let readback_surfaces = surfaces.prepare_reconfiguration(width, height)?;
@@ -405,12 +413,14 @@ impl GpuSparkleFlinger {
                     )
                 })
                 .transpose()?;
-            return Ok(PreparedPreviewSurfaceChange::Reconfigure {
-                width,
-                height,
-                readback_surfaces,
-                scale_output,
-            });
+            return Ok(PreparedPreviewSurfaceChange(
+                PreparedPreviewSurfaceChangeKind::Reconfigure {
+                    width,
+                    height,
+                    readback_surfaces,
+                    scale_output,
+                },
+            ));
         }
 
         let mut replacement = GpuPreviewSurfaceSet::try_new(&self.device, width, height)?;
@@ -430,12 +440,54 @@ impl GpuSparkleFlinger {
                 replacement.preview_bind_group_count = 2;
             }
         }
-        Ok(PreparedPreviewSurfaceChange::Replace(replacement))
+        Ok(PreparedPreviewSurfaceChange(
+            PreparedPreviewSurfaceChangeKind::Replace(replacement),
+        ))
+    }
+
+    pub(super) fn prepare_preview_surface_readback(
+        &mut self,
+        source_width: u32,
+        source_height: u32,
+        request: PreviewSurfaceRequest,
+        scale_views: Option<(wgpu::TextureView, wgpu::TextureView)>,
+        force_replace: bool,
+    ) -> Result<PreparedPreviewSurfaceChange> {
+        super::ensure_readback_buffer_capacity(
+            self.max_buffer_size,
+            request.width,
+            request.height,
+            false,
+        )?;
+        let requires_scale = preview_requires_scale(request, source_width, source_height);
+        if requires_scale {
+            super::ensure_storage_buffer_capacity(
+                self.max_storage_buffer_binding_size,
+                request.width,
+                request.height,
+            )?;
+        }
+        let scale_views = if requires_scale {
+            Some(
+                scale_views
+                    .context("GPU preview scale requested without compositor surface views")?,
+            )
+        } else {
+            None
+        };
+        self.prepare_preview_surface_change(
+            request.width,
+            request.height,
+            scale_views
+                .as_ref()
+                .map(|(front_view, back_view)| (front_view, back_view)),
+            force_replace,
+        )
     }
 
     fn commit_preview_surface_change(&mut self, prepared: PreparedPreviewSurfaceChange) {
-        match prepared {
-            PreparedPreviewSurfaceChange::Unchanged { scale_output } => {
+        match prepared.0 {
+            PreparedPreviewSurfaceChangeKind::Unchanged { scale_output } => {
                 if let Some(scale_output) = scale_output {
                     let surfaces = self
                         .preview_surfaces
@@ -449,7 +501,7 @@ impl GpuSparkleFlinger {
                     }
                 }
             }
-            PreparedPreviewSurfaceChange::Reconfigure {
+            PreparedPreviewSurfaceChangeKind::Reconfigure {
                 width,
                 height,
                 readback_surfaces,
@@ -470,7 +522,7 @@ impl GpuSparkleFlinger {
                     }
                 }
             }
-            PreparedPreviewSurfaceChange::Replace(replacement) => {
+            PreparedPreviewSurfaceChangeKind::Replace(replacement) => {
                 self.discard_pending_preview_map();
                 self.preview_surfaces = Some(replacement);
                 #[cfg(test)]
@@ -491,6 +543,7 @@ impl GpuSparkleFlinger {
         request: PreviewSurfaceRequest,
         cache_as_full_size: bool,
         encoder: Option<wgpu::CommandEncoder>,
+        prepared_surface_change: Option<PreparedPreviewSurfaceChange>,
     ) -> Result<ComposedFrameSet> {
         if !cache_as_full_size
             && let Some(key) = readback_key.as_ref()
@@ -506,13 +559,6 @@ impl GpuSparkleFlinger {
             self.discard_pending_uploads();
             return Ok(gpu_composed_with_preview_surface(cached));
         }
-
-        super::ensure_readback_buffer_capacity(
-            self.max_buffer_size,
-            request.width,
-            request.height,
-            false,
-        )?;
 
         let request_bytes_per_row = request.width.saturating_mul(BYTES_PER_PIXEL as u32);
         let direct_source_texture = if request.width == source_width
@@ -530,13 +576,6 @@ impl GpuSparkleFlinger {
         } else {
             None
         };
-        if direct_source_texture.is_none() {
-            super::ensure_storage_buffer_capacity(
-                self.max_storage_buffer_binding_size,
-                request.width,
-                request.height,
-            )?;
-        }
         let scale_views = direct_source_texture
             .is_none()
             .then(|| {
@@ -546,13 +585,16 @@ impl GpuSparkleFlinger {
                 Ok::<_, anyhow::Error>((surfaces.front.view.clone(), surfaces.back.view.clone()))
             })
             .transpose()?;
-        let prepared = self.prepare_preview_surface_change(
-            request.width,
-            request.height,
-            scale_views
-                .as_ref()
-                .map(|(front_view, back_view)| (front_view, back_view)),
-        )?;
+        let prepared = match prepared_surface_change {
+            Some(prepared) => prepared,
+            None => self.prepare_preview_surface_readback(
+                source_width,
+                source_height,
+                request,
+                scale_views,
+                false,
+            )?,
+        };
         self.commit_preview_surface_change(prepared);
         let mapped_readback_slot = self
             .pending_preview_map
