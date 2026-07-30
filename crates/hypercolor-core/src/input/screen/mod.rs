@@ -348,6 +348,7 @@ pub struct ScreenAnalysisResourcePlan {
     frame_work_capacity: u64,
     worker_count: u64,
     max_zone_id_bytes: usize,
+    zone_snapshot_slot_bytes: u64,
 }
 
 const ZONE_SNAPSHOT_SLOT_COUNT: usize = 3;
@@ -397,6 +398,7 @@ impl ScreenAnalysisComputeCapacity {
 
 struct PreparedZoneSnapshot {
     zones: Arc<Vec<ZoneColors>>,
+    resource_owner: Arc<dyn SurfaceResourceOwner>,
     cols: u32,
     rows: u32,
 }
@@ -508,6 +510,17 @@ impl ScreenAnalysisResourcePlan {
                 width: grid_cols,
                 height: grid_rows,
             })?;
+        let zone_snapshot_slot_bytes = grid_cells_u64
+            .checked_mul(u64::try_from(snapshot_cell_bytes).map_err(|_| {
+                SurfaceResourceError::ByteLengthOverflow {
+                    width: grid_cols,
+                    height: grid_rows,
+                }
+            })?)
+            .ok_or(SurfaceResourceError::ByteLengthOverflow {
+                width: grid_cols,
+                height: grid_rows,
+            })?;
         let retained_per_cell = u64::try_from(
             snapshot_cell_bytes
                 .checked_mul(ZONE_SNAPSHOT_SLOT_COUNT)
@@ -600,6 +613,7 @@ impl ScreenAnalysisResourcePlan {
             frame_work_capacity,
             worker_count,
             max_zone_id_bytes,
+            zone_snapshot_slot_bytes,
         })
     }
 
@@ -626,6 +640,11 @@ impl ScreenAnalysisResourcePlan {
     #[must_use]
     pub const fn non_surface_retained_bytes(self) -> u64 {
         self.retained_bytes - self.surface_backing_bytes()
+    }
+
+    #[must_use]
+    const fn zone_snapshot_slot_bytes(self) -> u64 {
+        self.zone_snapshot_slot_bytes
     }
 
     #[must_use]
@@ -799,9 +818,7 @@ pub struct ScreenCaptureInput {
 
     zone_snapshot_pool: Vec<PreparedZoneSnapshot>,
 
-    latest_zone_colors: Option<Arc<Vec<ZoneColors>>>,
-
-    latest_zone_count: usize,
+    latest_zone_colors: Option<ScreenZoneColors>,
 
     analysis_resource_plan: ScreenAnalysisResourcePlan,
 
@@ -895,7 +912,6 @@ impl ScreenCaptureInput {
             policy_grid,
             zone_snapshot_pool,
             latest_zone_colors: None,
-            latest_zone_count: 0,
             analysis_resource_plan,
             admission_coordinator,
             analysis_lease,
@@ -1045,7 +1061,6 @@ impl ScreenCaptureInput {
         self.latest_grid_width = effective_cols;
         self.latest_grid_height = effective_rows;
         self.latest_zone_colors = Some(zone_colors);
-        self.latest_zone_count = self.policy_grid.sector_count();
         self.letterbox = letterbox;
         self.frame_width = width;
         self.frame_height = height;
@@ -1165,7 +1180,6 @@ impl ScreenCaptureInput {
         self.surface_resource_owner = prepared.surface_resource_owner;
         self.requested_extent = requested_extent;
         self.latest_zone_colors = None;
-        self.latest_zone_count = 0;
         self.latest_canvas_downscale = None;
         self.latest_grid_width = 0;
         self.latest_grid_height = 0;
@@ -1188,7 +1202,6 @@ impl InputSource for ScreenCaptureInput {
         self.running = true;
         self.smoother.reset();
         self.latest_zone_colors = None;
-        self.latest_zone_count = 0;
         self.latest_grid_width = 0;
         self.latest_grid_height = 0;
         self.latest_canvas_downscale = None;
@@ -1200,7 +1213,6 @@ impl InputSource for ScreenCaptureInput {
     fn stop(&mut self) {
         self.running = false;
         self.latest_zone_colors = None;
-        self.latest_zone_count = 0;
         self.latest_grid_width = 0;
         self.latest_grid_height = 0;
         self.latest_canvas_downscale = None;
@@ -1225,11 +1237,7 @@ impl InputSource for ScreenCaptureInput {
         }
 
         Ok(InputData::Screen(ScreenData {
-            zone_colors: ScreenZoneColors::from_prepared(
-                Arc::clone(zone_colors),
-                self.latest_zone_count,
-            )
-            .expect("published zone count fits prepared snapshot storage"),
+            zone_colors: zone_colors.clone(),
             grid_width: self.latest_grid_width,
             grid_height: self.latest_grid_height,
             canvas_downscale: self.latest_canvas_downscale.clone(),
@@ -1356,7 +1364,18 @@ fn prepare_analysis_resources(
         })?;
     let analysis_grid = prepare_sector_grid(config, plan)?;
     let policy_grid = prepare_sector_grid(config, plan)?;
-    let zone_snapshot_pool = prepare_zone_snapshot_pool(config, plan)?;
+    let mut zone_snapshot_owners = Vec::new();
+    zone_snapshot_owners
+        .try_reserve_exact(ZONE_SNAPSHOT_SLOT_COUNT)
+        .map_err(|_| analysis_allocation_error(config, plan))?;
+    for _ in 0..ZONE_SNAPSHOT_SLOT_COUNT {
+        let slot_reservation = reservation
+            .split_off(plan.zone_snapshot_slot_bytes())
+            .expect("zone snapshot bytes are a checked subset of the aggregate quote");
+        let owner: Arc<dyn SurfaceResourceOwner> = Arc::new(slot_reservation.freeze());
+        zone_snapshot_owners.push(owner);
+    }
+    let zone_snapshot_pool = prepare_zone_snapshot_pool(config, plan, zone_snapshot_owners)?;
     let smoother = TemporalSmoother::try_new_for_grid(
         config.smoothing_alpha,
         config.scene_cut_threshold,
@@ -1415,12 +1434,13 @@ fn prepare_sector_grid(
 fn prepare_zone_snapshot_pool(
     config: &CaptureConfig,
     plan: ScreenAnalysisResourcePlan,
+    resource_owners: Vec<Arc<dyn SurfaceResourceOwner>>,
 ) -> Result<Vec<PreparedZoneSnapshot>, SurfaceResourceError> {
     let mut slots = Vec::new();
     slots
         .try_reserve_exact(ZONE_SNAPSHOT_SLOT_COUNT)
         .map_err(|_| analysis_allocation_error(config, plan))?;
-    for _ in 0..ZONE_SNAPSHOT_SLOT_COUNT {
+    for resource_owner in resource_owners {
         let mut zones = Vec::new();
         zones
             .try_reserve_exact(plan.grid_cells)
@@ -1443,6 +1463,7 @@ fn prepare_zone_snapshot_pool(
         }
         slots.push(PreparedZoneSnapshot {
             zones: Arc::new(zones),
+            resource_owner,
             cols: config.grid_cols,
             rows: config.grid_rows,
         });
@@ -1455,7 +1476,7 @@ fn prepare_zone_snapshot(
     colors: &[[u8; 3]],
     cols: u32,
     rows: u32,
-) -> Option<Arc<Vec<ZoneColors>>> {
+) -> Option<ScreenZoneColors> {
     let slot = slots
         .iter_mut()
         .find(|slot| Arc::strong_count(&slot.zones) == 1)?;
@@ -1485,7 +1506,11 @@ fn prepare_zone_snapshot(
     for (zone, color) in zones.iter_mut().zip(colors) {
         zone.colors[0] = *color;
     }
-    Some(Arc::clone(&slot.zones))
+    ScreenZoneColors::from_prepared(
+        Arc::clone(&slot.zones),
+        colors.len(),
+        Arc::clone(&slot.resource_owner),
+    )
 }
 
 fn prepare_policy_pixels(extent: PixelExtent) -> Result<Vec<[u8; 3]>, SurfaceResourceError> {

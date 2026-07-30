@@ -8,7 +8,7 @@ use super::graph::InteractionSourceOrigin;
 use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
 use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
-use crate::types::canvas::PublishedSurface;
+use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
 use crate::types::event::{TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::Deref;
@@ -357,15 +357,24 @@ pub struct MotionAggregate {
 // ── ScreenData ─────────────────────────────────────────────────────────────
 
 /// Shared immutable view over one prepared screen-zone snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ScreenZoneColors {
     storage: Arc<Vec<ZoneColors>>,
     len: usize,
+    _resource_owner: Option<Arc<dyn SurfaceResourceOwner>>,
 }
 
 impl ScreenZoneColors {
-    pub(crate) fn from_prepared(storage: Arc<Vec<ZoneColors>>, len: usize) -> Option<Self> {
-        (len <= storage.len()).then_some(Self { storage, len })
+    pub(crate) fn from_prepared(
+        storage: Arc<Vec<ZoneColors>>,
+        len: usize,
+        resource_owner: Arc<dyn SurfaceResourceOwner>,
+    ) -> Option<Self> {
+        (len <= storage.len()).then_some(Self {
+            storage,
+            len,
+            _resource_owner: Some(resource_owner),
+        })
     }
 }
 
@@ -375,9 +384,18 @@ impl From<Vec<ZoneColors>> for ScreenZoneColors {
         Self {
             storage: Arc::new(storage),
             len,
+            _resource_owner: None,
         }
     }
 }
+
+impl PartialEq for ScreenZoneColors {
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
+    }
+}
+
+impl Eq for ScreenZoneColors {}
 
 impl Deref for ScreenZoneColors {
     type Target = [ZoneColors];

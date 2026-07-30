@@ -219,6 +219,40 @@ fn extracted_surface_keeps_analyzer_admission_alive() {
     assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
 }
 
+#[test]
+fn extracted_zone_snapshot_keeps_its_admission_alive() {
+    let extent = PixelExtent::new(4, 4).expect("extent should be valid");
+    let config = CaptureConfig {
+        grid_cols: 1,
+        grid_rows: 1,
+        analysis_memory_bytes: 1_000_000,
+        ..CaptureConfig::default()
+    };
+    let coordinator =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(1_000_000, 1_000_000));
+    let mut input = ScreenCaptureInput::with_requested_extent_and_admission(
+        config,
+        extent,
+        coordinator.clone(),
+    )
+    .expect("analyzer should prepare");
+    let frame = solid_rgba(4, 4, [10, 20, 30, 255]);
+    assert!(
+        input
+            .push_frame(&frame, 4, 4)
+            .expect("frame should be valid")
+    );
+    let InputData::Screen(mut data) = input.sample().expect("sample should succeed") else {
+        panic!("accepted frame should publish screen data");
+    };
+    data.canvas_downscale = None;
+
+    drop(input);
+    assert!(coordinator.snapshot().reserved_bytes() > 0);
+    drop(data);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+}
+
 fn solid_rgba(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
     let pixel_count = usize::try_from(width)
         .expect("test width should fit")
