@@ -7,6 +7,8 @@ use hypercolor_types::scene::Zone;
 
 use super::super::frame_sampling::LedSamplingStrategy;
 use super::super::micros_u32;
+#[cfg(not(feature = "wgpu"))]
+use super::super::producer_queue::ProducerFrame;
 use super::super::producer_queue::record_producer_frame;
 use super::super::sparkleflinger::SparkleFlinger;
 use super::ZoneRuntime;
@@ -62,9 +64,12 @@ impl ZoneRuntime {
         self.render_display_group_frames(context, sparkleflinger, None, &mut rendered_groups)?;
         let logical_layer_count = scene_logical_layer_count(context.groups);
         let scene_compose_start = Instant::now();
+        #[cfg(feature = "wgpu")]
         let projected_scene_frame = project_scene_with_sparkleflinger
             .then(|| self.compose_projected_scene_frame(projected_scene.layers, sparkleflinger))
             .flatten();
+        #[cfg(not(feature = "wgpu"))]
+        let projected_scene_frame: Option<ProducerFrame> = None;
         let mut scene_compose_us = micros_u32(scene_compose_start.elapsed());
         if project_scene_with_sparkleflinger
             && projected_scene_frame.is_none()

@@ -1378,6 +1378,13 @@ pub(crate) struct PreparedCanvasResize {
     display_sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
 }
 
+impl PreparedCanvasResize {
+    #[cfg(feature = "wgpu")]
+    pub(crate) const fn render_gpu_output_admitted(&self) -> bool {
+        self.sparkleflinger_preparation.gpu_output_admitted()
+    }
+}
+
 pub(crate) struct PreparedLayoutActivation {
     pub(crate) spatial_engine: SpatialEngine,
     pub(crate) expected_layout: SpatialLayout,

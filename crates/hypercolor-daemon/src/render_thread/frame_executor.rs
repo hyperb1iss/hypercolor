@@ -18,6 +18,8 @@ use super::frame_policy::{FrameExecution, SkipDecision};
 use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
+#[cfg(feature = "wgpu")]
+use super::pipeline_runtime::PreparedCanvasResize;
 use super::pipeline_runtime::{
     OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
     PreparedLayoutActivation,
@@ -206,10 +208,18 @@ pub(crate) async fn execute_frame(
                             width,
                             height,
                         )?;
+                    #[cfg(feature = "wgpu")]
+                    let gpu_projection_admitted = prepared_resize.as_ref().map_or_else(
+                        || render.sparkleflinger.supports_gpu_output_frames(),
+                        PreparedCanvasResize::render_gpu_output_admitted,
+                    );
+                    #[cfg(not(feature = "wgpu"))]
+                    let gpu_projection_admitted = false;
                     let prepared_projected_scene =
                         render.sparkleflinger.prepare_projected_scene_resources(
                             prepared_groups.projected_group_texture_requirements(),
-                        )?;
+                            gpu_projection_admitted,
+                        );
                     Ok::<_, anyhow::Error>((
                         prepared_resize,
                         sampling_preparation,

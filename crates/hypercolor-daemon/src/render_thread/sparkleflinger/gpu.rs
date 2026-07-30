@@ -146,6 +146,7 @@ pub(crate) enum GpuCanvasPreparation {
     Gpu {
         generation: GpuCanvasGeneration,
         immutable_scene_snapshots: Vec<GpuImmutableSceneSnapshot>,
+        opaque_black_texture: GpuCompositorTexture,
     },
     CpuFallback,
 }
@@ -172,8 +173,28 @@ impl GpuCanvasPreparation {
     }
 }
 
-pub(crate) struct GpuProjectedScenePreparation {
-    snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
+pub(crate) enum GpuProjectedScenePreparation {
+    Disabled,
+    Admitted {
+        snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
+    },
+    ResourceFallback(GpuProjectedSceneResourceError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum GpuProjectedSceneResourceError {
+    #[error("GPU projection snapshot metadata allocation failed")]
+    Metadata(#[source] std::collections::TryReserveError),
+    #[error("GPU projection snapshot allocation failed for {width}x{height}")]
+    Snapshot {
+        width: u32,
+        height: u32,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[cfg(test)]
+    #[error("GPU projection snapshot allocation failure injected by test")]
+    Injected,
 }
 
 fn gpu_canvas_admission(
@@ -560,6 +581,7 @@ pub(crate) struct GpuSparkleFlinger {
     canvas_gpu_admitted: bool,
     pipeline: GpuCompositorPipeline,
     spatial_sampler: GpuSpatialSampler,
+    opaque_black_texture: Option<GpuCompositorTexture>,
     surfaces: Option<GpuCompositorSurfaceSet>,
     display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, GpuDisplayFinalizeSurfaceSet>,
     display_finalize_generation: u64,
@@ -601,6 +623,8 @@ pub(crate) struct GpuSparkleFlinger {
     fail_next_screen_upload_pool_saturation: bool,
     #[cfg(test)]
     snapshot_texture_allocation_count: Cell<usize>,
+    #[cfg(test)]
+    fail_next_projected_scene_preparation: Cell<bool>,
 }
 
 struct FrameInFlight {
@@ -827,13 +851,13 @@ impl PendingUploadBuffers {
     }
 }
 
-struct GpuCompositorTexture {
+pub(crate) struct GpuCompositorTexture {
     storage_id: u64,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
 
-struct GpuProjectionSnapshot {
+pub(crate) struct GpuProjectionSnapshot {
     width: u32,
     height: u32,
     texture: GpuCompositorTexture,
@@ -939,6 +963,7 @@ impl GpuSparkleFlinger {
             canvas_gpu_admitted: true,
             pipeline,
             spatial_sampler,
+            opaque_black_texture: None,
             surfaces: None,
             display_finalize_surfaces: HashMap::new(),
             display_finalize_generation: 0,
@@ -980,6 +1005,8 @@ impl GpuSparkleFlinger {
             fail_next_screen_upload_pool_saturation: false,
             #[cfg(test)]
             snapshot_texture_allocation_count: Cell::new(0),
+            #[cfg(test)]
+            fail_next_projected_scene_preparation: Cell::new(false),
         })
     }
 
@@ -1106,6 +1133,16 @@ impl GpuSparkleFlinger {
             let immutable_scene_snapshots = (0..IMMUTABLE_SCENE_GENERATIONS_IN_FLIGHT)
                 .map(|_| GpuImmutableSceneSnapshot::try_new(&self.device, width, height))
                 .collect::<Result<Vec<_>>>()?;
+            let opaque_black_texture =
+                GpuCompositorTexture::try_new(&self.device, 1, 1, "SparkleFlinger Opaque Black")
+                    .context("GPU opaque-black base texture allocation failed")?;
+            source::write_rgba_texture(
+                &self.queue,
+                &opaque_black_texture.texture,
+                1,
+                1,
+                &[0, 0, 0, 255],
+            );
             #[cfg(test)]
             self.snapshot_texture_allocation_count.set(
                 self.snapshot_texture_allocation_count
@@ -1115,6 +1152,7 @@ impl GpuSparkleFlinger {
             Ok::<_, anyhow::Error>(GpuCanvasPreparation::Gpu {
                 generation,
                 immutable_scene_snapshots,
+                opaque_black_texture,
             })
         })();
         match preparation {
@@ -1165,6 +1203,7 @@ impl GpuSparkleFlinger {
             GpuCanvasPreparation::Gpu {
                 mut generation,
                 immutable_scene_snapshots,
+                opaque_black_texture,
             } => {
                 if let Some(current) = self.surfaces.as_mut() {
                     std::mem::swap(
@@ -1174,6 +1213,7 @@ impl GpuSparkleFlinger {
                 }
                 self.canvas_gpu_admitted = true;
                 self.immutable_scene_snapshots = immutable_scene_snapshots;
+                self.opaque_black_texture = Some(opaque_black_texture);
                 (
                     Some(generation.surfaces),
                     generation.preview_surfaces,
@@ -1183,6 +1223,7 @@ impl GpuSparkleFlinger {
             GpuCanvasPreparation::CpuFallback => {
                 self.canvas_gpu_admitted = false;
                 self.immutable_scene_snapshots.clear();
+                self.opaque_black_texture = None;
                 (None, None, None)
             }
         };
@@ -1363,9 +1404,23 @@ impl GpuSparkleFlinger {
     pub(crate) fn prepare_projected_scene_resources(
         &self,
         requirements: &[ProjectedGroupTextureRequirement],
-    ) -> Result<GpuProjectedScenePreparation> {
+        gpu_projection_admitted: bool,
+    ) -> GpuProjectedScenePreparation {
+        if !gpu_projection_admitted || requirements.is_empty() {
+            return GpuProjectedScenePreparation::Disabled;
+        }
+        #[cfg(test)]
+        if self.fail_next_projected_scene_preparation.replace(false) {
+            return GpuProjectedScenePreparation::ResourceFallback(
+                GpuProjectedSceneResourceError::Injected,
+            );
+        }
         let mut snapshots = HashMap::new();
-        snapshots.try_reserve(requirements.len())?;
+        if let Err(error) = snapshots.try_reserve(requirements.len()) {
+            return GpuProjectedScenePreparation::ResourceFallback(
+                GpuProjectedSceneResourceError::Metadata(error),
+            );
+        }
         for requirement in requirements {
             let reusable = self
                 .projected_group_snapshots
@@ -1377,39 +1432,60 @@ impl GpuSparkleFlinger {
             let snapshot = if reusable {
                 None
             } else {
-                Some(
-                    GpuProjectionSnapshot::try_new(
-                        &self.device,
-                        requirement.width,
-                        requirement.height,
-                    )
-                    .inspect(|_| {
-                        #[cfg(test)]
-                        self.snapshot_texture_allocation_count.set(
-                            self.snapshot_texture_allocation_count
-                                .get()
-                                .saturating_add(1),
-                        );
-                    })?,
+                let allocation = GpuProjectionSnapshot::try_new(
+                    &self.device,
+                    requirement.width,
+                    requirement.height,
                 )
+                .inspect(|_| {
+                    #[cfg(test)]
+                    self.snapshot_texture_allocation_count.set(
+                        self.snapshot_texture_allocation_count
+                            .get()
+                            .saturating_add(1),
+                    );
+                });
+                let snapshot = match allocation {
+                    Ok(snapshot) => snapshot,
+                    Err(source) => {
+                        return GpuProjectedScenePreparation::ResourceFallback(
+                            GpuProjectedSceneResourceError::Snapshot {
+                                width: requirement.width,
+                                height: requirement.height,
+                                source,
+                            },
+                        );
+                    }
+                };
+                Some(snapshot)
             };
             snapshots.insert(requirement.group_id, snapshot);
         }
-        Ok(GpuProjectedScenePreparation { snapshots })
+        GpuProjectedScenePreparation::Admitted { snapshots }
     }
 
     pub(crate) fn apply_projected_scene_resources(
         &mut self,
-        mut preparation: GpuProjectedScenePreparation,
+        preparation: GpuProjectedScenePreparation,
     ) {
+        let GpuProjectedScenePreparation::Admitted { mut snapshots } = preparation else {
+            self.projected_group_snapshots.clear();
+            if let GpuProjectedScenePreparation::ResourceFallback(error) = preparation {
+                tracing::warn!(
+                    %error,
+                    "using CPU scene projection after GPU snapshot admission failed"
+                );
+            }
+            return;
+        };
         let mut installed = std::mem::take(&mut self.projected_group_snapshots);
-        for (group_id, snapshot) in &mut preparation.snapshots {
+        for (group_id, snapshot) in &mut snapshots {
             if snapshot.is_none() {
                 *snapshot = installed.remove(group_id).flatten();
             }
             debug_assert!(snapshot.is_some());
         }
-        self.projected_group_snapshots = preparation.snapshots;
+        self.projected_group_snapshots = snapshots;
     }
 
     pub(crate) fn has_projected_group_resource(
@@ -1427,6 +1503,11 @@ impl GpuSparkleFlinger {
     #[cfg(test)]
     pub(crate) fn snapshot_texture_allocation_count(&self) -> usize {
         self.snapshot_texture_allocation_count.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_projected_scene_preparation(&self) {
+        self.fail_next_projected_scene_preparation.set(true);
     }
 
     pub(crate) fn snapshot_projected_group_frame(
@@ -1486,6 +1567,22 @@ impl GpuSparkleFlinger {
             return Ok(None);
         };
         self.snapshot_scene_frame(frame).map(Some)
+    }
+
+    pub(crate) fn opaque_black_frame(&self) -> Option<GpuTextureFrame> {
+        let texture = self.opaque_black_texture.as_ref()?;
+        Some(GpuTextureFrame {
+            width: 1,
+            height: 1,
+            storage_id: texture.storage_id,
+            content_generation: 1,
+            origin: GpuTextureFrameOrigin::ProducerTexture,
+            texture: texture.texture.clone(),
+            view: texture.view.clone(),
+            _immutable_lease: None,
+            #[cfg(target_os = "windows")]
+            windows_screen_lease: None,
+        })
     }
 
     pub(crate) fn snapshot_scene_frame(
@@ -1843,6 +1940,25 @@ impl GpuCompositorSurfaceSet {
 }
 
 impl GpuCompositorTexture {
+    fn try_new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        label: &'static str,
+    ) -> Result<Self> {
+        let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let texture = Self::new(device, width, height, label);
+        let validation_error = pollster::block_on(validation_scope.pop());
+        let internal_error = pollster::block_on(internal_scope.pop());
+        let out_of_memory_error = pollster::block_on(out_of_memory_scope.pop());
+        if let Some(error) = validation_error.or(internal_error).or(out_of_memory_error) {
+            anyhow::bail!("GPU texture allocation failed for {label}: {error}");
+        }
+        Ok(texture)
+    }
+
     fn new(device: &wgpu::Device, width: u32, height: u32, label: &'static str) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
@@ -1868,21 +1984,12 @@ impl GpuCompositorTexture {
 
 impl GpuProjectionSnapshot {
     fn try_new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self> {
-        let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
-        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let texture = GpuCompositorTexture::new(
+        let texture = GpuCompositorTexture::try_new(
             device,
             width,
             height,
             "SparkleFlinger Projected Group Snapshot",
-        );
-        let validation_error = pollster::block_on(validation_scope.pop());
-        let internal_error = pollster::block_on(internal_scope.pop());
-        let out_of_memory_error = pollster::block_on(out_of_memory_scope.pop());
-        if let Some(error) = validation_error.or(internal_error).or(out_of_memory_error) {
-            anyhow::bail!("GPU projected group snapshot allocation failed: {error}");
-        }
+        )?;
         Ok(Self {
             width,
             height,
@@ -1894,21 +2001,12 @@ impl GpuProjectionSnapshot {
 
 impl GpuImmutableSceneSnapshot {
     fn try_new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self> {
-        let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
-        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let texture = GpuCompositorTexture::new(
+        let texture = GpuCompositorTexture::try_new(
             device,
             width,
             height,
             "SparkleFlinger Immutable Scene Snapshot",
-        );
-        let validation_error = pollster::block_on(validation_scope.pop());
-        let internal_error = pollster::block_on(internal_scope.pop());
-        let out_of_memory_error = pollster::block_on(out_of_memory_scope.pop());
-        if let Some(error) = validation_error.or(internal_error).or(out_of_memory_error) {
-            anyhow::bail!("GPU immutable scene snapshot allocation failed: {error}");
-        }
+        )?;
         Ok(Self {
             width,
             height,

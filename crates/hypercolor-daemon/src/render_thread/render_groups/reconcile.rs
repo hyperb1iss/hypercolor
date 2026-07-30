@@ -14,7 +14,7 @@ use super::group_state::{
     combine_led_group_layouts, combined_led_state, desired_media_asset_ids,
     group_contributes_to_scene_canvas, group_publishes_direct_canvas,
 };
-use super::projection::build_group_projection;
+use super::projection::{build_group_projection, projection_supports_composition};
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 use crate::render_thread::sparkleflinger::{ProjectedGroupTextureRequirement, SparkleFlinger};
 
@@ -86,8 +86,11 @@ impl ZoneRuntime {
             display_descriptors,
             authoritative_spatial_engine,
         )?;
-        let projected = sparkleflinger
-            .prepare_projected_scene_resources(prepared.projected_group_texture_requirements())?;
+        let gpu_projection_admitted = sparkleflinger.supports_gpu_output_frames();
+        let projected = sparkleflinger.prepare_projected_scene_resources(
+            prepared.projected_group_texture_requirements(),
+            gpu_projection_admitted,
+        );
         sparkleflinger.apply_projected_scene_resources(projected);
         self.commit_reconcile(prepared);
         Ok(())
@@ -239,16 +242,10 @@ impl ZoneRuntime {
         retained_direct_group_frames.try_reserve(direct_group_ids.len())?;
         let mut retained_materialized_group_frames = HashMap::new();
         retained_materialized_group_frames.try_reserve(direct_group_ids.len())?;
-        let mut projected_group_texture_requirements = Vec::new();
-        projected_group_texture_requirements.try_reserve(scene_group_ids.len())?;
+        let mut gpu_projection_eligible = !scene_group_ids.is_empty();
 
         for group in groups {
             if group_contributes_to_scene_canvas(group) {
-                projected_group_texture_requirements.push(ProjectedGroupTextureRequirement {
-                    group_id: group.id,
-                    width: group.layout.canvas_width,
-                    height: group.layout.canvas_height,
-                });
                 let needs_canvas = self.target_canvases.get(&group.id).is_none_or(|canvas| {
                     canvas.width() != group.layout.canvas_width
                         || canvas.height() != group.layout.canvas_height
@@ -274,6 +271,11 @@ impl ZoneRuntime {
                         build_group_projection(group, scene_width, scene_height)?,
                     );
                 }
+                let projection = scene_projection_cache
+                    .get(&group.id)
+                    .or_else(|| self.scene_projection_cache.get(&group.id))
+                    .expect("scene contributors must have prepared projection metadata");
+                gpu_projection_eligible &= projection_supports_composition(projection);
             }
 
             if group_publishes_direct_canvas(group) {
@@ -298,6 +300,24 @@ impl ZoneRuntime {
                 }
             }
         }
+
+        let projected_group_texture_requirements = if gpu_projection_eligible {
+            let mut requirements = Vec::new();
+            requirements.try_reserve(scene_group_ids.len())?;
+            requirements.extend(
+                groups
+                    .iter()
+                    .filter(|group| group_contributes_to_scene_canvas(group))
+                    .map(|group| ProjectedGroupTextureRequirement {
+                        group_id: group.id,
+                        width: group.layout.canvas_width,
+                        height: group.layout.canvas_height,
+                    }),
+            );
+            requirements
+        } else {
+            Vec::new()
+        };
 
         Ok(PreparedZoneReconcile {
             effect_pool,

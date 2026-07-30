@@ -66,6 +66,16 @@ impl StaticLayerSurfaceCache {
     pub(super) fn entry_count(&self) -> usize {
         self.surfaces.len()
     }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn contains(&self, width: u32, height: u32, color: Rgba) -> bool {
+        let key = StaticLayerSurfaceKey {
+            width,
+            height,
+            color,
+        };
+        self.surfaces.iter().any(|(cached, _)| *cached == key)
+    }
 }
 
 pub(super) fn passthrough_effect_layer(group: &Zone) -> Option<SceneLayer> {
@@ -173,14 +183,6 @@ pub(super) fn transparent_black_frame(
     height: u32,
 ) -> anyhow::Result<ProducerFrame> {
     cache.frame(width, height, Rgba::TRANSPARENT)
-}
-
-pub(super) fn opaque_black_frame(
-    cache: &mut StaticLayerSurfaceCache,
-    width: u32,
-    height: u32,
-) -> anyhow::Result<ProducerFrame> {
-    cache.frame(width, height, Rgba::BLACK)
 }
 
 pub(super) fn media_layer_producer_frame(

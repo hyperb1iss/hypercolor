@@ -138,7 +138,7 @@ pub(super) fn groups_support_projection_composition(
     scene_group_count > 0
 }
 
-fn projection_supports_composition(projection: &CachedGroupProjection) -> bool {
+pub(super) fn projection_supports_composition(projection: &CachedGroupProjection) -> bool {
     !projection.zones.is_empty()
         && projection.zones.iter().all(|zone| {
             zone.affine.is_some()

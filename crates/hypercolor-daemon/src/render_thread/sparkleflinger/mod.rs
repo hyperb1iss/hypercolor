@@ -474,7 +474,7 @@ pub struct SparkleFlinger {
 pub(crate) enum SparkleFlingerCanvasPreparation {
     Cpu(cpu::CpuCanvasPreparation),
     #[cfg(feature = "wgpu")]
-    Gpu(gpu::GpuCanvasPreparation),
+    Gpu(Box<gpu::GpuCanvasPreparation>),
     #[cfg(feature = "wgpu")]
     GpuCpuFallback(cpu::CpuCanvasPreparation),
 }
@@ -529,6 +529,11 @@ impl SparkleFlingerCanvasPreparation {
             #[cfg(feature = "wgpu")]
             Self::GpuCpuFallback(_) => false,
         }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) const fn gpu_output_admitted(&self) -> bool {
+        matches!(self, Self::Gpu(preparation) if preparation.is_admitted())
     }
 
     #[cfg(feature = "wgpu")]
@@ -636,7 +641,7 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => {
                 let preparation = gpu.prepare_canvas_resize(width, height, active_preview_request);
                 if preparation.is_admitted() {
-                    Ok(SparkleFlingerCanvasPreparation::Gpu(preparation))
+                    Ok(SparkleFlingerCanvasPreparation::Gpu(Box::new(preparation)))
                 } else {
                     Ok(SparkleFlingerCanvasPreparation::GpuCpuFallback(
                         cpu::CpuCanvasPreparation::try_new(width, height)?,
@@ -660,7 +665,7 @@ impl SparkleFlinger {
             (
                 SparkleFlingerBackend::Gpu { gpu, .. },
                 SparkleFlingerCanvasPreparation::Gpu(preparation),
-            ) => gpu.apply_canvas_resize(preparation),
+            ) => gpu.apply_canvas_resize(*preparation),
             #[cfg(feature = "wgpu")]
             (
                 SparkleFlingerBackend::Gpu { gpu, cpu_fallback },
@@ -912,23 +917,20 @@ impl SparkleFlinger {
         }
     }
 
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "the wrapper preserves the fallible GPU admission contract in CPU-only builds"
-    )]
     pub(crate) fn prepare_projected_scene_resources(
         &self,
         requirements: &[ProjectedGroupTextureRequirement],
-    ) -> Result<SparkleFlingerProjectedScenePreparation> {
+        gpu_projection_admitted: bool,
+    ) -> SparkleFlingerProjectedScenePreparation {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => {
-                let _ = requirements;
-                Ok(SparkleFlingerProjectedScenePreparation::Cpu)
+                let _ = (requirements, gpu_projection_admitted);
+                SparkleFlingerProjectedScenePreparation::Cpu
             }
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => gpu
-                .prepare_projected_scene_resources(requirements)
-                .map(SparkleFlingerProjectedScenePreparation::Gpu),
+            SparkleFlingerBackend::Gpu { gpu, .. } => SparkleFlingerProjectedScenePreparation::Gpu(
+                gpu.prepare_projected_scene_resources(requirements, gpu_projection_admitted),
+            ),
         }
     }
 
@@ -1026,6 +1028,13 @@ impl SparkleFlinger {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => None,
             SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.snapshot_texture_allocation_count()),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn fail_next_projected_scene_preparation_for_test(&self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+            gpu.fail_next_projected_scene_preparation();
         }
     }
 
@@ -1344,6 +1353,17 @@ impl SparkleFlinger {
         #[cfg(not(feature = "wgpu"))]
         {
             Ok(frame)
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn opaque_black_gpu_frame(&self) -> Option<ProducerFrame> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } if gpu.canvas_gpu_admitted() => {
+                gpu.opaque_black_frame().map(ProducerFrame::GpuTexture)
+            }
+            SparkleFlingerBackend::Gpu { .. } => None,
         }
     }
 
