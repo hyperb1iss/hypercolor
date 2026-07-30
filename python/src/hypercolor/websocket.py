@@ -344,12 +344,25 @@ class _ScreenZonesChunkReassembler:
     def push(self, payload: bytes) -> bytearray | None:
         self._expire_idle()
         publication_id = struct.unpack_from("<Q", payload, 7)[0] if len(payload) >= 15 else None
+        starts_new = publication_id is not None and self._retire_superseded(publication_id)
         try:
             chunk = _parse_screen_zone_chunk(payload)
         except ValueError as exc:
             self._reject(str(exc), publication_id)
-        partial = self._publication_for(chunk)
+        partial = self._start_publication(chunk) if starts_new else self._publication_for(chunk)
         return self._append_chunk(partial, chunk)
+
+    def _retire_superseded(self, publication_id: int) -> bool:
+        if (
+            self._high_water_publication_id is not None
+            and publication_id <= self._high_water_publication_id
+        ):
+            return False
+        self._partial = None
+        self._reserved_bytes = 0
+        self._decoded_bytes = 0
+        self._high_water_publication_id = publication_id
+        return True
 
     def _publication_for(self, chunk: _ScreenZoneChunk) -> _PartialPreviewPublication:
         partial = self._partial
@@ -359,15 +372,6 @@ class _ScreenZonesChunkReassembler:
         ):
             msg = "Preview chunk belongs to a stale publication"
             raise ValueError(msg)
-        starts_new = (
-            partial is None
-            and (
-                self._high_water_publication_id is None
-                or chunk.publication_id > self._high_water_publication_id
-            )
-        ) or (partial is not None and chunk.publication_id > partial.publication_id)
-        if starts_new:
-            return self._start_publication(chunk)
         if partial is None:
             msg = "Preview chunk duplicates a completed or cancelled publication"
             raise ValueError(msg)

@@ -503,10 +503,16 @@ def test_screen_zone_chunks_reject_out_of_order_and_duplicate_data() -> None:
 
     with pytest.raises(ValueError, match="start with chunk zero"):
         stream._decode_received_binary(chunks[1])
-    stream._decode_received_binary(chunks[0])
-    with pytest.raises(ValueError, match="duplicates"):
+    with pytest.raises(ValueError, match="completed or cancelled"):
         stream._decode_received_binary(chunks[0])
-    assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
+
+    duplicate_chunks = _screen_zone_chunks(encoded, 101, 30)
+    duplicate_stream = HypercolorEventStream(_TestClient())
+    duplicate_stream._decode_received_binary(duplicate_chunks[0])
+    with pytest.raises(ValueError, match="duplicates"):
+        duplicate_stream._decode_received_binary(duplicate_chunks[0])
+    assert duplicate_stream._screen_zones_reassembler.reserved_bytes == 0
 
 
 def test_screen_zone_chunks_reject_declared_publication_overflow() -> None:
@@ -535,6 +541,45 @@ def test_screen_zone_chunks_reject_declared_publication_overflow() -> None:
 
     with pytest.raises(ValueError, match="bounds"):
         HypercolorEventStream(_TestClient())._decode_received_binary(payload)
+
+
+def test_invalid_newer_publication_retires_old_partial_and_advances_high_water() -> None:
+    encoded = _extended_screen_zones_frame(4, 1, bytes(12))
+    old_chunks = _screen_zone_chunks(encoded, 10, 30)
+    stream = HypercolorEventStream(_TestClient())
+    stream._decode_received_binary(old_chunks[0])
+    total = websocket_module._PREVIEW_TRANSPORT_LIMITS["encoded"] + 1
+    oversized_new = (
+        struct.pack(
+            "<5BHQ4I2Q2I",
+            ws_protocol.BINARY_MESSAGE_TAGS["preview_chunk"],
+            1,
+            3,
+            ws_protocol.BINARY_MESSAGE_TAGS["screen_zones"],
+            0,
+            0,
+            11,
+            1,
+            2,
+            3840,
+            2160,
+            total,
+            0,
+            0,
+            2,
+        )
+        + b"x"
+    )
+
+    with pytest.raises(ValueError, match="bounds"):
+        stream._decode_received_binary(oversized_new)
+
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert stream._screen_zones_reassembler.decoded_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
+    with pytest.raises(ValueError, match="stale publication"):
+        stream._decode_received_binary(old_chunks[1])
 
 
 def test_screen_zone_cancel_releases_reserved_publication(
