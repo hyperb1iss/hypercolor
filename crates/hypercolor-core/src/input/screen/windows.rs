@@ -43,11 +43,12 @@ use crate::input::screen::{
     PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
     PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
     ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenBackendResourceIdentity,
-    ScreenBranchPayload, ScreenBranchPublisher, ScreenCaptureBackend, ScreenCaptureDemand,
-    ScreenCaptureInput, ScreenColorTransformCapabilities, ScreenCursorCapabilities,
-    ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
-    ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenPhysicalGpuDeviceIdentity,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity,
+    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenBranchPublisher,
+    ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
+    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenCursorPolicy,
+    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativePreparationPayload,
+    ScreenNativeTargetPreparation, ScreenPhysicalGpuDeviceIdentity,
     ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
     ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
     ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
@@ -102,6 +103,7 @@ pub struct ResolvedCaptureSource {
 struct SharedSettings {
     config: Mutex<VersionedCaptureConfig>,
     demand: Mutex<ScreenCaptureDemand>,
+    admission_coordinator: ScreenByteAdmissionCoordinator,
     generation: AtomicU64,
     session_generation: AtomicU64,
     activity_generation: AtomicU64,
@@ -721,6 +723,19 @@ impl WindowsScreenCaptureInput {
     /// Create a new Windows screen capture source.
     #[must_use]
     pub fn new(config: CaptureConfig) -> Self {
+        let capacity = ScreenAdmissionCapacity::new(
+            config.analysis_memory_bytes,
+            config.analysis_memory_bytes,
+        );
+        Self::with_admission_coordinator(config, ScreenByteAdmissionCoordinator::new(capacity))
+    }
+
+    /// Create a Windows source inside an existing process-wide screen byte fence.
+    #[must_use]
+    pub fn with_admission_coordinator(
+        config: CaptureConfig,
+        admission_coordinator: ScreenByteAdmissionCoordinator,
+    ) -> Self {
         Self {
             settings: Arc::new(SharedSettings {
                 config: Mutex::new(VersionedCaptureConfig {
@@ -728,6 +743,7 @@ impl WindowsScreenCaptureInput {
                     source_generation: 0,
                 }),
                 demand: Mutex::new(ScreenCaptureDemand::Inactive),
+                admission_coordinator,
                 generation: AtomicU64::new(0),
                 session_generation: AtomicU64::new(0),
                 activity_generation: AtomicU64::new(0),
@@ -774,8 +790,14 @@ impl WindowsScreenCaptureInput {
             anyhow::bail!("deterministic Windows capture session generation must be nonzero");
         }
         let mut source = Self::new(config.clone());
+        let admission_coordinator = source.settings.admission_coordinator.clone();
         let state = Arc::new(WindowsScreenCaptureFixtureState {
-            analyzer: Mutex::new(ScreenCaptureInput::new(config)),
+            analyzer: Mutex::new(ScreenCaptureInput::with_requested_extent_and_admission(
+                config,
+                PixelExtent::new(super::DEFAULT_CANVAS_WIDTH, super::DEFAULT_CANVAS_HEIGHT)
+                    .expect("default canvas extent is non-empty"),
+                admission_coordinator,
+            )?),
             epoch,
             active: Mutex::new(None),
         });
@@ -1011,7 +1033,11 @@ impl WindowsScreenCaptureInput {
             .requested_extent()
             .expect("active Windows capture settings carry an extent");
         let cadence = CaptureCadence::new(config.target_fps)?;
-        let analyzer = ScreenCaptureInput::with_requested_extent(config.clone(), requested_extent)?;
+        let analyzer = ScreenCaptureInput::with_requested_extent_and_admission(
+            config.clone(),
+            requested_extent,
+            self.settings.admission_coordinator.clone(),
+        )?;
         Ok(PreparedWorkerSettings {
             config,
             cadence,
@@ -1096,7 +1122,11 @@ impl WindowsScreenCaptureInput {
             .map(|requested_extent| -> anyhow::Result<_> {
                 let config = self.settings.snapshot().config;
                 let cadence = CaptureCadence::new(config.target_fps)?;
-                let analyzer = ScreenCaptureInput::with_requested_extent(config, requested_extent)?;
+                let analyzer = ScreenCaptureInput::with_requested_extent_and_admission(
+                    config,
+                    requested_extent,
+                    self.settings.admission_coordinator.clone(),
+                )?;
                 Ok((analyzer, cadence))
             })
             .transpose()?;
@@ -1764,11 +1794,16 @@ fn settle_inactive_capture<T>(
 fn build_worker_analyzer(
     config: &CaptureConfig,
     demand: ScreenCaptureDemand,
+    admission_coordinator: ScreenByteAdmissionCoordinator,
 ) -> Result<ScreenCaptureInput, SurfaceResourceError> {
     let requested_extent = demand
         .requested_extent()
         .expect("an active Windows capture worker carries an extent");
-    ScreenCaptureInput::with_requested_extent(config.clone(), requested_extent)
+    ScreenCaptureInput::with_requested_extent_and_admission(
+        config.clone(),
+        requested_extent,
+        admission_coordinator,
+    )
 }
 
 fn prepare_windows_exact_runtime(
@@ -2806,16 +2841,17 @@ fn run_worker(
     let mut source_generation = initial_settings.source_generation;
     let mut demand = initial_settings.demand;
     let mut generation = settings.generation.load(Ordering::Acquire);
-    let mut analyzer = match build_worker_analyzer(&config, demand) {
-        Ok(analyzer) => analyzer,
-        Err(error) => {
-            if let Some(status) = status_session.load() {
-                status.unavailable(screen_resource_issue(&error));
+    let mut analyzer =
+        match build_worker_analyzer(&config, demand, settings.admission_coordinator.clone()) {
+            Ok(analyzer) => analyzer,
+            Err(error) => {
+                if let Some(status) = status_session.load() {
+                    status.unavailable(screen_resource_issue(&error));
+                }
+                let _ = ready.send(Err(error.to_string()));
+                return;
             }
-            let _ = ready.send(Err(error.to_string()));
-            return;
-        }
-    };
+        };
     if ready.send(Ok(())).is_err() {
         return;
     }
@@ -2943,7 +2979,11 @@ fn run_worker(
                     continue;
                 }
             };
-            match build_worker_analyzer(&next_settings.config, next_settings.demand) {
+            match build_worker_analyzer(
+                &next_settings.config,
+                next_settings.demand,
+                settings.admission_coordinator.clone(),
+            ) {
                 Ok(next_analyzer) => {
                     let previous_source = config.source.clone();
                     config = next_settings.config;

@@ -21,13 +21,14 @@ use crate::input::screen::{
     CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureSourceId,
     CaptureStorage, CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent,
-    RawCaptureSurface, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenCaptureDemand,
-    ScreenExtentRequest, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
-    ScreenPhysicalGpuDeviceIdentity, ScreenProcessingProfile, ScreenProcessingProfileConfig,
-    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
-    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenPublicationResidency, ScreenReductionFilter, ScreenSourceSelector,
+    RawCaptureSurface, RegisteredScreenBranchDemand, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenByteAdmissionCoordinator, ScreenCaptureDemand, ScreenExtentRequest,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
+    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutor,
+    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency,
+    ScreenReductionFilter, ScreenSourceSelector,
 };
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
 use crate::input::traits::InputSource;
@@ -403,6 +404,23 @@ fn unrepresentable_cadence_cannot_activate_capture() {
 
     assert!(error.to_string().contains("scheduler clock limit"));
     assert_eq!(input.capture_demand, ScreenCaptureDemand::Inactive);
+}
+
+#[test]
+fn shared_admission_rejects_windows_analysis_before_backend_start() {
+    let coordinator = ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(0, 0));
+    let mut input = WindowsScreenCaptureInput::with_admission_coordinator(
+        CaptureConfig::default(),
+        coordinator.clone(),
+    );
+
+    let error = input
+        .set_capture_demand_state(active_demand())
+        .expect_err("manager-owned capacity must gate Windows analysis construction");
+
+    assert!(error.to_string().contains("capacity is 0 bytes"));
+    assert_eq!(input.capture_demand, ScreenCaptureDemand::Inactive);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
 }
 
 #[test]

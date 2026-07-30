@@ -141,10 +141,6 @@ impl ScreenByteAdmissionCoordinator {
         }
     }
 
-    pub(crate) fn is_same(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
-    }
-
     /// Reserve a worst-case quote before any corresponding allocation.
     pub fn try_acquire(
         &self,

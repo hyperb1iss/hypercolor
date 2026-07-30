@@ -1092,21 +1092,6 @@ impl ScreenCaptureInput {
         Ok(())
     }
 
-    /// Rebind this analyzer to a manager-owned shared byte coordinator.
-    pub fn set_admission_coordinator(
-        &mut self,
-        coordinator: ScreenByteAdmissionCoordinator,
-    ) -> Result<(), SurfaceResourceError> {
-        if self.admission_coordinator.is_same(&coordinator) {
-            return Ok(());
-        }
-        let prepared =
-            prepare_analysis_resources(&self.config, self.requested_extent, &coordinator)?;
-        self.admission_coordinator = coordinator;
-        self.install_prepared_analysis(prepared, self.requested_extent);
-        Ok(())
-    }
-
     /// Current requested publication extent.
     #[must_use]
     pub const fn requested_extent(&self) -> PixelExtent {

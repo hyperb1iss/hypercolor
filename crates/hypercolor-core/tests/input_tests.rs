@@ -10,7 +10,9 @@ use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
-use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand, ScreenCaptureInput};
+use hypercolor_core::input::screen::{
+    PixelExtent, ScreenAdmissionCapacity, ScreenCaptureDemand, ScreenCaptureInput,
+};
 use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
     InputManager, InputSource, MediaSource, NetSource, ScreenData, SourceFreshness, SourceIssue,
@@ -1307,6 +1309,41 @@ fn removed_source_fences_worker_owned_session() {
         "retired workers cannot overwrite final status",
         false,
     )));
+}
+
+#[test]
+fn manager_constructs_screen_analysis_inside_its_total_byte_fence() {
+    let mut manager = InputManager::new();
+    let total = ScreenAdmissionCapacity::new(1_000_000, 900_000);
+    let publication = ScreenAdmissionCapacity::new(400_000, 300_000);
+    manager
+        .set_screen_capacity_plan(total, publication)
+        .expect("empty manager should accept its configured screen capacities");
+    let coordinator = manager.screen_admission_coordinator();
+    assert_eq!(coordinator.snapshot().capacity(), total);
+    let next_publication = ScreenAdmissionCapacity::new(200_000, 150_000);
+    manager.set_screen_publication_capacity(next_publication);
+    assert_eq!(manager.screen_publication_capacity(), next_publication);
+    assert_eq!(manager.screen_resource_capacity(), total);
+    assert_eq!(coordinator.snapshot().capacity(), total);
+
+    let input = manager
+        .prepare_screen_capture_input(
+            ScreenCaptureConfig {
+                grid_cols: 1,
+                grid_rows: 1,
+                analysis_memory_bytes: u64::MAX,
+                ..ScreenCaptureConfig::default()
+            },
+            PixelExtent::new(4, 4).expect("test extent is non-empty"),
+        )
+        .expect("analysis should fit the manager's total fence");
+    assert_eq!(
+        coordinator.snapshot().reserved_bytes(),
+        input.analysis_resource_plan().peak_bytes()
+    );
+    drop(input);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
 }
 
 #[test]

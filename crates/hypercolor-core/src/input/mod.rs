@@ -977,8 +977,21 @@ impl InputManager {
         self.screen_plan_builder.admission_coordinator()
     }
 
-    /// Set the process and backend byte fences used for future exact plans.
-    pub fn set_screen_publication_capacity(
+    /// Construct compatibility screen analysis inside this manager's byte fence.
+    pub fn prepare_screen_capture_input(
+        &self,
+        config: screen::CaptureConfig,
+        requested_extent: screen::PixelExtent,
+    ) -> Result<screen::ScreenCaptureInput, crate::types::canvas::SurfaceResourceError> {
+        screen::ScreenCaptureInput::with_requested_extent_and_admission(
+            config,
+            requested_extent,
+            self.screen_admission_coordinator(),
+        )
+    }
+
+    /// Set the process and backend byte fences shared by all screen resources.
+    pub fn set_screen_resource_capacity(
         &mut self,
         capacity: screen::ScreenAdmissionCapacity,
     ) -> Result<(), screen::ScreenByteAdmissionError> {
@@ -986,8 +999,15 @@ impl InputManager {
             .admission_coordinator()
             .try_set_capacity(capacity)?;
         self.screen_resource_capacity = capacity;
-        self.screen_publication_capacity = capacity;
         Ok(())
+    }
+
+    /// Set the policy fence used to admit future screen publication plans.
+    pub const fn set_screen_publication_capacity(
+        &mut self,
+        capacity: screen::ScreenAdmissionCapacity,
+    ) {
+        self.screen_publication_capacity = capacity;
     }
 
     /// Atomically install the total capture fence and its post-analysis remainder.
@@ -996,11 +1016,8 @@ impl InputManager {
         total: screen::ScreenAdmissionCapacity,
         publication: screen::ScreenAdmissionCapacity,
     ) -> Result<(), screen::ScreenByteAdmissionError> {
-        self.screen_plan_builder
-            .admission_coordinator()
-            .try_set_capacity(publication)?;
-        self.screen_resource_capacity = total;
-        self.screen_publication_capacity = publication;
+        self.set_screen_resource_capacity(total)?;
+        self.set_screen_publication_capacity(publication);
         Ok(())
     }
 
