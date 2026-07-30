@@ -803,10 +803,12 @@ async fn request_with_layout_ack(
                 let mut deferred = Vec::new();
                 for transaction in scene_transactions.drain() {
                     match transaction {
-                        SceneTransaction::ApplyLayout(transaction) => {
+                        SceneTransaction::PrepareLayout(transaction) => {
                             applied.push(transaction.spatial_engine().layout().as_ref().clone());
                             transaction.accept();
                         }
+                        SceneTransaction::CommitLayout(transaction)
+                        | SceneTransaction::AbortLayout(transaction) => transaction.accept(),
                         transaction => deferred.push(transaction),
                     }
                 }

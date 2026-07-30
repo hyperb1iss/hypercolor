@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use hypercolor_core::spatial::SpatialSamplingError;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::Zone;
@@ -17,10 +18,11 @@ use super::projection::compose_authoritative_scene_canvas;
 
 impl ZoneRuntime {
     pub(super) fn sample_scene_group_led_zones(
-        &self,
+        &mut self,
         groups: &[Zone],
         zones: &mut Vec<ZoneColors>,
-    ) {
+    ) -> Result<(), SpatialSamplingError> {
+        self.zone_sampling_scratch.clear();
         for group in groups
             .iter()
             .filter(|group| group_contributes_to_scene_canvas(group))
@@ -31,9 +33,19 @@ impl ZoneRuntime {
             let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
                 continue;
             };
-            let start = zones.len();
-            spatial_engine.sample_append_into_at(target, zones, start);
+            let start = self.zone_sampling_scratch.len();
+            if let Err(error) = spatial_engine.try_sample_append_into_at(
+                target,
+                &mut self.zone_sampling_scratch,
+                start,
+            ) {
+                self.zone_sampling_scratch.clear();
+                return Err(error);
+            }
         }
+
+        std::mem::swap(zones, &mut self.zone_sampling_scratch);
+        Ok(())
     }
 
     pub(super) fn compose_scene_frame(&mut self, groups: &[Zone]) -> Result<ProducerFrame> {

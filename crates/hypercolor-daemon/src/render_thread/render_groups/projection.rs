@@ -22,14 +22,15 @@ pub(super) struct CachedZoneProjection {
     zone: Output,
     sampling_mode: SamplingMode,
     edge_behavior: EdgeBehavior,
-    pub(super) samples: Vec<ProjectionSample>,
+    pub(super) bounds: Option<ProjectionBounds>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct ProjectionSample {
-    x: u32,
-    y: u32,
-    local_position: NormalizedPosition,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ProjectionBounds {
+    pub(super) x0: u32,
+    pub(super) y0: u32,
+    pub(super) x1: u32,
+    pub(super) y1: u32,
 }
 
 pub(super) fn compose_authoritative_scene_canvas(
@@ -69,19 +70,7 @@ pub(super) fn compose_authoritative_scene_canvas(
         }
 
         for zone_projection in &projection.zones {
-            for sample in &zone_projection.samples {
-                scene_canvas.set_pixel(
-                    sample.x,
-                    sample.y,
-                    sample_led(
-                        source,
-                        sample.local_position,
-                        &zone_projection.zone,
-                        &zone_projection.sampling_mode,
-                        zone_projection.edge_behavior,
-                    ),
-                );
-            }
+            rasterize_zone_projection(scene_canvas, source, zone_projection);
         }
     }
 }
@@ -174,8 +163,15 @@ fn full_scene_identity_projection_shape(projection: &CachedGroupProjection) -> b
     if !zone_is_full_scene_identity(&zone_projection.zone) {
         return false;
     }
-    let expected_samples = u64::from(projection.scene_width) * u64::from(projection.scene_height);
-    u64::try_from(zone_projection.samples.len()) == Ok(expected_samples)
+    matches!(
+        zone_projection.bounds,
+        Some(ProjectionBounds {
+            x0: 0,
+            y0: 0,
+            x1,
+            y1,
+        }) if x1 == projection.scene_width && y1 == projection.scene_height
+    )
 }
 
 fn zone_is_full_scene_identity(zone: &Output) -> bool {
@@ -214,38 +210,11 @@ fn build_zone_projection(
         .clone()
         .unwrap_or_else(|| layout.default_sampling_mode.clone());
     let edge_behavior = zone.edge_behavior.unwrap_or(layout.default_edge_behavior);
-    let Some((x0, y0, x1, y1)) = zone_projection_bounds(zone, target_width, target_height) else {
-        return CachedZoneProjection {
-            zone: zone.clone(),
-            sampling_mode,
-            edge_behavior,
-            samples: Vec::new(),
-        };
-    };
-
-    let mut samples = Vec::with_capacity(
-        usize::try_from(u64::from(x1 - x0) * u64::from(y1 - y0)).unwrap_or(usize::MAX),
-    );
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let Some(local_position) =
-                zone_local_position_for_scene_pixel(x, y, target_width, target_height, zone)
-            else {
-                continue;
-            };
-            samples.push(ProjectionSample {
-                x,
-                y,
-                local_position,
-            });
-        }
-    }
-
     CachedZoneProjection {
         zone: zone.clone(),
         sampling_mode,
         edge_behavior,
-        samples,
+        bounds: zone_projection_bounds(zone, target_width, target_height),
     }
 }
 
@@ -258,18 +227,41 @@ pub(super) fn blit_zone_projection(
     target_height: u32,
 ) {
     let projection = build_zone_projection(zone, layout, target_width, target_height);
-    for sample in projection.samples {
-        target.set_pixel(
-            sample.x,
-            sample.y,
-            sample_led(
-                source,
-                sample.local_position,
+    rasterize_zone_projection(target, source, &projection);
+}
+
+fn rasterize_zone_projection(
+    target: &mut Canvas,
+    source: &Canvas,
+    projection: &CachedZoneProjection,
+) {
+    let Some(bounds) = projection.bounds else {
+        return;
+    };
+
+    for y in bounds.y0..bounds.y1 {
+        for x in bounds.x0..bounds.x1 {
+            let Some(local_position) = zone_local_position_for_scene_pixel(
+                x,
+                y,
+                target.width(),
+                target.height(),
                 &projection.zone,
-                &projection.sampling_mode,
-                projection.edge_behavior,
-            ),
-        );
+            ) else {
+                continue;
+            };
+            target.set_pixel(
+                x,
+                y,
+                sample_led(
+                    source,
+                    local_position,
+                    &projection.zone,
+                    &projection.sampling_mode,
+                    projection.edge_behavior,
+                ),
+            );
+        }
     }
 }
 
@@ -284,7 +276,7 @@ fn zone_projection_bounds(
     zone: &Output,
     target_width: u32,
     target_height: u32,
-) -> Option<(u32, u32, u32, u32)> {
+) -> Option<ProjectionBounds> {
     let span_x = zone.size.x * zone.scale;
     let span_y = zone.size.y * zone.scale;
     if span_x <= 0.0 || span_y <= 0.0 || target_width == 0 || target_height == 0 {
@@ -330,7 +322,7 @@ fn zone_projection_bounds(
         return None;
     }
 
-    Some((x0, y0, x1, y1))
+    Some(ProjectionBounds { x0, y0, x1, y1 })
 }
 
 #[expect(

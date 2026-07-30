@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn late_group_sampling_failure_preserves_last_good_zones() {
+    use hypercolor_core::spatial::SpatialSamplingCapacity;
+
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut first_group = sample_group(4, 4);
+    first_group.layout.zones = vec![point_zone("first")];
+    let mut second_group = sample_group(100, 100);
+    second_group.layout.zones = vec![point_zone("second")];
+    second_group.layout.zones[0].sampling_mode = Some(SamplingMode::AreaAverage {
+        radius_x: 1.0,
+        radius_y: 1.0,
+    });
+
+    let first_engine =
+        SpatialEngine::try_new(first_group.layout.clone()).expect("first group should prepare");
+    let mut constrained_layout = second_group.layout.clone();
+    constrained_layout.canvas_width = 1;
+    constrained_layout.canvas_height = 1;
+    let second_engine = SpatialEngine::try_new_with_sampling_capacity(
+        constrained_layout,
+        SpatialSamplingCapacity::new(1_024),
+    )
+    .expect("canonical second-group workspace should fit");
+
+    runtime
+        .target_canvases
+        .insert(first_group.id, Canvas::new(4, 4));
+    runtime
+        .target_canvases
+        .insert(second_group.id, Canvas::new(100, 100));
+    runtime.spatial_engines.insert(first_group.id, first_engine);
+    runtime
+        .spatial_engines
+        .insert(second_group.id, second_engine);
+    let last_good = vec![ZoneColors {
+        zone_id: "last_good".into(),
+        colors: vec![[12, 34, 56]],
+    }];
+    let mut zones = last_good.clone();
+
+    let result = runtime.sample_scene_group_led_zones(&[first_group, second_group], &mut zones);
+
+    assert!(result.is_err());
+    assert_eq!(zones, last_good);
+    assert!(runtime.zone_sampling_scratch.is_empty());
+}
+
+#[test]
 fn single_full_scene_group_renders_directly_into_surface() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();

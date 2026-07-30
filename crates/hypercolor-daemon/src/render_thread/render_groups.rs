@@ -23,7 +23,6 @@ use hypercolor_types::canvas::{
 use hypercolor_types::event::HypercolorEvent;
 #[cfg(test)]
 use hypercolor_types::event::LayerHealth;
-#[cfg(test)]
 use hypercolor_types::event::ZoneColors;
 #[cfg(test)]
 use hypercolor_types::layer::{
@@ -71,7 +70,7 @@ pub(crate) use model::{
 use projection::CachedGroupProjection;
 #[cfg(test)]
 use projection::{
-    blit_zone_projection, copy_full_scene_identity_projection,
+    ProjectionBounds, blit_zone_projection, copy_full_scene_identity_projection,
     projection_composition_layers_for_group, zone_local_position_for_scene_pixel,
 };
 
@@ -103,6 +102,7 @@ pub(crate) struct ZoneRuntime {
     scene_surface_pool_max_slots: usize,
     reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
+    zone_sampling_scratch: Vec<ZoneColors>,
     last_effect_error: Option<ZoneEffectError>,
     recovered_effect_error: Option<ZoneEffectError>,
     layer_runtime: LayerRuntimeRegistry,
@@ -111,6 +111,14 @@ pub(crate) struct ZoneRuntime {
     empty_led_spatial_engine: SpatialEngine,
     scene_width: u32,
     scene_height: u32,
+}
+
+pub(crate) struct PreparedSceneResize {
+    scene_width: u32,
+    scene_height: u32,
+    scene_surface_pool: RenderSurfacePool,
+    empty_led_layout: Arc<SpatialLayout>,
+    empty_led_spatial_engine: SpatialEngine,
 }
 
 #[derive(Debug, Error)]
@@ -191,6 +199,7 @@ impl ZoneRuntime {
             scene_surface_pool_max_slots: max_slots,
             reconciled_dependency_key: None,
             retained_frame: None,
+            zone_sampling_scratch: Vec::new(),
             last_effect_error: None,
             recovered_effect_error: None,
             layer_runtime: LayerRuntimeRegistry::default(),
@@ -207,10 +216,21 @@ impl ZoneRuntime {
         scene_width: u32,
         scene_height: u32,
     ) -> Result<(), ZoneRuntimePreparationError> {
-        if self.scene_width == scene_width && self.scene_height == scene_height {
+        let Some(prepared) = self.prepare_scene_resize(scene_width, scene_height)? else {
             return Ok(());
-        }
+        };
+        self.commit_scene_resize(prepared);
+        Ok(())
+    }
 
+    pub(crate) fn prepare_scene_resize(
+        &self,
+        scene_width: u32,
+        scene_height: u32,
+    ) -> Result<Option<PreparedSceneResize>, ZoneRuntimePreparationError> {
+        if self.scene_width == scene_width && self.scene_height == scene_height {
+            return Ok(None);
+        }
         let (empty_led_layout, empty_led_spatial_engine) =
             combined_led_state(empty_group_layout(scene_width, scene_height))?;
         let mut scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
@@ -223,17 +243,24 @@ impl ZoneRuntime {
             .expect("replacement scene surface pool must expose an initial slot")
             .release();
 
-        self.scene_width = scene_width;
-        self.scene_height = scene_height;
-        self.target_canvases.clear();
-        self.scene_projection_cache.clear();
-        self.scene_surface_pool = scene_surface_pool;
+        Ok(Some(PreparedSceneResize {
+            scene_width,
+            scene_height,
+            scene_surface_pool,
+            empty_led_layout,
+            empty_led_spatial_engine,
+        }))
+    }
+
+    pub(crate) fn commit_scene_resize(&mut self, prepared: PreparedSceneResize) {
+        self.scene_width = prepared.scene_width;
+        self.scene_height = prepared.scene_height;
+        self.scene_surface_pool = prepared.scene_surface_pool;
         self.retained_frame = None;
         self.reconciled_dependency_key = None;
-        self.combined_led_layout = empty_led_layout;
-        self.combined_led_spatial_engine = empty_led_spatial_engine.clone();
-        self.empty_led_spatial_engine = empty_led_spatial_engine;
-        Ok(())
+        self.combined_led_layout = prepared.empty_led_layout;
+        self.combined_led_spatial_engine = prepared.empty_led_spatial_engine.clone();
+        self.empty_led_spatial_engine = prepared.empty_led_spatial_engine;
     }
 
     #[cfg(test)]
@@ -272,10 +299,6 @@ impl ZoneRuntime {
         Ok(runtime)
     }
 
-    pub(crate) fn asset_library(&self) -> Option<Arc<RwLock<AssetLibrary>>> {
-        self.asset_library.clone()
-    }
-
     pub(crate) fn drain_layer_runtime_events(&mut self) -> Vec<HypercolorEvent> {
         self.layer_runtime.drain_events()
     }
@@ -289,6 +312,7 @@ mod layer_rendering;
 mod model;
 mod projection;
 mod reconcile;
+pub(crate) use reconcile::PreparedZoneReconcile;
 mod render_pass;
 mod scene_assembly;
 mod scene_output;

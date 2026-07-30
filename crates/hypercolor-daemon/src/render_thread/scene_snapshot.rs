@@ -64,14 +64,12 @@ impl SceneRuntimeSnapshot {
     }
 
     pub(crate) fn dependency_key(&self, dependency_generation: u64) -> SceneDependencyKey {
-        SceneDependencyKey::new(
+        scene_dependency_key(
             self.active_render_groups_revision,
-            combine_scene_dependency_generation(
-                dependency_generation,
-                self.device_registry_generation,
-                self.zone_layout_preview_generation,
-                &self.unassigned_behavior,
-            ),
+            dependency_generation,
+            self.device_registry_generation,
+            self.zone_layout_preview_generation,
+            &self.unassigned_behavior,
         )
     }
 }
@@ -328,7 +326,7 @@ async fn snapshot_scene_runtime(
     }
 }
 
-fn apply_zone_layout_previews(
+pub(super) fn apply_zone_layout_previews(
     active_render_groups: Arc<[Zone]>,
     overrides: &HashMap<ZoneId, SpatialLayout>,
 ) -> Arc<[Zone]> {
@@ -370,6 +368,24 @@ fn combine_scene_dependency_generation(
         ^ unassigned_behavior_generation(unassigned_behavior).rotate_left(42)
 }
 
+pub(super) fn scene_dependency_key(
+    active_render_groups_revision: u64,
+    registry_generation: u64,
+    device_registry_generation: u64,
+    zone_layout_preview_generation: u64,
+    unassigned_behavior: &UnassignedBehavior,
+) -> SceneDependencyKey {
+    SceneDependencyKey::new(
+        active_render_groups_revision,
+        combine_scene_dependency_generation(
+            registry_generation,
+            device_registry_generation,
+            zone_layout_preview_generation,
+            unassigned_behavior,
+        ),
+    )
+}
+
 fn unassigned_behavior_generation(unassigned_behavior: &UnassignedBehavior) -> u64 {
     match unassigned_behavior {
         UnassignedBehavior::Off => 0,
@@ -381,7 +397,7 @@ fn unassigned_behavior_generation(unassigned_behavior: &UnassignedBehavior) -> u
     }
 }
 
-async fn snapshot_display_group_target_metadata(
+pub(super) async fn snapshot_display_group_target_metadata(
     device_registry: &hypercolor_core::device::DeviceRegistry,
     scene_snapshot_cache: &mut SceneSnapshotCache,
     groups_revision: u64,
@@ -490,7 +506,7 @@ fn display_target_geometry_for_device(
 /// load. Pixel format maps the transport: raw RGB stays `Rgb`; JPEG
 /// transports apply 4:2:0 chroma subsampling, surfaced as `Yuv420` so
 /// face authors can avoid one-pixel colored hairlines.
-fn display_descriptors_for_groups(
+pub(super) fn display_descriptors_for_groups(
     target_fps: &HashMap<ZoneId, u32>,
     routes: &HashMap<ZoneId, DisplayGroupOutputRoute>,
 ) -> HashMap<ZoneId, DisplayDescriptor> {

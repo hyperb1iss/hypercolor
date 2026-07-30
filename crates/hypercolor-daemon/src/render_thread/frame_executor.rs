@@ -20,9 +20,12 @@ use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::{
     OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
+    PreparedLayoutActivation,
 };
 use super::scene_snapshot::{
-    FrameSceneSnapshot, build_frame_scene_snapshot, refresh_effect_scene_snapshot,
+    FrameSceneSnapshot, apply_zone_layout_previews, build_frame_scene_snapshot,
+    display_descriptors_for_groups, refresh_effect_scene_snapshot, scene_dependency_key,
+    snapshot_display_group_target_metadata,
 };
 use super::sparkleflinger::ComposedFrameSet;
 use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_generation};
@@ -61,8 +64,14 @@ pub(crate) async fn execute_frame(
             SceneTransaction::SetScreenCaptureConfigured(configured) => {
                 scene.render_state.set_screen_capture_configured(configured);
             }
-            SceneTransaction::ApplyLayout(transaction) => {
+            SceneTransaction::PrepareLayout(transaction) => {
                 if transaction.is_cancelled() {
+                    continue;
+                }
+                if render.pending_layout_activation.is_some() {
+                    transaction.reject(LayoutTransactionRejection::PreparationFailed {
+                        message: "another layout preparation is already pending".to_owned(),
+                    });
                     continue;
                 }
                 let spatial_engine = transaction.spatial_engine().clone();
@@ -71,9 +80,83 @@ pub(crate) async fn execute_frame(
                 let height = layout.canvas_height;
                 let needs_resize =
                     state.canvas_dims.width() != width || state.canvas_dims.height() != height;
-                let prepared_resize = if needs_resize {
-                    match render.prepare_canvas_resize(width, height, &spatial_engine) {
-                        Ok(prepared) => Some(prepared),
+                let candidate_groups = transaction.active_render_groups();
+                let active_scene_id = transaction.active_scene_id();
+                let active_render_groups_revision = transaction.active_render_groups_revision();
+                let unassigned_behavior = transaction.unassigned_behavior().clone();
+                let preparation = async {
+                    let (zone_layout_preview_generation, candidate_groups) =
+                        if let Some(scene_id) = active_scene_id {
+                            let (generation, overrides) = state
+                                .zone_layout_previews
+                                .scene_overrides_with_generation(scene_id)
+                                .await;
+                            (
+                                generation,
+                                apply_zone_layout_previews(candidate_groups, &overrides),
+                            )
+                        } else {
+                            (state.zone_layout_previews.generation(), candidate_groups)
+                        };
+                    let (display_target_fps, display_output_routes) =
+                        snapshot_display_group_target_metadata(
+                            &state.device_registry,
+                            &mut scene.snapshot_cache,
+                            active_render_groups_revision,
+                            candidate_groups.as_ref(),
+                            state.face_fps_cap,
+                        )
+                        .await;
+                    let display_descriptors =
+                        display_descriptors_for_groups(&display_target_fps, &display_output_routes);
+                    let registry = state.effect_registry.read().await;
+                    let dependency_key = scene_dependency_key(
+                        active_render_groups_revision,
+                        registry.generation(),
+                        state.device_registry.generation(),
+                        zone_layout_preview_generation,
+                        &unassigned_behavior,
+                    );
+                    let (prepared_resize, sampling_preparation) = if needs_resize {
+                        let off_color = state.power_state.borrow().off_output_color;
+                        (
+                            Some(render.prepare_canvas_resize(
+                                width,
+                                height,
+                                off_color,
+                                &spatial_engine,
+                            )?),
+                            None,
+                        )
+                    } else {
+                        (
+                            None,
+                            Some(render.prepare_spatial_sampling_plan(&spatial_engine)?),
+                        )
+                    };
+                    let prepared_groups = render
+                        .render_group_runtime
+                        .prepare_reconcile_for_scene_dimensions(
+                            candidate_groups.as_ref(),
+                            active_scene_id,
+                            dependency_key,
+                            &registry,
+                            &display_descriptors,
+                            Some(&spatial_engine),
+                            width,
+                            height,
+                        )?;
+                    Ok::<_, anyhow::Error>((
+                        candidate_groups,
+                        prepared_resize,
+                        sampling_preparation,
+                        prepared_groups,
+                    ))
+                }
+                .await;
+                let (candidate_groups, prepared_resize, sampling_preparation, prepared_groups) =
+                    match preparation {
+                        Ok(prepared) => prepared,
                         Err(error) => {
                             warn!(
                                 %error,
@@ -88,28 +171,68 @@ pub(crate) async fn execute_frame(
                             });
                             continue;
                         }
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(prepared_resize) = prepared_resize {
-                    render.commit_canvas_resize(prepared_resize);
-                    state.canvas_dims.set(width, height);
-                    frame_loop.throttle.reset_for_canvas_resize();
-                    info!(width, height, "Applied live canvas resize");
-                } else if let Err(error) = render.apply_spatial_sampling_plan(&spatial_engine) {
-                    warn!(
-                        %error,
-                        "Rejected spatial layout because CPU fallback resources could not be prepared"
-                    );
+                    };
+                render.pending_layout_activation = Some(PreparedLayoutActivation {
+                    token: transaction.token(),
+                    spatial_engine,
+                    active_render_groups: candidate_groups,
+                    prepared_resize,
+                    sampling_preparation,
+                    prepared_groups,
+                    width,
+                    height,
+                });
+                transaction.accept();
+            }
+            SceneTransaction::CommitLayout(transaction) => {
+                let Some(prepared) = render.pending_layout_activation.take() else {
                     transaction.reject(LayoutTransactionRejection::PreparationFailed {
-                        message: error.to_string(),
+                        message: "layout preparation token is no longer active".to_owned(),
+                    });
+                    continue;
+                };
+                if prepared.token != transaction.token() {
+                    render.pending_layout_activation = Some(prepared);
+                    transaction.reject(LayoutTransactionRejection::PreparationFailed {
+                        message: "layout preparation token does not match".to_owned(),
                     });
                     continue;
                 }
-                scene.render_state.replace_spatial_engine(spatial_engine);
+
+                if let Some(prepared_resize) = prepared.prepared_resize {
+                    render.commit_canvas_resize(prepared_resize);
+                    state.canvas_dims.set(prepared.width, prepared.height);
+                    frame_loop.throttle.reset_for_canvas_resize();
+                    info!(
+                        width = prepared.width,
+                        height = prepared.height,
+                        "Applied live canvas resize"
+                    );
+                } else if let Some(sampling_preparation) = prepared.sampling_preparation {
+                    render.commit_spatial_sampling_plan(sampling_preparation);
+                }
+                render.render_group_runtime.commit_reconcile(
+                    prepared.prepared_groups,
+                    prepared.active_render_groups.as_ref(),
+                );
+                scene
+                    .render_state
+                    .replace_spatial_engine(prepared.spatial_engine);
                 transaction.accept();
+            }
+            SceneTransaction::AbortLayout(transaction) => {
+                let matches_pending = render
+                    .pending_layout_activation
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.token == transaction.token());
+                if matches_pending {
+                    render.pending_layout_activation = None;
+                    transaction.accept();
+                } else {
+                    transaction.reject(LayoutTransactionRejection::PreparationFailed {
+                        message: "layout preparation token is no longer active".to_owned(),
+                    });
+                }
             }
         }
     }

@@ -164,7 +164,7 @@ fn authoritative_scene_canvas_uses_zone_sampling_mode() {
 }
 
 #[test]
-fn render_scene_reuses_projection_cache_until_layout_changes() {
+fn render_scene_caches_compact_projection_metadata_until_layout_changes() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -185,13 +185,12 @@ fn render_scene_reuses_projection_cache_until_layout_changes() {
         &mut zones,
     )
     .expect("first render should build the projection cache");
-    let cached_samples = runtime
+    let cached_bounds = runtime
         .scene_projection_cache
         .get(&group.id)
         .expect("scene group should have a cached projection")
         .zones[0]
-        .samples
-        .as_ptr();
+        .bounds;
 
     render_scene_for_test(
         &mut runtime,
@@ -210,9 +209,8 @@ fn render_scene_reuses_projection_cache_until_layout_changes() {
             .get(&group.id)
             .expect("scene group should keep a cached projection")
             .zones[0]
-            .samples
-            .as_ptr(),
-        cached_samples
+            .bounds,
+        cached_bounds
     );
 
     group.layout.zones[0].size = NormalizedPosition::new(1.0, 1.0);
@@ -227,16 +225,41 @@ fn render_scene_reuses_projection_cache_until_layout_changes() {
     )
     .expect("layout changes should rebuild the projection cache");
 
-    assert!(
+    assert!(matches!(
         runtime
             .scene_projection_cache
             .get(&group.id)
             .expect("scene group should rebuild a cached projection")
             .zones[0]
-            .samples
-            .len()
-            > 4
-    );
+            .bounds,
+        Some(ProjectionBounds {
+            x0: 0,
+            y0: 0,
+            x1: 4,
+            y1: 4,
+        })
+    ));
+}
+
+#[test]
+fn projection_metadata_is_constant_size_for_large_dimensions() {
+    let mut group = sample_group(u32::MAX, u32::MAX);
+    let mut zone = point_zone("large");
+    zone.position = NormalizedPosition::new(0.5, 0.5);
+    zone.size = NormalizedPosition::new(1.0, 1.0);
+    group.layout.zones = vec![zone];
+    let projection = build_group_projection(&group, u32::MAX, u32::MAX);
+
+    assert_eq!(projection.zones.len(), group.layout.zones.len());
+    assert!(matches!(
+        projection.zones[0].bounds,
+        Some(ProjectionBounds {
+            x0: 0,
+            y0: 0,
+            x1: u32::MAX,
+            y1: u32::MAX,
+        })
+    ));
 }
 
 #[test]

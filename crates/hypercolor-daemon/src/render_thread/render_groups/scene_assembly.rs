@@ -51,7 +51,6 @@ impl ZoneRuntime {
             &mut rendered_groups,
         )?;
         self.render_display_group_frames(context, sparkleflinger, None, &mut rendered_groups)?;
-        zones.clear();
         let logical_layer_count = scene_logical_layer_count(context.groups);
         let use_gpu_scene_sampling =
             project_scene_with_sparkleflinger && !self.combined_led_layout.zones.is_empty();
@@ -59,7 +58,7 @@ impl ZoneRuntime {
             0
         } else {
             let sample_start = Instant::now();
-            self.sample_scene_group_led_zones(context.groups, zones);
+            self.sample_scene_group_led_zones(context.groups, zones)?;
             micros_u32(sample_start.elapsed())
         };
         let scene_compose_start = Instant::now();

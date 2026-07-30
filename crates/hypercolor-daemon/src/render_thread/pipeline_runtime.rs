@@ -25,7 +25,7 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
+    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor, SurfaceResourceError,
 };
 use hypercolor_core::types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
@@ -33,9 +33,9 @@ use hypercolor_types::config::RenderAccelerationMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::SceneId;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
+use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 use std::sync::Arc;
@@ -53,7 +53,9 @@ use super::input_publication::{
     InputPublicationReader, OwnedInputPublicationDemand,
 };
 use super::producer_queue::ProducerQueue;
-use super::render_groups::{RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime};
+use super::render_groups::{
+    PreparedZoneReconcile, RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime,
+};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::{EffectDemand, FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
@@ -66,6 +68,7 @@ use super::sparkleflinger::{
 };
 use super::{RenderThreadState, micros_u32};
 use crate::interaction_routing::InteractionRoutingControl;
+use crate::scene_transactions::LayoutTransactionToken;
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
 const BACKGROUND_INPUT_HZ: u32 = 1;
@@ -696,7 +699,7 @@ pub(crate) struct CachedStaticSurface {
 }
 
 pub(crate) struct OutputArtifactsState {
-    static_surface_cache: Option<CachedStaticSurface>,
+    static_surface_cache: Vec<CachedStaticSurface>,
     recycled_frame: FrameData,
     pub(crate) unassigned_output_cache: UnassignedOutputCache,
 }
@@ -704,7 +707,7 @@ pub(crate) struct OutputArtifactsState {
 impl Default for OutputArtifactsState {
     fn default() -> Self {
         Self {
-            static_surface_cache: None,
+            static_surface_cache: Vec::new(),
             recycled_frame: FrameData::empty(),
             unassigned_output_cache: UnassignedOutputCache::default(),
         }
@@ -724,8 +727,10 @@ impl OutputArtifactsState {
             color,
         };
 
-        if let Some(cached) = self.static_surface_cache.as_ref()
-            && cached.key == key
+        if let Some(cached) = self
+            .static_surface_cache
+            .iter()
+            .find(|cached| cached.key == key)
         {
             return cached.surface.clone();
         }
@@ -736,15 +741,45 @@ impl OutputArtifactsState {
         }
 
         let surface = PublishedSurface::from_owned_canvas(canvas, 0, 0);
-        self.static_surface_cache = Some(CachedStaticSurface {
+        self.static_surface_cache.push(CachedStaticSurface {
             key,
             surface: surface.clone(),
         });
         surface
     }
 
-    pub(crate) fn reset_for_canvas_resize(&mut self) {
-        self.static_surface_cache = None;
+    fn prepare_static_surfaces(
+        width: u32,
+        height: u32,
+        colors: &[[u8; 3]],
+    ) -> Result<Vec<CachedStaticSurface>, SurfaceResourceError> {
+        let mut prepared = Vec::with_capacity(colors.len());
+        for color in colors.iter().copied() {
+            let key = StaticSurfaceKey {
+                width,
+                height,
+                color,
+            };
+            if prepared
+                .iter()
+                .any(|cached: &CachedStaticSurface| cached.key == key)
+            {
+                continue;
+            }
+            let mut canvas = Canvas::try_new(width, height)?;
+            if color != [0, 0, 0] {
+                canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
+            }
+            prepared.push(CachedStaticSurface {
+                key,
+                surface: PublishedSurface::from_owned_canvas(canvas, 0, 0),
+            });
+        }
+        Ok(prepared)
+    }
+
+    pub(crate) fn reset_for_canvas_resize(&mut self, static_surfaces: Vec<CachedStaticSurface>) {
+        self.static_surface_cache = static_surfaces;
         self.unassigned_output_cache.clear();
     }
 
@@ -1330,15 +1365,28 @@ pub(crate) struct RenderCaches {
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
     pub(crate) render_group_runtime: ZoneRuntime,
     pub(crate) output_artifacts: OutputArtifactsState,
+    pub(crate) pending_layout_activation: Option<PreparedLayoutActivation>,
     effect_delta_clock: EffectDeltaClock,
 }
 
 pub(crate) struct PreparedCanvasResize {
-    render_group_runtime: ZoneRuntime,
+    render_group_runtime: super::render_groups::PreparedSceneResize,
+    static_surfaces: Vec<CachedStaticSurface>,
     sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
     sampling_preparation: SparkleFlingerSamplingPreparation,
     #[cfg(feature = "wgpu")]
     display_sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
+}
+
+pub(crate) struct PreparedLayoutActivation {
+    pub(crate) token: LayoutTransactionToken,
+    pub(crate) spatial_engine: SpatialEngine,
+    pub(crate) active_render_groups: Arc<[Zone]>,
+    pub(crate) prepared_resize: Option<PreparedCanvasResize>,
+    pub(crate) sampling_preparation: Option<SparkleFlingerSamplingPreparation>,
+    pub(crate) prepared_groups: PreparedZoneReconcile,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 #[derive(Debug, Default)]
@@ -1799,14 +1847,15 @@ impl RenderCaches {
         &mut self,
         width: u32,
         height: u32,
+        off_color: [u8; 3],
         spatial_engine: &SpatialEngine,
     ) -> Result<PreparedCanvasResize> {
-        let render_group_runtime = match self.render_group_runtime.asset_library() {
-            Some(asset_library) => {
-                ZoneRuntime::try_with_asset_library(width, height, asset_library)?
-            }
-            None => ZoneRuntime::try_new(width, height)?,
-        };
+        let render_group_runtime = self
+            .render_group_runtime
+            .prepare_scene_resize(width, height)?
+            .expect("canvas resize preparation requires changed dimensions");
+        let static_surfaces =
+            OutputArtifactsState::prepare_static_surfaces(width, height, &[[0, 0, 0], off_color])?;
         let sampling_preparation = self.sparkleflinger.prepare_zone_sampling_plan(
             width,
             height,
@@ -1833,6 +1882,7 @@ impl RenderCaches {
         }
         Ok(PreparedCanvasResize {
             render_group_runtime,
+            static_surfaces,
             sparkleflinger_preparation,
             sampling_preparation,
             #[cfg(feature = "wgpu")]
@@ -1855,31 +1905,49 @@ impl RenderCaches {
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
             .apply_canvas_resize(prepared.display_sparkleflinger_preparation);
-        self.render_group_runtime = prepared.render_group_runtime;
+        self.render_group_runtime
+            .commit_scene_resize(prepared.render_group_runtime);
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
-        self.output_artifacts.reset_for_canvas_resize();
+        self.output_artifacts
+            .reset_for_canvas_resize(prepared.static_surfaces);
     }
 
-    pub(crate) fn apply_spatial_sampling_plan(
+    pub(crate) fn prepare_spatial_sampling_plan(
         &mut self,
         spatial_engine: &SpatialEngine,
-    ) -> Result<bool> {
+    ) -> Result<SparkleFlingerSamplingPreparation> {
         let layout = spatial_engine.layout();
         let preparation = self.sparkleflinger.prepare_zone_sampling_plan(
             layout.canvas_width,
             layout.canvas_height,
             spatial_engine.sampling_plan().as_ref(),
         );
-        #[cfg(feature = "wgpu")]
-        let admitted = preparation.is_admitted();
-        #[cfg(not(feature = "wgpu"))]
-        let admitted = false;
         if preparation.requires_cpu_sampling() {
             spatial_engine
                 .try_prepare_sampling_canvas(layout.canvas_width, layout.canvas_height)?;
         }
+        Ok(preparation)
+    }
+
+    pub(crate) fn commit_spatial_sampling_plan(
+        &mut self,
+        preparation: SparkleFlingerSamplingPreparation,
+    ) {
         self.sparkleflinger.apply_zone_sampling_plan(preparation);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_spatial_sampling_plan(
+        &mut self,
+        spatial_engine: &SpatialEngine,
+    ) -> Result<bool> {
+        let preparation = self.prepare_spatial_sampling_plan(spatial_engine)?;
+        #[cfg(feature = "wgpu")]
+        let admitted = preparation.is_admitted();
+        #[cfg(not(feature = "wgpu"))]
+        let admitted = false;
+        self.commit_spatial_sampling_plan(preparation);
         Ok(admitted)
     }
 
@@ -2106,6 +2174,7 @@ impl PipelineRuntime {
                     None => ZoneRuntime::try_new(canvas_width, canvas_height)?,
                 },
                 output_artifacts: OutputArtifactsState::default(),
+                pending_layout_activation: None,
                 effect_delta_clock: EffectDeltaClock::default(),
             },
             frame_policy: FramePolicy::new(configured_max_fps_tier),
@@ -2900,7 +2969,10 @@ mod tests {
         .expect("initial CPU runtime should prepare its area workspace");
 
         let active_engine = runtime.scene.render_state.spatial_engine().clone();
-        let Err(error) = runtime.render.prepare_canvas_resize(8, 8, &active_engine) else {
+        let Err(error) = runtime
+            .render
+            .prepare_canvas_resize(8, 8, [0, 0, 0], &active_engine)
+        else {
             panic!("larger fallback workspace must exceed the configured capacity");
         };
 
