@@ -436,6 +436,16 @@ def _extended_screen_zones_frame(grid_cols: int, grid_rows: int, rgb: bytes) -> 
     )
 
 
+def test_screen_zone_chunk_payload_borrows_the_websocket_frame() -> None:
+    encoded = _extended_screen_zones_frame(4, 1, bytes(12))
+    frame = _screen_zone_chunks(encoded, 99, 30)[0]
+
+    chunk = websocket_module._parse_screen_zone_chunk(frame)
+
+    assert isinstance(chunk.payload, memoryview)
+    assert chunk.payload.obj is frame
+
+
 @pytest.mark.asyncio
 async def test_chunked_extended_screen_zones_reassemble_and_dispatch() -> None:
     grid_cols = 350_000
@@ -527,7 +537,9 @@ def test_screen_zone_chunks_reject_declared_publication_overflow() -> None:
         HypercolorEventStream(_TestClient())._decode_received_binary(payload)
 
 
-def test_screen_zone_cancel_releases_reserved_publication() -> None:
+def test_screen_zone_cancel_releases_reserved_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     encoded = struct.pack(
         "<B10I",
         ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
@@ -546,11 +558,37 @@ def test_screen_zone_cancel_releases_reserved_publication() -> None:
     stream = HypercolorEventStream(_TestClient())
     stream._decode_received_binary(chunks[0])
     assert stream._screen_zones_reassembler.reserved_bytes == len(encoded)
+    cancel_payload = _screen_zone_cancel(102)
+    observed: list[tuple[int, int, int]] = []
+    original = websocket_module._ScreenZonesChunkReassembler.cancel
 
-    cancelled = stream._decode_received_binary(_screen_zone_cancel(102))
+    def observe_cancel(
+        reassembler: websocket_module._ScreenZonesChunkReassembler,
+        payload: bytes,
+    ) -> None:
+        observed.append(
+            (
+                reassembler.reserved_bytes,
+                reassembler.inbound_frame_bytes,
+                reassembler.connection_bytes,
+            )
+        )
+        original(reassembler, payload)
+
+    monkeypatch.setattr(
+        websocket_module._ScreenZonesChunkReassembler,
+        "cancel",
+        observe_cancel,
+    )
+
+    cancelled = stream._decode_received_binary(cancel_payload)
 
     assert isinstance(cancelled, BinaryMessage)
+    assert observed == [(len(encoded), len(cancel_payload), len(encoded) + len(cancel_payload))]
     assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert stream._screen_zones_reassembler.decoded_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
     with pytest.raises(ValueError, match="completed or cancelled"):
         stream._decode_received_binary(chunks[1])
 
@@ -601,6 +639,9 @@ def test_screen_zone_chunk_idle_expiry_releases_reserved_bytes(
     now = 6.0
 
     assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert stream._screen_zones_reassembler.decoded_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
     with pytest.raises(ValueError, match="completed or cancelled"):
         stream._decode_received_binary(chunks[1])
 
@@ -633,6 +674,9 @@ async def test_disconnect_clears_screen_zone_partial_and_high_water() -> None:
 
     assert connection.closed
     assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert stream._screen_zones_reassembler.decoded_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
     assert isinstance(stream._decode_received_binary(chunks[0]), BinaryMessage)
 
 
@@ -653,8 +697,8 @@ def test_screen_zone_completion_obeys_peak_connection_ledger(
         0,
         0,
     ) + bytes(12)
-    peak_bytes = len(encoded) + 12
     chunks = _screen_zone_chunks(encoded, 105, 30)
+    peak_bytes = len(encoded) + 12 + len(chunks[-1])
     monkeypatch.setitem(
         websocket_module._PREVIEW_TRANSPORT_LIMITS,
         "connection",
@@ -666,6 +710,9 @@ def test_screen_zone_completion_obeys_peak_connection_ledger(
     with pytest.raises(ValueError, match="connection byte ledger"):
         stream._decode_received_binary(chunks[1])
     assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert stream._screen_zones_reassembler.decoded_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
 
     monkeypatch.setitem(
         websocket_module._PREVIEW_TRANSPORT_LIMITS,
@@ -677,6 +724,65 @@ def test_screen_zone_completion_obeys_peak_connection_ledger(
     admitted._decode_received_binary(admitted_chunks[0])
     completed = admitted._decode_received_binary(admitted_chunks[1])
     assert isinstance(completed, ScreenZonesData)
+    assert admitted._screen_zones_reassembler.reserved_bytes == 0
+    assert admitted._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert admitted._screen_zones_reassembler.decoded_bytes == 0
+    assert admitted._screen_zones_reassembler.connection_bytes == 0
+
+
+def test_screen_zone_completion_retains_accounting_through_parse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rgb = bytes(12)
+    encoded = _extended_screen_zones_frame(4, 1, rgb)
+    chunks = _screen_zone_chunks(encoded, 111, 30)
+    stream = HypercolorEventStream(_TestClient())
+    original = HypercolorEventStream._parse_screen_zones
+    observed: list[tuple[int, int, int, int]] = []
+
+    def observe_accounting(payload: bytes | bytearray) -> ScreenZonesData:
+        observed.append(
+            (
+                stream._screen_zones_reassembler.reserved_bytes,
+                stream._screen_zones_reassembler.inbound_frame_bytes,
+                stream._screen_zones_reassembler.decoded_bytes,
+                stream._screen_zones_reassembler.connection_bytes,
+            )
+        )
+        return original(payload)
+
+    monkeypatch.setattr(
+        HypercolorEventStream,
+        "_parse_screen_zones",
+        staticmethod(observe_accounting),
+    )
+    stream._decode_received_binary(chunks[0])
+
+    completed = stream._decode_received_binary(chunks[1])
+
+    assert isinstance(completed, ScreenZonesData)
+    assert observed == [
+        (len(encoded), len(chunks[1]), len(rgb), len(encoded) + len(chunks[1]) + len(rgb))
+    ]
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert stream._screen_zones_reassembler.decoded_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
+
+
+def test_screen_zone_parse_error_clears_all_transient_accounting() -> None:
+    encoded = _extended_screen_zones_frame(5, 1, bytes(12))
+    chunks = _screen_zone_chunks(encoded, 112, 30)
+    stream = HypercolorEventStream(_TestClient())
+    stream._decode_received_binary(chunks[0])
+
+    with pytest.raises(ValueError, match="must be 15 bytes"):
+        stream._decode_received_binary(chunks[1])
+
+    assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert stream._screen_zones_reassembler.decoded_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
 
 
 def test_screen_zone_completion_obeys_decoded_byte_ledger(
@@ -696,6 +802,9 @@ def test_screen_zone_completion_obeys_decoded_byte_ledger(
     with pytest.raises(ValueError, match="decoded byte ledger"):
         stream._decode_received_binary(chunks[1])
     assert stream._screen_zones_reassembler.reserved_bytes == 0
+    assert stream._screen_zones_reassembler.inbound_frame_bytes == 0
+    assert stream._screen_zones_reassembler.decoded_bytes == 0
+    assert stream._screen_zones_reassembler.connection_bytes == 0
 
     monkeypatch.setitem(
         websocket_module._PREVIEW_TRANSPORT_LIMITS,

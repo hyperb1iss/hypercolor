@@ -188,6 +188,7 @@ class _PartialPreviewPublication:
     next_chunk_index: int
     encoded: bytearray
     last_activity: float
+    completed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +199,7 @@ class _ScreenZoneChunk:
     chunk_offset: int
     chunk_index: int
     chunk_count: int
-    payload: bytes
+    payload: memoryview
 
 
 def _parse_screen_zone_chunk(payload: bytes) -> _ScreenZoneChunk:
@@ -232,7 +233,8 @@ def _parse_screen_zone_chunk(payload: bytes) -> _ScreenZoneChunk:
     if len(payload) <= payload_offset:
         msg = "Preview chunk has a truncated identity or empty payload"
         raise ValueError(msg)
-    identity = payload[_PREVIEW_CHUNK_HEADER_LEN:payload_offset]
+    payload_view = memoryview(payload)
+    identity = payload_view[_PREVIEW_CHUNK_HEADER_LEN:payload_offset]
     if (
         stream_kind != 3
         or channel_tag != BINARY_MESSAGE_TAGS["screen_zones"]
@@ -241,7 +243,7 @@ def _parse_screen_zone_chunk(payload: bytes) -> _ScreenZoneChunk:
     ):
         msg = "Preview chunk is not a screen-zone RGB publication"
         raise ValueError(msg)
-    chunk_payload = payload[payload_offset:]
+    chunk_payload = payload_view[payload_offset:]
     end = chunk_offset + len(chunk_payload)
     if (
         total_encoded_bytes == 0
@@ -280,11 +282,25 @@ class _ScreenZonesChunkReassembler:
         self._partial: _PartialPreviewPublication | None = None
         self._high_water_publication_id: int | None = None
         self._reserved_bytes = 0
+        self._inbound_frame_bytes = 0
+        self._decoded_bytes = 0
 
     @property
     def reserved_bytes(self) -> int:
         self._expire_idle()
         return self._reserved_bytes
+
+    @property
+    def inbound_frame_bytes(self) -> int:
+        return self._inbound_frame_bytes
+
+    @property
+    def decoded_bytes(self) -> int:
+        return self._decoded_bytes
+
+    @property
+    def connection_bytes(self) -> int:
+        return self._reserved_bytes + self._inbound_frame_bytes + self._decoded_bytes
 
     @property
     def has_partial(self) -> bool:
@@ -293,10 +309,22 @@ class _ScreenZonesChunkReassembler:
     def expire_partial(self) -> None:
         self._partial = None
         self._reserved_bytes = 0
+        self._inbound_frame_bytes = 0
+        self._decoded_bytes = 0
 
     def reset(self) -> None:
         self.expire_partial()
         self._high_water_publication_id = None
+
+    def begin_inbound_frame(self, frame_bytes: int) -> None:
+        self._inbound_frame_bytes = frame_bytes
+
+    def finish_inbound_frame(self) -> None:
+        self._inbound_frame_bytes = 0
+        self._decoded_bytes = 0
+        if self._partial is not None and self._partial.completed:
+            self._partial = None
+            self._reserved_bytes = 0
 
     def _expire_idle(self) -> None:
         partial = self._partial
@@ -310,6 +338,7 @@ class _ScreenZonesChunkReassembler:
         if self._partial is not None and self._partial.publication_id == publication_id:
             self._partial = None
             self._reserved_bytes = 0
+            self._decoded_bytes = 0
         raise ValueError(message)
 
     def push(self, payload: bytes) -> bytearray | None:
@@ -348,7 +377,10 @@ class _ScreenZonesChunkReassembler:
         if chunk.chunk_index != 0 or chunk.chunk_offset != 0:
             msg = "Preview publication did not start with chunk zero"
             raise ValueError(msg)
-        if chunk.total_encoded_bytes > _PREVIEW_TRANSPORT_LIMITS["connection"]:
+        if (
+            chunk.total_encoded_bytes + self._inbound_frame_bytes
+            > _PREVIEW_TRANSPORT_LIMITS["connection"]
+        ):
             msg = "Preview publication exceeds the connection byte ledger"
             raise ValueError(msg)
         partial = _PartialPreviewPublication(
@@ -359,6 +391,7 @@ class _ScreenZonesChunkReassembler:
             next_chunk_index=0,
             encoded=bytearray(),
             last_activity=time.monotonic(),
+            completed=False,
         )
         self._partial = partial
         self._high_water_publication_id = chunk.publication_id
@@ -384,6 +417,14 @@ class _ScreenZonesChunkReassembler:
             partial.encoded
         ):
             self._reject("Preview chunks are not contiguous", chunk.publication_id)
+        if (
+            partial.total_encoded_bytes + self._inbound_frame_bytes
+            > _PREVIEW_TRANSPORT_LIMITS["connection"]
+        ):
+            self._reject(
+                "Preview publication exceeds the connection byte ledger",
+                chunk.publication_id,
+            )
         try:
             partial.encoded.extend(chunk.payload)
         except MemoryError as exc:
@@ -414,14 +455,14 @@ class _ScreenZonesChunkReassembler:
                 "Completed screen-zone publication exceeds the decoded byte ledger",
                 partial.publication_id,
             )
-        peak_bytes = partial.total_encoded_bytes + decoded_bytes
+        peak_bytes = partial.total_encoded_bytes + decoded_bytes + self._inbound_frame_bytes
         if peak_bytes > _PREVIEW_TRANSPORT_LIMITS["connection"]:
             self._reject(
                 "Completed screen-zone publication exceeds the connection byte ledger",
                 partial.publication_id,
             )
-        self._partial = None
-        self._reserved_bytes = 0
+        self._decoded_bytes = decoded_bytes
+        partial.completed = True
         return completed
 
     def cancel(self, payload: bytes) -> None:
@@ -451,6 +492,7 @@ class _ScreenZonesChunkReassembler:
         if self._partial is not None and self._partial.publication_id <= publication_id:
             self._partial = None
             self._reserved_bytes = 0
+            self._decoded_bytes = 0
 
 
 type WsMessage = (
@@ -813,19 +855,24 @@ class HypercolorEventStream:
     def _decode_preview_chunk(self, payload: bytes) -> _BinaryWsMessage:
         if not _is_screen_zone_preview_chunk(payload):
             return BinaryMessage(tag=payload[0], payload=payload)
+        self._screen_zones_reassembler.begin_inbound_frame(len(payload))
         try:
             completed = self._screen_zones_reassembler.push(payload)
+            if completed is None:
+                return BinaryMessage(tag=payload[0], payload=payload)
+            return self._parse_screen_zones(completed)
         finally:
+            self._screen_zones_reassembler.finish_inbound_frame()
             self._refresh_screen_zone_expiry()
-        if completed is None:
-            return BinaryMessage(tag=payload[0], payload=payload)
-        return self._parse_screen_zones(completed)
 
     def _decode_preview_cancel(self, payload: bytes) -> BinaryMessage:
+        if not _is_screen_zone_preview_cancel(payload):
+            return BinaryMessage(tag=payload[0], payload=payload)
+        self._screen_zones_reassembler.begin_inbound_frame(len(payload))
         try:
-            if _is_screen_zone_preview_cancel(payload):
-                self._screen_zones_reassembler.cancel(payload)
+            self._screen_zones_reassembler.cancel(payload)
         finally:
+            self._screen_zones_reassembler.finish_inbound_frame()
             self._refresh_screen_zone_expiry()
         return BinaryMessage(tag=payload[0], payload=payload)
 
