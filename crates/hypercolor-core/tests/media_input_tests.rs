@@ -7,9 +7,6 @@ use hypercolor_core::input::media::{
 };
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_core::input::{SourceFreshness, SourceState};
-use image::ImageEncoder as _;
-use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
-use std::alloc::System;
 use std::collections::{HashSet, VecDeque};
 use std::io::{Cursor, Read as _, Write as _};
 use std::net::TcpListener;
@@ -18,9 +15,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
-
-#[global_allocator]
-static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 fn player(bus_name: &str, status: PlaybackStatus, track: &str) -> PlayerSnapshot {
     PlayerSnapshot {
@@ -190,59 +184,6 @@ fn configured_artwork_fetchers_share_the_process_blocking_gate() {
     let second = ArtworkFetcher::new(artwork_policy(128)).expect("second fetcher builds");
 
     assert!(first.shares_process_gate_for_test(&second));
-}
-
-fn png_with_icc_profile(profile_bytes: usize) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
-    encoder
-        .set_icc_profile(vec![0; profile_bytes])
-        .expect("test ICC profile is accepted");
-    encoder
-        .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-        .expect("test PNG encodes");
-    bytes
-}
-
-#[test]
-fn compressed_png_metadata_obeys_the_decode_allocation_limit() {
-    const CHILD_ENV: &str = "HYPERCOLOR_MEDIA_ICC_ALLOCATION_CHILD";
-    if std::env::var_os(CHILD_ENV).is_none() {
-        let status = std::process::Command::new(std::env::current_exe().expect("test path exists"))
-            .args([
-                "--exact",
-                "compressed_png_metadata_obeys_the_decode_allocation_limit",
-                "--nocapture",
-            ])
-            .env(CHILD_ENV, "1")
-            .status()
-            .expect("allocation probe child starts");
-        assert!(status.success(), "allocation probe child failed");
-        return;
-    }
-
-    let bytes = png_with_icc_profile(64 * 1024 * 1024);
-    assert!(
-        bytes.len() < 256 * 1024,
-        "fixture must remain highly compressed"
-    );
-    let mut policy = artwork_policy(bytes.len());
-    policy.max_decode_bytes = 512 * 1024;
-    let fetcher = ArtworkFetcher::new(policy).expect("bounded policy builds");
-    let mut region = Region::new(GLOBAL);
-    region.reset();
-
-    let result = fetcher.encode_data_url(&bytes);
-    let allocated = region.change().bytes_allocated;
-
-    assert!(
-        result.is_ok(),
-        "oversized optional metadata is ignored safely"
-    );
-    assert!(
-        allocated < 16 * 1024 * 1024,
-        "dimension probing allocated {allocated} bytes for bounded ancillary metadata"
-    );
 }
 
 #[derive(Clone, Copy)]

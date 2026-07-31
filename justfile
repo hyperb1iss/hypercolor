@@ -145,13 +145,13 @@ test *args='':
 # Run process-global allocation counters without concurrent test threads
 [unix]
 alloc-contracts:
-    ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+    ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --no-default-features --features allocation-contract-tests --test alloc_contract_tests --test media_input_allocation_tests --test screen_cpu_fanout_allocation_tests --test spatial_area_reuse_tests -- --test-threads=1
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-daemon --no-default-features --features wgpu,allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
 
 [windows]
 alloc-contracts:
-    HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+    HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-core --no-default-features --features allocation-contract-tests --test alloc_contract_tests --test media_input_allocation_tests --test screen_cpu_fanout_allocation_tests --test spatial_area_reuse_tests -- --test-threads=1
     HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
     HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-daemon --no-default-features --features wgpu,allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
 

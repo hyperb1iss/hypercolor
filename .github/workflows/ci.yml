@@ -299,14 +299,17 @@ jobs:
       - name: Run allocation contracts serially
         if: matrix.suite == 'shared'
         run: |
-          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --no-default-features --features allocation-contract-tests --test alloc_contract_tests --test media_input_allocation_tests --test screen_cpu_fanout_allocation_tests --test spatial_area_reuse_tests -- --test-threads=1
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
 
       - name: Clippy allocation contract
         if: matrix.suite == 'shared'
         run: >-
           ./scripts/cargo-cache-build.sh cargo clippy --locked -p hypercolor-core
-          --features allocation-contract-tests --test alloc_contract_tests
+          --no-default-features --features allocation-contract-tests
+          --test alloc_contract_tests --test media_input_allocation_tests
+          --test screen_cpu_fanout_allocation_tests
+          --test spatial_area_reuse_tests
           -- -D warnings
 
       - name: Run shared crate doc tests
@@ -523,7 +526,7 @@ jobs:
       - name: Run allocation contracts serially
         shell: pwsh
         run: |
-          cargo test --locked -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
+          cargo test --locked -p hypercolor-core --no-default-features --features allocation-contract-tests --test alloc_contract_tests --test media_input_allocation_tests --test screen_cpu_fanout_allocation_tests --test spatial_area_reuse_tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -531,7 +534,10 @@ jobs:
       - name: Clippy allocation contract
         run: >-
           cargo clippy --locked -p hypercolor-core
-          --features allocation-contract-tests --test alloc_contract_tests
+          --no-default-features --features allocation-contract-tests
+          --test alloc_contract_tests --test media_input_allocation_tests
+          --test screen_cpu_fanout_allocation_tests
+          --test spatial_area_reuse_tests
           -- -D warnings
 
       - name: Seed effect cover fixture
