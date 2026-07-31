@@ -4,67 +4,106 @@
 //! real `hyper` binary against it to verify cross-crate behavior.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::input::{BrowserInputSource, InputManager};
+use hypercolor_core::types::config::{RenderAccelerationMode, ServoGpuImportMode};
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
 use hypercolor_daemon::startup::{DaemonState, default_config};
 use tempfile::TempDir;
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex, oneshot};
 
 const HEALTH_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CLI_TIMEOUT: Duration = Duration::from_secs(15);
+static PATH_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct DaemonHarness {
     port: u16,
     shutdown_tx: Option<oneshot::Sender<()>>,
     server_task: Option<tokio::task::JoinHandle<()>>,
     daemon_state: Option<DaemonState>,
-    #[allow(dead_code)]
+    _paths: TestPathsGuard,
+}
+
+struct TestPathsGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
     temp_dir: TempDir,
 }
 
-struct DataDirOverrideGuard;
+impl TestPathsGuard {
+    async fn new() -> Result<Self> {
+        let lock = PATH_OVERRIDE_LOCK.lock().await;
+        let temp_dir = tempfile::tempdir().context("failed to create temp dir")?;
+        ConfigManager::set_config_dir_override(Some(temp_dir.path().join("config")));
+        ConfigManager::set_data_dir_override(Some(temp_dir.path().join("data")));
+        Ok(Self {
+            _lock: lock,
+            temp_dir,
+        })
+    }
 
-impl Drop for DataDirOverrideGuard {
+    fn config_path(&self) -> std::path::PathBuf {
+        self.temp_dir
+            .path()
+            .join("config")
+            .join("hypercolor-e2e.toml")
+    }
+}
+
+impl Drop for TestPathsGuard {
     fn drop(&mut self) {
+        ConfigManager::set_config_dir_override(None);
         ConfigManager::set_data_dir_override(None);
     }
 }
 
 impl DaemonHarness {
     async fn start() -> Result<Self> {
-        let temp_dir = tempfile::tempdir().context("failed to create temp dir")?;
-        let config_path = temp_dir.path().join("hypercolor-e2e.toml");
-        let data_dir = temp_dir.path().join("data");
-        ConfigManager::set_data_dir_override(Some(data_dir));
-        let data_dir_guard = DataDirOverrideGuard;
-
-        let mut config = default_config();
-        "127.0.0.1".clone_into(&mut config.daemon.listen_address);
-        config.daemon.port = reserve_loopback_port()?;
-
-        let mut daemon_state = DaemonState::initialize(&config, config_path)
-            .context("failed to initialize daemon state")?;
-        daemon_state
-            .start()
+        let paths = TestPathsGuard::new().await?;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
-            .context("failed to start daemon state")?;
-
-        let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
-        let router = api::build_router(app_state, None);
-        let bind = format!("{}:{}", config.daemon.listen_address, config.daemon.port);
-        let listener = tokio::net::TcpListener::bind(&bind)
-            .await
-            .with_context(|| format!("failed to bind test listener at {bind}"))?;
+            .context("failed to bind test listener")?;
         let port = listener
             .local_addr()
             .context("failed to read listener local address")?
             .port();
+
+        let mut config = default_config();
+        "127.0.0.1".clone_into(&mut config.daemon.listen_address);
+        config.daemon.port = port;
+        "none".clone_into(&mut config.daemon.start_profile);
+        config.audio.enabled = false;
+        config.capture.enabled = false;
+        config.input.enabled = false;
+        config.session.enabled = false;
+        config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
+        config.rendering.servo_gpu_import.mode = ServoGpuImportMode::Off;
+        config.effect_engine.watch_effects = false;
+        config.discovery.background_enabled = false;
+        config.discovery.mdns_enabled = false;
+        config.discovery.blocks_scan = false;
+        config.network.mdns_publish = false;
+
+        let mut daemon_state = DaemonState::initialize(&config, paths.config_path())
+            .context("failed to initialize daemon state")?;
+        install_browser_only_input(&mut daemon_state);
+        daemon_state
+            .start()
+            .await
+            .context("failed to start daemon state")?;
+        if daemon_state.input_publication_demands().is_none() {
+            let _ = daemon_state.shutdown().await;
+            bail!("daemon started without an input publication pump");
+        }
+
+        let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
+        let router = api::build_router(app_state, None);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let server_task = tokio::spawn(async move {
@@ -78,22 +117,24 @@ impl DaemonHarness {
             .await;
         });
 
-        if let Err(error) = wait_for_health(port, HEALTH_WAIT_TIMEOUT).await {
-            let _ = shutdown_tx.send(());
-            let _ = daemon_state.shutdown().await;
-            let _ = server_task.await;
-            return Err(error);
-        }
-
-        std::mem::forget(data_dir_guard);
-
-        Ok(Self {
+        let harness = Self {
             port,
             shutdown_tx: Some(shutdown_tx),
             server_task: Some(server_task),
             daemon_state: Some(daemon_state),
-            temp_dir,
-        })
+            _paths: paths,
+        };
+
+        if let Err(error) = wait_for_health(port, HEALTH_WAIT_TIMEOUT).await {
+            return match harness.shutdown().await {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(error.context(format!(
+                    "daemon health failure cleanup also failed: {cleanup_error:#}"
+                ))),
+            };
+        }
+
+        Ok(harness)
     }
 
     fn port(&self) -> u16 {
@@ -101,38 +142,66 @@ impl DaemonHarness {
     }
 
     async fn shutdown(mut self) -> Result<()> {
+        let mut first_error = None;
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
 
-        if let Some(task) = self.server_task.take() {
-            tokio::time::timeout(SERVER_SHUTDOWN_TIMEOUT, task)
-                .await
-                .context("timed out waiting for API server shutdown")?
-                .context("API server task join failed")?;
+        if let Some(mut task) = self.server_task.take() {
+            match tokio::time::timeout(SERVER_SHUTDOWN_TIMEOUT, &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => record_first_error(
+                    &mut first_error,
+                    anyhow!("API server task join failed: {error}"),
+                ),
+                Err(_) => {
+                    record_first_error(
+                        &mut first_error,
+                        anyhow!("timed out waiting for API server shutdown"),
+                    );
+                    task.abort();
+                    let _ = task.await;
+                }
+            }
         }
 
-        if let Some(mut state) = self.daemon_state.take() {
-            state
-                .shutdown()
-                .await
-                .context("failed to shut down daemon state")?;
+        if let Some(mut state) = self.daemon_state.take()
+            && let Err(error) = state.shutdown().await
+        {
+            record_first_error(
+                &mut first_error,
+                error.context("failed to shut down daemon state"),
+            );
         }
 
-        ConfigManager::set_data_dir_override(None);
-
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }
 
-fn reserve_loopback_port() -> Result<u16> {
-    let listener =
-        std::net::TcpListener::bind(("127.0.0.1", 0)).context("failed to reserve loopback port")?;
-    let port = listener
-        .local_addr()
-        .context("failed to inspect reserved loopback port")?
-        .port();
-    Ok(port)
+fn install_browser_only_input(daemon_state: &mut DaemonState) {
+    let config = daemon_state.config();
+    let browser_source = BrowserInputSource::new();
+    let browser_input = browser_source.handle();
+    let interaction_routing = InteractionRoutingControl::new(
+        browser_input.registry(),
+        1,
+        config.input.daemon_route,
+        config.input.preview_route,
+    );
+    let mut input_manager = InputManager::new();
+    input_manager.add_source(Box::new(browser_source));
+    let input_status = input_manager.source_status_registry();
+
+    daemon_state.input_manager = Arc::new(Mutex::new(input_manager));
+    daemon_state.input_status = input_status;
+    daemon_state.browser_input = browser_input;
+    daemon_state.interaction_routing = interaction_routing;
+}
+
+fn record_first_error(first_error: &mut Option<anyhow::Error>, error: anyhow::Error) {
+    if first_error.is_none() {
+        *first_error = Some(error);
+    }
 }
 
 async fn wait_for_health(port: u16, timeout: Duration) -> Result<()> {
@@ -160,6 +229,7 @@ async fn wait_for_health(port: u16, timeout: Duration) -> Result<()> {
 
 async fn run_hyper_json(port: u16, args: &[&str]) -> Result<serde_json::Value> {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"));
+    cmd.kill_on_drop(true);
     cmd.arg("--host")
         .arg("127.0.0.1")
         .arg("--port")
