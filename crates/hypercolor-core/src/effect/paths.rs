@@ -162,18 +162,23 @@ pub fn resolve_html_source_path(path: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use tempfile::tempdir;
 
     use super::{
-        bundled_effects_root, bundled_screenshots_root, resolve_html_source_path, user_effects_dir,
+        EFFECTS_DIR_ENV, bundled_effects_root, bundled_screenshots_root, resolve_html_source_path,
+        user_effects_dir,
     };
 
     #[test]
-    fn bundled_effects_root_returns_valid_path() {
+    fn bundled_effects_root_uses_configured_or_installed_path() {
         let root = bundled_effects_root();
-        // In dev, falls back to repo effects/; in prod, uses XDG data dir
+        if let Some(configured) = std::env::var_os(EFFECTS_DIR_ENV) {
+            assert_eq!(root, PathBuf::from(configured));
+            return;
+        }
+
         let name = root.file_name().and_then(|v| v.to_str());
         assert!(
             name == Some("effects") || name == Some("bundled"),
