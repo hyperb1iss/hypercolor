@@ -579,11 +579,10 @@ where
             LayoutPersistenceOutcome::RetryArmed(error) => {
                 submission.activation.abort();
                 let _ = submission.completion.wait().await;
-                if let LayoutPersistenceOutcome::BeforeAdmission(rollback_error) =
-                    persist(LayoutPersistencePhase::Rollback).await
-                {
+                let rollback = persist(LayoutPersistencePhase::Rollback).await;
+                if rollback != LayoutPersistenceOutcome::Written {
                     return Err(LayoutUpdateError::PersistenceRollback(format!(
-                        "{error}; {rollback_error}"
+                        "{error}; rollback outcome: {rollback:?}"
                     )));
                 }
                 return Err(LayoutUpdateError::Persistence(error));
@@ -592,11 +591,10 @@ where
         submission.activation.commit();
         let renderer_result = submission.completion.wait().await;
         if let Err(error) = renderer_result {
-            if let LayoutPersistenceOutcome::BeforeAdmission(rollback_error) =
-                persist(LayoutPersistencePhase::Rollback).await
-            {
+            let rollback = persist(LayoutPersistencePhase::Rollback).await;
+            if rollback != LayoutPersistenceOutcome::Written {
                 return Err(LayoutUpdateError::PersistenceRollback(format!(
-                    "{error}; {rollback_error}"
+                    "{error}; rollback outcome: {rollback:?}"
                 )));
             }
             return Err(error.into());

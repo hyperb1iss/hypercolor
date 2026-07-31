@@ -911,7 +911,102 @@ where
                                     .await
                             }));
                         }
-                        transaction => deferred.push(transaction),
+                        transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
+                            deferred.push(transaction);
+                        }
+                    }
+                }
+                for transaction in deferred {
+                    state.scene_transactions
+                        .push(transaction)
+                        .expect("test transaction queue should remain open");
+                }
+            }
+        }
+    }
+}
+
+async fn run_two_layout_publications_with_gates(
+    state: Arc<AppState>,
+    first_publication_entered: Arc<Notify>,
+    release_first_publication: Arc<Semaphore>,
+    release_second_admission: Arc<Semaphore>,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async move {
+        let mut publication_index = 0;
+        while publication_index < 2 {
+            let mut deferred = Vec::new();
+            for transaction in state.scene_transactions.drain() {
+                match transaction {
+                    SceneTransaction::PrepareLayout(transaction) => {
+                        let index = publication_index;
+                        let entered = Arc::clone(&first_publication_entered);
+                        let release = Arc::clone(&release_first_publication);
+                        transaction
+                            .accept_and_publish_for_test(
+                                &state.spatial_engine,
+                                &state.scene_manager,
+                                move || async move {
+                                    if index == 0 {
+                                        entered.notify_one();
+                                        let _permit = release
+                                            .acquire_owned()
+                                            .await
+                                            .expect("first publication gate should remain open");
+                                    }
+                                },
+                            )
+                            .await
+                            .expect("layout publication should succeed");
+                        publication_index += 1;
+                        if publication_index == 1 {
+                            let _permit = Arc::clone(&release_second_admission)
+                                .acquire_owned()
+                                .await
+                                .expect("second admission gate should remain open");
+                        }
+                    }
+                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
+                        deferred.push(transaction);
+                    }
+                }
+            }
+            for transaction in deferred {
+                state
+                    .scene_transactions
+                    .push(transaction)
+                    .expect("test transaction queue should remain open");
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("layout publication worker should finish");
+}
+
+async fn request_with_layout_rejection(
+    app: axum::Router,
+    request: Request<Body>,
+    state: &Arc<AppState>,
+    rejection: hypercolor_daemon::scene_transactions::LayoutTransactionRejection,
+) -> axum::response::Response {
+    let request = app.oneshot(request);
+    tokio::pin!(request);
+    loop {
+        tokio::select! {
+            response = &mut request => {
+                return response.expect("failed to execute request");
+            }
+            () = tokio::time::sleep(Duration::from_millis(1)) => {
+                let mut deferred = Vec::new();
+                for transaction in state.scene_transactions.drain() {
+                    match transaction {
+                        SceneTransaction::PrepareLayout(transaction) => {
+                            transaction.reject(rejection.clone());
+                        }
+                        transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
+                            deferred.push(transaction);
+                        }
                     }
                 }
                 for transaction in deferred {
@@ -8872,6 +8967,129 @@ async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
     );
 }
 
+#[tokio::test]
+async fn layout_apply_maps_renderer_rejections_to_explicit_statuses() {
+    use hypercolor_daemon::scene_transactions::LayoutTransactionRejection;
+
+    let cases = [
+        (
+            LayoutTransactionRejection::PreparationFailed {
+                message: "invalid renderer plan".to_owned(),
+            },
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (LayoutTransactionRejection::Superseded, StatusCode::CONFLICT),
+        (
+            LayoutTransactionRejection::RendererStopped,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    ];
+    for (rejection, expected_status) in cases {
+        let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+        let candidate = SpatialLayout {
+            id: "rejected-apply".to_owned(),
+            name: "Rejected Apply".to_owned(),
+            ..state.spatial_engine.read().await.layout().as_ref().clone()
+        };
+        state
+            .layouts
+            .write()
+            .await
+            .insert(candidate.id.clone(), candidate.clone());
+        let app = test_app_with_state(Arc::clone(&state));
+
+        let response = request_with_layout_rejection(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+                .body(Body::empty())
+                .expect("failed to build request"),
+            &state,
+            rejection,
+        )
+        .await;
+
+        assert_eq!(response.status(), expected_status);
+    }
+}
+
+#[tokio::test]
+async fn layout_preview_maps_renderer_rejections_to_explicit_statuses() {
+    use hypercolor_daemon::scene_transactions::LayoutTransactionRejection;
+
+    let cases = [
+        (
+            LayoutTransactionRejection::PreparationFailed {
+                message: "invalid preview plan".to_owned(),
+            },
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (LayoutTransactionRejection::Superseded, StatusCode::CONFLICT),
+        (
+            LayoutTransactionRejection::RendererStopped,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    ];
+    for (rejection, expected_status) in cases {
+        let state = Arc::new(isolated_state());
+        let preview = SpatialLayout {
+            id: "rejected-preview".to_owned(),
+            name: "Rejected Preview".to_owned(),
+            ..state.spatial_engine.read().await.layout().as_ref().clone()
+        };
+        let app = test_app_with_state(Arc::clone(&state));
+
+        let response = request_with_layout_rejection(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/layouts/active/preview")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&preview).expect("preview should serialize"),
+                ))
+                .expect("failed to build request"),
+            &state,
+            rejection,
+        )
+        .await;
+
+        assert_eq!(response.status(), expected_status);
+    }
+}
+
+#[tokio::test]
+async fn layout_apply_maps_persistence_failure_to_internal_error() {
+    let mut state = isolated_state();
+    state.runtime_state_path = PathBuf::new();
+    let state = Arc::new(state);
+    let candidate = SpatialLayout {
+        id: "persistence-failure".to_owned(),
+        name: "Persistence Failure".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(candidate.id.clone(), candidate.clone());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let (response, _) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
 #[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
@@ -8902,7 +9120,7 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
         move || {
             let writer = failure_writer.clone();
             async move {
-                writer.set_injected_replace_failures(1);
+                writer.set_injected_replace_failures(1_000);
             }
         },
     )
@@ -8913,6 +9131,89 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
     assert_eq!(json["data"]["applied"], true);
     assert_eq!(json["data"]["persistence_pending"], true);
     assert_eq!(state.spatial_engine.read().await.layout().id, candidate.id);
+}
+
+#[tokio::test]
+async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let candidate = SpatialLayout {
+        id: "concurrent-apply-delete".to_owned(),
+        name: "Concurrent Apply Delete".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(candidate.id.clone(), candidate.clone());
+    let app = test_app_with_state(Arc::clone(&state));
+    let first_entered = Arc::new(Notify::new());
+    let release_first = Arc::new(Semaphore::new(0));
+    let release_second = Arc::new(Semaphore::new(0));
+    let renderer = tokio::spawn(run_two_layout_publications_with_gates(
+        Arc::clone(&state),
+        Arc::clone(&first_entered),
+        Arc::clone(&release_first),
+        Arc::clone(&release_second),
+    ));
+    let apply_id = candidate.id.clone();
+    let apply_app = app.clone();
+    let apply = tokio::spawn(async move {
+        apply_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/layouts/{apply_id}/apply"))
+                    .body(Body::empty())
+                    .expect("failed to build apply request"),
+            )
+            .await
+            .expect("failed to execute apply request")
+    });
+    first_entered.notified().await;
+    let delete_id = candidate.id.clone();
+    let mut delete = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{delete_id}"))
+                .body(Body::empty())
+                .expect("failed to build delete request"),
+        )
+        .await
+        .expect("failed to execute delete request")
+    });
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut delete)
+            .await
+            .is_err(),
+        "delete must wait for the applying layout's admission guard"
+    );
+    assert!(state.layouts.read().await.contains_key(&candidate.id));
+    release_first.add_permits(1);
+    assert_eq!(
+        apply.await.expect("apply task should not panic").status(),
+        StatusCode::OK
+    );
+    release_second.add_permits(1);
+    assert_eq!(
+        delete.await.expect("delete task should not panic").status(),
+        StatusCode::OK
+    );
+    renderer
+        .await
+        .expect("layout publication worker should not panic");
+
+    assert!(!state.layouts.read().await.contains_key(&candidate.id));
+    assert_ne!(state.spatial_engine.read().await.layout().id, candidate.id);
+    let persisted = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime state should load")
+        .expect("runtime state should exist");
+    assert_ne!(
+        persisted.active_layout_id.as_deref(),
+        Some(candidate.id.as_str())
+    );
 }
 
 #[tokio::test]
@@ -8985,6 +9286,96 @@ async fn layout_delete_active_falls_back_to_default_layout() {
     let runtime_json: serde_json::Value =
         serde_json::from_str(&runtime_raw).expect("runtime state should be valid JSON");
     assert_eq!(runtime_json["active_layout_id"], "default");
+}
+
+#[tokio::test]
+async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let fallback = SpatialLayout {
+        id: "fallback-delete-race".to_owned(),
+        name: "Fallback Delete Race".to_owned(),
+        ..active.clone()
+    };
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(active.id.clone(), active.clone());
+        layouts.insert(fallback.id.clone(), fallback.clone());
+    }
+    let app = test_app_with_state(Arc::clone(&state));
+    let first_entered = Arc::new(Notify::new());
+    let release_first = Arc::new(Semaphore::new(0));
+    let release_second = Arc::new(Semaphore::new(0));
+    let renderer = tokio::spawn(run_two_layout_publications_with_gates(
+        Arc::clone(&state),
+        Arc::clone(&first_entered),
+        Arc::clone(&release_first),
+        Arc::clone(&release_second),
+    ));
+    let active_id = active.id.clone();
+    let first_app = app.clone();
+    let first_delete = tokio::spawn(async move {
+        first_app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/layouts/{active_id}"))
+                    .body(Body::empty())
+                    .expect("failed to build active delete request"),
+            )
+            .await
+            .expect("failed to execute active delete request")
+    });
+    first_entered.notified().await;
+    let fallback_id = fallback.id.clone();
+    let mut fallback_delete = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{fallback_id}"))
+                .body(Body::empty())
+                .expect("failed to build fallback delete request"),
+        )
+        .await
+        .expect("failed to execute fallback delete request")
+    });
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut fallback_delete)
+            .await
+            .is_err(),
+        "fallback delete must wait for active-delete admission"
+    );
+    assert!(state.layouts.read().await.contains_key(&fallback.id));
+    release_first.add_permits(1);
+    assert_eq!(
+        first_delete
+            .await
+            .expect("active delete task should not panic")
+            .status(),
+        StatusCode::OK
+    );
+    release_second.add_permits(1);
+    assert_eq!(
+        fallback_delete
+            .await
+            .expect("fallback delete task should not panic")
+            .status(),
+        StatusCode::OK
+    );
+    renderer
+        .await
+        .expect("layout publication worker should not panic");
+
+    assert!(!state.layouts.read().await.contains_key(&fallback.id));
+    assert_ne!(state.spatial_engine.read().await.layout().id, fallback.id);
+    let persisted = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime state should load")
+        .expect("runtime state should exist");
+    assert_ne!(
+        persisted.active_layout_id.as_deref(),
+        Some(fallback.id.as_str())
+    );
 }
 
 #[tokio::test]

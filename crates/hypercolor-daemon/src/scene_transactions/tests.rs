@@ -730,3 +730,85 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
         newer.id
     );
 }
+
+async fn renderer_rejection_with_rollback_outcome(
+    rollback_outcome: LayoutPersistenceOutcome,
+) -> LayoutUpdateError {
+    let (spatial_engine, scene_manager, queue) = state(layout("initial", 320, 200));
+    let _consumer = queue.consumer();
+    let guard = queue.acquire_layout_update_guard().await;
+    let prepared = PreparedLayoutUpdate::try_new(layout("candidate", 640, 480))
+        .expect("candidate layout should prepare");
+    let rollback_outcome = Arc::new(std::sync::Mutex::new(Some(rollback_outcome)));
+    let update_rollback_outcome = Arc::clone(&rollback_outcome);
+    let update_queue = queue.clone();
+    let update = tokio::spawn(async move {
+        apply_prepared_layout_update_under_guard_with_persistence(
+            spatial_engine,
+            scene_manager,
+            update_queue,
+            &guard,
+            prepared,
+            move |phase| {
+                let rollback_outcome = Arc::clone(&update_rollback_outcome);
+                async move {
+                    match phase {
+                        LayoutPersistencePhase::Precommit(_) => LayoutPersistenceOutcome::Written,
+                        LayoutPersistencePhase::Rollback => rollback_outcome
+                            .lock()
+                            .expect("rollback outcome should lock")
+                            .take()
+                            .expect("rollback should run once"),
+                        LayoutPersistencePhase::Converge => {
+                            panic!("rejected renderer publication must not converge")
+                        }
+                    }
+                }
+            },
+        )
+        .await
+    });
+    wait_for_pending(&queue, 1).await;
+    let SceneTransaction::PrepareLayout(transaction) = queue
+        .drain()
+        .into_iter()
+        .next()
+        .expect("layout preparation should be queued")
+    else {
+        panic!("queued transaction should prepare a layout");
+    };
+    let activation = accept_preparation(transaction);
+    wait_for_decision(&activation, LayoutActivationDecision::Commit).await;
+    activation.complete(Err(LayoutTransactionRejection::RendererStopped));
+
+    update
+        .await
+        .expect("layout coordinator should not panic")
+        .expect_err("unsafe rollback outcome must fail")
+}
+
+#[tokio::test]
+async fn renderer_rejection_rejects_retry_armed_rollback() {
+    let error = renderer_rejection_with_rollback_outcome(LayoutPersistenceOutcome::RetryArmed(
+        "rollback retry remains armed".to_owned(),
+    ))
+    .await;
+
+    assert!(matches!(
+        error,
+        LayoutUpdateError::PersistenceRollback(message)
+            if message.contains("RetryArmed(\"rollback retry remains armed\")")
+    ));
+}
+
+#[tokio::test]
+async fn renderer_rejection_rejects_superseded_rollback() {
+    let error =
+        renderer_rejection_with_rollback_outcome(LayoutPersistenceOutcome::Superseded).await;
+
+    assert!(matches!(
+        error,
+        LayoutUpdateError::PersistenceRollback(message)
+            if message.contains("rollback outcome: Superseded")
+    ));
+}
