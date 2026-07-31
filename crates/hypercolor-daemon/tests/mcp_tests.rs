@@ -65,7 +65,9 @@ fn spawn_layout_acknowledger(queue: SceneTransactionQueue) -> LayoutAcknowledger
         loop {
             for transaction in queue.drain() {
                 match transaction {
-                    SceneTransaction::ApplyLayout(transaction) => transaction.accept(),
+                    SceneTransaction::PrepareLayout(transaction) => {
+                        transaction.accept_and_commit_for_test();
+                    }
                     transaction => queue
                         .push(transaction)
                         .expect("test transaction queue should remain open"),

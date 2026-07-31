@@ -1714,7 +1714,7 @@ fn gpu_compositor_rejects_stale_mutable_output_handles() {
         Ok(compositor) => compositor,
         Err(_) => return,
     };
-    let preparation = compositor.prepare_canvas_resize(4, 4);
+    let preparation = compositor.prepare_canvas_resize(4, 4, None);
     assert!(preparation.is_admitted());
     compositor.apply_canvas_resize(preparation);
     compositor
@@ -1762,7 +1762,7 @@ fn gpu_compositor_rejects_every_cached_surface_texture_before_reactivation() {
         Ok(compositor) => compositor,
         Err(_) => return,
     };
-    let preparation = compositor.prepare_canvas_resize(4, 4);
+    let preparation = compositor.prepare_canvas_resize(4, 4, None);
     assert!(preparation.is_admitted());
     compositor.apply_canvas_resize(preparation);
     compositor
@@ -1895,7 +1895,7 @@ fn immutable_scene_pool_covers_two_overlapping_generations_without_growth() {
         Ok(compositor) => compositor,
         Err(_) => return,
     };
-    let preparation = compositor.prepare_canvas_resize(4, 4);
+    let preparation = compositor.prepare_canvas_resize(4, 4, None);
     assert!(preparation.is_admitted());
     compositor.apply_canvas_resize(preparation);
     let allocations = compositor.snapshot_texture_allocation_count();

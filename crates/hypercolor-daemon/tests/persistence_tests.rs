@@ -521,7 +521,7 @@ fn dropped_admitted_payload_is_retained_by_the_shared_supervisor() {
 
     assert_eq!(
         writer
-            .flush(Duration::from_secs(5))
+            .flush(std::time::Duration::from_secs(5))
             .expect("admitted payload should converge"),
         hypercolor_daemon::persistence::PersistenceFlushOutcome::Written
     );
