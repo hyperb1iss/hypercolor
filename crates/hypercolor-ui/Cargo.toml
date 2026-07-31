@@ -80,6 +80,11 @@ web-sys = { version = "0.3", features = [
     "DataTransfer",
 ] }
 
+# The standalone crate does not inherit the root dev profile. Full debug info
+# pushes its native Windows test archive past the COFF 4 GiB limit.
+[profile.dev]
+debug = 1
+
 [profile.release]
 opt-level = "z"
 lto = true

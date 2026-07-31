@@ -718,8 +718,13 @@ e2e *args='':
     cd e2e && npm test -- {{ args }}
 
 # Run the standalone UI crate tests
+[unix]
 ui-test:
-    cd crates/hypercolor-ui && cargo test
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test --manifest-path crates/hypercolor-ui/Cargo.toml
+
+[windows]
+ui-test:
+    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test --manifest-path crates/hypercolor-ui/Cargo.toml
 
 # ─── SDK ─────────────────────────────────────────────────
 
