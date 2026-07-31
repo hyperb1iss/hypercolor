@@ -20,6 +20,7 @@ required-features = ["persistence-test-hooks"]
 workspace = true
 
 [features]
+allocation-contract-tests = []
 builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/default"]
 media-lottie = ["hypercolor-core/media-lottie"]
 media-video = ["hypercolor-core/media-video"]
@@ -98,6 +99,12 @@ http = "1.2"
 reqwest = { workspace = true }
 criterion = { workspace = true }
 gif = { workspace = true }
+stats_alloc = { workspace = true }
+
+[[test]]
+name = "alloc_contract_tests"
+path = "tests/alloc_contract_tests.rs"
+required-features = ["allocation-contract-tests", "wgpu"]
 
 [[bench]]
 name = "render_pipeline"

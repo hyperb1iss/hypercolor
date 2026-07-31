@@ -3,6 +3,22 @@ use super::*;
 #[cfg(feature = "wgpu")]
 use crate::render_thread::producer_queue::GpuTextureFrameOrigin;
 use crate::render_thread::sparkleflinger::CompositionLayer;
+#[cfg(feature = "wgpu")]
+use hypercolor_core::input::screen::{
+    CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
+    CaptureSourceId, CpuReductionExecutor, PhysicalOrigin, PixelExtent,
+    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenCaptureBackend, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenPayloadKind, ScreenPlanBuilder,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
+};
+#[cfg(feature = "wgpu")]
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+#[cfg(feature = "wgpu")]
+use std::time::{Duration, Instant};
 
 #[test]
 fn single_group_preview_publishes_surface_frame() {
@@ -1003,6 +1019,334 @@ fn two_gpu_resident_groups_produce_stable_projected_scene_frame() {
 
 #[cfg(feature = "wgpu")]
 #[test]
+fn six_projected_sources_use_only_admitted_bind_groups_after_warmup() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let groups = gpu_projection_group_set(6);
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut zones = Vec::new();
+
+    let first = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &groups,
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zones,
+        None,
+        &mut sparkleflinger,
+    )
+    .expect("six-source GPU scene should render from admitted resources");
+    assert!(matches!(first.scene_frame, ProducerFrame::GpuTexture(_)));
+
+    let admitted_creations = sparkleflinger
+        .projected_bind_group_creation_count_for_test()
+        .expect("required GPU compositor should expose projected bind creation");
+    assert_eq!(admitted_creations, groups.len() * 2);
+    assert_eq!(
+        sparkleflinger.projected_bind_group_entry_count_for_test(),
+        Some(groups.len() * 2)
+    );
+    assert_eq!(
+        sparkleflinger
+            .projected_bind_group_source_storage_ids_for_test()
+            .expect("required GPU compositor should expose admitted source identities")
+            .len(),
+        groups.len()
+    );
+    assert_eq!(
+        sparkleflinger.screen_layer_host_allocation_count_for_test(),
+        Some(0),
+        "a zero-screen scene must not preflight or grow screen upload scratch"
+    );
+
+    for elapsed_ms in [16, 32, 48] {
+        let frame = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &groups,
+            1,
+            elapsed_ms,
+            &HashMap::new(),
+            &registry,
+            &mut zones,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("warmed six-source GPU scene should keep rendering");
+        assert!(matches!(frame.scene_frame, ProducerFrame::GpuTexture(_)));
+        assert_eq!(
+            sparkleflinger.projected_bind_group_creation_count_for_test(),
+            Some(admitted_creations),
+            "steady render lookup must never create a bind group"
+        );
+        assert_eq!(
+            sparkleflinger.screen_layer_host_allocation_count_for_test(),
+            Some(0),
+            "zero-screen projection must bypass screen upload state"
+        );
+    }
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn projected_bind_groups_retire_by_exact_source_lease_and_surface_generation() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let mut groups = gpu_projection_group_set(6);
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let first_dependency = SceneDependencyKey::new(1, registry.generation());
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            first_dependency,
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("six-source GPU scene should admit");
+    let first_surface_generation = sparkleflinger
+        .active_surface_generation_for_test()
+        .expect("GPU compositor surface should be installed");
+    let admitted_creations = sparkleflinger
+        .projected_bind_group_creation_count_for_test()
+        .expect("GPU compositor should expose bind creation");
+
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let target_fps = HashMap::new();
+    let display_descriptors = HashMap::new();
+    let context = RenderSceneContext {
+        groups: &groups,
+        active_scene_id: Some(SceneId::DEFAULT),
+        dependency_key: first_dependency,
+        elapsed_ms: 0,
+        display_group_target_fps: &target_fps,
+        display_group_descriptors: &display_descriptors,
+        registry: &registry,
+        authoritative_spatial_engine: None,
+        inputs: ZoneFrameInputs {
+            delta_secs: 1.0 / 60.0,
+            audio: &audio,
+            interaction: &interaction,
+            screen: None,
+            sensors: &sensors,
+            input_availability: InputSourceAvailability::default(),
+            media: None,
+            net: None,
+            lighting: None,
+        },
+    };
+    let mut output = super::super::render_pass::RenderedGroupPassOutput::default();
+    let mut projected = runtime
+        .render_scene_contributor_frames(context, &mut sparkleflinger, true, &mut output)
+        .expect("projected contributors should render");
+    let stale_layer = projected
+        .layers
+        .pop()
+        .expect("six projected groups should publish a final source layer");
+    let stale_storage_id = stale_layer
+        .gpu_frame_identity_for_test()
+        .expect("held projected layer should remain GPU-resident")
+        .0;
+    drop(projected);
+    assert_eq!(stale_layer.gpu_frame_lease_count_for_test(), Some(2));
+
+    groups.pop();
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            SceneDependencyKey::new(2, registry.generation()),
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("group removal should commit an exact projected generation");
+    assert_eq!(
+        sparkleflinger.active_surface_generation_for_test(),
+        Some(first_surface_generation),
+        "same-size source changes should preserve the target surface generation"
+    );
+    assert_eq!(
+        sparkleflinger.projected_bind_group_creation_count_for_test(),
+        Some(admitted_creations),
+        "unchanged source identities should reuse their prepared bindings"
+    );
+    assert_eq!(
+        sparkleflinger.projected_bind_group_entry_count_for_test(),
+        Some(groups.len() * 2)
+    );
+    assert!(
+        !sparkleflinger
+            .projected_bind_group_source_storage_ids_for_test()
+            .expect("active projected source identities should be visible")
+            .contains(&stale_storage_id)
+    );
+    assert_eq!(
+        sparkleflinger.retired_projected_bind_group_entry_count_for_test(),
+        Some(2),
+        "both directions for the leased stale source must survive retirement"
+    );
+    assert_eq!(stale_layer.gpu_frame_lease_count_for_test(), Some(1));
+
+    drop(stale_layer);
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            SceneDependencyKey::new(3, registry.generation()),
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("next admission should prune fully released source bindings");
+    assert_eq!(
+        sparkleflinger.retired_projected_bind_group_entry_count_for_test(),
+        Some(0)
+    );
+
+    let source_ids_before_resize = sparkleflinger
+        .projected_bind_group_source_storage_ids_for_test()
+        .expect("source identities should be visible before resize");
+    groups[0].layout.canvas_width = 2;
+    groups[0].layout.canvas_height = 2;
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            SceneDependencyKey::new(4, registry.generation()),
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("source resize should prewarm the replacement source bindings");
+    let source_ids_after_resize = sparkleflinger
+        .projected_bind_group_source_storage_ids_for_test()
+        .expect("source identities should be visible after resize");
+    assert_ne!(source_ids_after_resize, source_ids_before_resize);
+    assert_eq!(
+        sparkleflinger.projected_bind_group_creation_count_for_test(),
+        Some(admitted_creations + 2),
+        "one resized source should prepare exactly two direction bindings"
+    );
+    assert_eq!(
+        sparkleflinger.retired_projected_bind_group_entry_count_for_test(),
+        Some(0),
+        "unleased resized source bindings should prune during admission"
+    );
+
+    let canvas = sparkleflinger
+        .prepare_canvas_resize(8, 8)
+        .expect("target resize should prepare a distinct compositor generation");
+    assert!(canvas.is_admitted());
+    let requirements = projected_group_requirements(&groups);
+    let projected =
+        sparkleflinger.prepare_projected_scene_resources(&requirements, true, 8, 8, Some(&canvas));
+    sparkleflinger.apply_canvas_resize(canvas);
+    sparkleflinger.apply_projected_scene_resources(projected);
+    assert_ne!(
+        sparkleflinger.active_surface_generation_for_test(),
+        Some(first_surface_generation),
+        "target resize must never alias a prior surface generation"
+    );
+    assert_eq!(
+        sparkleflinger.projected_bind_group_creation_count_for_test(),
+        Some(admitted_creations + 2 + groups.len() * 2),
+        "a new target generation must prepare both directions for every source"
+    );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn mixed_screen_and_projected_sources_reuse_upload_scratch_and_preserve_pixels() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let mut groups = gpu_projection_group_set(1);
+    groups[0].layout.zones[0].size = NormalizedPosition::new(0.5, 0.5);
+    let dependency_key = SceneDependencyKey::new(1, registry.generation());
+    let mut runtime = ZoneRuntime::new(4, 4);
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            dependency_key,
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("mixed screen scene should admit its projected source");
+    let screen = ProducerFrame::screen_publication(cpu_screen_publication(4, 4, [0, 255, 0, 255]))
+        .expect("RGBA screen publication should become a producer frame");
+
+    let mut layers = render_projected_layers_for_test(
+        &mut runtime,
+        &groups,
+        dependency_key,
+        &registry,
+        0,
+        &mut sparkleflinger,
+    );
+    layers.insert(1, CompositionLayer::replace_opaque(screen.clone()));
+    let first = runtime
+        .compose_projected_scene_frame(layers, &mut sparkleflinger)
+        .expect("mixed screen and projected sources should compose");
+    assert!(matches!(first, ProducerFrame::GpuTexture(_)));
+    let first_pixels = sample_full_gpu_canvas(&mut sparkleflinger, 4, 4);
+    assert_eq!(first_pixels[0], [0, 255, 0]);
+    assert_eq!(first_pixels[5], [255, 0, 0]);
+    let scratch_allocations = sparkleflinger
+        .screen_layer_host_allocation_count_for_test()
+        .expect("GPU compositor should expose screen scratch growth");
+    assert_eq!(scratch_allocations, 1);
+    let bind_creations = sparkleflinger
+        .projected_bind_group_creation_count_for_test()
+        .expect("GPU compositor should expose projected bind creation");
+
+    let mut layers = render_projected_layers_for_test(
+        &mut runtime,
+        &groups,
+        dependency_key,
+        &registry,
+        16,
+        &mut sparkleflinger,
+    );
+    layers.insert(1, CompositionLayer::replace_opaque(screen));
+    let second = runtime
+        .compose_projected_scene_frame(layers, &mut sparkleflinger)
+        .expect("warmed mixed screen scene should compose");
+    assert!(matches!(second, ProducerFrame::GpuTexture(_)));
+    assert_eq!(
+        sample_full_gpu_canvas(&mut sparkleflinger, 4, 4),
+        first_pixels
+    );
+    assert_eq!(
+        sparkleflinger.screen_layer_host_allocation_count_for_test(),
+        Some(scratch_allocations),
+        "mixed screen plans should reuse admitted host scratch"
+    );
+    assert_eq!(
+        sparkleflinger.projected_bind_group_creation_count_for_test(),
+        Some(bind_creations),
+        "screen upload must not disturb admitted projected bindings"
+    );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
 fn mixed_extent_gpu_projection_reuses_every_admitted_compositor_set() {
     let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
         return;
@@ -1192,7 +1536,7 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
         .expect("required GPU compositor should expose snapshot allocations");
     let requirements = projected_group_requirements(&groups);
     let prepared =
-        sparkleflinger.prepare_projected_scene_resources(&requirements, true, 4, 4, false);
+        sparkleflinger.prepare_projected_scene_resources(&requirements, true, 4, 4, None);
     sparkleflinger.apply_projected_scene_resources(prepared);
     let stable_allocations = initial_allocations + groups.len();
     assert_eq!(
@@ -1201,7 +1545,7 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
     );
 
     let prepared =
-        sparkleflinger.prepare_projected_scene_resources(&requirements, true, 4, 4, false);
+        sparkleflinger.prepare_projected_scene_resources(&requirements, true, 4, 4, None);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
@@ -1212,7 +1556,7 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
     groups[1].layout.canvas_height = 2;
     let resized_requirements = projected_group_requirements(&groups);
     let prepared =
-        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 4, 4, false);
+        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 4, 4, None);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
@@ -1224,7 +1568,7 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
         .expect("resized scene snapshot generations should prepare");
     sparkleflinger.apply_canvas_resize(canvas);
     let prepared =
-        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 8, 8, false);
+        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 8, 8, None);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
@@ -1237,7 +1581,7 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
         true,
         8,
         8,
-        false,
+        None,
     );
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
@@ -1245,7 +1589,7 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
         Some(stable_allocations + 3)
     );
     let prepared =
-        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 8, 8, false);
+        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 8, 8, None);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
@@ -1373,7 +1717,7 @@ fn oversized_cpu_canvas_fallback_skips_gpu_projection_resource_preparation() {
         gpu_projection_admitted,
         oversized_width,
         1,
-        true,
+        None,
     );
     sparkleflinger.apply_projected_scene_resources(projected);
 
@@ -1550,7 +1894,7 @@ fn admit_projected_scene_resources(
     sparkleflinger.apply_canvas_resize(canvas);
     let requirements = projected_group_requirements(groups);
     let projected =
-        sparkleflinger.prepare_projected_scene_resources(&requirements, true, width, height, false);
+        sparkleflinger.prepare_projected_scene_resources(&requirements, true, width, height, None);
     sparkleflinger.apply_projected_scene_resources(projected);
 }
 
@@ -1632,4 +1976,239 @@ fn gpu_projection_groups() -> [Zone; 2] {
     front.layout.zones = vec![front_zone];
     front.layout.default_sampling_mode = SamplingMode::Nearest;
     [back, front]
+}
+
+#[cfg(feature = "wgpu")]
+fn gpu_projection_group_set(count: usize) -> Vec<Zone> {
+    (0..count)
+        .map(|index| {
+            let mut group = sample_group(4, 4);
+            make_color_fill_group(&mut group);
+            let LayerSource::ColorFill { rgba } = &mut group.layers[0].source else {
+                unreachable!("color-fill helper should create a color layer")
+            };
+            *rgba = match index % 3 {
+                0 => [1.0, 0.0, 0.0, 1.0],
+                1 => [0.0, 1.0, 0.0, 1.0],
+                _ => [0.0, 0.0, 1.0, 1.0],
+            };
+            let mut zone = point_zone(&format!("projected_{index}"));
+            zone.size = NormalizedPosition::new(1.0, 1.0);
+            zone.sampling_mode = Some(SamplingMode::Nearest);
+            zone.edge_behavior = Some(EdgeBehavior::Clamp);
+            group.layout.zones = vec![zone];
+            group.layout.default_sampling_mode = SamplingMode::Nearest;
+            group
+        })
+        .collect()
+}
+
+#[cfg(feature = "wgpu")]
+fn render_projected_layers_for_test(
+    runtime: &mut ZoneRuntime,
+    groups: &[Zone],
+    dependency_key: SceneDependencyKey,
+    registry: &EffectRegistry,
+    elapsed_ms: u64,
+    sparkleflinger: &mut SparkleFlinger,
+) -> Vec<CompositionLayer> {
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let target_fps = HashMap::new();
+    let display_descriptors = HashMap::new();
+    let context = RenderSceneContext {
+        groups,
+        active_scene_id: Some(SceneId::DEFAULT),
+        dependency_key,
+        elapsed_ms,
+        display_group_target_fps: &target_fps,
+        display_group_descriptors: &display_descriptors,
+        registry,
+        authoritative_spatial_engine: None,
+        inputs: ZoneFrameInputs {
+            delta_secs: 1.0 / 60.0,
+            audio: &audio,
+            interaction: &interaction,
+            screen: None,
+            sensors: &sensors,
+            input_availability: InputSourceAvailability::default(),
+            media: None,
+            net: None,
+            lighting: None,
+        },
+    };
+    let mut output = super::super::render_pass::RenderedGroupPassOutput::default();
+    runtime
+        .render_scene_contributor_frames(context, sparkleflinger, true, &mut output)
+        .expect("projected contributors should render")
+        .layers
+}
+
+#[cfg(feature = "wgpu")]
+fn cpu_screen_publication(
+    width: u32,
+    height: u32,
+    rgba: [u8; 4],
+) -> Arc<hypercolor_core::input::screen::ScreenBranchPublication> {
+    let extent = PixelExtent::new(width, height).expect("screen fixture extent is non-empty");
+    let source_id = CaptureSourceId::new("synthetic:mixed-compositor-screen")
+        .expect("screen fixture source id is non-empty");
+    let source_epoch = CaptureEpoch {
+        source_id,
+        topology_generation: 1,
+        session_generation: 1,
+    };
+    let geometry = CaptureGeometry::new(
+        PhysicalOrigin::default(),
+        extent,
+        extent,
+        CaptureRotation::Identity,
+        None,
+        SourceScale::ONE,
+    )
+    .expect("screen fixture geometry is valid");
+    let source = ResolvedScreenSource::new(
+        ScreenSourceSelector::Configured,
+        source_epoch.clone(),
+        ResolvedScreenSourceConfig::new(
+            geometry,
+            extent,
+            ScreenSourceReflection::None,
+            CapturePixelFormat::Rgba8,
+            CaptureColorimetry::SRGB,
+            ScreenBackendResourceIdentity::new(
+                ScreenCaptureBackend::Synthetic,
+                ScreenResourceApi::Cpu,
+                1,
+                1,
+            ),
+        ),
+    );
+    let executor = CpuReductionExecutor::new(
+        NonZeroUsize::new(1).expect("fixture worker count is non-zero"),
+        NonZeroU32::MIN,
+    )
+    .expect("fixture reducer should construct");
+    let demand = RegisteredScreenBranchDemand::new(
+        ScreenPublicationRequest::new(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::Cpu,
+            ScreenExtentRequest::bounded(
+                NonZeroU32::new(width),
+                NonZeroU32::new(height),
+                ScreenUpscalePolicy::Allow,
+            ),
+            ScreenAspectPolicy::Cover,
+            Arc::new(
+                hypercolor_core::input::screen::ScreenProcessingProfile::new(
+                    hypercolor_core::input::screen::ScreenProcessingProfileConfig::default(),
+                ),
+            ),
+        ),
+        NonZeroU32::new(60).expect("fixture cadence is non-zero"),
+    )
+    .resolve_with_color_capabilities(&source, executor.capabilities())
+    .expect("screen fixture demand should resolve");
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let graph_generation = ScreenInputGraphGeneration::new(1);
+    let demand_revision = builder
+        .current()
+        .demand_revision()
+        .next()
+        .expect("screen fixture demand revision remains representable");
+    let mut preparing = builder
+        .prepare(
+            [demand],
+            None,
+            demand_revision,
+            graph_generation,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("screen fixture plan should prepare");
+    let mut lifetimes = Vec::new();
+    for required_source in preparing.required_sources().to_vec() {
+        let ticket = preparing
+            .worker_ticket(&required_source)
+            .expect("screen fixture worker ticket should exist");
+        let resources = ticket
+            .required_minimums()
+            .iter()
+            .map(|minimum| {
+                ScreenExactResource::try_new(
+                    Arc::clone(minimum.name()),
+                    minimum.resource(),
+                    minimum.minimum_bytes(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("screen fixture exact resources should allocate");
+        let worker_lifetimes = resources
+            .iter()
+            .map(|resource| ticket.bind_resource_lifetime(resource))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("screen fixture lifetimes should bind");
+        let token = ticket
+            .acknowledge(
+                ScreenExactResourceLedger::try_new(resources)
+                    .expect("screen fixture ledger should validate"),
+                &worker_lifetimes,
+            )
+            .expect("screen fixture resources should satisfy the ticket");
+        preparing
+            .acknowledge(token)
+            .expect("screen fixture token should belong to the candidate");
+        lifetimes.push(worker_lifetimes);
+    }
+    let armed = preparing
+        .arm(
+            builder.current().generation(),
+            demand_revision,
+            graph_generation,
+        )
+        .unwrap_or_else(|failure| panic!("screen fixture plan should arm: {}", failure.error()));
+    let committed = builder
+        .commit(armed, demand_revision, graph_generation)
+        .unwrap_or_else(|failure| panic!("screen fixture plan should commit: {}", failure.error()));
+    drop(lifetimes);
+    let (plan, retirement) = committed.into_parts();
+    retirement
+        .try_reclaim()
+        .expect("unobserved screen fixture retirement should reclaim");
+    let descriptor = plan.branches()[0].descriptor().clone();
+    let state = builder.committed_state();
+    let binding = state
+        .worker_bindings()
+        .iter()
+        .find(|binding| state.publisher(&descriptor, binding).is_ok())
+        .cloned()
+        .expect("screen fixture binding should own the descriptor");
+    let publisher = hub
+        .publisher(&descriptor, &binding)
+        .expect("screen fixture publisher should remain committed");
+    let captured_at = Instant::now();
+    let metadata = ScreenPublicationMetadata::try_intent(
+        source_epoch,
+        plan.generation(),
+        NonZeroU64::MIN,
+        captured_at,
+        captured_at + Duration::from_secs(1),
+    )
+    .expect("screen fixture metadata should validate");
+    let mut prepared = hub
+        .prepare_writable_publication(&publisher, ScreenPayloadKind::Surface, &metadata)
+        .expect("screen fixture publication slot should reserve");
+    for pixel in prepared
+        .surface_pixels_mut()
+        .expect("screen fixture surface should be CPU-writable")
+        .chunks_exact_mut(4)
+    {
+        pixel.copy_from_slice(&rgba);
+    }
+    let receipt = hub
+        .finalize_writable_publication(prepared, captured_at, ScreenPublicationHealth::Healthy)
+        .expect("screen fixture publication should finalize");
+    Arc::clone(receipt.publication())
 }

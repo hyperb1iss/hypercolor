@@ -8,6 +8,23 @@ mod gpu_area_sat;
 mod gpu_sampling;
 mod transform;
 
+#[cfg(all(feature = "wgpu", feature = "allocation-contract-tests"))]
+#[doc(hidden)]
+pub struct ProjectedLookupAllocationFixture(gpu::GpuProjectedLookupAllocationFixture);
+
+#[cfg(all(feature = "wgpu", feature = "allocation-contract-tests"))]
+impl ProjectedLookupAllocationFixture {
+    #[must_use]
+    pub fn new(source_count: usize) -> Self {
+        Self(gpu::GpuProjectedLookupAllocationFixture::new(source_count))
+    }
+
+    #[must_use]
+    pub fn run_round(&self) -> bool {
+        self.0.run_round()
+    }
+}
+
 use anyhow::{Result, bail};
 #[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayYuv420Frame;
@@ -324,6 +341,17 @@ impl CompositionLayer {
         };
         Some((frame.storage_id, frame.content_generation, frame.origin))
     }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn gpu_frame_lease_count_for_test(&self) -> Option<usize> {
+        let ProducerFrame::GpuTexture(frame) = &self.frame else {
+            return None;
+        };
+        frame
+            .immutable_lease
+            .as_ref()
+            .map(std::sync::Arc::strong_count)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -583,6 +611,14 @@ impl SparkleFlingerCanvasPreparation {
     #[cfg(feature = "wgpu")]
     pub(crate) const fn gpu_output_admitted(&self) -> bool {
         matches!(self, Self::Gpu(preparation) if preparation.is_admitted())
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn gpu_preparation(&self) -> Option<&gpu::GpuCanvasPreparation> {
+        match self {
+            Self::Gpu(preparation) => Some(preparation.as_ref()),
+            Self::Cpu(_) | Self::GpuCpuFallback(_) => None,
+        }
     }
 
     #[cfg(feature = "wgpu")]
@@ -1007,7 +1043,7 @@ impl SparkleFlinger {
         gpu_projection_admitted: bool,
         scene_width: u32,
         scene_height: u32,
-        scene_surface_prepared_by_resize: bool,
+        canvas_preparation: Option<&SparkleFlingerCanvasPreparation>,
     ) -> SparkleFlingerProjectedScenePreparation {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => {
@@ -1016,7 +1052,7 @@ impl SparkleFlinger {
                     gpu_projection_admitted,
                     scene_width,
                     scene_height,
-                    scene_surface_prepared_by_resize,
+                    canvas_preparation,
                 );
                 SparkleFlingerProjectedScenePreparation::Cpu
             }
@@ -1027,7 +1063,7 @@ impl SparkleFlinger {
                     gpu_projection_admitted,
                     scene_width,
                     scene_height,
-                    scene_surface_prepared_by_resize,
+                    canvas_preparation.and_then(SparkleFlingerCanvasPreparation::gpu_preparation),
                 ))
             }
         }
@@ -1137,6 +1173,62 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => {
                 Some(gpu.compositor_surface_allocation_count())
             }
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn projected_bind_group_creation_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.projected_bind_group_creation_count())
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn projected_bind_group_entry_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.projected_bind_group_entry_count()),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn projected_bind_group_source_storage_ids_for_test(&self) -> Option<Vec<u64>> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.projected_bind_group_source_storage_ids())
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn retired_projected_bind_group_entry_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.retired_projected_bind_group_entry_count())
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn screen_layer_host_allocation_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.screen_layer_host_allocation_count())
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn active_surface_generation_for_test(&self) -> Option<u64> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.active_surface_generation(),
         }
     }
 

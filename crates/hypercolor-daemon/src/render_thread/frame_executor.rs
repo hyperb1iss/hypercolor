@@ -18,7 +18,6 @@ use super::frame_policy::{FrameExecution, SkipDecision};
 use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
-#[cfg(feature = "wgpu")]
 use super::pipeline_runtime::PreparedCanvasResize;
 use super::pipeline_runtime::{
     OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
@@ -222,7 +221,9 @@ pub(crate) async fn execute_frame(
                             gpu_projection_admitted,
                             scene_width,
                             scene_height,
-                            prepared_resize.is_some(),
+                            prepared_resize
+                                .as_ref()
+                                .map(PreparedCanvasResize::render_preparation),
                         );
                     let gpu_projection_admitted =
                         prepared_projected_scene.gpu_projection_admitted();

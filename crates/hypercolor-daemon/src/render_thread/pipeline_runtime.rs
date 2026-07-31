@@ -1384,6 +1384,10 @@ impl PreparedCanvasResize {
         self.sparkleflinger_preparation.gpu_output_admitted()
     }
 
+    pub(crate) const fn render_preparation(&self) -> &SparkleFlingerCanvasPreparation {
+        &self.sparkleflinger_preparation
+    }
+
     pub(crate) fn prepare_scene_cpu_backing(&mut self) -> Result<()> {
         self.render_group_runtime.prepare_cpu_backing()?;
         Ok(())

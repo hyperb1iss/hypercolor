@@ -1,3 +1,5 @@
+use std::collections::{HashMap, VecDeque};
+use std::sync::Weak;
 use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
@@ -35,7 +37,9 @@ use super::{
     ScreenUploadContentKey, padded_bytes_per_row, texture_extent,
 };
 use crate::performance::CompositorBackendKind;
-use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
+use crate::render_thread::producer_queue::{
+    GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin, ProducerFrame,
+};
 
 const SAMPLING_READBACK_SLOT_COUNT: usize = 2;
 const SAMPLING_READBACK_SURFACE_SLOTS: usize = 3;
@@ -164,6 +168,10 @@ impl GpuSparkleFlinger {
         }
     }
 
+    #[allow(
+        clippy::drop_non_drop,
+        reason = "the screen-frame iterator borrow must end before its backing scratch returns"
+    )]
     pub(crate) fn compose(
         &mut self,
         plan: &CompositionPlan,
@@ -332,11 +340,15 @@ impl GpuSparkleFlinger {
                 prepared_surface_replacement.is_some(),
             )?
         };
-        let has_screen_uploads = screen_upload_content_keys(&plan.layers).next().is_some();
+        let first_layer = plan
+            .layers
+            .first()
+            .context("GPU composition requires at least one layer")?;
+        let has_screen_uploads = has_screen_upload_layers(&plan.layers);
         if has_screen_uploads {
             self.flush_pending_output_submission()?;
         }
-        let uploaded_screen_frames = {
+        let mut uploaded_screen_frame_scratch = if has_screen_uploads {
             let surfaces = prepared_surface_replacement
                 .as_mut()
                 .or(self.surfaces.as_mut())
@@ -348,12 +360,14 @@ impl GpuSparkleFlinger {
                 return Err(error);
             }
             match upload_screen_layers(&self.device, &self.queue, surfaces, &plan.layers) {
-                Ok(uploaded) => uploaded,
+                Ok(()) => Some(std::mem::take(&mut surfaces.uploaded_screen_frame_scratch)),
                 Err(error) => {
                     surfaces.discard_pending_uploads();
                     return Err(error);
                 }
             }
+        } else {
+            None
         };
         self.commit_surface_size(prepared_surface_replacement);
         self.commit_sampling_readback_buffers(prepared_sampling_readback);
@@ -388,14 +402,13 @@ impl GpuSparkleFlinger {
             });
 
         let mut use_front_as_current = true;
-        let mut layers = plan.layers.iter();
-        let mut uploaded_screen_frames = uploaded_screen_frames.into_iter();
-        let first_layer = layers
-            .next()
-            .context("GPU composition requires at least one layer")?;
+        let mut uploaded_screen_frames = uploaded_screen_frame_scratch
+            .as_ref()
+            .map(|frames| frames.iter());
         let first_uploaded_screen_frame = uploaded_screen_frames
-            .next()
-            .expect("screen upload preparation should match composition layers");
+            .as_mut()
+            .and_then(Iterator::next)
+            .and_then(Option::as_ref);
 
         if first_layer.can_bypass_for_size(plan.width, plan.height) {
             copy_frame_into_output_texture(
@@ -421,36 +434,53 @@ impl GpuSparkleFlinger {
                 encoder.clear_texture(&surfaces.front.texture, &full_range);
                 surfaces.front_contents = None;
             }
-            compose_layer_into_gpu(
+            let compose_result = compose_layer_into_gpu(
                 &self.device,
                 &self.queue,
                 &mut self.pipeline,
                 surfaces,
                 &mut encoder,
                 first_layer,
-                first_uploaded_screen_frame.as_ref(),
+                first_uploaded_screen_frame,
                 true,
             );
+            if let Err(error) = compose_result {
+                drop(uploaded_screen_frames);
+                return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
+                return Err(error);
+            }
             use_front_as_current = false;
         }
 
-        for layer in layers {
+        for layer in plan.layers.iter().skip(1) {
             let uploaded_screen_frame = uploaded_screen_frames
-                .next()
-                .expect("screen upload preparation should match composition layers");
-            compose_layer_into_gpu(
+                .as_mut()
+                .and_then(Iterator::next)
+                .and_then(Option::as_ref);
+            let compose_result = compose_layer_into_gpu(
                 &self.device,
                 &self.queue,
                 &mut self.pipeline,
                 surfaces,
                 &mut encoder,
                 layer,
-                uploaded_screen_frame.as_ref(),
+                uploaded_screen_frame,
                 use_front_as_current,
             );
+            if let Err(error) = compose_result {
+                drop(uploaded_screen_frames);
+                return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
+                return Err(error);
+            }
             use_front_as_current = !use_front_as_current;
         }
-        debug_assert!(uploaded_screen_frames.next().is_none());
+        debug_assert!(
+            uploaded_screen_frames
+                .as_mut()
+                .is_none_or(|frames| frames.next().is_none())
+        );
+        drop(uploaded_screen_frames);
+        return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
 
         let current_output = if use_front_as_current {
             GpuCompositorOutputSurface::Front
@@ -1108,7 +1138,7 @@ fn compose_layer_into_gpu(
     layer: &CompositionLayer,
     uploaded_screen_frame: Option<&GpuTextureFrame>,
     use_front_as_current: bool,
-) {
+) -> Result<()> {
     let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
         ComposeShaderMode::Replace
     } else {
@@ -1164,7 +1194,7 @@ fn compose_layer_into_gpu(
                 .as_ref()
                 .and_then(|_| cached_source_upload(&layer.frame)),
         );
-        return;
+        return Ok(());
     }
 
     if gpu_frame.is_none() {
@@ -1193,7 +1223,7 @@ fn compose_layer_into_gpu(
                 texture_extent(surfaces.width, surfaces.height),
             );
             set_texture_contents(surfaces, output_surface, cached_source_upload(&layer.frame));
-            return;
+            return Ok(());
         }
     }
 
@@ -1218,8 +1248,15 @@ fn compose_layer_into_gpu(
             record_gpu_source_upload_skipped();
         }
         let (width, height) = (surfaces.width, surfaces.height);
+        let projected_source = uploaded_screen_frame.is_none()
+            && matches!(
+                &layer.frame,
+                ProducerFrame::GpuTexture(frame)
+                    if frame.origin == GpuTextureFrameOrigin::ProjectionSnapshot
+            );
         let bind_group = {
             let GpuCompositorSurfaceSet {
+                generation,
                 front,
                 back,
                 source,
@@ -1233,21 +1270,34 @@ fn compose_layer_into_gpu(
             };
             let _ = source;
             let source_view = frame.view();
-            compose_source_bind_groups.get_or_create(
-                device,
-                pipeline,
-                frame.cached_display_source_copy().storage_id,
-                source_view,
-                use_front_as_current,
-                current_view,
-                output_view,
-                #[cfg(target_os = "windows")]
-                frame.screen_target_lifetime(),
-            )
+            let source_storage_id = frame.cached_display_source_copy().storage_id;
+            if projected_source {
+                compose_source_bind_groups
+                    .get_projected(
+                        *generation,
+                        source_storage_id,
+                        source_view,
+                        use_front_as_current,
+                    )
+                    .context("projected source bind group was not admitted")?
+            } else {
+                compose_source_bind_groups.get_or_create_transient(
+                    device,
+                    pipeline,
+                    *generation,
+                    source_storage_id,
+                    source_view,
+                    use_front_as_current,
+                    current_view,
+                    output_view,
+                    #[cfg(target_os = "windows")]
+                    frame.screen_target_lifetime(),
+                )
+            }
         };
         dispatch_compose_pass(encoder, pipeline, &bind_group, params_offset, width, height);
         set_texture_contents(surfaces, output_surface, None);
-        return;
+        return Ok(());
     }
 
     let bind_group = if use_front_as_current {
@@ -1264,6 +1314,17 @@ fn compose_layer_into_gpu(
         surfaces.height,
     );
     set_texture_contents(surfaces, output_surface, None);
+    Ok(())
+}
+
+fn return_screen_frame_scratch(
+    surfaces: &mut GpuCompositorSurfaceSet,
+    scratch: &mut Option<Vec<Option<GpuTextureFrame>>>,
+) {
+    if let Some(mut frames) = scratch.take() {
+        frames.clear();
+        surfaces.uploaded_screen_frame_scratch = frames;
+    }
 }
 
 fn upload_screen_layers(
@@ -1271,44 +1332,59 @@ fn upload_screen_layers(
     queue: &wgpu::Queue,
     surfaces: &mut GpuCompositorSurfaceSet,
     layers: &[CompositionLayer],
-) -> Result<Vec<Option<GpuTextureFrame>>> {
-    let mut uploaded = Vec::with_capacity(layers.len());
-    for layer in layers {
-        let ProducerFrame::ScreenPublication(publication) = &layer.frame else {
-            uploaded.push(None);
-            continue;
-        };
-        let surface = publication.surface();
-        let GpuCompositorSurfaceSet {
-            screen_upload_pool,
-            compose_source_bind_groups,
-            ..
-        } = surfaces;
-        let content_key = ScreenUploadContentKey::new(
-            publication.plan_generation(),
-            publication.descriptor_identity(),
-            publication.branch_sequence(),
-            surface.extent().width(),
-            surface.extent().height(),
-        );
-        let (frame, wrote_texture) = screen_upload_pool.upload_rgba(
-            device,
-            queue,
-            surface.extent().width(),
-            surface.extent().height(),
-            surface.pixels(),
-            content_key,
-            |storage_id| compose_source_bind_groups.release_source(storage_id),
-        )?;
-        #[cfg(test)]
-        if wrote_texture {
-            surfaces.source_upload_count = surfaces.source_upload_count.saturating_add(1);
+) -> Result<()> {
+    let mut uploaded = std::mem::take(&mut surfaces.uploaded_screen_frame_scratch);
+    uploaded.clear();
+    let prior_capacity = uploaded.capacity();
+    let result = (|| -> Result<()> {
+        if prior_capacity < layers.len() {
+            uploaded.try_reserve_exact(layers.len() - prior_capacity)?;
         }
-        #[cfg(not(test))]
-        let _ = wrote_texture;
-        uploaded.push(Some(frame));
+        for layer in layers {
+            let ProducerFrame::ScreenPublication(publication) = &layer.frame else {
+                uploaded.push(None);
+                continue;
+            };
+            let surface = publication.surface();
+            let GpuCompositorSurfaceSet {
+                screen_upload_pool,
+                compose_source_bind_groups,
+                ..
+            } = surfaces;
+            let content_key = ScreenUploadContentKey::new(
+                publication.plan_generation(),
+                publication.descriptor_identity(),
+                publication.branch_sequence(),
+                surface.extent().width(),
+                surface.extent().height(),
+            );
+            let (frame, wrote_texture) = screen_upload_pool.upload_rgba(
+                device,
+                queue,
+                surface.extent().width(),
+                surface.extent().height(),
+                surface.pixels(),
+                content_key,
+                |storage_id| compose_source_bind_groups.release_source(storage_id),
+            )?;
+            #[cfg(test)]
+            if wrote_texture {
+                surfaces.source_upload_count = surfaces.source_upload_count.saturating_add(1);
+            }
+            #[cfg(not(test))]
+            let _ = wrote_texture;
+            uploaded.push(Some(frame));
+        }
+        Ok(())
+    })();
+    #[cfg(test)]
+    if uploaded.capacity() > prior_capacity {
+        surfaces.screen_layer_host_allocation_count = surfaces
+            .screen_layer_host_allocation_count
+            .saturating_add(1);
     }
-    Ok(uploaded)
+    surfaces.uploaded_screen_frame_scratch = uploaded;
+    result
 }
 
 fn screen_upload_content_keys(
@@ -1361,23 +1437,38 @@ fn set_texture_contents(
     }
 }
 
-/// Compose bind groups for GPU producer layers, cached by source-view
-/// identity and ping-pong direction. The current/output views are the
-/// surface set's own front/back textures, so direction fully determines
-/// them; entries die with the surface set on resize. Cached views keep the
-/// producer textures alive, bounded by the cache cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ComposeSourceBindGroupKey {
+    target_generation: u64,
+    source_storage_id: u64,
+    front_as_current: bool,
+}
+
+pub(crate) struct PreparedProjectedComposeBindGroups {
+    target_generation: u64,
+    entries: HashMap<ComposeSourceBindGroupKey, CachedComposeSourceBindGroup>,
+    retired_entries: HashMap<ComposeSourceBindGroupKey, CachedComposeSourceBindGroup>,
+}
+
 #[derive(Default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the suffix distinguishes active, retired, and transient entry ownership"
+)]
 pub(super) struct ComposeSourceBindGroupCache {
-    entries: Vec<CachedComposeSourceBindGroup>,
+    projected_entries: HashMap<ComposeSourceBindGroupKey, CachedComposeSourceBindGroup>,
+    retired_projected_entries: HashMap<ComposeSourceBindGroupKey, CachedComposeSourceBindGroup>,
+    transient_entries: VecDeque<CachedComposeSourceBindGroup>,
     #[cfg(test)]
     pub(super) creation_count: usize,
 }
 
+#[derive(Clone)]
 struct CachedComposeSourceBindGroup {
-    source_storage_id: u64,
+    key: ComposeSourceBindGroupKey,
     source_view: wgpu::TextureView,
-    front_as_current: bool,
     bind_group: wgpu::BindGroup,
+    source_lease: Option<Weak<GpuTextureFrameLease>>,
     #[cfg(target_os = "windows")]
     screen_target_lifetime: Option<ScreenResourceLifetime>,
 }
@@ -1385,10 +1476,137 @@ struct CachedComposeSourceBindGroup {
 const COMPOSE_SOURCE_BIND_GROUP_CACHE_CAP: usize = 4;
 
 impl ComposeSourceBindGroupCache {
-    fn get_or_create(
+    pub(super) fn prepare_projected(
+        &self,
+        device: &wgpu::Device,
+        pipeline: &GpuCompositorPipeline,
+        target_generation: u64,
+        front_view: &wgpu::TextureView,
+        back_view: &wgpu::TextureView,
+        source_count: usize,
+        sources: impl IntoIterator<Item = (u64, wgpu::TextureView, Weak<GpuTextureFrameLease>)>,
+    ) -> std::result::Result<
+        (PreparedProjectedComposeBindGroups, usize),
+        std::collections::TryReserveError,
+    > {
+        let mut entries = HashMap::new();
+        entries.try_reserve(source_count.saturating_mul(2))?;
+        let mut creation_count = 0_usize;
+        for (source_storage_id, source_view, source_lease) in sources {
+            for front_as_current in [true, false] {
+                let key = ComposeSourceBindGroupKey {
+                    target_generation,
+                    source_storage_id,
+                    front_as_current,
+                };
+                let cached = self
+                    .projected_entries
+                    .get(&key)
+                    .filter(|cached| cached.source_view == source_view);
+                let entry = if let Some(cached) = cached {
+                    cached.clone()
+                } else {
+                    let (current_view, output_view) = if front_as_current {
+                        (front_view, back_view)
+                    } else {
+                        (back_view, front_view)
+                    };
+                    creation_count = creation_count.saturating_add(1);
+                    CachedComposeSourceBindGroup {
+                        key,
+                        source_view: source_view.clone(),
+                        bind_group: create_compose_bind_group(
+                            device,
+                            pipeline,
+                            current_view,
+                            &source_view,
+                            output_view,
+                            "SparkleFlinger admitted projected-source bind group",
+                        ),
+                        source_lease: Some(source_lease.clone()),
+                        #[cfg(target_os = "windows")]
+                        screen_target_lifetime: None,
+                    }
+                };
+                entries.insert(key, entry);
+            }
+        }
+        let mut retired_entries = HashMap::new();
+        retired_entries.try_reserve(
+            self.retired_projected_entries
+                .len()
+                .saturating_add(self.projected_entries.len()),
+        )?;
+        for (key, entry) in &self.retired_projected_entries {
+            let remains_leased = entry
+                .source_lease
+                .as_ref()
+                .is_some_and(|lease| lease.strong_count() > 0);
+            if remains_leased && !entries.contains_key(key) {
+                retired_entries.insert(*key, entry.clone());
+            }
+        }
+        for (key, entry) in &self.projected_entries {
+            let has_external_lease = entry
+                .source_lease
+                .as_ref()
+                .is_some_and(|lease| lease.strong_count() > 1);
+            if has_external_lease && !entries.contains_key(key) {
+                retired_entries.insert(*key, entry.clone());
+            }
+        }
+        Ok((
+            PreparedProjectedComposeBindGroups {
+                target_generation,
+                entries,
+                retired_entries,
+            },
+            creation_count,
+        ))
+    }
+
+    pub(super) fn install_projected(
+        &mut self,
+        prepared: PreparedProjectedComposeBindGroups,
+        target_generation: u64,
+    ) {
+        debug_assert_eq!(prepared.target_generation, target_generation);
+        debug_assert!(
+            prepared
+                .entries
+                .keys()
+                .all(|key| key.target_generation == target_generation)
+        );
+        self.projected_entries = prepared.entries;
+        self.retired_projected_entries = prepared.retired_entries;
+    }
+
+    fn get_projected(
+        &self,
+        target_generation: u64,
+        source_storage_id: u64,
+        source_view: &wgpu::TextureView,
+        front_as_current: bool,
+    ) -> Option<wgpu::BindGroup> {
+        let key = ComposeSourceBindGroupKey {
+            target_generation,
+            source_storage_id,
+            front_as_current,
+        };
+        exact_projected_entry(
+            &self.projected_entries,
+            &self.retired_projected_entries,
+            &key,
+        )
+        .filter(|cached| cached.source_view == *source_view)
+        .map(|cached| cached.bind_group.clone())
+    }
+
+    fn get_or_create_transient(
         &mut self,
         device: &wgpu::Device,
         pipeline: &GpuCompositorPipeline,
+        target_generation: u64,
         source_storage_id: u64,
         source_view: &wgpu::TextureView,
         front_as_current: bool,
@@ -1396,9 +1614,16 @@ impl ComposeSourceBindGroupCache {
         output_view: &wgpu::TextureView,
         #[cfg(target_os = "windows")] screen_target_lifetime: Option<&ScreenResourceLifetime>,
     ) -> wgpu::BindGroup {
-        if let Some(cached) = self.entries.iter().find(|cached| {
-            cached.front_as_current == front_as_current && cached.source_view == *source_view
-        }) {
+        let key = ComposeSourceBindGroupKey {
+            target_generation,
+            source_storage_id,
+            front_as_current,
+        };
+        if let Some(cached) = self
+            .transient_entries
+            .iter()
+            .find(|cached| cached.key == key && cached.source_view == *source_view)
+        {
             return cached.bind_group.clone();
         }
         let bind_group = create_compose_bind_group(
@@ -1413,29 +1638,126 @@ impl ComposeSourceBindGroupCache {
         {
             self.creation_count = self.creation_count.saturating_add(1);
         }
-        if self.entries.len() >= COMPOSE_SOURCE_BIND_GROUP_CACHE_CAP {
-            self.entries.remove(0);
+        if self.transient_entries.len() >= COMPOSE_SOURCE_BIND_GROUP_CACHE_CAP {
+            self.transient_entries.pop_front();
         }
-        self.entries.push(CachedComposeSourceBindGroup {
-            source_storage_id,
-            source_view: source_view.clone(),
-            front_as_current,
-            bind_group: bind_group.clone(),
-            #[cfg(target_os = "windows")]
-            screen_target_lifetime: screen_target_lifetime.cloned(),
-        });
+        self.transient_entries
+            .push_back(CachedComposeSourceBindGroup {
+                key,
+                source_view: source_view.clone(),
+                bind_group: bind_group.clone(),
+                source_lease: None,
+                #[cfg(target_os = "windows")]
+                screen_target_lifetime: screen_target_lifetime.cloned(),
+            });
         bind_group
     }
 
     fn release_source(&mut self, source_storage_id: u64) {
-        self.entries
-            .retain(|entry| entry.source_storage_id != source_storage_id);
+        self.projected_entries
+            .retain(|key, _| key.source_storage_id != source_storage_id);
+        self.retired_projected_entries
+            .retain(|key, _| key.source_storage_id != source_storage_id);
+        self.transient_entries
+            .retain(|entry| entry.key.source_storage_id != source_storage_id);
     }
 
     #[cfg(target_os = "windows")]
     pub(super) fn release_native_screen_entries(&mut self) {
-        self.entries
+        self.projected_entries
+            .retain(|_, entry| entry.screen_target_lifetime.is_none());
+        self.retired_projected_entries
+            .retain(|_, entry| entry.screen_target_lifetime.is_none());
+        self.transient_entries
             .retain(|entry| entry.screen_target_lifetime.is_none());
+    }
+
+    #[cfg(test)]
+    pub(super) fn projected_entry_count(&self) -> usize {
+        self.projected_entries.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn projected_source_storage_ids(&self) -> Vec<u64> {
+        let mut source_storage_ids = self
+            .projected_entries
+            .keys()
+            .map(|key| key.source_storage_id)
+            .collect::<Vec<_>>();
+        source_storage_ids.sort_unstable();
+        source_storage_ids.dedup();
+        source_storage_ids
+    }
+
+    #[cfg(test)]
+    pub(super) fn retired_projected_entry_count(&self) -> usize {
+        self.retired_projected_entries.len()
+    }
+}
+
+fn exact_projected_entry<'a, T>(
+    entries: &'a HashMap<ComposeSourceBindGroupKey, T>,
+    retired_entries: &'a HashMap<ComposeSourceBindGroupKey, T>,
+    key: &ComposeSourceBindGroupKey,
+) -> Option<&'a T> {
+    entries.get(key).or_else(|| retired_entries.get(key))
+}
+
+fn has_screen_upload_layers(layers: &[CompositionLayer]) -> bool {
+    screen_upload_content_keys(layers).next().is_some()
+}
+
+#[cfg(feature = "allocation-contract-tests")]
+pub(crate) struct ProjectedLookupAllocationFixture {
+    entries: HashMap<ComposeSourceBindGroupKey, std::sync::Arc<()>>,
+    retired_entries: HashMap<ComposeSourceBindGroupKey, std::sync::Arc<()>>,
+    keys: Vec<ComposeSourceBindGroupKey>,
+    zero_screen_layers: [CompositionLayer; 2],
+}
+
+#[cfg(feature = "allocation-contract-tests")]
+impl ProjectedLookupAllocationFixture {
+    pub(crate) fn new(source_count: usize) -> Self {
+        let target_generation = 41;
+        let mut entries = HashMap::with_capacity(source_count.saturating_mul(2));
+        let mut keys = Vec::with_capacity(source_count.saturating_mul(2));
+        for source_storage_id in 1..=u64::try_from(source_count).unwrap_or(u64::MAX) {
+            for front_as_current in [true, false] {
+                let key = ComposeSourceBindGroupKey {
+                    target_generation,
+                    source_storage_id,
+                    front_as_current,
+                };
+                entries.insert(key, std::sync::Arc::new(()));
+                keys.push(key);
+            }
+        }
+        Self {
+            entries,
+            retired_entries: HashMap::new(),
+            keys,
+            zero_screen_layers: [
+                CompositionLayer::replace_opaque(ProducerFrame::Canvas(
+                    hypercolor_core::types::canvas::Canvas::new(4, 4),
+                )),
+                CompositionLayer::replace_opaque(ProducerFrame::Canvas(
+                    hypercolor_core::types::canvas::Canvas::new(4, 4),
+                )),
+            ],
+        }
+    }
+
+    pub(crate) fn run_round(&self) -> bool {
+        let mut hits = 0_usize;
+        for key in &self.keys {
+            if exact_projected_entry(&self.entries, &self.retired_entries, key)
+                .map(std::sync::Arc::clone)
+                .is_some()
+            {
+                hits = hits.saturating_add(1);
+            }
+        }
+        hits == self.keys.len() && !has_screen_upload_layers(&self.zero_screen_layers)
     }
 }
 

@@ -147,11 +147,13 @@ test *args='':
 alloc-contracts:
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
+    ./scripts/cargo-cache-build.sh cargo test -p hypercolor-daemon --no-default-features --features wgpu,allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
 
 [windows]
 alloc-contracts:
     HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-core --features allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
     HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
+    HYPERCOLOR_NO_FAST_LINK=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p hypercolor-daemon --no-default-features --features wgpu,allocation-contract-tests --test alloc_contract_tests -- --test-threads=1
 
 # Run tests for a specific crate (iteration-shaped: keeps incremental rebuilds)
 [unix]

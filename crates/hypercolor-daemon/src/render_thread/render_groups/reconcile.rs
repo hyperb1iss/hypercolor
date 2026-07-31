@@ -169,7 +169,7 @@ impl ZoneRuntime {
             gpu_projection_admitted,
             scene_width,
             scene_height,
-            false,
+            None,
         );
         prepared.resolve_scene_backing(self, projected.gpu_projection_admitted(), false)?;
         sparkleflinger.apply_projected_scene_resources(projected);

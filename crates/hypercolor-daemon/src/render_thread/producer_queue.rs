@@ -21,7 +21,11 @@ pub(crate) struct GpuTextureFrame {
     pub(crate) origin: GpuTextureFrameOrigin,
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
-    pub(crate) _immutable_lease: Option<Arc<GpuTextureFrameLease>>,
+    #[allow(
+        dead_code,
+        reason = "the Arc value is retained for its lifetime rather than read in production"
+    )]
+    pub(crate) immutable_lease: Option<Arc<GpuTextureFrameLease>>,
     #[cfg(target_os = "windows")]
     pub(crate) windows_screen_lease: Option<WindowsScreenTextureLease>,
 }
