@@ -281,6 +281,7 @@ impl DaemonState {
             config.input.preview_route,
         );
         let input_status = built_input_manager.source_status_registry();
+        let screen_capacity_status = built_input_manager.screen_capacity_status_handle();
         let input_manager = Arc::new(Mutex::new(built_input_manager));
         info!(
             audio_enabled = config.audio.enabled,
@@ -562,6 +563,7 @@ impl DaemonState {
             lifecycle_manager,
             reconnect_tasks,
             input_manager,
+            screen_capacity_status,
             input_status,
             browser_input,
             interaction_routing,

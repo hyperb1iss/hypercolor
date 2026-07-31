@@ -3,9 +3,211 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use arc_swap::ArcSwap;
 use thiserror::Error;
 
-use super::ScreenAdmissionCapacity;
+use super::{
+    ScreenAdmissionCapacity, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
+    ScreenAnalysisWorkPlan, ScreenCaptureDemand,
+};
+
+/// Immutable manager-owned screen capacity policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenCapacityPolicySnapshot {
+    capacity_enforced: bool,
+    total_capacity: ScreenAdmissionCapacity,
+    publication_capacity: ScreenAdmissionCapacity,
+    capture_demand: ScreenCaptureDemand,
+    analysis_resource_plan: Option<ScreenAnalysisResourcePlan>,
+    analysis_work_plan: Option<ScreenAnalysisWorkPlan>,
+    analysis_compute_capacity: Option<ScreenAnalysisComputeCapacity>,
+}
+
+impl ScreenCapacityPolicySnapshot {
+    pub(crate) const fn new(
+        capacity_enforced: bool,
+        total_capacity: ScreenAdmissionCapacity,
+        publication_capacity: ScreenAdmissionCapacity,
+        capture_demand: ScreenCaptureDemand,
+        analysis_resource_plan: Option<ScreenAnalysisResourcePlan>,
+        analysis_work_plan: Option<ScreenAnalysisWorkPlan>,
+        analysis_compute_capacity: Option<ScreenAnalysisComputeCapacity>,
+    ) -> Self {
+        Self {
+            capacity_enforced,
+            total_capacity,
+            publication_capacity,
+            capture_demand,
+            analysis_resource_plan,
+            analysis_work_plan,
+            analysis_compute_capacity,
+        }
+    }
+
+    /// Whether exact screen capacity admission is installed.
+    #[must_use]
+    pub const fn capacity_enforced(self) -> bool {
+        self.capacity_enforced
+    }
+
+    /// Configured steady-state capacity shared by analysis and publication.
+    #[must_use]
+    pub const fn total_capacity(self) -> ScreenAdmissionCapacity {
+        self.total_capacity
+    }
+
+    /// Remaining steady-state capacity available to publication.
+    #[must_use]
+    pub const fn publication_capacity(self) -> ScreenAdmissionCapacity {
+        self.publication_capacity
+    }
+
+    /// Authoritative screen-capture demand used by the analysis plans.
+    #[must_use]
+    pub const fn capture_demand(self) -> ScreenCaptureDemand {
+        self.capture_demand
+    }
+
+    /// Exact retained and peak analysis resources for current demand.
+    #[must_use]
+    pub const fn analysis_resource_plan(self) -> Option<ScreenAnalysisResourcePlan> {
+        self.analysis_resource_plan
+    }
+
+    /// Exact compatibility-analysis work for current demand.
+    #[must_use]
+    pub const fn analysis_work_plan(self) -> Option<ScreenAnalysisWorkPlan> {
+        self.analysis_work_plan
+    }
+
+    /// Calibrated analysis compute capacity, when configured.
+    #[must_use]
+    pub const fn analysis_compute_capacity(self) -> Option<ScreenAnalysisComputeCapacity> {
+        self.analysis_compute_capacity
+    }
+}
+
+/// One coherent lock-free screen capacity observation.
+#[derive(Clone, Debug)]
+pub struct ScreenCapacityStatusSnapshot {
+    policy: Arc<ScreenCapacityPolicySnapshot>,
+    physical: ScreenByteAdmissionSnapshot,
+}
+
+impl ScreenCapacityStatusSnapshot {
+    /// Manager-owned capacity policy and analysis plans.
+    #[must_use]
+    pub fn policy(&self) -> ScreenCapacityPolicySnapshot {
+        *self.policy
+    }
+
+    /// Live physical capacity and source-lifetime reservations.
+    #[must_use]
+    pub const fn physical(&self) -> ScreenByteAdmissionSnapshot {
+        self.physical
+    }
+}
+
+/// Cloneable lock-free access to exact screen capacity status.
+#[derive(Clone, Debug)]
+pub struct ScreenCapacityStatusHandle {
+    policy: Arc<ArcSwap<ScreenCapacityPolicySnapshot>>,
+    coordinator: ScreenByteAdmissionCoordinator,
+    transition_revision: Arc<AtomicU64>,
+}
+
+pub(crate) struct ScreenCapacityStatusTransition {
+    handle: ScreenCapacityStatusHandle,
+    locked_revision: u64,
+    finished: bool,
+}
+
+impl ScreenCapacityStatusHandle {
+    pub(crate) fn new(
+        policy: &ScreenCapacityPolicySnapshot,
+        coordinator: ScreenByteAdmissionCoordinator,
+    ) -> Self {
+        Self {
+            policy: Arc::new(ArcSwap::from_pointee(*policy)),
+            coordinator,
+            transition_revision: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub(crate) fn publish(&self, policy: &ScreenCapacityPolicySnapshot) {
+        self.policy.store(Arc::new(*policy));
+    }
+
+    pub(crate) fn begin_transition(&self) -> ScreenCapacityStatusTransition {
+        loop {
+            let revision = self.transition_revision.load(Ordering::Acquire);
+            if revision & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let locked_revision = revision
+                .checked_add(1)
+                .filter(|locked| locked.checked_add(1).is_some())
+                .expect("screen capacity status revision exhausted");
+            if self
+                .transition_revision
+                .compare_exchange_weak(
+                    revision,
+                    locked_revision,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return ScreenCapacityStatusTransition {
+                    handle: self.clone(),
+                    locked_revision,
+                    finished: false,
+                };
+            }
+        }
+    }
+
+    /// Snapshot policy and physical usage from one installed capacity revision.
+    #[must_use]
+    pub fn snapshot(&self) -> ScreenCapacityStatusSnapshot {
+        loop {
+            let revision = self.transition_revision.load(Ordering::Acquire);
+            if revision & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let policy = self.policy.load_full();
+            let physical = self.coordinator.snapshot();
+            if self.transition_revision.load(Ordering::Acquire) == revision {
+                return ScreenCapacityStatusSnapshot { policy, physical };
+            }
+            std::hint::spin_loop();
+        }
+    }
+}
+
+impl ScreenCapacityStatusTransition {
+    pub(crate) fn publish(mut self, policy: &ScreenCapacityPolicySnapshot) {
+        self.handle.policy.store(Arc::new(*policy));
+        self.finish();
+    }
+
+    fn finish(&mut self) {
+        self.handle
+            .transition_revision
+            .store(self.locked_revision + 1, Ordering::Release);
+        self.finished = true;
+    }
+}
+
+impl Drop for ScreenCapacityStatusTransition {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finish();
+        }
+    }
+}
 
 /// Lock-free process-wide byte fence shared by analysis and publication.
 #[derive(Clone, Debug)]

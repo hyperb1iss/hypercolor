@@ -40,7 +40,8 @@ pub mod windows;
 
 pub use admission::{
     ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteAdmissionSnapshot,
-    ScreenByteLease, ScreenByteReservation,
+    ScreenByteLease, ScreenByteReservation, ScreenCapacityPolicySnapshot,
+    ScreenCapacityStatusHandle, ScreenCapacityStatusSnapshot,
 };
 pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,

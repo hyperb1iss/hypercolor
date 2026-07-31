@@ -111,6 +111,31 @@ pub struct ScreenCaptureCapacityStatus {
     pub analysis_worker_count: Option<u64>,
 }
 
+impl ScreenCaptureCapacityStatus {
+    const fn without_capacity(windows_admission_enforced: bool) -> Self {
+        Self {
+            windows_admission_enforced,
+            physical_transition_byte_capacity: None,
+            physical_transition_backend_capacity: None,
+            physical_reserved_bytes: None,
+            physical_available_bytes: None,
+            steady_total_byte_budget: None,
+            steady_total_backend_capacity: None,
+            steady_publication_byte_budget: None,
+            transition_publication_backend_capacity: None,
+            analysis_width: None,
+            analysis_height: None,
+            analysis_retained_bytes: None,
+            analysis_peak_bytes: None,
+            analysis_weighted_work_units_per_frame: None,
+            analysis_weighted_work_units_per_second: None,
+            analysis_parallel_capacity_per_second: None,
+            analysis_serial_capacity_per_second: None,
+            analysis_worker_count: None,
+        }
+    }
+}
+
 /// Host keyboard/mouse capture health, for consent and remediation UX.
 ///
 /// `enabled` is the consent config gate. `host_capturing` is true when a
@@ -811,18 +836,19 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
     let input_status = input_status_snapshot(&state);
+    #[cfg(target_os = "windows")]
     let screen_capture_capacity = {
-        let input_manager = state.input_manager.lock().await;
-        #[cfg(target_os = "windows")]
-        {
-            let resource_capacity = input_manager.screen_resource_capacity();
-            let total_capacity = input_manager.screen_total_capacity();
-            let publication_capacity = input_manager.screen_publication_capacity();
-            let resource_snapshot = input_manager.screen_admission_coordinator().snapshot();
-            let demand = input_manager.screen_capture_demand();
-            let analysis = input_manager.screen_analysis_resource_plan().ok().flatten();
-            let analysis_work = input_manager.screen_analysis_work_plan().ok().flatten();
-            let analysis_compute = input_manager.screen_analysis_compute_capacity();
+        let capacity_snapshot = state.screen_capacity_status.snapshot();
+        let policy = capacity_snapshot.policy();
+        if policy.capacity_enforced() {
+            let resource_snapshot = capacity_snapshot.physical();
+            let resource_capacity = resource_snapshot.capacity();
+            let total_capacity = policy.total_capacity();
+            let publication_capacity = policy.publication_capacity();
+            let demand = policy.capture_demand();
+            let analysis = policy.analysis_resource_plan();
+            let analysis_work = policy.analysis_work_plan();
+            let analysis_compute = policy.analysis_compute_capacity();
             let extent = demand.requested_extent();
             ScreenCaptureCapacityStatus {
                 windows_admission_enforced: true,
@@ -852,29 +878,12 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
                 analysis_worker_count: analysis_compute
                     .and_then(|capacity| u64::try_from(capacity.worker_count().get()).ok()),
             }
-        }
-        #[cfg(not(target_os = "windows"))]
-        ScreenCaptureCapacityStatus {
-            windows_admission_enforced: false,
-            physical_transition_byte_capacity: None,
-            physical_transition_backend_capacity: None,
-            physical_reserved_bytes: None,
-            physical_available_bytes: None,
-            steady_total_byte_budget: None,
-            steady_total_backend_capacity: None,
-            steady_publication_byte_budget: None,
-            transition_publication_backend_capacity: None,
-            analysis_width: None,
-            analysis_height: None,
-            analysis_retained_bytes: None,
-            analysis_peak_bytes: None,
-            analysis_weighted_work_units_per_frame: None,
-            analysis_weighted_work_units_per_second: None,
-            analysis_parallel_capacity_per_second: None,
-            analysis_serial_capacity_per_second: None,
-            analysis_worker_count: None,
+        } else {
+            ScreenCaptureCapacityStatus::without_capacity(false)
         }
     };
+    #[cfg(not(target_os = "windows"))]
+    let screen_capture_capacity = ScreenCaptureCapacityStatus::without_capacity(false);
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();

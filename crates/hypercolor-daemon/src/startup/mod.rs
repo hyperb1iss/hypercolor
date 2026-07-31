@@ -25,6 +25,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -161,6 +162,9 @@ pub struct DaemonState {
 
     /// Input orchestrator — audio and screen capture sampling sources.
     pub input_manager: Arc<Mutex<InputManager>>,
+
+    /// Exact lock-free screen capacity policy and physical usage.
+    pub screen_capacity_status: ScreenCapacityStatusHandle,
 
     /// Lock-free latest-value health for the live input graph.
     pub input_status: SourceStatusRegistry,

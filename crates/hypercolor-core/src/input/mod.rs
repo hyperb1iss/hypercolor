@@ -312,6 +312,7 @@ pub struct InputManager {
     screen_publication_resolution_revision: u64,
     committed_screen_publication_resolution_revision: Option<u64>,
     screen_plan_builder: screen::ScreenPlanBuilder,
+    screen_capacity_status: screen::ScreenCapacityStatusHandle,
     screen_resource_capacity: screen::ScreenAdmissionCapacity,
     screen_total_capacity: screen::ScreenAdmissionCapacity,
     screen_publication_capacity: screen::ScreenAdmissionCapacity,
@@ -525,6 +526,22 @@ impl InputManager {
     /// Create an empty manager with no sources.
     #[must_use]
     pub fn new() -> Self {
+        let screen_plan_builder = screen::ScreenPlanBuilder::new();
+        let screen_admission = screen_plan_builder.admission_coordinator();
+        let unlimited = screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
+        let initial_screen_capacity_policy = screen::ScreenCapacityPolicySnapshot::new(
+            false,
+            unlimited,
+            unlimited,
+            ScreenCaptureDemand::Inactive,
+            None,
+            None,
+            None,
+        );
+        let screen_capacity_status = screen::ScreenCapacityStatusHandle::new(
+            &initial_screen_capacity_policy,
+            screen_admission,
+        );
         Self {
             sources: Vec::new(),
             source_graph_generation: 0,
@@ -538,10 +555,11 @@ impl InputManager {
             screen_publication_source_snapshot: Vec::new(),
             screen_publication_resolution_revision: 0,
             committed_screen_publication_resolution_revision: None,
-            screen_plan_builder: screen::ScreenPlanBuilder::new(),
-            screen_resource_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
-            screen_total_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
-            screen_publication_capacity: screen::ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+            screen_plan_builder,
+            screen_capacity_status,
+            screen_resource_capacity: unlimited,
+            screen_total_capacity: unlimited,
+            screen_publication_capacity: unlimited,
             screen_capacity_enforced: false,
             screen_capacity_generation: 0,
             interaction_capture_active: None,
@@ -811,6 +829,7 @@ impl InputManager {
                     sensor_poller.stop();
                 }
                 self.invalidate_capture_domains((true, true, true));
+                self.publish_screen_capacity_status();
                 return Err(err);
             }
             info!(
@@ -818,6 +837,7 @@ impl InputManager {
                 "Started input source"
             );
         }
+        self.publish_screen_capacity_status();
         Ok(())
     }
 
@@ -831,6 +851,7 @@ impl InputManager {
             sensor_poller.stop();
         }
         self.invalidate_capture_domains((true, true, true));
+        self.publish_screen_capacity_status();
     }
 
     /// Snapshot a generation-fenced audio reconfiguration plan.
@@ -1044,6 +1065,12 @@ impl InputManager {
         self.screen_plan_builder.admission_coordinator()
     }
 
+    /// Clone the lock-free exact screen capacity status handle.
+    #[must_use]
+    pub fn screen_capacity_status_handle(&self) -> screen::ScreenCapacityStatusHandle {
+        self.screen_capacity_status.clone()
+    }
+
     /// Construct compatibility screen analysis inside this manager's byte fence.
     pub fn prepare_screen_capture_input(
         &self,
@@ -1062,10 +1089,10 @@ impl InputManager {
         &mut self,
         capacity: screen::ScreenAdmissionCapacity,
     ) -> Result<(), screen::ScreenByteAdmissionError> {
-        self.screen_plan_builder
-            .admission_coordinator()
-            .try_set_capacity(capacity)?;
-        self.screen_resource_capacity = capacity;
+        let policy = self.screen_capacity_policy_snapshot();
+        let transition = self.screen_capacity_status.begin_transition();
+        self.set_screen_resource_capacity_unpublished(capacity)?;
+        transition.publish(&policy);
         Ok(())
     }
 
@@ -1077,7 +1104,9 @@ impl InputManager {
         total: screen::ScreenAdmissionCapacity,
         publication: screen::ScreenAdmissionCapacity,
     ) -> Result<(), screen::ScreenByteAdmissionError> {
-        self.set_screen_resource_capacity(resource)?;
+        let policy = self.screen_capacity_policy_snapshot_with(true, total, publication);
+        let transition = self.screen_capacity_status.begin_transition();
+        self.set_screen_resource_capacity_unpublished(resource)?;
         self.screen_total_capacity = total;
         self.screen_publication_capacity = publication;
         self.screen_capacity_enforced = true;
@@ -1085,6 +1114,18 @@ impl InputManager {
             .screen_capacity_generation
             .checked_add(1)
             .expect("screen capacity policy generation exhausted");
+        transition.publish(&policy);
+        Ok(())
+    }
+
+    fn set_screen_resource_capacity_unpublished(
+        &mut self,
+        capacity: screen::ScreenAdmissionCapacity,
+    ) -> Result<(), screen::ScreenByteAdmissionError> {
+        self.screen_plan_builder
+            .admission_coordinator()
+            .try_set_capacity(capacity)?;
+        self.screen_resource_capacity = capacity;
         Ok(())
     }
 
@@ -1256,13 +1297,18 @@ impl InputManager {
         preparation: ScreenCapacityPreparation,
     ) -> Result<(), ScreenReconfigurationConflict> {
         self.validate_screen_capacity(&preparation)?;
+        self.commit_screen_capacity_unpublished(preparation);
+        self.publish_screen_capacity_status();
+        Ok(())
+    }
+
+    fn commit_screen_capacity_unpublished(&mut self, preparation: ScreenCapacityPreparation) {
         self.screen_total_capacity = preparation.total_capacity;
         self.screen_publication_capacity = preparation.publication_capacity;
         self.screen_capacity_generation = self
             .screen_capacity_generation
             .checked_add(1)
             .expect("screen capacity policy generation exhausted");
-        Ok(())
     }
 
     fn current_screen_capture_demand(&self) -> ScreenCaptureDemand {
@@ -1620,7 +1666,36 @@ impl InputManager {
         replacement: &mut Option<Box<dyn InputSource>>,
     ) -> Result<ScreenRuntimeRetirement, ScreenReconfigurationConflict> {
         self.validate_screen_runtime_config(plan, replacement)?;
+        let retirement = self.commit_screen_runtime_config_unpublished(plan, replacement);
+        self.publish_source_status_registry();
+        Ok(retirement)
+    }
 
+    /// Atomically install a prepared screen capacity policy and source runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed conflict before either prepared transaction mutates the
+    /// manager when a capacity or runtime fence has advanced.
+    pub fn commit_screen_capacity_and_runtime_config(
+        &mut self,
+        capacity: ScreenCapacityPreparation,
+        plan: &ScreenRuntimeConfigPlan,
+        replacement: &mut Option<Box<dyn InputSource>>,
+    ) -> Result<ScreenRuntimeRetirement, ScreenReconfigurationConflict> {
+        self.validate_screen_runtime_config(plan, replacement)?;
+        self.validate_screen_capacity(&capacity)?;
+        self.commit_screen_capacity_unpublished(capacity);
+        let retirement = self.commit_screen_runtime_config_unpublished(plan, replacement);
+        self.publish_source_status_registry();
+        Ok(retirement)
+    }
+
+    fn commit_screen_runtime_config_unpublished(
+        &mut self,
+        plan: &ScreenRuntimeConfigPlan,
+        replacement: &mut Option<Box<dyn InputSource>>,
+    ) -> ScreenRuntimeRetirement {
         let source_index = self
             .sources
             .iter()
@@ -1645,13 +1720,10 @@ impl InputManager {
             (None, None) => {}
         }
         self.screen_capture_demand = Some(plan.capture_demand);
-        if topology_changed {
-            self.publish_source_status_registry();
-        }
-        Ok(ScreenRuntimeRetirement {
+        ScreenRuntimeRetirement {
             sources: retired,
             source_graph_generation,
-        })
+        }
     }
 
     /// Verify that a prepared screen replacement can still commit.
@@ -2033,7 +2105,8 @@ impl InputManager {
         }
 
         if let Some(capacity_preparation) = capacity_preparation {
-            self.commit_screen_capacity(capacity_preparation)?;
+            self.validate_screen_capacity(&capacity_preparation)?;
+            self.commit_screen_capacity_unpublished(capacity_preparation);
         }
         self.screen_capture_demand = Some(demand);
         self.publish_source_status_registry();
@@ -2070,6 +2143,37 @@ impl InputManager {
             .collect();
         self.source_status_registry
             .publish(self.source_graph_generation, handles);
+        self.publish_screen_capacity_status();
+    }
+
+    fn publish_screen_capacity_status(&self) {
+        let policy = self.screen_capacity_policy_snapshot();
+        self.screen_capacity_status.publish(&policy);
+    }
+
+    fn screen_capacity_policy_snapshot(&self) -> screen::ScreenCapacityPolicySnapshot {
+        self.screen_capacity_policy_snapshot_with(
+            self.screen_capacity_enforced,
+            self.screen_total_capacity,
+            self.screen_publication_capacity,
+        )
+    }
+
+    fn screen_capacity_policy_snapshot_with(
+        &self,
+        capacity_enforced: bool,
+        total_capacity: screen::ScreenAdmissionCapacity,
+        publication_capacity: screen::ScreenAdmissionCapacity,
+    ) -> screen::ScreenCapacityPolicySnapshot {
+        screen::ScreenCapacityPolicySnapshot::new(
+            capacity_enforced,
+            total_capacity,
+            publication_capacity,
+            self.current_screen_capture_demand(),
+            self.screen_analysis_resource_plan().ok().flatten(),
+            self.screen_analysis_work_plan().ok().flatten(),
+            self.screen_analysis_compute_capacity(),
+        )
     }
 }
 

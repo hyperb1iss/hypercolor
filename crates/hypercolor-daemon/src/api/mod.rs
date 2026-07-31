@@ -60,6 +60,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
+use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -184,6 +185,9 @@ pub struct AppState {
 
     /// Live input graph shared with the daemon render thread.
     pub input_manager: Arc<Mutex<InputManager>>,
+
+    /// Exact lock-free screen capacity policy and physical usage.
+    pub screen_capacity_status: ScreenCapacityStatusHandle,
 
     /// Aggregate typed input demand shared with render and connection consumers.
     pub input_publication_demands: InputPublicationDemandHandle,
@@ -480,6 +484,7 @@ impl AppState {
         let mut standalone_input_manager = InputManager::new();
         standalone_input_manager.add_source(Box::new(browser_input_source));
         let input_status = standalone_input_manager.source_status_registry();
+        let screen_capacity_status = standalone_input_manager.screen_capacity_status_handle();
         let input_manager = Arc::new(Mutex::new(standalone_input_manager));
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
@@ -568,6 +573,7 @@ impl AppState {
             extensions: ExtensionRegistry::default(),
             api_extensions: Vec::new(),
             input_manager,
+            screen_capacity_status,
             input_publication_demands: InputPublicationDemandHandle::new(),
             input_status,
             browser_input,
@@ -667,6 +673,7 @@ impl AppState {
             extensions: daemon.extensions.clone(),
             api_extensions: daemon.api_extensions.clone(),
             input_manager: Arc::clone(&daemon.input_manager),
+            screen_capacity_status: daemon.screen_capacity_status.clone(),
             input_publication_demands: daemon
                 .input_publication_demands()
                 .expect("live API state requires a running input publication pump"),

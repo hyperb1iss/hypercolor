@@ -804,11 +804,17 @@ async fn apply_capture_config_transaction(
     }
 
     #[cfg(target_os = "windows")]
-    if let Some(capacity_preparation) = capacity_preparation {
-        input_manager
-            .commit_screen_capacity(capacity_preparation)
-            .expect("screen capacity was validated under the same input-manager lock");
+    let retirement = if let Some(capacity_preparation) = capacity_preparation {
+        input_manager.commit_screen_capacity_and_runtime_config(
+            capacity_preparation,
+            &plan,
+            &mut replacement,
+        )
+    } else {
+        input_manager.commit_screen_runtime_config(&plan, &mut replacement)
     }
+    .expect("screen capacity and runtime were validated under the same input-manager lock");
+    #[cfg(not(target_os = "windows"))]
     let retirement = input_manager
         .commit_screen_runtime_config(&plan, &mut replacement)
         .expect("screen runtime plan was validated under the same input-manager lock");

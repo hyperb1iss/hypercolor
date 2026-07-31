@@ -444,9 +444,11 @@ fn status_event_state() -> (Arc<AppState>, SourceSessionSlot) {
         .start_all()
         .expect("status event test source should start");
     let input_status = input_manager.source_status_registry();
+    let screen_capacity_status = input_manager.screen_capacity_status_handle();
 
     let mut state = AppState::new();
     state.input_manager = Arc::new(tokio::sync::Mutex::new(input_manager));
+    state.screen_capacity_status = screen_capacity_status;
     state.input_status = input_status;
     (Arc::new(state), session_slot)
 }

@@ -36,6 +36,8 @@ use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
 use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
     BrowserInputEdge, InputData, InputSource, SourceIssue, SourceKind, SourceSessionWriter,
     SourceStatusHandle, SourceStatusReporter,
@@ -98,6 +100,11 @@ use hypercolor_types::spatial::{
 
 static COVER_DATA_DIR_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
 
+std::thread_local! {
+    static ISOLATED_STATE_DATA_DIRS: std::cell::RefCell<Vec<tempfile::TempDir>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 #[cfg(feature = "persistence-test-hooks")]
 struct InjectedWriterCleanup {
     writer: AtomicFileWriter,
@@ -157,7 +164,9 @@ fn display_group_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) ->
 }
 
 fn isolated_state() -> AppState {
-    isolated_state_with_tempdir().0
+    let (state, tempdir) = isolated_state_with_tempdir();
+    ISOLATED_STATE_DATA_DIRS.with(|data_dirs| data_dirs.borrow_mut().push(tempdir));
+    state
 }
 
 fn isolated_state_with_tempdir() -> (AppState, tempfile::TempDir) {
@@ -305,6 +314,17 @@ fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, 
             .driver_host
             .with_config_manager(Some(Arc::clone(&manager))),
     );
+    #[cfg(target_os = "windows")]
+    {
+        let mut input_manager = state
+            .input_manager
+            .try_lock()
+            .expect("isolated input manager should be uncontended");
+        let capacity = input_manager.screen_resource_capacity();
+        input_manager
+            .set_screen_capacity_plan(capacity, capacity, capacity)
+            .expect("isolated input manager should accept its default capacity");
+    }
     (Arc::new(state), manager, dir)
 }
 
@@ -1392,7 +1412,8 @@ async fn status_returns_200_with_envelope() {
     assert_eq!(
         json["data"]["capture_available"],
         serde_json::json!(
-            cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
+            cfg!(target_os = "windows")
+                || (cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some())
         )
     );
 }
@@ -1457,6 +1478,14 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
         ObservableInputSource::new("failed_test_audio", true, Duration::from_millis(1));
     {
         let mut manager = state.input_manager.lock().await;
+        #[cfg(target_os = "windows")]
+        manager
+            .set_screen_capacity_plan(
+                ScreenAdmissionCapacity::new(2_000_000, 1_500_000),
+                ScreenAdmissionCapacity::new(1_000_000, 900_000),
+                ScreenAdmissionCapacity::new(750_000, 700_000),
+            )
+            .expect("empty manager should accept exact test capacity");
         manager.add_source(Box::new(source));
         manager.start_all().expect("test input graph should start");
     }
@@ -1494,6 +1523,28 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     .expect("status must not wait for the input manager")
     .expect("status request should succeed");
     let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["screen_capture_capacity"]["windows_admission_enforced"],
+        cfg!(target_os = "windows")
+    );
+    if cfg!(target_os = "windows") {
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
+            2_000_000
+        );
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
+            1_500_000
+        );
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["physical_available_bytes"],
+            1_500_000
+        );
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
+            1_000_000
+        );
+    }
     let failed = json["data"]["input"]["sources"]
         .as_array()
         .expect("sources should be an array")
