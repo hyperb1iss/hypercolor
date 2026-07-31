@@ -3600,6 +3600,11 @@ async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_s
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::PassiveStream,
+        SourceKind::Screen,
+    );
 
     let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
         frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
@@ -3699,6 +3704,11 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::PassiveStream,
+        SourceKind::Screen,
+    );
 
     let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
         frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
@@ -3844,6 +3854,11 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
     }
 
     let mut rt = RenderThread::spawn(state.clone());
+    let _input_demand = demand_input(
+        &rt,
+        InputPublicationConsumer::PassiveStream,
+        SourceKind::Screen,
+    );
 
     let initial_frame = wait_for_frame_where(&mut frame_rx, |frame| {
         frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
