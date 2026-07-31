@@ -5,14 +5,18 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::InputManager;
+use hypercolor_daemon::extensions::DaemonLifecycleExtension;
 use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
-use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, RenderAccelerationMode};
+use hypercolor_types::config::{
+    CURRENT_SCHEMA_VERSION, RenderAccelerationMode, ServoGpuImportMode,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
@@ -95,6 +99,26 @@ fn test_input_manager() -> InputManager {
     let mut input_manager = InputManager::new();
     input_manager.set_sensor_snapshot_receiver(rx);
     input_manager
+}
+
+struct FailingStartupExtension {
+    shutdowns: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DaemonLifecycleExtension for FailingStartupExtension {
+    fn name(&self) -> &'static str {
+        "failing-startup-test"
+    }
+
+    async fn start(&self, _daemon: &DaemonState) -> anyhow::Result<()> {
+        anyhow::bail!("intentional startup failure")
+    }
+
+    async fn shutdown(&self, _daemon: &DaemonState) -> anyhow::Result<()> {
+        self.shutdowns.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
@@ -237,6 +261,42 @@ async fn daemon_double_shutdown_is_safe() {
         .shutdown()
         .await
         .expect("second shutdown should also succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_rolls_back_partial_startup() {
+    let _config_guard = TestConfigDirGuard::new().await;
+    let _data_guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    config.session.enabled = false;
+    config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
+    config.rendering.servo_gpu_import.mode = ServoGpuImportMode::Off;
+    config.effect_engine.watch_effects = false;
+    config.discovery.background_enabled = false;
+    config.daemon.start_profile = "none".to_owned();
+
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+    *state.input_manager.lock().await = test_input_manager();
+
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    state.register_lifecycle_extension(Arc::new(FailingStartupExtension {
+        shutdowns: Arc::clone(&shutdowns),
+    }));
+
+    let error = state
+        .start()
+        .await
+        .expect_err("extension start should fail");
+
+    assert!(error.to_string().contains("failing-startup-test"));
+    assert_eq!(shutdowns.load(Ordering::Relaxed), 1);
+    assert!(state.input_publication_demands().is_none());
+    assert!(!state.render_loop.read().await.is_running());
 }
 
 #[tokio::test]

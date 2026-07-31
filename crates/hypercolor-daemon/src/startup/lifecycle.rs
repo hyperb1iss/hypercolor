@@ -44,6 +44,18 @@ impl DaemonState {
     ///
     /// Returns an error if any subsystem fails to start.
     pub async fn start(&mut self) -> Result<()> {
+        if let Err(start_error) = self.start_inner().await {
+            if let Err(rollback_error) = self.shutdown().await {
+                return Err(start_error.context(format!(
+                    "daemon startup rollback also failed: {rollback_error:#}"
+                )));
+            }
+            return Err(start_error);
+        }
+        Ok(())
+    }
+
+    async fn start_inner(&mut self) -> Result<()> {
         let config = self.config();
         info!(
             listen = %config.daemon.listen_address,
