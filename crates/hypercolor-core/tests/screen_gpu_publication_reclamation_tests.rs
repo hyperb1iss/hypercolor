@@ -4,23 +4,24 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CommittedScreenPlan, PhysicalOrigin, PixelExtent, PlatformGpuApi,
-    PlatformGpuSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenBranchPayload, ScreenBranchPublisher, ScreenCaptureBackend, ScreenCapturePlan,
-    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExactResource,
-    ScreenExactResourceLedger, ScreenExecutorColorCapabilities, ScreenExtentRequest,
-    ScreenGpuSurfacePayload, ScreenInputGraphGeneration, ScreenLiveBranchReceipt,
-    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
-    ScreenNativeTargetBindingError, ScreenNativeTargetPreparation, ScreenNativeTargetResourceError,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenProcessingProfile,
-    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
-    ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, SourceScale,
+    BoundScreenNativeTargetPreparation, CaptureColorimetry, CaptureEpoch, CaptureGeometry,
+    CapturePixelFormat, CaptureRotation, CaptureSourceId, CommittedScreenPlan, PhysicalOrigin,
+    PixelExtent, PlatformGpuApi, PlatformGpuSurface, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenBranchPublisher,
+    ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTransformCapabilities,
+    ScreenCursorCapabilities, ScreenExactResource, ScreenExecutorColorCapabilities,
+    ScreenExtentRequest, ScreenGpuSurfacePayload, ScreenInputGraphGeneration,
+    ScreenLiveBranchReceipt, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenNativePreparationPayload, ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
+    ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
+    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
+    ScreenPublicationRequest, ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceKind,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
+    ScreenWorkerExactLedgerBuilder, SourceScale,
 };
 
 #[path = "support/native_target.rs"]
@@ -147,25 +148,27 @@ fn demand(source: &ResolvedScreenSource) -> ResolvedScreenBranchDemand {
 }
 
 fn exact_ledger(
-    ticket: &hypercolor_core::input::screen::ScreenWorkerPreparationTicket,
-) -> anyhow::Result<(ScreenExactResourceLedger, Vec<ScreenResourceLifetime>)> {
-    let mut resources = ticket
+    ticket: hypercolor_core::input::screen::ScreenWorkerPreparationTicket,
+) -> anyhow::Result<(
+    hypercolor_core::input::screen::ScreenPreparedWorkerToken,
+    Box<[ScreenResourceLifetime]>,
+    Option<BoundScreenNativeTargetPreparation>,
+)> {
+    let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
+    let has_native_runtime = ledger
+        .ticket()
         .required_minimums()
         .iter()
-        .map(|minimum| {
-            ScreenExactResource::try_new(
-                Arc::clone(minimum.name()),
-                minimum.resource(),
-                minimum.minimum_bytes(),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if ticket
+        .any(|minimum| minimum.name().as_ref() == "worker-runtime-total");
+    let reports = ledger
+        .ticket()
         .required_minimums()
         .iter()
-        .any(|minimum| minimum.name().as_ref() == "worker-runtime-total")
-    {
-        let descriptor = ticket
+        .map(|minimum| (Arc::clone(minimum.name()), minimum.minimum_bytes()))
+        .collect::<Vec<_>>();
+    let admitted_target = if has_native_runtime {
+        let descriptor = ledger
+            .ticket()
             .candidate_plan()
             .branches()
             .iter()
@@ -176,37 +179,57 @@ fn exact_ledger(
                     ScreenPublicationExecutor::SourceNative(_)
                 )
             })
-            .expect("native fixture candidate has a native descriptor");
+            .expect("native fixture candidate has a native descriptor")
+            .clone();
         let ScreenPublicationExecutor::SourceNative(target) = descriptor.executor() else {
             unreachable!("native descriptor selected above")
         };
-        let preparation = target.prepare(
-            descriptor,
+        let preparation = ledger.prepare_native_target(
+            target,
+            &descriptor,
             &ScreenNativePreparationPayload::new(
-                descriptor,
-                ticket.plan_generation(),
+                &descriptor,
+                ledger.ticket().plan_generation(),
                 Arc::new(RendererTargetPayload),
             ),
+            "native-target-test",
+            "worker-runtime-total",
         )?;
-        resources.push(preparation.exact_resource("native-target-test", "worker-runtime-total")?);
-        resources.push(ScreenExactResource::try_new_scoped(
+        ledger.preflight_additional_bytes(CAPTURE_PLAN_RETAINED_BYTES)?;
+        ledger.report_scoped(
             "capture-plan-test",
             "worker-runtime-total",
-            ScreenResourceKind::WorkerAdditional,
             CAPTURE_PLAN_RETAINED_BYTES,
-        )?);
+        )?;
+        Some(preparation)
+    } else {
+        None
+    };
+    for (name, bytes) in reports {
+        ledger.report(&name, bytes)?;
     }
-    let lifetimes = resources
-        .iter()
-        .map(|resource| ticket.bind_resource_lifetime(resource))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((ScreenExactResourceLedger::try_new(resources)?, lifetimes))
+    let (token, lifetimes) = ledger.finish()?.into_parts();
+    let target = admitted_target
+        .map(|preparation| {
+            let lifetime = lifetimes
+                .iter()
+                .find(|lifetime| lifetime.resource().name().as_ref() == "native-target-test")
+                .cloned()
+                .expect("native target lifetime is present after exact acknowledgement");
+            preparation.bind(lifetime)
+        })
+        .transpose()?;
+    Ok((token, lifetimes, target))
 }
 
 fn commit_candidate(
     builder: &mut ScreenPlanBuilder,
     demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
-) -> (CommittedScreenPlan, Vec<Vec<ScreenResourceLifetime>>) {
+) -> (
+    CommittedScreenPlan,
+    Vec<Box<[ScreenResourceLifetime]>>,
+    Vec<BoundScreenNativeTargetPreparation>,
+) {
     let graph_generation = ScreenInputGraphGeneration::new(1);
     let demand_revision = builder
         .current()
@@ -223,18 +246,18 @@ fn commit_candidate(
         )
         .expect("test plan prepares");
     let mut worker_lifetimes = Vec::new();
+    let mut native_targets = Vec::new();
     for required_source in preparing.required_sources().to_vec() {
         let ticket = preparing
             .worker_ticket(&required_source)
             .expect("required source has a worker ticket");
-        let (ledger, lifetimes) = exact_ledger(&ticket).expect("exact ledger is valid");
-        let token = ticket
-            .acknowledge(ledger, &lifetimes)
-            .expect("worker resources satisfy the ticket");
+        let (token, lifetimes, native_target) =
+            exact_ledger(ticket).expect("exact ledger is valid");
         preparing
             .acknowledge(token)
             .expect("worker token belongs to the candidate");
         worker_lifetimes.push(lifetimes);
+        native_targets.extend(native_target);
     }
     let armed = preparing
         .arm(
@@ -246,7 +269,7 @@ fn commit_candidate(
     let committed = builder
         .commit(armed, demand_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("test plan commits: {}", failure.error()));
-    (committed, worker_lifetimes)
+    (committed, worker_lifetimes, native_targets)
 }
 
 fn worker_ticket_for(
@@ -274,8 +297,9 @@ fn commit_initial(
     ScreenCapturePlan,
     ScreenResourceLifetime,
     ScreenResourceLifetime,
+    BoundScreenNativeTargetPreparation,
 ) {
-    let (committed, worker_lifetimes) = commit_candidate(builder, [demand]);
+    let (committed, worker_lifetimes, native_targets) = commit_candidate(builder, [demand]);
     let worker_lifetimes = worker_lifetimes.into_iter().flatten().collect::<Vec<_>>();
     let target_lifetime = worker_lifetimes
         .iter()
@@ -290,7 +314,11 @@ fn commit_initial(
     retirement
         .try_reclaim()
         .expect("empty predecessor retires immediately");
-    (plan, target_lifetime, capture_lifetime)
+    let target = native_targets
+        .into_iter()
+        .next()
+        .expect("initial native target is bound");
+    (plan, target_lifetime, capture_lifetime, target)
 }
 
 fn binding(builder: &ScreenPlanBuilder) -> ScreenWorkerBinding {
@@ -368,6 +396,7 @@ struct Fixture {
     descriptor: ResolvedScreenPublicationDescriptor,
     target_lifetime: Option<ScreenResourceLifetime>,
     capture_lifetime: Option<ScreenResourceLifetime>,
+    target_preparation: Option<BoundScreenNativeTargetPreparation>,
 }
 
 impl Fixture {
@@ -377,13 +406,15 @@ impl Fixture {
         let descriptor = demand.descriptor().clone();
         let mut builder = ScreenPlanBuilder::with_publication_slots(slot_policy);
         let hub = builder.publication_hub();
-        let (_, target_lifetime, capture_lifetime) = commit_initial(&mut builder, demand);
+        let (_, target_lifetime, capture_lifetime, target_preparation) =
+            commit_initial(&mut builder, demand);
         Self {
             builder,
             hub,
             descriptor,
             target_lifetime: Some(target_lifetime),
             capture_lifetime: Some(capture_lifetime),
+            target_preparation: Some(target_preparation),
         }
     }
 
@@ -625,7 +656,7 @@ fn abandoned_and_rejected_gpu_staging_releases_native_owners() {
 struct RendererTargetPayload;
 
 #[test]
-fn native_target_bindings_reject_unbound_mismatched_and_swapped_allocations() {
+fn native_target_bindings_require_installed_admission_and_exact_identity() {
     let source = source();
     let first_target = native_target();
     let second_target = native_target_with(2, native_target_support::preparer());
@@ -633,163 +664,115 @@ fn native_target_bindings_reject_unbound_mismatched_and_swapped_allocations() {
     let second_demand = demand_for_target(&source, second_target.clone());
     let first_descriptor = first_demand.descriptor().clone();
     let second_descriptor = second_demand.descriptor().clone();
-    let ticket = worker_ticket_for([first_demand, second_demand]);
-    let platform = ScreenNativePreparationPayload::new(
+
+    let premature_ticket = worker_ticket_for([first_demand.clone()]);
+    let mut premature = ScreenWorkerExactLedgerBuilder::new(premature_ticket)
+        .expect("premature admission prepares");
+    let first_platform = ScreenNativePreparationPayload::new(
         &first_descriptor,
-        ticket.plan_generation(),
+        premature.ticket().plan_generation(),
         Arc::new(RendererTargetPayload),
     );
-
-    let unbound =
-        ScreenNativeTargetPreparation::new(platform.clone(), native_target_support::RETAINED_BYTES);
+    let unbound = ScreenNativeTargetPreparation::new(
+        ScreenNativePreparationPayload::new(
+            &first_descriptor,
+            premature.ticket().plan_generation(),
+            Arc::new(RendererTargetPayload),
+        ),
+        native_target_support::RETAINED_BYTES,
+    );
     assert!(matches!(
         unbound.exact_resource("unbound", "worker-runtime-total"),
         Err(ScreenNativeTargetResourceError::TargetIdentityMissing)
     ));
-    let generic_worker = ScreenExactResource::try_new_scoped(
+    let generic_resource = ScreenExactResource::try_new_scoped(
         "generic-worker",
         "worker-runtime-total",
         ScreenResourceKind::WorkerAdditional,
         native_target_support::RETAINED_BYTES,
     )
     .expect("generic worker resource is valid");
-    let generic_worker_lifetime = ticket
-        .bind_resource_lifetime(&generic_worker)
-        .expect("generic worker lifetime binds to the ticket");
+    let uninstalled_lifetime = premature
+        .ticket()
+        .bind_resource_lifetime(&generic_resource)
+        .expect("generic lifetime belongs to the ticket");
+    let premature_target = premature
+        .prepare_native_target(
+            &first_target,
+            &first_descriptor,
+            &first_platform,
+            "native-premature",
+            "worker-runtime-total",
+        )
+        .expect("target prepares under a dedicated lease");
     assert!(matches!(
-        unbound.bind(generic_worker_lifetime),
-        Err(ScreenNativeTargetBindingError::TargetIdentityMissing)
+        premature_target.bind(uninstalled_lifetime),
+        Err(ScreenNativeTargetBindingError::AdmissionLeaseMismatch)
     ));
 
-    let wrong_kind = ScreenExactResource::try_new(
-        "wrong-kind",
-        ScreenResourceKind::ApiAllocation,
-        native_target_support::RETAINED_BYTES,
-    )
-    .expect("API resource is valid exact accounting");
-    let wrong_kind_lifetime = ticket
-        .bind_resource_lifetime(&wrong_kind)
-        .expect("wrong-kind lifetime still belongs to the ticket");
-    let preparation = first_target
-        .prepare(&first_descriptor, &platform)
-        .expect("first target prepares its descriptor");
-    assert!(matches!(
-        preparation.bind(wrong_kind_lifetime),
-        Err(ScreenNativeTargetBindingError::ResourceKindMismatch {
-            observed: ScreenResourceKind::ApiAllocation
-        })
-    ));
-
-    let accounted = first_target
-        .prepare(&first_descriptor, &platform)
-        .expect("first target prepares its accounted allocation");
-    let accounted_resource = accounted
-        .exact_resource("native-first-sized", "worker-runtime-total")
-        .expect("target-stamped resource builds");
-    let accounted_lifetime = ticket
-        .bind_resource_lifetime(&accounted_resource)
-        .expect("target-stamped lifetime binds to the ticket");
-    let smaller_target = native_target_with(
-        1,
-        native_target_support::preparer_with_bytes(native_target_support::RETAINED_BYTES / 2),
+    let ticket = worker_ticket_for([first_demand, second_demand]);
+    let mut ledger =
+        ScreenWorkerExactLedgerBuilder::new(ticket).expect("native binding admission prepares");
+    let first_platform = ScreenNativePreparationPayload::new(
+        &first_descriptor,
+        ledger.ticket().plan_generation(),
+        Arc::new(RendererTargetPayload),
     );
-    let smaller = smaller_target
-        .prepare(&first_descriptor, &platform)
-        .expect("equal-identity target prepares a smaller allocation");
-    assert!(matches!(
-        smaller.bind(accounted_lifetime),
-        Err(ScreenNativeTargetBindingError::RetainedBytesMismatch {
-            expected,
-            observed
-        }) if expected == native_target_support::RETAINED_BYTES / 2
-            && observed == native_target_support::RETAINED_BYTES
-    ));
-
-    let first_preparation = first_target
-        .prepare(&first_descriptor, &platform)
+    let first = ledger
+        .prepare_native_target(
+            &first_target,
+            &first_descriptor,
+            &first_platform,
+            "native-route-first",
+            "worker-runtime-total",
+        )
         .expect("first route prepares");
-    let first_resource = first_preparation
-        .exact_resource("native-route-first", "worker-runtime-total")
-        .expect("first route produces its bound resource");
-    let first_lifetime = ticket
-        .bind_resource_lifetime(&first_resource)
-        .expect("first route lifetime binds");
-    let second_preparation = second_target
-        .prepare(
+    let second = ledger
+        .prepare_native_target(
+            &second_target,
             &second_descriptor,
             &ScreenNativePreparationPayload::new(
                 &second_descriptor,
-                ticket.plan_generation(),
+                ledger.ticket().plan_generation(),
                 Arc::new(RendererTargetPayload),
             ),
+            "native-route-second",
+            "worker-runtime-total",
         )
         .expect("second route prepares");
-    let second_resource = second_preparation
-        .exact_resource("native-route-second", "worker-runtime-total")
-        .expect("second route produces its bound resource");
-    let second_lifetime = ticket
-        .bind_resource_lifetime(&second_resource)
-        .expect("second route lifetime binds");
-    assert_eq!(first_resource.name().as_ref(), "native-route-first");
-    assert_eq!(second_resource.name().as_ref(), "native-route-second");
-    assert_eq!(first_resource.bytes(), second_resource.bytes());
-    assert!(matches!(
-        first_preparation.bind(second_lifetime),
-        Err(ScreenNativeTargetBindingError::NativeBindingMismatch)
-    ));
-    assert!(matches!(
-        second_preparation.bind(first_lifetime),
-        Err(ScreenNativeTargetBindingError::NativeBindingMismatch)
-    ));
-
-    let native_demand = demand_for_target(&source, first_target.clone());
-    let compact_demand = demand_for_target_extent(
-        &source,
-        first_target.clone(),
-        ScreenExtentRequest::bounded(
-            Some(NonZeroU32::MIN),
-            Some(NonZeroU32::MIN),
-            hypercolor_core::input::screen::ScreenUpscalePolicy::Never,
-        ),
-    );
-    let native_descriptor = native_demand.descriptor().clone();
-    let compact_descriptor = compact_demand.descriptor().clone();
-    assert_ne!(native_descriptor, compact_descriptor);
-    let descriptor_ticket = worker_ticket_for([native_demand, compact_demand]);
-    let native_preparation = first_target
-        .prepare(&native_descriptor, &platform)
-        .expect("native-size route prepares");
-    let native_resource = native_preparation
-        .exact_resource("native-size-route", "worker-runtime-total")
-        .expect("native-size route produces its bound resource");
-    let native_lifetime = descriptor_ticket
-        .bind_resource_lifetime(&native_resource)
-        .expect("native-size route lifetime binds");
-    let compact_preparation = first_target
-        .prepare(
-            &compact_descriptor,
-            &ScreenNativePreparationPayload::new(
-                &compact_descriptor,
-                descriptor_ticket.plan_generation(),
-                Arc::new(RendererTargetPayload),
-            ),
-        )
-        .expect("compact route prepares");
-    let compact_resource = compact_preparation
-        .exact_resource("compact-route", "worker-runtime-total")
-        .expect("compact route produces its bound resource");
-    let compact_lifetime = descriptor_ticket
-        .bind_resource_lifetime(&compact_resource)
-        .expect("compact route lifetime binds");
-    assert_eq!(native_resource.bytes(), compact_resource.bytes());
-    assert!(matches!(
-        native_preparation.bind(compact_lifetime),
-        Err(ScreenNativeTargetBindingError::NativeBindingMismatch)
-    ));
-    assert!(matches!(
-        compact_preparation.bind(native_lifetime),
-        Err(ScreenNativeTargetBindingError::NativeBindingMismatch)
-    ));
+    let reports = ledger
+        .ticket()
+        .required_minimums()
+        .iter()
+        .map(|minimum| (Arc::clone(minimum.name()), minimum.minimum_bytes()))
+        .collect::<Vec<_>>();
+    for (name, bytes) in reports {
+        ledger
+            .report(&name, bytes)
+            .expect("required native scope reports");
+    }
+    let (_, lifetimes) = ledger
+        .finish()
+        .expect("native ledger finishes")
+        .into_parts();
+    let first_lifetime = lifetimes
+        .iter()
+        .find(|lifetime| lifetime.resource().name().as_ref() == "native-route-first")
+        .cloned()
+        .expect("first target lifetime installs");
+    let second_lifetime = lifetimes
+        .iter()
+        .find(|lifetime| lifetime.resource().name().as_ref() == "native-route-second")
+        .cloned()
+        .expect("second target lifetime installs");
+    let first = first
+        .bind(first_lifetime)
+        .expect("first target binds to its installed lease");
+    let second = second
+        .bind(second_lifetime)
+        .expect("second target binds to its installed lease");
+    assert_eq!(first.target_id(), first_target.id());
+    assert_eq!(second.target_id(), second_target.id());
 }
 
 #[test]
@@ -800,27 +783,10 @@ fn reader_held_gpu_surface_retains_capture_and_renderer_bytes_after_plan_retirem
         .hub
         .lease(&fixture.descriptor)
         .expect("GPU branch has a lease");
-    let ScreenPublicationExecutor::SourceNative(target) = fixture.descriptor.executor() else {
-        panic!("fixture resolves a native target");
-    };
-    let renderer_payload = Arc::new(RendererTargetPayload);
-    let renderer_payload_weak = Arc::downgrade(&renderer_payload);
-    let platform = ScreenNativePreparationPayload::new(
-        &fixture.descriptor,
-        fixture.hub.committed_state().plan().generation(),
-        renderer_payload,
-    );
-    let preparation = target
-        .prepare(&fixture.descriptor, &platform)
-        .expect("test renderer prepares the target")
-        .bind(
-            fixture
-                .target_lifetime
-                .as_ref()
-                .expect("fixture retains target accounting")
-                .clone(),
-        )
-        .expect("renderer bytes bind to their exact lifetime");
+    let preparation = fixture
+        .target_preparation
+        .take()
+        .expect("fixture retains its admitted native target");
     let (surface, owner) = gpu_surface(1);
     let surface = preparation
         .retain_on_surface_with_capture_allocation(
@@ -832,6 +798,10 @@ fn reader_held_gpu_surface_retains_capture_and_renderer_bytes_after_plan_retirem
                 .clone(),
         )
         .expect("capture and target allocations belong to one worker");
+    let renderer_payload = surface
+        .retained_owner::<native_target_support::TestNativeTargetPayload>()
+        .expect("fixture target retains renderer payload");
+    let renderer_payload_weak = renderer_payload.downgrade();
     let receipt = fixture
         .hub
         .publish(
@@ -843,13 +813,14 @@ fn reader_held_gpu_surface_retains_capture_and_renderer_bytes_after_plan_retirem
             &metadata(&fixture.descriptor, &publisher, 1),
         )
         .expect("bound GPU surface publishes");
-    drop((receipt, surface, preparation, platform));
+    drop((receipt, surface, preparation));
     let held = branch_lease
         .read()
         .expect("reader retains the renderer-bound publication");
 
-    let (committed, _) = commit_candidate(&mut fixture.builder, std::iter::empty());
+    let (committed, _, _) = commit_candidate(&mut fixture.builder, std::iter::empty());
     let (_, retirement) = committed.into_parts();
+    drop(fixture.target_preparation.take());
     drop(fixture.target_lifetime.take());
     drop(fixture.capture_lifetime.take());
     drop((publisher, branch_lease));
@@ -870,7 +841,7 @@ fn reader_held_gpu_surface_retains_capture_and_renderer_bytes_after_plan_retirem
     assert!(
         payload
             .surface()
-            .retained_owner::<RendererTargetPayload>()
+            .retained_owner::<native_target_support::TestNativeTargetPayload>()
             .is_some()
     );
     assert_eq!(
@@ -895,9 +866,13 @@ fn reader_held_gpu_surface_retains_capture_and_renderer_bytes_after_plan_retirem
     assert!(renderer_payload_weak.upgrade().is_some());
 
     drop(held);
+    let retirement = retirement
+        .try_reclaim()
+        .expect_err("typed owner access retains exact admission after the surface drops");
+    drop(renderer_payload);
     retirement
         .try_reclaim()
-        .expect("retirement completes after the final reader drops");
+        .expect("retirement completes after the final owner guard drops");
     assert_eq!(fixture.hub.pending_retired_bytes(), 0);
     assert!(owner.upgrade().is_none());
     assert!(renderer_payload_weak.upgrade().is_none());
@@ -910,8 +885,9 @@ fn retirement_releases_unread_latest_gpu_payload_before_stale_publisher_drops() 
     let (owner, receipt) = publish_gpu(&fixture, &publisher, 1);
     drop(receipt);
 
-    let (committed, _) = commit_candidate(&mut fixture.builder, std::iter::empty());
+    let (committed, _, _) = commit_candidate(&mut fixture.builder, std::iter::empty());
     let (_, retirement) = committed.into_parts();
+    drop(fixture.target_preparation.take());
     drop(fixture.target_lifetime.take());
     drop(fixture.capture_lifetime.take());
     assert!(fixture.hub.lease(&fixture.descriptor).is_err());

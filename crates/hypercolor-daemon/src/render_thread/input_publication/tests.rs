@@ -53,7 +53,7 @@ struct ScreenDemandSource {
 
 struct ScreenRuntimeAllocation {
     binding: ScreenWorkerBinding,
-    _lifetimes: Vec<ScreenResourceLifetime>,
+    _lifetimes: Box<[ScreenResourceLifetime]>,
 }
 
 impl ScreenDemandSource {

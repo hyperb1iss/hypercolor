@@ -405,4 +405,8 @@ impl ScreenByteLease {
     pub fn bytes(&self) -> u64 {
         self.inner.bytes.load(Ordering::Acquire)
     }
+
+    pub(crate) fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
 }

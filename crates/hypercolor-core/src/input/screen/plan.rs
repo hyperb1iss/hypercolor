@@ -672,6 +672,21 @@ pub struct ScreenResourceLifetime {
     inner: Arc<ScreenResourceLifetimeInner>,
 }
 
+#[derive(Debug)]
+pub(crate) struct ScreenExternalResourceAdmission {
+    resource_name: Arc<str>,
+    lease: ScreenByteLease,
+}
+
+impl ScreenExternalResourceAdmission {
+    pub(crate) fn new(resource_name: Arc<str>, lease: ScreenByteLease) -> Self {
+        Self {
+            resource_name,
+            lease,
+        }
+    }
+}
+
 impl ScreenResourceLifetime {
     /// Exact allocation represented by this lifetime.
     #[must_use]
@@ -706,6 +721,13 @@ impl ScreenResourceLifetime {
     pub(crate) fn install_admission_lease(&self, lease: ScreenByteLease) {
         let installed = self.inner.admission_lease.set(lease);
         assert!(installed.is_ok(), "exact resource admission installs once");
+    }
+
+    pub(crate) fn has_admission_lease(&self, lease: &ScreenByteLease) -> bool {
+        self.inner
+            .admission_lease
+            .get()
+            .is_some_and(|installed| installed.is_same(lease))
     }
 }
 
@@ -1138,6 +1160,21 @@ impl ScreenWorkerPreparationTicket {
         lifetimes: &[ScreenResourceLifetime],
         admission_top_ups: Vec<ScreenByteReservation>,
     ) -> Result<ScreenPreparedWorkerToken, ScreenPlanError> {
+        self.acknowledge_with_external_admission(
+            exact_ledger,
+            lifetimes,
+            admission_top_ups,
+            Vec::new(),
+        )
+    }
+
+    pub(crate) fn acknowledge_with_external_admission(
+        &self,
+        exact_ledger: ScreenExactResourceLedger,
+        lifetimes: &[ScreenResourceLifetime],
+        admission_top_ups: Vec<ScreenByteReservation>,
+        mut external_admissions: Vec<ScreenExternalResourceAdmission>,
+    ) -> Result<ScreenPreparedWorkerToken, ScreenPlanError> {
         let modeled_bytes = self
             .required_minimums
             .iter()
@@ -1161,6 +1198,24 @@ impl ScreenWorkerPreparationTicket {
                 return Err(ScreenPlanError::SharedAdmission(error));
             }
         }
+        external_admissions
+            .sort_unstable_by(|left, right| left.resource_name.cmp(&right.resource_name));
+        if let Some(duplicate) = external_admissions
+            .windows(2)
+            .find(|pair| pair[0].resource_name == pair[1].resource_name)
+        {
+            *admission = Some(reservation);
+            return Err(ScreenPlanError::ExternalAdmissionMismatch {
+                name: Arc::clone(&duplicate[1].resource_name),
+            });
+        }
+        let external_bytes = external_admissions
+            .iter()
+            .try_fold(0_u64, |total, claim| total.checked_add(claim.lease.bytes()));
+        let Some(external_bytes) = external_bytes else {
+            *admission = Some(reservation);
+            return Err(ScreenPlanError::ExternalAdmissionOverflow);
+        };
         let validation = (|| {
             validate_resource_coverage(self.required_minimums.as_slice(), &exact_ledger)?;
             let lifetimes = validate_resource_lifetimes(self, &exact_ledger, lifetimes)?;
@@ -1169,14 +1224,32 @@ impl ScreenWorkerPreparationTicket {
                 &exact_ledger,
                 &lifetimes,
             )?;
-            if exact_ledger.total_bytes > reservation.bytes() {
+            for claim in &external_admissions {
+                let resource = exact_ledger
+                    .resources()
+                    .binary_search_by(|resource| resource.name().cmp(&claim.resource_name))
+                    .ok()
+                    .map(|index| &exact_ledger.resources()[index]);
+                if resource.is_none_or(|resource| {
+                    resource.native_binding().is_none() || resource.bytes() != claim.lease.bytes()
+                }) {
+                    return Err(ScreenPlanError::ExternalAdmissionMismatch {
+                        name: Arc::clone(&claim.resource_name),
+                    });
+                }
+            }
+            let reservation_bytes = exact_ledger
+                .total_bytes
+                .checked_sub(external_bytes)
+                .ok_or(ScreenPlanError::ExternalAdmissionOverflow)?;
+            if reservation_bytes > reservation.bytes() {
                 let quoted = reservation.bytes().saturating_sub(modeled_bytes);
-                let required = exact_ledger.total_bytes.saturating_sub(modeled_bytes);
+                let required = reservation_bytes.saturating_sub(modeled_bytes);
                 return Err(ScreenPlanError::UnquotedExactWorkerBytes { required, quoted });
             }
-            Ok((lifetimes, retained_resources))
+            Ok((lifetimes, retained_resources, reservation_bytes))
         })();
-        let (lifetimes, retained_resources) = match validation {
+        let (lifetimes, retained_resources, reservation_bytes) = match validation {
             Ok(validated) => validated,
             Err(error) => {
                 *admission = Some(reservation);
@@ -1184,14 +1257,23 @@ impl ScreenWorkerPreparationTicket {
             }
         };
         reservation
-            .reconcile_down(exact_ledger.total_bytes)
+            .reconcile_down(reservation_bytes)
             .expect("exact worker bytes fit their pre-allocation quote");
         for lifetime in &lifetimes {
-            let claim = reservation
-                .split_off(lifetime.resource().bytes)
-                .expect("exact worker quote covers every bound allocation")
-                .freeze();
-            lifetime.install_admission_lease(claim);
+            let external = external_admissions
+                .binary_search_by(|claim| claim.resource_name.cmp(lifetime.resource().name()))
+                .ok()
+                .map(|index| &external_admissions[index]);
+            let lease = external.map_or_else(
+                || {
+                    reservation
+                        .split_off(lifetime.resource().bytes)
+                        .expect("exact worker quote covers every bound allocation")
+                        .freeze()
+                },
+                |external| external.lease.clone(),
+            );
+            lifetime.install_admission_lease(lease);
         }
         debug_assert_eq!(reservation.bytes(), 0);
         let binding = ScreenWorkerBinding::new(
@@ -2161,6 +2243,12 @@ pub enum ScreenPlanError {
         "exact worker resources need {required} additional bytes but only {quoted} bytes were preflighted"
     )]
     UnquotedExactWorkerBytes { required: u64, quoted: u64 },
+    /// A dedicated external lease did not match its native exact resource.
+    #[error("external admission does not match native exact resource {name}")]
+    ExternalAdmissionMismatch { name: Arc<str> },
+    /// Dedicated external lease byte accounting overflowed or exceeded the ledger.
+    #[error("external exact resource admission byte accounting overflowed")]
+    ExternalAdmissionOverflow,
     /// Memory for a candidate plan structure could not be reserved.
     #[error("failed to allocate the candidate screen publication plan")]
     AllocationFailed,

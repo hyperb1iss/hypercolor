@@ -2288,6 +2288,14 @@ mod tests {
     struct InertNativeTargetPreparer;
 
     impl ScreenNativeTargetPreparer for InertNativeTargetPreparer {
+        fn quote_retained_bytes(
+            &self,
+            _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+            _platform: &ScreenNativePreparationPayload,
+        ) -> anyhow::Result<u64> {
+            anyhow::bail!("test target does not quote renderer resources")
+        }
+
         fn prepare(
             &self,
             _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
@@ -3040,6 +3048,15 @@ mod tests {
         )
         .expect("CPU render runtime should initialize");
 
+        let lazy_snapshot = runtime.render.render_surface_snapshot(3);
+        assert_eq!(lazy_snapshot.scene_pool_slot_count, 0);
+        assert_eq!(lazy_snapshot.scene_pool_free_slots, 0);
+
+        runtime
+            .render
+            .render_group_runtime
+            .try_resize_scene(321, 200)
+            .expect("CPU scene resize should prepare its surface pool");
         let snapshot = runtime.render.render_surface_snapshot(3);
 
         assert_eq!(snapshot.canvas_receivers, 3);

@@ -12,9 +12,10 @@
 //! per process, and other ambient-lighting tools want the same interface, so
 //! holding it while no effect needs it would be antisocial.
 
+use std::alloc::Layout;
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,40 +23,44 @@ use std::time::{Duration, Instant};
 use anyhow::anyhow;
 use hypercolor_windows_capture::{
     CaptureError, CaptureExtent as NativeCaptureExtent, CaptureLane, CapturePumpRequest,
-    CaptureRegion, CpuDesktopFrame, DesktopDuplicator, DisplayRotation,
-    Frame as NativeCaptureFrame, GpuAdapterLuid, GpuReductionAdmission,
-    GpuReductionPublicationDisposition, GpuReductionPublishOutcome, GpuSurfaceAdmission,
-    GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy,
-    GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter,
-    GpuSurfaceFormat, GpuSurfacePlanGeneration, GpuSurfacePublicationDisposition,
-    GpuSurfacePublishOutcome, GpuSurfaceSourceColorSpace, PreparedCpuDesktopReadback,
-    PreparedGpuReductionPlan, PreparedGpuSurfacePlan, ReductionTelemetry,
+    CaptureRegion, CaptureResourceAdmission, CaptureResourceKind, CaptureResourceLease,
+    CaptureResourceReservation, CpuDesktopFrame, CpuDesktopReadbackResourceQuote,
+    DesktopDuplicator, DisplayRotation, Frame as NativeCaptureFrame, GpuAdapterLuid,
+    GpuReductionAdmission, GpuReductionPublicationDisposition, GpuReductionPublishOutcome,
+    GpuSurfaceAdmission, GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace,
+    GpuSurfaceCursorPolicy, GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig,
+    GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat, GpuSurfacePlanGeneration,
+    GpuSurfacePublicationDisposition, GpuSurfacePublishOutcome, GpuSurfaceSourceColorSpace,
+    GpuSurfaceTargetPreparation, GpuSurfaceTargetPreparationResourceQuote,
+    PreparedCpuDesktopReadback, PreparedGpuReductionPlan, PreparedGpuSurfacePlan,
+    ReductionTelemetry,
 };
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, BoundScreenNativeTargetPreparation, CaptureCadence,
-    CaptureCadenceError, CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureCursor,
-    CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
-    CaptureGeometry, CapturePacer, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, CpuExactReductionWorkPlan,
-    CpuReductionExecutor, PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
-    PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorTransform,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAnalysisAdmissionError, ScreenAnalysisComputeCapacity,
-    ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity,
-    ScreenBranchPayload, ScreenBranchPublisher, ScreenByteAdmissionCoordinator,
+    AdmittedScreenNativeTargetPreparation, AnalyzedScreenSnapshot,
+    BoundScreenNativeTargetPreparation, CaptureCadence, CaptureCadenceError, CaptureColorSpace,
+    CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureDynamicRange,
+    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePacer,
+    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction,
+    CpuCaptureStorage, CpuExactReductionWorkPlan, CpuReductionExecutor, PhysicalOrigin,
+    PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
+    PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity,
+    ScreenAnalysisAdmissionError, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
+    ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
+    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenByteLease, ScreenByteReservation,
     ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
     ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
     ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
-    ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenPhysicalGpuDeviceIdentity,
+    ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
     ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
     ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
     ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -109,6 +114,100 @@ struct SharedSettings {
     generation: AtomicU64,
     session_generation: AtomicU64,
     activity_generation: AtomicU64,
+}
+
+#[derive(Debug)]
+struct WindowsCaptureResourceAdmission {
+    coordinator: ScreenByteAdmissionCoordinator,
+}
+
+#[derive(Debug)]
+struct WindowsCaptureResourceReservation {
+    kind: CaptureResourceKind,
+    reservation: ScreenByteReservation,
+}
+
+#[derive(Debug)]
+struct WindowsCaptureResourceLease {
+    kind: CaptureResourceKind,
+    lease: ScreenByteLease,
+}
+
+impl CaptureResourceAdmission for WindowsCaptureResourceAdmission {
+    fn try_reserve(
+        &self,
+        kind: CaptureResourceKind,
+        peak_bytes: u64,
+    ) -> Result<Box<dyn CaptureResourceReservation>, CaptureError> {
+        let reservation = self.coordinator.try_acquire(peak_bytes).map_err(|_| {
+            CaptureError::ResourceExhausted {
+                operation: capture_resource_operation(kind),
+                requested_bytes: usize::try_from(peak_bytes).unwrap_or(usize::MAX),
+            }
+        })?;
+        Ok(Box::new(WindowsCaptureResourceReservation {
+            kind,
+            reservation,
+        }))
+    }
+}
+
+impl CaptureResourceReservation for WindowsCaptureResourceReservation {
+    fn kind(&self) -> CaptureResourceKind {
+        self.kind
+    }
+
+    fn bytes(&self) -> u64 {
+        self.reservation.bytes()
+    }
+
+    fn commit(
+        mut self: Box<Self>,
+        retained_bytes: u64,
+    ) -> Result<Arc<dyn CaptureResourceLease>, CaptureError> {
+        let quoted_bytes = self.reservation.bytes();
+        self.reservation
+            .reconcile_down(retained_bytes)
+            .map_err(|_| CaptureError::ResourceAdmissionMismatch {
+                operation: "reconcile Windows capture resource reservation",
+                expected_kind: self.kind,
+                expected_bytes: quoted_bytes,
+                actual_kind: self.kind,
+                actual_bytes: retained_bytes,
+            })?;
+        Ok(Arc::new(WindowsCaptureResourceLease {
+            kind: self.kind,
+            lease: self.reservation.freeze(),
+        }))
+    }
+}
+
+impl CaptureResourceLease for WindowsCaptureResourceLease {
+    fn kind(&self) -> CaptureResourceKind {
+        self.kind
+    }
+
+    fn bytes(&self) -> u64 {
+        self.lease.bytes()
+    }
+}
+
+const fn capture_resource_operation(kind: CaptureResourceKind) -> &'static str {
+    match kind {
+        CaptureResourceKind::PointerShape => "reserve Windows pointer shape",
+        CaptureResourceKind::CanonicalDesktop => "reserve Windows canonical desktop",
+        CaptureResourceKind::PointerTexture => "reserve Windows pointer texture",
+        CaptureResourceKind::CompatibilityReductionConstantBuffer => {
+            "reserve Windows compatibility reduction constant buffer"
+        }
+        CaptureResourceKind::CompatibilityReductionTextures => {
+            "reserve Windows compatibility reduction textures"
+        }
+        CaptureResourceKind::CompatibilityCpuStagingTexture => {
+            "reserve Windows compatibility CPU staging texture"
+        }
+        CaptureResourceKind::CompatibilityFramePlane => "reserve Windows compatibility frame plane",
+    }
 }
 
 struct VersionedCaptureConfig {
@@ -281,10 +380,85 @@ impl WindowsPublicationSource {
     }
 }
 
+struct ExactBoxNode<T> {
+    value: T,
+    next: Option<Box<Self>>,
+}
+
+struct ExactBoxList<T> {
+    head: Option<Box<ExactBoxNode<T>>>,
+}
+
+impl<T> Default for ExactBoxList<T> {
+    fn default() -> Self {
+        Self { head: None }
+    }
+}
+
+impl<T> ExactBoxList<T> {
+    fn boxed_node(value: T) -> Box<ExactBoxNode<T>> {
+        Box::new(ExactBoxNode { value, next: None })
+    }
+
+    fn push_boxed(&mut self, mut node: Box<ExactBoxNode<T>>) {
+        node.next = self.head.take();
+        self.head = Some(node);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        let mut next = self.head.as_deref();
+        std::iter::from_fn(move || {
+            let node = next?;
+            next = node.next.as_deref();
+            Some(&node.value)
+        })
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        let mut next = self.head.as_deref_mut();
+        std::iter::from_fn(move || {
+            let node = next.take()?;
+            next = node.next.as_deref_mut();
+            Some(&mut node.value)
+        })
+    }
+
+    fn retain(&mut self, mut retain: impl FnMut(&mut T) -> bool) {
+        let mut link = &mut self.head;
+        while let Some(mut node) = link.take() {
+            if retain(&mut node.value) {
+                *link = Some(node);
+                link = &mut link.as_mut().expect("retained node was restored").next;
+            } else {
+                *link = node.next.take();
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        let mut next = self.head.take();
+        while let Some(mut node) = next {
+            next = node.next.take();
+        }
+    }
+}
+
+impl<T> Drop for ExactBoxList<T> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+struct WindowsOwnedSource {
+    source_id: CaptureSourceId,
+    binding: ScreenWorkerBinding,
+    _runtime_lifetime: ScreenResourceLifetime,
+}
+
 #[derive(Default)]
 struct ExactPublicationShared {
     source: Mutex<Option<WindowsPublicationSource>>,
-    owned_sources: Mutex<Vec<CaptureSourceId>>,
+    owned_sources: Mutex<ExactBoxList<WindowsOwnedSource>>,
     hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
     cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
     resolution_revision: AtomicU64,
@@ -329,14 +503,29 @@ impl ExactPublicationShared {
                 .owned_sources
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(source_id)
+                .iter()
+                .any(|owned| &owned.source_id == source_id)
     }
 
-    fn replace_owned_sources(&self, sources: Vec<CaptureSourceId>) {
-        *self
-            .owned_sources
+    fn register_owned_source(&self, source: Box<ExactBoxNode<WindowsOwnedSource>>) {
+        self.owned_sources
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = sources;
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_boxed(source);
+    }
+
+    fn reap_owned_sources(&self) {
+        self.owned_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|source| source.binding.state() == ScreenWorkerBindingState::Active);
+    }
+
+    fn clear_owned_sources(&self) {
+        self.owned_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
@@ -603,14 +792,14 @@ struct WindowsGpuRoute {
 
 struct WindowsGpuRuntime {
     plan: PreparedGpuSurfacePlan,
-    routes: Vec<WindowsGpuRoute>,
+    routes: Box<[WindowsGpuRoute]>,
 }
 
 struct PendingWindowsGpuRoute {
     id: GpuSurfaceDescriptorId,
     native: Arc<GpuSurfaceDescriptor>,
     descriptor: ResolvedScreenPublicationDescriptor,
-    target: ScreenNativeTargetPreparation,
+    target: AdmittedScreenNativeTargetPreparation,
     capture_resource_name: Arc<str>,
     capture_allocation_byte_len: u64,
     requested_hz: NonZeroU32,
@@ -639,16 +828,18 @@ struct WindowsGpuReductionRoute {
 
 struct WindowsGpuReductionRuntime {
     plan: PreparedGpuReductionPlan,
-    routes: Vec<WindowsGpuReductionRoute>,
+    routes: Box<[WindowsGpuReductionRoute]>,
 }
 
 struct WindowsExactRuntime {
     source: WindowsPublicationSource,
     binding: ScreenWorkerBinding,
-    _lifetimes: Vec<ScreenResourceLifetime>,
     gpu: Option<WindowsGpuRuntime>,
     cpu: Option<WindowsCpuRuntime>,
+    _lifetimes: Box<[ScreenResourceLifetime]>,
 }
+
+type WindowsExactRuntimes = ExactBoxList<WindowsExactRuntime>;
 
 impl WindowsExactRuntime {
     fn bind_if_active(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
@@ -1959,6 +2150,45 @@ fn build_analyzer_for_extent(
     }
 }
 
+fn checked_retained_metadata_bytes<T>(count: usize, resource: &str) -> anyhow::Result<u64> {
+    u64::try_from(count)
+        .ok()
+        .and_then(|count| {
+            u64::try_from(std::mem::size_of::<T>())
+                .ok()
+                .and_then(|size| count.checked_mul(size))
+        })
+        .ok_or_else(|| anyhow!("Windows exact {resource} metadata accounting overflow"))
+}
+
+fn checked_retained_arc_bytes<T>(count: usize, resource: &str) -> anyhow::Result<u64> {
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<T>())
+        .map_err(|_| anyhow!("Windows exact {resource} Arc accounting overflow"))?;
+    u64::try_from(count)
+        .ok()
+        .and_then(|count| {
+            u64::try_from(layout.pad_to_align().size())
+                .ok()
+                .and_then(|size| count.checked_mul(size))
+        })
+        .ok_or_else(|| anyhow!("Windows exact {resource} Arc accounting overflow"))
+}
+
+fn preflight_required_scope_bytes(
+    ledger: &mut ScreenWorkerExactLedgerBuilder,
+    minimum_remaining: &mut u64,
+    bytes: u64,
+) -> anyhow::Result<()> {
+    let modeled = bytes.min(*minimum_remaining);
+    *minimum_remaining -= modeled;
+    let additional = bytes - modeled;
+    if additional > 0 {
+        ledger.preflight_additional_bytes(additional)?;
+    }
+    Ok(())
+}
+
 fn prepare_windows_exact_runtime(
     ticket: ScreenWorkerPreparationTicket,
     duplicator: Option<&DesktopDuplicator>,
@@ -1966,8 +2196,11 @@ fn prepare_windows_exact_runtime(
     exact: &ExactPublicationShared,
     hub: &ScreenPublicationHub,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
-) -> anyhow::Result<(ScreenPreparedWorkerToken, Option<WindowsExactRuntime>)> {
-    let candidate = ticket.candidate_plan();
+) -> anyhow::Result<(
+    ScreenPreparedWorkerToken,
+    Option<(WindowsExactRuntime, WindowsOwnedSource)>,
+)> {
+    let candidate = ticket.candidate_plan().clone();
     let source_branches = candidate
         .branches()
         .iter()
@@ -1995,6 +2228,56 @@ fn prepare_windows_exact_runtime(
         .ok_or_else(|| anyhow!("Windows duplication session is unavailable for preparation"))?;
     let slot_count = NonZeroU32::new(hub.committed_state().slot_policy().total_slots())
         .ok_or_else(|| anyhow!("Windows exact publication slot count must be nonzero"))?;
+    let ticket_source_id = ticket.source_id().clone();
+    let ticket_plan_generation = ticket.plan_generation();
+    let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
+    let (mut cpu_api_minimum_remaining, mut processing_minimum_remaining) = {
+        let required_minimum = |resource, native| {
+            ledger
+                .ticket()
+                .required_minimums()
+                .iter()
+                .find(|minimum| {
+                    minimum.resource() == resource
+                        && matches!(
+                            minimum.descriptor().executor(),
+                            ScreenPublicationExecutor::SourceNative(_)
+                        ) == native
+                })
+                .map_or(0, ScreenRequiredResourceMinimum::minimum_bytes)
+        };
+        (
+            required_minimum(ScreenResourceKind::ApiAllocation, false),
+            required_minimum(ScreenResourceKind::ProcessingProfileState, false),
+        )
+    };
+    let mut worker_minimum_remaining = ledger
+        .ticket()
+        .required_minimums()
+        .iter()
+        .find(|minimum| minimum.resource() == ScreenResourceKind::WorkerAdditional)
+        .map_or(0, ScreenRequiredResourceMinimum::minimum_bytes);
+    let plane_minimum_bytes = ledger
+        .ticket()
+        .required_minimums()
+        .iter()
+        .filter(|minimum| minimum.resource() == ScreenResourceKind::PhysicalPlane)
+        .try_fold(0_u64, |total, minimum| {
+            total
+                .checked_add(minimum.minimum_bytes())
+                .ok_or_else(|| anyhow!("Windows exact physical-plane accounting overflow"))
+        })?;
+    let runtime_node_bytes =
+        checked_retained_metadata_bytes::<ExactBoxNode<WindowsExactRuntime>>(1, "runtime node")?
+            .checked_add(checked_retained_metadata_bytes::<
+                ExactBoxNode<WindowsOwnedSource>,
+            >(1, "owned source node")?)
+            .ok_or_else(|| anyhow!("Windows exact runtime node accounting overflow"))?;
+    preflight_required_scope_bytes(
+        &mut ledger,
+        &mut worker_minimum_remaining,
+        runtime_node_bytes,
+    )?;
 
     let cpu_source = source_branches
         .iter()
@@ -2013,10 +2296,10 @@ fn prepare_windows_exact_runtime(
             );
             let worker_count = exact.cpu_worker_count();
             let compute_plan = CpuExactReductionWorkPlan::try_for_source(
-                candidate,
-                ticket.source_id(),
+                &candidate,
+                &ticket_source_id,
                 |descriptor| {
-                    windows_physical_reduction_executes_on_cpu(candidate, descriptor, source)
+                    windows_physical_reduction_executes_on_cpu(&candidate, descriptor, source)
                 },
             )?;
             let capacity = compute_capacity_policy.exact(worker_count);
@@ -2045,6 +2328,16 @@ fn prepare_windows_exact_runtime(
             )
         })
         .collect::<Vec<_>>();
+    preflight_required_scope_bytes(
+        &mut ledger,
+        &mut worker_minimum_remaining,
+        checked_retained_metadata_bytes::<WindowsGpuRoute>(gpu_branches.len(), "GPU route")?
+            .checked_add(checked_retained_arc_bytes::<GpuSurfaceDescriptor>(
+                gpu_branches.len(),
+                "GPU descriptor",
+            )?)
+            .ok_or_else(|| anyhow!("Windows GPU route metadata accounting overflow"))?,
+    )?;
     let gpu = if gpu_branches.is_empty() {
         None
     } else {
@@ -2052,7 +2345,7 @@ fn prepare_windows_exact_runtime(
         let _preparation_guard = preparation_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let plan_generation = NonZeroU64::new(ticket.plan_generation().get())
+        let plan_generation = NonZeroU64::new(ticket_plan_generation.get())
             .map(GpuSurfacePlanGeneration::new)
             .ok_or_else(|| {
                 anyhow!("Windows native publication requires a nonzero plan generation")
@@ -2079,6 +2372,9 @@ fn prepare_windows_exact_runtime(
             slot_count,
             available_gpu_bytes,
         )?;
+        let capture_quote =
+            admission.quote(native_capture_extent(source.logical_extent), &descriptors)?;
+        ledger.preflight_additional_bytes(capture_quote.retained_byte_len())?;
         let plan = duplicator.prepare_gpu_surface_plan(plan_generation, &descriptors, admission)?;
         let mut routes = Vec::new();
         routes.try_reserve_exact(pending_routes.len())?;
@@ -2087,14 +2383,36 @@ fn prepare_windows_exact_runtime(
             else {
                 anyhow::bail!("Windows GPU route lost source-native target identity");
             };
+            let manifest_quote = GpuSurfaceTargetPreparationResourceQuote::try_new(slot_count)?;
+            let manifest_metadata_bytes =
+                checked_retained_arc_bytes::<GpuSurfaceTargetPreparation>(
+                    1,
+                    "GPU target manifest",
+                )?
+                .checked_add(checked_retained_arc_bytes::<
+                    ResolvedScreenPublicationDescriptor,
+                >(1, "GPU target manifest descriptor")?)
+                .ok_or_else(|| anyhow!("Windows GPU target manifest accounting overflow"))?;
+            ledger.preflight_additional_bytes(
+                manifest_quote
+                    .retained_byte_len()
+                    .checked_add(manifest_metadata_bytes)
+                    .ok_or_else(|| anyhow!("Windows GPU target manifest accounting overflow"))?,
+            )?;
             let manifest = Arc::new(plan.target_preparation(id)?);
             let capture_allocation_byte_len = manifest.allocation_byte_len();
             let platform = ScreenNativePreparationPayload::new(
                 branch.descriptor(),
-                ticket.plan_generation(),
+                ticket_plan_generation,
                 manifest,
             );
-            let target = target.prepare(branch.descriptor(), &platform)?;
+            let target = ledger.prepare_native_target(
+                target,
+                branch.descriptor(),
+                &platform,
+                format!("native-target-{}", id.get()),
+                "worker-runtime-total",
+            )?;
             routes.push(PendingWindowsGpuRoute {
                 id,
                 native,
@@ -2110,34 +2428,49 @@ fn prepare_windows_exact_runtime(
 
     let cpu = if let Some(resolved_source) = cpu_source {
         let executor = exact.cpu_executor()?;
-        let batch = executor.prepare_batch(&resolved_source, candidate)?;
-        let workspace = batch.prepare_materialization_workspace(candidate)?;
-        let workspace_allocation_byte_len = workspace.allocation_byte_len();
-        let fanout_candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
-            &executor, &batch, workspace, candidate,
+        let batch_quote = executor.batch_allocation_quote(&resolved_source, &candidate)?;
+        preflight_required_scope_bytes(
+            &mut ledger,
+            &mut processing_minimum_remaining,
+            batch_quote,
         )?;
-        let mut native_physical_mask = Vec::new();
-        let mut reduction_descriptors = Vec::new();
-        let mut reduction_routes = Vec::new();
-        native_physical_mask.try_reserve_exact(batch.len())?;
-        reduction_descriptors.try_reserve_exact(batch.len())?;
-        reduction_routes.try_reserve_exact(batch.len())?;
+        let batch = executor.prepare_batch(&resolved_source, &candidate)?;
+        let workspace_quote = batch.materialization_workspace_allocation_quote(&candidate)?;
+        let workspace_additional_bytes = workspace_quote
+            .checked_sub(plane_minimum_bytes)
+            .ok_or_else(|| anyhow!("Windows workspace quote understates physical-plane minima"))?;
+        preflight_required_scope_bytes(
+            &mut ledger,
+            &mut worker_minimum_remaining,
+            workspace_additional_bytes,
+        )?;
+        let workspace = batch.prepare_materialization_workspace(&candidate)?;
+        let workspace_allocation_byte_len = workspace.allocation_byte_len();
+        let fanout_quote = PreparedCpuPublicationFanout::candidate_allocation_quote(
+            &batch, &workspace, &candidate,
+        )?;
+        let fanout_additional_bytes = fanout_quote
+            .checked_sub(batch_quote)
+            .ok_or_else(|| anyhow!("Windows fanout quote understates retained batch backing"))?;
+        preflight_required_scope_bytes(
+            &mut ledger,
+            &mut processing_minimum_remaining,
+            fanout_additional_bytes,
+        )?;
+        let fanout_candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+            &executor, &batch, workspace, &candidate,
+        )?;
+        let mut classifications = Vec::new();
+        classifications.try_reserve_exact(batch.len())?;
         for physical_index in 0..batch.len() {
             let physical = batch
                 .descriptor(physical_index)
                 .expect("prepared CPU batch index is valid");
             let id = exact.next_gpu_descriptor_id()?;
-            let freshness = physical_capture_freshness(candidate, physical)?;
+            let freshness = physical_capture_freshness(&candidate, physical)?;
             match capture_gpu_reduction_descriptor(physical, source, id, freshness) {
                 Ok(descriptor) => {
-                    native_physical_mask.push(false);
-                    let native = Arc::new(descriptor.clone());
-                    reduction_descriptors.push(descriptor);
-                    reduction_routes.push(WindowsGpuReductionRoute {
-                        id,
-                        native,
-                        physical_index,
-                    });
+                    classifications.push(Some((id, descriptor, physical_index)));
                 }
                 Err(error) => {
                     debug!(
@@ -2145,23 +2478,84 @@ fn prepare_windows_exact_runtime(
                         reason = %error,
                         "routing unsupported Windows physical reduction through native readback"
                     );
-                    native_physical_mask.push(true);
+                    classifications.push(None);
                 }
             }
         }
-        let reduction = if reduction_descriptors.is_empty() {
+        let reduction_count = classifications.iter().flatten().count();
+        let mask_metadata_bytes =
+            checked_retained_metadata_bytes::<bool>(classifications.len(), "CPU route mask")?;
+        let reduction_route_metadata_bytes = checked_retained_metadata_bytes::<
+            WindowsGpuReductionRoute,
+        >(reduction_count, "GPU reduction route")?
+        .checked_add(checked_retained_arc_bytes::<GpuSurfaceDescriptor>(
+            reduction_count,
+            "GPU reduction descriptor",
+        )?)
+        .ok_or_else(|| anyhow!("Windows GPU reduction route metadata accounting overflow"))?;
+        preflight_required_scope_bytes(
+            &mut ledger,
+            &mut worker_minimum_remaining,
+            mask_metadata_bytes
+                .checked_add(reduction_route_metadata_bytes)
+                .ok_or_else(|| anyhow!("Windows CPU route metadata accounting overflow"))?,
+        )?;
+        let native_physical_mask = classifications
+            .iter()
+            .map(Option::is_none)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let mut reduction_descriptors = Vec::new();
+        let mut reduction_routes = Vec::new();
+        reduction_descriptors.try_reserve_exact(reduction_count)?;
+        reduction_routes.try_reserve_exact(reduction_count)?;
+        for (id, descriptor, physical_index) in classifications.into_iter().flatten() {
+            let native = Arc::new(descriptor.clone());
+            reduction_descriptors.push(descriptor);
+            reduction_routes.push(WindowsGpuReductionRoute {
+                id,
+                native,
+                physical_index,
+            });
+        }
+        let reduction_preparation = if reduction_descriptors.is_empty() {
             None
         } else {
-            let preparation_gate = windows_gpu_preparation_gate(source.adapter_luid);
-            let _preparation_guard = preparation_gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let generation = GpuSurfacePlanGeneration::new(
-                NonZeroU64::new(ticket.plan_generation().get())
+                NonZeroU64::new(ticket_plan_generation.get())
                     .ok_or_else(|| anyhow!("Windows reduction plan generation must be nonzero"))?,
             );
             let available_gpu_bytes = duplicator.available_gpu_memory_bytes()?;
             let admission = GpuReductionAdmission::new(available_gpu_bytes, slot_count);
+            let quote = admission.quote(
+                native_capture_extent(source.logical_extent),
+                &reduction_descriptors,
+            )?;
+            Some((generation, admission, quote))
+        };
+        let readback_quote = native_physical_mask
+            .iter()
+            .any(|native| *native)
+            .then(|| {
+                CpuDesktopReadbackResourceQuote::try_new(
+                    native_capture_extent(source.native_extent),
+                    slot_count,
+                )
+            })
+            .transpose()?;
+        let cpu_api_quote = reduction_preparation
+            .as_ref()
+            .map_or(0, |(_, _, quote)| quote.retained_byte_len())
+            .checked_add(
+                readback_quote.map_or(0, CpuDesktopReadbackResourceQuote::retained_byte_len),
+            )
+            .ok_or_else(|| anyhow!("Windows CPU API resource quote overflow"))?;
+        preflight_required_scope_bytes(&mut ledger, &mut cpu_api_minimum_remaining, cpu_api_quote)?;
+        let reduction = if let Some((generation, admission, _quote)) = reduction_preparation {
+            let preparation_gate = windows_gpu_preparation_gate(source.adapter_luid);
+            let _preparation_guard = preparation_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let plan = duplicator.prepare_gpu_reduction_plan(
                 generation,
                 &reduction_descriptors,
@@ -2169,17 +2563,18 @@ fn prepare_windows_exact_runtime(
             )?;
             Some(WindowsGpuReductionRuntime {
                 plan,
-                routes: reduction_routes,
+                routes: reduction_routes.into_boxed_slice(),
             })
+        } else {
+            None
         };
-        let readback = native_physical_mask
-            .iter()
-            .any(|native| *native)
+        let readback = readback_quote
+            .is_some()
             .then(|| duplicator.prepare_cpu_desktop_readback(slot_count))
             .transpose()?;
         Some(WindowsCpuRuntime {
             readback,
-            native_physical_mask: native_physical_mask.into_boxed_slice(),
+            native_physical_mask,
             reduction,
             workspace_allocation_byte_len,
             fanout_candidate: Some(fanout_candidate),
@@ -2196,17 +2591,13 @@ fn prepare_windows_exact_runtime(
             let native = runtime
                 .readback
                 .as_ref()
-                .map_or(0, PreparedCpuDesktopReadback::allocation_byte_len);
-            let reduced_gpu = runtime
+                .map_or(0, PreparedCpuDesktopReadback::retained_byte_len);
+            let reduced = runtime
                 .reduction
                 .as_ref()
-                .map_or(0, |reduction| reduction.plan.allocation_byte_len());
-            let reduced_cpu = runtime.reduction.as_ref().map_or(Ok(0), |reduction| {
-                u64::try_from(reduction.plan.publication_buffer_byte_len())
-            })?;
+                .map_or(0, |reduction| reduction.plan.retained_byte_len());
             native
-                .checked_add(reduced_gpu)
-                .and_then(|bytes| bytes.checked_add(reduced_cpu))
+                .checked_add(reduced)
                 .ok_or_else(|| anyhow!("Windows reduction allocation accounting overflow"))
         })
         .transpose()?
@@ -2220,16 +2611,8 @@ fn prepare_windows_exact_runtime(
             PreparedCpuPublicationFanoutCandidate::allocation_byte_len,
         )
     });
-    let plane_minimum_bytes = ticket
-        .required_minimums()
-        .iter()
-        .filter(|minimum| minimum.resource() == ScreenResourceKind::PhysicalPlane)
-        .try_fold(0_u64, |total, minimum| {
-            total
-                .checked_add(minimum.minimum_bytes())
-                .ok_or_else(|| anyhow!("Windows exact physical-plane accounting overflow"))
-        })?;
-    let reports = ticket
+    let reports = ledger
+        .ticket()
         .required_minimums()
         .iter()
         .map(|minimum| {
@@ -2255,58 +2638,43 @@ fn prepare_windows_exact_runtime(
         .iter()
         .find(|(_, resource, _, _, _)| *resource == ScreenResourceKind::ProcessingProfileState)
         .map(|(name, _, _, _, _)| Arc::clone(name));
+    let gpu_route_count = gpu.as_ref().map_or(0, |runtime| runtime.routes.len());
+    let reduction_route_count = cpu
+        .as_ref()
+        .and_then(|runtime| runtime.reduction.as_ref())
+        .map_or(0, |reduction| reduction.routes.len());
+    let gpu_route_metadata_bytes =
+        checked_retained_metadata_bytes::<WindowsGpuRoute>(gpu_route_count, "GPU route")?
+            .checked_add(checked_retained_arc_bytes::<GpuSurfaceDescriptor>(
+                gpu_route_count,
+                "GPU descriptor",
+            )?)
+            .ok_or_else(|| anyhow!("Windows GPU route metadata accounting overflow"))?;
+    let reduction_route_metadata_bytes =
+        checked_retained_metadata_bytes::<WindowsGpuReductionRoute>(
+            reduction_route_count,
+            "GPU reduction route",
+        )?
+        .checked_add(checked_retained_arc_bytes::<GpuSurfaceDescriptor>(
+            reduction_route_count,
+            "GPU reduction descriptor",
+        )?)
+        .ok_or_else(|| anyhow!("Windows GPU reduction route metadata accounting overflow"))?;
+    let mask_metadata_bytes = cpu.as_ref().map_or(Ok(0), |runtime| {
+        checked_retained_metadata_bytes::<bool>(
+            runtime.native_physical_mask.len(),
+            "CPU route mask",
+        )
+    })?;
     let worker_metadata_bytes = workspace_bytes
-        .saturating_sub(plane_minimum_bytes)
-        .checked_add(u64::try_from(std::mem::size_of::<WindowsExactRuntime>()).unwrap_or(u64::MAX))
-        .and_then(|bytes| {
-            bytes.checked_add(
-                u64::try_from(
-                    gpu.as_ref()
-                        .map_or(0, |runtime| runtime.routes.capacity())
-                        .saturating_mul(std::mem::size_of::<WindowsGpuRoute>()),
-                )
-                .unwrap_or(u64::MAX),
-            )
-        })
-        .and_then(|bytes| {
-            bytes.checked_add(
-                cpu.as_ref()
-                    .and_then(|runtime| runtime.reduction.as_ref())
-                    .map_or(0, |reduction| {
-                        u64::try_from(reduction.routes.capacity())
-                            .ok()
-                            .and_then(|count| {
-                                u64::try_from(std::mem::size_of::<WindowsGpuReductionRoute>())
-                                    .ok()
-                                    .and_then(|size| count.checked_mul(size))
-                            })
-                            .unwrap_or(u64::MAX)
-                    }),
-            )
-        })
-        .and_then(|bytes| {
-            bytes.checked_add(cpu.as_ref().map_or(0, |runtime| {
-                u64::try_from(runtime.native_physical_mask.len()).unwrap_or(u64::MAX)
-            }))
-        })
+        .checked_sub(plane_minimum_bytes)
+        .ok_or_else(|| anyhow!("Windows workspace accounting understates physical-plane minima"))?
+        .checked_add(runtime_node_bytes)
+        .and_then(|bytes| bytes.checked_add(gpu_route_metadata_bytes))
+        .and_then(|bytes| bytes.checked_add(reduction_route_metadata_bytes))
+        .and_then(|bytes| bytes.checked_add(mask_metadata_bytes))
         .ok_or_else(|| anyhow!("Windows exact worker allocation accounting overflow"))?;
 
-    let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
-    for (name, resource, minimum, _native, _descriptor) in &reports {
-        let actual = match resource {
-            ScreenResourceKind::ApiAllocation if cpu_api_scope.as_ref() == Some(name) => {
-                cpu_api_bytes.max(*minimum)
-            }
-            ScreenResourceKind::ProcessingProfileState
-                if processing_scope.as_ref() == Some(name) =>
-            {
-                fanout_bytes.max(*minimum)
-            }
-            ScreenResourceKind::WorkerAdditional => worker_metadata_bytes.max(*minimum),
-            _ => *minimum,
-        };
-        ledger.report(name, actual)?;
-    }
     if cpu_api_bytes > 0 && cpu_api_scope.is_none() {
         ledger.report_scoped(
             "windows-cpu-readback",
@@ -2318,6 +2686,24 @@ fn prepare_windows_exact_runtime(
         ledger.report_scoped("windows-cpu-fanout", "worker-runtime-total", fanout_bytes)?;
     }
     if let Some(gpu) = &gpu {
+        let native_api_scope = reports
+            .iter()
+            .find(|(_, resource, _, native, _)| {
+                *resource == ScreenResourceKind::ApiAllocation && *native
+            })
+            .map_or("worker-runtime-total", |(name, _, _, _, _)| name.as_ref());
+        let plan_resource_bytes = gpu
+            .plan
+            .metadata_byte_len()
+            .checked_add(gpu.plan.constant_buffer_byte_len())
+            .ok_or_else(|| anyhow!("Windows GPU plan resource accounting overflow"))?;
+        if plan_resource_bytes > 0 {
+            ledger.report_scoped(
+                "windows-gpu-plan-resources",
+                native_api_scope,
+                plan_resource_bytes,
+            )?;
+        }
         for route in &gpu.routes {
             let allocation_scope = reports
                 .iter()
@@ -2332,12 +2718,34 @@ fn prepare_windows_exact_runtime(
                 allocation_scope,
                 route.capture_allocation_byte_len,
             )?;
-            let resource = route.target.exact_resource(
-                format!("native-target-{}", route.id.get()),
-                "worker-runtime-total",
-            )?;
-            ledger.report_native_target(resource)?;
         }
+    }
+    let lifetime_metadata_bytes = checked_retained_metadata_bytes::<ScreenResourceLifetime>(
+        ledger.prospective_resource_count()?,
+        "runtime lifetimes",
+    )?;
+    preflight_required_scope_bytes(
+        &mut ledger,
+        &mut worker_minimum_remaining,
+        lifetime_metadata_bytes,
+    )?;
+    let worker_metadata_bytes = worker_metadata_bytes
+        .checked_add(lifetime_metadata_bytes)
+        .ok_or_else(|| anyhow!("Windows exact lifetime accounting overflow"))?;
+    for (name, resource, minimum, _native, _descriptor) in &reports {
+        let actual = match resource {
+            ScreenResourceKind::ApiAllocation if cpu_api_scope.as_ref() == Some(name) => {
+                cpu_api_bytes.max(*minimum)
+            }
+            ScreenResourceKind::ProcessingProfileState
+                if processing_scope.as_ref() == Some(name) =>
+            {
+                fanout_bytes.max(*minimum)
+            }
+            ScreenResourceKind::WorkerAdditional => worker_metadata_bytes.max(*minimum),
+            _ => *minimum,
+        };
+        ledger.report(name, actual)?;
     }
     let exact_ledger = ledger.finish()?;
     let binding = exact_ledger.token().binding().clone();
@@ -2378,19 +2786,31 @@ fn prepare_windows_exact_runtime(
             }
             Ok::<_, anyhow::Error>(WindowsGpuRuntime {
                 plan: pending.plan,
-                routes,
+                routes: routes.into_boxed_slice(),
             })
         })
         .transpose()?;
+    let runtime_lifetime = lifetimes
+        .iter()
+        .find(|lifetime| lifetime.resource().name().as_ref() == "worker-runtime-total")
+        .cloned()
+        .ok_or_else(|| anyhow!("Windows worker runtime lifetime is missing from exact ledger"))?;
     Ok((
         token,
-        Some(WindowsExactRuntime {
-            source: source.clone(),
-            binding,
-            _lifetimes: lifetimes,
-            gpu,
-            cpu,
-        }),
+        Some((
+            WindowsExactRuntime {
+                source: source.clone(),
+                binding: binding.clone(),
+                _lifetimes: lifetimes,
+                gpu,
+                cpu,
+            },
+            WindowsOwnedSource {
+                source_id: source.epoch.source_id.clone(),
+                binding,
+                _runtime_lifetime: runtime_lifetime,
+            },
+        )),
     ))
 }
 
@@ -2446,7 +2866,7 @@ fn prepare_exact_command(
     duplicator: Option<&DesktopDuplicator>,
     exact: &ExactPublicationShared,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
-    runtimes: &mut Vec<WindowsExactRuntime>,
+    runtimes: &mut WindowsExactRuntimes,
 ) {
     let result = exact
         .hub
@@ -2467,9 +2887,11 @@ fn prepare_exact_command(
         });
     match result {
         Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
-            if let Some(runtime) = runtime {
-                runtimes.push(runtime);
-                refresh_exact_runtime_ownership(runtimes, exact);
+            if let Some((runtime, owned_source)) = runtime {
+                let runtime = WindowsExactRuntimes::boxed_node(runtime);
+                let owned_source = ExactBoxList::boxed_node(owned_source);
+                exact.register_owned_source(owned_source);
+                runtimes.push_boxed(runtime);
             }
             if completion.send(Ok(token)).is_err() {
                 reap_exact_runtimes(runtimes, exact);
@@ -2486,43 +2908,32 @@ fn prepare_exact_command(
     }
 }
 
-fn reap_exact_runtimes(runtimes: &mut Vec<WindowsExactRuntime>, exact: &ExactPublicationShared) {
+fn reap_exact_runtimes(runtimes: &mut WindowsExactRuntimes, exact: &ExactPublicationShared) {
+    exact.reap_owned_sources();
     runtimes.retain(|runtime| runtime.binding.state() == ScreenWorkerBindingState::Active);
-    refresh_exact_runtime_ownership(runtimes, exact);
-}
-
-fn refresh_exact_runtime_ownership(
-    runtimes: &[WindowsExactRuntime],
-    exact: &ExactPublicationShared,
-) {
-    let mut sources = runtimes
-        .iter()
-        .map(|runtime| runtime.source.epoch.source_id.clone())
-        .collect::<Vec<_>>();
-    sources.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-    sources.dedup();
-    exact.replace_owned_sources(sources);
 }
 
 fn bind_current_exact_runtime<'a>(
-    runtimes: &'a mut [WindowsExactRuntime],
+    runtimes: &'a mut WindowsExactRuntimes,
     source: &WindowsPublicationSource,
     hub: &ScreenPublicationHub,
 ) -> anyhow::Result<Option<&'a mut WindowsExactRuntime>> {
-    let mut selected = None;
     let mut selected_generation = None;
-    for (index, runtime) in runtimes.iter_mut().enumerate() {
+    for runtime in runtimes.iter_mut() {
         if runtime.source != *source {
             continue;
         }
         runtime.bind_if_active(hub)?;
         let generation = runtime.binding.plan_generation();
         if runtime.is_bound() && selected_generation.is_none_or(|current| current < generation) {
-            selected = Some(index);
             selected_generation = Some(generation);
         }
     }
-    Ok(selected.map(|index| &mut runtimes[index]))
+    Ok(runtimes.iter_mut().find(|runtime| {
+        runtime.source == *source
+            && runtime.is_bound()
+            && Some(runtime.binding.plan_generation()) == selected_generation
+    }))
 }
 
 fn publish_windows_gpu_outcome(
@@ -2855,7 +3266,7 @@ fn pump_windows_exact_runtime(
     let mut reduction_error = None;
     let (gpu_plan, mut gpu_routes) = if gpu_requested {
         runtime.gpu.as_mut().map_or((None, None), |gpu| {
-            (Some(&mut gpu.plan), Some(gpu.routes.as_mut_slice()))
+            (Some(&mut gpu.plan), Some(gpu.routes.as_mut()))
         })
     } else {
         (None, None)
@@ -2875,7 +3286,7 @@ fn pump_windows_exact_runtime(
             };
             let (plan, routes) = if reduction_requested {
                 cpu.reduction.as_mut().map_or((None, None), |reduction| {
-                    (Some(&mut reduction.plan), Some(reduction.routes.as_slice()))
+                    (Some(&mut reduction.plan), Some(reduction.routes.as_ref()))
                 })
             } else {
                 (None, None)
@@ -2986,7 +3397,7 @@ fn pump_windows_exact_runtime(
 
 fn pump_current_windows_exact_runtime(
     session: &mut DesktopDuplicator,
-    runtimes: &mut [WindowsExactRuntime],
+    runtimes: &mut WindowsExactRuntimes,
     source: &WindowsPublicationSource,
     exact: &ExactPublicationShared,
 ) -> anyhow::Result<Option<Duration>> {
@@ -3058,7 +3469,7 @@ fn run_worker(
     let mut rejected_analysis_work = None;
     let mut failed_settings_generation = None;
     let mut settings_retry_at = Instant::now();
-    let mut exact_runtimes = Vec::new();
+    let mut exact_runtimes = WindowsExactRuntimes::default();
 
     loop {
         if cancel.load(Ordering::Acquire) {
@@ -3222,8 +3633,14 @@ fn run_worker(
             let requested_extent = demand
                 .requested_extent()
                 .expect("active Windows capture demand carries an extent");
-            match DesktopDuplicator::open(selector.clone(), native_capture_extent(requested_extent))
-            {
+            let resource_admission = Arc::new(WindowsCaptureResourceAdmission {
+                coordinator: settings.admission_coordinator.clone(),
+            });
+            match DesktopDuplicator::open_with_resource_admission(
+                selector.clone(),
+                native_capture_extent(requested_extent),
+                resource_admission,
+            ) {
                 Ok(session) => {
                     if let Some(source) = selector.canonical_source(session.source_id()) {
                         if let Some(sink) = source_sink.as_ref() {
@@ -3576,7 +3993,8 @@ fn run_worker(
 
     clear_capture_publication(publication);
     exact.replace_source(None);
-    exact.replace_owned_sources(Vec::new());
+    exact.clear_owned_sources();
+    exact_runtimes.clear();
     debug!("Windows screen capture worker stopped");
 }
 
@@ -3736,7 +4154,7 @@ fn drain_commands(
     analyzer: &mut ScreenCaptureInput,
     duplicator: &mut Option<DesktopDuplicator>,
     exact: &ExactPublicationShared,
-    exact_runtimes: &mut Vec<WindowsExactRuntime>,
+    exact_runtimes: &mut WindowsExactRuntimes,
 ) -> ControlFlow {
     loop {
         match command_rx.try_recv() {
@@ -3897,6 +4315,11 @@ fn capture_issue(error: &CaptureError) -> SourceIssue {
                 true,
             )
         }
+        CaptureError::ResourceAdmissionMismatch { .. } => SourceIssue::new(
+            "windows_capture_resource_contract_invalid",
+            error.to_string(),
+            false,
+        ),
         CaptureError::GeometryOverflow { .. } => SourceIssue::new(
             "windows_capture_geometry_overflow",
             error.to_string(),

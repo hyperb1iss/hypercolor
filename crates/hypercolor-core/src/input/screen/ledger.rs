@@ -2,8 +2,11 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+use super::plan::ScreenExternalResourceAdmission;
 use super::{
-    ScreenByteReservation, ScreenExactResource, ScreenExactResourceLedger, ScreenPlanError,
+    AdmittedScreenNativeTargetPreparation, ResolvedScreenPublicationDescriptor,
+    ScreenByteReservation, ScreenExactResource, ScreenExactResourceLedger,
+    ScreenNativeExecutionTarget, ScreenNativePreparationPayload, ScreenPlanError,
     ScreenPreparedWorkerToken, ScreenResourceLifetime, ScreenWorkerPreparationTicket,
 };
 
@@ -14,6 +17,7 @@ pub struct ScreenWorkerExactLedgerBuilder {
     reported_bytes: Vec<Option<u64>>,
     additional_resources: Vec<ScreenExactResource>,
     admission_top_ups: Vec<ScreenByteReservation>,
+    external_admissions: Vec<ScreenExternalResourceAdmission>,
 }
 
 impl ScreenWorkerExactLedgerBuilder {
@@ -35,6 +39,7 @@ impl ScreenWorkerExactLedgerBuilder {
             reported_bytes,
             additional_resources: Vec::new(),
             admission_top_ups: Vec::new(),
+            external_admissions: Vec::new(),
         })
     }
 
@@ -51,10 +56,65 @@ impl ScreenWorkerExactLedgerBuilder {
         Ok(())
     }
 
+    /// Quote, admit, prepare, and report one native renderer target.
+    ///
+    /// The returned preparation and this builder share one dedicated byte
+    /// lease. Dropping either side cannot leave renderer backing unadmitted;
+    /// [`Self::finish`] installs the same lease on its exact lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Propagates target contract, admission, and renderer preparation errors.
+    pub fn prepare_native_target(
+        &mut self,
+        target: &ScreenNativeExecutionTarget,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+        resource_name: impl Into<Arc<str>>,
+        accounting_scope: impl Into<Arc<str>>,
+    ) -> anyhow::Result<AdmittedScreenNativeTargetPreparation> {
+        let quote = target.quote_preparation(descriptor, platform)?;
+        self.additional_resources
+            .try_reserve(1)
+            .map_err(|_| ScreenWorkerLedgerBuildError::AllocationFailed)?;
+        self.external_admissions
+            .try_reserve(1)
+            .map_err(|_| ScreenWorkerLedgerBuildError::AllocationFailed)?;
+        let reservation = self
+            .ticket
+            .reserve_additional_exact_bytes(quote.retained_bytes())?;
+        let preparation = target.prepare_quoted(descriptor, platform, quote)?;
+        let resource = preparation.exact_resource(resource_name, accounting_scope)?;
+        let resource_name = Arc::clone(resource.name());
+        self.report_native_target(resource)?;
+        let lease = reservation.freeze();
+        self.external_admissions
+            .push(ScreenExternalResourceAdmission::new(
+                resource_name,
+                lease.clone(),
+            ));
+        Ok(AdmittedScreenNativeTargetPreparation::new(
+            preparation,
+            lease,
+        ))
+    }
+
     /// Source- and transaction-bound worker ticket being reported.
     #[must_use]
     pub const fn ticket(&self) -> &ScreenWorkerPreparationTicket {
         &self.ticket
+    }
+
+    /// Number of resource lifetimes that [`Self::finish`] will retain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an allocation failure when the combined count overflows.
+    pub fn prospective_resource_count(&self) -> Result<usize, ScreenWorkerLedgerBuildError> {
+        self.reported_bytes
+            .len()
+            .checked_add(self.additional_resources.len())
+            .ok_or(ScreenWorkerLedgerBuildError::AllocationFailed)
     }
 
     /// Report the actual retained bytes for one required named scope.
@@ -148,7 +208,7 @@ impl ScreenWorkerExactLedgerBuilder {
     ///
     /// Rejects generic worker resources, unknown or non-runtime scopes,
     /// repeated names, and allocation failure while retaining prior reports.
-    pub fn report_native_target(
+    pub(crate) fn report_native_target(
         &mut self,
         resource: ScreenExactResource,
     ) -> Result<(), ScreenWorkerLedgerBuildError> {
@@ -214,11 +274,7 @@ impl ScreenWorkerExactLedgerBuilder {
             return Err(ScreenWorkerLedgerBuildError::MissingResource { name });
         }
 
-        let resource_count = self
-            .reported_bytes
-            .len()
-            .checked_add(self.additional_resources.len())
-            .ok_or(ScreenWorkerLedgerBuildError::AllocationFailed)?;
+        let resource_count = self.prospective_resource_count()?;
         let mut resources = Vec::new();
         resources
             .try_reserve_exact(resource_count)
@@ -246,10 +302,12 @@ impl ScreenWorkerExactLedgerBuilder {
             resources.push(resource);
         }
         let exact_ledger = ScreenExactResourceLedger::try_new(resources)?;
-        let token = self.ticket.acknowledge_with_admission(
+        let lifetimes = lifetimes.into_boxed_slice();
+        let token = self.ticket.acknowledge_with_external_admission(
             exact_ledger,
             &lifetimes,
             self.admission_top_ups,
+            self.external_admissions,
         )?;
         Ok(ScreenWorkerExactLedger { token, lifetimes })
     }
@@ -259,7 +317,7 @@ impl ScreenWorkerExactLedgerBuilder {
 #[derive(Debug)]
 pub struct ScreenWorkerExactLedger {
     token: ScreenPreparedWorkerToken,
-    lifetimes: Vec<ScreenResourceLifetime>,
+    lifetimes: Box<[ScreenResourceLifetime]>,
 }
 
 impl ScreenWorkerExactLedger {
@@ -277,7 +335,7 @@ impl ScreenWorkerExactLedger {
 
     /// Separate the opaque token from worker-owned allocation lifetimes.
     #[must_use]
-    pub fn into_parts(self) -> (ScreenPreparedWorkerToken, Vec<ScreenResourceLifetime>) {
+    pub fn into_parts(self) -> (ScreenPreparedWorkerToken, Box<[ScreenResourceLifetime]>) {
         (self.token, self.lifetimes)
     }
 }

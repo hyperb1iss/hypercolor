@@ -1173,6 +1173,42 @@ pub struct PlatformGpuSurface {
     capture_resource_lifetime: Option<ScreenResourceLifetime>,
 }
 
+/// Typed access to one GPU owner paired with every attached resource lifetime.
+#[derive(Clone)]
+pub struct PlatformGpuSurfaceOwner<T> {
+    owner: Arc<T>,
+    _target_resource_lifetime: Option<ScreenResourceLifetime>,
+    _capture_resource_lifetime: Option<ScreenResourceLifetime>,
+}
+
+impl<T> PlatformGpuSurfaceOwner<T> {
+    fn new(
+        owner: Arc<T>,
+        target_resource_lifetime: Option<ScreenResourceLifetime>,
+        capture_resource_lifetime: Option<ScreenResourceLifetime>,
+    ) -> Self {
+        Self {
+            owner,
+            _target_resource_lifetime: target_resource_lifetime,
+            _capture_resource_lifetime: capture_resource_lifetime,
+        }
+    }
+
+    /// Observe owner retirement without detaching it from admission.
+    #[must_use]
+    pub fn downgrade(&self) -> Weak<T> {
+        Arc::downgrade(&self.owner)
+    }
+}
+
+impl<T> Deref for PlatformGpuSurfaceOwner<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.owner
+    }
+}
+
 impl PlatformGpuSurface {
     /// Erase a platform owner behind the neutral capture contract.
     ///
@@ -1250,22 +1286,35 @@ impl PlatformGpuSurface {
     /// Recover a typed owner in a platform adapter without exposing that type
     /// in the backend-neutral contract.
     #[must_use]
-    pub fn owner<T>(&self) -> Option<Arc<T>>
+    pub fn owner<T>(&self) -> Option<PlatformGpuSurfaceOwner<T>>
     where
         T: Any + Send + Sync,
     {
-        Arc::clone(&self.owner).downcast().ok()
+        Arc::clone(&self.owner).downcast().ok().map(|owner| {
+            PlatformGpuSurfaceOwner::new(
+                owner,
+                self.target_resource_lifetime.clone(),
+                self.capture_resource_lifetime.clone(),
+            )
+        })
     }
 
     /// Recover a typed secondary owner retained for renderer-target lifetime.
     #[must_use]
-    pub fn retained_owner<T>(&self) -> Option<Arc<T>>
+    pub fn retained_owner<T>(&self) -> Option<PlatformGpuSurfaceOwner<T>>
     where
         T: Any + Send + Sync,
     {
         self.retained_owner
             .as_ref()
             .and_then(|owner| Arc::clone(owner).downcast().ok())
+            .map(|owner| {
+                PlatformGpuSurfaceOwner::new(
+                    owner,
+                    self.target_resource_lifetime.clone(),
+                    self.capture_resource_lifetime.clone(),
+                )
+            })
     }
 
     /// Exact renderer-target allocation lifetime retained with this GPU surface.

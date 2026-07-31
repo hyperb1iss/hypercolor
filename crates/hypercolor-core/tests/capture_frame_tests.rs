@@ -420,10 +420,7 @@ fn gpu_surface_erases_platform_type_but_retains_owner_lifetime() {
     let recovered = surface
         .owner::<GpuLifetimeProbe>()
         .expect("platform adapter can recover its erased owner");
-    assert!(Arc::ptr_eq(
-        &recovered,
-        &weak.upgrade().expect("owner remains live")
-    ));
+    assert!(Weak::ptr_eq(&recovered.downgrade(), &weak));
     drop(recovered);
     let frame = CaptureFrame::<RawCaptureSurface>::new(
         metadata(CaptureRotation::Identity),

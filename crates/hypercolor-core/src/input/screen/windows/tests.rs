@@ -5,19 +5,45 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use hypercolor_windows_capture::{
-    CaptureError, DisplayRotation, GpuAdapterLuid, GpuSurfaceColorPipeline, GpuSurfaceDescriptorId,
-    GpuSurfaceFilter, GpuSurfaceSourceColorSpace, ReductionPath, ReductionTelemetry,
+    CaptureError, CaptureResourceAdmission, CaptureResourceKind, DisplayRotation, GpuAdapterLuid,
+    GpuSurfaceColorPipeline, GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceSourceColorSpace,
+    ReductionPath, ReductionTelemetry,
 };
 
 use super::{
-    ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactPublicationShared,
-    WindowsPhysicalReductionRoute, WindowsPublicationSource, WindowsScreenCaptureInput,
-    WorkerCaptureSchedule, WorkerCommand, capture_epoch, capture_freshness, capture_geometry,
-    capture_gpu_descriptor, capture_gpu_reduction_descriptor, capture_issue,
-    classify_windows_physical_reduction, native_capture_extent, record_capture_health,
-    resolve_windows_publication_branch, settle_inactive_capture, windows_gpu_attempt_at,
-    windows_gpu_candidate_admission, windows_gpu_preparation_gate, windows_gpu_retry_at,
+    ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactBoxList, ExactPublicationShared,
+    WindowsCaptureResourceAdmission, WindowsPhysicalReductionRoute, WindowsPublicationSource,
+    WindowsScreenCaptureInput, WorkerCaptureSchedule, WorkerCommand, capture_epoch,
+    capture_freshness, capture_geometry, capture_gpu_descriptor, capture_gpu_reduction_descriptor,
+    capture_issue, classify_windows_physical_reduction, native_capture_extent,
+    record_capture_health, resolve_windows_publication_branch, settle_inactive_capture,
+    windows_gpu_attempt_at, windows_gpu_candidate_admission, windows_gpu_preparation_gate,
+    windows_gpu_retry_at,
 };
+
+#[test]
+fn capture_resource_adapter_reconciles_and_releases_source_bytes() {
+    let coordinator = ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(100, 100));
+    let admission = WindowsCaptureResourceAdmission {
+        coordinator: coordinator.clone(),
+    };
+
+    let reservation = admission
+        .try_reserve(CaptureResourceKind::CanonicalDesktop, 80)
+        .expect("source quote fits the shared fence");
+    assert_eq!(reservation.bytes(), 80);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 80);
+
+    let lease = reservation
+        .commit(50)
+        .expect("temporary preparation slack reconciles down");
+    assert_eq!(lease.kind(), CaptureResourceKind::CanonicalDesktop);
+    assert_eq!(lease.bytes(), 50);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 50);
+
+    drop(lease);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+}
 use crate::input::screen::{
     CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureSourceId,
@@ -35,6 +61,25 @@ use crate::input::screen::{
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
 use crate::input::traits::InputSource;
 use crate::input::{SourceKind, SourceState, SourceStatusReporter};
+
+#[test]
+fn exact_box_list_mutation_preserves_node_exactness_and_iterative_cleanup() {
+    let mut values = ExactBoxList::default();
+    for value in 0_u64..10_000 {
+        values.push_boxed(ExactBoxList::boxed_node(value));
+    }
+
+    assert_eq!(values.iter().count(), 10_000);
+    values.retain(|value| *value % 2 == 0);
+    assert_eq!(values.iter().count(), 5_000);
+    for value in values.iter_mut() {
+        *value += 1;
+    }
+    assert!(values.iter().all(|value| value % 2 == 1));
+
+    values.clear();
+    assert_eq!(values.iter().count(), 0);
+}
 
 #[test]
 fn healthy_gpu_reduction_counters_are_visible_through_source_diagnostics() {
@@ -214,12 +259,27 @@ fn native_target() -> ScreenNativeExecutionTarget {
 struct TestNativeTargetPreparer;
 
 impl ScreenNativeTargetPreparer for TestNativeTargetPreparer {
-    fn prepare(
+    fn quote_retained_bytes(
         &self,
         _descriptor: &crate::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64> {
+        Ok(1)
+    }
+
+    fn prepare(
+        &self,
+        descriptor: &crate::input::screen::ResolvedScreenPublicationDescriptor,
         platform: &ScreenNativePreparationPayload,
     ) -> anyhow::Result<ScreenNativeTargetPreparation> {
-        Ok(ScreenNativeTargetPreparation::new(platform.clone(), 0))
+        Ok(ScreenNativeTargetPreparation::new(
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(()),
+            ),
+            0,
+        ))
     }
 }
 

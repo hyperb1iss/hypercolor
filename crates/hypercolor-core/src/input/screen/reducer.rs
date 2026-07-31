@@ -1,9 +1,11 @@
 //! Deterministic arbitrary-resolution CPU screen reduction.
 
+use std::alloc::Layout;
 use std::fmt;
 use std::mem::size_of;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -232,6 +234,7 @@ pub struct PreparedCpuReductionBatch {
     source: ResolvedScreenSource,
     sampling_transform: CpuSamplingTransform,
     reductions: Arc<[PreparedCpuReduction]>,
+    allocation_byte_len: u64,
 }
 
 impl PreparedCpuReductionBatch {
@@ -259,6 +262,12 @@ impl PreparedCpuReductionBatch {
         self.reductions.is_empty()
     }
 
+    /// Exact heap bytes retained by the shared physical-reduction slice.
+    #[must_use]
+    pub const fn allocation_byte_len(&self) -> u64 {
+        self.allocation_byte_len
+    }
+
     /// Canonical physical descriptor at one output index.
     #[must_use]
     pub fn descriptor(&self, index: usize) -> Option<&ScreenPhysicalReductionDescriptor> {
@@ -275,6 +284,23 @@ impl PreparedCpuReductionBatch {
             .map(|reduction| reduction.output.byte_len_usize())
     }
 
+    /// Quote exact workspace backing before allocating retained planes.
+    ///
+    /// The quote includes plane metadata plus both transactional byte planes
+    /// for every physical key requiring branch-local materialization.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another plan generation or physical-key set and any byte
+    /// calculation that exceeds the checked resource ledger.
+    pub fn materialization_workspace_allocation_quote(
+        &self,
+        plan: &ScreenCapturePlan,
+    ) -> Result<u64, CpuReductionError> {
+        self.materialization_workspace_layout(plan)
+            .map(|layout| layout.allocation_byte_len)
+    }
+
     /// Allocate exact retained planes only for keys with branch-local work.
     ///
     /// Identity-only Surface keys can reduce directly into publication slots,
@@ -289,26 +315,10 @@ impl PreparedCpuReductionBatch {
         &self,
         plan: &ScreenCapturePlan,
     ) -> Result<PreparedCpuMaterializationWorkspace, CpuReductionError> {
-        if plan.generation() != self.plan_generation {
-            return Err(CpuReductionError::WorkspacePlanGenerationMismatch);
-        }
-        let selected_count = self.reductions.iter().enumerate().try_fold(
-            0_usize,
-            |count, (batch_index, reduction)| {
-                if physical_requires_materialization(plan, reduction, batch_index)? {
-                    count
-                        .checked_add(1)
-                        .ok_or(CpuReductionError::GeometryOverflow {
-                            resource: "materialization workspace",
-                        })
-                } else {
-                    Ok(count)
-                }
-            },
-        )?;
+        let layout = self.materialization_workspace_layout(plan)?;
         let mut planes = Vec::new();
         planes
-            .try_reserve_exact(selected_count)
+            .try_reserve_exact(layout.plane_count)
             .map_err(|_| CpuReductionError::WorkspaceMetadataAllocationFailed)?;
         for (batch_index, reduction) in self.reductions.iter().enumerate() {
             if !physical_requires_materialization(plan, reduction, batch_index)? {
@@ -333,19 +343,123 @@ impl PreparedCpuReductionBatch {
             scratch.resize(byte_len, 0);
             planes.push(CpuMaterializationPlane {
                 batch_index,
-                pixels,
-                scratch,
+                pixels: pixels.into_boxed_slice(),
+                scratch: scratch.into_boxed_slice(),
                 completed_source_sequence: None,
             });
         }
-        let allocation_byte_len = workspace_allocation_byte_len(&planes, planes.capacity())?;
         Ok(PreparedCpuMaterializationWorkspace {
             plan_generation: self.plan_generation,
             reductions: Arc::clone(&self.reductions),
-            planes,
+            planes: planes.into_boxed_slice(),
+            allocation_byte_len: layout.allocation_byte_len,
+        })
+    }
+
+    fn materialization_workspace_layout(
+        &self,
+        plan: &ScreenCapturePlan,
+    ) -> Result<CpuMaterializationWorkspaceLayout, CpuReductionError> {
+        if plan.generation() != self.plan_generation {
+            return Err(CpuReductionError::WorkspacePlanGenerationMismatch);
+        }
+        let mut plane_count = 0_usize;
+        let mut plane_byte_len = 0_u64;
+        for (batch_index, reduction) in self.reductions.iter().enumerate() {
+            if !physical_requires_materialization(plan, reduction, batch_index)? {
+                continue;
+            }
+            plane_count =
+                plane_count
+                    .checked_add(1)
+                    .ok_or(CpuReductionError::GeometryOverflow {
+                        resource: "materialization workspace",
+                    })?;
+            plane_byte_len = plane_byte_len
+                .checked_add(reduction.output.byte_len())
+                .and_then(|bytes| bytes.checked_add(reduction.output.byte_len()))
+                .ok_or(CpuReductionError::GeometryOverflow {
+                    resource: "materialization workspace",
+                })?;
+        }
+        let allocation_byte_len = checked_workspace_bytes::<CpuMaterializationPlane>(plane_count)?
+            .checked_add(plane_byte_len)
+            .ok_or(CpuReductionError::GeometryOverflow {
+                resource: "materialization workspace",
+            })?;
+        Ok(CpuMaterializationWorkspaceLayout {
+            plane_count,
             allocation_byte_len,
         })
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CpuMaterializationWorkspaceLayout {
+    plane_count: usize,
+    allocation_byte_len: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CpuReductionBatchLayout {
+    sampling_transform: CpuSamplingTransform,
+    first: usize,
+    last: usize,
+    reduction_count: usize,
+    allocation_byte_len: u64,
+}
+
+fn cpu_reduction_batch_layout(
+    source: &ResolvedScreenSource,
+    plan: &ScreenCapturePlan,
+) -> Result<CpuReductionBatchLayout, CpuReductionError> {
+    let sampling_transform = CpuSamplingTransform::try_from_cpu_executor(source)?;
+    let source_id = source.epoch().source_id.as_str();
+    let physical_reductions = plan.physical_reductions();
+    let first = physical_reductions.partition_point(|reduction| {
+        reduction.descriptor().source_epoch().source_id.as_str() < source_id
+    });
+    let last = physical_reductions.partition_point(|reduction| {
+        reduction.descriptor().source_epoch().source_id.as_str() <= source_id
+    });
+    let mut reduction_count = 0_usize;
+    for reduction in &physical_reductions[first..last] {
+        let descriptor = reduction.descriptor();
+        if !matches!(descriptor.executor(), ScreenPublicationExecutor::Cpu) {
+            continue;
+        }
+        if descriptor.source_epoch() != source.epoch() || descriptor.source() != source.config() {
+            return Err(CpuReductionError::SourceConfigMismatch);
+        }
+        reduction_count =
+            reduction_count
+                .checked_add(1)
+                .ok_or(CpuReductionError::GeometryOverflow {
+                    resource: "CPU reduction batch",
+                })?;
+    }
+    let allocation_byte_len =
+        checked_arc_slice_bytes::<PreparedCpuReduction>(reduction_count, "CPU reduction batch")?;
+    Ok(CpuReductionBatchLayout {
+        sampling_transform,
+        first,
+        last,
+        reduction_count,
+        allocation_byte_len,
+    })
+}
+
+fn checked_arc_slice_bytes<T>(
+    count: usize,
+    resource: &'static str,
+) -> Result<u64, CpuReductionError> {
+    let elements =
+        Layout::array::<T>(count).map_err(|_| CpuReductionError::GeometryOverflow { resource })?;
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(elements)
+        .map_err(|_| CpuReductionError::GeometryOverflow { resource })?;
+    u64::try_from(layout.pad_to_align().size())
+        .map_err(|_| CpuReductionError::GeometryOverflow { resource })
 }
 
 /// Retained physical planes required by branch-local CPU materialization.
@@ -353,7 +467,7 @@ impl PreparedCpuReductionBatch {
 pub struct PreparedCpuMaterializationWorkspace {
     plan_generation: ScreenPlanGeneration,
     reductions: Arc<[PreparedCpuReduction]>,
-    planes: Vec<CpuMaterializationPlane>,
+    planes: Box<[CpuMaterializationPlane]>,
     allocation_byte_len: u64,
 }
 
@@ -411,7 +525,7 @@ impl PreparedCpuMaterializationWorkspace {
         self.planes
             .get(workspace_index)
             .filter(|plane| plane.completed_source_sequence.is_some())
-            .map(|plane| plane.pixels.as_slice())
+            .map(|plane| plane.pixels.as_ref())
     }
 
     /// Native source sequence that last completed one retained plane.
@@ -426,8 +540,8 @@ impl PreparedCpuMaterializationWorkspace {
 #[derive(Debug)]
 struct CpuMaterializationPlane {
     batch_index: usize,
-    pixels: Vec<u8>,
-    scratch: Vec<u8>,
+    pixels: Box<[u8]>,
+    scratch: Box<[u8]>,
     completed_source_sequence: Option<u64>,
 }
 
@@ -567,36 +681,17 @@ fn physical_requires_materialization(
         }))
 }
 
-fn workspace_allocation_byte_len(
-    planes: &[CpuMaterializationPlane],
-    metadata_capacity: usize,
-) -> Result<u64, CpuReductionError> {
-    let metadata = u64::try_from(metadata_capacity)
+fn checked_workspace_bytes<T>(count: usize) -> Result<u64, CpuReductionError> {
+    u64::try_from(count)
         .ok()
         .and_then(|count| {
-            u64::try_from(size_of::<CpuMaterializationPlane>())
+            u64::try_from(size_of::<T>())
                 .ok()
                 .and_then(|item_size| count.checked_mul(item_size))
         })
         .ok_or(CpuReductionError::GeometryOverflow {
             resource: "materialization workspace",
-        })?;
-    planes.iter().try_fold(metadata, |total, plane| {
-        total
-            .checked_add(u64::try_from(plane.pixels.capacity()).map_err(|_| {
-                CpuReductionError::GeometryOverflow {
-                    resource: "materialization workspace",
-                }
-            })?)
-            .and_then(|total| {
-                u64::try_from(plane.scratch.capacity())
-                    .ok()
-                    .and_then(|scratch| total.checked_add(scratch))
-            })
-            .ok_or(CpuReductionError::GeometryOverflow {
-                resource: "materialization workspace",
-            })
-    })
+        })
 }
 
 fn validate_workspace_schedule(
@@ -931,6 +1026,20 @@ impl CpuReductionExecutor {
         ScreenColorTransformCapabilities::new(true, false, false, CPU_REDUCTION_ALGORITHM_REVISION)
     }
 
+    /// Quote exact prepared-batch backing before allocating descriptor storage.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an incompatible CPU sampling source, mismatched physical source
+    /// identity, or a batch byte calculation outside the checked ledger.
+    pub fn batch_allocation_quote(
+        &self,
+        source: &ResolvedScreenSource,
+        plan: &ScreenCapturePlan,
+    ) -> Result<u64, CpuReductionError> {
+        cpu_reduction_batch_layout(source, plan).map(|layout| layout.allocation_byte_len)
+    }
+
     /// Prepare every canonical physical reduction owned by one resolved source.
     ///
     /// Preparation allocates only plan-lifetime descriptor metadata. Execution
@@ -947,44 +1056,28 @@ impl CpuReductionExecutor {
         source: &ResolvedScreenSource,
         plan: &ScreenCapturePlan,
     ) -> Result<PreparedCpuReductionBatch, CpuReductionError> {
-        let sampling_transform = CpuSamplingTransform::try_from_cpu_executor(source)?;
-        let source_id = source.epoch().source_id.as_str();
+        let layout = cpu_reduction_batch_layout(source, plan)?;
         let physical_reductions = plan.physical_reductions();
-        let first = physical_reductions.partition_point(|reduction| {
-            reduction.descriptor().source_epoch().source_id.as_str() < source_id
-        });
-        let last = physical_reductions.partition_point(|reduction| {
-            reduction.descriptor().source_epoch().source_id.as_str() <= source_id
-        });
-        let cpu_reduction_count = physical_reductions[first..last]
-            .iter()
-            .filter(|reduction| {
-                matches!(
-                    reduction.descriptor().executor(),
-                    ScreenPublicationExecutor::Cpu
-                )
-            })
-            .count();
         let mut reductions = Vec::new();
         reductions
-            .try_reserve_exact(cpu_reduction_count)
+            .try_reserve_exact(layout.reduction_count)
             .map_err(|_| CpuReductionError::BatchPreparationAllocationFailed)?;
-        for reduction in &physical_reductions[first..last] {
+        for reduction in &physical_reductions[layout.first..layout.last] {
             let descriptor = reduction.descriptor();
             if !matches!(descriptor.executor(), ScreenPublicationExecutor::Cpu) {
                 continue;
             }
-            if descriptor.source_epoch() != source.epoch() || descriptor.source() != source.config()
-            {
-                return Err(CpuReductionError::SourceConfigMismatch);
-            }
-            reductions.push(prepare_physical_reduction(descriptor, sampling_transform)?);
+            reductions.push(prepare_physical_reduction(
+                descriptor,
+                layout.sampling_transform,
+            )?);
         }
         Ok(PreparedCpuReductionBatch {
             plan_generation: plan.generation(),
             source: source.clone(),
-            sampling_transform,
+            sampling_transform: layout.sampling_transform,
             reductions: Arc::from(reductions),
+            allocation_byte_len: layout.allocation_byte_len,
         })
     }
 

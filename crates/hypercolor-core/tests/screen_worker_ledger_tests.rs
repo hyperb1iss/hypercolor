@@ -175,6 +175,12 @@ fn ticket_scoped_builder_binds_every_actual_resource_and_commits() {
             .report(&name, actual_bytes)
             .expect("required scope reports exact retained bytes");
     }
+    assert_eq!(
+        ledger
+            .prospective_resource_count()
+            .expect("required resource count is representable"),
+        required_count
+    );
     let acknowledged = ledger.finish().expect("exact ledger acknowledges");
     assert_eq!(acknowledged.lifetimes().len(), required_count);
     assert_eq!(
@@ -222,8 +228,17 @@ fn ticket_scoped_builder_infers_additional_resource_kind_from_required_scope() {
             .expect("required scope reports exact retained bytes");
     }
     ledger
+        .preflight_additional_bytes(2_048)
+        .expect("additional allocation is admitted before backing storage");
+    ledger
         .report_scoped("decoder-scratch", runtime_scope.name(), 2_048)
         .expect("additional allocation inherits its admitted scope");
+    assert_eq!(
+        ledger
+            .prospective_resource_count()
+            .expect("scoped resource count is representable"),
+        required_count + 1
+    );
     assert!(matches!(
         ledger.report_scoped("decoder-scratch", runtime_scope.name(), 4_096),
         Err(ScreenWorkerLedgerBuildError::DuplicateResource { .. })

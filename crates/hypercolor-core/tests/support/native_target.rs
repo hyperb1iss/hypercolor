@@ -9,16 +9,31 @@ struct TestNativeTargetPreparer {
     retained_bytes: u64,
 }
 
+#[derive(Debug)]
+pub struct TestNativeTargetPayload;
+
 pub const RETAINED_BYTES: u64 = 8_192;
 
 impl ScreenNativeTargetPreparer for TestNativeTargetPreparer {
-    fn prepare(
+    fn quote_retained_bytes(
         &self,
         _descriptor: &ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64> {
+        Ok(self.retained_bytes)
+    }
+
+    fn prepare(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
         platform: &ScreenNativePreparationPayload,
     ) -> anyhow::Result<ScreenNativeTargetPreparation> {
         Ok(ScreenNativeTargetPreparation::new(
-            platform.clone(),
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(TestNativeTargetPayload),
+            ),
             self.retained_bytes,
         ))
     }

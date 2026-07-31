@@ -114,7 +114,7 @@ fn demand_snapshot_rejects_unregistered_or_mistyped_compatibility() {
 
 struct RuntimeAllocation {
     binding: ScreenWorkerBinding,
-    _lifetimes: Vec<ScreenResourceLifetime>,
+    _lifetimes: Box<[ScreenResourceLifetime]>,
 }
 
 #[derive(Default)]

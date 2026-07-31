@@ -14,8 +14,8 @@ use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
     CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CaptureRotation,
     CaptureSourceId, CaptureTransferFunction, KnownCaptureColorimetry, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, ScreenExactResource, ScreenPlanError, ScreenPlanGeneration,
-    ScreenResourceKind, ScreenResourceLifetime,
+    PlatformGpuApi, PlatformGpuSurface, ScreenByteLease, ScreenExactResource, ScreenPlanError,
+    ScreenPlanGeneration, ScreenResourceKind, ScreenResourceLifetime,
 };
 
 /// Selector used by a consumer before capture-source resolution.
@@ -485,7 +485,6 @@ impl ScreenNativeExecutionTargetId {
 }
 
 /// Type-erased source-native data supplied to a renderer target preparer.
-#[derive(Clone)]
 pub struct ScreenNativePreparationPayload {
     descriptor: Arc<ResolvedScreenPublicationDescriptor>,
     plan_generation: ScreenPlanGeneration,
@@ -525,11 +524,11 @@ impl ScreenNativePreparationPayload {
 
     /// Recover a typed platform preparation input.
     #[must_use]
-    pub fn downcast<T>(&self) -> Option<Arc<T>>
+    pub fn downcast_ref<T>(&self) -> Option<&T>
     where
         T: Any + Send + Sync,
     {
-        Arc::clone(&self.inner).downcast().ok()
+        self.inner.downcast_ref()
     }
 }
 
@@ -641,8 +640,48 @@ impl ScreenNativeTargetPreparation {
     }
 }
 
+/// Renderer preparation protected by a dedicated exact byte lease.
+#[derive(Debug)]
+pub struct AdmittedScreenNativeTargetPreparation {
+    preparation: ScreenNativeTargetPreparation,
+    admission_lease: ScreenByteLease,
+}
+
+impl AdmittedScreenNativeTargetPreparation {
+    pub(crate) fn new(
+        preparation: ScreenNativeTargetPreparation,
+        admission_lease: ScreenByteLease,
+    ) -> Self {
+        Self {
+            preparation,
+            admission_lease,
+        }
+    }
+
+    /// Renderer bytes protected by this preparation's dedicated lease.
+    #[must_use]
+    pub const fn retained_bytes(&self) -> u64 {
+        self.preparation.retained_bytes()
+    }
+
+    /// Bind after the exact ledger installs this preparation's byte lease.
+    ///
+    /// # Errors
+    ///
+    /// Rejects pre-acknowledgement binding and mismatched exact lifetimes.
+    pub fn bind(
+        self,
+        lifetime: ScreenResourceLifetime,
+    ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
+        if !lifetime.has_admission_lease(&self.admission_lease) {
+            return Err(ScreenNativeTargetBindingError::AdmissionLeaseMismatch);
+        }
+        self.preparation.bind(lifetime)
+    }
+}
+
 /// Renderer preparation whose allocation and ledger lifetime cannot diverge.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BoundScreenNativeTargetPreparation {
     target_id: ScreenNativeExecutionTargetId,
     platform: ScreenNativePreparationPayload,
@@ -685,12 +724,6 @@ impl BoundScreenNativeTargetPreparation {
     #[must_use]
     pub const fn target_id(&self) -> ScreenNativeExecutionTargetId {
         self.target_id
-    }
-
-    /// Renderer-specific prepared data for delivery setup.
-    #[must_use]
-    pub const fn platform(&self) -> &ScreenNativePreparationPayload {
-        &self.platform
     }
 
     /// Exact allocation and worker-ledger lifetime.
@@ -748,6 +781,9 @@ pub enum ScreenNativeTargetResourceError {
 /// Failure to pair one renderer preparation with exact worker accounting.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum ScreenNativeTargetBindingError {
+    /// The exact ledger has not installed this preparation's dedicated lease.
+    #[error("native target allocation is not bound to its admitted byte lease")]
+    AdmissionLeaseMismatch,
     /// Only a live execution target can stamp preparation identity.
     #[error("native target preparation is missing execution-target identity")]
     TargetIdentityMissing,
@@ -783,10 +819,28 @@ pub enum ScreenNativeTargetPreparationError {
     /// The renderer returned preparation state for another descriptor or plan.
     #[error("native target returned preparation state for another descriptor or plan")]
     PreparedPayloadMismatch,
+    /// A quote belongs to another target, descriptor, or plan generation.
+    #[error("native target preparation quote does not match this request")]
+    QuoteMismatch,
+    /// The renderer retained a different byte count than it quoted.
+    #[error("native target retained {actual} bytes after quoting {quoted}")]
+    PreparedRetainedBytesMismatch { quoted: u64, actual: u64 },
 }
 
 /// Live renderer capability that prepares one exact source-native branch.
 pub trait ScreenNativeTargetPreparer: Send + Sync {
+    /// Quote renderer-owned bytes before allocating any backing resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the renderer cannot realize the exact descriptor
+    /// and platform input without allocating its target.
+    fn quote_retained_bytes(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64>;
+
     /// Prepare renderer-owned resources without changing active delivery.
     ///
     /// # Errors
@@ -798,6 +852,23 @@ pub trait ScreenNativeTargetPreparer: Send + Sync {
         descriptor: &ResolvedScreenPublicationDescriptor,
         platform: &ScreenNativePreparationPayload,
     ) -> anyhow::Result<ScreenNativeTargetPreparation>;
+}
+
+/// Immutable target-bound quote obtained before renderer allocation.
+#[derive(Debug)]
+pub(super) struct ScreenNativeTargetPreparationQuote {
+    target_id: ScreenNativeExecutionTargetId,
+    descriptor: ResolvedScreenPublicationDescriptor,
+    plan_generation: ScreenPlanGeneration,
+    retained_bytes: u64,
+}
+
+impl ScreenNativeTargetPreparationQuote {
+    /// Renderer bytes admitted before target preparation begins.
+    #[must_use]
+    pub const fn retained_bytes(&self) -> u64 {
+        self.retained_bytes
+    }
 }
 
 /// Renderer-owned native execution contract for one GPU context.
@@ -853,16 +924,11 @@ impl ScreenNativeExecutionTarget {
         self.max_texture_dimension
     }
 
-    /// Prepare this exact renderer capability for one resolved native branch.
-    ///
-    /// # Errors
-    ///
-    /// Propagates transactional preparation failure from the live renderer.
-    pub fn prepare(
+    fn validate_preparation_request(
         &self,
         descriptor: &ResolvedScreenPublicationDescriptor,
         platform: &ScreenNativePreparationPayload,
-    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+    ) -> anyhow::Result<()> {
         match descriptor.executor() {
             ScreenPublicationExecutor::Cpu => {
                 return Err(ScreenNativeTargetPreparationError::CpuDescriptor.into());
@@ -875,7 +941,59 @@ impl ScreenNativeExecutionTarget {
         if platform.descriptor() != descriptor {
             return Err(ScreenNativeTargetPreparationError::PayloadDescriptorMismatch.into());
         }
+        Ok(())
+    }
+
+    /// Quote this exact renderer capability before target allocation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects mismatched descriptors and propagates quote failure from the
+    /// live renderer.
+    pub(super) fn quote_preparation(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparationQuote> {
+        self.validate_preparation_request(descriptor, platform)?;
+        let retained_bytes = self.preparer.quote_retained_bytes(descriptor, platform)?;
+        Ok(ScreenNativeTargetPreparationQuote {
+            target_id: self.id,
+            descriptor: descriptor.clone(),
+            plan_generation: platform.plan_generation(),
+            retained_bytes,
+        })
+    }
+
+    /// Prepare this exact renderer capability from a prior admission quote.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or substituted quotes and any renderer result that does
+    /// not match its pre-allocation byte quote.
+    pub(super) fn prepare_quoted(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+        quote: ScreenNativeTargetPreparationQuote,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        self.validate_preparation_request(descriptor, platform)?;
+        if quote.target_id != self.id
+            || &quote.descriptor != descriptor
+            || quote.plan_generation != platform.plan_generation()
+        {
+            return Err(ScreenNativeTargetPreparationError::QuoteMismatch.into());
+        }
         let mut preparation = self.preparer.prepare(descriptor, platform)?;
+        if preparation.retained_bytes != quote.retained_bytes {
+            return Err(
+                ScreenNativeTargetPreparationError::PreparedRetainedBytesMismatch {
+                    quoted: quote.retained_bytes,
+                    actual: preparation.retained_bytes,
+                }
+                .into(),
+            );
+        }
         if preparation.platform.descriptor() != platform.descriptor()
             || preparation.platform.plan_generation() != platform.plan_generation()
         {
@@ -883,7 +1001,7 @@ impl ScreenNativeExecutionTarget {
         }
         preparation.binding = Some(ScreenNativeResourceBindingKey::new(
             self.id.get(),
-            Arc::new(descriptor.clone()),
+            Arc::clone(&preparation.platform.descriptor),
         ));
         Ok(preparation)
     }

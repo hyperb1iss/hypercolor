@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use std::alloc::Layout;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -7,6 +9,8 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use std::sync::Weak;
+#[cfg(target_os = "windows")]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
@@ -385,6 +389,23 @@ fn validate_windows_plan_generation(core: u64, native: u64) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+fn prepared_windows_screen_target_metadata_bytes() -> Result<u64> {
+    checked_arc_allocation_bytes::<PreparedWindowsScreenTarget>()?
+        .checked_add(checked_arc_allocation_bytes::<
+            ResolvedScreenPublicationDescriptor,
+        >()?)
+        .context("Windows prepared target metadata accounting overflow")
+}
+
+#[cfg(target_os = "windows")]
+fn checked_arc_allocation_bytes<T>() -> Result<u64> {
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<T>())
+        .context("Windows Arc allocation layout overflow")?;
+    u64::try_from(layout.pad_to_align().size()).context("Windows Arc allocation exceeds u64")
+}
+
+#[cfg(target_os = "windows")]
 pub(crate) fn is_retryable_native_screen_copy_error(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<D3d11On12ScreenInteropError>()
@@ -395,29 +416,54 @@ pub(crate) fn is_retryable_native_screen_copy_error(error: &anyhow::Error) -> bo
 
 #[cfg(target_os = "windows")]
 impl ScreenNativeTargetPreparer for WindowsScreenTargetPreparer {
+    fn quote_retained_bytes(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> Result<u64> {
+        let manifest = platform
+            .downcast_ref::<GpuSurfaceTargetPreparation>()
+            .context("Windows screen target received an unknown preparation manifest")?;
+        validate_windows_target_manifest(descriptor, platform.plan_generation(), manifest)?;
+        let bridge = self
+            .bridge
+            .upgrade()
+            .context("Windows screen renderer was retired during target admission")?;
+        let interop_bytes = bridge
+            .interop
+            .quote_target_retained_bytes(manifest)
+            .context("failed to quote the renderer screen-copy target")?;
+        interop_bytes
+            .checked_add(prepared_windows_screen_target_metadata_bytes()?)
+            .context("Windows prepared target retained-byte quote overflow")
+    }
+
     fn prepare(
         &self,
         descriptor: &ResolvedScreenPublicationDescriptor,
         platform: &ScreenNativePreparationPayload,
     ) -> Result<ScreenNativeTargetPreparation> {
         let manifest = platform
-            .downcast::<GpuSurfaceTargetPreparation>()
+            .downcast_ref::<GpuSurfaceTargetPreparation>()
             .context("Windows screen target received an unknown preparation manifest")?;
-        validate_windows_target_manifest(descriptor, platform.plan_generation(), &manifest)?;
+        validate_windows_target_manifest(descriptor, platform.plan_generation(), manifest)?;
         let bridge = self
             .bridge
             .upgrade()
             .context("Windows screen renderer was retired during target preparation")?;
         let interop = bridge
             .interop
-            .prepare_target(&manifest)
+            .prepare_target(manifest)
             .context("failed to prepare the renderer screen-copy target")?;
         let storage_id = NEXT_GPU_TEXTURE_STORAGE_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .map_err(|_| anyhow::anyhow!("GPU texture storage identity space is exhausted"))?;
-        let retained_bytes = interop.retained_bytes();
+        let retained_bytes = interop
+            .total_retained_bytes()
+            .checked_add(prepared_windows_screen_target_metadata_bytes()?)
+            .context("Windows prepared target retained-byte accounting overflow")?;
         Ok(ScreenNativeTargetPreparation::new(
             ScreenNativePreparationPayload::new(
                 descriptor,

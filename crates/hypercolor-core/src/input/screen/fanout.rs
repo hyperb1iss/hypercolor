@@ -1,6 +1,6 @@
 //! Immutable CPU publication routing prepared from one committed authority.
 
-use std::mem::size_of;
+use std::mem::{align_of, size_of};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Instant;
@@ -9,14 +9,15 @@ use thiserror::Error;
 
 use super::reducer::branch_requires_materialization;
 use super::{
-    CaptureCadence, CaptureCadenceError, CaptureFrame, CapturePacer, CpuReductionError,
-    CpuReductionExecutor, CpuSurfaceMaterializationError, CpuZoneMaterializationError,
-    PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch, PreparedCpuSurfaceMaterializer,
-    PreparedCpuZoneMaterializer, PreparedScreenPublication, RawCaptureSurface,
-    ResolvedScreenPublicationDescriptor, ScreenBranchPublisher, ScreenCapturePlan,
-    ScreenCommittedState, ScreenPayloadKind, ScreenPhysicalReductionDescriptor,
+    CaptureCadence, CaptureCadenceError, CaptureFrame, CapturePacer, CaptureTransferFunction,
+    CpuReductionError, CpuReductionExecutor, CpuSurfaceMaterializationError,
+    CpuZoneMaterializationError, PixelExtent, PreparedCpuMaterializationWorkspace,
+    PreparedCpuReductionBatch, PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer,
+    PreparedScreenPublication, RawCaptureSurface, ResolvedScreenPublicationDescriptor,
+    ScreenBranchPublisher, ScreenCapturePlan, ScreenCommittedState, ScreenContentBarsPolicy,
+    ScreenGridPolicy, ScreenLetterboxFill, ScreenPayloadKind, ScreenPhysicalReductionDescriptor,
     ScreenPlanGeneration, ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationKind, ScreenPublicationMetadata, ScreenWorkerBinding,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenSmoothingPolicy, ScreenWorkerBinding,
 };
 
 /// Plan-time routing class for one exact logical branch.
@@ -142,7 +143,7 @@ impl CpuPublicationFanoutReport {
 #[derive(Debug)]
 pub struct PreparedCpuPublicationFanoutCandidate {
     batch: PreparedCpuReductionBatch,
-    physical: Vec<PreparedCpuPhysicalFanout>,
+    physical: Box<[PreparedCpuPhysicalFanout]>,
     executor: Option<CpuReductionExecutor>,
     workspace: Option<PreparedCpuMaterializationWorkspace>,
     workspace_schedule: Vec<usize>,
@@ -171,6 +172,7 @@ impl PreparedCpuPublicationFanoutCandidate {
         workspace: &PreparedCpuMaterializationWorkspace,
         plan: &ScreenCapturePlan,
     ) -> Result<Self, CpuPublicationFanoutError> {
+        let allocation_byte_len = candidate_allocation_quote(batch, workspace, plan)?;
         if plan.generation() != batch.plan_generation() {
             return Err(CpuPublicationFanoutError::CandidatePlanGenerationMismatch {
                 batch: batch.plan_generation(),
@@ -279,7 +281,7 @@ impl PreparedCpuPublicationFanoutCandidate {
             physical.push(PreparedCpuPhysicalFanout {
                 batch_index,
                 workspace_index,
-                branches,
+                branches: branches.into_boxed_slice(),
             });
         }
         if workspace_cursor != workspace.len() {
@@ -302,27 +304,9 @@ impl PreparedCpuPublicationFanoutCandidate {
         direct_batch_indices
             .try_reserve_exact(branch_count)
             .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
-        let allocation_byte_len = allocation_byte_len(&physical, physical.capacity())?
-            .checked_add(checked_bytes::<usize>(workspace_schedule.capacity())?)
-            .and_then(|bytes| {
-                checked_bytes::<CpuPendingPublication>(reservations.capacity())
-                    .ok()
-                    .and_then(|reservation_bytes| bytes.checked_add(reservation_bytes))
-            })
-            .and_then(|bytes| {
-                checked_bytes::<PreparedScreenPublication>(publications.capacity())
-                    .ok()
-                    .and_then(|publication_bytes| bytes.checked_add(publication_bytes))
-            })
-            .and_then(|bytes| {
-                checked_bytes::<Option<usize>>(direct_batch_indices.capacity())
-                    .ok()
-                    .and_then(|schedule_bytes| bytes.checked_add(schedule_bytes))
-            })
-            .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
         Ok(Self {
             batch: batch.clone(),
-            physical,
+            physical: physical.into_boxed_slice(),
             executor: None,
             workspace: None,
             workspace_schedule,
@@ -343,7 +327,7 @@ impl PreparedCpuPublicationFanoutCandidate {
         self
     }
 
-    /// Heap bytes retained by unpublished routing metadata and kernels.
+    /// Heap bytes retained by the physical batch, routing metadata, and kernels.
     #[must_use]
     pub const fn allocation_byte_len(&self) -> u64 {
         self.allocation_byte_len
@@ -404,7 +388,7 @@ impl PreparedCpuPublicationFanoutCandidate {
 pub struct PreparedCpuPhysicalFanout {
     batch_index: usize,
     workspace_index: Option<usize>,
-    branches: Vec<PreparedCpuLogicalFanout>,
+    branches: Box<[PreparedCpuLogicalFanout]>,
 }
 
 impl PreparedCpuPhysicalFanout {
@@ -438,7 +422,7 @@ impl PreparedCpuPhysicalFanout {
 pub struct PreparedCpuPublicationFanout {
     authority: Arc<ScreenCommittedState>,
     batch: PreparedCpuReductionBatch,
-    physical: Vec<PreparedCpuPhysicalFanout>,
+    physical: Box<[PreparedCpuPhysicalFanout]>,
     executor: Option<CpuReductionExecutor>,
     workspace: Option<PreparedCpuMaterializationWorkspace>,
     workspace_schedule: Vec<usize>,
@@ -449,6 +433,20 @@ pub struct PreparedCpuPublicationFanout {
 }
 
 impl PreparedCpuPublicationFanout {
+    /// Quote exact fanout metadata and branch-kernel backing before allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same shape, policy, and accounting validation failures as
+    /// [`Self::prepare_candidate`] without allocating fanout-owned storage.
+    pub fn candidate_allocation_quote(
+        batch: &PreparedCpuReductionBatch,
+        workspace: &PreparedCpuMaterializationWorkspace,
+        plan: &ScreenCapturePlan,
+    ) -> Result<u64, CpuPublicationFanoutError> {
+        candidate_allocation_quote(batch, workspace, plan)
+    }
+
     /// Allocate an unpublished fanout candidate from one exact candidate plan.
     ///
     /// # Errors
@@ -534,7 +532,7 @@ impl PreparedCpuPublicationFanout {
             .sum()
     }
 
-    /// Heap bytes retained exclusively by fanout metadata and sampling kernels.
+    /// Heap bytes retained by the physical batch, fanout metadata, and kernels.
     #[must_use]
     pub const fn allocation_byte_len(&self) -> u64 {
         self.allocation_byte_len
@@ -1212,31 +1210,398 @@ fn publication_intent(
     )?)
 }
 
-fn allocation_byte_len(
-    physical: &[PreparedCpuPhysicalFanout],
-    physical_capacity: usize,
+fn candidate_allocation_quote(
+    batch: &PreparedCpuReductionBatch,
+    workspace: &PreparedCpuMaterializationWorkspace,
+    plan: &ScreenCapturePlan,
 ) -> Result<u64, CpuPublicationFanoutError> {
-    let mut total = checked_bytes::<PreparedCpuPhysicalFanout>(physical_capacity)?;
-    for route in physical {
-        total = total
-            .checked_add(checked_bytes::<PreparedCpuLogicalFanout>(
-                route.branches.capacity(),
-            )?)
+    if plan.generation() != batch.plan_generation() {
+        return Err(CpuPublicationFanoutError::CandidatePlanGenerationMismatch {
+            batch: batch.plan_generation(),
+            candidate: plan.generation(),
+        });
+    }
+    if workspace.plan_generation() != batch.plan_generation() || !workspace.belongs_to(batch) {
+        return Err(CpuPublicationFanoutError::WorkspaceBatchMismatch);
+    }
+
+    let mut workspace_cursor = 0_usize;
+    let mut branch_count = 0_usize;
+    let mut materializer_bytes = 0_u64;
+    for batch_index in 0..batch.len() {
+        let descriptor = batch
+            .descriptor(batch_index)
+            .expect("prepared batch index is bounded by its length");
+        let reduction_index = plan
+            .physical_reductions()
+            .binary_search_by(|demand| demand.descriptor().cmp(descriptor))
+            .map_err(|_| CpuPublicationFanoutError::PhysicalPlanMismatch { batch_index })?;
+        let demand = &plan.physical_reductions()[reduction_index];
+        let workspace_selected = match workspace.batch_index(workspace_cursor) {
+            Some(observed) if observed < batch_index => {
+                return Err(CpuPublicationFanoutError::WorkspaceOrderMismatch);
+            }
+            Some(observed) if observed == batch_index => {
+                if workspace.physical_descriptor(workspace_cursor) != Some(descriptor) {
+                    return Err(CpuPublicationFanoutError::WorkspacePhysicalMismatch {
+                        workspace_index: workspace_cursor,
+                    });
+                }
+                workspace_cursor = workspace_cursor
+                    .checked_add(1)
+                    .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
+                true
+            }
+            _ => false,
+        };
+        branch_count = branch_count
+            .checked_add(demand.branch_indices().len())
             .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
-        for branch in &route.branches {
-            if let Some(materializer) = &branch.surface_materializer {
-                total = total
-                    .checked_add(materializer.precomputed_byte_len())
-                    .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
+        let mut requires_workspace = demand.branch_indices().len() > 1;
+        for &branch_index in demand.branch_indices() {
+            let branch = plan.branches().get(branch_index).ok_or(
+                CpuPublicationFanoutError::BranchIndexOutOfBounds {
+                    branch_index,
+                    branch_count: plan.branches().len(),
+                },
+            )?;
+            let branch_descriptor = branch.descriptor();
+            CaptureCadence::new(branch.requested_hz().get())?;
+            if branch_descriptor.physical() != descriptor {
+                return Err(CpuPublicationFanoutError::BranchPhysicalMismatch { branch_index });
             }
-            if let Some(materializer) = &branch.zone_materializer {
-                total = total
-                    .checked_add(materializer.precomputed_byte_len())
-                    .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
-            }
+            let retained_bytes = match branch_descriptor.kind() {
+                ScreenPublicationKind::Surface
+                    if branch_requires_materialization(branch_descriptor) =>
+                {
+                    requires_workspace = true;
+                    surface_materializer_allocation_quote(branch_descriptor)?
+                }
+                ScreenPublicationKind::Surface => 0,
+                ScreenPublicationKind::Zones { .. } => {
+                    requires_workspace = true;
+                    zone_materializer_allocation_quote(branch_descriptor)?
+                }
+            };
+            materializer_bytes = materializer_bytes
+                .checked_add(retained_bytes)
+                .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)?;
+        }
+        if requires_workspace != workspace_selected {
+            return Err(CpuPublicationFanoutError::WorkspaceSelectionMismatch {
+                batch_index,
+                required: requires_workspace,
+            });
         }
     }
-    Ok(total)
+    if workspace_cursor != workspace.len() {
+        return Err(CpuPublicationFanoutError::WorkspaceOrderMismatch);
+    }
+
+    batch
+        .allocation_byte_len()
+        .checked_add(checked_bytes::<PreparedCpuPhysicalFanout>(batch.len())?)
+        .and_then(|bytes| {
+            checked_bytes::<PreparedCpuLogicalFanout>(branch_count)
+                .ok()
+                .and_then(|branch_bytes| bytes.checked_add(branch_bytes))
+        })
+        .and_then(|bytes| bytes.checked_add(materializer_bytes))
+        .and_then(|bytes| {
+            checked_bytes::<usize>(batch.len())
+                .ok()
+                .and_then(|scratch| bytes.checked_add(scratch))
+        })
+        .and_then(|bytes| {
+            checked_bytes::<CpuPendingPublication>(branch_count)
+                .ok()
+                .and_then(|scratch| bytes.checked_add(scratch))
+        })
+        .and_then(|bytes| {
+            checked_bytes::<PreparedScreenPublication>(branch_count)
+                .ok()
+                .and_then(|scratch| bytes.checked_add(scratch))
+        })
+        .and_then(|bytes| {
+            checked_bytes::<Option<usize>>(branch_count)
+                .ok()
+                .and_then(|scratch| bytes.checked_add(scratch))
+        })
+        .ok_or(CpuPublicationFanoutError::AllocationAccountingOverflow)
+}
+
+fn surface_materializer_allocation_quote(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> Result<u64, CpuPublicationFanoutError> {
+    if descriptor.kind() != ScreenPublicationKind::Surface {
+        return Err(CpuSurfaceMaterializationError::BranchNotSurface.into());
+    }
+    let physical_extent = descriptor.physical().reduction_extent();
+    let output_extent = descriptor.geometry().output_extent();
+    let physical_pixels = surface_pixel_count(physical_extent)?;
+    let output_pixels = surface_pixel_count(output_extent)?;
+    surface_byte_len(physical_pixels)?;
+    surface_byte_len(output_pixels)?;
+    validate_surface_transfer(
+        descriptor
+            .physical()
+            .color_pipeline()
+            .output()
+            .transfer_function(),
+    )?;
+
+    let profile = descriptor.processing_profile();
+    let mut retained_bytes = 0_u64;
+    if matches!(
+        profile.content_bars(),
+        ScreenContentBarsPolicy::DetectAndCrop { .. }
+    ) {
+        retained_bytes = surface_requested_bytes(physical_pixels, size_of::<[u8; 3]>())?
+            .checked_add(surface_detector_requested_bytes(physical_extent)?)
+            .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)?;
+    }
+    if matches!(
+        profile.smoothing(),
+        ScreenSmoothingPolicy::Exponential { .. }
+    ) {
+        retained_bytes = retained_bytes
+            .checked_add(surface_requested_bytes(
+                output_pixels,
+                size_of::<[u8; 3]>(),
+            )?)
+            .and_then(|bytes| {
+                surface_requested_bytes(output_pixels, size_of::<[f32; 3]>() * 2)
+                    .ok()
+                    .and_then(|history| bytes.checked_add(history))
+            })
+            .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)?;
+    }
+    Ok(retained_bytes)
+}
+
+fn zone_materializer_allocation_quote(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> Result<u64, CpuPublicationFanoutError> {
+    let ScreenPublicationKind::Zones { columns, rows } = descriptor.kind() else {
+        return Err(CpuZoneMaterializationError::BranchNotZones.into());
+    };
+    let profile = descriptor.processing_profile();
+    if profile.letterbox_fill() != ScreenLetterboxFill::default() {
+        return Err(CpuZoneMaterializationError::LetterboxFillRequiresMaterialization.into());
+    }
+    let extent = descriptor.physical().reduction_extent();
+    zone_physical_byte_len(extent)?;
+    let zone_count = zone_count(columns.get(), rows.get())?;
+    validate_zone_transfer(
+        descriptor
+            .physical()
+            .color_pipeline()
+            .output()
+            .transfer_function(),
+    )?;
+
+    let mut retained_bytes = match profile.grid() {
+        ScreenGridPolicy::AreaWeighted => {
+            area_axis_allocation_quote(extent.width(), columns.get())?
+                .checked_add(area_axis_allocation_quote(extent.height(), rows.get())?)
+                .ok_or(CpuZoneMaterializationError::GeometryOverflow)?
+        }
+        ScreenGridPolicy::PointSample => zone_requested_bytes(
+            usize::try_from(columns.get())
+                .map_err(|_| CpuZoneMaterializationError::GeometryOverflow)?,
+            size_of::<usize>(),
+        )?
+        .checked_add(zone_requested_bytes(
+            usize::try_from(rows.get())
+                .map_err(|_| CpuZoneMaterializationError::GeometryOverflow)?,
+            size_of::<usize>(),
+        )?)
+        .ok_or(CpuZoneMaterializationError::GeometryOverflow)?,
+    };
+    if matches!(
+        profile.content_bars(),
+        ScreenContentBarsPolicy::DetectAndCrop { .. }
+    ) {
+        retained_bytes = retained_bytes
+            .checked_add(zone_detector_requested_bytes(columns.get(), rows.get())?)
+            .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    }
+    if matches!(
+        profile.smoothing(),
+        ScreenSmoothingPolicy::Exponential { .. }
+    ) {
+        retained_bytes = retained_bytes
+            .checked_add(zone_requested_bytes(zone_count, size_of::<[f32; 3]>() * 2)?)
+            .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    }
+    Ok(retained_bytes)
+}
+
+fn surface_pixel_count(extent: PixelExtent) -> Result<usize, CpuSurfaceMaterializationError> {
+    usize::try_from(extent.width())
+        .ok()
+        .and_then(|width| {
+            usize::try_from(extent.height())
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)
+}
+
+fn surface_byte_len(pixel_count: usize) -> Result<usize, CpuSurfaceMaterializationError> {
+    pixel_count
+        .checked_mul(4)
+        .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)
+}
+
+fn surface_requested_bytes(
+    count: usize,
+    item_size: usize,
+) -> Result<u64, CpuSurfaceMaterializationError> {
+    requested_bytes(count, item_size).ok_or(CpuSurfaceMaterializationError::GeometryOverflow)
+}
+
+fn surface_detector_requested_bytes(
+    extent: PixelExtent,
+) -> Result<u64, CpuSurfaceMaterializationError> {
+    let count = usize::try_from(extent.width())
+        .ok()
+        .and_then(|width| {
+            usize::try_from(extent.height())
+                .ok()
+                .and_then(|height| width.checked_add(height))
+        })
+        .ok_or(CpuSurfaceMaterializationError::GeometryOverflow)?;
+    surface_requested_bytes(count, size_of::<f32>())
+}
+
+fn validate_surface_transfer(
+    transfer: CaptureTransferFunction,
+) -> Result<(), CpuSurfaceMaterializationError> {
+    if matches!(
+        transfer,
+        CaptureTransferFunction::Srgb | CaptureTransferFunction::Linear
+    ) {
+        Ok(())
+    } else {
+        Err(CpuSurfaceMaterializationError::UnsupportedTransferFunction(
+            transfer,
+        ))
+    }
+}
+
+fn zone_physical_byte_len(extent: PixelExtent) -> Result<usize, CpuZoneMaterializationError> {
+    let byte_len = u64::from(extent.width())
+        .checked_mul(u64::from(extent.height()))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    usize::try_from(byte_len)
+        .map_err(|_| CpuZoneMaterializationError::PhysicalByteLengthNotAddressable { byte_len })
+}
+
+fn zone_count(columns: u32, rows: u32) -> Result<usize, CpuZoneMaterializationError> {
+    let count = u64::from(columns)
+        .checked_mul(u64::from(rows))
+        .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    usize::try_from(count)
+        .map_err(|_| CpuZoneMaterializationError::ZoneCountNotAddressable { count })
+}
+
+fn zone_requested_bytes(
+    count: usize,
+    item_size: usize,
+) -> Result<u64, CpuZoneMaterializationError> {
+    requested_bytes(count, item_size).ok_or(CpuZoneMaterializationError::GeometryOverflow)
+}
+
+fn zone_detector_requested_bytes(
+    columns: u32,
+    rows: u32,
+) -> Result<u64, CpuZoneMaterializationError> {
+    let count = usize::try_from(columns)
+        .ok()
+        .and_then(|columns| {
+            usize::try_from(rows)
+                .ok()
+                .and_then(|rows| columns.checked_add(rows))
+        })
+        .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    zone_requested_bytes(count, size_of::<f32>())
+}
+
+fn validate_zone_transfer(
+    transfer: CaptureTransferFunction,
+) -> Result<(), CpuZoneMaterializationError> {
+    if matches!(
+        transfer,
+        CaptureTransferFunction::Srgb | CaptureTransferFunction::Linear
+    ) {
+        Ok(())
+    } else {
+        Err(CpuZoneMaterializationError::UnsupportedTransferFunction(
+            transfer,
+        ))
+    }
+}
+
+fn area_axis_allocation_quote(
+    source: u32,
+    divisions: u32,
+) -> Result<u64, CpuZoneMaterializationError> {
+    let division_count = usize::try_from(divisions).map_err(|_| {
+        CpuZoneMaterializationError::ZoneCountNotAddressable {
+            count: u64::from(divisions),
+        }
+    })?;
+    let sample_count = u64::from(source)
+        .checked_add(u64::from(divisions))
+        .and_then(|count| count.checked_sub(u64::from(greatest_common_divisor(source, divisions))))
+        .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    let sample_count = usize::try_from(sample_count)
+        .map_err(|_| CpuZoneMaterializationError::SamplingKernelNotAddressable { sample_count })?;
+    let span_size = size_of::<usize>()
+        .checked_mul(2)
+        .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    let sample_size = aligned_pair_size(
+        size_of::<usize>(),
+        align_of::<usize>(),
+        size_of::<u64>(),
+        align_of::<u64>(),
+    )
+    .ok_or(CpuZoneMaterializationError::GeometryOverflow)?;
+    zone_requested_bytes(division_count, span_size)?
+        .checked_add(zone_requested_bytes(sample_count, sample_size)?)
+        .ok_or(CpuZoneMaterializationError::GeometryOverflow)
+}
+
+fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
+fn aligned_pair_size(
+    first_size: usize,
+    first_alignment: usize,
+    second_size: usize,
+    second_alignment: usize,
+) -> Option<usize> {
+    let alignment = first_alignment.max(second_alignment);
+    first_size
+        .checked_add(second_size)
+        .and_then(|size| size.checked_add(alignment - 1))
+        .map(|size| size / alignment * alignment)
+}
+
+fn requested_bytes(count: usize, item_size: usize) -> Option<u64> {
+    u64::try_from(count).ok().and_then(|count| {
+        u64::try_from(item_size)
+            .ok()
+            .and_then(|size| count.checked_mul(size))
+    })
 }
 
 fn checked_bytes<T>(count: usize) -> Result<u64, CpuPublicationFanoutError> {

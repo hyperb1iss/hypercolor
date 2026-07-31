@@ -18,10 +18,17 @@ use hypercolor_core::input::screen::{
     ScreenPublicationRequest, ScreenResourceApi, ScreenSceneCutPolicy, ScreenSmoothingPolicy,
     ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
 };
-use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+
+fn retained_heap_bytes(change: &Stats) -> usize {
+    change
+        .bytes_allocated
+        .checked_sub(change.bytes_deallocated)
+        .expect("allocation probe cannot deallocate pre-existing storage")
+}
 
 fn enter_isolated_allocation_probe(test_name: &str, child_env: &str) -> bool {
     if std::env::var_os(child_env).is_some() {
@@ -446,16 +453,86 @@ fn warmed_mixed_materialized_fanout_performs_no_heap_allocation() {
         .first()
         .cloned()
         .expect("mixed source has one worker binding");
+    let mut batch_quote_region = Region::new(GLOBAL);
+    batch_quote_region.reset();
+    let batch_quote = black_box(&executor)
+        .batch_allocation_quote(black_box(&source), black_box(&plan))
+        .expect("mixed CPU batch allocation quotes");
+    let batch_quote_change = batch_quote_region.change();
+
+    assert!(batch_quote > 0);
+    assert_eq!(batch_quote_change.allocations, 0);
+    assert_eq!(batch_quote_change.reallocations, 0);
+    assert_eq!(batch_quote_change.bytes_allocated, 0);
+
+    let mut batch_preparation_region = Region::new(GLOBAL);
+    batch_preparation_region.reset();
     let batch = executor
         .prepare_batch(&source, &plan)
         .expect("mixed CPU batch prepares");
+    let batch_preparation_change = batch_preparation_region.change();
+    assert_eq!(
+        u64::try_from(retained_heap_bytes(&batch_preparation_change))
+            .expect("measured batch bytes fit the exact ledger"),
+        batch_quote
+    );
+    assert_eq!(batch.allocation_byte_len(), batch_quote);
+    let mut workspace_quote_region = Region::new(GLOBAL);
+    workspace_quote_region.reset();
+    let workspace_quote = black_box(&batch)
+        .materialization_workspace_allocation_quote(black_box(&plan))
+        .expect("mixed workspace allocation quotes");
+    let workspace_quote_change = workspace_quote_region.change();
+
+    assert!(workspace_quote > 0);
+    assert_eq!(workspace_quote_change.allocations, 0);
+    assert_eq!(workspace_quote_change.reallocations, 0);
+    assert_eq!(workspace_quote_change.bytes_allocated, 0);
+
+    let mut workspace_preparation_region = Region::new(GLOBAL);
+    workspace_preparation_region.reset();
     let workspace = batch
         .prepare_materialization_workspace(&plan)
         .expect("mixed materialization workspace prepares");
+    let workspace_preparation_change = workspace_preparation_region.change();
+    assert_eq!(
+        u64::try_from(retained_heap_bytes(&workspace_preparation_change))
+            .expect("measured workspace bytes fit the exact ledger"),
+        workspace_quote
+    );
+    assert_eq!(workspace.allocation_byte_len(), workspace_quote);
+
+    let mut fanout_quote_region = Region::new(GLOBAL);
+    fanout_quote_region.reset();
+    let fanout_quote = PreparedCpuPublicationFanout::candidate_allocation_quote(
+        black_box(&batch),
+        black_box(&workspace),
+        black_box(&plan),
+    )
+    .expect("mixed fanout allocation quotes");
+    let fanout_quote_change = fanout_quote_region.change();
+
+    assert!(fanout_quote > 0);
+    assert_eq!(fanout_quote_change.allocations, 0);
+    assert_eq!(fanout_quote_change.reallocations, 0);
+    assert_eq!(fanout_quote_change.bytes_allocated, 0);
+
+    let mut fanout_preparation_region = Region::new(GLOBAL);
+    fanout_preparation_region.reset();
     let candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
         &executor, &batch, workspace, &plan,
     )
     .expect("mixed executable fanout prepares");
+    let fanout_preparation_change = fanout_preparation_region.change();
+    let fanout_additional_bytes = fanout_quote
+        .checked_sub(batch_quote)
+        .expect("fanout quote retains its shared batch");
+    assert_eq!(
+        u64::try_from(retained_heap_bytes(&fanout_preparation_change))
+            .expect("measured fanout bytes fit the exact ledger"),
+        fanout_additional_bytes
+    );
+    assert_eq!(candidate.allocation_byte_len(), fanout_quote);
     let mut fanout = candidate
         .bind(builder.committed_state(), &binding)
         .expect("mixed executable fanout binds");
