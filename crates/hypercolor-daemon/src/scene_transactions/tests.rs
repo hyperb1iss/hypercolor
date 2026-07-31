@@ -2,10 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{
-    LayoutActivationControl, LayoutActivationDecision, LayoutTransactionRejection,
-    LayoutUpdateError, PreparedLayoutUpdate, SceneTransaction, SceneTransactionQueue,
-    apply_layout_update, apply_prepared_layout_update_under_guard_with_persistence,
-    publish_prepared_layout_activation,
+    LayoutActivationControl, LayoutActivationDecision, LayoutPersistenceOutcome,
+    LayoutPersistencePhase, LayoutTransactionRejection, LayoutUpdateError, PreparedLayoutUpdate,
+    SceneTransaction, SceneTransactionQueue, apply_layout_update,
+    apply_prepared_layout_update_under_guard_with_persistence, publish_prepared_layout_activation,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
@@ -444,7 +444,7 @@ async fn invalid_preparation_never_reaches_the_renderer_or_mutates_state() {
 }
 
 #[tokio::test]
-async fn persistence_failure_aborts_prepared_renderer_resources() {
+async fn admitted_persistence_failure_aborts_and_persists_fresh_rollback() {
     let initial = layout("initial", 320, 200);
     let (spatial_engine, scene_manager, queue) = state(initial.clone());
     let _consumer = queue.consumer();
@@ -454,6 +454,8 @@ async fn persistence_failure_aborts_prepared_renderer_resources() {
     let update_spatial_engine = Arc::clone(&spatial_engine);
     let update_scene_manager = Arc::clone(&scene_manager);
     let update_queue = queue.clone();
+    let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let update_phases = Arc::clone(&phases);
     let update = tokio::spawn(async move {
         apply_prepared_layout_update_under_guard_with_persistence(
             update_spatial_engine,
@@ -461,7 +463,32 @@ async fn persistence_failure_aborts_prepared_renderer_resources() {
             update_queue,
             &guard,
             prepared,
-            |_| async { anyhow::bail!("synthetic persistence failure") },
+            move |phase| {
+                let phases = Arc::clone(&update_phases);
+                async move {
+                    match phase {
+                        LayoutPersistencePhase::Precommit(_) => {
+                            phases
+                                .lock()
+                                .expect("phase log should lock")
+                                .push("precommit");
+                            LayoutPersistenceOutcome::RetryArmed(
+                                "synthetic persistence failure".to_owned(),
+                            )
+                        }
+                        LayoutPersistencePhase::Rollback => {
+                            phases
+                                .lock()
+                                .expect("phase log should lock")
+                                .push("rollback");
+                            LayoutPersistenceOutcome::Written
+                        }
+                        LayoutPersistencePhase::Converge => {
+                            panic!("failed precommit must not converge")
+                        }
+                    }
+                }
+            },
         )
         .await
     });
@@ -483,6 +510,10 @@ async fn persistence_failure_aborts_prepared_renderer_resources() {
         Err(LayoutUpdateError::Persistence(message))
             if message.contains("synthetic persistence failure")
     ));
+    assert_eq!(
+        *phases.lock().expect("phase log should lock"),
+        ["precommit", "rollback"]
+    );
     assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
     let manager_layout = scene_manager.read().await.active_render_groups()[0]
         .layout
@@ -490,6 +521,64 @@ async fn persistence_failure_aborts_prepared_renderer_resources() {
     assert_eq!(manager_layout.id, initial.id);
     assert_eq!(manager_layout.canvas_width, initial.canvas_width);
     assert_eq!(manager_layout.canvas_height, initial.canvas_height);
+}
+
+#[tokio::test]
+async fn superseded_precommit_aborts_renderer_admission() {
+    let initial = layout("initial", 320, 200);
+    let (spatial_engine, scene_manager, queue) = state(initial.clone());
+    let _consumer = queue.consumer();
+    let guard = queue.acquire_layout_update_guard().await;
+    let prepared = PreparedLayoutUpdate::try_new(layout("candidate", 640, 480))
+        .expect("candidate layout should prepare");
+    let update_spatial_engine = Arc::clone(&spatial_engine);
+    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_queue = queue.clone();
+    let update = tokio::spawn(async move {
+        apply_prepared_layout_update_under_guard_with_persistence(
+            update_spatial_engine,
+            update_scene_manager,
+            update_queue,
+            &guard,
+            prepared,
+            |phase| async move {
+                match phase {
+                    LayoutPersistencePhase::Precommit(_) => LayoutPersistenceOutcome::Superseded,
+                    LayoutPersistencePhase::Rollback => {
+                        panic!("superseded precommit must not roll back")
+                    }
+                    LayoutPersistencePhase::Converge => {
+                        panic!("superseded precommit must not converge")
+                    }
+                }
+            },
+        )
+        .await
+    });
+    wait_for_pending(&queue, 1).await;
+    let SceneTransaction::PrepareLayout(transaction) = queue
+        .drain()
+        .into_iter()
+        .next()
+        .expect("layout preparation should be queued")
+    else {
+        panic!("queued transaction should prepare a layout");
+    };
+    let activation = accept_preparation(transaction);
+    wait_for_decision(&activation, LayoutActivationDecision::Abort).await;
+    activation.complete(Ok(()));
+
+    assert!(matches!(
+        update.await.expect("layout coordinator should not panic"),
+        Err(LayoutUpdateError::PersistenceSuperseded)
+    ));
+    assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
+    assert_eq!(
+        scene_manager.read().await.active_render_groups()[0]
+            .layout
+            .id,
+        initial.id
+    );
 }
 
 #[tokio::test]
@@ -517,12 +606,11 @@ async fn persistence_finishes_before_armed_renderer_publication() {
             move |phase| {
                 let path = update_path.clone();
                 async move {
-                    let state = match phase {
-                        super::LayoutPersistencePhase::Commit(state)
-                        | super::LayoutPersistencePhase::Rollback(state) => state,
+                    let LayoutPersistencePhase::Precommit(state) = phase else {
+                        panic!("successful renderer publication must not roll back")
                     };
-                    std::fs::write(path, state.layout.id)?;
-                    Ok(())
+                    std::fs::write(path, state.layout.id).expect("test persistence should write");
+                    LayoutPersistenceOutcome::Written
                 }
             },
         )
@@ -576,6 +664,7 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
     let update_scene_manager = Arc::clone(&scene_manager);
     let update_queue = queue.clone();
     let update_path = persisted_path.clone();
+    let rollback_spatial_engine = Arc::clone(&spatial_engine);
     let update = tokio::spawn(async move {
         apply_prepared_layout_update_under_guard_with_persistence(
             update_spatial_engine,
@@ -585,13 +674,19 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
             prepared,
             move |phase| {
                 let path = update_path.clone();
+                let spatial_engine = Arc::clone(&rollback_spatial_engine);
                 async move {
-                    let state = match phase {
-                        super::LayoutPersistencePhase::Commit(state)
-                        | super::LayoutPersistencePhase::Rollback(state) => state,
+                    let layout_id = match phase {
+                        LayoutPersistencePhase::Precommit(state) => state.layout.id,
+                        LayoutPersistencePhase::Rollback => {
+                            spatial_engine.read().await.layout().id.clone()
+                        }
+                        LayoutPersistencePhase::Converge => {
+                            panic!("rejected renderer publication must not converge")
+                        }
                     };
-                    std::fs::write(path, state.layout.id)?;
-                    Ok(())
+                    std::fs::write(path, layout_id).expect("test persistence should write");
+                    LayoutPersistenceOutcome::Written
                 }
             },
         )

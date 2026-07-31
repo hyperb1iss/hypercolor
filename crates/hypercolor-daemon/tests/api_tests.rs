@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
@@ -20,13 +21,14 @@ use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverHost, DriverModule, ValidatedControlChanges,
+    DriverControlProvider, DriverDescriptor, DriverHost, DriverModule, DriverRuntimeCacheProvider,
+    ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "builtin-drivers")]
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex as AsyncMutex, Semaphore};
+use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -42,9 +44,11 @@ use hypercolor_core::types::event::InputButtonState;
 use hypercolor_daemon::api::{self, AppState};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::JsonLibraryStore;
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::persistence::AtomicFileWriter;
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
+use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{
     OutputPowerState, current_global_brightness, set_global_brightness,
 };
@@ -271,6 +275,71 @@ fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, 
 
 struct NoopBackend {
     info: BackendInfo,
+}
+
+static RUNTIME_CACHE_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "runtime_cache_test",
+    "Runtime Cache Test",
+    DriverTransportKind::Network,
+    false,
+    false,
+);
+
+struct RuntimeCacheTestDriver {
+    revision: Arc<AtomicUsize>,
+}
+
+struct BlockingRuntimeCacheTestDriver {
+    entered: Arc<Notify>,
+    release: Arc<Semaphore>,
+}
+
+impl DriverModule for RuntimeCacheTestDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &RUNTIME_CACHE_TEST_DRIVER
+    }
+
+    fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
+        Some(self)
+    }
+}
+
+impl DriverModule for BlockingRuntimeCacheTestDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &RUNTIME_CACHE_TEST_DRIVER
+    }
+
+    fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverRuntimeCacheProvider for RuntimeCacheTestDriver {
+    async fn snapshot(
+        &self,
+        _host: &dyn DriverHost,
+    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        Ok(BTreeMap::from([(
+            "revision".to_owned(),
+            serde_json::json!(self.revision.load(Ordering::Acquire)),
+        )]))
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverRuntimeCacheProvider for BlockingRuntimeCacheTestDriver {
+    async fn snapshot(
+        &self,
+        _host: &dyn DriverHost,
+    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        self.entered.notify_one();
+        let _permit = Arc::clone(&self.release)
+            .acquire_owned()
+            .await
+            .expect("runtime cache release should remain open");
+        Ok(BTreeMap::new())
+    }
 }
 
 impl NoopBackend {
@@ -786,14 +855,38 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 async fn request_with_layout_ack(
     app: axum::Router,
     request: Request<Body>,
-    scene_transactions: &SceneTransactionQueue,
+    state: &Arc<AppState>,
 ) -> (axum::response::Response, Vec<SpatialLayout>) {
+    request_with_layout_ack_and_hook(app, request, state, || async {}).await
+}
+
+async fn request_with_layout_ack_and_hook<F, Fut>(
+    app: axum::Router,
+    request: Request<Body>,
+    state: &Arc<AppState>,
+    before_publication: F,
+) -> (axum::response::Response, Vec<SpatialLayout>)
+where
+    F: Fn() -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let request = app.oneshot(request);
     tokio::pin!(request);
     let mut applied = Vec::new();
+    let mut publications: Vec<
+        tokio::task::JoinHandle<
+            Result<(), hypercolor_daemon::scene_transactions::LayoutTransactionRejection>,
+        >,
+    > = Vec::new();
     loop {
         tokio::select! {
             response = &mut request => {
+                for publication in publications {
+                    publication
+                        .await
+                        .expect("layout publication task should not panic")
+                        .expect("layout publication should succeed");
+                }
                 return (
                     response.expect("failed to execute request"),
                     applied,
@@ -801,17 +894,28 @@ async fn request_with_layout_ack(
             }
             () = tokio::time::sleep(Duration::from_millis(1)) => {
                 let mut deferred = Vec::new();
-                for transaction in scene_transactions.drain() {
+                for transaction in state.scene_transactions.drain() {
                     match transaction {
                         SceneTransaction::PrepareLayout(transaction) => {
                             applied.push(transaction.spatial_engine().layout().as_ref().clone());
-                            transaction.accept_and_commit_for_test();
+                            let spatial_engine = Arc::clone(&state.spatial_engine);
+                            let scene_manager = Arc::clone(&state.scene_manager);
+                            let before_publication = before_publication.clone();
+                            publications.push(tokio::spawn(async move {
+                                transaction
+                                    .accept_and_publish_for_test(
+                                        &spatial_engine,
+                                        &scene_manager,
+                                        before_publication,
+                                    )
+                                    .await
+                            }));
                         }
                         transaction => deferred.push(transaction),
                     }
                 }
                 for transaction in deferred {
-                    scene_transactions
+                    state.scene_transactions
                         .push(transaction)
                         .expect("test transaction queue should remain open");
                 }
@@ -1944,7 +2048,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
                     r#"{{"key":"{key}","value":"{value}"}}"#
                 )))
                 .expect("failed to build request"),
-            &state.scene_transactions,
+            &state,
         )
         .await;
         applied_layouts.extend(applied);
@@ -7946,7 +8050,7 @@ async fn profile_crud_lifecycle() {
             .uri(format!("/api/v1/profiles/{profile_id}/apply"))
             .body(Body::empty())
             .expect("failed to build request"),
-        &state.scene_transactions,
+        &state,
     )
     .await;
 
@@ -8594,12 +8698,13 @@ async fn layout_apply_updates_active_layout() {
             .uri(format!("/api/v1/layouts/{layout_id}/apply"))
             .body(Body::empty())
             .expect("failed to build request"),
-        &state.scene_transactions,
+        &state,
     )
     .await;
     assert_eq!(apply_response.status(), StatusCode::OK);
     let apply_json = body_json(apply_response).await;
     assert_eq!(apply_json["data"]["applied"], true);
+    assert_eq!(apply_json["data"]["persistence_pending"], false);
     assert_eq!(apply_json["data"]["layout"]["id"], layout_id);
 
     let active_response = app
@@ -8648,6 +8753,169 @@ async fn layout_apply_updates_active_layout() {
 }
 
 #[tokio::test]
+async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
+    let (mut state, _tmp) = isolated_state_with_tempdir();
+    let revision = Arc::new(AtomicUsize::new(1));
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(RuntimeCacheTestDriver {
+            revision: Arc::clone(&revision),
+        })
+        .expect("runtime cache test driver should register");
+    state.driver_registry = Arc::new(registry);
+    let state = Arc::new(state);
+    let candidate = SpatialLayout {
+        id: "converged-layout".to_owned(),
+        name: "Converged Layout".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(candidate.id.clone(), candidate.clone());
+    let app = test_app_with_state(Arc::clone(&state));
+    let update_revision = Arc::clone(&revision);
+
+    let (response, _) = request_with_layout_ack_and_hook(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+        move || {
+            let revision = Arc::clone(&update_revision);
+            async move {
+                revision.store(2, Ordering::Release);
+            }
+        },
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["persistence_pending"], false);
+    let persisted = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime state should load")
+        .expect("runtime state should exist");
+    assert_eq!(
+        persisted.active_layout_id.as_deref(),
+        Some(candidate.id.as_str())
+    );
+    assert_eq!(
+        persisted.driver_runtime_cache["runtime_cache_test"]["revision"],
+        serde_json::json!(2)
+    );
+}
+
+#[tokio::test]
+async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
+    let (mut state, _tmp) = isolated_state_with_tempdir();
+    let initial_layout_id = state.spatial_engine.read().await.layout().id.clone();
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Semaphore::new(0));
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(BlockingRuntimeCacheTestDriver {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        })
+        .expect("blocking runtime cache test driver should register");
+    state.driver_registry = Arc::new(registry);
+    let state = Arc::new(state);
+    let candidate = SpatialLayout {
+        id: "superseded-layout".to_owned(),
+        name: "Superseded Layout".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(candidate.id.clone(), candidate.clone());
+    let runtime_state_path = state.runtime_state_path.clone();
+    let concurrent_layout_id = initial_layout_id.clone();
+    let superseding_write = tokio::spawn(async move {
+        entered.notified().await;
+        runtime_state::save(
+            &runtime_state_path,
+            &runtime_state::RuntimeSessionSnapshot {
+                active_layout_id: Some(concurrent_layout_id),
+                ..runtime_state::RuntimeSessionSnapshot::default()
+            },
+        )
+        .expect("newer runtime snapshot should persist");
+        release.add_permits(1);
+    });
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let (response, _) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+    superseding_write
+        .await
+        .expect("superseding runtime write should not panic");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        state.spatial_engine.read().await.layout().id,
+        initial_layout_id
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let candidate = SpatialLayout {
+        id: "pending-layout".to_owned(),
+        name: "Pending Layout".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(candidate.id.clone(), candidate.clone());
+    let writer = AtomicFileWriter::new(&state.runtime_state_path)
+        .expect("runtime state writer should initialize");
+    let app = test_app_with_state(Arc::clone(&state));
+    let failure_writer = writer.clone();
+
+    let (response, _) = request_with_layout_ack_and_hook(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+        move || {
+            let writer = failure_writer.clone();
+            async move {
+                writer.set_injected_replace_failures(1);
+            }
+        },
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["applied"], true);
+    assert_eq!(json["data"]["persistence_pending"], true);
+    assert_eq!(state.spatial_engine.read().await.layout().id, candidate.id);
+}
+
+#[tokio::test]
 async fn layout_delete_active_falls_back_to_default_layout() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
@@ -8678,7 +8946,7 @@ async fn layout_delete_active_falls_back_to_default_layout() {
             .uri(format!("/api/v1/layouts/{layout_id}/apply"))
             .body(Body::empty())
             .expect("failed to build request"),
-        &state.scene_transactions,
+        &state,
     )
     .await;
     assert_eq!(apply_response.status(), StatusCode::OK);
@@ -8690,10 +8958,12 @@ async fn layout_delete_active_falls_back_to_default_layout() {
             .uri(format!("/api/v1/layouts/{layout_id}"))
             .body(Body::empty())
             .expect("failed to build request"),
-        &state.scene_transactions,
+        &state,
     )
     .await;
     assert_eq!(delete_response.status(), StatusCode::OK);
+    let delete_json = body_json(delete_response).await;
+    assert_eq!(delete_json["data"]["persistence_pending"], false);
 
     let active_response = app
         .clone()
@@ -8715,6 +8985,35 @@ async fn layout_delete_active_falls_back_to_default_layout() {
     let runtime_json: serde_json::Value =
         serde_json::from_str(&runtime_raw).expect("runtime state should be valid JSON");
     assert_eq!(runtime_json["active_layout_id"], "default");
+}
+
+#[tokio::test]
+async fn layout_preview_never_persists_runtime_state() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let preview = SpatialLayout {
+        id: "preview-only".to_owned(),
+        name: "Preview Only".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let (response, _) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("PUT")
+            .uri("/api/v1/layouts/active/preview")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&preview).expect("preview layout should serialize"),
+            ))
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(state.spatial_engine.read().await.layout().id, preview.id);
+    assert!(!state.runtime_state_path.exists());
 }
 
 #[tokio::test]
@@ -9184,7 +9483,7 @@ async fn applying_effect_auto_applies_associated_layout() {
             .uri(format!("/api/v1/layouts/{first_layout_id}/apply"))
             .body(Body::empty())
             .expect("failed to build request"),
-        &state.scene_transactions,
+        &state,
     )
     .await;
 
@@ -9195,7 +9494,7 @@ async fn applying_effect_auto_applies_associated_layout() {
             .uri("/api/v1/effects/solid_color/apply")
             .body(Body::empty())
             .expect("failed to build request"),
-        &state.scene_transactions,
+        &state,
     )
     .await;
     assert_eq!(apply_effect_response.status(), StatusCode::OK);

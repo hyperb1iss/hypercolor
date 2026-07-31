@@ -31,7 +31,9 @@ pub enum LayoutUpdateError {
     Coordinator(String),
     #[error("layout persistence failed: {0}")]
     Persistence(String),
-    #[error("renderer stopped after persistence and rollback failed: {0}")]
+    #[error("layout persistence was superseded before renderer activation")]
+    PersistenceSuperseded,
+    #[error("layout rollback persistence failed: {0}")]
     PersistenceRollback(String),
 }
 
@@ -52,8 +54,17 @@ pub(crate) struct LayoutPersistenceState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum LayoutPersistencePhase {
-    Commit(LayoutPersistenceState),
-    Rollback(LayoutPersistenceState),
+    Precommit(LayoutPersistenceState),
+    Rollback,
+    Converge,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LayoutPersistenceOutcome {
+    Written,
+    Superseded,
+    BeforeAdmission(String),
+    RetryArmed(String),
 }
 
 impl PreparedLayoutUpdate {
@@ -147,6 +158,46 @@ impl PrepareLayoutTransaction {
         self.accept();
         activation.commit();
         activation.complete(Ok(()));
+    }
+
+    #[doc(hidden)]
+    pub async fn accept_and_publish_for_test<F, Fut>(
+        self,
+        spatial_engine: &Arc<RwLock<SpatialEngine>>,
+        scene_manager: &Arc<RwLock<SceneManager>>,
+        before_publication: F,
+    ) -> Result<(), LayoutTransactionRejection>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let activation = self.activation();
+        let candidate_spatial_engine = self.spatial_engine.clone();
+        let expected_layout = self.expected_layout.clone();
+        let expected_active_scene_id = self.active_scene_id;
+        let expected_active_render_groups_revision = self.source_active_render_groups_revision;
+        self.accept();
+        while activation.decision() == LayoutActivationDecision::Pending {
+            tokio::task::yield_now().await;
+        }
+        if activation.decision() == LayoutActivationDecision::Abort {
+            activation.complete(Ok(()));
+            return Ok(());
+        }
+
+        before_publication().await;
+        let result = publish_prepared_layout_activation(
+            spatial_engine,
+            scene_manager,
+            candidate_spatial_engine,
+            &expected_layout,
+            expected_active_scene_id,
+            expected_active_render_groups_revision,
+            |_| {},
+        )
+        .await;
+        activation.complete(result.clone());
+        result
     }
 
     #[doc(hidden)]
@@ -451,7 +502,7 @@ pub async fn apply_prepared_layout_update_under_guard(
         scene_transactions,
         guard,
         prepared,
-        |_| async { Ok(()) },
+        |_| async { LayoutPersistenceOutcome::Written },
     )
     .await
 }
@@ -466,7 +517,7 @@ pub(crate) async fn apply_prepared_layout_update_under_guard_with_persistence<F,
 ) -> Result<(), LayoutUpdateError>
 where
     F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
-    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
 {
     let retained_guard = guard.clone();
     tokio::spawn(async move {
@@ -513,25 +564,36 @@ where
             active_scene_id,
             active_render_groups: Arc::clone(&active_render_groups),
         };
-        if let Err(error) = persist(LayoutPersistencePhase::Commit(commit_state)).await {
-            submission.activation.abort();
-            let _ = submission.completion.wait().await;
-            return Err(LayoutUpdateError::Persistence(error.to_string()));
+        match persist(LayoutPersistencePhase::Precommit(commit_state)).await {
+            LayoutPersistenceOutcome::Written => {}
+            LayoutPersistenceOutcome::Superseded => {
+                submission.activation.abort();
+                let _ = submission.completion.wait().await;
+                return Err(LayoutUpdateError::PersistenceSuperseded);
+            }
+            LayoutPersistenceOutcome::BeforeAdmission(error) => {
+                submission.activation.abort();
+                let _ = submission.completion.wait().await;
+                return Err(LayoutUpdateError::Persistence(error));
+            }
+            LayoutPersistenceOutcome::RetryArmed(error) => {
+                submission.activation.abort();
+                let _ = submission.completion.wait().await;
+                if let LayoutPersistenceOutcome::BeforeAdmission(rollback_error) =
+                    persist(LayoutPersistencePhase::Rollback).await
+                {
+                    return Err(LayoutUpdateError::PersistenceRollback(format!(
+                        "{error}; {rollback_error}"
+                    )));
+                }
+                return Err(LayoutUpdateError::Persistence(error));
+            }
         }
         submission.activation.commit();
         let renderer_result = submission.completion.wait().await;
         if let Err(error) = renderer_result {
-            let rollback_state = {
-                let manager = scene_manager.read().await;
-                let authoritative_spatial_engine = spatial_engine.read().await;
-                LayoutPersistenceState {
-                    layout: authoritative_spatial_engine.layout().as_ref().clone(),
-                    active_scene_id: manager.active_scene_id().copied(),
-                    active_render_groups: manager.active_render_groups(),
-                }
-            };
-            if let Err(rollback_error) =
-                persist(LayoutPersistencePhase::Rollback(rollback_state)).await
+            if let LayoutPersistenceOutcome::BeforeAdmission(rollback_error) =
+                persist(LayoutPersistencePhase::Rollback).await
             {
                 return Err(LayoutUpdateError::PersistenceRollback(format!(
                     "{error}; {rollback_error}"
