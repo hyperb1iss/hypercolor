@@ -76,6 +76,9 @@ function Initialize-HypercolorCargoCache {
     if (-not $env:MOZBUILD_STATE_PATH) {
         $env:MOZBUILD_STATE_PATH = Join-Path $cacheRoot 'mozbuild'
     }
+    if (-not $env:CMAKE_TOOLCHAIN_FILE) {
+        $env:CMAKE_TOOLCHAIN_FILE = Join-Path $PSScriptRoot 'cmake\windows-msvc-dynamic-crt.cmake'
+    }
 
     New-Item -ItemType Directory -Force -Path $env:CARGO_TARGET_DIR, $env:MOZBUILD_STATE_PATH | Out-Null
 
@@ -189,6 +192,7 @@ function Initialize-HypercolorCargoCache {
 
     Write-Host "[cargo-cache] CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
     Write-Host "[cargo-cache] MOZBUILD_STATE_PATH=$env:MOZBUILD_STATE_PATH"
+    Write-Host "[cargo-cache] CMAKE_TOOLCHAIN_FILE=$env:CMAKE_TOOLCHAIN_FILE"
 }
 
 function Initialize-HypercolorNativeTools {
