@@ -54,6 +54,8 @@ use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{
     OutputPowerState, current_global_brightness, set_global_brightness,
 };
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::simulators::{SimulatedDisplayConfig, SimulatedDisplayStore};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::{Canvas, Rgba};
@@ -9939,6 +9941,406 @@ async fn layout_mutation_cancellation_finishes_delete() {
     .await;
 }
 
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
+    let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    let preview = SpatialLayout {
+        id: "cancellation-preview".to_owned(),
+        name: "Cancellation Preview".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    let after_renderer = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterRendererMutation,
+        LayoutMutationTestOperation::Preview,
+        &preview.id,
+    );
+    let after_workflow = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterWorkflow,
+        LayoutMutationTestOperation::Preview,
+        &preview.id,
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+    let request_state = Arc::clone(&state);
+    let request = tokio::spawn(async move {
+        request_with_layout_ack(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/layouts/active/preview")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&preview).expect("preview should serialize"),
+                ))
+                .expect("failed to build request"),
+            &request_state,
+        )
+        .await
+        .0
+    });
+    after_renderer.wait_until_entered().await;
+
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("request task should be cancelled")
+            .is_cancelled()
+    );
+    after_renderer.release();
+    after_workflow.wait_until_entered().await;
+    assert_eq!(
+        state.spatial_engine.read().await.layout().id,
+        "cancellation-preview"
+    );
+    after_workflow.release();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
+    let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    state
+        .layouts
+        .write()
+        .await
+        .insert(active.id.clone(), active.clone());
+    persist_current_layouts_for_test(&state).await;
+    let configured_height = state
+        .config_manager
+        .as_ref()
+        .expect("config manager should exist")
+        .get()
+        .daemon
+        .canvas_height;
+    let reference = format!("1024x{configured_height}");
+    let after_memory = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterMemoryMutation,
+        LayoutMutationTestOperation::ConfigResize,
+        &reference,
+    );
+    let after_workflow = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterWorkflow,
+        LayoutMutationTestOperation::ConfigResize,
+        &reference,
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+    let request_state = Arc::clone(&state);
+    let request = tokio::spawn(async move {
+        request_with_layout_ack(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"key":"daemon.canvas_width","value":"1024"}"#,
+                ))
+                .expect("failed to build request"),
+            &request_state,
+        )
+        .await
+        .0
+    });
+    after_memory.wait_until_entered().await;
+
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("request task should be cancelled")
+            .is_cancelled()
+    );
+    after_memory.release();
+    after_workflow.wait_until_entered().await;
+    assert_eq!(state.layouts.read().await[&active.id].canvas_width, 1024);
+    assert_eq!(
+        hypercolor_daemon::layout_store::load(&state.layouts_path)
+            .expect("layout store should load")[&active.id]
+            .canvas_width,
+        1024
+    );
+    after_workflow.release();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_mutation_cancellation_finishes_simulator_pruning() {
+    let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    let device_id = DeviceId::new();
+    state
+        .simulated_displays
+        .write()
+        .await
+        .upsert(SimulatedDisplayConfig {
+            id: device_id,
+            name: "Cancellation Simulator".to_owned(),
+            width: 16,
+            height: 16,
+            circular: false,
+            enabled: true,
+        });
+    let mut stored = state.spatial_engine.read().await.layout().as_ref().clone();
+    stored.id = "cancellation-simulator-prune".to_owned();
+    stored.name = "Cancellation Simulator Prune".to_owned();
+    stored.zones = vec![simulator_target_output(device_id)];
+    state
+        .layouts
+        .write()
+        .await
+        .insert(stored.id.clone(), stored.clone());
+    persist_current_layouts_for_test(&state).await;
+    let after_memory = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterMemoryMutation,
+        LayoutMutationTestOperation::SimulatorPrune,
+        device_id.to_string(),
+    );
+    let after_workflow = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterWorkflow,
+        LayoutMutationTestOperation::SimulatorPrune,
+        device_id.to_string(),
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+    let request = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/simulators/displays/{device_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request")
+    });
+    after_memory.wait_until_entered().await;
+
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("request task should be cancelled")
+            .is_cancelled()
+    );
+    after_memory.release();
+    after_workflow.wait_until_entered().await;
+    assert!(state.layouts.read().await[&stored.id].zones.is_empty());
+    assert!(
+        hypercolor_daemon::layout_store::load(&state.layouts_path)
+            .expect("layout store should load")[&stored.id]
+            .zones
+            .is_empty()
+    );
+    assert!(
+        state
+            .simulated_displays
+            .read()
+            .await
+            .get(device_id)
+            .is_none()
+    );
+    after_workflow.release();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
+    let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    state
+        .layouts
+        .write()
+        .await
+        .insert(active.id.clone(), active.clone());
+    persist_current_layouts_for_test(&state).await;
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    let update_after_memory = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterMemoryMutation,
+        LayoutMutationTestOperation::Update,
+        &active.id,
+    );
+    let configured_height = state
+        .config_manager
+        .as_ref()
+        .expect("config manager should exist")
+        .get()
+        .daemon
+        .canvas_height;
+    let resize_reference = format!("1024x{configured_height}");
+    let resize_before_guard = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::BeforeGuard,
+        LayoutMutationTestOperation::ConfigResize,
+        &resize_reference,
+    );
+    let resize_after_memory = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterMemoryMutation,
+        LayoutMutationTestOperation::ConfigResize,
+        &resize_reference,
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+    let update_app = app.clone();
+    let update_id = active.id.clone();
+    let update = tokio::spawn(async move {
+        update_app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/v1/layouts/{update_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"Rejected Update"}"#))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute update request")
+    });
+    update_after_memory.wait_until_entered().await;
+    let resize_state = Arc::clone(&state);
+    let resize = tokio::spawn(async move {
+        request_with_layout_ack(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"key":"daemon.canvas_width","value":"1024"}"#,
+                ))
+                .expect("failed to build request"),
+            &resize_state,
+        )
+        .await
+        .0
+    });
+    resize_before_guard.wait_until_entered().await;
+    resize_before_guard.release();
+    update_after_memory.release();
+    assert_eq!(
+        update.await.expect("update task should not panic").status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    resize_after_memory.wait_until_entered().await;
+    {
+        let layouts = state.layouts.read().await;
+        assert_eq!(layouts[&active.id].name, active.name);
+        assert_eq!(layouts[&active.id].canvas_width, 1024);
+    }
+    resize_after_memory.release();
+    assert_eq!(
+        resize.await.expect("resize task should not panic").status(),
+        StatusCode::OK
+    );
+    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
+        .expect("layout store should load");
+    assert_eq!(persisted[&active.id].name, active.name);
+    assert_eq!(persisted[&active.id].canvas_width, 1024);
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_update_compensation_cannot_erase_simulator_pruning() {
+    let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    let device_id = DeviceId::new();
+    state
+        .simulated_displays
+        .write()
+        .await
+        .upsert(SimulatedDisplayConfig {
+            id: device_id,
+            name: "Collision Simulator".to_owned(),
+            width: 16,
+            height: 16,
+            circular: false,
+            enabled: true,
+        });
+    let mut stored = state.spatial_engine.read().await.layout().as_ref().clone();
+    stored.id = "simulator-prune-collision".to_owned();
+    stored.name = "Simulator Prune Collision".to_owned();
+    stored.zones = vec![simulator_target_output(device_id)];
+    state
+        .layouts
+        .write()
+        .await
+        .insert(stored.id.clone(), stored.clone());
+    persist_current_layouts_for_test(&state).await;
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    let update_after_memory = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterMemoryMutation,
+        LayoutMutationTestOperation::Update,
+        &stored.id,
+    );
+    let prune_before_guard = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::BeforeGuard,
+        LayoutMutationTestOperation::SimulatorPrune,
+        device_id.to_string(),
+    );
+    let prune_after_memory = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterMemoryMutation,
+        LayoutMutationTestOperation::SimulatorPrune,
+        device_id.to_string(),
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+    let update_app = app.clone();
+    let update_id = stored.id.clone();
+    let update = tokio::spawn(async move {
+        update_app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/v1/layouts/{update_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"Rejected Update"}"#))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute update request")
+    });
+    update_after_memory.wait_until_entered().await;
+    let pruning = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/simulators/displays/{device_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute simulator delete request")
+    });
+    prune_before_guard.wait_until_entered().await;
+    prune_before_guard.release();
+    update_after_memory.release();
+    assert_eq!(
+        update.await.expect("update task should not panic").status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    prune_after_memory.wait_until_entered().await;
+    {
+        let layouts = state.layouts.read().await;
+        assert_eq!(layouts[&stored.id].name, stored.name);
+        assert!(layouts[&stored.id].zones.is_empty());
+    }
+    prune_after_memory.release();
+    assert_eq!(
+        pruning
+            .await
+            .expect("pruning task should not panic")
+            .status(),
+        StatusCode::OK
+    );
+    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
+        .expect("layout store should load");
+    assert_eq!(persisted[&stored.id].name, stored.name);
+    assert!(persisted[&stored.id].zones.is_empty());
+    cleanup.reset_and_flush();
+}
+
 #[tokio::test]
 async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
     let state = Arc::new(isolated_state());
@@ -10234,6 +10636,48 @@ fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::
     state.layouts_path = dir.path().join("layouts.json");
     state.runtime_state_path = dir.path().join("runtime-state.json");
     (Arc::new(state), dir)
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+fn test_state_with_temp_layout_config_and_simulator_stores() -> (Arc<AppState>, tempfile::TempDir) {
+    let mut state = isolated_state();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    state.layouts_path = dir.path().join("layouts.json");
+    state.runtime_state_path = dir.path().join("runtime-state.json");
+    state.logical_devices_path = dir.path().join("logical-devices.json");
+    state.config_manager = Some(Arc::new(
+        ConfigManager::new(dir.path().join("hypercolor.toml"))
+            .expect("config manager should initialize"),
+    ));
+    state.simulated_displays = Arc::new(tokio::sync::RwLock::new(SimulatedDisplayStore::new(
+        dir.path().join("simulated-displays.json"),
+    )));
+    (Arc::new(state), dir)
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+fn simulator_target_output(device_id: DeviceId) -> Output {
+    Output {
+        id: "simulator-output".to_owned(),
+        name: "Simulator Output".to_owned(),
+        device_id: device_id.to_string(),
+        zone_name: None,
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(1.0, 1.0),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    }
 }
 
 async fn persist_current_layouts_for_test(state: &Arc<AppState>) {

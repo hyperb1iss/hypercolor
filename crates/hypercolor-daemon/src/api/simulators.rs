@@ -19,7 +19,7 @@ use hypercolor_types::event::DisconnectReason;
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::logical_devices;
-use crate::scene_transactions::apply_layout_update;
+use crate::scene_transactions::{PreparedLayoutUpdate, apply_prepared_layout_update_under_guard};
 use crate::simulators::{
     SimulatedDisplayConfig, activate_simulated_displays, logical_device_ids_for_simulator,
 };
@@ -164,6 +164,15 @@ pub async fn delete_simulated_display(
         Err(response) => return response,
     };
 
+    match tokio::spawn(delete_simulated_display_workflow(state, device_id)).await {
+        Ok(response) => response,
+        Err(error) => ApiError::internal(format!(
+            "Simulated display deletion workflow failed: {error}"
+        )),
+    }
+}
+
+async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: DeviceId) -> Response {
     let removed = {
         let mut store = state.simulated_displays.write().await;
         store.remove(device_id)
@@ -203,6 +212,15 @@ pub async fn delete_simulated_display(
         .remove(device_id);
     state.display_frames.write().await.remove(device_id);
     crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            crate::api::layouts::LayoutMutationTestPoint::AfterWorkflow,
+            crate::api::layouts::LayoutMutationTestOperation::SimulatorPrune,
+            &device_id.to_string(),
+        )
+        .await;
     ApiResponse::ok(serde_json::json!({
         "id": device_id,
         "deleted": true,
@@ -278,6 +296,16 @@ fn validate_simulator_config(config: &SimulatedDisplayConfig) -> Result<(), Stri
 
 async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: DeviceId) {
     let physical_id = device_id.to_string();
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            crate::api::layouts::LayoutMutationTestPoint::BeforeGuard,
+            crate::api::layouts::LayoutMutationTestOperation::SimulatorPrune,
+            &physical_id,
+        )
+        .await;
+    let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let mut target_ids: HashSet<String> =
         logical_device_ids_for_simulator(&state.logical_devices, device_id)
             .await
@@ -308,17 +336,34 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
         updated_active
     };
 
-    if let Some(layout) = active_layout
-        && let Err(error) = apply_layout_update(
-            &state.spatial_engine,
-            &state.scene_manager,
-            &state.scene_transactions,
-            layout,
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            crate::api::layouts::LayoutMutationTestPoint::AfterMemoryMutation,
+            crate::api::layouts::LayoutMutationTestOperation::SimulatorPrune,
+            &physical_id,
         )
-        .await
-    {
-        warn!(%error, "rejected active layout after simulator pruning");
+        .await;
+    if let Some(layout) = active_layout {
+        match PreparedLayoutUpdate::try_new(layout) {
+            Ok(prepared) => {
+                if let Err(error) = apply_prepared_layout_update_under_guard(
+                    Arc::clone(&state.spatial_engine),
+                    Arc::clone(&state.scene_manager),
+                    state.scene_transactions.clone(),
+                    &guard,
+                    prepared,
+                )
+                .await
+                {
+                    warn!(%error, "rejected active layout after simulator pruning");
+                }
+            }
+            Err(error) => warn!(%error, "rejected active layout after simulator pruning"),
+        }
     }
 
     crate::api::persist_layouts_best_effort(state).await;
+    drop(guard);
 }

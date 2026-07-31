@@ -32,7 +32,7 @@ use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
 use crate::runtime_state::RuntimeSessionError;
 use crate::scene_transactions::{
     LayoutPersistenceOutcome, LayoutPersistencePhase, LayoutTransactionRejection,
-    LayoutUpdateError, LayoutUpdateGuard, PreparedLayoutUpdate, apply_layout_update,
+    LayoutUpdateError, LayoutUpdateGuard, PreparedLayoutUpdate,
     apply_prepared_layout_update_under_guard_with_persistence,
 };
 
@@ -67,6 +67,8 @@ const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum LayoutMutationTestPoint {
     BeforeGuard,
     AfterMemoryMutation,
+    AfterRendererMutation,
+    AfterWorkflow,
 }
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -75,7 +77,10 @@ pub enum LayoutMutationTestOperation {
     Create,
     Update,
     Apply,
+    Preview,
     Delete,
+    ConfigResize,
+    SimulatorPrune,
 }
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -136,7 +141,7 @@ impl LayoutMutationTestHooks {
         barrier
     }
 
-    async fn wait(
+    pub(crate) async fn wait(
         &self,
         point: LayoutMutationTestPoint,
         operation: LayoutMutationTestOperation,
@@ -539,6 +544,10 @@ pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
     Json(layout): Json<SpatialLayout>,
 ) -> Response {
+    await_layout_mutation(tokio::spawn(preview_layout_workflow(state, layout))).await
+}
+
+async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) -> Response {
     if let Err(error) = validate_canvas_dimensions(layout.canvas_width, layout.canvas_height) {
         return ApiError::validation(error);
     }
@@ -546,18 +555,53 @@ pub async fn preview_layout(
         return ApiError::validation(error);
     }
 
-    if let Err(error) = apply_layout_update(
-        &state.spatial_engine,
-        &state.scene_manager,
-        &state.scene_transactions,
-        layout,
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::BeforeGuard,
+            LayoutMutationTestOperation::Preview,
+            &layout.id,
+        )
+        .await;
+    let guard = state.scene_transactions.acquire_layout_update_guard().await;
+    let reference = layout.id.clone();
+    let prepared = match PreparedLayoutUpdate::try_new(layout) {
+        Ok(prepared) => prepared,
+        Err(error) => return layout_update_error_response(error.into()),
+    };
+    if let Err(error) = crate::scene_transactions::apply_prepared_layout_update_under_guard(
+        Arc::clone(&state.spatial_engine),
+        Arc::clone(&state.scene_manager),
+        state.scene_transactions.clone(),
+        &guard,
+        prepared,
     )
     .await
     {
         return layout_update_error_response(error);
     }
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::AfterRendererMutation,
+            LayoutMutationTestOperation::Preview,
+            &reference,
+        )
+        .await;
     let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::AfterWorkflow,
+            LayoutMutationTestOperation::Preview,
+            &reference,
+        )
+        .await;
+    drop(guard);
 
     ApiResponse::ok(serde_json::json!({ "previewing": true }))
 }

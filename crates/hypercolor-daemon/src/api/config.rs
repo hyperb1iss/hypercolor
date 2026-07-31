@@ -21,8 +21,9 @@ use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::scene_transactions::SceneTransaction;
-use crate::scene_transactions::apply_layout_update;
+use crate::scene_transactions::{
+    PreparedLayoutUpdate, SceneTransaction, apply_prepared_layout_update_under_guard,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct GetConfigQuery {
@@ -1041,6 +1042,36 @@ const fn canvas_dimensions_differ(
 }
 
 async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, height: u32) -> bool {
+    let state = Arc::clone(state);
+    match tokio::spawn(sync_active_layout_canvas_size_workflow(
+        state, width, height,
+    ))
+    .await
+    {
+        Ok(applied) => applied,
+        Err(error) => {
+            warn!(%error, width, height, "Live canvas dimension workflow failed");
+            false
+        }
+    }
+}
+
+async fn sync_active_layout_canvas_size_workflow(
+    state: Arc<AppState>,
+    width: u32,
+    height: u32,
+) -> bool {
+    let mutation_reference = format!("{width}x{height}");
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            crate::api::layouts::LayoutMutationTestPoint::BeforeGuard,
+            crate::api::layouts::LayoutMutationTestOperation::ConfigResize,
+            &mutation_reference,
+        )
+        .await;
+    let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let updated_layout = {
         let spatial = state.spatial_engine.read().await;
         let current = spatial.layout().as_ref().clone();
@@ -1058,11 +1089,19 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
         return false;
     };
 
-    if let Err(error) = apply_layout_update(
-        &state.spatial_engine,
-        &state.scene_manager,
-        &state.scene_transactions,
-        updated_layout.clone(),
+    let prepared = match PreparedLayoutUpdate::try_new(updated_layout.clone()) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            warn!(%error, width, height, "Rejected live canvas dimension config");
+            return false;
+        }
+    };
+    if let Err(error) = apply_prepared_layout_update_under_guard(
+        Arc::clone(&state.spatial_engine),
+        Arc::clone(&state.scene_manager),
+        state.scene_transactions.clone(),
+        &guard,
+        prepared,
     )
     .await
     {
@@ -1081,9 +1120,28 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
         }
     };
 
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            crate::api::layouts::LayoutMutationTestPoint::AfterMemoryMutation,
+            crate::api::layouts::LayoutMutationTestOperation::ConfigResize,
+            &mutation_reference,
+        )
+        .await;
     if persisted_layout_updated {
-        crate::api::persist_layouts_best_effort(state).await;
+        crate::api::persist_layouts_best_effort(&state).await;
     }
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            crate::api::layouts::LayoutMutationTestPoint::AfterWorkflow,
+            crate::api::layouts::LayoutMutationTestOperation::ConfigResize,
+            &mutation_reference,
+        )
+        .await;
+    drop(guard);
 
     true
 }
