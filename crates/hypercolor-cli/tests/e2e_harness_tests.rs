@@ -50,6 +50,10 @@ impl DaemonHarness {
 
         let mut daemon_state = DaemonState::initialize(&config, config_path)
             .context("failed to initialize daemon state")?;
+        daemon_state
+            .start()
+            .await
+            .context("failed to start daemon state")?;
 
         let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
         let router = api::build_router(app_state, None);
