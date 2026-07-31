@@ -1066,6 +1066,89 @@ async fn run_one_layout_publication_with_gate(
     .expect("layout publication worker should finish");
 }
 
+async fn run_layout_publications(
+    state: Arc<AppState>,
+    expected_count: usize,
+) -> Vec<SpatialLayout> {
+    let mut applied = Vec::with_capacity(expected_count);
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        while applied.len() < expected_count {
+            let mut deferred = Vec::new();
+            for transaction in state.scene_transactions.drain() {
+                match transaction {
+                    SceneTransaction::PrepareLayout(transaction) => {
+                        applied.push(transaction.spatial_engine().layout().as_ref().clone());
+                        transaction
+                            .accept_and_publish_for_test(
+                                &state.spatial_engine,
+                                &state.scene_manager,
+                                || async {},
+                            )
+                            .await
+                            .expect("layout publication should succeed");
+                    }
+                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
+                        deferred.push(transaction);
+                    }
+                }
+            }
+            for transaction in deferred {
+                state
+                    .scene_transactions
+                    .push(transaction)
+                    .expect("test transaction queue should remain open");
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(
+        result.is_ok(),
+        "layout publication worker should finish after {expected_count} publications; observed {}",
+        applied.len()
+    );
+    applied
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> String {
+    let tracked = state
+        .device_registry
+        .get(device_id)
+        .await
+        .expect("repair target should be registered");
+    let fingerprint = state.device_registry.fingerprint_for_id(device_id).await;
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&tracked.info, fingerprint.as_ref());
+    let mut layout = state.spatial_engine.read().await.layout().as_ref().clone();
+    assert_eq!(
+        hypercolor_daemon::discovery::append_auto_layout_zones_for_device(
+            &mut layout,
+            &layout_device_id,
+            &tracked.info,
+        ),
+        1
+    );
+    let stale_zone = layout
+        .zones
+        .iter_mut()
+        .find(|zone| zone.device_id == layout_device_id)
+        .expect("seeded auto-layout zone should exist");
+    "Stale Auto Layout Zone".clone_into(&mut stale_zone.name);
+    let mut repair_probe = layout.clone();
+    assert_eq!(
+        hypercolor_daemon::discovery::reconcile_auto_layout_zones_for_device(
+            &mut repair_probe,
+            &layout_device_id,
+            &tracked.info,
+        ),
+        1,
+        "seeded auto-layout zone should require repair"
+    );
+    state.spatial_engine.write().await.update_layout(layout);
+    layout_device_id
+}
+
 async fn wait_for_async_condition<F, Fut>(mut condition: F)
 where
     F: FnMut() -> Fut,
@@ -9945,6 +10028,13 @@ async fn layout_mutation_cancellation_finishes_delete() {
 #[tokio::test]
 async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
     let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    register_noop_backend(&state, "wled", "WLED").await;
+    let repair_device_id = insert_test_device(&state, "Preview Repair Target").await;
+    state
+        .device_registry
+        .set_state(&repair_device_id, DeviceState::Connected)
+        .await;
+    let repair_layout_device_id = seed_stale_auto_layout_zone(&state, &repair_device_id).await;
     let preview = SpatialLayout {
         id: "cancellation-preview".to_owned(),
         name: "Cancellation Preview".to_owned(),
@@ -9961,10 +10051,9 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
         &preview.id,
     );
     let app = test_app_with_state(Arc::clone(&state));
-    let request_state = Arc::clone(&state);
+    let renderer = tokio::spawn(run_layout_publications(Arc::clone(&state), 2));
     let request = tokio::spawn(async move {
-        request_with_layout_ack(
-            app,
+        app.oneshot(
             Request::builder()
                 .method("PUT")
                 .uri("/api/v1/layouts/active/preview")
@@ -9973,10 +10062,9 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
                     serde_json::to_vec(&preview).expect("preview should serialize"),
                 ))
                 .expect("failed to build request"),
-            &request_state,
         )
         .await
-        .0
+        .expect("failed to execute request")
     });
     after_renderer.wait_until_entered().await;
 
@@ -9993,7 +10081,96 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
         state.spatial_engine.read().await.layout().id,
         "cancellation-preview"
     );
+    assert!(
+        state
+            .spatial_engine
+            .read()
+            .await
+            .layout()
+            .zones
+            .iter()
+            .any(|output| {
+                output.device_id == repair_layout_device_id
+                    && output.name == "Preview Repair Target"
+            })
+    );
     after_workflow.release();
+    assert_eq!(
+        renderer
+            .await
+            .expect("layout publication worker should not panic")
+            .len(),
+        2
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool) {
+    let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    let device_id = insert_test_device(&state, "Failed Auto Layout Repair").await;
+    state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+    seed_stale_auto_layout_zone(&state, &device_id).await;
+    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    if saved_layout_present {
+        state
+            .layouts
+            .write()
+            .await
+            .insert(active.id.clone(), active.clone());
+    }
+    persist_current_layouts_for_test(&state).await;
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    let renderer = tokio::spawn(run_layout_publications(Arc::clone(&state), 2));
+
+    let mut runtime = state.driver_host.discovery_runtime();
+    runtime.layouts_path.clone_from(&state.layouts_path);
+    hypercolor_daemon::discovery::sync_active_layout_for_renderable_devices(&runtime, None).await;
+
+    let applied = renderer
+        .await
+        .expect("layout publication worker should not panic");
+    assert_eq!(applied.len(), 2);
+    assert!(!applied[0].zones.is_empty());
+    assert_eq!(applied[1], active);
+    assert_eq!(state.spatial_engine.read().await.layout().as_ref(), &active);
+    let layouts = state.layouts.read().await;
+    assert_eq!(
+        layouts.get(&active.id),
+        saved_layout_present.then_some(&active)
+    );
+    drop(layouts);
+    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
+        .expect("layout store should load");
+    let persisted_active = persisted.get(&active.id).map(|layout| {
+        hypercolor_core::spatial::SpatialEngine::try_new(layout.clone())
+            .expect("persisted layout should rebuild")
+            .layout()
+            .as_ref()
+            .clone()
+    });
+    assert_eq!(
+        persisted_active.as_ref(),
+        saved_layout_present.then_some(&active)
+    );
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_auto_repair_store_failure_restores_saved_layout() {
+    assert_auto_layout_store_failure_rolls_back(true).await;
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_auto_repair_store_failure_preserves_absent_saved_layout() {
+    assert_auto_layout_store_failure_rolls_back(false).await;
 }
 
 #[cfg(feature = "persistence-test-hooks")]

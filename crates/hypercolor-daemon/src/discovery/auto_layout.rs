@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 
 use super::DiscoveryRuntime;
 use crate::layout_auto_exclusions::LayoutAutoExclusionKey;
-use crate::scene_transactions::apply_layout_update;
+use crate::scene_transactions::{PreparedLayoutUpdate, apply_prepared_layout_update_under_guard};
 
 #[doc(hidden)]
 #[allow(
@@ -23,10 +23,64 @@ pub async fn sync_active_layout_for_renderable_devices(
     runtime: &DiscoveryRuntime,
     limit_to_devices: Option<&HashSet<DeviceId>>,
 ) {
-    let mut layout = {
+    let runtime = runtime.clone();
+    let limit_to_devices = limit_to_devices.cloned();
+    if let Err(error) = tokio::spawn(async move {
+        sync_active_layout_for_renderable_devices_workflow(&runtime, limit_to_devices.as_ref())
+            .await;
+    })
+    .await
+    {
+        warn!(%error, "auto-layout repair workflow failed");
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "layout reconciliation keeps the full discovery-driven repair flow in one place"
+)]
+async fn sync_active_layout_for_renderable_devices_workflow(
+    runtime: &DiscoveryRuntime,
+    limit_to_devices: Option<&HashSet<DeviceId>>,
+) {
+    let tracked_devices = runtime.device_registry.list().await;
+    let logical_store = runtime.logical_devices.read().await.clone();
+    let lifecycle_layout_ids = {
+        let lifecycle = runtime.lifecycle_manager.lock().await;
+        tracked_devices
+            .iter()
+            .map(|tracked| {
+                let device_id = tracked.info.id;
+                let layout_id = lifecycle
+                    .layout_device_id_for(device_id)
+                    .map(ToOwned::to_owned);
+                (device_id, layout_id)
+            })
+            .collect::<HashMap<_, _>>()
+    };
+    let mut canonical_layout_ids = HashMap::with_capacity(tracked_devices.len());
+    for tracked in &tracked_devices {
+        let device_id = tracked.info.id;
+        let layout_device_id = if let Some(Some(layout_device_id)) =
+            lifecycle_layout_ids.get(&device_id)
+        {
+            layout_device_id.clone()
+        } else {
+            let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+            DeviceLifecycleManager::canonical_layout_device_id(&tracked.info, fingerprint.as_ref())
+        };
+        canonical_layout_ids.insert(device_id, layout_device_id);
+    }
+
+    let guard = runtime
+        .scene_transactions
+        .acquire_layout_update_guard()
+        .await;
+    let original_layout = {
         let spatial = runtime.spatial_engine.read().await;
         spatial.layout().as_ref().clone()
     };
+    let mut layout = original_layout.clone();
     let excluded_layout_device_ids = {
         let exclusion_keys = active_auto_exclusion_keys(runtime, &layout).await;
         let store = runtime.layout_auto_exclusions.read().await;
@@ -46,22 +100,6 @@ pub async fn sync_active_layout_for_renderable_devices(
             .collect::<HashSet<_>>()
     };
 
-    let tracked_devices = runtime.device_registry.list().await;
-    let logical_store = runtime.logical_devices.read().await.clone();
-    let canonical_layout_ids = {
-        let lifecycle = runtime.lifecycle_manager.lock().await;
-        tracked_devices
-            .iter()
-            .map(|tracked| {
-                let device_id = tracked.info.id;
-                let layout_id = lifecycle
-                    .layout_device_id_for(device_id)
-                    .map(ToOwned::to_owned);
-                (device_id, layout_id)
-            })
-            .collect::<HashMap<_, _>>()
-    };
-
     let mut repaired_devices = Vec::new();
     let mut repaired_zone_count = 0_usize;
     for tracked in tracked_devices {
@@ -73,14 +111,10 @@ pub async fn sync_active_layout_for_renderable_devices(
             continue;
         }
 
-        let layout_device_id = if let Some(Some(layout_device_id)) =
-            canonical_layout_ids.get(&device_id)
-        {
-            layout_device_id.clone()
-        } else {
-            let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
-            DeviceLifecycleManager::canonical_layout_device_id(&tracked.info, fingerprint.as_ref())
-        };
+        let layout_device_id = canonical_layout_ids
+            .get(&device_id)
+            .expect("tracked device should have a canonical layout id")
+            .clone();
         let default_enabled = logical_store
             .get(&layout_device_id)
             .is_none_or(|entry| entry.enabled);
@@ -131,11 +165,19 @@ pub async fn sync_active_layout_for_renderable_devices(
         return;
     }
 
-    if let Err(error) = apply_layout_update(
-        &runtime.spatial_engine,
-        &runtime.scene_manager,
-        &runtime.scene_transactions,
-        layout.clone(),
+    let prepared = match PreparedLayoutUpdate::try_new(layout.clone()) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            warn!(%error, "rejected auto-layout repair before persistence");
+            return;
+        }
+    };
+    if let Err(error) = apply_prepared_layout_update_under_guard(
+        runtime.spatial_engine.clone(),
+        runtime.scene_manager.clone(),
+        runtime.scene_transactions.clone(),
+        &guard,
+        prepared,
     )
     .await
     {
@@ -143,17 +185,48 @@ pub async fn sync_active_layout_for_renderable_devices(
         return;
     }
 
-    let layouts_snapshot = {
+    let (previous_saved_layout, layouts_snapshot) = {
         let mut layouts = runtime.layouts.write().await;
-        layouts.insert(layout.id.clone(), layout.clone());
-        layouts.clone()
+        let previous = layouts.insert(layout.id.clone(), layout.clone());
+        (previous, layouts.clone())
     };
     if let Err(error) = crate::layout_store::save(&runtime.layouts_path, &layouts_snapshot) {
+        let rollback_layout = previous_saved_layout
+            .as_ref()
+            .cloned()
+            .unwrap_or(original_layout);
+        let rollback_snapshot = {
+            let mut layouts = runtime.layouts.write().await;
+            if let Some(previous) = previous_saved_layout {
+                layouts.insert(layout.id.clone(), previous);
+            } else {
+                layouts.remove(&layout.id);
+            }
+            layouts.clone()
+        };
+        let layout_store_rollback =
+            crate::layout_store::save(&runtime.layouts_path, &rollback_snapshot).err();
+        let renderer_rollback = match PreparedLayoutUpdate::try_new(rollback_layout) {
+            Ok(prepared) => apply_prepared_layout_update_under_guard(
+                runtime.spatial_engine.clone(),
+                runtime.scene_manager.clone(),
+                runtime.scene_transactions.clone(),
+                &guard,
+                prepared,
+            )
+            .await
+            .err()
+            .map(|error| error.to_string()),
+            Err(error) => Some(error.to_string()),
+        };
         warn!(
             path = %runtime.layouts_path.display(),
             %error,
-            "failed to persist auto-updated layout store"
+            layout_store_rollback = ?layout_store_rollback,
+            renderer_rollback = ?renderer_rollback,
+            "failed to persist auto-updated layout store; restored previous layout"
         );
+        return;
     }
 
     info!(

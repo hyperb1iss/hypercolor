@@ -581,6 +581,7 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
     {
         return layout_update_error_response(error);
     }
+    drop(guard);
     #[cfg(feature = "persistence-test-hooks")]
     state
         .layout_mutation_test_hooks
@@ -601,7 +602,6 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
             &reference,
         )
         .await;
-    drop(guard);
 
     ApiResponse::ok(serde_json::json!({ "previewing": true }))
 }
