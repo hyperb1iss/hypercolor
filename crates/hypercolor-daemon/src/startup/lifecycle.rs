@@ -196,7 +196,9 @@ impl DaemonState {
 
         self.spawn_effect_error_fallback_worker();
         self.spawn_display_preference_sync_worker();
-        self.spawn_discovery_worker(Arc::clone(&config));
+        if config.discovery.background_enabled {
+            self.spawn_discovery_worker(Arc::clone(&config));
+        }
 
         for extension in self.lifecycle_extensions.clone() {
             info!(extension = extension.name(), "Starting daemon extension");

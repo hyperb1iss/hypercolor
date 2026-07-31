@@ -1039,6 +1039,12 @@ impl Default for DisplayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct DiscoveryConfig {
+    /// Run startup, hotplug, and periodic background discovery.
+    ///
+    /// Manual discovery requests remain available when this is disabled.
+    #[serde(default = "defaults::bool_true")]
+    pub background_enabled: bool,
+
     #[serde(default = "defaults::bool_true")]
     pub mdns_enabled: bool,
 
@@ -1057,6 +1063,7 @@ pub struct DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
+            background_enabled: defaults::bool_true(),
             mdns_enabled: defaults::bool_true(),
             scan_interval_secs: defaults::scan_interval(),
             blocks_scan: defaults::bool_true(),

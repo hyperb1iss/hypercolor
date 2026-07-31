@@ -258,13 +258,14 @@ Network device discovery settings.
 
 ```toml
 [discovery]
+background_enabled  = true    # Run startup, hotplug, and periodic discovery
 mdns_enabled        = true    # Auto-detect mDNS-advertised devices (WLED, Hue, Nanoleaf)
 scan_interval_secs  = 300     # Re-scan interval in seconds
 blocks_scan         = true    # Enable ROLI Blocks discovery via blocksd bridge
 blocks_socket_path  = ""      # Custom blocksd socket path (empty = auto-detect)
 ```
 
-Discovery triggers automatically on startup and then at each `scan_interval_secs` interval. Lower the interval if you frequently plug in and unplug network devices; raise it on battery-constrained setups.
+Discovery triggers automatically on startup, USB hotplug, and then at each `scan_interval_secs` interval. Set `background_enabled = false` to disable all three automatic triggers while keeping manual discovery available. Lower the interval if you frequently plug in and unplug network devices; raise it on battery-constrained setups.
 
 ---
 

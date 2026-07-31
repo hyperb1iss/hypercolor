@@ -270,6 +270,7 @@ fn unsupported_capture_platform_only_accepts_disabled_config() {
 #[test]
 fn discovery_defaults_match_spec() {
     let d = DiscoveryConfig::default();
+    assert!(d.background_enabled);
     assert!(d.mdns_enabled);
     assert_eq!(d.scan_interval_secs, 300);
     assert!(d.blocks_scan);
