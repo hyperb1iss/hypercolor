@@ -961,6 +961,7 @@ where
     }
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 async fn run_two_layout_publications_with_gates(
     state: Arc<AppState>,
     first_publication_entered: Arc<Notify>,
@@ -1019,6 +1020,7 @@ async fn run_two_layout_publications_with_gates(
     .expect("layout publication worker should finish");
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 async fn run_one_layout_publication_with_gate(
     state: Arc<AppState>,
     publication_entered: Arc<Notify>,
@@ -1066,6 +1068,7 @@ async fn run_one_layout_publication_with_gate(
     .expect("layout publication worker should finish");
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 async fn run_layout_publications(
     state: Arc<AppState>,
     expected_count: usize,
@@ -1149,6 +1152,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     layout_device_id
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 async fn wait_for_async_condition<F, Fut>(mut condition: F)
 where
     F: FnMut() -> Fut,
@@ -10857,6 +10861,7 @@ fn simulator_target_output(device_id: DeviceId) -> Output {
     }
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 async fn persist_current_layouts_for_test(state: &Arc<AppState>) {
     let layouts = state.layouts.read().await;
     hypercolor_daemon::layout_store::save(&state.layouts_path, &layouts)

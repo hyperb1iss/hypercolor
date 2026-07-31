@@ -590,15 +590,15 @@ fn one_registration_preserves_every_screen_request_shape() {
     let exact = demands.snapshot().exact_screen_demand(91);
     assert_eq!(exact.graph_generation().get(), 91);
     assert_eq!(exact.branches().len(), 4);
-    assert!(matches!(
+    assert!(
         exact
             .compatibility_surface()
             .expect("a Surface compatibility branch is selected")
             .request()
             .extent()
-            .bounded_extent(),
-        Some(_)
-    ));
+            .bounded_extent()
+            .is_some()
+    );
     assert!(matches!(
         exact
             .compatibility_zones()

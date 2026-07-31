@@ -1061,6 +1061,7 @@ async fn sync_active_layout_canvas_size_workflow(
     width: u32,
     height: u32,
 ) -> bool {
+    #[cfg(feature = "persistence-test-hooks")]
     let mutation_reference = format!("{width}x{height}");
     #[cfg(feature = "persistence-test-hooks")]
     state
@@ -1346,8 +1347,10 @@ mod tests {
 
     #[test]
     fn capture_runtime_health_rejects_missing_stopped_failed_and_extra_sources() {
-        let mut capture = hypercolor_types::config::CaptureConfig::default();
-        capture.enabled = true;
+        let mut capture = hypercolor_types::config::CaptureConfig {
+            enabled: true,
+            ..hypercolor_types::config::CaptureConfig::default()
+        };
         assert!(!capture_statuses_match(&capture, &[]));
         assert!(!capture_statuses_match(
             &capture,

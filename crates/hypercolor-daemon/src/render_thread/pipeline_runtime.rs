@@ -2246,8 +2246,8 @@ mod tests {
         ScreenPhysicalGpuDeviceIdentity, ScreenPublicationExecutorRequest,
     };
     use hypercolor_core::input::{
-        InputData, InputGraphSnapshot, InputManager, InputSource, InteractionData, SourceIssue,
-        SourceKind, SourceStatusWriter,
+        InputData, InputGraphSnapshot, InputManager, InputSource, InputSourceSlot, InteractionData,
+        MotionAggregate, SourceIssue, SourceKind, SourceStatusWriter,
     };
     use hypercolor_core::spatial::{
         SpatialEngine, SpatialSamplingCapacity, SpatialSamplingWorkspaceUsage,
@@ -2540,7 +2540,8 @@ mod tests {
             .expect("eligible source should begin");
         assert!(session.mark_event_driven_live_without_deadline(1));
 
-        let idle = aggregate_interaction_availability(&[handle.clone()], Instant::now());
+        let idle =
+            aggregate_interaction_availability(std::slice::from_ref(&handle), Instant::now());
         assert_eq!(
             idle,
             hypercolor_core::effect::InputSourceAvailability {
@@ -2578,7 +2579,7 @@ mod tests {
         let graph = manager.input_graph_handle().snapshot();
 
         let availability = aggregate_interaction_availability(
-            graph.slots().iter().map(|slot| slot.status()),
+            graph.slots().iter().map(InputSourceSlot::status),
             Instant::now(),
         );
 
@@ -2835,7 +2836,7 @@ mod tests {
         );
 
         resolve_authoritative(&mut routes, &graph, &event_bus, &mut inputs);
-        assert_eq!(inputs.interaction.batch.motion, Default::default());
+        assert_eq!(inputs.interaction.batch.motion, MotionAggregate::default());
         assert_eq!(inputs.interaction.batch.wheel_hi_res, 0);
         assert!(inputs.interaction.batch.events.is_empty());
     }

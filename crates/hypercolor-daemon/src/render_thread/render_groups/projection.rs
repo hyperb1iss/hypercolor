@@ -486,11 +486,6 @@ fn zone_projection_bounds(
     Some(ProjectionBounds { x0, y0, x1, y1 })
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::as_conversions,
-    reason = "scene pixel centers are rasterized into normalized scene coordinates"
-)]
 #[cfg(test)]
 pub(super) fn zone_local_position_for_scene_pixel(
     x: u32,

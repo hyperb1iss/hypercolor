@@ -397,7 +397,7 @@ impl StatusEventTestSource {
 }
 
 impl InputSource for StatusEventTestSource {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Status Event Test"
     }
 

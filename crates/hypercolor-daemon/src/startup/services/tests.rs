@@ -267,9 +267,8 @@ fn daemon_initialization_rejects_invalid_capture_config_before_startup() {
     };
 
     let result = super::DaemonState::initialize(&config, directory.path().join("hypercolor.toml"));
-    let error = match result {
-        Ok(_) => panic!("invalid capture config must stop daemon initialization"),
-        Err(error) => error,
+    let Err(error) = result else {
+        panic!("invalid capture config must stop daemon initialization");
     };
 
     assert!(format!("{error:#}").contains("capture.capture_fps"));

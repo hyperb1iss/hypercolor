@@ -311,6 +311,7 @@ async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest)
         return ApiError::conflict(format!("Layout already exists: {normalized_name}"));
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     let mutation_reference = normalized_name.clone();
     let id = format!("layout_{}", uuid::Uuid::now_v7());
     let layout = SpatialLayout {
@@ -565,6 +566,7 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
         )
         .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
+    #[cfg(feature = "persistence-test-hooks")]
     let reference = layout.id.clone();
     let prepared = match PreparedLayoutUpdate::try_new(layout) {
         Ok(prepared) => prepared,

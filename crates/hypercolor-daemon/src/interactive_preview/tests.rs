@@ -15,6 +15,7 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::viewport::ViewportRect;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -257,7 +258,7 @@ fn wire_timestamp_wraps_at_u32_boundary() {
 fn screen_preview_demands_the_resolved_scene_extent() {
     let mut group = color_group([0.0, 0.0, 0.0, 1.0]);
     group.layers[0].source = LayerSource::ScreenRegion {
-        viewport: Default::default(),
+        viewport: ViewportRect::default(),
     };
     let scene = ResolvedPreviewScene {
         scene_id: None,
@@ -518,9 +519,8 @@ async fn resource_exhaustion_rejects_only_candidate_and_preserves_active_lane() 
     let used_before = rig.executor.resource_snapshot().used;
     let second_attachment = rig.attach(2, "preview");
 
-    let error = match rig.executor.open(&second_attachment, requested_spec).await {
-        Ok(_) => panic!("second lane should exceed aggregate bytes"),
-        Err(error) => error,
+    let Err(error) = rig.executor.open(&second_attachment, requested_spec).await else {
+        panic!("second lane should exceed aggregate bytes");
     };
 
     assert!(matches!(error, super::InteractivePreviewError::Capacity(_)));

@@ -43,7 +43,7 @@ fn spawn_layout_acknowledger(queue: SceneTransactionQueue) -> LayoutAcknowledger
                     SceneTransaction::PrepareLayout(transaction) => {
                         transaction.accept_and_commit_for_test();
                     }
-                    transaction => queue
+                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => queue
                         .push(transaction)
                         .expect("test transaction queue should remain open"),
                 }
