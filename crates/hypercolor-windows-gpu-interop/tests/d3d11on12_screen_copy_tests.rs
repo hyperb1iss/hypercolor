@@ -117,7 +117,6 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
     assert!(restarted_copy.content_generation > second_copy.content_generation);
     assert_pixels(&wgpu, &restarted_copy, [90, 80, 70, 255])?;
 
-    let storage_id = target.storage_id();
     drop(target);
     assert_eq!(
         bridge
@@ -127,11 +126,13 @@ fn copies_exact_pixels_and_separates_native_resource_incarnations() -> Result<()
         3,
         "texture readers must retain each exact prepared target",
     );
-    let retained_by_readers = bridge
+    let duplicate_error = bridge
         .prepare_target(first.target_preparation())
-        .map_err(|error| error.to_string())?;
-    assert_eq!(retained_by_readers.storage_id(), storage_id);
-    drop(retained_by_readers);
+        .expect_err("reader-retained target prevents a duplicate native claimant");
+    assert!(matches!(
+        duplicate_error,
+        D3d11On12ScreenInteropError::PreparedTargetAlreadyLive
+    ));
     drop(restarted_target);
     drop(second_target);
     drop(restarted_copy);

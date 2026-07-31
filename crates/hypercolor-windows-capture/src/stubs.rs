@@ -1,15 +1,16 @@
 //! Non-Windows stand-in so downstream crates compile unconditionally.
 
+use std::marker::PhantomData;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::shared::{
-    CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
-    DisplayRotation, Frame, GpuAdapterLuid, GpuReductionAdmission, GpuReductionProvenance,
-    GpuSharedHandle, GpuSurfaceAdmission, GpuSurfaceDescriptor, GpuSurfaceDescriptorId,
-    GpuSurfacePlanGeneration, GpuSurfaceProvenance, GpuSurfaceSlotId, GpuSurfaceSourceColorSpace,
-    GpuSurfaceSynchronization, MonitorSelector, ReductionTelemetry,
+    CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResourceAdmission,
+    CaptureResult, CpuDesktopFrame, DisplayRotation, Frame, GpuAdapterLuid, GpuReductionAdmission,
+    GpuReductionProvenance, GpuSharedHandle, GpuSurfaceAdmission, GpuSurfaceDescriptor,
+    GpuSurfaceDescriptorId, GpuSurfacePlanGeneration, GpuSurfaceProvenance, GpuSurfaceSlotId,
+    GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization, MonitorSelector, ReductionTelemetry,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -17,11 +18,12 @@ enum Never {}
 
 /// Uninhabited non-Windows stand-in for a shareable D3D11 texture lease.
 #[derive(Debug)]
-pub struct GpuSurfaceLease {
+pub struct GpuSurfaceLease<'a> {
     never: Never,
+    marker: PhantomData<&'a GpuSurfacePublication>,
 }
 
-impl GpuSurfaceLease {
+impl GpuSurfaceLease<'_> {
     /// No borrowed D3D11 texture handle exists on this platform.
     #[must_use]
     pub fn texture_handle(&self) -> GpuSharedHandle<'_> {
@@ -82,13 +84,13 @@ impl GpuSurfacePublication {
     }
 
     /// No GPU lease exists on this platform.
-    pub fn claim(self: &Arc<Self>) -> CaptureResult<GpuSurfaceLease> {
+    pub fn claim(&self) -> CaptureResult<GpuSurfaceLease<'_>> {
         match self.never {}
     }
 }
 
 /// Uninhabited non-Windows stand-in for one native preparation slot.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GpuSurfaceTargetPreparationSlot {
     never: Never,
 }
@@ -120,7 +122,7 @@ impl GpuSurfaceTargetPreparationSlot {
 }
 
 /// Uninhabited non-Windows stand-in for a native preparation manifest.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GpuSurfaceTargetPreparation {
     never: Never,
 }
@@ -531,6 +533,19 @@ impl DesktopDuplicator {
     pub fn open(
         _selector: MonitorSelector,
         _requested_extent: CaptureExtent,
+    ) -> CaptureResult<Self> {
+        Err(CaptureError::UnsupportedPlatform)
+    }
+
+    /// Always fails: Desktop Duplication is Windows-only.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`CaptureError::UnsupportedPlatform`].
+    pub fn open_with_resource_admission(
+        _selector: MonitorSelector,
+        _requested_extent: CaptureExtent,
+        _resource_admission: Arc<dyn CaptureResourceAdmission>,
     ) -> CaptureResult<Self> {
         Err(CaptureError::UnsupportedPlatform)
     }

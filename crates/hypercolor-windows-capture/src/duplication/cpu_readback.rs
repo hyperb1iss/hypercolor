@@ -1,5 +1,7 @@
+use std::alloc::Layout;
 use std::mem::size_of;
 use std::num::NonZeroU32;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::E_OUTOFMEMORY;
@@ -15,8 +17,8 @@ use super::{
     classify_windows_error, create_staging_texture,
 };
 use crate::{
-    CaptureError, CaptureExtent, CaptureLane, CaptureResult, CpuDesktopFrame, DisplayRotation,
-    GpuAdapterLuid, GpuSurfaceSourceColorSpace,
+    CaptureError, CaptureExtent, CaptureLane, CaptureResult, CpuDesktopFrame,
+    CpuDesktopReadbackResourceQuote, DisplayRotation, GpuAdapterLuid, GpuSurfaceSourceColorSpace,
 };
 
 struct PendingReadback {
@@ -40,11 +42,13 @@ pub struct PreparedCpuDesktopReadback {
     source_rotation: DisplayRotation,
     source_color_space: GpuSurfaceSourceColorSpace,
     context: ID3D11DeviceContext,
-    slots: Vec<ReadbackSlot>,
+    slots: Box<[ReadbackSlot]>,
     write_index: usize,
     read_index: usize,
     frame_pool: Arc<Mutex<Vec<Vec<u8>>>>,
     allocation_byte_len: u64,
+    metadata_byte_len: u64,
+    retained_byte_len: u64,
     mapped_byte_len: u64,
     last_submitted_sequence: Option<u64>,
 }
@@ -60,6 +64,7 @@ impl std::fmt::Debug for PreparedCpuDesktopReadback {
             .field("source_extent", &self.source_extent)
             .field("slot_count", &self.slots.len())
             .field("allocation_byte_len", &self.allocation_byte_len)
+            .field("metadata_byte_len", &self.metadata_byte_len)
             .field("mapped_byte_len", &self.mapped_byte_len)
             .finish_non_exhaustive()
     }
@@ -79,11 +84,8 @@ impl PreparedCpuDesktopReadback {
         source_color_space: GpuSurfaceSourceColorSpace,
         slot_count: NonZeroU32,
     ) -> CaptureResult<Self> {
-        let frame_bytes = checked_rgba_len(
-            source_extent.width(),
-            source_extent.height(),
-            "allocate native CPU capture frame",
-        )?;
+        let quote = CpuDesktopReadbackResourceQuote::try_new(source_extent, slot_count)?;
+        let frame_bytes = quote.frame_byte_len();
         let slot_count =
             usize::try_from(slot_count.get()).map_err(|_| CaptureError::ResourceExhausted {
                 operation: "allocate native CPU readback slots",
@@ -116,6 +118,7 @@ impl PreparedCpuDesktopReadback {
                 progress_kicked: false,
             });
         }
+        let slots = slots.into_boxed_slice();
 
         let mut buffers = Vec::new();
         buffers
@@ -132,18 +135,13 @@ impl PreparedCpuDesktopReadback {
                     operation: "allocate native CPU capture frame",
                     requested_bytes: frame_bytes,
                 })?;
+            buffer.resize(frame_bytes, 0);
+            let mut buffer = buffer.into_boxed_slice().into_vec();
+            buffer.clear();
             buffers.push(buffer);
         }
+        let buffers = buffers.into_boxed_slice().into_vec();
 
-        let allocation_byte_len = u64::try_from(frame_bytes)
-            .unwrap_or(u64::MAX)
-            .checked_mul(u64::try_from(slot_count).unwrap_or(u64::MAX))
-            .and_then(|bytes| bytes.checked_mul(2))
-            .ok_or(CaptureError::GeometryOverflow {
-                operation: "account native CPU readback",
-                width: source_extent.width(),
-                height: source_extent.height(),
-            })?;
         Ok(Self {
             source_id,
             topology_generation,
@@ -157,7 +155,9 @@ impl PreparedCpuDesktopReadback {
             write_index: 0,
             read_index: 0,
             frame_pool: Arc::new(Mutex::new(buffers)),
-            allocation_byte_len,
+            allocation_byte_len: quote.allocation_byte_len(),
+            metadata_byte_len: quote.metadata_byte_len(),
+            retained_byte_len: quote.retained_byte_len(),
             mapped_byte_len: 0,
             last_submitted_sequence: None,
         })
@@ -173,6 +173,106 @@ impl PreparedCpuDesktopReadback {
     #[must_use]
     pub const fn allocation_byte_len(&self) -> u64 {
         self.allocation_byte_len
+    }
+
+    /// Rust-owned slot array, frame-pool array, and pool payload.
+    #[must_use]
+    pub const fn metadata_byte_len(&self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    /// Logical staging/output bytes plus Rust-owned metadata.
+    #[must_use]
+    pub const fn retained_byte_len(&self) -> u64 {
+        self.retained_byte_len
+    }
+
+    #[cfg(test)]
+    pub(super) fn actual_metadata_byte_len_for_test(&self) -> u64 {
+        let pool = self
+            .frame_pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        checked_heap_payload_bytes::<ReadbackSlot>(
+            self.slots.len(),
+            "account prepared native CPU readback slots",
+        )
+        .and_then(|bytes| {
+            checked_heap_payload_bytes::<Vec<u8>>(
+                pool.capacity(),
+                "account prepared native CPU frame-pool slots",
+            )
+            .and_then(|buffers| {
+                bytes
+                    .checked_add(buffers)
+                    .ok_or(CaptureError::ResourceExhausted {
+                        operation: "account prepared native CPU readback metadata",
+                        requested_bytes: usize::MAX,
+                    })
+            })
+        })
+        .and_then(|bytes| {
+            checked_arc_allocation_bytes::<Mutex<Vec<Vec<u8>>>>(
+                "account prepared native CPU frame-pool owner",
+            )
+            .ok()
+            .and_then(|pool| bytes.checked_add(pool))
+            .ok_or(CaptureError::ResourceExhausted {
+                operation: "account prepared native CPU readback metadata",
+                requested_bytes: usize::MAX,
+            })
+        })
+        .expect("prepared native CPU metadata was quoted before allocation")
+    }
+
+    #[cfg(test)]
+    pub(super) fn actual_allocation_byte_len_for_test(&self) -> u64 {
+        let frame_bytes = checked_rgba_len(
+            self.source_extent.width(),
+            self.source_extent.height(),
+            "account prepared native CPU capture frames",
+        )
+        .expect("prepared native CPU frame geometry was quoted before allocation");
+        let staging_bytes = u64::try_from(frame_bytes)
+            .ok()
+            .and_then(|bytes| {
+                u64::try_from(self.slots.len())
+                    .ok()
+                    .and_then(|slots| bytes.checked_mul(slots))
+            })
+            .expect("prepared native CPU staging bytes were quoted before allocation");
+        let output_bytes = self
+            .frame_pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .try_fold(0_u64, |total, buffer| {
+                u64::try_from(buffer.capacity())
+                    .ok()
+                    .and_then(|bytes| total.checked_add(bytes))
+            })
+            .expect("prepared native CPU output bytes were quoted before allocation");
+        staging_bytes
+            .checked_add(output_bytes)
+            .expect("prepared native CPU allocation bytes were quoted before allocation")
+    }
+
+    #[cfg(test)]
+    pub(super) fn frame_pool_capacity_for_test(&self) -> usize {
+        self.frame_pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .capacity()
+    }
+
+    #[cfg(test)]
+    pub(super) fn frame_plane_capacities_for_test(&self) -> Box<[usize]> {
+        self.frame_pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(Vec::capacity)
+            .collect()
     }
 
     /// Cumulative bytes copied from mapped staging surfaces.
@@ -318,6 +418,51 @@ impl PreparedCpuDesktopReadback {
     }
 }
 
+pub(crate) fn cpu_readback_metadata_byte_len(slot_count: NonZeroU32) -> CaptureResult<u64> {
+    let slot_count =
+        usize::try_from(slot_count.get()).map_err(|_| CaptureError::ResourceExhausted {
+            operation: "quote native CPU readback metadata",
+            requested_bytes: usize::MAX,
+        })?;
+    checked_heap_payload_bytes::<ReadbackSlot>(slot_count, "quote native CPU readback slots")?
+        .checked_add(checked_heap_payload_bytes::<Vec<u8>>(
+            slot_count,
+            "quote native CPU frame-pool slots",
+        )?)
+        .and_then(|bytes| {
+            checked_arc_allocation_bytes::<Mutex<Vec<Vec<u8>>>>("quote native CPU frame-pool owner")
+                .ok()
+                .and_then(|pool| bytes.checked_add(pool))
+        })
+        .ok_or(CaptureError::ResourceExhausted {
+            operation: "quote native CPU readback metadata",
+            requested_bytes: usize::MAX,
+        })
+}
+
+fn checked_heap_payload_bytes<T>(count: usize, operation: &'static str) -> CaptureResult<u64> {
+    count
+        .checked_mul(size_of::<T>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes: usize::MAX,
+        })
+}
+
+fn checked_arc_allocation_bytes<T>(operation: &'static str) -> CaptureResult<u64> {
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<T>())
+        .map_err(|_| CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes: usize::MAX,
+        })?;
+    u64::try_from(layout.pad_to_align().size()).map_err(|_| CaptureError::ResourceExhausted {
+        operation,
+        requested_bytes: usize::MAX,
+    })
+}
+
 fn create_event_query(device: &ID3D11Device) -> CaptureResult<ID3D11Query> {
     let desc = D3D11_QUERY_DESC {
         Query: D3D11_QUERY_EVENT,
@@ -384,6 +529,7 @@ pub(super) fn packed_readback_for_test(
             .map_err(|error| CaptureError::windows("create CPU readback fixture view", error))?,
         texture: source,
         metadata,
+        _resource_lease: None,
     };
     let mut readback = PreparedCpuDesktopReadback::prepare(
         &device,
@@ -402,7 +548,17 @@ pub(super) fn packed_readback_for_test(
 }
 
 #[cfg(test)]
-pub(super) fn retained_frame_exhausts_bounded_pool_for_test() -> CaptureResult<(bool, u64, u64)> {
+pub(super) struct CpuReadbackPoolProof {
+    pub(super) busy: bool,
+    pub(super) mapped_while_busy: u64,
+    pub(super) final_mapped: u64,
+    pub(super) pool_capacity: usize,
+    pub(super) plane_capacities: Box<[usize]>,
+}
+
+#[cfg(test)]
+pub(super) fn retained_frame_exhausts_bounded_pool_for_test() -> CaptureResult<CpuReadbackPoolProof>
+{
     let (device, context) = super::gpu_reduction::test_device()
         .map_err(|error| CaptureError::windows("create CPU pool fixture", error))?;
     let pixels = [10, 20, 30, 0xFF].repeat(15);
@@ -413,6 +569,7 @@ pub(super) fn retained_frame_exhausts_bounded_pool_for_test() -> CaptureResult<(
             .map_err(|error| CaptureError::windows("create CPU pool fixture view", error))?,
         texture: source,
         metadata: test_metadata(5, 3, 1),
+        _resource_lease: None,
     };
     let mut readback = PreparedCpuDesktopReadback::prepare(
         &device,
@@ -453,11 +610,13 @@ pub(super) fn retained_frame_exhausts_bounded_pool_for_test() -> CaptureResult<(
     drop(first);
     let second = await_frame(&mut readback)?;
     drop(second);
-    Ok((
+    Ok(CpuReadbackPoolProof {
         busy,
-        still_mapped.saturating_sub(first_mapped),
-        readback.mapped_byte_len(),
-    ))
+        mapped_while_busy: still_mapped.saturating_sub(first_mapped),
+        final_mapped: readback.mapped_byte_len(),
+        pool_capacity: readback.frame_pool_capacity_for_test(),
+        plane_capacities: readback.frame_plane_capacities_for_test(),
+    })
 }
 
 #[cfg(test)]
@@ -494,6 +653,7 @@ pub(super) fn hybrid_sequence_proof_for_test() -> CaptureResult<HybridSequencePr
             .map_err(|error| CaptureError::windows("create hybrid pump fixture view", error))?,
         texture: source,
         metadata,
+        _resource_lease: None,
     };
     let source_extent = CaptureExtent::try_new(width, height)?;
     let descriptor = super::gpu_surface::fixture::descriptor(
@@ -619,7 +779,7 @@ fn test_metadata(width: u32, height: u32, sequence: u64) -> CaptureMetadata {
         sequence,
         captured_at: std::time::Instant::now(),
         cursor: crate::CursorInfo::default(),
-        pointer: Arc::new(super::PointerState::default()),
+        pointer: super::PointerState::default(),
         source_width: width,
         source_height: height,
         origin_x: -17,

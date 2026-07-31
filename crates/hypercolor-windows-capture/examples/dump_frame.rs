@@ -61,11 +61,13 @@ fn main() {
                         "captured {}x{} ({} bytes)",
                         frame.width,
                         frame.height,
-                        frame.rgba.len()
+                        frame.rgba().len()
                     );
-                    let Some(buffer) =
-                        image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.to_vec())
-                    else {
+                    let Some(buffer) = image::RgbaImage::from_raw(
+                        frame.width,
+                        frame.height,
+                        frame.rgba().to_vec(),
+                    ) else {
                         eprintln!("frame buffer did not match its declared dimensions");
                         std::process::exit(1);
                     };

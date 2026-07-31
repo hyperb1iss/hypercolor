@@ -10,6 +10,179 @@ use thiserror::Error;
 /// Screen capture result type.
 pub type CaptureResult<T> = Result<T, CaptureError>;
 
+/// Source-owned logical backing classes that can outlive one prepared output plan.
+///
+/// Byte accounting covers texture payloads, constant buffers, host planes, and
+/// explicitly quoted Rust metadata. Opaque driver objects, resource views,
+/// queries, heap alignment, and allocator bookkeeping remain backend baseline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureResourceKind {
+    /// CPU pointer-shape payload retained across metadata generations.
+    PointerShape,
+    /// Canonical clean desktop retained between duplication acquisitions.
+    CanonicalDesktop,
+    /// Cursor texture shared by exact GPU publication lanes.
+    PointerTexture,
+    /// Constant buffer retained by the compatibility reduction path.
+    CompatibilityReductionConstantBuffer,
+    /// Output and staging-ring textures retained by compatibility reduction.
+    CompatibilityReductionTextures,
+    /// CPU-readable full-desktop staging texture used by compatibility capture.
+    CompatibilityCpuStagingTexture,
+    /// Packed host frame plane returned by compatibility capture.
+    CompatibilityFramePlane,
+}
+
+/// Immutable ownership of one admitted source allocation.
+pub trait CaptureResourceLease: std::fmt::Debug + Send + Sync {
+    /// Allocation class owned by this lease.
+    fn kind(&self) -> CaptureResourceKind;
+
+    /// Exact retained logical backing bytes within the documented boundary.
+    fn bytes(&self) -> u64;
+}
+
+/// Mutable peak quote held across fallible source allocation.
+pub trait CaptureResourceReservation: std::fmt::Debug + Send {
+    /// Allocation class reserved by this quote.
+    fn kind(&self) -> CaptureResourceKind;
+
+    /// Peak bytes currently reserved.
+    fn bytes(&self) -> u64;
+
+    /// Reconcile temporary quote slack and freeze the retained ownership.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a retained size larger than the original peak quote.
+    fn commit(self: Box<Self>, retained_bytes: u64)
+    -> CaptureResult<Arc<dyn CaptureResourceLease>>;
+}
+
+/// Admission authority for allocations owned by a live capture source.
+pub trait CaptureResourceAdmission: std::fmt::Debug + Send + Sync {
+    /// Reserve a peak quote before any corresponding allocation occurs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureError::ResourceExhausted`] when the shared fence cannot
+    /// admit the quote.
+    fn try_reserve(
+        &self,
+        kind: CaptureResourceKind,
+        peak_bytes: u64,
+    ) -> CaptureResult<Box<dyn CaptureResourceReservation>>;
+}
+
+#[derive(Debug)]
+struct UnboundedCaptureResourceAdmission;
+
+#[derive(Debug)]
+struct UnboundedCaptureResourceReservation {
+    kind: CaptureResourceKind,
+    bytes: u64,
+}
+
+#[derive(Debug)]
+struct UnboundedCaptureResourceLease {
+    kind: CaptureResourceKind,
+    bytes: u64,
+}
+
+impl CaptureResourceAdmission for UnboundedCaptureResourceAdmission {
+    fn try_reserve(
+        &self,
+        kind: CaptureResourceKind,
+        peak_bytes: u64,
+    ) -> CaptureResult<Box<dyn CaptureResourceReservation>> {
+        Ok(Box::new(UnboundedCaptureResourceReservation {
+            kind,
+            bytes: peak_bytes,
+        }))
+    }
+}
+
+impl CaptureResourceReservation for UnboundedCaptureResourceReservation {
+    fn kind(&self) -> CaptureResourceKind {
+        self.kind
+    }
+
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    fn commit(
+        self: Box<Self>,
+        retained_bytes: u64,
+    ) -> CaptureResult<Arc<dyn CaptureResourceLease>> {
+        if retained_bytes > self.bytes {
+            return Err(CaptureError::ResourceAdmissionMismatch {
+                operation: "commit default capture resource reservation",
+                expected_kind: self.kind,
+                expected_bytes: self.bytes,
+                actual_kind: self.kind,
+                actual_bytes: retained_bytes,
+            });
+        }
+        Ok(Arc::new(UnboundedCaptureResourceLease {
+            kind: self.kind,
+            bytes: retained_bytes,
+        }))
+    }
+}
+
+impl CaptureResourceLease for UnboundedCaptureResourceLease {
+    fn kind(&self) -> CaptureResourceKind {
+        self.kind
+    }
+
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
+
+pub(crate) fn default_capture_resource_admission() -> Arc<dyn CaptureResourceAdmission> {
+    Arc::new(UnboundedCaptureResourceAdmission)
+}
+
+pub(crate) fn reserve_capture_resource(
+    admission: &dyn CaptureResourceAdmission,
+    kind: CaptureResourceKind,
+    peak_bytes: u64,
+    operation: &'static str,
+) -> CaptureResult<Box<dyn CaptureResourceReservation>> {
+    let reservation = admission.try_reserve(kind, peak_bytes)?;
+    if reservation.kind() != kind || reservation.bytes() != peak_bytes {
+        return Err(CaptureError::ResourceAdmissionMismatch {
+            operation,
+            expected_kind: kind,
+            expected_bytes: peak_bytes,
+            actual_kind: reservation.kind(),
+            actual_bytes: reservation.bytes(),
+        });
+    }
+    Ok(reservation)
+}
+
+pub(crate) fn commit_capture_resource(
+    reservation: Box<dyn CaptureResourceReservation>,
+    retained_bytes: u64,
+    operation: &'static str,
+) -> CaptureResult<Arc<dyn CaptureResourceLease>> {
+    let kind = reservation.kind();
+    let lease = reservation.commit(retained_bytes)?;
+    if lease.kind() != kind || lease.bytes() != retained_bytes {
+        return Err(CaptureError::ResourceAdmissionMismatch {
+            operation,
+            expected_kind: kind,
+            expected_bytes: retained_bytes,
+            actual_kind: lease.kind(),
+            actual_bytes: lease.bytes(),
+        });
+    }
+    Ok(lease)
+}
+
 /// Independent outcome for one requested lane in a hybrid capture pump.
 #[derive(Debug)]
 pub enum CaptureLane<T> {
@@ -284,6 +457,23 @@ pub enum CaptureError {
         operation: &'static str,
         /// Number of bytes requested by the operation.
         requested_bytes: usize,
+    },
+
+    /// An admission implementation returned ownership for another quote.
+    #[error(
+        "{operation} admission mismatch: expected {expected_kind:?}/{expected_bytes} bytes, got {actual_kind:?}/{actual_bytes} bytes"
+    )]
+    ResourceAdmissionMismatch {
+        /// Resource operation whose ownership proof was invalid.
+        operation: &'static str,
+        /// Allocation class requested by the capture source.
+        expected_kind: CaptureResourceKind,
+        /// Exact bytes requested or committed by the capture source.
+        expected_bytes: u64,
+        /// Allocation class returned by the admission implementation.
+        actual_kind: CaptureResourceKind,
+        /// Bytes returned by the admission implementation.
+        actual_bytes: u64,
     },
 
     /// A replacement capture session could not reserve its resources.
@@ -813,6 +1003,57 @@ impl GpuSurfaceDescriptor {
     }
 }
 
+/// Checked pre-allocation resources for one descriptor-keyed GPU readback plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuReductionResourceQuote {
+    allocation_byte_len: u64,
+    constant_buffer_byte_len: u64,
+    readback_byte_len: u64,
+    publication_buffer_byte_len: usize,
+    metadata_byte_len: u64,
+    retained_byte_len: u64,
+}
+
+impl GpuReductionResourceQuote {
+    /// Output UAV and staging-ring texture bytes.
+    #[must_use]
+    pub const fn allocation_byte_len(self) -> u64 {
+        self.allocation_byte_len
+    }
+
+    /// Constant-buffer bytes retained by descriptor-local reducers.
+    #[must_use]
+    pub const fn constant_buffer_byte_len(self) -> u64 {
+        self.constant_buffer_byte_len
+    }
+
+    /// Staging-ring texture bytes within the full GPU allocation.
+    #[must_use]
+    pub const fn readback_byte_len(self) -> u64 {
+        self.readback_byte_len
+    }
+
+    /// Tightly packed host buffers retained for publication callbacks.
+    #[must_use]
+    pub const fn publication_buffer_byte_len(self) -> usize {
+        self.publication_buffer_byte_len
+    }
+
+    /// Rust-owned route, descriptor, and staging-slot payloads.
+    ///
+    /// This excludes allocator bookkeeping and opaque COM/driver internals.
+    #[must_use]
+    pub const fn metadata_byte_len(self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    /// GPU textures and constants, host publication buffers, and metadata.
+    #[must_use]
+    pub const fn retained_byte_len(self) -> u64 {
+        self.retained_byte_len
+    }
+}
+
 /// Caller-supplied resource ledger for descriptor-keyed GPU readback rings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuReductionAdmission {
@@ -842,18 +1083,20 @@ impl GpuReductionAdmission {
         self.slots_per_descriptor
     }
 
-    /// Validate a complete immutable plan and return its checked GPU bytes.
+    /// Validate and quote a complete immutable plan before backing allocation.
     ///
     /// # Errors
     ///
     /// Rejects unsupported semantics, duplicate identities, regions outside
     /// the source, checked byte overflow, and plans over the supplied budget.
-    pub fn admit(
+    pub fn quote(
         self,
         source_extent: CaptureExtent,
         descriptors: &[GpuSurfaceDescriptor],
-    ) -> CaptureResult<u64> {
-        let mut bytes = 0_u64;
+    ) -> CaptureResult<GpuReductionResourceQuote> {
+        let mut allocation_byte_len = 0_u64;
+        let mut readback_byte_len = 0_u64;
+        let mut publication_buffer_byte_len = 0_usize;
         for (index, descriptor) in descriptors.iter().enumerate() {
             descriptor.validate_exact_gpu_readback()?;
             if !descriptor
@@ -874,29 +1117,99 @@ impl GpuReductionAdmission {
                     descriptor_id: descriptor.id(),
                 });
             }
-            let texture_count = u64::from(self.slots_per_descriptor.get()) + 1;
-            let route = checked_gpu_surface_bytes(descriptor.output_extent())?
-                .checked_mul(texture_count)
+            let output_byte_len = checked_gpu_surface_bytes(descriptor.output_extent())?;
+            let output_byte_len_usize =
+                usize::try_from(output_byte_len).map_err(|_| CaptureError::GeometryOverflow {
+                    operation: "allocate GPU reduction output",
+                    width: descriptor.output_extent().width(),
+                    height: descriptor.output_extent().height(),
+                })?;
+            let route_readback_byte_len = output_byte_len
+                .checked_mul(u64::from(self.slots_per_descriptor.get()))
+                .ok_or(CaptureError::GeometryOverflow {
+                    operation: "account GPU reduction staging slots",
+                    width: descriptor.output_extent().width(),
+                    height: descriptor.output_extent().height(),
+                })?;
+            let route_allocation_byte_len = output_byte_len
+                .checked_add(route_readback_byte_len)
                 .ok_or(CaptureError::GeometryOverflow {
                     operation: "account GPU reduction readback ring",
                     width: descriptor.output_extent().width(),
                     height: descriptor.output_extent().height(),
                 })?;
-            bytes = bytes
-                .checked_add(route)
+            allocation_byte_len = allocation_byte_len
+                .checked_add(route_allocation_byte_len)
                 .ok_or(CaptureError::GeometryOverflow {
                     operation: "account GPU reduction plan",
                     width: descriptor.output_extent().width(),
                     height: descriptor.output_extent().height(),
                 })?;
+            readback_byte_len = readback_byte_len
+                .checked_add(route_readback_byte_len)
+                .ok_or(CaptureError::GeometryOverflow {
+                    operation: "account GPU reduction staging plan",
+                    width: descriptor.output_extent().width(),
+                    height: descriptor.output_extent().height(),
+                })?;
+            publication_buffer_byte_len = publication_buffer_byte_len
+                .checked_add(output_byte_len_usize)
+                .ok_or(CaptureError::GeometryOverflow {
+                    operation: "account GPU reduction publication buffers",
+                    width: descriptor.output_extent().width(),
+                    height: descriptor.output_extent().height(),
+                })?;
         }
-        if bytes > self.max_texture_bytes {
+        if allocation_byte_len > self.max_texture_bytes {
             return Err(CaptureError::GpuSurfaceBudgetExceeded {
-                requested_bytes: bytes,
+                requested_bytes: allocation_byte_len,
                 budget_bytes: self.max_texture_bytes,
             });
         }
-        Ok(bytes)
+        #[cfg(target_os = "windows")]
+        let metadata_byte_len = crate::duplication::gpu_reduction_metadata_byte_len(
+            descriptors.len(),
+            self.slots_per_descriptor,
+        )?;
+        #[cfg(target_os = "windows")]
+        let constant_buffer_byte_len =
+            crate::duplication::gpu_reduction_constant_buffer_byte_len(descriptors.len())?;
+        #[cfg(not(target_os = "windows"))]
+        let metadata_byte_len = 0;
+        #[cfg(not(target_os = "windows"))]
+        let constant_buffer_byte_len = 0;
+        let retained_byte_len = allocation_byte_len
+            .checked_add(constant_buffer_byte_len)
+            .and_then(|bytes| bytes.checked_add(u64::try_from(publication_buffer_byte_len).ok()?))
+            .and_then(|bytes| bytes.checked_add(metadata_byte_len))
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "account GPU reduction retained resources",
+                width: source_extent.width(),
+                height: source_extent.height(),
+            })?;
+        Ok(GpuReductionResourceQuote {
+            allocation_byte_len,
+            constant_buffer_byte_len,
+            readback_byte_len,
+            publication_buffer_byte_len,
+            metadata_byte_len,
+            retained_byte_len,
+        })
+    }
+
+    /// Validate a complete immutable plan and return its checked GPU bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::quote`].
+    pub fn admit(
+        self,
+        source_extent: CaptureExtent,
+        descriptors: &[GpuSurfaceDescriptor],
+    ) -> CaptureResult<u64> {
+        Ok(self
+            .quote(source_extent, descriptors)?
+            .allocation_byte_len())
     }
 }
 
@@ -935,6 +1248,79 @@ pub struct GpuReductionProvenance {
     pub cursor_composed: bool,
 }
 
+/// Checked pre-allocation resources for one exact GPU Surface plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuSurfaceResourceQuote {
+    allocation_byte_len: u64,
+    constant_buffer_byte_len: u64,
+    metadata_byte_len: u64,
+    retained_byte_len: u64,
+}
+
+impl GpuSurfaceResourceQuote {
+    /// Shareable output texture bytes across every descriptor slot.
+    #[must_use]
+    pub const fn allocation_byte_len(self) -> u64 {
+        self.allocation_byte_len
+    }
+
+    /// Constant-buffer bytes retained by the plan-wide surface shader.
+    #[must_use]
+    pub const fn constant_buffer_byte_len(self) -> u64 {
+        self.constant_buffer_byte_len
+    }
+
+    /// Rust-owned route, descriptor, slot, and publication payloads.
+    ///
+    /// This excludes allocator bookkeeping and opaque COM/driver internals.
+    #[must_use]
+    pub const fn metadata_byte_len(self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    /// Logical GPU texture and constant bytes plus Rust-owned metadata.
+    #[must_use]
+    pub const fn retained_byte_len(self) -> u64 {
+        self.retained_byte_len
+    }
+}
+
+/// Checked Rust metadata retained by one GPU Surface target manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuSurfaceTargetPreparationResourceQuote {
+    metadata_byte_len: u64,
+}
+
+impl GpuSurfaceTargetPreparationResourceQuote {
+    /// Quote the owned slot manifest before allocation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a slot count that cannot be represented by the current process.
+    pub fn try_new(slot_count: NonZeroU32) -> CaptureResult<Self> {
+        #[cfg(target_os = "windows")]
+        let metadata_byte_len =
+            crate::duplication::gpu_surface_target_preparation_metadata_byte_len(slot_count)?;
+        #[cfg(not(target_os = "windows"))]
+        let metadata_byte_len = 0;
+        Ok(Self { metadata_byte_len })
+    }
+
+    /// Rust-owned slot-array payload retained by the manifest.
+    ///
+    /// This excludes allocator bookkeeping and opaque COM/driver internals.
+    #[must_use]
+    pub const fn metadata_byte_len(self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    /// Total resources allocated uniquely for the manifest.
+    #[must_use]
+    pub const fn retained_byte_len(self) -> u64 {
+        self.metadata_byte_len
+    }
+}
+
 /// Caller-supplied resource ledger for one prepared GPU Surface plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuSurfaceAdmission {
@@ -964,7 +1350,7 @@ impl GpuSurfaceAdmission {
         self.slots_per_descriptor
     }
 
-    /// Validate exact descriptors and return their checked texture ledger.
+    /// Validate and quote exact descriptors before backing allocation.
     ///
     /// The ledger includes every descriptor's configured in-flight output
     /// slots. The source-owned clean desktop and pointer texture are already
@@ -975,11 +1361,11 @@ impl GpuSurfaceAdmission {
     ///
     /// Rejects unsupported exact operations, duplicate identities, regions
     /// outside the source, checked byte overflow, and plans over this budget.
-    pub fn admit(
+    pub fn quote(
         self,
         source_extent: CaptureExtent,
         descriptors: &[GpuSurfaceDescriptor],
-    ) -> CaptureResult<u64> {
+    ) -> CaptureResult<GpuSurfaceResourceQuote> {
         if self.slots_per_descriptor.get() < 2 {
             return Err(CaptureError::GpuSurfaceInFlightDepthTooSmall {
                 requested: self.slots_per_descriptor.get(),
@@ -1028,7 +1414,137 @@ impl GpuSurfaceAdmission {
                 budget_bytes: self.max_texture_bytes,
             });
         }
-        Ok(bytes)
+        #[cfg(target_os = "windows")]
+        let metadata_byte_len = crate::duplication::gpu_surface_metadata_byte_len(
+            descriptors.len(),
+            self.slots_per_descriptor,
+        )?;
+        #[cfg(target_os = "windows")]
+        let constant_buffer_byte_len = u64::try_from(
+            crate::duplication::gpu_surface_constant_buffer_byte_len(),
+        )
+        .map_err(|_| CaptureError::GeometryOverflow {
+            operation: "account GPU Surface constant buffer",
+            width: source_extent.width(),
+            height: source_extent.height(),
+        })?;
+        #[cfg(not(target_os = "windows"))]
+        let metadata_byte_len = 0;
+        #[cfg(not(target_os = "windows"))]
+        let constant_buffer_byte_len = 0;
+        let retained_byte_len = bytes
+            .checked_add(constant_buffer_byte_len)
+            .and_then(|bytes| bytes.checked_add(metadata_byte_len))
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "account GPU Surface retained resources",
+                width: source_extent.width(),
+                height: source_extent.height(),
+            })?;
+        Ok(GpuSurfaceResourceQuote {
+            allocation_byte_len: bytes,
+            constant_buffer_byte_len,
+            metadata_byte_len,
+            retained_byte_len,
+        })
+    }
+
+    /// Validate a complete immutable plan and return its checked GPU bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::quote`].
+    pub fn admit(
+        self,
+        source_extent: CaptureExtent,
+        descriptors: &[GpuSurfaceDescriptor],
+    ) -> CaptureResult<u64> {
+        Ok(self
+            .quote(source_extent, descriptors)?
+            .allocation_byte_len())
+    }
+}
+
+/// Checked pre-allocation resources for one native CPU readback lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CpuDesktopReadbackResourceQuote {
+    frame_byte_len: usize,
+    allocation_byte_len: u64,
+    metadata_byte_len: u64,
+    retained_byte_len: u64,
+}
+
+impl CpuDesktopReadbackResourceQuote {
+    /// Quote fixed staging textures and pooled output planes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects byte geometry that cannot be represented by the current process.
+    pub fn try_new(source_extent: CaptureExtent, slot_count: NonZeroU32) -> CaptureResult<Self> {
+        let frame_byte_len = usize::try_from(source_extent.width())
+            .ok()
+            .and_then(|width| {
+                usize::try_from(source_extent.height())
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "account native CPU readback",
+                width: source_extent.width(),
+                height: source_extent.height(),
+            })?;
+        let allocation_byte_len = u64::try_from(frame_byte_len)
+            .ok()
+            .and_then(|bytes| bytes.checked_mul(u64::from(slot_count.get())))
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or(CaptureError::GeometryOverflow {
+                operation: "account native CPU readback",
+                width: source_extent.width(),
+                height: source_extent.height(),
+            })?;
+        #[cfg(target_os = "windows")]
+        let metadata_byte_len = crate::duplication::cpu_readback_metadata_byte_len(slot_count)?;
+        #[cfg(not(target_os = "windows"))]
+        let metadata_byte_len = 0;
+        let retained_byte_len = allocation_byte_len.checked_add(metadata_byte_len).ok_or(
+            CaptureError::GeometryOverflow {
+                operation: "account native CPU readback retained resources",
+                width: source_extent.width(),
+                height: source_extent.height(),
+            },
+        )?;
+        Ok(Self {
+            frame_byte_len,
+            allocation_byte_len,
+            metadata_byte_len,
+            retained_byte_len,
+        })
+    }
+
+    /// Bytes in one tightly packed native BGRA plane.
+    #[must_use]
+    pub const fn frame_byte_len(self) -> usize {
+        self.frame_byte_len
+    }
+
+    /// Staging textures plus pooled output planes.
+    #[must_use]
+    pub const fn allocation_byte_len(self) -> u64 {
+        self.allocation_byte_len
+    }
+
+    /// Rust-owned slot array, frame-pool array, and pool payload.
+    ///
+    /// This excludes allocator bookkeeping and opaque COM/driver internals.
+    #[must_use]
+    pub const fn metadata_byte_len(self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    /// Logical staging/output bytes plus Rust-owned metadata.
+    #[must_use]
+    pub const fn retained_byte_len(self) -> u64 {
+        self.retained_byte_len
     }
 }
 
@@ -1216,6 +1732,37 @@ pub struct CursorInfo {
 }
 
 type FramePool = Arc<Mutex<Vec<Vec<u8>>>>;
+
+#[derive(Debug)]
+pub(crate) struct LegacyFramePlane {
+    pub(crate) rgba: Vec<u8>,
+    pub(crate) resource_lease: Arc<dyn CaptureResourceLease>,
+}
+
+pub(crate) type LegacyFramePool = Arc<Mutex<Vec<LegacyFramePlane>>>;
+const LEGACY_FRAME_POOL_WARM_LEN: usize = 3;
+
+pub(crate) fn recycle_legacy_frame_plane(pool: &LegacyFramePool, mut plane: LegacyFramePlane) {
+    plane.rgba.clear();
+    let mut pool = pool
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pool.len() < LEGACY_FRAME_POOL_WARM_LEN {
+        pool.push(plane);
+        return;
+    }
+    let Some((smallest_index, smallest_capacity)) = pool
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| (index, candidate.rgba.capacity()))
+        .min_by_key(|(_, capacity)| *capacity)
+    else {
+        return;
+    };
+    if plane.rgba.capacity() > smallest_capacity {
+        pool[smallest_index] = plane;
+    }
+}
 
 /// Owned, tightly packed native BGRA desktop produced by async readback.
 ///
@@ -1417,8 +1964,9 @@ pub struct Frame {
     /// Display transform still pending on the stored pixels.
     pub rotation: DisplayRotation,
     /// Tightly packed RGBA8 pixels, `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
-    pool: FramePool,
+    rgba: Vec<u8>,
+    resource_lease: Option<Arc<dyn CaptureResourceLease>>,
+    pool: LegacyFramePool,
 }
 
 #[cfg(target_os = "windows")]
@@ -1438,7 +1986,8 @@ impl Frame {
         origin_y: i32,
         rotation: DisplayRotation,
         rgba: Vec<u8>,
-        pool: FramePool,
+        resource_lease: Arc<dyn CaptureResourceLease>,
+        pool: LegacyFramePool,
     ) -> Self {
         Self {
             source_id,
@@ -1454,6 +2003,7 @@ impl Frame {
             origin_y,
             rotation,
             rgba,
+            resource_lease: Some(resource_lease),
             pool,
         }
     }
@@ -1465,14 +2015,27 @@ impl AsRef<[u8]> for Frame {
     }
 }
 
+impl Frame {
+    /// Tightly packed immutable RGBA8 pixels.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
 impl Drop for Frame {
     fn drop(&mut self) {
-        let mut rgba = std::mem::take(&mut self.rgba);
-        rgba.clear();
-        self.pool
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(rgba);
+        let rgba = std::mem::take(&mut self.rgba);
+        let Some(resource_lease) = self.resource_lease.take() else {
+            return;
+        };
+        recycle_legacy_frame_plane(
+            &self.pool,
+            LegacyFramePlane {
+                rgba,
+                resource_lease,
+            },
+        );
     }
 }
 
@@ -1665,6 +2228,18 @@ mod tests {
     fn native_frame_owns_acquisition_sequence_and_time() {
         let captured_at = Instant::now();
         let pool = Arc::new(Mutex::new(Vec::new()));
+        let resource_lease = commit_capture_resource(
+            reserve_capture_resource(
+                default_capture_resource_admission().as_ref(),
+                CaptureResourceKind::CompatibilityFramePlane,
+                4,
+                "reserve test compatibility frame",
+            )
+            .expect("test reservation succeeds"),
+            4,
+            "commit test compatibility frame",
+        )
+        .expect("test lease succeeds");
         let frame = Frame::new(
             Arc::from("display:test"),
             3,
@@ -1679,10 +2254,54 @@ mod tests {
             0,
             DisplayRotation::Identity,
             vec![1, 2, 3, 0xFF],
+            resource_lease,
             pool,
         );
 
         assert_eq!(frame.sequence, 41);
         assert_eq!(frame.captured_at, captured_at);
+    }
+
+    #[test]
+    fn native_frame_without_a_lease_drops_without_recycling() {
+        let pool = Arc::new(Mutex::new(Vec::new()));
+        let resource_lease = commit_capture_resource(
+            reserve_capture_resource(
+                default_capture_resource_admission().as_ref(),
+                CaptureResourceKind::CompatibilityFramePlane,
+                4,
+                "reserve test compatibility frame",
+            )
+            .expect("test reservation succeeds"),
+            4,
+            "commit test compatibility frame",
+        )
+        .expect("test lease succeeds");
+        let mut frame = Frame::new(
+            Arc::from("display:test"),
+            1,
+            1,
+            Instant::now(),
+            CursorInfo::default(),
+            1,
+            1,
+            1,
+            1,
+            0,
+            0,
+            DisplayRotation::Identity,
+            vec![0; 4],
+            resource_lease,
+            Arc::clone(&pool),
+        );
+
+        drop(frame.resource_lease.take());
+        drop(frame);
+
+        assert!(
+            pool.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
     }
 }

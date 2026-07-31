@@ -68,7 +68,7 @@ fn wait_for_frame(
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
         match duplicator.next_frame(Duration::from_millis(120)) {
-            Ok(Some(frame)) => return Ok(Some((frame.width, frame.height, frame.rgba.len()))),
+            Ok(Some(frame)) => return Ok(Some((frame.width, frame.height, frame.rgba().len()))),
             Ok(None) => {}
             Err(error) => return Err(error),
         }
@@ -169,7 +169,7 @@ fn alpha_is_opaque_across_repeated_acquisitions() {
         match duplicator.next_frame(Duration::from_millis(150)) {
             Ok(Some(frame)) => {
                 assert!(
-                    frame.rgba.chunks_exact(4).all(|pixel| pixel[3] == 0xFF),
+                    frame.rgba().chunks_exact(4).all(|pixel| pixel[3] == 0xFF),
                     "every captured pixel must be fully opaque"
                 );
                 checked += 1;
@@ -197,7 +197,7 @@ fn repeated_frames_reuse_the_owned_plane_allocation() {
     while Instant::now() < deadline {
         match duplicator.next_frame(Duration::from_millis(150)) {
             Ok(Some(frame)) => {
-                let pointer = frame.rgba.as_ptr();
+                let pointer = frame.rgba().as_ptr();
                 assert_eq!(frame.native_width, duplicator.native_extent().0);
                 assert_eq!(frame.native_height, duplicator.native_extent().1);
                 drop(frame);

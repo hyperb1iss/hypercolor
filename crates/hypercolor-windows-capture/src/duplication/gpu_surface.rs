@@ -1,7 +1,8 @@
+use std::alloc::Layout;
 use std::mem::size_of;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE, WAIT_ABANDONED, WAIT_TIMEOUT};
@@ -27,13 +28,17 @@ use super::gpu_reduction::{
     create_texture, create_uav, normalized_pointer, pointer_kind_code, rotation_code,
 };
 use super::{CaptureMetadata, PointerState, RetainedDesktop};
-use crate::shared::checked_gpu_surface_bytes;
+use crate::shared::{
+    CaptureResourceAdmission, CaptureResourceKind, CaptureResourceLease, checked_gpu_surface_bytes,
+    commit_capture_resource, reserve_capture_resource,
+};
 use crate::{
     CaptureError, CaptureExtent, CaptureResult, GpuAdapterLuid, GpuSharedHandle,
     GpuSurfaceAdmission, GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace,
     GpuSurfaceCursorPolicy, GpuSurfaceDescriptor, GpuSurfaceDescriptorId, GpuSurfaceFormat,
     GpuSurfacePlanGeneration, GpuSurfaceProvenance, GpuSurfaceSlotId, GpuSurfaceSourceColorSpace,
-    GpuSurfaceSynchronization, GpuSurfaceUnsupportedReason,
+    GpuSurfaceSynchronization, GpuSurfaceTargetPreparationResourceQuote,
+    GpuSurfaceUnsupportedReason,
 };
 
 const THREAD_GROUP: u32 = 8;
@@ -108,7 +113,6 @@ struct SharedSurfaceSlot {
 }
 
 /// One stable native slot retained for renderer-target preparation.
-#[derive(Clone)]
 pub struct GpuSurfaceTargetPreparationSlot {
     slot_id: GpuSurfaceSlotId,
     shared: Arc<SharedSurfaceSlot>,
@@ -153,7 +157,6 @@ impl GpuSurfaceTargetPreparationSlot {
 ///
 /// The manifest retains every reusable slot without retaining publication
 /// objects, so producer-side uniqueness and reclamation checks remain exact.
-#[derive(Clone)]
 pub struct GpuSurfaceTargetPreparation {
     plan_generation: GpuSurfacePlanGeneration,
     descriptor: Arc<GpuSurfaceDescriptor>,
@@ -162,6 +165,7 @@ pub struct GpuSurfaceTargetPreparation {
     topology_generation: u64,
     duplication_generation: u64,
     allocation_byte_len: u64,
+    metadata_byte_len: u64,
     slots: Box<[GpuSurfaceTargetPreparationSlot]>,
 }
 
@@ -176,6 +180,7 @@ impl std::fmt::Debug for GpuSurfaceTargetPreparation {
             .field("topology_generation", &self.topology_generation)
             .field("duplication_generation", &self.duplication_generation)
             .field("allocation_byte_len", &self.allocation_byte_len)
+            .field("metadata_byte_len", &self.metadata_byte_len)
             .field("slot_count", &self.slots.len())
             .finish_non_exhaustive()
     }
@@ -224,6 +229,27 @@ impl GpuSurfaceTargetPreparation {
         self.allocation_byte_len
     }
 
+    /// Rust-owned slot-array payload retained by this manifest.
+    #[must_use]
+    pub const fn metadata_byte_len(&self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    /// Resources allocated uniquely for this manifest.
+    #[must_use]
+    pub const fn retained_byte_len(&self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    #[cfg(test)]
+    pub(super) fn actual_metadata_byte_len_for_test(&self) -> u64 {
+        checked_heap_payload_bytes::<GpuSurfaceTargetPreparationSlot>(
+            self.slots.len(),
+            "account prepared GPU Surface target slots",
+        )
+        .expect("prepared target slot metadata was quoted before allocation")
+    }
+
     /// Stable ordered native slots prepared for this exact route.
     #[must_use]
     pub fn slots(&self) -> &[GpuSurfaceTargetPreparationSlot] {
@@ -245,13 +271,13 @@ const USE_POISONED: u8 = 5;
 /// key 1, copies into a renderer-owned wrapped D3D12 texture, releases key 0,
 /// signals the release fence, and then marks the release queued. Wgpu never
 /// imports the keyed source directly.
-pub struct GpuSurfaceLease {
-    publication: Arc<GpuSurfacePublication>,
+pub struct GpuSurfaceLease<'a> {
+    publication: &'a GpuSurfacePublication,
     native_acquired: bool,
     finalized: bool,
 }
 
-impl std::fmt::Debug for GpuSurfaceLease {
+impl std::fmt::Debug for GpuSurfaceLease<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("GpuSurfaceLease")
@@ -264,7 +290,7 @@ impl std::fmt::Debug for GpuSurfaceLease {
     }
 }
 
-impl GpuSurfaceLease {
+impl GpuSurfaceLease<'_> {
     /// Borrowed NT handle for the shareable `R8G8B8A8_UNORM` texture.
     #[must_use]
     pub fn texture_handle(&self) -> GpuSharedHandle<'_> {
@@ -372,7 +398,7 @@ impl GpuSurfaceLease {
     }
 }
 
-impl Drop for GpuSurfaceLease {
+impl Drop for GpuSurfaceLease<'_> {
     fn drop(&mut self) {
         if self.finalized {
             return;
@@ -435,7 +461,7 @@ impl GpuSurfacePublication {
     ///
     /// Returns [`CaptureError::GpuSurfaceUseUnavailable`] when this result was
     /// already claimed, expired, superseded, or reclaimed by the producer.
-    pub fn claim(self: &Arc<Self>) -> CaptureResult<GpuSurfaceLease> {
+    pub fn claim(&self) -> CaptureResult<GpuSurfaceLease<'_>> {
         if Instant::now() >= self.provenance().freshness_deadline {
             return Err(CaptureError::GpuSurfaceUseUnavailable {
                 descriptor_id: self.provenance().descriptor.id(),
@@ -454,7 +480,7 @@ impl GpuSurfacePublication {
                 source_sequence: self.provenance().source_sequence,
             })?;
         Ok(GpuSurfaceLease {
-            publication: Arc::clone(self),
+            publication: self,
             native_acquired: false,
             finalized: false,
         })
@@ -517,7 +543,7 @@ struct SurfaceSlot {
 
 struct SurfaceRoute {
     descriptor: Arc<GpuSurfaceDescriptor>,
-    slots: Vec<SurfaceSlot>,
+    slots: Box<[SurfaceSlot]>,
     allocation_byte_len: u64,
     write_index: usize,
     selected_for_next_acquisition: bool,
@@ -603,6 +629,7 @@ pub(super) struct PointerResource {
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) srv: ID3D11ShaderResourceView,
+    _resource_lease: Option<Arc<dyn CaptureResourceLease>>,
 }
 
 /// Allocation-complete descriptor-keyed D3D11 Surface plan.
@@ -622,9 +649,12 @@ pub struct PreparedGpuSurfacePlan {
     context4: ID3D11DeviceContext4,
     shader: ID3D11ComputeShader,
     params: ID3D11Buffer,
-    routes: Vec<SurfaceRoute>,
+    routes: Box<[SurfaceRoute]>,
     selection_controlled: bool,
     allocation_byte_len: u64,
+    constant_buffer_byte_len: u64,
+    metadata_byte_len: u64,
+    retained_byte_len: u64,
     #[cfg(test)]
     injected_fault: Option<InjectedSurfaceFault>,
 }
@@ -644,6 +674,7 @@ impl std::fmt::Debug for PreparedGpuSurfacePlan {
             .field("source_color_space", &self.source_color_space)
             .field("descriptor_count", &self.routes.len())
             .field("allocation_byte_len", &self.allocation_byte_len)
+            .field("metadata_byte_len", &self.metadata_byte_len)
             .finish_non_exhaustive()
     }
 }
@@ -665,7 +696,7 @@ impl PreparedGpuSurfacePlan {
         descriptors: &[GpuSurfaceDescriptor],
         admission: GpuSurfaceAdmission,
     ) -> CaptureResult<Self> {
-        let allocation_byte_len = admission.admit(logical_source_extent, descriptors)?;
+        let quote = admission.quote(logical_source_extent, descriptors)?;
         for descriptor in descriptors {
             if descriptor.source_rotation() != source_rotation {
                 return Err(CaptureError::GpuSurfaceRotationMismatch {
@@ -724,9 +755,12 @@ impl PreparedGpuSurfacePlan {
             context4,
             shader,
             params,
-            routes,
+            routes: routes.into_boxed_slice(),
             selection_controlled: false,
-            allocation_byte_len,
+            allocation_byte_len: quote.allocation_byte_len(),
+            constant_buffer_byte_len: quote.constant_buffer_byte_len(),
+            metadata_byte_len: quote.metadata_byte_len(),
+            retained_byte_len: quote.retained_byte_len(),
             #[cfg(test)]
             injected_fault: None,
         })
@@ -795,6 +829,14 @@ impl PreparedGpuSurfacePlan {
         if matching_routes.next().is_some() {
             return Err(CaptureError::DuplicateGpuSurfaceDescriptor { descriptor_id });
         }
+        let slot_count = NonZeroU32::new(u32::try_from(route.slots.len()).map_err(|_| {
+            CaptureError::ResourceExhausted {
+                operation: "quote GPU Surface target preparation slots",
+                requested_bytes: usize::MAX,
+            }
+        })?)
+        .expect("a prepared GPU Surface route always retains slots");
+        let quote = GpuSurfaceTargetPreparationResourceQuote::try_new(slot_count)?;
         let mut slots = Vec::new();
         slots.try_reserve_exact(route.slots.len()).map_err(|_| {
             CaptureError::ResourceExhausted {
@@ -823,6 +865,7 @@ impl PreparedGpuSurfacePlan {
             topology_generation: self.topology_generation,
             duplication_generation: self.duplication_generation,
             allocation_byte_len: route.allocation_byte_len,
+            metadata_byte_len: quote.metadata_byte_len(),
             slots: slots.into_boxed_slice(),
         })
     }
@@ -831,6 +874,64 @@ impl PreparedGpuSurfacePlan {
     #[must_use]
     pub const fn allocation_byte_len(&self) -> u64 {
         self.allocation_byte_len
+    }
+
+    /// Constant-buffer bytes retained by the plan-wide surface shader.
+    #[must_use]
+    pub const fn constant_buffer_byte_len(&self) -> u64 {
+        self.constant_buffer_byte_len
+    }
+
+    /// Rust-owned route, descriptor, slot, and publication payloads.
+    #[must_use]
+    pub const fn metadata_byte_len(&self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    /// Logical GPU texture and constant bytes plus Rust-owned metadata.
+    #[must_use]
+    pub const fn retained_byte_len(&self) -> u64 {
+        self.retained_byte_len
+    }
+
+    #[cfg(test)]
+    pub(super) fn actual_metadata_byte_len_for_test(&self) -> u64 {
+        let mut bytes = checked_heap_payload_bytes::<SurfaceRoute>(
+            self.routes.len(),
+            "account prepared GPU Surface routes",
+        )
+        .and_then(|bytes| {
+            checked_arc_allocation_bytes::<GpuSurfaceDescriptor>(
+                self.routes.len(),
+                "account prepared GPU Surface descriptors",
+            )
+            .and_then(|descriptors| checked_metadata_sum(bytes, descriptors))
+        })
+        .expect("prepared route metadata was quoted before allocation");
+        for route in &self.routes {
+            let slot_count = route.slots.len();
+            for slot_bytes in [
+                checked_heap_payload_bytes::<SurfaceSlot>(
+                    slot_count,
+                    "account prepared GPU Surface slots",
+                ),
+                checked_arc_allocation_bytes::<GpuSurfacePublication>(
+                    slot_count,
+                    "account prepared GPU Surface publications",
+                ),
+                checked_arc_allocation_bytes::<SharedSurfaceSlot>(
+                    slot_count,
+                    "account prepared GPU Surface shared slots",
+                ),
+            ] {
+                bytes = checked_metadata_sum(
+                    bytes,
+                    slot_bytes.expect("prepared slot metadata was quoted before allocation"),
+                )
+                .expect("prepared metadata total was quoted before allocation");
+            }
+        }
+        bytes
     }
 
     /// GPU Surface publication performs no staging readback.
@@ -1363,7 +1464,7 @@ impl PreparedGpuSurfacePlan {
             pointer_x: pointer.position_x,
             pointer_y: pointer.position_y,
             pointer_width: shape.map_or(0, |shape| shape.width),
-            pointer_height: shape.map_or(0, super::PointerShape::visible_height),
+            pointer_height: shape.map_or(0, |shape| shape.visible_height()),
             region_x: region.origin_x(),
             region_y: region.origin_y(),
             region_width: region.width(),
@@ -1473,6 +1574,7 @@ pub(super) fn ensure_pointer_resource(
     resource: &mut Option<PointerResource>,
     pointer: &PointerState,
     available_bytes: u64,
+    admission: &dyn CaptureResourceAdmission,
 ) -> CaptureResult<()> {
     let Some(shape) = pointer.shape.as_ref() else {
         return Ok(());
@@ -1493,6 +1595,19 @@ pub(super) fn ensure_pointer_resource(
         });
     }
 
+    let peak_bytes = byte_len
+        .checked_mul(2)
+        .ok_or(CaptureError::GeometryOverflow {
+            operation: "reserve GPU pointer normalization and texture",
+            width: shape.width,
+            height,
+        })?;
+    let reservation = reserve_capture_resource(
+        admission,
+        CaptureResourceKind::PointerTexture,
+        peak_bytes,
+        "reserve GPU pointer normalization and texture",
+    )?;
     let pixels = normalized_pointer(shape).map_err(capture_gpu_error)?;
     let desc = texture_desc(
         CaptureExtent::try_new(shape.width, height)?,
@@ -1508,11 +1623,15 @@ pub(super) fn ensure_pointer_resource(
     };
     let texture = create_texture(device, &desc, Some(&initial)).map_err(capture_gpu_error)?;
     let srv = create_srv(device, &texture).map_err(capture_gpu_error)?;
+    drop(pixels);
+    let resource_lease =
+        commit_capture_resource(reservation, byte_len, "commit GPU pointer texture")?;
     *resource = Some(PointerResource {
         generation: pointer.shape_generation,
         width: shape.width,
         height,
         srv,
+        _resource_lease: Some(resource_lease),
     });
     Ok(())
 }
@@ -1566,13 +1685,104 @@ fn create_route(
     }
     Ok(SurfaceRoute {
         descriptor,
-        slots,
+        slots: slots.into_boxed_slice(),
         allocation_byte_len,
         write_index: 0,
         selected_for_next_acquisition: true,
         pending: PendingRouteOutcome::None,
         pending_source_sequence: None,
     })
+}
+
+pub(crate) const fn gpu_surface_constant_buffer_byte_len() -> usize {
+    size_of::<SurfaceShaderParams>()
+}
+
+pub(crate) fn gpu_surface_metadata_byte_len(
+    descriptor_count: usize,
+    slots_per_descriptor: NonZeroU32,
+) -> CaptureResult<u64> {
+    let slot_count = usize::try_from(slots_per_descriptor.get()).map_err(|_| {
+        CaptureError::ResourceExhausted {
+            operation: "quote GPU Surface slot metadata",
+            requested_bytes: usize::MAX,
+        }
+    })?;
+    let total_slots =
+        descriptor_count
+            .checked_mul(slot_count)
+            .ok_or(CaptureError::ResourceExhausted {
+                operation: "quote GPU Surface slot metadata",
+                requested_bytes: usize::MAX,
+            })?;
+    let mut bytes =
+        checked_heap_payload_bytes::<SurfaceRoute>(descriptor_count, "quote GPU Surface routes")?;
+    for allocation in [
+        checked_arc_allocation_bytes::<GpuSurfaceDescriptor>(
+            descriptor_count,
+            "quote GPU Surface descriptors",
+        ),
+        checked_heap_payload_bytes::<SurfaceSlot>(total_slots, "quote GPU Surface slots"),
+        checked_arc_allocation_bytes::<GpuSurfacePublication>(
+            total_slots,
+            "quote GPU Surface publications",
+        ),
+        checked_arc_allocation_bytes::<SharedSurfaceSlot>(
+            total_slots,
+            "quote GPU Surface shared slots",
+        ),
+    ] {
+        bytes = checked_metadata_sum(bytes, allocation?)?;
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn gpu_surface_target_preparation_metadata_byte_len(
+    slot_count: NonZeroU32,
+) -> CaptureResult<u64> {
+    let slot_count =
+        usize::try_from(slot_count.get()).map_err(|_| CaptureError::ResourceExhausted {
+            operation: "quote GPU Surface target preparation slots",
+            requested_bytes: usize::MAX,
+        })?;
+    checked_heap_payload_bytes::<GpuSurfaceTargetPreparationSlot>(
+        slot_count,
+        "quote GPU Surface target preparation slots",
+    )
+}
+
+fn checked_heap_payload_bytes<T>(count: usize, operation: &'static str) -> CaptureResult<u64> {
+    count
+        .checked_mul(size_of::<T>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes: usize::MAX,
+        })
+}
+
+fn checked_arc_allocation_bytes<T>(count: usize, operation: &'static str) -> CaptureResult<u64> {
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<T>())
+        .map_err(|_| CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes: usize::MAX,
+        })?;
+    count
+        .checked_mul(layout.pad_to_align().size())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes: usize::MAX,
+        })
+}
+
+fn checked_metadata_sum(left: u64, right: u64) -> CaptureResult<u64> {
+    left.checked_add(right)
+        .ok_or(CaptureError::ResourceExhausted {
+            operation: "quote GPU Surface metadata",
+            requested_bytes: usize::MAX,
+        })
 }
 
 fn create_surface_slot(
@@ -2187,7 +2397,7 @@ pub(super) mod fixture {
             sequence: 41,
             captured_at: Instant::now(),
             cursor: crate::CursorInfo::default(),
-            pointer: Arc::new(pointer),
+            pointer,
             source_width: width,
             source_height: height,
             origin_x: 0,
@@ -2200,6 +2410,7 @@ pub(super) mod fixture {
             srv: create_srv(&device, &source).map_err(capture_gpu_error)?,
             texture: source,
             metadata,
+            _resource_lease: None,
         };
         let mut pointer_resource = None;
         if plan.requires_pointer_for_next_publication() && clean.metadata.pointer.visible {
@@ -2208,6 +2419,7 @@ pub(super) mod fixture {
                 &mut pointer_resource,
                 &clean.metadata.pointer,
                 u64::MAX,
+                crate::shared::default_capture_resource_admission().as_ref(),
             )?;
         }
         let mut outcomes = Vec::new();
@@ -2341,7 +2553,7 @@ pub(super) mod fixture {
 
     pub(crate) fn release_lease_on_producer_device(
         plan: &PreparedGpuSurfacePlan,
-        mut lease: GpuSurfaceLease,
+        mut lease: GpuSurfaceLease<'_>,
     ) -> CaptureResult<()> {
         let device5 = plan
             .device
@@ -2438,7 +2650,7 @@ pub(super) mod fixture {
             sequence,
             captured_at: Instant::now(),
             cursor: crate::CursorInfo::default(),
-            pointer: Arc::new(PointerState::default()),
+            pointer: PointerState::default(),
             source_width: plan.native_source_extent.width(),
             source_height: plan.native_source_extent.height(),
             origin_x: 0,
@@ -2524,7 +2736,7 @@ pub(super) mod fixture {
             sequence,
             captured_at: Instant::now(),
             cursor: crate::CursorInfo::default(),
-            pointer: Arc::new(PointerState::default()),
+            pointer: PointerState::default(),
             source_width: plan.native_source_extent.width(),
             source_height: plan.native_source_extent.height(),
             origin_x: 0,

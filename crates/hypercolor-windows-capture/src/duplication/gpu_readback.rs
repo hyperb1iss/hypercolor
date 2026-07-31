@@ -1,5 +1,8 @@
+use std::alloc::Layout;
 use std::mem::size_of;
+use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
@@ -88,7 +91,7 @@ impl GpuReductionBatchInfo {
 struct ReductionRoute {
     descriptor: Arc<GpuSurfaceDescriptor>,
     reducer: GpuReducer,
-    rgba: Vec<u8>,
+    rgba: Box<[u8]>,
     in_flight: bool,
     completed: Option<GpuReductionProvenance>,
     last_submitted_sequence: Option<u64>,
@@ -106,11 +109,14 @@ pub struct PreparedGpuReductionPlan {
     logical_source_extent: CaptureExtent,
     source_rotation: DisplayRotation,
     source_color_space: GpuSurfaceSourceColorSpace,
-    routes: Vec<ReductionRoute>,
+    routes: Box<[ReductionRoute]>,
     selection_controlled: bool,
     allocation_byte_len: u64,
+    constant_buffer_byte_len: u64,
     readback_byte_len: u64,
     publication_buffer_byte_len: usize,
+    metadata_byte_len: u64,
+    retained_byte_len: u64,
 }
 
 impl std::fmt::Debug for PreparedGpuReductionPlan {
@@ -122,6 +128,7 @@ impl std::fmt::Debug for PreparedGpuReductionPlan {
             .field("descriptor_count", &self.routes.len())
             .field("allocation_byte_len", &self.allocation_byte_len)
             .field("readback_byte_len", &self.readback_byte_len)
+            .field("metadata_byte_len", &self.metadata_byte_len)
             .finish_non_exhaustive()
     }
 }
@@ -143,7 +150,10 @@ impl PreparedGpuReductionPlan {
         descriptors: &[GpuSurfaceDescriptor],
         admission: GpuReductionAdmission,
     ) -> CaptureResult<Self> {
-        let allocation_byte_len = admission.admit(logical_source_extent, descriptors)?;
+        let quote = admission.quote(logical_source_extent, descriptors)?;
+        let allocation_byte_len = quote.allocation_byte_len();
+        let readback_byte_len = quote.readback_byte_len();
+        let publication_buffer_byte_len = quote.publication_buffer_byte_len();
         let mut routes = Vec::new();
         routes.try_reserve_exact(descriptors.len()).map_err(|_| {
             CaptureError::ResourceExhausted {
@@ -153,8 +163,6 @@ impl PreparedGpuReductionPlan {
                     .saturating_mul(size_of::<ReductionRoute>()),
             }
         })?;
-        let mut readback_byte_len = 0_u64;
-        let mut publication_buffer_byte_len = 0_usize;
         for descriptor in descriptors {
             if descriptor.source_rotation() != source_rotation {
                 return Err(CaptureError::GpuSurfaceRotationMismatch {
@@ -170,30 +178,6 @@ impl PreparedGpuReductionPlan {
                 });
             }
             let output_bytes = checked_output_bytes(descriptor.output_extent())?;
-            let route_readback = u64::try_from(output_bytes)
-                .ok()
-                .and_then(|bytes| {
-                    bytes.checked_mul(u64::from(admission.slots_per_descriptor().get()))
-                })
-                .ok_or(CaptureError::GeometryOverflow {
-                    operation: "account GPU reduction staging slots",
-                    width: descriptor.output_extent().width(),
-                    height: descriptor.output_extent().height(),
-                })?;
-            readback_byte_len = readback_byte_len.checked_add(route_readback).ok_or(
-                CaptureError::GeometryOverflow {
-                    operation: "account GPU reduction staging plan",
-                    width: descriptor.output_extent().width(),
-                    height: descriptor.output_extent().height(),
-                },
-            )?;
-            publication_buffer_byte_len = publication_buffer_byte_len
-                .checked_add(output_bytes)
-                .ok_or(CaptureError::GeometryOverflow {
-                    operation: "account GPU reduction publication buffers",
-                    width: descriptor.output_extent().width(),
-                    height: descriptor.output_extent().height(),
-                })?;
             let mut rgba = Vec::new();
             rgba.try_reserve_exact(output_bytes)
                 .map_err(|_| CaptureError::ResourceExhausted {
@@ -213,7 +197,7 @@ impl PreparedGpuReductionPlan {
             routes.push(ReductionRoute {
                 descriptor: Arc::new(descriptor.clone()),
                 reducer,
-                rgba,
+                rgba: rgba.into_boxed_slice(),
                 in_flight: false,
                 completed: None,
                 last_submitted_sequence: None,
@@ -230,11 +214,14 @@ impl PreparedGpuReductionPlan {
             logical_source_extent,
             source_rotation,
             source_color_space,
-            routes,
+            routes: routes.into_boxed_slice(),
             selection_controlled: false,
             allocation_byte_len,
+            constant_buffer_byte_len: quote.constant_buffer_byte_len(),
             readback_byte_len,
             publication_buffer_byte_len,
+            metadata_byte_len: quote.metadata_byte_len(),
+            retained_byte_len: quote.retained_byte_len(),
         })
     }
 
@@ -278,6 +265,12 @@ impl PreparedGpuReductionPlan {
         self.allocation_byte_len
     }
 
+    /// Constant-buffer bytes retained by descriptor-local reducers.
+    #[must_use]
+    pub const fn constant_buffer_byte_len(&self) -> u64 {
+        self.constant_buffer_byte_len
+    }
+
     /// Checked staging texture bytes retained by descriptor-keyed rings.
     #[must_use]
     pub const fn readback_byte_len(&self) -> u64 {
@@ -288,6 +281,39 @@ impl PreparedGpuReductionPlan {
     #[must_use]
     pub const fn publication_buffer_byte_len(&self) -> usize {
         self.publication_buffer_byte_len
+    }
+
+    /// Rust-owned route, descriptor, and staging-slot payloads.
+    #[must_use]
+    pub const fn metadata_byte_len(&self) -> u64 {
+        self.metadata_byte_len
+    }
+
+    /// Logical GPU resources, publication buffers, and Rust-owned metadata.
+    #[must_use]
+    pub const fn retained_byte_len(&self) -> u64 {
+        self.retained_byte_len
+    }
+
+    #[cfg(test)]
+    pub(super) fn actual_metadata_byte_len_for_test(&self) -> u64 {
+        let mut bytes = checked_heap_payload_bytes::<ReductionRoute>(
+            self.routes.len(),
+            "account prepared GPU reduction routes",
+        )
+        .and_then(|bytes| {
+            checked_arc_allocation_bytes::<GpuSurfaceDescriptor>(
+                self.routes.len(),
+                "account prepared GPU reduction descriptors",
+            )
+            .and_then(|descriptors| checked_metadata_sum(bytes, descriptors))
+        })
+        .expect("prepared reduction route metadata was quoted before allocation");
+        for route in &self.routes {
+            bytes = checked_metadata_sum(bytes, route.reducer.actual_metadata_byte_len_for_test())
+                .expect("prepared reduction metadata was quoted before allocation");
+        }
+        bytes
     }
 
     pub(super) fn requires_pointer_for_next_publication(&self) -> bool {
@@ -339,7 +365,7 @@ impl PreparedGpuReductionPlan {
                 && route.in_flight
                 && let Some(frame) = route
                     .reducer
-                    .poll(&mut route.rgba)
+                    .poll_preallocated(&mut route.rgba)
                     .map_err(capture_gpu_error)?
             {
                 validate_reduced_frame(route, &frame)?;
@@ -436,6 +462,76 @@ impl PreparedGpuReductionPlan {
             route.selected_for_next_acquisition = false;
         }
     }
+}
+
+pub(crate) fn gpu_reduction_metadata_byte_len(
+    descriptor_count: usize,
+    slots_per_descriptor: NonZeroU32,
+) -> CaptureResult<u64> {
+    let mut bytes = checked_heap_payload_bytes::<ReductionRoute>(
+        descriptor_count,
+        "quote GPU reduction routes",
+    )?;
+    bytes = checked_metadata_sum(
+        bytes,
+        checked_arc_allocation_bytes::<GpuSurfaceDescriptor>(
+            descriptor_count,
+            "quote GPU reduction descriptors",
+        )?,
+    )?;
+    checked_metadata_sum(
+        bytes,
+        super::gpu_reduction::readback_slot_metadata_byte_len(
+            descriptor_count,
+            slots_per_descriptor,
+        )?,
+    )
+}
+
+pub(crate) fn gpu_reduction_constant_buffer_byte_len(
+    descriptor_count: usize,
+) -> CaptureResult<u64> {
+    descriptor_count
+        .checked_mul(super::gpu_reduction::constant_buffer_byte_len())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(CaptureError::ResourceExhausted {
+            operation: "quote GPU reduction constant buffers",
+            requested_bytes: usize::MAX,
+        })
+}
+
+fn checked_heap_payload_bytes<T>(count: usize, operation: &'static str) -> CaptureResult<u64> {
+    count
+        .checked_mul(size_of::<T>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes: usize::MAX,
+        })
+}
+
+fn checked_arc_allocation_bytes<T>(count: usize, operation: &'static str) -> CaptureResult<u64> {
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<T>())
+        .map_err(|_| CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes: usize::MAX,
+        })?;
+    count
+        .checked_mul(layout.pad_to_align().size())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(CaptureError::ResourceExhausted {
+            operation,
+            requested_bytes: usize::MAX,
+        })
+}
+
+fn checked_metadata_sum(left: u64, right: u64) -> CaptureResult<u64> {
+    left.checked_add(right)
+        .ok_or(CaptureError::ResourceExhausted {
+            operation: "quote GPU reduction metadata",
+            requested_bytes: usize::MAX,
+        })
 }
 
 fn validate_pointer(

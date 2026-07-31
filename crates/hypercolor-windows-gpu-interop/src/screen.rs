@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::alloc::{Layout, alloc};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use hypercolor_windows_capture::{
@@ -23,8 +25,12 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Direct3D11on12::{
     D3D11_RESOURCE_FLAGS, D3D11On12CreateDevice, ID3D11On12Device,
 };
-use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_COPY_DEST;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
+use windows::Win32::Graphics::Direct3D12::{
+    D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST,
+    D3D12_TEXTURE_LAYOUT_UNKNOWN, ID3D12Device,
+};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIKeyedMutex;
 use windows::core::{IUnknown, Interface};
 
@@ -88,12 +94,23 @@ pub enum D3d11On12ScreenInteropError {
     /// A bridge cache could not reserve metadata for another exact resource.
     #[error("screen interop cache allocation failed")]
     CacheAllocationFailed,
+    /// One live target already owns this exact capture publication route.
+    #[error("screen interop target is already prepared for this exact route")]
+    PreparedTargetAlreadyLive,
     /// A bridge-local texture or content identity exhausted its integer domain.
     #[error("screen interop identity exhausted")]
     IdentityExhausted,
     /// The requested renderer target byte geometry cannot be represented.
     #[error("screen target {width}x{height} byte geometry overflowed")]
     TargetByteLengthOverflow {
+        /// Exact output width.
+        width: u32,
+        /// Exact output height.
+        height: u32,
+    },
+    /// D3D12 rejected the renderer target's resource-allocation query.
+    #[error("D3D12 rejected the screen target {width}x{height} allocation quote")]
+    TargetAllocationQuoteFailed {
         /// Exact output width.
         width: u32,
         /// Exact output height.
@@ -200,6 +217,7 @@ pub enum D3d11On12ScreenInteropError {
 /// D3D11On12 interfaces permanently bound to one renderer device and queue.
 pub struct D3d11On12ScreenDevice {
     adapter_luid: GpuAdapterLuid,
+    device12: ID3D12Device,
     pub(crate) on12: ID3D11On12Device,
     pub(crate) device1: ID3D11Device1,
     pub(crate) device5: ID3D11Device5,
@@ -234,8 +252,12 @@ pub struct ScreenCopyTargetAllocation {
     pub width: u32,
     /// Exact output height.
     pub height: u32,
-    /// Physical RGBA bytes retained by the renderer target.
+    /// D3D12 per-resource suballocation requirement for the renderer target.
     pub retained_bytes: u64,
+    /// Exact Rust allocation requests for target, cache, and wgpu ownership.
+    pub metadata_bytes: u64,
+    /// Target suballocation bytes plus exact Rust allocation requests.
+    pub total_retained_bytes: u64,
 }
 
 /// Live renderer-target and native-surface cache occupancy.
@@ -247,7 +269,7 @@ pub struct ScreenInteropCacheStats {
     pub opened_surfaces: usize,
     /// Cumulative native surface opens performed during target preparation.
     pub native_surface_opens: u64,
-    /// Exact physical bytes retained by live renderer targets.
+    /// D3D12 suballocation requirements for live renderer targets.
     pub retained_target_bytes: u64,
 }
 
@@ -324,6 +346,14 @@ struct PreparedScreenCopyTargetInner {
     target: Mutex<ScreenCopyTarget>,
 }
 
+const SCREEN_TARGET_CACHE_BUCKETS: usize = 256;
+
+struct ScreenTargetCacheEntry {
+    key: ScreenCopyTargetKey,
+    target: Weak<PreparedScreenCopyTargetInner>,
+    next: Option<Box<Self>>,
+}
+
 /// Cloneable lease retaining one exact renderer-owned screen-copy target.
 ///
 /// The final lease or texture-reader drop releases the renderer target and
@@ -346,10 +376,22 @@ impl PreparedScreenCopyTarget {
         self.inner.allocation.storage_id
     }
 
-    /// Physical RGBA bytes retained by this renderer target.
+    /// D3D12 per-resource suballocation requirement for this renderer target.
     #[must_use]
     pub fn retained_bytes(&self) -> u64 {
         self.inner.allocation.retained_bytes
+    }
+
+    /// Exact Rust allocation requests for target, cache, and wgpu ownership.
+    #[must_use]
+    pub fn metadata_bytes(&self) -> u64 {
+        self.inner.allocation.metadata_bytes
+    }
+
+    /// Target suballocation bytes plus exact Rust allocation requests.
+    #[must_use]
+    pub fn total_retained_bytes(&self) -> u64 {
+        self.inner.allocation.total_retained_bytes
     }
 
     /// Exact target width.
@@ -391,20 +433,35 @@ impl Drop for PreparedScreenCopyTargetInner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let is_current = state
-            .targets
-            .get(&self.key)
-            .is_some_and(|target| std::ptr::eq(target.as_ptr(), std::ptr::from_ref(self)));
-        if is_current {
-            state.targets.remove(&self.key);
-        }
+        remove_cached_target(&mut state, &self.key, std::ptr::from_ref(self));
     }
 }
 
 struct D3d11On12ScreenBridgeState {
-    targets: HashMap<ScreenCopyTargetKey, Weak<PreparedScreenCopyTargetInner>>,
+    targets: [Option<Box<ScreenTargetCacheEntry>>; SCREEN_TARGET_CACHE_BUCKETS],
     next_storage_id: u64,
     native_surface_opens: u64,
+}
+
+impl D3d11On12ScreenBridgeState {
+    fn new() -> Self {
+        Self {
+            targets: std::array::from_fn(|_| None),
+            next_storage_id: 0,
+            native_surface_opens: 0,
+        }
+    }
+}
+
+impl Drop for D3d11On12ScreenBridgeState {
+    fn drop(&mut self) {
+        for bucket in &mut self.targets {
+            let mut entry = bucket.take();
+            while let Some(mut current) = entry {
+                entry = current.next.take();
+            }
+        }
+    }
 }
 
 struct D3d11On12ScreenBridgeInner {
@@ -419,8 +476,8 @@ struct D3d11On12ScreenBridgeInner {
 /// Copy bridge from exact D3D11 capture publications into ordinary wgpu textures.
 ///
 /// Clones share one bridge permanently bound to a wgpu DX12 device and queue.
-/// Prepared leases own renderer targets, while the bridge retains weak dedupe
-/// entries and serializes immediate-context work for exact native copies.
+/// Prepared leases own renderer targets, while the bridge retains weak
+/// occupancy entries and serializes immediate-context work for native copies.
 #[derive(Clone)]
 pub struct D3d11On12ScreenBridge {
     inner: Arc<D3d11On12ScreenBridgeInner>,
@@ -440,11 +497,7 @@ impl D3d11On12ScreenBridge {
                 device,
                 queue,
                 interop,
-                state: Mutex::new(D3d11On12ScreenBridgeState {
-                    targets: HashMap::new(),
-                    next_storage_id: 0,
-                    native_surface_opens: 0,
-                }),
+                state: Mutex::new(D3d11On12ScreenBridgeState::new()),
                 context_gate: Mutex::new(()),
                 next_content_generation: AtomicU64::new(1),
             }),
@@ -457,19 +510,17 @@ impl D3d11On12ScreenBridge {
         self.inner.interop.adapter_luid()
     }
 
-    /// Prepare or reuse a renderer target for one exact plan descriptor.
-    ///
-    /// This performs every allocation and initialization submission outside
-    /// the frame-copy hot path and reports the physical bytes retained.
+    /// Quote the renderer texture's D3D12 allocation without allocating or
+    /// mutating cache state.
     ///
     /// # Errors
     ///
-    /// Rejects unsupported descriptor semantics, renderer limits, byte
-    /// overflow, allocation metadata exhaustion, and native wrapping errors.
-    pub fn prepare_target(
+    /// Rejects the same descriptor, adapter, slot, limit, and geometry
+    /// violations as [`Self::prepare_target`].
+    pub fn quote_target_bytes(
         &self,
         preparation: &GpuSurfaceTargetPreparation,
-    ) -> ScreenInteropResult<PreparedScreenCopyTarget> {
+    ) -> ScreenInteropResult<u64> {
         let descriptor = preparation.descriptor();
         validate_descriptor_contract(descriptor, self.inner.device.limits())?;
         if preparation.adapter_luid() != self.adapter_luid() {
@@ -485,6 +536,56 @@ impl D3d11On12ScreenBridge {
                 },
             );
         }
+        self.inner.interop.target_allocation_bytes(
+            descriptor.output_extent().width(),
+            descriptor.output_extent().height(),
+        )
+    }
+
+    /// Quote every target-attributable retained byte without allocating.
+    ///
+    /// The D3D12 term is the per-resource suballocation requirement used by
+    /// wgpu. Renderer-global heap blocks, driver internals, and allocator
+    /// control blocks are backend baseline rather than target ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same contract failures as [`Self::quote_target_bytes`] and
+    /// rejects checked metadata overflow.
+    pub fn quote_target_retained_bytes(
+        &self,
+        preparation: &GpuSurfaceTargetPreparation,
+    ) -> ScreenInteropResult<u64> {
+        self.quote_target_bytes(preparation)?
+            .checked_add(checked_target_metadata_bytes(preparation)?)
+            .ok_or(D3d11On12ScreenInteropError::TargetByteLengthOverflow {
+                width: preparation.descriptor().output_extent().width(),
+                height: preparation.descriptor().output_extent().height(),
+            })
+    }
+
+    /// Prepare one independently owned renderer target for an exact descriptor.
+    ///
+    /// This performs every allocation and initialization submission outside
+    /// the frame-copy hot path and reports the D3D12 suballocation requirement.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported descriptor semantics, renderer limits, byte
+    /// overflow, allocation metadata exhaustion, and native wrapping errors.
+    pub fn prepare_target(
+        &self,
+        preparation: &GpuSurfaceTargetPreparation,
+    ) -> ScreenInteropResult<PreparedScreenCopyTarget> {
+        let descriptor = preparation.descriptor();
+        let retained_bytes = self.quote_target_bytes(preparation)?;
+        let metadata_bytes = checked_target_metadata_bytes(preparation)?;
+        let total_retained_bytes = retained_bytes.checked_add(metadata_bytes).ok_or(
+            D3d11On12ScreenInteropError::TargetByteLengthOverflow {
+                width: descriptor.output_extent().width(),
+                height: descriptor.output_extent().height(),
+            },
+        )?;
         let key = ScreenCopyTargetKey::new(preparation);
         let native_identity = PreparedNativeIdentity {
             adapter_luid: preparation.adapter_luid(),
@@ -492,22 +593,15 @@ impl D3d11On12ScreenBridge {
             topology_generation: preparation.topology_generation(),
             duplication_generation: preparation.duplication_generation(),
         };
-        let retained_bytes = checked_target_bytes(key.width, key.height)?;
         let storage_id = {
             let mut state = self
                 .inner
                 .state
                 .lock()
                 .map_err(|_| D3d11On12ScreenInteropError::PoisonedState { state: "bridge" })?;
-            if let Some(target) = state.targets.get(&key).and_then(Weak::upgrade) {
-                validate_matching_preparation(&target, &native_identity, preparation.slots())?;
-                return Ok(PreparedScreenCopyTarget { inner: target });
+            if has_live_cached_target(&state, &key) {
+                return Err(D3d11On12ScreenInteropError::PreparedTargetAlreadyLive);
             }
-            state.targets.remove(&key);
-            state
-                .targets
-                .try_reserve(1)
-                .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
             let storage_id = state
                 .next_storage_id
                 .checked_add(1)
@@ -550,9 +644,16 @@ impl D3d11On12ScreenBridge {
                 width: key.width,
                 height: key.height,
                 retained_bytes,
+                metadata_bytes,
+                total_retained_bytes,
             },
             target: Mutex::new(target),
         });
+        let cache_entry = try_box_cache_entry(ScreenTargetCacheEntry {
+            key: key.clone(),
+            target: Arc::downgrade(&target),
+            next: None,
+        })?;
         let mut state = self
             .inner
             .state
@@ -565,18 +666,11 @@ impl D3d11On12ScreenBridge {
                     .map_err(|_| D3d11On12ScreenInteropError::IdentityExhausted)?,
             )
             .ok_or(D3d11On12ScreenInteropError::IdentityExhausted)?;
-        // Independent extents allocate in parallel. If the same key raced us,
-        // discard this candidate and share the winner's exact lease.
-        if let Some(existing) = state.targets.get(&key).and_then(Weak::upgrade) {
-            validate_matching_preparation(&existing, &target.native_identity, preparation.slots())?;
+        if has_live_cached_target(&state, &key) {
             drop(state);
-            return Ok(PreparedScreenCopyTarget { inner: existing });
+            return Err(D3d11On12ScreenInteropError::PreparedTargetAlreadyLive);
         }
-        state
-            .targets
-            .try_reserve(1)
-            .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
-        state.targets.insert(key, Arc::downgrade(&target));
+        insert_cached_target(&mut state, &key, cache_entry);
         Ok(PreparedScreenCopyTarget { inner: target })
     }
 
@@ -592,11 +686,26 @@ impl D3d11On12ScreenBridge {
             .lock()
             .map_err(|_| D3d11On12ScreenInteropError::PoisonedState { state: "bridge" })?;
         let native_surface_opens = state.native_surface_opens;
-        let targets = state
-            .targets
-            .values()
-            .filter_map(Weak::upgrade)
-            .collect::<Vec<_>>();
+        let target_count = state.targets.iter().try_fold(0_usize, |total, bucket| {
+            let bucket_count =
+                std::iter::successors(bucket.as_deref(), |entry| entry.next.as_deref()).count();
+            total.checked_add(bucket_count)
+        });
+        let target_count =
+            target_count.ok_or(D3d11On12ScreenInteropError::CacheAllocationFailed)?;
+        let mut targets = Vec::new();
+        targets
+            .try_reserve_exact(target_count)
+            .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
+        for bucket in &state.targets {
+            let mut entry = bucket.as_deref();
+            while let Some(cached) = entry {
+                if let Some(target) = cached.target.upgrade() {
+                    targets.push(target);
+                }
+                entry = cached.next.as_deref();
+            }
+        }
         drop(state);
         let mut stats = ScreenInteropCacheStats {
             native_surface_opens,
@@ -626,7 +735,7 @@ impl D3d11On12ScreenBridge {
     pub fn copy_publication(
         &self,
         prepared: &PreparedScreenCopyTarget,
-        publication: &Arc<GpuSurfacePublication>,
+        publication: &GpuSurfacePublication,
     ) -> ScreenInteropResult<ScreenTextureCopy> {
         let provenance = publication.provenance();
         validate_publication_contract(provenance, self.adapter_luid(), self.inner.device.limits())?;
@@ -936,6 +1045,7 @@ impl D3d11On12ScreenDevice {
         let context4 = cast_interface(&context, "ID3D11DeviceContext4")?;
         Ok(Self {
             adapter_luid,
+            device12: raw_device,
             on12,
             device1,
             device5,
@@ -948,6 +1058,100 @@ impl D3d11On12ScreenDevice {
     #[must_use]
     pub const fn adapter_luid(&self) -> GpuAdapterLuid {
         self.adapter_luid
+    }
+
+    fn target_allocation_bytes(&self, width: u32, height: u32) -> ScreenInteropResult<u64> {
+        let descriptor = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Alignment: 0,
+            Width: u64::from(width),
+            Height: height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+        };
+        // SAFETY: the descriptor matches the renderer texture created by
+        // create_target, and GetResourceAllocationInfo only reads it.
+        let allocation = unsafe {
+            self.device12
+                .GetResourceAllocationInfo(0, std::slice::from_ref(&descriptor))
+        };
+        if allocation.SizeInBytes == u64::MAX || allocation.Alignment == 0 {
+            return Err(D3d11On12ScreenInteropError::TargetAllocationQuoteFailed { width, height });
+        }
+        Ok(allocation.SizeInBytes)
+    }
+}
+
+fn target_cache_bucket(key: &ScreenCopyTargetKey) -> usize {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let bucket_count = u64::try_from(SCREEN_TARGET_CACHE_BUCKETS)
+        .expect("screen target bucket count must fit u64");
+    usize::try_from(hasher.finish() % bucket_count)
+        .expect("screen target bucket index must fit usize")
+}
+
+fn has_live_cached_target(state: &D3d11On12ScreenBridgeState, key: &ScreenCopyTargetKey) -> bool {
+    let mut entry = state.targets[target_cache_bucket(key)].as_deref();
+    while let Some(cached) = entry {
+        if cached.key == *key && cached.target.strong_count() > 0 {
+            return true;
+        }
+        entry = cached.next.as_deref();
+    }
+    false
+}
+
+fn insert_cached_target(
+    state: &mut D3d11On12ScreenBridgeState,
+    key: &ScreenCopyTargetKey,
+    mut entry: Box<ScreenTargetCacheEntry>,
+) {
+    let bucket = &mut state.targets[target_cache_bucket(key)];
+    entry.next = bucket.take();
+    *bucket = Some(entry);
+}
+
+fn remove_cached_target(
+    state: &mut D3d11On12ScreenBridgeState,
+    key: &ScreenCopyTargetKey,
+    target: *const PreparedScreenCopyTargetInner,
+) {
+    let mut link = &mut state.targets[target_cache_bucket(key)];
+    while let Some(mut entry) = link.take() {
+        if std::ptr::eq(entry.target.as_ptr(), target) {
+            *link = entry.next.take();
+            return;
+        }
+        *link = Some(entry);
+        link = &mut link
+            .as_mut()
+            .expect("cache entry was restored before traversal")
+            .next;
+    }
+}
+
+fn try_box_cache_entry(
+    entry: ScreenTargetCacheEntry,
+) -> ScreenInteropResult<Box<ScreenTargetCacheEntry>> {
+    let layout = Layout::new::<ScreenTargetCacheEntry>();
+    // SAFETY: allocation uses the exact layout Box will later deallocate.
+    let pointer = unsafe { alloc(layout) }.cast::<ScreenTargetCacheEntry>();
+    if pointer.is_null() {
+        return Err(D3d11On12ScreenInteropError::CacheAllocationFailed);
+    }
+    // SAFETY: pointer is non-null, suitably aligned, uniquely owned, and has
+    // enough storage for one ScreenTargetCacheEntry.
+    unsafe {
+        pointer.write(entry);
+        Ok(Box::from_raw(pointer))
     }
 }
 
@@ -1076,31 +1280,48 @@ fn checked_target_bytes(width: u32, height: u32) -> ScreenInteropResult<u64> {
         .ok_or(D3d11On12ScreenInteropError::TargetByteLengthOverflow { width, height })
 }
 
-fn validate_matching_preparation(
-    target: &PreparedScreenCopyTargetInner,
-    identity: &PreparedNativeIdentity,
-    slots: &[GpuSurfaceTargetPreparationSlot],
-) -> ScreenInteropResult<()> {
-    if target.native_identity != *identity {
-        return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
-            field: "preparation.native_identity",
-        });
-    }
-    if target.opened_surfaces.len() != slots.len()
-        || target
-            .opened_surfaces
-            .iter()
-            .zip(slots)
-            .any(|(opened, slot)| {
-                opened.slot_id != slot.slot_id()
-                    || opened.opaque_handle_id != slot.opaque_handle_id()
-            })
-    {
-        return Err(D3d11On12ScreenInteropError::PreparedTargetMismatch {
-            field: "preparation.slots",
-        });
-    }
-    Ok(())
+fn checked_target_metadata_bytes(
+    preparation: &GpuSurfaceTargetPreparation,
+) -> ScreenInteropResult<u64> {
+    let inner = checked_arc_allocation_bytes::<PreparedScreenCopyTargetInner>()?;
+    let opened = u64::try_from(preparation.slots().len())
+        .ok()
+        .and_then(|count| {
+            u64::try_from(std::mem::size_of::<OpenedSurface>())
+                .ok()
+                .and_then(|size| count.checked_mul(size))
+        })
+        .ok_or(D3d11On12ScreenInteropError::CacheAllocationFailed)?;
+    let source_id = checked_arc_slice_allocation_bytes(preparation.source_id().len())?;
+    let cache_entry = u64::try_from(std::mem::size_of::<ScreenTargetCacheEntry>())
+        .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
+    let texture = checked_arc_allocation_bytes::<wgpu::Texture>()?;
+    let texture_view = checked_arc_allocation_bytes::<wgpu::TextureView>()?;
+    inner
+        .checked_add(opened)
+        .and_then(|bytes| bytes.checked_add(source_id))
+        .and_then(|bytes| bytes.checked_add(cache_entry))
+        .and_then(|bytes| bytes.checked_add(texture))
+        .and_then(|bytes| bytes.checked_add(texture_view))
+        .ok_or(D3d11On12ScreenInteropError::CacheAllocationFailed)
+}
+
+fn checked_arc_allocation_bytes<T>() -> ScreenInteropResult<u64> {
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<T>())
+        .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
+    u64::try_from(layout.pad_to_align().size())
+        .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)
+}
+
+fn checked_arc_slice_allocation_bytes(len: usize) -> ScreenInteropResult<u64> {
+    let payload =
+        Layout::array::<u8>(len).map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(payload)
+        .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)?;
+    u64::try_from(layout.pad_to_align().size())
+        .map_err(|_| D3d11On12ScreenInteropError::CacheAllocationFailed)
 }
 
 fn open_surface(
@@ -1296,7 +1517,7 @@ fn target_content_uncertain(
 }
 
 fn abandon_windows_error(
-    lease: GpuSurfaceLease,
+    lease: GpuSurfaceLease<'_>,
     operation: &'static str,
     error: windows::core::Error,
 ) -> D3d11On12ScreenInteropError {
@@ -1304,7 +1525,7 @@ fn abandon_windows_error(
 }
 
 fn abandon_before_acquire(
-    lease: GpuSurfaceLease,
+    lease: GpuSurfaceLease<'_>,
     error: D3d11On12ScreenInteropError,
 ) -> D3d11On12ScreenInteropError {
     let operation = match &error {

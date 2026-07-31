@@ -11,8 +11,9 @@ use hypercolor_windows_capture::{
     GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter,
     GpuSurfaceFormat, GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace,
 };
-use hypercolor_windows_gpu_interop::D3d11On12ScreenBridge;
-use hypercolor_windows_gpu_interop::D3d11On12ScreenDevice;
+use hypercolor_windows_gpu_interop::{
+    D3d11On12ScreenBridge, D3d11On12ScreenDevice, D3d11On12ScreenInteropError,
+};
 use std::num::NonZeroU64;
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
@@ -46,7 +47,7 @@ fn binds_d3d11on12_to_the_renderer_dx12_queue() -> Result<(), String> {
 }
 
 #[test]
-fn prepares_and_reuses_exact_renderer_target() -> Result<(), String> {
+fn rejects_a_duplicate_live_renderer_target() -> Result<(), String> {
     if std::env::var(RUN_FIXTURE_ENV).as_deref() != Ok("1") {
         eprintln!("set {RUN_FIXTURE_ENV}=1 to run the D3D11On12 fixture");
         return Ok(());
@@ -57,19 +58,47 @@ fn prepares_and_reuses_exact_renderer_target() -> Result<(), String> {
         D3d11On12ScreenBridge::new(wgpu.device, wgpu.queue).map_err(|error| error.to_string())?;
     let descriptor = fixture_descriptor(17, 641, 359)?;
     let plan = fixture_plan_generation(11)?;
-    let fixture = publish_fixture(bridge.adapter_luid(), &descriptor, plan, "fixture:reuse", 1)?;
+    let fixture = publish_fixture(
+        bridge.adapter_luid(),
+        &descriptor,
+        plan,
+        "fixture:independent",
+        1,
+    )?;
+    let quote = bridge
+        .quote_target_bytes(fixture.target_preparation())
+        .map_err(|error| error.to_string())?;
+    let retained_quote = bridge
+        .quote_target_retained_bytes(fixture.target_preparation())
+        .map_err(|error| error.to_string())?;
 
     let first = bridge
         .prepare_target(fixture.target_preparation())
         .map_err(|error| error.to_string())?;
-    let reused = bridge
+    let duplicate = bridge
         .prepare_target(fixture.target_preparation())
-        .map_err(|error| error.to_string())?;
+        .expect_err("one exact route has one live renderer target");
 
-    assert_eq!(first, reused);
+    assert!(matches!(
+        duplicate,
+        D3d11On12ScreenInteropError::PreparedTargetAlreadyLive
+    ));
     assert_eq!(first.width(), 641);
     assert_eq!(first.height(), 359);
-    assert_eq!(first.retained_bytes(), 641 * 359 * 4);
+    let logical_bytes = 641 * 359 * 4;
+    assert!(quote >= logical_bytes);
+    assert_ne!(quote, logical_bytes);
+    assert_eq!(quote % (64 * 1024), 0);
+    assert_eq!(first.retained_bytes(), quote);
+    assert_eq!(first.total_retained_bytes(), retained_quote);
+    assert_eq!(first.total_retained_bytes(), quote + first.metadata_bytes());
+    assert!(
+        first.metadata_bytes()
+            >= u64::try_from(
+                std::mem::size_of::<wgpu::Texture>() + std::mem::size_of::<wgpu::TextureView>()
+            )
+            .expect("wgpu handle payload sizes must fit u64")
+    );
     assert_eq!(
         bridge
             .cache_stats()
@@ -110,6 +139,38 @@ fn aborted_preparation_releases_its_target() -> Result<(), String> {
         .prepare_target(fixture.target_preparation())
         .map_err(|error| error.to_string())?;
     assert_ne!(retried.storage_id(), aborted_storage);
+    Ok(())
+}
+
+#[test]
+fn released_targets_leave_no_dynamic_cache_ownership() -> Result<(), String> {
+    if std::env::var(RUN_FIXTURE_ENV).as_deref() != Ok("1") {
+        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the D3D11On12 fixture");
+        return Ok(());
+    }
+
+    let wgpu = WgpuFixture::new_dx12("hypercolor D3D11On12 cache churn fixture")?;
+    let bridge =
+        D3d11On12ScreenBridge::new(wgpu.device, wgpu.queue).map_err(|error| error.to_string())?;
+    for generation in 1_u32..=64 {
+        let identity = 100 + u64::from(generation);
+        let descriptor = fixture_descriptor(identity, 64 + generation, 36)?;
+        let fixture = publish_fixture(
+            bridge.adapter_luid(),
+            &descriptor,
+            fixture_plan_generation(identity)?,
+            "fixture:cache-churn",
+            u64::from(generation),
+        )?;
+        let target = bridge
+            .prepare_target(fixture.target_preparation())
+            .map_err(|error| error.to_string())?;
+        drop(target);
+        let stats = bridge.cache_stats().map_err(|error| error.to_string())?;
+        assert_eq!(stats.prepared_targets, 0);
+        assert_eq!(stats.opened_surfaces, 0);
+        assert_eq!(stats.retained_target_bytes, 0);
+    }
     Ok(())
 }
 
@@ -161,7 +222,7 @@ fn overlapping_plan_generations_keep_exact_targets_independent() -> Result<(), S
 }
 
 #[test]
-fn cloned_bridges_coalesce_concurrent_exact_preparations() -> Result<(), String> {
+fn cloned_bridges_admit_one_concurrent_exact_target() -> Result<(), String> {
     if std::env::var(RUN_FIXTURE_ENV).as_deref() != Ok("1") {
         eprintln!("set {RUN_FIXTURE_ENV}=1 to run the D3D11On12 fixture");
         return Ok(());
@@ -179,10 +240,10 @@ fn cloned_bridges_coalesce_concurrent_exact_preparations() -> Result<(), String>
         "fixture:concurrent",
         1,
     )?;
-    let preparation = fixture.target_preparation().clone();
+    let preparation = fixture.target_preparation();
     let barrier = Arc::new(Barrier::new(2));
     let left_bridge = bridge.clone();
-    let left_preparation = preparation.clone();
+    let left_preparation = preparation;
     let left_barrier = Arc::clone(&barrier);
     let right_bridge = bridge.clone();
     let right_barrier = Arc::clone(&barrier);
@@ -190,15 +251,11 @@ fn cloned_bridges_coalesce_concurrent_exact_preparations() -> Result<(), String>
     let (left, right) = std::thread::scope(|scope| {
         let left = scope.spawn(move || {
             left_barrier.wait();
-            left_bridge
-                .prepare_target(&left_preparation)
-                .map_err(|error| error.to_string())
+            left_bridge.prepare_target(left_preparation)
         });
         let right = scope.spawn(move || {
             right_barrier.wait();
-            right_bridge
-                .prepare_target(&preparation)
-                .map_err(|error| error.to_string())
+            right_bridge.prepare_target(preparation)
         });
         (
             left.join().expect("left preparation thread must not panic"),
@@ -207,10 +264,15 @@ fn cloned_bridges_coalesce_concurrent_exact_preparations() -> Result<(), String>
                 .expect("right preparation thread must not panic"),
         )
     });
-    let left = left?;
-    let right = right?;
-
-    assert_eq!(left, right);
+    let target = match (left, right) {
+        (Ok(target), Err(D3d11On12ScreenInteropError::PreparedTargetAlreadyLive))
+        | (Err(D3d11On12ScreenInteropError::PreparedTargetAlreadyLive), Ok(target)) => target,
+        (left, right) => {
+            return Err(format!(
+                "concurrent preparation returned unexpected results: left={left:?}, right={right:?}"
+            ));
+        }
+    };
     assert_eq!(
         bridge
             .cache_stats()
@@ -218,6 +280,7 @@ fn cloned_bridges_coalesce_concurrent_exact_preparations() -> Result<(), String>
             .prepared_targets,
         1,
     );
+    drop(target);
     Ok(())
 }
 

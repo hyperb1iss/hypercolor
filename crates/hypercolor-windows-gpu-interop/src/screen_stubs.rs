@@ -43,8 +43,12 @@ pub struct ScreenCopyTargetAllocation {
     pub width: u32,
     /// Exact output height.
     pub height: u32,
-    /// Physical RGBA bytes retained by the renderer target.
+    /// D3D12 per-resource suballocation requirement for the renderer target.
     pub retained_bytes: u64,
+    /// No target-attributable Rust allocation requests exist outside Windows.
+    pub metadata_bytes: u64,
+    /// No retained target-attributable resources exist outside Windows.
+    pub total_retained_bytes: u64,
 }
 
 /// Live renderer-target and native-surface cache occupancy.
@@ -56,7 +60,7 @@ pub struct ScreenInteropCacheStats {
     pub opened_surfaces: usize,
     /// Cumulative native surface opens performed during target preparation.
     pub native_surface_opens: u64,
-    /// Exact physical bytes retained by live renderer targets.
+    /// D3D12 suballocation requirements for live renderer targets.
     pub retained_target_bytes: u64,
 }
 
@@ -79,10 +83,22 @@ impl PreparedScreenCopyTarget {
         self.allocation.storage_id
     }
 
-    /// Physical RGBA bytes retained by this renderer target.
+    /// D3D12 per-resource suballocation requirement for this renderer target.
     #[must_use]
     pub const fn retained_bytes(&self) -> u64 {
         self.allocation.retained_bytes
+    }
+
+    /// Exact Rust allocation requests for target, cache, and wgpu ownership.
+    #[must_use]
+    pub const fn metadata_bytes(&self) -> u64 {
+        self.allocation.metadata_bytes
+    }
+
+    /// Target suballocation bytes plus exact Rust allocation requests.
+    #[must_use]
+    pub const fn total_retained_bytes(&self) -> u64 {
+        self.allocation.total_retained_bytes
     }
 
     /// Exact target width.
@@ -125,6 +141,30 @@ impl D3d11On12ScreenBridge {
         self.adapter_luid
     }
 
+    /// Reject target quoting outside Windows.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`D3d11On12ScreenInteropError::UnsupportedPlatform`].
+    pub fn quote_target_bytes(
+        &self,
+        _preparation: &GpuSurfaceTargetPreparation,
+    ) -> ScreenInteropResult<u64> {
+        Err(D3d11On12ScreenInteropError::UnsupportedPlatform)
+    }
+
+    /// Reject retained-target quoting outside Windows.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`D3d11On12ScreenInteropError::UnsupportedPlatform`].
+    pub fn quote_target_retained_bytes(
+        &self,
+        _preparation: &GpuSurfaceTargetPreparation,
+    ) -> ScreenInteropResult<u64> {
+        Err(D3d11On12ScreenInteropError::UnsupportedPlatform)
+    }
+
     /// Reject target preparation outside Windows.
     ///
     /// # Errors
@@ -154,7 +194,7 @@ impl D3d11On12ScreenBridge {
     pub fn copy_publication(
         &self,
         _prepared: &PreparedScreenCopyTarget,
-        _publication: &Arc<GpuSurfacePublication>,
+        _publication: &GpuSurfacePublication,
     ) -> ScreenInteropResult<ScreenTextureCopy> {
         Err(D3d11On12ScreenInteropError::UnsupportedPlatform)
     }

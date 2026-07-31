@@ -2,8 +2,8 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
 use hypercolor_windows_capture::{
-    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, GpuReductionAdmission,
-    GpuSurfaceAdmission, GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace,
+    CaptureError, CaptureExtent, CaptureRegion, CpuDesktopReadbackResourceQuote, DisplayRotation,
+    GpuReductionAdmission, GpuSurfaceAdmission, GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace,
     GpuSurfaceCursorPolicy, GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig,
     GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat, GpuSurfaceSourceColorSpace,
     GpuSurfaceUnsupportedReason,
@@ -70,12 +70,23 @@ fn reduction_admission_accounts_output_and_descriptor_readback_ring() {
     ];
     let admission =
         GpuReductionAdmission::new(384, NonZeroU32::new(3).expect("three slots is non-zero"));
+    let quote = admission
+        .quote(source, &descriptors)
+        .expect("all reduction resources quote before allocation");
 
+    assert_eq!(quote.allocation_byte_len(), 384);
+    assert_eq!(quote.readback_byte_len(), 288);
+    assert_eq!(quote.publication_buffer_byte_len(), 96);
+    assert_eq!(quote.constant_buffer_byte_len(), 240);
+    assert_eq!(
+        quote.retained_byte_len(),
+        480 + quote.constant_buffer_byte_len() + quote.metadata_byte_len()
+    );
     assert_eq!(
         admission
             .admit(source, &descriptors)
             .expect("all exact reduction filters are admitted"),
-        384
+        quote.allocation_byte_len()
     );
 }
 
@@ -139,12 +150,38 @@ fn admission_has_no_artificial_resolution_axis_cap() {
     );
     let admission =
         GpuSurfaceAdmission::new(u64::MAX, NonZeroU32::new(2).expect("two slots is non-zero"));
+    let quote = admission
+        .quote(source, std::slice::from_ref(&descriptor))
+        .expect("large descriptor resources quote without an axis cap");
 
+    assert_eq!(quote.allocation_byte_len(), 1_061_683_200);
+    assert_eq!(quote.constant_buffer_byte_len(), 80);
+    assert_eq!(
+        quote.retained_byte_len(),
+        1_061_683_200 + quote.constant_buffer_byte_len() + quote.metadata_byte_len()
+    );
     assert_eq!(
         admission
             .admit(source, &[descriptor])
             .expect("large descriptor remains resource-admitted"),
-        1_061_683_200
+        quote.allocation_byte_len()
+    );
+}
+
+#[test]
+fn native_cpu_readback_quote_scales_without_an_axis_cap() {
+    let extent = CaptureExtent::try_new(15_360, 8_640).expect("16K extent is non-empty");
+    let quote = CpuDesktopReadbackResourceQuote::try_new(
+        extent,
+        NonZeroU32::new(3).expect("three slots are non-zero"),
+    )
+    .expect("large native CPU readback remains representable");
+
+    assert_eq!(quote.frame_byte_len(), 530_841_600);
+    assert_eq!(quote.allocation_byte_len(), 3_185_049_600);
+    assert_eq!(
+        quote.retained_byte_len(),
+        quote.allocation_byte_len() + quote.metadata_byte_len()
     );
 }
 

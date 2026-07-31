@@ -39,14 +39,17 @@ pub use duplication::gpu_reduction::{
 mod shared;
 
 pub use shared::{
-    CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResult, CpuDesktopFrame,
-    CursorInfo, DisplayRotation, Frame, GPU_SURFACE_ALGORITHM_REVISION, GpuAdapterLuid,
-    GpuReductionAdmission, GpuReductionProvenance, GpuSharedHandle, GpuSurfaceAdmission,
-    GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy,
-    GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter,
-    GpuSurfaceFormat, GpuSurfacePlanGeneration, GpuSurfaceProvenance, GpuSurfaceSlotId,
-    GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization, GpuSurfaceUnsupportedReason,
-    MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry, list_monitors, monitor_count,
+    CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResourceAdmission,
+    CaptureResourceKind, CaptureResourceLease, CaptureResourceReservation, CaptureResult,
+    CpuDesktopFrame, CpuDesktopReadbackResourceQuote, CursorInfo, DisplayRotation, Frame,
+    GPU_SURFACE_ALGORITHM_REVISION, GpuAdapterLuid, GpuReductionAdmission, GpuReductionProvenance,
+    GpuReductionResourceQuote, GpuSharedHandle, GpuSurfaceAdmission, GpuSurfaceColorPipeline,
+    GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy, GpuSurfaceDescriptor,
+    GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat,
+    GpuSurfacePlanGeneration, GpuSurfaceProvenance, GpuSurfaceResourceQuote, GpuSurfaceSlotId,
+    GpuSurfaceSourceColorSpace, GpuSurfaceSynchronization,
+    GpuSurfaceTargetPreparationResourceQuote, GpuSurfaceUnsupportedReason, MonitorInfo,
+    MonitorSelector, ReductionPath, ReductionTelemetry, list_monitors, monitor_count,
     subsample_stride, subsample_stride_within, subsampled_extent, width_target_within,
 };
 

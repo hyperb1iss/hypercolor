@@ -3,16 +3,23 @@ use super::{
     TopologyEntry, TopologyState, average_channel, capture_region_origin, classify_hresult,
     desktop_frame_source, gpu_surface_acquire_timeout, logical_to_scanout, native_scanout_extent,
     pointer_scanout_geometry, prepare_duplication, scanout_to_logical, session_rebuild_error,
+    take_frame_plane,
 };
+use crate::shared::{LegacyFramePlane, recycle_legacy_frame_plane};
 use crate::{
-    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, GpuSurfaceColorPipeline,
-    GpuSurfaceCoordinateSpace, GpuSurfaceCursorPolicy, GpuSurfaceDescriptor,
-    GpuSurfaceDescriptorConfig, GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat,
-    GpuSurfaceSourceColorSpace, ReductionPath,
+    CaptureError, CaptureExtent, CaptureRegion, CaptureResourceAdmission, CaptureResourceKind,
+    CaptureResourceLease, CaptureResourceReservation, CaptureResult,
+    CpuDesktopReadbackResourceQuote, DisplayRotation, GpuAdapterLuid, GpuReductionAdmission,
+    GpuSurfaceAdmission, GpuSurfaceColorPipeline, GpuSurfaceCoordinateSpace,
+    GpuSurfaceCursorPolicy, GpuSurfaceDescriptor, GpuSurfaceDescriptorConfig,
+    GpuSurfaceDescriptorId, GpuSurfaceFilter, GpuSurfaceFormat, GpuSurfacePlanGeneration,
+    GpuSurfaceSourceColorSpace, GpuSurfaceTargetPreparationResourceQuote, ReductionPath,
 };
 use std::cell::Cell;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{E_ACCESSDENIED, E_FAIL};
 use windows::Win32::Graphics::Direct3D11::D3D11_ASYNC_GETDATA_DONOTFLUSH;
@@ -39,6 +46,181 @@ fn d3d11on12_bridges_a_keyed_surface_into_d3d12() {
         .expect("D3D11On12 should bridge the shared capture Surface into D3D12");
 }
 
+#[test]
+fn gpu_surface_resource_quote_matches_prepared_backing() {
+    let source_extent = CaptureExtent::try_new(7, 5).expect("source extent is valid");
+    let descriptors = [
+        super::gpu_surface::fixture::descriptor(101, CaptureRegion::full(7, 5), source_extent),
+        super::gpu_surface::fixture::descriptor(
+            102,
+            CaptureRegion::full(7, 5),
+            CaptureExtent::try_new(3, 2).expect("reduced extent is valid"),
+        ),
+    ];
+    let admission = GpuSurfaceAdmission::new(
+        u64::MAX,
+        NonZeroU32::new(2).expect("two slots are non-zero"),
+    );
+    let quote = admission
+        .quote(source_extent, &descriptors)
+        .expect("surface resources quote before preparation");
+    let pixels = [17, 83, 149, 0xFF].repeat(7 * 5);
+    let fixture = super::gpu_surface::fixture::publish(&pixels, 7, 5, &descriptors)
+        .expect("WARP surface plan prepares");
+
+    assert_eq!(
+        quote.allocation_byte_len(),
+        fixture.plan.allocation_byte_len()
+    );
+    assert_eq!(quote.constant_buffer_byte_len(), 80);
+    assert_eq!(
+        quote.constant_buffer_byte_len(),
+        fixture.plan.constant_buffer_byte_len()
+    );
+    assert_eq!(quote.retained_byte_len(), fixture.plan.retained_byte_len());
+    assert_eq!(
+        quote.metadata_byte_len(),
+        fixture.plan.actual_metadata_byte_len_for_test()
+    );
+    let target_quote =
+        GpuSurfaceTargetPreparationResourceQuote::try_new(admission.slots_per_descriptor())
+            .expect("target preparation metadata quotes before allocation");
+    let target = fixture
+        .plan
+        .target_preparation(descriptors[0].id())
+        .expect("prepared descriptor exposes its target manifest");
+    assert_eq!(target_quote.metadata_byte_len(), target.metadata_byte_len());
+    assert_eq!(target_quote.retained_byte_len(), target.retained_byte_len());
+    assert_eq!(
+        target.metadata_byte_len(),
+        target.actual_metadata_byte_len_for_test()
+    );
+}
+
+#[test]
+fn gpu_reduction_resource_quote_matches_prepared_backing_and_buffers() {
+    let (device, context) =
+        super::gpu_reduction::test_device().expect("WARP reduction device opens");
+    let source_extent = CaptureExtent::try_new(11, 7).expect("source extent is valid");
+    let descriptors = [
+        reduction_quote_descriptor(
+            111,
+            source_extent,
+            CaptureExtent::try_new(5, 3).expect("first output extent is valid"),
+            GpuSurfaceFilter::Bilinear,
+        ),
+        reduction_quote_descriptor(
+            112,
+            source_extent,
+            CaptureExtent::try_new(2, 6).expect("second output extent is valid"),
+            GpuSurfaceFilter::Area,
+        ),
+    ];
+    let admission = GpuReductionAdmission::new(
+        u64::MAX,
+        NonZeroU32::new(3).expect("three slots are non-zero"),
+    );
+    let quote = admission
+        .quote(source_extent, &descriptors)
+        .expect("reduction resources quote before preparation");
+    let plan = super::PreparedGpuReductionPlan::prepare(
+        &device,
+        &context,
+        GpuSurfacePlanGeneration::new(NonZeroU64::new(113).expect("plan generation is non-zero")),
+        Arc::from("fixture:quote-reduction"),
+        3,
+        5,
+        GpuAdapterLuid::new(0, 0),
+        source_extent,
+        source_extent,
+        DisplayRotation::Identity,
+        GpuSurfaceSourceColorSpace::RgbFullG22P709,
+        &descriptors,
+        admission,
+    )
+    .expect("WARP reduction plan prepares");
+
+    assert_eq!(quote.allocation_byte_len(), plan.allocation_byte_len());
+    assert_eq!(quote.constant_buffer_byte_len(), 160);
+    assert_eq!(
+        quote.constant_buffer_byte_len(),
+        plan.constant_buffer_byte_len()
+    );
+    assert_eq!(quote.readback_byte_len(), plan.readback_byte_len());
+    assert_eq!(
+        quote.publication_buffer_byte_len(),
+        plan.publication_buffer_byte_len()
+    );
+    assert_eq!(quote.retained_byte_len(), plan.retained_byte_len());
+    assert_eq!(
+        quote.metadata_byte_len(),
+        plan.actual_metadata_byte_len_for_test()
+    );
+}
+
+#[test]
+fn native_cpu_readback_resource_quote_matches_prepared_backing() {
+    let (device, context) =
+        super::gpu_reduction::test_device().expect("WARP readback device opens");
+    let source_extent = CaptureExtent::try_new(17, 9).expect("source extent is valid");
+    let slot_count = NonZeroU32::new(3).expect("three slots are non-zero");
+    let quote = CpuDesktopReadbackResourceQuote::try_new(source_extent, slot_count)
+        .expect("native CPU resources quote before preparation");
+    let readback = super::PreparedCpuDesktopReadback::prepare(
+        &device,
+        &context,
+        Arc::from("fixture:quote-readback"),
+        3,
+        5,
+        GpuAdapterLuid::new(0, 0),
+        source_extent,
+        DisplayRotation::Identity,
+        GpuSurfaceSourceColorSpace::RgbFullG22P709,
+        slot_count,
+    )
+    .expect("WARP native CPU readback prepares");
+
+    assert_eq!(quote.allocation_byte_len(), readback.allocation_byte_len());
+    assert_eq!(
+        quote.allocation_byte_len(),
+        readback.actual_allocation_byte_len_for_test()
+    );
+    assert_eq!(quote.retained_byte_len(), readback.retained_byte_len());
+    assert_eq!(
+        quote.metadata_byte_len(),
+        readback.actual_metadata_byte_len_for_test()
+    );
+    assert_eq!(readback.frame_pool_capacity_for_test(), 3);
+    assert_eq!(
+        readback.frame_plane_capacities_for_test().as_ref(),
+        [quote.frame_byte_len(); 3]
+    );
+}
+
+fn reduction_quote_descriptor(
+    id: u64,
+    source_extent: CaptureExtent,
+    output_extent: CaptureExtent,
+    filter: GpuSurfaceFilter,
+) -> GpuSurfaceDescriptor {
+    GpuSurfaceDescriptor::new(GpuSurfaceDescriptorConfig {
+        id: GpuSurfaceDescriptorId::new(
+            NonZeroU64::new(id).expect("fixture descriptor id is non-zero"),
+        ),
+        source_region: CaptureRegion::full(source_extent.width(), source_extent.height()),
+        coordinate_space: GpuSurfaceCoordinateSpace::LogicalDisplay,
+        source_rotation: DisplayRotation::Identity,
+        source_color_space: GpuSurfaceSourceColorSpace::RgbFullG22P709,
+        output_extent,
+        filter,
+        format: GpuSurfaceFormat::Rgba8Unorm,
+        color_pipeline: GpuSurfaceColorPipeline::LinearSdr,
+        cursor: GpuSurfaceCursorPolicy::Exclude,
+        algorithm_revision: crate::GPU_SURFACE_ALGORITHM_REVISION,
+        freshness: Duration::from_millis(250),
+    })
+}
+
 #[derive(Debug)]
 struct DropSignal(Rc<Cell<u32>>);
 
@@ -53,7 +235,7 @@ fn pointer(kind: PointerShapeKind, bytes: Vec<u8>) -> PointerState {
         visible: true,
         position_x: 0,
         position_y: 0,
-        shape: Some(PointerShape {
+        shape: Some(Arc::new(PointerShape {
             kind,
             width: 1,
             height: if kind == PointerShapeKind::Monochrome {
@@ -68,8 +250,9 @@ fn pointer(kind: PointerShapeKind, bytes: Vec<u8>) -> PointerState {
             },
             hotspot_x: 0,
             hotspot_y: 0,
-            bytes,
-        }),
+            bytes: bytes.into_boxed_slice(),
+            _resource_lease: None,
+        })),
         shape_generation: 1,
     }
 }
@@ -103,7 +286,10 @@ fn cpu_reduce_region(
     rotation: DisplayRotation,
     region: CaptureRegion,
 ) -> Vec<u8> {
-    let mut rgba = Vec::new();
+    let mut rgba = vec![0; width as usize * height as usize * 4]
+        .into_boxed_slice()
+        .into_vec();
+    rgba.clear();
     super::DesktopDuplicator::copy_bgra_rows(
         super::BgraRows {
             bytes: bgra,
@@ -221,13 +407,14 @@ fn native_cpu_readback_preserves_arbitrary_tightly_packed_bgra_extents() {
 
 #[test]
 fn native_cpu_readback_never_maps_without_a_free_bounded_output() {
-    let (busy, mapped_while_busy, final_mapped) =
-        super::cpu_readback::retained_frame_exhausts_bounded_pool_for_test()
-            .expect("WARP bounded native CPU readback remains healthy");
+    let proof = super::cpu_readback::retained_frame_exhausts_bounded_pool_for_test()
+        .expect("WARP bounded native CPU readback remains healthy");
 
-    assert!(busy);
-    assert_eq!(mapped_while_busy, 0);
-    assert_eq!(final_mapped, 5 * 3 * 4 * 2);
+    assert!(proof.busy);
+    assert_eq!(proof.mapped_while_busy, 0);
+    assert_eq!(proof.final_mapped, 5 * 3 * 4 * 2);
+    assert_eq!(proof.pool_capacity, 1);
+    assert_eq!(proof.plane_capacities.as_ref(), [5 * 3 * 4]);
 }
 
 #[test]
@@ -1338,7 +1525,8 @@ fn pointer_upload_normalizes_color_and_monochrome_shapes() {
         pitch: 1,
         hotspot_x: 0,
         hotspot_y: 0,
-        bytes: vec![0b1000_0000, 0b0100_0000],
+        bytes: vec![0b1000_0000, 0b0100_0000].into_boxed_slice(),
+        _resource_lease: None,
     };
     assert_eq!(
         super::gpu_reduction::normalized_pointer_for_test(&monochrome),
@@ -1418,7 +1606,7 @@ fn cropped_frame_origin_tracks_scanout_region_across_rotations() {
         (DisplayRotation::Clockwise180, (-10, 20)),
         (DisplayRotation::Clockwise270, (-9, 20)),
     ] {
-        let pointer = Arc::new(PointerState::default());
+        let pointer = PointerState::default();
         let metadata = CaptureMetadata {
             source_id: Arc::from("synthetic"),
             topology_generation: 1,
@@ -1580,7 +1768,8 @@ fn rebuild_resource_admission_preserves_requested_byte_context() {
 fn retained_clean_staging_recomposes_a_moving_pointer_without_residue() {
     let desktop = [10_u8, 20, 30, 255, 40, 50, 60, 255];
     let mut pointer = pointer(PointerShapeKind::Color, vec![200, 100, 50, 255]);
-    let mut rgba = Vec::new();
+    let mut rgba = vec![0; 8].into_boxed_slice().into_vec();
+    rgba.clear();
 
     super::DesktopDuplicator::copy_bgra_rows(
         super::BgraRows {
@@ -1831,7 +2020,8 @@ fn truncated_pointer_shapes_are_rejected_before_composition() {
         pitch: 8,
         hotspot_x: 0,
         hotspot_y: 0,
-        bytes: vec![0; 4],
+        bytes: vec![0; 4].into_boxed_slice(),
+        _resource_lease: None,
     };
     let monochrome = PointerShape {
         kind: PointerShapeKind::Monochrome,
@@ -1840,11 +2030,30 @@ fn truncated_pointer_shapes_are_rejected_before_composition() {
         pitch: 1,
         hotspot_x: 0,
         hotspot_y: 0,
-        bytes: vec![0; 2],
+        bytes: vec![0; 2].into_boxed_slice(),
+        _resource_lease: None,
     };
 
     assert!(color.validate().is_err());
     assert!(monochrome.validate().is_err());
+}
+
+#[test]
+fn pointer_shape_validation_uses_the_written_byte_count() {
+    let shape = PointerShape {
+        kind: PointerShapeKind::Color,
+        width: 2,
+        height: 1,
+        pitch: 8,
+        hotspot_x: 0,
+        hotspot_y: 0,
+        bytes: vec![0; 16].into_boxed_slice(),
+        _resource_lease: None,
+    };
+
+    assert!(shape.validate().is_ok());
+    assert!(shape.validate_written_bytes(4).is_err());
+    assert!(shape.validate_written_bytes(17).is_err());
 }
 
 #[test]
@@ -1884,4 +2093,142 @@ fn channel_average_handles_the_maximum_d3d11_surface() {
 #[test]
 fn channel_average_defends_against_an_empty_box() {
     assert_eq!(average_channel(0, 0), 0);
+}
+
+#[derive(Debug)]
+struct CountingAdmission {
+    reserved: Arc<AtomicU64>,
+}
+
+#[derive(Debug)]
+struct CountingReservation {
+    kind: CaptureResourceKind,
+    bytes: u64,
+    reserved: Arc<AtomicU64>,
+}
+
+#[derive(Debug)]
+struct CountingLease {
+    kind: CaptureResourceKind,
+    bytes: u64,
+    reserved: Arc<AtomicU64>,
+}
+
+impl CaptureResourceAdmission for CountingAdmission {
+    fn try_reserve(
+        &self,
+        kind: CaptureResourceKind,
+        peak_bytes: u64,
+    ) -> CaptureResult<Box<dyn CaptureResourceReservation>> {
+        self.reserved.fetch_add(peak_bytes, Ordering::AcqRel);
+        Ok(Box::new(CountingReservation {
+            kind,
+            bytes: peak_bytes,
+            reserved: Arc::clone(&self.reserved),
+        }))
+    }
+}
+
+impl CaptureResourceReservation for CountingReservation {
+    fn kind(&self) -> CaptureResourceKind {
+        self.kind
+    }
+
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    fn commit(
+        self: Box<Self>,
+        retained_bytes: u64,
+    ) -> CaptureResult<Arc<dyn CaptureResourceLease>> {
+        assert!(retained_bytes <= self.bytes);
+        self.reserved
+            .fetch_sub(self.bytes - retained_bytes, Ordering::AcqRel);
+        Ok(Arc::new(CountingLease {
+            kind: self.kind,
+            bytes: retained_bytes,
+            reserved: Arc::clone(&self.reserved),
+        }))
+    }
+}
+
+impl CaptureResourceLease for CountingLease {
+    fn kind(&self) -> CaptureResourceKind {
+        self.kind
+    }
+
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
+
+impl Drop for CountingLease {
+    fn drop(&mut self) {
+        self.reserved.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+fn counted_plane(admission: &CountingAdmission, bytes: usize) -> LegacyFramePlane {
+    let lease = admission
+        .try_reserve(CaptureResourceKind::CompatibilityFramePlane, bytes as u64)
+        .expect("test plane quote succeeds")
+        .commit(bytes as u64)
+        .expect("test plane commit succeeds");
+    let mut rgba = vec![0; bytes].into_boxed_slice().into_vec();
+    rgba.clear();
+    assert_eq!(lease.bytes(), rgba.capacity() as u64);
+    LegacyFramePlane {
+        rgba,
+        resource_lease: lease,
+    }
+}
+
+#[test]
+fn compatibility_frame_pool_reuses_the_smallest_fitting_admitted_plane() {
+    let reserved = Arc::new(AtomicU64::new(0));
+    let admission = CountingAdmission {
+        reserved: Arc::clone(&reserved),
+    };
+    let pool = Arc::new(Mutex::new(vec![
+        counted_plane(&admission, 4),
+        counted_plane(&admission, 16),
+        counted_plane(&admission, 8),
+    ]));
+
+    let plane = take_frame_plane(&pool, &admission, 7).expect("warm plane fits");
+    assert_eq!(plane.rgba.capacity(), 8);
+    assert_eq!(plane.resource_lease.bytes(), 8);
+    drop(plane);
+    drop(pool);
+    assert_eq!(reserved.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn compatibility_frame_pool_replaces_smallest_plane_and_releases_its_lease() {
+    let reserved = Arc::new(AtomicU64::new(0));
+    let admission = CountingAdmission {
+        reserved: Arc::clone(&reserved),
+    };
+    let pool = Arc::new(Mutex::new(vec![
+        counted_plane(&admission, 4),
+        counted_plane(&admission, 8),
+        counted_plane(&admission, 12),
+    ]));
+    let incoming = counted_plane(&admission, 16);
+    assert_eq!(reserved.load(Ordering::Acquire), 40);
+
+    recycle_legacy_frame_plane(&pool, incoming);
+    assert_eq!(reserved.load(Ordering::Acquire), 36);
+    let mut capacities = pool
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|plane| plane.rgba.capacity())
+        .collect::<Vec<_>>();
+    capacities.sort_unstable();
+    assert_eq!(capacities, [8, 12, 16]);
+
+    drop(pool);
+    assert_eq!(reserved.load(Ordering::Acquire), 0);
 }

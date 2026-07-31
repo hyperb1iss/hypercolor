@@ -1,6 +1,6 @@
 use std::ffi::{CStr, c_void};
 use std::mem::{size_of, transmute};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use thiserror::Error;
 use windows::Win32::Foundation::{E_OUTOFMEMORY, FreeLibrary, HMODULE};
@@ -9,30 +9,33 @@ use windows::Win32::Graphics::Direct3D::Fxc::{
 };
 use windows::Win32::Graphics::Direct3D::{D3D_SHADER_MACRO, ID3DBlob};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_SHADER_RESOURCE,
-    D3D11_BIND_UNORDERED_ACCESS, D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_READ,
-    D3D11_FORMAT_SUPPORT_SHADER_SAMPLE, D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW,
-    D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_QUERY_DESC, D3D11_QUERY_EVENT,
-    D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
-    ID3D11Buffer, ID3D11ComputeShader, ID3D11Device, ID3D11DeviceContext, ID3D11Query,
-    ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11UnorderedAccessView,
+    D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_UNORDERED_ACCESS,
+    D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_READ, D3D11_FORMAT_SUPPORT_SHADER_SAMPLE,
+    D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_QUERY_DESC, D3D11_QUERY_EVENT, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, ID3D11Buffer, ID3D11ComputeShader, ID3D11Device,
+    ID3D11DeviceContext, ID3D11Query, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11UnorderedAccessView,
 };
 #[cfg(any(test, feature = "capture-bench"))]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R8G8B8A8_UNORM,
-};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::core::{BOOL, HRESULT, Interface, PCSTR, w};
 
-use super::{CaptureMetadata, PointerShapeKind, PointerState, RetainedDesktop};
+#[cfg(any(test, feature = "capture-bench"))]
+use super::PointerState;
+use super::{CaptureMetadata, PointerShapeKind, RetainedDesktop};
 #[cfg(feature = "capture-bench")]
 use crate::CaptureResult;
+use crate::shared::{commit_capture_resource, reserve_capture_resource};
 use crate::{
-    CaptureError, CaptureExtent, CaptureRegion, DisplayRotation, GpuSurfaceColorPipeline,
-    GpuSurfaceCursorPolicy, GpuSurfaceDescriptor, GpuSurfaceFilter, subsample_stride_within,
-    subsampled_extent,
+    CaptureError, CaptureExtent, CaptureRegion, CaptureResourceAdmission, CaptureResourceKind,
+    CaptureResourceLease, DisplayRotation, GpuSurfaceColorPipeline, GpuSurfaceCursorPolicy,
+    GpuSurfaceDescriptor, GpuSurfaceFilter, subsample_stride_within, subsampled_extent,
 };
+#[cfg(any(test, feature = "capture-bench"))]
+use windows::Win32::Graphics::Direct3D11::D3D11_BIND_SHADER_RESOURCE;
 
 const READBACK_RING_LEN: usize = 3;
 const THREAD_GROUP: u32 = 8;
@@ -73,6 +76,16 @@ pub(super) enum GpuReductionError {
         requested_bytes: usize,
         message: String,
     },
+    #[error(
+        "{operation} admission mismatch: expected {expected_kind:?}/{expected_bytes} bytes, got {actual_kind:?}/{actual_bytes} bytes"
+    )]
+    ResourceAdmissionMismatch {
+        operation: &'static str,
+        expected_kind: CaptureResourceKind,
+        expected_bytes: u64,
+        actual_kind: CaptureResourceKind,
+        actual_bytes: u64,
+    },
 }
 
 impl GpuReductionError {
@@ -101,6 +114,35 @@ impl GpuReductionError {
         }
     }
 
+    fn capture_resource(error: CaptureError) -> Self {
+        match error {
+            CaptureError::ResourceExhausted {
+                operation,
+                requested_bytes,
+            } => Self::ResourceExhausted {
+                context: operation,
+                requested_bytes,
+                message: "capture resource admission rejected the quote".to_owned(),
+            },
+            CaptureError::ResourceAdmissionMismatch {
+                operation,
+                expected_kind,
+                expected_bytes,
+                actual_kind,
+                actual_bytes,
+            } => Self::ResourceAdmissionMismatch {
+                operation,
+                expected_kind,
+                expected_bytes,
+                actual_kind,
+                actual_bytes,
+            },
+            other => Self::Operation {
+                message: other.to_string(),
+            },
+        }
+    }
+
     pub(super) fn as_capture_error(&self) -> Option<CaptureError> {
         match self {
             Self::ResourceExhausted {
@@ -119,6 +161,19 @@ impl GpuReductionError {
                 operation: context,
                 width: *width,
                 height: *height,
+            }),
+            Self::ResourceAdmissionMismatch {
+                operation,
+                expected_kind,
+                expected_bytes,
+                actual_kind,
+                actual_bytes,
+            } => Some(CaptureError::ResourceAdmissionMismatch {
+                operation,
+                expected_kind: *expected_kind,
+                expected_bytes: *expected_bytes,
+                actual_kind: *actual_kind,
+                actual_bytes: *actual_bytes,
             }),
             Self::Operation { .. } | Self::Windows { .. } => None,
         }
@@ -331,16 +386,10 @@ struct Resources {
     key: ResourceKey,
     reduced: ID3D11Texture2D,
     reduced_uav: ID3D11UnorderedAccessView,
-    slots: Vec<ReadbackSlot>,
+    slots: Box<[ReadbackSlot]>,
     write_index: usize,
     read_index: usize,
-}
-
-struct PointerResource {
-    generation: u64,
-    width: u32,
-    height: u32,
-    srv: ID3D11ShaderResourceView,
+    _resource_lease: Option<Arc<dyn CaptureResourceLease>>,
 }
 
 pub(super) enum SubmitOutcome {
@@ -361,7 +410,8 @@ pub(super) struct GpuReducer {
     reduce_shader: ID3D11ComputeShader,
     params: ID3D11Buffer,
     resources: Option<Resources>,
-    pointer: Option<PointerResource>,
+    resource_admission: Option<Arc<dyn CaptureResourceAdmission>>,
+    _constant_buffer_lease: Option<Arc<dyn CaptureResourceLease>>,
     #[cfg(test)]
     poll_failure: Option<InjectedPollFailure>,
 }
@@ -377,17 +427,34 @@ impl GpuReducer {
     pub(super) fn new(
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
+        resource_admission: Arc<dyn CaptureResourceAdmission>,
     ) -> Result<Self, GpuReductionError> {
         let bytecode = compiled_shaders()?;
         let reduce_shader = create_compute_shader(device, &bytecode.reduce)?;
+        let constant_buffer_bytes = u64::try_from(constant_buffer_byte_len())
+            .map_err(|_| GpuReductionError::operation("constant buffer size exceeds u64"))?;
+        let reservation = reserve_capture_resource(
+            resource_admission.as_ref(),
+            CaptureResourceKind::CompatibilityReductionConstantBuffer,
+            constant_buffer_bytes,
+            "reserve compatibility reduction constant buffer",
+        )
+        .map_err(GpuReductionError::capture_resource)?;
         let params = create_constant_buffer(device)?;
+        let constant_buffer_lease = commit_capture_resource(
+            reservation,
+            constant_buffer_bytes,
+            "commit compatibility reduction constant buffer",
+        )
+        .map_err(GpuReductionError::capture_resource)?;
         Ok(Self {
             device: device.clone(),
             context: context.clone(),
             reduce_shader,
             params,
             resources: None,
-            pointer: None,
+            resource_admission: Some(resource_admission),
+            _constant_buffer_lease: Some(constant_buffer_lease),
             #[cfg(test)]
             poll_failure: None,
         })
@@ -420,20 +487,33 @@ impl GpuReducer {
             reduce_shader,
             params,
             resources: Some(resources),
-            pointer: None,
+            resource_admission: None,
+            _constant_buffer_lease: None,
             #[cfg(test)]
             poll_failure: None,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn actual_metadata_byte_len_for_test(&self) -> u64 {
+        self.resources.as_ref().map_or(0, |resources| {
+            resources
+                .slots
+                .len()
+                .checked_mul(size_of::<ReadbackSlot>())
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .expect("prepared readback slot metadata was quoted before allocation")
         })
     }
 
     pub(super) fn submit(
         &mut self,
         clean: &RetainedDesktop,
+        pointer_resource: Option<&super::gpu_surface::PointerResource>,
         requested_extent: CaptureExtent,
         metadata: CaptureMetadata,
     ) -> Result<SubmitOutcome, GpuReductionError> {
         self.ensure_resources(&clean.texture, requested_extent, metadata.region)?;
-        self.ensure_pointer(&metadata.pointer)?;
         let context = self.context.clone();
         let params_buffer = self.params.clone();
 
@@ -459,7 +539,7 @@ impl GpuReducer {
             pointer_x: pointer.position_x,
             pointer_y: pointer.position_y,
             pointer_width: shape.map_or(0, |shape| shape.width),
-            pointer_height: shape.map_or(0, super::PointerShape::visible_height),
+            pointer_height: shape.map_or(0, |shape| shape.visible_height()),
             region_x: resources.key.region.origin_x(),
             region_y: resources.key.region.origin_y(),
             region_width: resources.key.region.width(),
@@ -472,7 +552,7 @@ impl GpuReducer {
         update_params(&context, &params_buffer, &params);
         let srvs = [
             Some(clean.srv.clone()),
-            shape.and(self.pointer.as_ref().map(|pointer| pointer.srv.clone())),
+            shape.and(pointer_resource.map(|pointer| pointer.srv.clone())),
         ];
         let uavs = [Some(resources.reduced_uav.clone())];
         // SAFETY: resources match the shader contract and dispatch dimensions
@@ -605,6 +685,7 @@ impl GpuReducer {
         Ok(SubmitOutcome::Submitted)
     }
 
+    #[cfg(any(test, feature = "capture-bench"))]
     pub(super) fn poll(
         &mut self,
         rgba: &mut Vec<u8>,
@@ -613,6 +694,29 @@ impl GpuReducer {
             return Ok(None);
         }
         self.read_ready(rgba).map(Some)
+    }
+
+    pub(super) fn poll_preallocated(
+        &mut self,
+        rgba: &mut [u8],
+    ) -> Result<Option<ReducedFrame>, GpuReductionError> {
+        if !self.query_ready()? {
+            return Ok(None);
+        }
+        self.read_ready_preallocated(rgba).map(Some)
+    }
+
+    pub(super) fn output_byte_len(&self) -> Result<Option<usize>, GpuReductionError> {
+        self.resources
+            .as_ref()
+            .map(|resources| {
+                checked_rgba_len(
+                    resources.key.output_width,
+                    resources.key.output_height,
+                    "reserve reduced readback",
+                )
+            })
+            .transpose()
     }
 
     fn query_ready(&mut self) -> Result<bool, GpuReductionError> {
@@ -645,7 +749,26 @@ impl GpuReducer {
         Ok(ready.as_bool())
     }
 
+    #[cfg(any(test, feature = "capture-bench"))]
     fn read_ready(&mut self, rgba: &mut Vec<u8>) -> Result<ReducedFrame, GpuReductionError> {
+        let resources = self
+            .resources
+            .as_ref()
+            .expect("a ready query belongs to initialized resources");
+        let output_len = checked_rgba_len(
+            resources.key.output_width,
+            resources.key.output_height,
+            "allocate reduced readback",
+        )?;
+        admit_vec_len(rgba, output_len, "allocate reduced readback")?;
+        rgba.resize(output_len, 0);
+        self.read_ready_preallocated(rgba)
+    }
+
+    fn read_ready_preallocated(
+        &mut self,
+        rgba: &mut [u8],
+    ) -> Result<ReducedFrame, GpuReductionError> {
         #[cfg(test)]
         if matches!(self.poll_failure, Some(InjectedPollFailure::Map)) {
             self.poll_failure = None;
@@ -665,9 +788,13 @@ impl GpuReducer {
             resources.key.output_height,
             "allocate reduced readback",
         )?;
+        if rgba.len() != output_len {
+            return Err(GpuReductionError::operation(
+                "preallocated reduced readback has invalid length",
+            ));
+        }
         let row_bytes =
             checked_rgba_len(resources.key.output_width, 1, "validate reduced row pitch")?;
-        admit_vec_len(rgba, output_len, "allocate reduced readback")?;
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         // SAFETY: staging is CPU-readable and its event query completed.
         unsafe {
@@ -686,7 +813,6 @@ impl GpuReducer {
                 "mapped reduction surface has invalid row geometry",
             ));
         }
-        rgba.resize(output_len, 0);
         // SAFETY: Map exposes RowPitch bytes for each output row until Unmap.
         let source = unsafe {
             std::slice::from_raw_parts(
@@ -733,59 +859,30 @@ impl GpuReducer {
             return Ok(());
         }
 
+        let resource_admission = self
+            .resource_admission
+            .as_ref()
+            .expect("compatibility reduction carries source resource admission");
+        let retained_bytes = checked_resource_retained_bytes(key, READBACK_RING_LEN as u32)?;
+        let reservation = reserve_capture_resource(
+            resource_admission.as_ref(),
+            CaptureResourceKind::CompatibilityReductionTextures,
+            retained_bytes,
+            "reserve compatibility reduction textures",
+        )
+        .map_err(GpuReductionError::capture_resource)?;
         let mut replacement = create_resources(&self.device, key, READBACK_RING_LEN as u32)?;
+        replacement._resource_lease = Some(
+            commit_capture_resource(
+                reservation,
+                retained_bytes,
+                "commit compatibility reduction textures",
+            )
+            .map_err(GpuReductionError::capture_resource)?,
+        );
         replacement.write_index = 0;
         replacement.read_index = 0;
         self.resources = Some(replacement);
-        Ok(())
-    }
-
-    fn ensure_pointer(&mut self, pointer: &PointerState) -> Result<(), GpuReductionError> {
-        let Some(shape) = pointer.shape.as_ref() else {
-            return Ok(());
-        };
-        let visible_height = shape.visible_height();
-        if self.pointer.as_ref().is_some_and(|resource| {
-            resource.generation == pointer.shape_generation
-                && resource.width == shape.width
-                && resource.height == visible_height
-        }) {
-            return Ok(());
-        }
-
-        let pixels = normalized_pointer(shape)?;
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: shape.width,
-            Height: visible_height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_R8G8B8A8_UINT,
-            SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-        };
-        let initial = D3D11_SUBRESOURCE_DATA {
-            pSysMem: pixels.as_ptr().cast(),
-            SysMemPitch: checked_rgba_row_pitch(
-                shape.width,
-                visible_height,
-                "create pointer texture",
-            )?,
-            SysMemSlicePitch: 0,
-        };
-        let texture = create_texture(&self.device, &desc, Some(&initial))?;
-        let srv = create_srv(&self.device, &texture)?;
-        self.pointer = Some(PointerResource {
-            generation: pointer.shape_generation,
-            width: shape.width,
-            height: visible_height,
-            srv,
-        });
         Ok(())
     }
 }
@@ -929,10 +1026,69 @@ fn create_resources(
         key,
         reduced,
         reduced_uav,
-        slots,
+        slots: slots.into_boxed_slice(),
         write_index: 0,
         read_index: 0,
+        _resource_lease: None,
     })
+}
+
+fn checked_resource_retained_bytes(
+    key: ResourceKey,
+    slot_count: u32,
+) -> Result<u64, GpuReductionError> {
+    let output_bytes = u64::from(key.output_width)
+        .checked_mul(u64::from(key.output_height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(GpuReductionError::SizeOverflow {
+            context: "account compatibility reduction textures",
+            width: key.output_width,
+            height: key.output_height,
+        })?;
+    let texture_bytes = output_bytes
+        .checked_mul(u64::from(slot_count).saturating_add(1))
+        .ok_or(GpuReductionError::SizeOverflow {
+            context: "account compatibility reduction texture ring",
+            width: key.output_width,
+            height: key.output_height,
+        })?;
+    let metadata_bytes = u64::try_from(size_of::<ReadbackSlot>())
+        .ok()
+        .and_then(|slot| u64::from(slot_count).checked_mul(slot))
+        .ok_or_else(|| GpuReductionError::operation("reduction slot metadata exceeds u64"))?;
+    texture_bytes
+        .checked_add(metadata_bytes)
+        .ok_or_else(|| GpuReductionError::operation("reduction retained bytes overflow"))
+}
+
+pub(super) const fn constant_buffer_byte_len() -> usize {
+    size_of::<ShaderParams>()
+}
+
+pub(super) fn readback_slot_metadata_byte_len(
+    descriptor_count: usize,
+    slots_per_descriptor: std::num::NonZeroU32,
+) -> Result<u64, CaptureError> {
+    let slot_count = usize::try_from(slots_per_descriptor.get()).map_err(|_| {
+        CaptureError::ResourceExhausted {
+            operation: "quote GPU reduction readback slot metadata",
+            requested_bytes: usize::MAX,
+        }
+    })?;
+    let total_slots =
+        descriptor_count
+            .checked_mul(slot_count)
+            .ok_or(CaptureError::ResourceExhausted {
+                operation: "quote GPU reduction readback slot metadata",
+                requested_bytes: usize::MAX,
+            })?;
+    total_slots
+        .checked_mul(size_of::<ReadbackSlot>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(CaptureError::ResourceExhausted {
+            operation: "quote GPU reduction readback slot metadata",
+            requested_bytes: usize::MAX,
+        })
 }
 
 const fn filter_code(filter: GpuSurfaceFilter) -> u32 {
@@ -1322,8 +1478,14 @@ impl CaptureReductionBenchmark {
                 CaptureRegion::full(width, height),
                 1,
             ),
+            _resource_lease: None,
         };
-        let mut reducer = GpuReducer::new(&device, &context).map_err(public_capture_error)?;
+        let mut reducer = GpuReducer::new(
+            &device,
+            &context,
+            crate::shared::default_capture_resource_admission(),
+        )
+        .map_err(public_capture_error)?;
         let region = CaptureRegion::full(width, height);
         reducer
             .ensure_resources(&clean.texture, requested_extent, region)
@@ -1366,7 +1528,7 @@ impl CaptureReductionBenchmark {
         self.clean.metadata = metadata.clone();
         match self
             .reducer
-            .submit(&self.clean, self.requested_extent, metadata)
+            .submit(&self.clean, None, self.requested_extent, metadata)
             .map_err(|error| error.to_string())?
         {
             SubmitOutcome::Submitted => {}
@@ -1449,7 +1611,7 @@ impl CaptureReductionBenchmark {
                 let submitted_at = Instant::now();
                 match self
                     .reducer
-                    .submit(&self.clean, self.requested_extent, metadata)
+                    .submit(&self.clean, None, self.requested_extent, metadata)
                     .map_err(|error| error.to_string())?
                 {
                     SubmitOutcome::Submitted => {
@@ -1537,7 +1699,7 @@ fn synthetic_metadata(
         sequence,
         captured_at: std::time::Instant::now(),
         cursor: pointer.cursor_info(width, height, rotation),
-        pointer: std::sync::Arc::new(pointer.clone()),
+        pointer: pointer.clone(),
         source_width: width,
         source_height: height,
         origin_x: 0,
@@ -1589,7 +1751,11 @@ pub(super) fn ring_pressure_is_bounded_for_test() -> Result<(usize, bool), GpuRe
             1,
         ),
     )?;
-    let mut reducer = GpuReducer::new(&device, &context)?;
+    let mut reducer = GpuReducer::new(
+        &device,
+        &context,
+        crate::shared::default_capture_resource_admission(),
+    )?;
     for submission in 0..=READBACK_RING_LEN {
         let metadata = synthetic_metadata(
             1,
@@ -1601,6 +1767,7 @@ pub(super) fn ring_pressure_is_bounded_for_test() -> Result<(usize, bool), GpuRe
         );
         let outcome = reducer.submit(
             &clean,
+            None,
             CaptureExtent::try_new(1, u32::MAX).expect("test extent"),
             metadata,
         )?;
@@ -1629,7 +1796,11 @@ pub(super) fn ring_busy_keeps_latest_clean_metadata_for_test()
     let source = test_source(&device, &[10, 20, 30, 0xFF], 1, 1)?;
     let pointer = PointerState::default();
     let region = CaptureRegion::full(1, 1);
-    let mut reducer = GpuReducer::new(&device, &context)?;
+    let mut reducer = GpuReducer::new(
+        &device,
+        &context,
+        crate::shared::default_capture_resource_admission(),
+    )?;
     let mut clean = test_clean(
         &device,
         &source,
@@ -1641,6 +1812,7 @@ pub(super) fn ring_busy_keeps_latest_clean_metadata_for_test()
         clean.metadata = metadata.clone();
         reducer.submit(
             &clean,
+            None,
             CaptureExtent::try_new(1, u32::MAX).expect("test extent"),
             metadata,
         )?;
@@ -1670,11 +1842,16 @@ pub(super) fn poll_failure_preserves_clean_metadata_for_test(
     let source = test_source(&device, &pixels, 5, 3)?;
     let pointer = PointerState::default();
     let region = CaptureRegion::new(1, 1, 4, 2).expect("fixture region is non-empty");
-    let mut reducer = GpuReducer::new(&device, &context)?;
+    let mut reducer = GpuReducer::new(
+        &device,
+        &context,
+        crate::shared::default_capture_resource_admission(),
+    )?;
     let metadata = synthetic_metadata(5, 3, &pointer, DisplayRotation::Identity, region, 41);
     let clean = test_clean(&device, &source, metadata.clone())?;
     reducer.submit(
         &clean,
+        None,
         CaptureExtent::try_new(3, u32::MAX).expect("test extent"),
         metadata,
     )?;
@@ -1803,11 +1980,17 @@ pub(super) fn reduce_region_fixture(
 ) -> Result<Vec<u8>, GpuReductionError> {
     let (device, context) = test_device()?;
     let source = test_source(&device, bgra, width, height)?;
-    let mut reducer = GpuReducer::new(&device, &context)?;
+    let mut reducer = GpuReducer::new(
+        &device,
+        &context,
+        crate::shared::default_capture_resource_admission(),
+    )?;
     let metadata = synthetic_metadata(width, height, pointer, rotation, region, 1);
     let clean = test_clean(&device, &source, metadata.clone())?;
+    let pointer_resource = test_pointer_resource(&device, pointer)?;
     match reducer.submit(
         &clean,
+        pointer_resource.as_ref(),
         CaptureExtent::try_new(max_width, u32::MAX).expect("test extent"),
         metadata,
     )? {
@@ -1831,13 +2014,19 @@ pub(super) fn reduce_pointer_sequence(
 ) -> Result<(Vec<u8>, Vec<u8>), GpuReductionError> {
     let (device, context) = test_device()?;
     let source = test_source(&device, bgra, width, height)?;
-    let mut reducer = GpuReducer::new(&device, &context)?;
+    let mut reducer = GpuReducer::new(
+        &device,
+        &context,
+        crate::shared::default_capture_resource_admission(),
+    )?;
     let region = CaptureRegion::full(width, height);
     let first_metadata =
         synthetic_metadata(width, height, first, DisplayRotation::Identity, region, 1);
     let mut clean = test_clean(&device, &source, first_metadata.clone())?;
+    let first_pointer_resource = test_pointer_resource(&device, first)?;
     reducer.submit(
         &clean,
+        first_pointer_resource.as_ref(),
         CaptureExtent::try_new(width, u32::MAX).expect("test extent"),
         first_metadata,
     )?;
@@ -1845,13 +2034,36 @@ pub(super) fn reduce_pointer_sequence(
     let second_metadata =
         synthetic_metadata(width, height, second, DisplayRotation::Identity, region, 2);
     clean.metadata = second_metadata.clone();
+    let second_pointer_resource = test_pointer_resource(&device, second)?;
     reducer.submit(
         &clean,
+        second_pointer_resource.as_ref(),
         CaptureExtent::try_new(width, u32::MAX).expect("test extent"),
         second_metadata,
     )?;
     let second = poll_test_reduction(&mut reducer)?;
     Ok((first, second))
+}
+
+#[cfg(test)]
+fn test_pointer_resource(
+    device: &ID3D11Device,
+    pointer: &PointerState,
+) -> Result<Option<super::gpu_surface::PointerResource>, GpuReductionError> {
+    if !pointer.visible || pointer.shape.is_none() {
+        return Ok(None);
+    }
+    let admission = crate::shared::default_capture_resource_admission();
+    let mut resource = None;
+    super::gpu_surface::ensure_pointer_resource(
+        device,
+        &mut resource,
+        pointer,
+        u64::MAX,
+        admission.as_ref(),
+    )
+    .map_err(GpuReductionError::capture_resource)?;
+    Ok(resource)
 }
 
 #[cfg(test)]
@@ -1933,6 +2145,7 @@ fn test_clean(
         texture: source.clone(),
         srv: create_srv(device, source)?,
         metadata,
+        _resource_lease: None,
     })
 }
 
