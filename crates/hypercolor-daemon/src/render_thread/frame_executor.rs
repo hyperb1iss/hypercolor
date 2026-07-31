@@ -179,7 +179,7 @@ pub(crate) async fn execute_frame(
                         zone_layout_preview_generation,
                         &unassigned_behavior,
                     );
-                    let (prepared_resize, sampling_preparation) = if needs_resize {
+                    let (mut prepared_resize, sampling_preparation) = if needs_resize {
                         let off_color = state.power_state.borrow().off_output_color;
                         (
                             Some(render.prepare_canvas_resize(
@@ -196,7 +196,7 @@ pub(crate) async fn execute_frame(
                             Some(render.prepare_spatial_sampling_plan(&spatial_engine)?),
                         )
                     };
-                    let prepared_groups = render
+                    let mut prepared_groups = render
                         .render_group_runtime
                         .prepare_reconcile_for_scene_dimensions(
                             candidate_groups.as_ref(),
@@ -215,11 +215,26 @@ pub(crate) async fn execute_frame(
                     );
                     #[cfg(not(feature = "wgpu"))]
                     let gpu_projection_admitted = false;
+                    let (scene_width, scene_height) = prepared_groups.scene_dimensions();
                     let prepared_projected_scene =
                         render.sparkleflinger.prepare_projected_scene_resources(
                             prepared_groups.projected_group_texture_requirements(),
                             gpu_projection_admitted,
+                            scene_width,
+                            scene_height,
+                            prepared_resize.is_some(),
                         );
+                    let gpu_projection_admitted =
+                        prepared_projected_scene.gpu_projection_admitted();
+                    if !gpu_projection_admitted && let Some(prepared_resize) = &mut prepared_resize
+                    {
+                        prepared_resize.prepare_scene_cpu_backing()?;
+                    }
+                    prepared_groups.resolve_scene_backing(
+                        &render.render_group_runtime,
+                        gpu_projection_admitted,
+                        prepared_resize.is_some(),
+                    )?;
                     Ok::<_, anyhow::Error>((
                         prepared_resize,
                         sampling_preparation,

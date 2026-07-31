@@ -6,7 +6,7 @@ use crate::render_thread::sparkleflinger::CompositionLayer;
 
 #[test]
 fn single_group_preview_publishes_surface_frame() {
-    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut runtime = cpu_backed_runtime(4, 4);
     let group = sample_group(4, 4);
     let mut source = Canvas::new(4, 4);
     source.fill(Rgba::new(12, 34, 56, 255));
@@ -25,7 +25,7 @@ fn single_group_preview_publishes_surface_frame() {
 
 #[test]
 fn single_group_preview_scales_group_canvas_to_preview_extent() {
-    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut runtime = cpu_backed_runtime(4, 4);
     let group = sample_group(2, 2);
     let mut source = Canvas::new(2, 2);
     source.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
@@ -54,7 +54,7 @@ fn single_group_preview_scales_group_canvas_to_preview_extent() {
 
 #[test]
 fn compose_preview_ignores_display_groups() {
-    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut runtime = cpu_backed_runtime(4, 4);
     let preview_group = sample_group(4, 4);
     let display_group = sample_display_group(4, 4);
     let mut preview_canvas = Canvas::new(4, 4);
@@ -79,7 +79,7 @@ fn compose_preview_ignores_display_groups() {
 
 #[test]
 fn authoritative_scene_canvas_clips_rotated_zone_geometry() {
-    let mut runtime = ZoneRuntime::new(8, 8);
+    let mut runtime = cpu_backed_runtime(8, 8);
     let mut group = sample_group(8, 8);
     group.layout.zones = vec![rotated_zone("zone_rotated", FRAC_PI_4, 0.5)];
     let mut source = Canvas::new(8, 8);
@@ -107,7 +107,7 @@ fn authoritative_scene_canvas_clips_rotated_zone_geometry() {
 
 #[test]
 fn authoritative_scene_canvas_preserves_group_overlap_order() {
-    let mut runtime = ZoneRuntime::new(8, 8);
+    let mut runtime = cpu_backed_runtime(8, 8);
     let mut back_group = sample_group(8, 8);
     back_group.layout.zones = vec![rotated_zone("zone_back", FRAC_PI_4, 0.5)];
     let mut front_group = sample_group(8, 8);
@@ -142,7 +142,7 @@ fn authoritative_scene_canvas_preserves_group_overlap_order() {
 
 #[test]
 fn authoritative_scene_canvas_uses_zone_sampling_mode() {
-    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut runtime = cpu_backed_runtime(4, 4);
     let mut group = sample_group(2, 2);
     group.layout.zones = vec![point_zone("zone_sampling")];
     group.layout.zones[0].size = NormalizedPosition { x: 1.0, y: 1.0 };
@@ -546,6 +546,10 @@ fn projected_contributors_refresh_current_cpu_replay() {
             None,
         )
         .expect("projection resources should reconcile");
+    runtime
+        .projected_scene_layers
+        .try_reserve_exact(1)
+        .expect("test projection scratch should allocate");
     let audio = AudioData::silence();
     let interaction = InteractionData::default();
     let sensors = SystemSnapshot::empty();
@@ -862,6 +866,14 @@ fn two_gpu_resident_groups_produce_stable_projected_scene_frame() {
     let allocations_after_admission = sparkleflinger
         .snapshot_texture_allocation_count_for_test()
         .expect("required GPU compositor should expose snapshot allocations");
+    let compositor_allocations_after_admission = sparkleflinger
+        .compositor_surface_allocation_count_for_test()
+        .expect("required GPU compositor should expose surface allocations");
+    assert_eq!(runtime.scene_cpu_backing_bytes(), 0);
+    let admitted_layer_capacity = runtime.projected_scene_layer_capacity();
+    assert_eq!(admitted_layer_capacity, 3);
+    let layer_allocations_after_admission = runtime.projected_scene_layer_allocation_count();
+    assert_eq!(layer_allocations_after_admission, 1);
     let audio = AudioData::silence();
     let interaction = InteractionData::default();
     let sensors = SystemSnapshot::empty();
@@ -895,6 +907,7 @@ fn two_gpu_resident_groups_produce_stable_projected_scene_frame() {
     let identities = projected
         .layers
         .iter()
+        .skip(1)
         .map(|layer| {
             layer
                 .gpu_frame_identity_for_test()
@@ -944,6 +957,7 @@ fn two_gpu_resident_groups_produce_stable_projected_scene_frame() {
     let second_identities = second
         .layers
         .iter()
+        .skip(1)
         .map(|layer| {
             layer
                 .gpu_frame_identity_for_test()
@@ -969,6 +983,80 @@ fn two_gpu_resident_groups_produce_stable_projected_scene_frame() {
         Some(allocations_after_admission),
         "steady-state projection must not allocate GPU textures"
     );
+    assert_eq!(
+        sparkleflinger.compositor_surface_allocation_count_for_test(),
+        Some(compositor_allocations_after_admission),
+        "steady-state projection must reuse admitted compositor descriptors"
+    );
+    assert_eq!(
+        runtime.projected_scene_layer_capacity(),
+        admitted_layer_capacity,
+        "steady-state projection must return its admitted layer scratch"
+    );
+    assert_eq!(runtime.scene_cpu_backing_bytes(), 0);
+    assert_eq!(
+        runtime.projected_scene_layer_allocation_count(),
+        layer_allocations_after_admission,
+        "steady projection must not allocate layer-vector backing"
+    );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn mixed_extent_gpu_projection_reuses_every_admitted_compositor_set() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let mut groups = gpu_projection_groups();
+    groups[0].layout.canvas_width = 8;
+    groups[0].layout.canvas_height = 4;
+    groups[1].layout.canvas_width = 4;
+    groups[1].layout.canvas_height = 2;
+    let canvas = sparkleflinger
+        .prepare_canvas_resize(8, 8)
+        .expect("mixed extent scene canvas should prepare");
+    assert!(canvas.is_admitted());
+    sparkleflinger.apply_canvas_resize(canvas);
+    let dependency_key = SceneDependencyKey::new(1, registry.generation());
+    let mut runtime = ZoneRuntime::new(8, 8);
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            dependency_key,
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("mixed GPU descriptors should admit transactionally");
+    let admitted_allocations = sparkleflinger
+        .compositor_surface_allocation_count_for_test()
+        .expect("required GPU compositor should expose surface allocations");
+    let mut zones = Vec::new();
+
+    for elapsed_ms in [0, 16, 32] {
+        let rendered = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &groups,
+            1,
+            elapsed_ms,
+            &HashMap::new(),
+            &registry,
+            &mut zones,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("mixed GPU descriptors should render from admitted resources");
+        assert!(matches!(rendered.scene_frame, ProducerFrame::GpuTexture(_)));
+        assert_eq!(runtime.scene_cpu_backing_bytes(), 0);
+        assert_eq!(
+            sparkleflinger.compositor_surface_allocation_count_for_test(),
+            Some(admitted_allocations),
+            "steady mixed-size frames must not allocate compositor textures"
+        );
+    }
 }
 
 #[cfg(feature = "wgpu")]
@@ -1103,7 +1191,8 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
         .snapshot_texture_allocation_count_for_test()
         .expect("required GPU compositor should expose snapshot allocations");
     let requirements = projected_group_requirements(&groups);
-    let prepared = sparkleflinger.prepare_projected_scene_resources(&requirements, true);
+    let prepared =
+        sparkleflinger.prepare_projected_scene_resources(&requirements, true, 4, 4, false);
     sparkleflinger.apply_projected_scene_resources(prepared);
     let stable_allocations = initial_allocations + groups.len();
     assert_eq!(
@@ -1111,7 +1200,8 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
         Some(stable_allocations)
     );
 
-    let prepared = sparkleflinger.prepare_projected_scene_resources(&requirements, true);
+    let prepared =
+        sparkleflinger.prepare_projected_scene_resources(&requirements, true, 4, 4, false);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
@@ -1121,7 +1211,8 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
     groups[1].layout.canvas_width = 2;
     groups[1].layout.canvas_height = 2;
     let resized_requirements = projected_group_requirements(&groups);
-    let prepared = sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true);
+    let prepared =
+        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 4, 4, false);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
@@ -1132,7 +1223,8 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
         .prepare_canvas_resize(8, 8)
         .expect("resized scene snapshot generations should prepare");
     sparkleflinger.apply_canvas_resize(canvas);
-    let prepared = sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true);
+    let prepared =
+        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 8, 8, false);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
@@ -1140,14 +1232,20 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
         "scene resize should allocate only its two immutable generations"
     );
 
-    let prepared =
-        sparkleflinger.prepare_projected_scene_resources(&resized_requirements[..1], true);
+    let prepared = sparkleflinger.prepare_projected_scene_resources(
+        &resized_requirements[..1],
+        true,
+        8,
+        8,
+        false,
+    );
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
         Some(stable_allocations + 3)
     );
-    let prepared = sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true);
+    let prepared =
+        sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 8, 8, false);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
@@ -1199,6 +1297,7 @@ fn unsupported_filter_and_wrap_skip_gpu_projection_without_rejecting_scene() {
             group.layout.canvas_height,
         )
     }));
+    assert_eq!(runtime.scene_cpu_backing_bytes(), 192);
 }
 
 #[cfg(feature = "wgpu")]
@@ -1244,6 +1343,7 @@ fn gpu_projection_allocation_failure_falls_back_without_rejecting_scene() {
             group.layout.canvas_height,
         )
     }));
+    assert_eq!(runtime.scene_cpu_backing_bytes(), 192);
 }
 
 #[cfg(feature = "wgpu")]
@@ -1268,8 +1368,13 @@ fn oversized_cpu_canvas_fallback_skips_gpu_projection_resource_preparation() {
         .snapshot_texture_allocation_count_for_test()
         .expect("required GPU compositor should expose snapshot allocations");
 
-    let projected =
-        sparkleflinger.prepare_projected_scene_resources(&requirements, gpu_projection_admitted);
+    let projected = sparkleflinger.prepare_projected_scene_resources(
+        &requirements,
+        gpu_projection_admitted,
+        oversized_width,
+        1,
+        true,
+    );
     sparkleflinger.apply_projected_scene_resources(projected);
 
     assert_eq!(
@@ -1444,7 +1549,8 @@ fn admit_projected_scene_resources(
     assert!(canvas.is_admitted());
     sparkleflinger.apply_canvas_resize(canvas);
     let requirements = projected_group_requirements(groups);
-    let projected = sparkleflinger.prepare_projected_scene_resources(&requirements, true);
+    let projected =
+        sparkleflinger.prepare_projected_scene_resources(&requirements, true, width, height, false);
     sparkleflinger.apply_projected_scene_resources(projected);
 }
 
@@ -1487,6 +1593,20 @@ fn compose_projection_layers_on_cpu(
                 .map(|surface| Canvas::from_published_surface(&surface))
         })
         .expect("CPU projection should materialize a scene canvas")
+}
+
+fn cpu_backed_runtime(width: u32, height: u32) -> ZoneRuntime {
+    let mut runtime = ZoneRuntime::new(width, height);
+    runtime.scene_surface_pool = Some(
+        ZoneRuntime::prepare_scene_surface_pool(
+            width,
+            height,
+            SCENE_SURFACE_POOL_INITIAL_SLOTS,
+            SCENE_SURFACE_POOL_MAX_SLOTS,
+        )
+        .expect("test CPU scene surface should prepare"),
+    );
+    runtime
 }
 
 #[cfg(feature = "wgpu")]

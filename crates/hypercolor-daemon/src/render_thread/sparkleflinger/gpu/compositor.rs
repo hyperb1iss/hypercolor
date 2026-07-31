@@ -500,7 +500,7 @@ impl GpuSparkleFlinger {
     }
 
     fn prepare_surface_size(
-        &self,
+        &mut self,
         width: u32,
         height: u32,
     ) -> Result<Option<GpuCompositorSurfaceSet>> {
@@ -520,7 +520,12 @@ impl GpuSparkleFlinger {
             anyhow::bail!("{}", reason.message());
         }
 
-        GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height).map(Some)
+        let replacement = self
+            .compositor_surface_cache
+            .remove(&(width, height))
+            .flatten()
+            .map_or_else(|| self.try_create_compositor_surface_set(width, height), Ok)?;
+        Ok(Some(replacement))
     }
 
     fn commit_surface_size(&mut self, replacement: Option<GpuCompositorSurfaceSet>) {
@@ -530,7 +535,11 @@ impl GpuSparkleFlinger {
         self.discard_pending_preview_map();
         self.clear_sampling_readback_latch();
         drop(self.supersede_frame_in_flight("compositor surfaces resized"));
-        self.surfaces = Some(replacement);
+        self.discard_pending_uploads();
+        if let Some(previous) = self.surfaces.replace(replacement) {
+            self.compositor_surface_cache
+                .insert((previous.width, previous.height), Some(previous));
+        }
         self.preview_surfaces = None;
         self.current_output = None;
         self.cached_composition_key = None;

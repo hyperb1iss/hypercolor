@@ -61,14 +61,12 @@ fn generation_zero_surface_materialization_records_full_frame_copy() {
 }
 
 #[test]
-fn wide_runtime_admits_one_scene_surface_without_eager_fanout() {
+fn eight_k_runtime_defers_scene_surface_until_cpu_admission() {
     let runtime =
-        ZoneRuntime::try_new(7_681, 1).expect("addressable wide runtime should construct");
+        ZoneRuntime::try_new(7_680, 4_320).expect("addressable 8K runtime should construct");
 
-    assert_eq!(runtime.scene_surface_pool.descriptor().width, 7_681);
-    assert_eq!(runtime.scene_surface_pool.descriptor().height, 1);
-    assert_eq!(runtime.scene_surface_pool.materialized_slot_count(), 1);
-    assert!(runtime.scene_surface_pool.slot_count() > 1);
+    assert!(runtime.scene_surface_pool.is_none());
+    assert_eq!(runtime.scene_cpu_backing_bytes(), 0);
 }
 
 #[test]
@@ -89,10 +87,7 @@ fn failed_scene_resize_preserves_last_good_geometry() {
     ));
     assert_eq!(runtime.scene_width, 4);
     assert_eq!(runtime.scene_height, 4);
-    assert_eq!(
-        runtime.scene_surface_pool.descriptor(),
-        SurfaceDescriptor::rgba8888(4, 4)
-    );
+    assert!(runtime.scene_surface_pool.is_none());
     assert!(Arc::ptr_eq(
         &previous_plan,
         &runtime.combined_led_spatial_engine.sampling_plan()

@@ -7,12 +7,40 @@ use crate::performance::FullFrameCopyMetrics;
 use crate::render_thread::producer_queue::ProducerFrame;
 
 impl ZoneRuntime {
+    #[cfg(test)]
+    pub(super) fn scene_cpu_backing_bytes(&self) -> u64 {
+        let scene_bytes = self.scene_surface_pool.as_ref().map_or(0, |pool| {
+            let bytes = pool.descriptor().checked_byte_len().unwrap_or(0);
+            u64::try_from(bytes)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(u64::try_from(pool.materialized_slot_count()).unwrap_or(u64::MAX))
+        });
+        self.target_canvases
+            .values()
+            .fold(scene_bytes, |total, canvas| {
+                total.saturating_add(u64::try_from(canvas.rgba_len()).unwrap_or(u64::MAX))
+            })
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn projected_scene_layer_capacity(&self) -> usize {
+        self.projected_scene_layers.capacity()
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) const fn projected_scene_layer_allocation_count(&self) -> usize {
+        self.projected_scene_layer_allocation_count
+    }
+
     pub(super) fn surface_backed_scene_frame(
         &mut self,
         frame: ProducerFrame,
         full_frame_copy: &mut FullFrameCopyMetrics,
     ) -> anyhow::Result<Option<ProducerFrame>> {
-        surface_backed_frame(&mut self.scene_surface_pool, frame, full_frame_copy)
+        let Some(surface_pool) = &mut self.scene_surface_pool else {
+            return Ok(Some(frame));
+        };
+        surface_backed_frame(surface_pool, frame, full_frame_copy)
     }
 
     pub(super) fn surface_backed_direct_frame(
@@ -33,7 +61,9 @@ impl ZoneRuntime {
     /// undersized for current downstream fan-out.
     #[must_use]
     pub(crate) fn scene_surface_pool_saturation_reallocs(&self) -> u64 {
-        self.scene_surface_pool.saturation_reallocs()
+        self.scene_surface_pool
+            .as_ref()
+            .map_or(0, RenderSurfacePool::saturation_reallocs)
     }
 
     /// Same as `scene_surface_pool_saturation_reallocs` but summed across
@@ -51,7 +81,9 @@ impl ZoneRuntime {
     /// reflect the pool settling at its working-set size.
     #[must_use]
     pub(crate) fn scene_surface_pool_grown_slots(&self) -> u32 {
-        self.scene_surface_pool.grown_slots()
+        self.scene_surface_pool
+            .as_ref()
+            .map_or(0, RenderSurfacePool::grown_slots)
     }
 
     /// Total grown slots across every direct-canvas group pool.
@@ -65,7 +97,9 @@ impl ZoneRuntime {
 
     #[must_use]
     pub(crate) fn scene_surface_pool_max_slots(&self) -> u32 {
-        u32::try_from(self.scene_surface_pool.max_slots()).unwrap_or(u32::MAX)
+        self.scene_surface_pool.as_ref().map_or(0, |pool| {
+            u32::try_from(pool.max_slots()).unwrap_or(u32::MAX)
+        })
     }
 
     #[must_use]
@@ -85,7 +119,9 @@ impl ZoneRuntime {
     }
 
     pub(crate) fn scene_surface_pool_state_counts(&mut self) -> SurfaceStateCounts {
-        self.scene_surface_pool.slot_counts()
+        self.scene_surface_pool
+            .as_mut()
+            .map_or_else(SurfaceStateCounts::default, RenderSurfacePool::slot_counts)
     }
 
     pub(crate) fn direct_surface_pool_state_counts(&mut self) -> SurfaceStateCounts {
@@ -96,12 +132,18 @@ impl ZoneRuntime {
     }
 
     pub(crate) fn scene_surface_pool_shared_published_slots(&mut self) -> u32 {
-        let counts = self.scene_surface_pool.sharing_counts();
+        let Some(pool) = &mut self.scene_surface_pool else {
+            return 0;
+        };
+        let counts = pool.sharing_counts();
         u32::try_from(counts.shared_published).unwrap_or(u32::MAX)
     }
 
     pub(crate) fn scene_surface_pool_max_ref_count(&mut self) -> u32 {
-        let counts = self.scene_surface_pool.sharing_counts();
+        let Some(pool) = &mut self.scene_surface_pool else {
+            return 0;
+        };
+        let counts = pool.sharing_counts();
         u32::try_from(counts.max_ref_count).unwrap_or(u32::MAX)
     }
 

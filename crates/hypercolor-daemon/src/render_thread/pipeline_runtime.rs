@@ -1383,6 +1383,11 @@ impl PreparedCanvasResize {
     pub(crate) const fn render_gpu_output_admitted(&self) -> bool {
         self.sparkleflinger_preparation.gpu_output_admitted()
     }
+
+    pub(crate) fn prepare_scene_cpu_backing(&mut self) -> Result<()> {
+        self.render_group_runtime.prepare_cpu_backing()?;
+        Ok(())
+    }
 }
 
 pub(crate) struct PreparedLayoutActivation {

@@ -11,7 +11,7 @@ use hypercolor_types::scene::ZoneId;
 
 use super::super::producer_queue::{ProducerFrame, record_producer_frame};
 #[cfg(feature = "wgpu")]
-use super::super::sparkleflinger::{CompositionLayer, CompositionPlan, SparkleFlinger};
+use super::super::sparkleflinger::{CompositionLayer, SparkleFlinger};
 use super::ZoneRuntime;
 #[cfg(feature = "wgpu")]
 use super::frame_helpers::composed_frame_to_producer_frame;
@@ -51,7 +51,11 @@ impl ZoneRuntime {
     }
 
     pub(super) fn compose_scene_frame(&mut self, groups: &[Zone]) -> Result<ProducerFrame> {
-        let Some(mut lease) = self.scene_surface_pool.try_dequeue()? else {
+        let scene_surface_pool = self
+            .scene_surface_pool
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("CPU scene composition was not admitted"))?;
+        let Some(mut lease) = scene_surface_pool.try_dequeue()? else {
             let mut scene_canvas = Canvas::try_new(self.scene_width, self.scene_height)?;
             compose_authoritative_scene_canvas(
                 &mut scene_canvas,
@@ -88,21 +92,24 @@ impl ZoneRuntime {
     ) -> Option<ProducerFrame> {
         #[cfg(all(test, feature = "wgpu"))]
         if std::mem::take(&mut self.fail_next_projected_scene_composition) {
+            layers.clear();
+            self.projected_scene_layers = layers;
             return None;
         }
         if layers.is_empty() {
+            self.projected_scene_layers = layers;
             return None;
         }
 
-        let opaque_black = sparkleflinger.opaque_black_gpu_frame()?;
-        layers.try_reserve(1).ok()?;
-        layers.insert(0, CompositionLayer::replace_opaque(opaque_black));
-        let plan = CompositionPlan::with_layers(self.scene_width, self.scene_height, layers)
-            .with_cpu_replay_cacheable(false);
-        let requires_cpu_sampling_canvas = !sparkleflinger.supports_gpu_output_frames();
-        let composed =
-            sparkleflinger.compose_for_outputs(plan.clone(), requires_cpu_sampling_canvas, None);
-        if let Some(frame) = composed_frame_to_producer_frame(composed, sparkleflinger, true) {
+        let composed = sparkleflinger.compose_projected_scene_layers(
+            self.scene_width,
+            self.scene_height,
+            &mut layers,
+        );
+        let frame = composed_frame_to_producer_frame(composed, sparkleflinger, true);
+        layers.clear();
+        self.projected_scene_layers = layers;
+        if let Some(frame) = frame {
             record_producer_frame(&frame);
             return Some(frame);
         }
@@ -117,7 +124,18 @@ impl ZoneRuntime {
 
     #[cfg(test)]
     pub(super) fn compose_preview_grid_for_test(&mut self, groups: &[Zone]) -> ProducerFrame {
-        let Some(mut lease) = self.scene_surface_pool.dequeue() else {
+        let Some(scene_surface_pool) = &mut self.scene_surface_pool else {
+            let mut preview_grid = Canvas::new(self.scene_width, self.scene_height);
+            compose_preview_grid_canvas(
+                &mut preview_grid,
+                groups,
+                &self.target_canvases,
+                self.scene_width,
+                self.scene_height,
+            );
+            return ProducerFrame::Canvas(preview_grid);
+        };
+        let Some(mut lease) = scene_surface_pool.dequeue() else {
             let mut preview_grid = Canvas::new(self.scene_width, self.scene_height);
             compose_preview_grid_canvas(
                 &mut preview_grid,

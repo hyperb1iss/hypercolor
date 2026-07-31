@@ -15,7 +15,7 @@ use super::model::{
     GroupFrameContext, GroupFrameRequirements, PendingGroupCanvasFrame, RenderSceneContext,
     RenderedGroupSet,
 };
-use super::projection::projection_composition_layers_for_group;
+use super::projection::append_projection_composition_layers_for_group;
 use crate::performance::FullFrameCopyMetrics;
 
 #[derive(Default)]
@@ -109,80 +109,114 @@ impl ZoneRuntime {
         output: &mut RenderedGroupPassOutput,
     ) -> Result<ProjectedSceneFrames> {
         let mut projected_scene = ProjectedSceneFrames::default();
-        for group in context.groups {
-            if !group_is_active(group) || group_publishes_direct_canvas(group) {
-                continue;
+        if project_scene_with_sparkleflinger {
+            projected_scene.layers = std::mem::take(&mut self.projected_scene_layers);
+            projected_scene.layers.clear();
+            #[cfg(feature = "wgpu")]
+            if let Some(opaque_black) = sparkleflinger.opaque_black_gpu_frame() {
+                if projected_scene.layers.len() == projected_scene.layers.capacity() {
+                    self.projected_scene_layers = projected_scene.layers;
+                    anyhow::bail!("projected scene layer scratch was not admitted");
+                }
+                projected_scene
+                    .layers
+                    .push(CompositionLayer::replace_opaque(opaque_black));
             }
+        }
+        let render_result = (|| -> Result<()> {
+            for group in context.groups {
+                if !group_is_active(group) || group_publishes_direct_canvas(group) {
+                    continue;
+                }
 
-            let render_start = Instant::now();
-            let mut frame = self.render_group_frame(
-                group,
-                context.group_context(),
-                sparkleflinger,
-                GroupFrameRequirements {
-                    requires_cpu_sampling_canvas: !project_scene_with_sparkleflinger,
-                    requires_published_surface: false,
-                },
-            )?;
-            if frame.is_none() && project_scene_with_sparkleflinger {
-                frame = self.render_group_frame(
+                let render_start = Instant::now();
+                let mut frame = self.render_group_frame(
                     group,
                     context.group_context(),
                     sparkleflinger,
                     GroupFrameRequirements {
-                        requires_cpu_sampling_canvas: true,
+                        requires_cpu_sampling_canvas: !project_scene_with_sparkleflinger,
                         requires_published_surface: false,
                     },
                 )?;
-            }
-            let Some(target) = self.target_canvases.get_mut(&group.id) else {
-                output.record_render_elapsed(render_start);
-                continue;
-            };
-            let Some(frame) = frame else {
-                target.clear();
-                output.record_render_elapsed(render_start);
-                continue;
-            };
-            let frame = if project_scene_with_sparkleflinger {
-                sparkleflinger.stabilize_projected_group_frame(group.id, frame)?
-            } else {
-                frame
-            };
-            if project_scene_with_sparkleflinger
-                && let Some(projection) = self.scene_projection_cache.get(&group.id)
-                && let Some(layers) = projection_composition_layers_for_group(
-                    &frame,
-                    group,
-                    projection,
-                    self.scene_width,
-                    self.scene_height,
-                )
-            {
-                projected_scene.layers.extend(layers);
+                if frame.is_none() && project_scene_with_sparkleflinger {
+                    frame = self.render_group_frame(
+                        group,
+                        context.group_context(),
+                        sparkleflinger,
+                        GroupFrameRequirements {
+                            requires_cpu_sampling_canvas: true,
+                            requires_published_surface: false,
+                        },
+                    )?;
+                }
+                let Some(frame) = frame else {
+                    if let Some(target) = self.target_canvases.get_mut(&group.id) {
+                        target.clear();
+                    }
+                    output.record_render_elapsed(render_start);
+                    continue;
+                };
+                let frame = if project_scene_with_sparkleflinger {
+                    sparkleflinger.stabilize_projected_group_frame(group.id, frame)?
+                } else {
+                    frame
+                };
+                if project_scene_with_sparkleflinger
+                    && let Some(projection) = self.scene_projection_cache.get(&group.id)
+                    && append_projection_composition_layers_for_group(
+                        &mut projected_scene.layers,
+                        &frame,
+                        group,
+                        projection,
+                        self.scene_width,
+                        self.scene_height,
+                    )
+                {
+                    let replayed = if let Some(target) = self.target_canvases.get_mut(&group.id) {
+                        let replayed = copy_producer_frame_to_canvas(
+                            frame,
+                            target,
+                            &mut output.producer_full_frame_copy,
+                        )?;
+                        if !replayed {
+                            target.clear();
+                        }
+                        replayed
+                    } else {
+                        false
+                    };
+                    if !replayed {
+                        projected_scene.cpu_replay_complete = false;
+                    }
+                    output.record_render_elapsed(render_start);
+                    continue;
+                }
+                let target = self
+                    .target_canvases
+                    .get_mut(&group.id)
+                    .ok_or_else(|| anyhow::anyhow!("CPU group target was not admitted"))?;
                 if !copy_producer_frame_to_canvas(
                     frame,
                     target,
                     &mut output.producer_full_frame_copy,
                 )? {
                     target.clear();
-                    projected_scene.cpu_replay_complete = false;
+                    output.record_render_elapsed(render_start);
+                    continue;
                 }
+                output
+                    .rendered_groups
+                    .push_fresh_scene_group_frame(group.id, ProducerFrame::Canvas(target.clone()));
                 output.record_render_elapsed(render_start);
-                continue;
             }
-            if !copy_producer_frame_to_canvas(frame, target, &mut output.producer_full_frame_copy)?
-            {
-                target.clear();
-                output.record_render_elapsed(render_start);
-                continue;
-            }
-            output
-                .rendered_groups
-                .push_fresh_scene_group_frame(group.id, ProducerFrame::Canvas(target.clone()));
-            output.record_render_elapsed(render_start);
+            Ok(())
+        })();
+        if let Err(error) = render_result {
+            projected_scene.layers.clear();
+            self.projected_scene_layers = projected_scene.layers;
+            return Err(error);
         }
-
         Ok(projected_scene)
     }
 

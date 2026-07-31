@@ -363,6 +363,11 @@ impl CompositionPlan {
         self
     }
 
+    #[cfg(feature = "wgpu")]
+    fn into_layers(self) -> Vec<CompositionLayer> {
+        self.layers
+    }
+
     #[cfg_attr(
         not(feature = "wgpu"),
         allow(dead_code, reason = "only used by the optional wgpu compositor lane")
@@ -385,6 +390,40 @@ impl CompositionPlan {
     #[cfg(not(feature = "wgpu"))]
     const fn contains_gpu_frames(&self) -> bool {
         false
+    }
+}
+
+#[cfg(feature = "wgpu")]
+struct ReusableCompositionPlan<'a> {
+    target: &'a mut Vec<CompositionLayer>,
+    plan: Option<CompositionPlan>,
+}
+
+#[cfg(feature = "wgpu")]
+impl<'a> ReusableCompositionPlan<'a> {
+    fn new(target: &'a mut Vec<CompositionLayer>, width: u32, height: u32) -> Self {
+        Self {
+            plan: Some(
+                CompositionPlan::with_layers(width, height, std::mem::take(target))
+                    .with_cpu_replay_cacheable(false),
+            ),
+            target,
+        }
+    }
+
+    fn plan(&self) -> &CompositionPlan {
+        self.plan
+            .as_ref()
+            .expect("reusable composition plan remains installed until drop")
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl Drop for ReusableCompositionPlan<'_> {
+    fn drop(&mut self) {
+        if let Some(plan) = self.plan.take() {
+            *self.target = plan.into_layers();
+        }
     }
 }
 
@@ -507,6 +546,16 @@ pub(crate) enum SparkleFlingerProjectedScenePreparation {
     Cpu,
     #[cfg(feature = "wgpu")]
     Gpu(gpu::GpuProjectedScenePreparation),
+}
+
+impl SparkleFlingerProjectedScenePreparation {
+    pub(crate) const fn gpu_projection_admitted(&self) -> bool {
+        match self {
+            Self::Cpu => false,
+            #[cfg(feature = "wgpu")]
+            Self::Gpu(preparation) => preparation.is_admitted(),
+        }
+    }
 }
 
 impl SparkleFlingerCanvasPreparation {
@@ -881,6 +930,41 @@ impl SparkleFlinger {
     }
 
     #[cfg(feature = "wgpu")]
+    pub(crate) fn compose_projected_scene_layers(
+        &mut self,
+        width: u32,
+        height: u32,
+        layers: &mut Vec<CompositionLayer>,
+    ) -> ComposedFrameSet {
+        let reusable = ReusableCompositionPlan::new(layers, width, height);
+        let plan = reusable.plan();
+        let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend else {
+            return gpu_frame_without_cpu_fallback(
+                width,
+                height,
+                None,
+                &mut self.preview_surface_pool,
+            );
+        };
+        if !gpu.supports_plan(plan) {
+            tracing::warn!("Unsupported projected GPU scene plan; refusing CPU fallback");
+            return gpu_frame_without_cpu_fallback(
+                width,
+                height,
+                None,
+                &mut self.preview_surface_pool,
+            );
+        }
+        match gpu.compose(plan, false, None) {
+            Ok(composed) => composed,
+            Err(error) => {
+                tracing::warn!(%error, "GPU projected scene composition failed");
+                gpu_frame_without_cpu_fallback(width, height, None, &mut self.preview_surface_pool)
+            }
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
     pub(crate) fn materialize_output_surface(
         &mut self,
         frame: ProducerFrame,
@@ -921,16 +1005,31 @@ impl SparkleFlinger {
         &self,
         requirements: &[ProjectedGroupTextureRequirement],
         gpu_projection_admitted: bool,
+        scene_width: u32,
+        scene_height: u32,
+        scene_surface_prepared_by_resize: bool,
     ) -> SparkleFlingerProjectedScenePreparation {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => {
-                let _ = (requirements, gpu_projection_admitted);
+                let _ = (
+                    requirements,
+                    gpu_projection_admitted,
+                    scene_width,
+                    scene_height,
+                    scene_surface_prepared_by_resize,
+                );
                 SparkleFlingerProjectedScenePreparation::Cpu
             }
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => SparkleFlingerProjectedScenePreparation::Gpu(
-                gpu.prepare_projected_scene_resources(requirements, gpu_projection_admitted),
-            ),
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                SparkleFlingerProjectedScenePreparation::Gpu(gpu.prepare_projected_scene_resources(
+                    requirements,
+                    gpu_projection_admitted,
+                    scene_width,
+                    scene_height,
+                    scene_surface_prepared_by_resize,
+                ))
+            }
         }
     }
 
@@ -1028,6 +1127,16 @@ impl SparkleFlinger {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => None,
             SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.snapshot_texture_allocation_count()),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn compositor_surface_allocation_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.compositor_surface_allocation_count())
+            }
         }
     }
 

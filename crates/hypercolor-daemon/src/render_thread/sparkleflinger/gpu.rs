@@ -177,8 +177,16 @@ pub(crate) enum GpuProjectedScenePreparation {
     Disabled,
     Admitted {
         snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
+        compositor_surfaces: HashMap<(u32, u32), Option<GpuCompositorSurfaceSet>>,
+        scene_extent: (u32, u32),
     },
     ResourceFallback(GpuProjectedSceneResourceError),
+}
+
+impl GpuProjectedScenePreparation {
+    pub(super) const fn is_admitted(&self) -> bool {
+        matches!(self, Self::Admitted { .. })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +195,15 @@ pub(crate) enum GpuProjectedSceneResourceError {
     Metadata(#[source] std::collections::TryReserveError),
     #[error("GPU projection snapshot allocation failed for {width}x{height}")]
     Snapshot {
+        width: u32,
+        height: u32,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("GPU compositor surface metadata allocation failed")]
+    CompositorMetadata(#[source] std::collections::TryReserveError),
+    #[error("GPU compositor surface allocation failed for {width}x{height}")]
+    CompositorSurface {
         width: u32,
         height: u32,
         #[source]
@@ -583,6 +600,7 @@ pub(crate) struct GpuSparkleFlinger {
     spatial_sampler: GpuSpatialSampler,
     opaque_black_texture: Option<GpuCompositorTexture>,
     surfaces: Option<GpuCompositorSurfaceSet>,
+    compositor_surface_cache: HashMap<(u32, u32), Option<GpuCompositorSurfaceSet>>,
     display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, GpuDisplayFinalizeSurfaceSet>,
     display_finalize_generation: u64,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
@@ -623,6 +641,8 @@ pub(crate) struct GpuSparkleFlinger {
     fail_next_screen_upload_pool_saturation: bool,
     #[cfg(test)]
     snapshot_texture_allocation_count: Cell<usize>,
+    #[cfg(test)]
+    compositor_surface_allocation_count: Cell<usize>,
     #[cfg(test)]
     fail_next_projected_scene_preparation: Cell<bool>,
 }
@@ -965,6 +985,7 @@ impl GpuSparkleFlinger {
             spatial_sampler,
             opaque_black_texture: None,
             surfaces: None,
+            compositor_surface_cache: HashMap::new(),
             display_finalize_surfaces: HashMap::new(),
             display_finalize_generation: 0,
             preview_surfaces: None,
@@ -1005,6 +1026,8 @@ impl GpuSparkleFlinger {
             fail_next_screen_upload_pool_saturation: false,
             #[cfg(test)]
             snapshot_texture_allocation_count: Cell::new(0),
+            #[cfg(test)]
+            compositor_surface_allocation_count: Cell::new(0),
             #[cfg(test)]
             fail_next_projected_scene_preparation: Cell::new(false),
         })
@@ -1176,8 +1199,11 @@ impl GpuSparkleFlinger {
         height: u32,
         active_preview_request: Option<super::PreviewSurfaceRequest>,
     ) -> Result<GpuCanvasGeneration> {
-        let surfaces =
-            GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height)?;
+        let surfaces = self
+            .compositor_surface_cache
+            .remove(&(width, height))
+            .flatten()
+            .map_or_else(|| self.try_create_compositor_surface_set(width, height), Ok)?;
         let sampling_readback_buffers =
             self.prepare_sampling_readback_buffers_for_canvas_resize(width, height)?;
         let preview_surfaces = active_preview_request
@@ -1192,6 +1218,22 @@ impl GpuSparkleFlinger {
             preview_surfaces,
             sampling_readback_buffers,
         })
+    }
+
+    fn try_create_compositor_surface_set(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<GpuCompositorSurfaceSet> {
+        let surfaces =
+            GpuCompositorSurfaceSet::try_new(&self.device, &self.pipeline, width, height)?;
+        #[cfg(test)]
+        self.compositor_surface_allocation_count.set(
+            self.compositor_surface_allocation_count
+                .get()
+                .saturating_add(1),
+        );
+        Ok(surfaces)
     }
 
     pub(super) fn apply_canvas_resize(&mut self, preparation: GpuCanvasPreparation) {
@@ -1246,6 +1288,14 @@ impl GpuSparkleFlinger {
     #[cfg(target_os = "windows")]
     pub(crate) fn release_native_screen_caches(&mut self) {
         if let Some(surfaces) = &mut self.surfaces {
+            surfaces
+                .compose_source_bind_groups
+                .release_native_screen_entries();
+            surfaces
+                .source_copy_bind_groups
+                .release_native_screen_entries();
+        }
+        for surfaces in self.compositor_surface_cache.values_mut().flatten() {
             surfaces
                 .compose_source_bind_groups
                 .release_native_screen_entries();
@@ -1405,6 +1455,9 @@ impl GpuSparkleFlinger {
         &self,
         requirements: &[ProjectedGroupTextureRequirement],
         gpu_projection_admitted: bool,
+        scene_width: u32,
+        scene_height: u32,
+        scene_surface_prepared_by_resize: bool,
     ) -> GpuProjectedScenePreparation {
         if !gpu_projection_admitted || requirements.is_empty() {
             return GpuProjectedScenePreparation::Disabled;
@@ -1461,15 +1514,66 @@ impl GpuSparkleFlinger {
             };
             snapshots.insert(requirement.group_id, snapshot);
         }
-        GpuProjectedScenePreparation::Admitted { snapshots }
+        let mut compositor_surfaces = HashMap::new();
+        if let Err(error) = compositor_surfaces.try_reserve(requirements.len().saturating_add(1)) {
+            return GpuProjectedScenePreparation::ResourceFallback(
+                GpuProjectedSceneResourceError::CompositorMetadata(error),
+            );
+        }
+        compositor_surfaces.insert((scene_width, scene_height), None);
+        for requirement in requirements {
+            compositor_surfaces
+                .entry((requirement.width, requirement.height))
+                .or_insert(None);
+        }
+        for (&(width, height), surface) in &mut compositor_surfaces {
+            let supplied_by_resize =
+                scene_surface_prepared_by_resize && (width, height) == (scene_width, scene_height);
+            let active_reusable = !scene_surface_prepared_by_resize
+                && self
+                    .surfaces
+                    .as_ref()
+                    .is_some_and(|current| current.width == width && current.height == height);
+            let cached_reusable = self
+                .compositor_surface_cache
+                .get(&(width, height))
+                .is_some_and(Option::is_some);
+            if supplied_by_resize || active_reusable || cached_reusable {
+                continue;
+            }
+            let replacement = match self.try_create_compositor_surface_set(width, height) {
+                Ok(replacement) => replacement,
+                Err(source) => {
+                    return GpuProjectedScenePreparation::ResourceFallback(
+                        GpuProjectedSceneResourceError::CompositorSurface {
+                            width,
+                            height,
+                            source,
+                        },
+                    );
+                }
+            };
+            *surface = Some(replacement);
+        }
+        GpuProjectedScenePreparation::Admitted {
+            snapshots,
+            compositor_surfaces,
+            scene_extent: (scene_width, scene_height),
+        }
     }
 
     pub(crate) fn apply_projected_scene_resources(
         &mut self,
         preparation: GpuProjectedScenePreparation,
     ) {
-        let GpuProjectedScenePreparation::Admitted { mut snapshots } = preparation else {
+        let GpuProjectedScenePreparation::Admitted {
+            mut snapshots,
+            mut compositor_surfaces,
+            scene_extent,
+        } = preparation
+        else {
             self.projected_group_snapshots.clear();
+            self.compositor_surface_cache.clear();
             if let GpuProjectedScenePreparation::ResourceFallback(error) = preparation {
                 tracing::warn!(
                     %error,
@@ -1478,6 +1582,45 @@ impl GpuSparkleFlinger {
             }
             return;
         };
+        self.discard_pending_preview_map();
+        self.clear_sampling_readback_latch();
+        drop(self.supersede_frame_in_flight("projected scene resources committed"));
+        self.discard_pending_uploads();
+        let mut installed_surfaces = std::mem::take(&mut self.compositor_surface_cache);
+        let mut active_surface = self.surfaces.take();
+        for (&extent, surface) in &mut compositor_surfaces {
+            if surface.is_some() {
+                continue;
+            }
+            if active_surface
+                .as_ref()
+                .is_some_and(|active| (active.width, active.height) == extent)
+            {
+                *surface = active_surface.take();
+            } else {
+                *surface = installed_surfaces.remove(&extent).flatten();
+            }
+            debug_assert!(surface.is_some());
+        }
+        self.surfaces = compositor_surfaces
+            .remove(&scene_extent)
+            .flatten()
+            .or(active_surface);
+        debug_assert!(
+            self.surfaces
+                .as_ref()
+                .is_some_and(|surfaces| { (surfaces.width, surfaces.height) == scene_extent })
+        );
+        self.compositor_surface_cache = compositor_surfaces;
+        self.current_output = None;
+        self.cached_composition_key = None;
+        self.cached_readback_surface = None;
+        self.preview_surfaces = None;
+        self.cached_preview_surfaces.clear();
+        self.pending_preview_map = None;
+        self.ready_preview_surface = None;
+        self.cached_sample_result = None;
+        self.spatial_sampler.clear_bind_groups();
         let mut installed = std::mem::take(&mut self.projected_group_snapshots);
         for (group_id, snapshot) in &mut snapshots {
             if snapshot.is_none() {
@@ -1503,6 +1646,11 @@ impl GpuSparkleFlinger {
     #[cfg(test)]
     pub(crate) fn snapshot_texture_allocation_count(&self) -> usize {
         self.snapshot_texture_allocation_count.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compositor_surface_allocation_count(&self) -> usize {
+        self.compositor_surface_allocation_count.get()
     }
 
     #[cfg(test)]

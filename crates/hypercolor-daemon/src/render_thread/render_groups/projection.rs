@@ -147,23 +147,24 @@ pub(super) fn projection_supports_composition(projection: &CachedGroupProjection
         })
 }
 
-pub(super) fn projection_composition_layers_for_group(
+pub(super) fn append_projection_composition_layers_for_group(
+    layers: &mut Vec<CompositionLayer>,
     frame: &ProducerFrame,
     group: &Zone,
     projection: &CachedGroupProjection,
     scene_width: u32,
     scene_height: u32,
-) -> Option<Vec<CompositionLayer>> {
+) -> bool {
     if projection.scene_width != scene_width
         || projection.scene_height != scene_height
         || projection.layout != group.layout
         || !projection_supports_composition(projection)
     {
-        return None;
+        return false;
     }
-
-    let mut layers = Vec::new();
-    layers.try_reserve_exact(projection.zones.len()).ok()?;
+    if layers.capacity().saturating_sub(layers.len()) < projection.zones.len() {
+        return false;
+    }
     for zone in &projection.zones {
         layers.push(CompositionLayer::alpha(frame.clone(), 1.0).with_transform(
             CompositionTransform {
@@ -178,7 +179,28 @@ pub(super) fn projection_composition_layers_for_group(
             },
         ));
     }
-    Some(layers)
+    true
+}
+
+#[cfg(test)]
+pub(super) fn projection_composition_layers_for_group(
+    frame: &ProducerFrame,
+    group: &Zone,
+    projection: &CachedGroupProjection,
+    scene_width: u32,
+    scene_height: u32,
+) -> Option<Vec<CompositionLayer>> {
+    let mut layers = Vec::new();
+    layers.try_reserve_exact(projection.zones.len()).ok()?;
+    append_projection_composition_layers_for_group(
+        &mut layers,
+        frame,
+        group,
+        projection,
+        scene_width,
+        scene_height,
+    )
+    .then_some(layers)
 }
 
 pub(super) fn copy_full_scene_identity_projection(

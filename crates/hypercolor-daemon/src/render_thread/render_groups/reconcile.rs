@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use hypercolor_core::effect::{EffectRegistry, PreparedEffectPoolReconcile};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
@@ -16,6 +16,7 @@ use super::group_state::{
 };
 use super::projection::{build_group_projection, projection_supports_composition};
 use crate::render_thread::scene_dependency::SceneDependencyKey;
+use crate::render_thread::sparkleflinger::CompositionLayer;
 use crate::render_thread::sparkleflinger::{ProjectedGroupTextureRequirement, SparkleFlinger};
 
 /// Initial slot count for per-group direct-canvas pools (HTML-face zones).
@@ -30,11 +31,22 @@ struct PreparedSpatialState {
     combined_engine: SpatialEngine,
 }
 
+enum PreparedSceneBacking {
+    Unresolved,
+    GpuOnly {
+        projected_scene_layers: Option<Vec<CompositionLayer>>,
+    },
+    Cpu {
+        scene_surface_pool: Option<RenderSurfacePool>,
+    },
+}
+
 pub(crate) struct PreparedZoneReconcile {
     effect_pool: PreparedEffectPoolReconcile,
     layer_runtime: PreparedLayerRuntimeRegistry,
     spatial: PreparedSpatialState,
     target_canvases: HashMap<ZoneId, Canvas>,
+    scene_canvas_requirements: Vec<ProjectedGroupTextureRequirement>,
     scene_projection_cache: HashMap<ZoneId, super::projection::CachedGroupProjection>,
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
     media_producers: HashMap<hypercolor_types::asset::AssetId, super::model::CachedMediaProducer>,
@@ -45,6 +57,10 @@ pub(crate) struct PreparedZoneReconcile {
     scene_group_ids: HashSet<ZoneId>,
     direct_group_ids: HashSet<ZoneId>,
     projected_group_texture_requirements: Vec<ProjectedGroupTextureRequirement>,
+    projected_scene_layer_capacity: usize,
+    scene_width: u32,
+    scene_height: u32,
+    scene_backing: PreparedSceneBacking,
     dependency_key: SceneDependencyKey,
 }
 
@@ -53,6 +69,66 @@ impl PreparedZoneReconcile {
         &self,
     ) -> &[ProjectedGroupTextureRequirement] {
         &self.projected_group_texture_requirements
+    }
+
+    pub(crate) const fn scene_dimensions(&self) -> (u32, u32) {
+        (self.scene_width, self.scene_height)
+    }
+
+    pub(crate) fn resolve_scene_backing(
+        &mut self,
+        runtime: &ZoneRuntime,
+        gpu_projection_admitted: bool,
+        scene_pool_prepared_by_resize: bool,
+    ) -> Result<()> {
+        if gpu_projection_admitted {
+            let projected_scene_layers = if gpu_projection_admitted
+                && runtime.projected_scene_layers.capacity() < self.projected_scene_layer_capacity
+            {
+                let mut layers = Vec::new();
+                layers.try_reserve_exact(self.projected_scene_layer_capacity)?;
+                Some(layers)
+            } else {
+                None
+            };
+            self.scene_backing = PreparedSceneBacking::GpuOnly {
+                projected_scene_layers,
+            };
+            return Ok(());
+        }
+
+        for requirement in &self.scene_canvas_requirements {
+            let reusable = runtime
+                .target_canvases
+                .get(&requirement.group_id)
+                .is_some_and(|canvas| {
+                    canvas.width() == requirement.width && canvas.height() == requirement.height
+                });
+            if !reusable {
+                self.target_canvases.insert(
+                    requirement.group_id,
+                    Canvas::try_new(requirement.width, requirement.height)?,
+                );
+            }
+        }
+        let descriptor = SurfaceDescriptor::rgba8888(self.scene_width, self.scene_height);
+        let scene_surface_pool = if scene_pool_prepared_by_resize
+            || runtime
+                .scene_surface_pool
+                .as_ref()
+                .is_some_and(|pool| pool.descriptor() == descriptor)
+        {
+            None
+        } else {
+            Some(ZoneRuntime::prepare_scene_surface_pool(
+                self.scene_width,
+                self.scene_height,
+                runtime.scene_surface_pool_initial_slots,
+                runtime.scene_surface_pool_max_slots,
+            )?)
+        };
+        self.scene_backing = PreparedSceneBacking::Cpu { scene_surface_pool };
+        Ok(())
     }
 }
 
@@ -78,7 +154,7 @@ impl ZoneRuntime {
         if !self.needs_reconcile(dependency_key) {
             return Ok(());
         }
-        let prepared = self.prepare_reconcile(
+        let mut prepared = self.prepare_reconcile(
             groups,
             active_scene_id,
             dependency_key,
@@ -87,10 +163,15 @@ impl ZoneRuntime {
             authoritative_spatial_engine,
         )?;
         let gpu_projection_admitted = sparkleflinger.supports_gpu_output_frames();
+        let (scene_width, scene_height) = prepared.scene_dimensions();
         let projected = sparkleflinger.prepare_projected_scene_resources(
             prepared.projected_group_texture_requirements(),
             gpu_projection_admitted,
+            scene_width,
+            scene_height,
+            false,
         );
+        prepared.resolve_scene_backing(self, projected.gpu_projection_admitted(), false)?;
         sparkleflinger.apply_projected_scene_resources(projected);
         self.commit_reconcile(prepared);
         Ok(())
@@ -119,6 +200,8 @@ impl ZoneRuntime {
         self.effect_pool.clear();
         self.media_producers.clear();
         self.target_canvases.clear();
+        self.scene_surface_pool = None;
+        self.projected_scene_layers.clear();
         self.scene_projection_cache.clear();
         self.spatial_engines.clear();
         self.direct_surface_pools.clear();
@@ -159,7 +242,7 @@ impl ZoneRuntime {
             return Ok(());
         }
 
-        let prepared = self.prepare_reconcile(
+        let mut prepared = self.prepare_reconcile(
             groups,
             active_scene_id,
             dependency_key,
@@ -167,6 +250,7 @@ impl ZoneRuntime {
             display_descriptors,
             authoritative_spatial_engine,
         )?;
+        prepared.resolve_scene_backing(self, false, false)?;
         self.commit_reconcile(prepared);
         Ok(())
     }
@@ -232,6 +316,8 @@ impl ZoneRuntime {
             .collect::<HashSet<_>>();
         let mut target_canvases = HashMap::new();
         target_canvases.try_reserve(scene_group_ids.len())?;
+        let mut scene_canvas_requirements = Vec::new();
+        scene_canvas_requirements.try_reserve_exact(scene_group_ids.len())?;
         let mut scene_projection_cache = HashMap::new();
         scene_projection_cache.try_reserve(scene_group_ids.len())?;
         let mut direct_surface_pools = HashMap::new();
@@ -243,19 +329,15 @@ impl ZoneRuntime {
         let mut retained_materialized_group_frames = HashMap::new();
         retained_materialized_group_frames.try_reserve(direct_group_ids.len())?;
         let mut gpu_projection_eligible = !scene_group_ids.is_empty();
+        let mut projected_scene_layer_capacity = 1_usize;
 
         for group in groups {
             if group_contributes_to_scene_canvas(group) {
-                let needs_canvas = self.target_canvases.get(&group.id).is_none_or(|canvas| {
-                    canvas.width() != group.layout.canvas_width
-                        || canvas.height() != group.layout.canvas_height
+                scene_canvas_requirements.push(ProjectedGroupTextureRequirement {
+                    group_id: group.id,
+                    width: group.layout.canvas_width,
+                    height: group.layout.canvas_height,
                 });
-                if needs_canvas {
-                    target_canvases.insert(
-                        group.id,
-                        Canvas::try_new(group.layout.canvas_width, group.layout.canvas_height)?,
-                    );
-                }
 
                 let needs_projection =
                     self.scene_projection_cache
@@ -276,6 +358,9 @@ impl ZoneRuntime {
                     .or_else(|| self.scene_projection_cache.get(&group.id))
                     .expect("scene contributors must have prepared projection metadata");
                 gpu_projection_eligible &= projection_supports_composition(projection);
+                projected_scene_layer_capacity = projected_scene_layer_capacity
+                    .checked_add(projection.zones.len())
+                    .context("projected scene layer cardinality overflowed")?;
             }
 
             if group_publishes_direct_canvas(group) {
@@ -303,19 +388,11 @@ impl ZoneRuntime {
 
         let projected_group_texture_requirements = if gpu_projection_eligible {
             let mut requirements = Vec::new();
-            requirements.try_reserve(scene_group_ids.len())?;
-            requirements.extend(
-                groups
-                    .iter()
-                    .filter(|group| group_contributes_to_scene_canvas(group))
-                    .map(|group| ProjectedGroupTextureRequirement {
-                        group_id: group.id,
-                        width: group.layout.canvas_width,
-                        height: group.layout.canvas_height,
-                    }),
-            );
+            requirements.try_reserve_exact(scene_canvas_requirements.len())?;
+            requirements.extend(scene_canvas_requirements.iter().copied());
             requirements
         } else {
+            projected_scene_layer_capacity = 0;
             Vec::new()
         };
 
@@ -324,6 +401,7 @@ impl ZoneRuntime {
             layer_runtime,
             spatial,
             target_canvases,
+            scene_canvas_requirements,
             scene_projection_cache,
             direct_surface_pools,
             media_producers,
@@ -333,6 +411,10 @@ impl ZoneRuntime {
             scene_group_ids,
             direct_group_ids,
             projected_group_texture_requirements,
+            projected_scene_layer_capacity,
+            scene_width,
+            scene_height,
+            scene_backing: PreparedSceneBacking::Unresolved,
             dependency_key,
         })
     }
@@ -343,6 +425,7 @@ impl ZoneRuntime {
             layer_runtime,
             spatial,
             mut target_canvases,
+            scene_canvas_requirements: _,
             mut scene_projection_cache,
             mut direct_surface_pools,
             mut media_producers,
@@ -352,6 +435,10 @@ impl ZoneRuntime {
             scene_group_ids,
             direct_group_ids,
             projected_group_texture_requirements: _,
+            projected_scene_layer_capacity: _,
+            scene_width: _,
+            scene_height: _,
+            scene_backing,
             dependency_key,
         } = prepared;
         self.effect_pool.commit_reconcile(effect_pool);
@@ -361,9 +448,11 @@ impl ZoneRuntime {
                 media_producers.insert(asset_id, producer);
             }
         }
-        for (group_id, canvas) in std::mem::take(&mut self.target_canvases) {
-            if scene_group_ids.contains(&group_id) && !target_canvases.contains_key(&group_id) {
-                target_canvases.insert(group_id, canvas);
+        if matches!(scene_backing, PreparedSceneBacking::Cpu { .. }) {
+            for (group_id, canvas) in std::mem::take(&mut self.target_canvases) {
+                if scene_group_ids.contains(&group_id) && !target_canvases.contains_key(&group_id) {
+                    target_canvases.insert(group_id, canvas);
+                }
             }
         }
         for (group_id, projection) in std::mem::take(&mut self.scene_projection_cache) {
@@ -391,6 +480,32 @@ impl ZoneRuntime {
         }
         self.media_producers = media_producers;
         self.target_canvases = target_canvases;
+        match scene_backing {
+            PreparedSceneBacking::GpuOnly {
+                projected_scene_layers,
+            } => {
+                self.scene_surface_pool = None;
+                if let Some(layers) = projected_scene_layers {
+                    self.projected_scene_layers = layers;
+                    #[cfg(all(test, feature = "wgpu"))]
+                    {
+                        self.projected_scene_layer_allocation_count = self
+                            .projected_scene_layer_allocation_count
+                            .saturating_add(1);
+                    }
+                }
+                self.projected_scene_layers.clear();
+            }
+            PreparedSceneBacking::Cpu { scene_surface_pool } => {
+                if let Some(pool) = scene_surface_pool {
+                    self.scene_surface_pool = Some(pool);
+                }
+                self.projected_scene_layers.clear();
+            }
+            PreparedSceneBacking::Unresolved => {
+                unreachable!("scene backing must be resolved before reconcile commit")
+            }
+        }
         self.scene_projection_cache = scene_projection_cache;
         self.direct_surface_pools = direct_surface_pools;
         self.retained_direct_group_frames = retained_direct_group_frames;

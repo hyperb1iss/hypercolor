@@ -97,9 +97,12 @@ pub(crate) struct ZoneRuntime {
     retained_materialized_group_frames: HashMap<ZoneId, RetainedMaterializedGroupFrame>,
     effect_registry_snapshot: Option<Arc<EffectRegistry>>,
     static_layer_surface_cache: StaticLayerSurfaceCache,
-    scene_surface_pool: RenderSurfacePool,
+    scene_surface_pool: Option<RenderSurfacePool>,
     scene_surface_pool_initial_slots: usize,
     scene_surface_pool_max_slots: usize,
+    projected_scene_layers: Vec<super::sparkleflinger::CompositionLayer>,
+    #[cfg(all(test, feature = "wgpu"))]
+    projected_scene_layer_allocation_count: usize,
     reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     zone_sampling_scratch: Vec<ZoneColors>,
@@ -118,9 +121,25 @@ pub(crate) struct ZoneRuntime {
 pub(crate) struct PreparedSceneResize {
     scene_width: u32,
     scene_height: u32,
-    scene_surface_pool: RenderSurfacePool,
+    scene_surface_pool: Option<RenderSurfacePool>,
+    scene_surface_pool_initial_slots: usize,
+    scene_surface_pool_max_slots: usize,
     empty_led_layout: Arc<SpatialLayout>,
     empty_led_spatial_engine: SpatialEngine,
+}
+
+impl PreparedSceneResize {
+    pub(crate) fn prepare_cpu_backing(&mut self) -> Result<(), ZoneRuntimePreparationError> {
+        if self.scene_surface_pool.is_none() {
+            self.scene_surface_pool = Some(ZoneRuntime::prepare_scene_surface_pool(
+                self.scene_width,
+                self.scene_height,
+                self.scene_surface_pool_initial_slots,
+                self.scene_surface_pool_max_slots,
+            )?);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -171,15 +190,6 @@ impl ZoneRuntime {
         let (combined_led_layout, combined_led_spatial_engine) =
             combined_led_state(empty_group_layout(scene_width, scene_height))?;
         let empty_led_spatial_engine = combined_led_spatial_engine.clone();
-        let mut scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
-            SurfaceDescriptor::rgba8888(scene_width, scene_height),
-            initial_slots,
-            max_slots,
-        )?;
-        scene_surface_pool
-            .try_dequeue()?
-            .expect("new scene surface pool must expose an initial slot")
-            .release();
         Ok(Self {
             asset_library: None,
             effect_pool: EffectPool::new(),
@@ -196,9 +206,12 @@ impl ZoneRuntime {
             // display-output dispatch + one pin per display worker mid-
             // encode). The higher cap lets preview/display bursts settle
             // into a larger working set instead of reallocating per frame.
-            scene_surface_pool,
+            scene_surface_pool: None,
             scene_surface_pool_initial_slots: initial_slots,
             scene_surface_pool_max_slots: max_slots,
+            projected_scene_layers: Vec::new(),
+            #[cfg(all(test, feature = "wgpu"))]
+            projected_scene_layer_allocation_count: 0,
             reconciled_dependency_key: None,
             retained_frame: None,
             zone_sampling_scratch: Vec::new(),
@@ -220,9 +233,10 @@ impl ZoneRuntime {
         scene_width: u32,
         scene_height: u32,
     ) -> Result<(), ZoneRuntimePreparationError> {
-        let Some(prepared) = self.prepare_scene_resize(scene_width, scene_height)? else {
+        let Some(mut prepared) = self.prepare_scene_resize(scene_width, scene_height)? else {
             return Ok(());
         };
+        prepared.prepare_cpu_backing()?;
         self.commit_scene_resize(prepared);
         Ok(())
     }
@@ -237,20 +251,12 @@ impl ZoneRuntime {
         }
         let (empty_led_layout, empty_led_spatial_engine) =
             combined_led_state(empty_group_layout(scene_width, scene_height))?;
-        let mut scene_surface_pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
-            SurfaceDescriptor::rgba8888(scene_width, scene_height),
-            self.scene_surface_pool_initial_slots,
-            self.scene_surface_pool_max_slots,
-        )?;
-        scene_surface_pool
-            .try_dequeue()?
-            .expect("replacement scene surface pool must expose an initial slot")
-            .release();
-
         Ok(Some(PreparedSceneResize {
             scene_width,
             scene_height,
-            scene_surface_pool,
+            scene_surface_pool: None,
+            scene_surface_pool_initial_slots: self.scene_surface_pool_initial_slots,
+            scene_surface_pool_max_slots: self.scene_surface_pool_max_slots,
             empty_led_layout,
             empty_led_spatial_engine,
         }))
@@ -265,6 +271,23 @@ impl ZoneRuntime {
         self.combined_led_layout = prepared.empty_led_layout;
         self.combined_led_spatial_engine = prepared.empty_led_spatial_engine.clone();
         self.empty_led_spatial_engine = prepared.empty_led_spatial_engine;
+    }
+
+    fn prepare_scene_surface_pool(
+        scene_width: u32,
+        scene_height: u32,
+        initial_slots: usize,
+        max_slots: usize,
+    ) -> Result<RenderSurfacePool, ZoneRuntimePreparationError> {
+        let mut pool = RenderSurfacePool::try_with_lazy_slot_count_and_cap(
+            SurfaceDescriptor::rgba8888(scene_width, scene_height),
+            initial_slots,
+            max_slots,
+        )?;
+        pool.try_dequeue()?
+            .expect("prepared scene surface pool must expose an initial slot")
+            .release();
+        Ok(pool)
     }
 
     #[cfg(test)]
