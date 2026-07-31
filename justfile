@@ -286,12 +286,22 @@ fix *args='':
     @echo '✅ Automatic fixes applied'
 
 # Format all code
+[unix]
 fmt:
     cargo fmt --all
 
+[windows]
+fmt:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-fmt-workspace.ps1
+
 # Check formatting without modifying
+[unix]
 fmt-check:
     cargo fmt --all -- --check
+
+[windows]
+fmt-check:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-fmt-workspace.ps1 -Check
 
 # Format all Markdown prose with Prettier
 prettier:
