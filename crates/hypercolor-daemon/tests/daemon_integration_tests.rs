@@ -216,8 +216,19 @@ async fn daemon_shutdown_publishes_events() {
 
     state.start().await.expect("start");
 
-    // Drain the DaemonStarted event
-    let started = rx.recv().await.expect("should receive startup event");
+    let started = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("should receive event");
+            if matches!(
+                event.event,
+                hypercolor_types::event::HypercolorEvent::DaemonStarted { .. }
+            ) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for DaemonStarted event");
     assert!(matches!(
         started.event,
         hypercolor_types::event::HypercolorEvent::DaemonStarted { .. }
