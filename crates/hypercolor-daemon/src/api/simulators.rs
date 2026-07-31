@@ -320,5 +320,5 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
         warn!(%error, "rejected active layout after simulator pruning");
     }
 
-    crate::api::persist_layouts(state).await;
+    crate::api::persist_layouts_best_effort(state).await;
 }

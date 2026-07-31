@@ -1082,7 +1082,7 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
     };
 
     if persisted_layout_updated {
-        crate::api::persist_layouts(state).await;
+        crate::api::persist_layouts_best_effort(state).await;
     }
 
     true

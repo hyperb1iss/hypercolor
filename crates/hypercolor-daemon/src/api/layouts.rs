@@ -4,7 +4,11 @@
 //! This module provides CRUD operations against an in-memory store
 //! of [`SpatialLayout`] objects.
 
+#[cfg(feature = "persistence-test-hooks")]
+use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "persistence-test-hooks")]
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use axum::Json;
@@ -15,6 +19,8 @@ use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "persistence-test-hooks")]
+use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
 use crate::api::AppState;
@@ -55,6 +61,106 @@ enum LayoutPersistenceStatus {
 }
 
 const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[cfg(feature = "persistence-test-hooks")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LayoutMutationTestPoint {
+    BeforeGuard,
+    AfterMemoryMutation,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LayoutMutationTestOperation {
+    Create,
+    Update,
+    Apply,
+    Delete,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[derive(Debug)]
+pub struct LayoutMutationTestBarrier {
+    entered: Notify,
+    release: Semaphore,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+impl LayoutMutationTestBarrier {
+    pub async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub fn release(&self) {
+        self.release.add_permits(1);
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[derive(Debug, Clone, Default)]
+pub struct LayoutMutationTestHooks {
+    barriers: Arc<StdMutex<HashMap<LayoutMutationTestKey, Arc<LayoutMutationTestBarrier>>>>,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LayoutMutationTestKey {
+    point: LayoutMutationTestPoint,
+    operation: LayoutMutationTestOperation,
+    reference: String,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+impl LayoutMutationTestHooks {
+    pub fn install(
+        &self,
+        point: LayoutMutationTestPoint,
+        operation: LayoutMutationTestOperation,
+        reference: impl Into<String>,
+    ) -> Arc<LayoutMutationTestBarrier> {
+        let barrier = Arc::new(LayoutMutationTestBarrier {
+            entered: Notify::new(),
+            release: Semaphore::new(0),
+        });
+        self.barriers
+            .lock()
+            .expect("layout mutation test hooks should lock")
+            .insert(
+                LayoutMutationTestKey {
+                    point,
+                    operation,
+                    reference: reference.into(),
+                },
+                Arc::clone(&barrier),
+            );
+        barrier
+    }
+
+    async fn wait(
+        &self,
+        point: LayoutMutationTestPoint,
+        operation: LayoutMutationTestOperation,
+        reference: &str,
+    ) {
+        let barrier = self
+            .barriers
+            .lock()
+            .expect("layout mutation test hooks should lock")
+            .remove(&LayoutMutationTestKey {
+                point,
+                operation,
+                reference: reference.to_owned(),
+            });
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            let _permit = barrier
+                .release
+                .acquire()
+                .await
+                .expect("layout mutation test barrier should remain open");
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateLayoutRequest {
@@ -163,10 +269,24 @@ pub async fn create_layout(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateLayoutRequest>,
 ) -> Response {
+    await_layout_mutation(tokio::spawn(create_layout_workflow(state, body))).await
+}
+
+async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest) -> Response {
     let normalized_name = match normalize_layout_name(&body.name) {
         Ok(name) => name,
         Err(error) => return ApiError::validation(error),
     };
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::BeforeGuard,
+            LayoutMutationTestOperation::Create,
+            &normalized_name,
+        )
+        .await;
+    let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let (default_canvas_width, default_canvas_height) = {
         let spatial = state.spatial_engine.read().await;
         let layout = spatial.layout();
@@ -186,6 +306,7 @@ pub async fn create_layout(
         return ApiError::conflict(format!("Layout already exists: {normalized_name}"));
     }
 
+    let mutation_reference = normalized_name.clone();
     let id = format!("layout_{}", uuid::Uuid::now_v7());
     let layout = SpatialLayout {
         id: id.clone(),
@@ -209,9 +330,27 @@ pub async fn create_layout(
         is_active: false,
     };
 
-    layouts.insert(id, layout);
+    layouts.insert(id.clone(), layout);
     drop(layouts);
-    persist_layouts(&state).await;
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::AfterMemoryMutation,
+            LayoutMutationTestOperation::Create,
+            &mutation_reference,
+        )
+        .await;
+    if let Err(error) = persist_layouts(&state).await {
+        state.layouts.write().await.remove(&id);
+        let rollback_errors = persist_layouts(&state)
+            .await
+            .err()
+            .map(|error| format!("layout store rollback failed: {error}"));
+        drop(guard);
+        return layout_store_persistence_error_response("create", error, rollback_errors);
+    }
+    drop(guard);
     ApiResponse::created(summary)
 }
 
@@ -221,6 +360,14 @@ pub async fn update_layout(
     Path(id): Path<String>,
     Json(body): Json<UpdateLayoutRequest>,
 ) -> Response {
+    await_layout_mutation(tokio::spawn(update_layout_workflow(state, id, body))).await
+}
+
+async fn update_layout_workflow(
+    state: Arc<AppState>,
+    id: String,
+    body: UpdateLayoutRequest,
+) -> Response {
     if let Some(zones) = &body.zones {
         for output in zones {
             if let Err(error) = validate_output_sampling_radii(output) {
@@ -229,6 +376,16 @@ pub async fn update_layout(
         }
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::BeforeGuard,
+            LayoutMutationTestOperation::Update,
+            &id,
+        )
+        .await;
+    let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let active_layout_id = {
         let spatial = state.spatial_engine.read().await;
         spatial.layout().id.clone()
@@ -257,6 +414,7 @@ pub async fn update_layout(
     let previous_zones = zones.as_ref().map(|_| existing.zones.clone());
     let updated_zones_for_exclusions = zones.clone();
     let layout_id = existing.id.clone();
+    let previous_layout = existing.clone();
     let mut updated = existing;
 
     if let Some(name) = name {
@@ -296,17 +454,52 @@ pub async fn update_layout(
     layouts.insert(key, updated);
 
     drop(layouts);
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::AfterMemoryMutation,
+            LayoutMutationTestOperation::Update,
+            &layout_id,
+        )
+        .await;
+    if let Err(error) = persist_layouts(&state).await {
+        state
+            .layouts
+            .write()
+            .await
+            .insert(layout_id.clone(), previous_layout);
+        let rollback_errors = persist_layouts(&state)
+            .await
+            .err()
+            .map(|error| format!("layout store rollback failed: {error}"));
+        drop(guard);
+        return layout_store_persistence_error_response("update", error, rollback_errors);
+    }
     if let (Some(previous_zones), Some(updated_zones)) =
         (previous_zones, updated_zones_for_exclusions)
     {
         update_layout_auto_exclusions(&state, &layout_id, &previous_zones, &updated_zones).await;
     }
-    persist_layouts(&state).await;
+    drop(guard);
     ApiResponse::ok(summary)
 }
 
 /// `POST /api/v1/layouts/:id/apply` — Apply a saved layout to the spatial engine.
 pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    await_layout_mutation(tokio::spawn(apply_layout_workflow(state, id))).await
+}
+
+async fn apply_layout_workflow(state: Arc<AppState>, id: String) -> Response {
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::BeforeGuard,
+            LayoutMutationTestOperation::Apply,
+            &id,
+        )
+        .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let layout = {
         let layouts = state.layouts.read().await;
@@ -371,6 +564,19 @@ pub async fn preview_layout(
 
 /// `DELETE /api/v1/layouts/:id` — Delete a layout.
 pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    await_layout_mutation(tokio::spawn(delete_layout_workflow(state, id))).await
+}
+
+async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::BeforeGuard,
+            LayoutMutationTestOperation::Delete,
+            &id,
+        )
+        .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let active_layout = {
         let spatial = state.spatial_engine.read().await;
@@ -401,6 +607,15 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
         None
     };
     drop(layouts);
+    #[cfg(feature = "persistence-test-hooks")]
+    state
+        .layout_mutation_test_hooks
+        .wait(
+            LayoutMutationTestPoint::AfterMemoryMutation,
+            LayoutMutationTestOperation::Delete,
+            &key,
+        )
+        .await;
 
     let active_layout_changed = next_active_layout.is_some();
     if let Some(layout) = next_active_layout
@@ -414,6 +629,30 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
         drop(guard);
         return layout_update_error_response(error);
     }
+    if let Err(error) = persist_layouts(&state).await {
+        state
+            .layouts
+            .write()
+            .await
+            .insert(key.clone(), removed_layout);
+        let mut rollback_errors = Vec::new();
+        if let Err(rollback_error) = persist_layouts(&state).await {
+            rollback_errors.push(format!("layout store rollback failed: {rollback_error}"));
+        }
+        if active_layout_changed
+            && let Err(rollback_error) =
+                admit_persisted_layout_update_under_guard(&state, &guard, active_layout).await
+        {
+            rollback_errors.push(format!("active layout rollback failed: {rollback_error}"));
+        }
+        drop(guard);
+        if active_layout_changed
+            && converge_persisted_layout_update(&state).await == LayoutPersistenceStatus::Pending
+        {
+            rollback_errors.push("active layout rollback persistence remains pending".to_owned());
+        }
+        return layout_store_persistence_error_response("delete", error, rollback_errors);
+    }
     let exclusions_changed = {
         let mut exclusions = state.layout_auto_exclusions.write().await;
         exclusions
@@ -423,7 +662,6 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
             .is_some()
     };
 
-    persist_layouts(&state).await;
     if exclusions_changed {
         persist_layout_auto_exclusions(&state).await;
     }
@@ -443,6 +681,28 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
         }),
         persistence,
     )
+}
+
+async fn await_layout_mutation(workflow: tokio::task::JoinHandle<Response>) -> Response {
+    match workflow.await {
+        Ok(response) => response,
+        Err(error) => layout_update_error_response(LayoutUpdateError::Coordinator(format!(
+            "layout mutation workflow failed: {error}"
+        ))),
+    }
+}
+
+fn layout_store_persistence_error_response(
+    action: &str,
+    error: anyhow::Error,
+    rollback_errors: impl IntoIterator<Item = String>,
+) -> Response {
+    let mut message = format!("failed to persist layout store during {action}: {error}");
+    for rollback_error in rollback_errors {
+        message.push_str("; ");
+        message.push_str(&rollback_error);
+    }
+    ApiError::internal(message)
 }
 
 async fn admit_persisted_layout_update_under_guard(

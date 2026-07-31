@@ -41,6 +41,8 @@ use hypercolor_core::input::{
     SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::types::event::InputButtonState;
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::api::layouts::{LayoutMutationTestOperation, LayoutMutationTestPoint};
 use hypercolor_daemon::api::{self, AppState};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::JsonLibraryStore;
@@ -93,6 +95,37 @@ use hypercolor_types::spatial::{
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
 static COVER_DATA_DIR_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
+
+#[cfg(feature = "persistence-test-hooks")]
+struct InjectedWriterCleanup {
+    writer: AtomicFileWriter,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+impl InjectedWriterCleanup {
+    fn new(writer: AtomicFileWriter) -> Self {
+        Self { writer }
+    }
+
+    fn writer(&self) -> &AtomicFileWriter {
+        &self.writer
+    }
+
+    fn reset_and_flush(&self) {
+        self.writer.set_injected_replace_failures(0);
+        self.writer
+            .flush(Duration::from_secs(5))
+            .expect("injected persistence destination should converge");
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+impl Drop for InjectedWriterCleanup {
+    fn drop(&mut self) {
+        self.writer.set_injected_replace_failures(0);
+        let _ = self.writer.flush(Duration::from_secs(5));
+    }
+}
 
 fn assert_canvas_frame_black(frame: &CanvasFrame) {
     assert_canvas_frame_color(frame, [0, 0, 0]);
@@ -982,6 +1015,70 @@ async fn run_two_layout_publications_with_gates(
     })
     .await
     .expect("layout publication worker should finish");
+}
+
+async fn run_one_layout_publication_with_gate(
+    state: Arc<AppState>,
+    publication_entered: Arc<Notify>,
+    release_publication: Arc<Semaphore>,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async move {
+        loop {
+            let mut deferred = Vec::new();
+            for transaction in state.scene_transactions.drain() {
+                match transaction {
+                    SceneTransaction::PrepareLayout(transaction) => {
+                        let entered = Arc::clone(&publication_entered);
+                        let release = Arc::clone(&release_publication);
+                        transaction
+                            .accept_and_publish_for_test(
+                                &state.spatial_engine,
+                                &state.scene_manager,
+                                move || async move {
+                                    entered.notify_one();
+                                    let _permit = release
+                                        .acquire_owned()
+                                        .await
+                                        .expect("publication gate should remain open");
+                                },
+                            )
+                            .await
+                            .expect("layout publication should succeed");
+                        return;
+                    }
+                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
+                        deferred.push(transaction);
+                    }
+                }
+            }
+            for transaction in deferred {
+                state
+                    .scene_transactions
+                    .push(transaction)
+                    .expect("test transaction queue should remain open");
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("layout publication worker should finish");
+}
+
+async fn wait_for_async_condition<F, Fut>(mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if condition().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("condition should become true");
 }
 
 async fn request_with_layout_rejection(
@@ -9106,8 +9203,9 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
         .insert(candidate.id.clone(), candidate.clone());
     let writer = AtomicFileWriter::new(&state.runtime_state_path)
         .expect("runtime state writer should initialize");
+    let cleanup = InjectedWriterCleanup::new(writer);
     let app = test_app_with_state(Arc::clone(&state));
-    let failure_writer = writer.clone();
+    let failure_writer = cleanup.writer().clone();
 
     let (response, _) = request_with_layout_ack_and_hook(
         app,
@@ -9131,8 +9229,10 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
     assert_eq!(json["data"]["applied"], true);
     assert_eq!(json["data"]["persistence_pending"], true);
     assert_eq!(state.spatial_engine.read().await.layout().id, candidate.id);
+    cleanup.reset_and_flush();
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
@@ -9172,7 +9272,12 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     });
     first_entered.notified().await;
     let delete_id = candidate.id.clone();
-    let mut delete = tokio::spawn(async move {
+    let before_delete_guard = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::BeforeGuard,
+        LayoutMutationTestOperation::Delete,
+        &delete_id,
+    );
+    let delete = tokio::spawn(async move {
         app.oneshot(
             Request::builder()
                 .method("DELETE")
@@ -9184,13 +9289,9 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
         .expect("failed to execute delete request")
     });
 
-    assert!(
-        tokio::time::timeout(Duration::from_millis(25), &mut delete)
-            .await
-            .is_err(),
-        "delete must wait for the applying layout's admission guard"
-    );
+    before_delete_guard.wait_until_entered().await;
     assert!(state.layouts.read().await.contains_key(&candidate.id));
+    before_delete_guard.release();
     release_first.add_permits(1);
     assert_eq!(
         apply.await.expect("apply task should not panic").status(),
@@ -9288,6 +9389,7 @@ async fn layout_delete_active_falls_back_to_default_layout() {
     assert_eq!(runtime_json["active_layout_id"], "default");
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
@@ -9328,7 +9430,12 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
     });
     first_entered.notified().await;
     let fallback_id = fallback.id.clone();
-    let mut fallback_delete = tokio::spawn(async move {
+    let before_fallback_guard = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::BeforeGuard,
+        LayoutMutationTestOperation::Delete,
+        &fallback_id,
+    );
+    let fallback_delete = tokio::spawn(async move {
         app.oneshot(
             Request::builder()
                 .method("DELETE")
@@ -9340,13 +9447,9 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
         .expect("failed to execute fallback delete request")
     });
 
-    assert!(
-        tokio::time::timeout(Duration::from_millis(25), &mut fallback_delete)
-            .await
-            .is_err(),
-        "fallback delete must wait for active-delete admission"
-    );
+    before_fallback_guard.wait_until_entered().await;
     assert!(state.layouts.read().await.contains_key(&fallback.id));
+    before_fallback_guard.release();
     release_first.add_permits(1);
     assert_eq!(
         first_delete
@@ -9405,6 +9508,435 @@ async fn layout_preview_never_persists_runtime_state() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(state.spatial_engine.read().await.layout().id, preview.id);
     assert!(!state.runtime_state_path.exists());
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_store_write_failure_rolls_back_create() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Rejected Create"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(state.layouts.read().await.is_empty());
+    assert!(
+        hypercolor_daemon::layout_store::load(&state.layouts_path)
+            .expect("layout store should load")
+            .is_empty()
+    );
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_store_write_failure_rolls_back_update() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let stored = SpatialLayout {
+        id: "failed-update".to_owned(),
+        name: "Before Update".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(stored.id.clone(), stored.clone());
+    persist_current_layouts_for_test(&state).await;
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/layouts/{}", stored.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Rejected Update"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(state.layouts.read().await[&stored.id].name, stored.name);
+    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
+        .expect("layout store should load");
+    assert_eq!(persisted[&stored.id].name, stored.name);
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_store_write_failure_rolls_back_inactive_delete() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let stored = SpatialLayout {
+        id: "failed-inactive-delete".to_owned(),
+        name: "Failed Inactive Delete".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(stored.id.clone(), stored.clone());
+    persist_current_layouts_for_test(&state).await;
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{}", stored.id))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(state.layouts.read().await.get(&stored.id), Some(&stored));
+    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
+        .expect("layout store should load");
+    assert_eq!(persisted.get(&stored.id), Some(&stored));
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_store_write_failure_rolls_back_active_delete() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let fallback = SpatialLayout {
+        id: "failed-active-delete-fallback".to_owned(),
+        name: "Failed Active Delete Fallback".to_owned(),
+        ..active.clone()
+    };
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(active.id.clone(), active.clone());
+        layouts.insert(fallback.id.clone(), fallback);
+    }
+    persist_current_layouts_for_test(&state).await;
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let (response, applied) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/layouts/{}", active.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(applied.len(), 2);
+    assert_eq!(state.spatial_engine.read().await.layout().id, active.id);
+    assert_eq!(state.layouts.read().await.get(&active.id), Some(&active));
+    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
+        .expect("layout store should load");
+    assert_eq!(persisted.get(&active.id), Some(&active));
+    let runtime = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime state should load")
+        .expect("runtime state should exist");
+    assert_eq!(
+        runtime.active_layout_id.as_deref(),
+        Some(active.id.as_str())
+    );
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_mutation_cancellation_finishes_create() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let barrier = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterMemoryMutation,
+        LayoutMutationTestOperation::Create,
+        "Cancellation Create",
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+    let request = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Cancellation Create"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request")
+    });
+    barrier.wait_until_entered().await;
+    let created_id = state
+        .layouts
+        .read()
+        .await
+        .values()
+        .find(|layout| layout.name == "Cancellation Create")
+        .expect("create workflow should mutate memory before the barrier")
+        .id
+        .clone();
+
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("request task should be cancelled")
+            .is_cancelled()
+    );
+    barrier.release();
+    let layouts_path = state.layouts_path.clone();
+    let durable_id = created_id.clone();
+    wait_for_async_condition(move || {
+        let layouts_path = layouts_path.clone();
+        let durable_id = durable_id.clone();
+        async move {
+            hypercolor_daemon::layout_store::load(&layouts_path)
+                .is_ok_and(|layouts| layouts.contains_key(&durable_id))
+        }
+    })
+    .await;
+
+    assert!(state.layouts.read().await.contains_key(&created_id));
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_mutation_cancellation_finishes_update() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let stored = SpatialLayout {
+        id: "cancellation-update".to_owned(),
+        name: "Before Cancellation Update".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(stored.id.clone(), stored.clone());
+    persist_current_layouts_for_test(&state).await;
+    let barrier = state.layout_mutation_test_hooks.install(
+        LayoutMutationTestPoint::AfterMemoryMutation,
+        LayoutMutationTestOperation::Update,
+        &stored.id,
+    );
+    let app = test_app_with_state(Arc::clone(&state));
+    let update_id = stored.id.clone();
+    let request = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/layouts/{update_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"After Cancellation Update"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request")
+    });
+    barrier.wait_until_entered().await;
+
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("request task should be cancelled")
+            .is_cancelled()
+    );
+    barrier.release();
+    let layouts_path = state.layouts_path.clone();
+    let durable_id = stored.id.clone();
+    wait_for_async_condition(move || {
+        let layouts_path = layouts_path.clone();
+        let durable_id = durable_id.clone();
+        async move {
+            hypercolor_daemon::layout_store::load(&layouts_path).is_ok_and(|layouts| {
+                layouts
+                    .get(&durable_id)
+                    .is_some_and(|layout| layout.name == "After Cancellation Update")
+            })
+        }
+    })
+    .await;
+
+    assert_eq!(
+        state.layouts.read().await[&stored.id].name,
+        "After Cancellation Update"
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_mutation_cancellation_finishes_apply_convergence() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let candidate = SpatialLayout {
+        id: "cancellation-apply".to_owned(),
+        name: "Cancellation Apply".to_owned(),
+        ..state.spatial_engine.read().await.layout().as_ref().clone()
+    };
+    state
+        .layouts
+        .write()
+        .await
+        .insert(candidate.id.clone(), candidate.clone());
+    let app = test_app_with_state(Arc::clone(&state));
+    let publication_entered = Arc::new(Notify::new());
+    let release_publication = Arc::new(Semaphore::new(0));
+    let renderer = tokio::spawn(run_one_layout_publication_with_gate(
+        Arc::clone(&state),
+        Arc::clone(&publication_entered),
+        Arc::clone(&release_publication),
+    ));
+    let apply_id = candidate.id.clone();
+    let request = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/layouts/{apply_id}/apply"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request")
+    });
+    publication_entered.notified().await;
+
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("request task should be cancelled")
+            .is_cancelled()
+    );
+    release_publication.add_permits(1);
+    renderer
+        .await
+        .expect("layout publication worker should not panic");
+    let durable_state = Arc::clone(&state);
+    let durable_id = candidate.id.clone();
+    wait_for_async_condition(move || {
+        let state = Arc::clone(&durable_state);
+        let durable_id = durable_id.clone();
+        async move {
+            if state.spatial_engine.read().await.layout().id != durable_id {
+                return false;
+            }
+            runtime_state::load(&state.runtime_state_path)
+                .ok()
+                .flatten()
+                .and_then(|snapshot| snapshot.active_layout_id)
+                .as_deref()
+                == Some(durable_id.as_str())
+        }
+    })
+    .await;
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_mutation_cancellation_finishes_delete() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let fallback = SpatialLayout {
+        id: "cancellation-delete-fallback".to_owned(),
+        name: "Cancellation Delete Fallback".to_owned(),
+        ..active.clone()
+    };
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(active.id.clone(), active.clone());
+        layouts.insert(fallback.id.clone(), fallback.clone());
+    }
+    persist_current_layouts_for_test(&state).await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let publication_entered = Arc::new(Notify::new());
+    let release_publication = Arc::new(Semaphore::new(0));
+    let renderer = tokio::spawn(run_one_layout_publication_with_gate(
+        Arc::clone(&state),
+        Arc::clone(&publication_entered),
+        Arc::clone(&release_publication),
+    ));
+    let active_id = active.id.clone();
+    let request = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{active_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request")
+    });
+    publication_entered.notified().await;
+
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("request task should be cancelled")
+            .is_cancelled()
+    );
+    release_publication.add_permits(1);
+    renderer
+        .await
+        .expect("layout publication worker should not panic");
+    let durable_state = Arc::clone(&state);
+    let removed_id = active.id.clone();
+    let durable_id = fallback.id.clone();
+    wait_for_async_condition(move || {
+        let state = Arc::clone(&durable_state);
+        let removed_id = removed_id.clone();
+        let durable_id = durable_id.clone();
+        async move {
+            if state.layouts.read().await.contains_key(&removed_id)
+                || state.spatial_engine.read().await.layout().id != durable_id
+            {
+                return false;
+            }
+            let layouts_are_durable = hypercolor_daemon::layout_store::load(&state.layouts_path)
+                .is_ok_and(|layouts| {
+                    !layouts.contains_key(&removed_id) && layouts.contains_key(&durable_id)
+                });
+            let runtime_is_durable = runtime_state::load(&state.runtime_state_path)
+                .ok()
+                .flatten()
+                .and_then(|snapshot| snapshot.active_layout_id)
+                .as_deref()
+                == Some(durable_id.as_str());
+            layouts_are_durable && runtime_is_durable
+        }
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -9702,6 +10234,12 @@ fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::
     state.layouts_path = dir.path().join("layouts.json");
     state.runtime_state_path = dir.path().join("runtime-state.json");
     (Arc::new(state), dir)
+}
+
+async fn persist_current_layouts_for_test(state: &Arc<AppState>) {
+    let layouts = state.layouts.read().await;
+    hypercolor_daemon::layout_store::save(&state.layouts_path, &layouts)
+        .expect("test layout store should persist");
 }
 
 fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {

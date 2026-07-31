@@ -236,6 +236,10 @@ pub struct AppState {
     /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
 
+    #[cfg(feature = "persistence-test-hooks")]
+    #[doc(hidden)]
+    pub layout_mutation_test_hooks: layouts::LayoutMutationTestHooks,
+
     /// Persistent path for spatial layouts.
     pub layouts_path: PathBuf,
 
@@ -581,6 +585,8 @@ impl AppState {
             driver_host,
             driver_registry,
             layouts,
+            #[cfg(feature = "persistence-test-hooks")]
+            layout_mutation_test_hooks: layouts::LayoutMutationTestHooks::default(),
             layouts_path,
             layout_auto_exclusions,
             layout_auto_exclusions_path,
@@ -680,6 +686,8 @@ impl AppState {
             driver_host,
             driver_registry,
             layouts: Arc::clone(&daemon.layouts),
+            #[cfg(feature = "persistence-test-hooks")]
+            layout_mutation_test_hooks: layouts::LayoutMutationTestHooks::default(),
             layouts_path: daemon.layouts_path.clone(),
             layout_auto_exclusions: Arc::clone(&daemon.layout_auto_exclusions),
             layout_auto_exclusions_path: daemon.layout_auto_exclusions_path.clone(),
@@ -706,9 +714,13 @@ impl Default for AppState {
 }
 
 /// Persist the spatial layout store to disk.
-pub(crate) async fn persist_layouts(state: &Arc<AppState>) {
+pub(crate) async fn persist_layouts(state: &Arc<AppState>) -> anyhow::Result<()> {
     let layouts = state.layouts.read().await;
-    if let Err(error) = crate::layout_store::save(&state.layouts_path, &layouts) {
+    crate::layout_store::save(&state.layouts_path, &layouts)
+}
+
+pub(crate) async fn persist_layouts_best_effort(state: &Arc<AppState>) {
+    if let Err(error) = persist_layouts(state).await {
         warn!(
             path = %state.layouts_path.display(),
             %error,
