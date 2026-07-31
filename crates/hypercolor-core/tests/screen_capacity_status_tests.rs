@@ -1,8 +1,10 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, mpsc};
+use std::time::Duration;
 
 use hypercolor_core::input::screen::{
-    PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan, ScreenCaptureDemand,
+    PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan, ScreenByteAdmissionError,
+    ScreenCaptureDemand,
 };
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenReconfigurationConflict};
 
@@ -166,6 +168,92 @@ fn concurrent_status_readers_observe_complete_physical_snapshots() {
     running.store(false, Ordering::Release);
     reader.join().expect("status reader should not panic");
     assert!(reads.load(Ordering::Acquire) > 0);
+}
+
+#[test]
+fn concurrent_status_readers_never_observe_torn_capacity_transitions() {
+    let mut manager = InputManager::new();
+    let steps = Arc::new([
+        (
+            ScreenAdmissionCapacity::new(10_000, 8_000),
+            ScreenAdmissionCapacity::new(9_000, 7_000),
+            ScreenAdmissionCapacity::new(6_000, 5_000),
+        ),
+        (
+            ScreenAdmissionCapacity::new(20_000, 16_000),
+            ScreenAdmissionCapacity::new(18_000, 14_000),
+            ScreenAdmissionCapacity::new(12_000, 10_000),
+        ),
+        (
+            ScreenAdmissionCapacity::new(30_000, 24_000),
+            ScreenAdmissionCapacity::new(27_000, 21_000),
+            ScreenAdmissionCapacity::new(18_000, 15_000),
+        ),
+    ]);
+    let (initial_resource, initial_total, initial_publication) = steps[0];
+    manager
+        .set_screen_capacity_plan(initial_resource, initial_total, initial_publication)
+        .expect("empty manager should accept initial capacity");
+    let coordinator = manager.screen_admission_coordinator();
+    let _lease = coordinator
+        .try_acquire(1_000)
+        .expect("test reservation should fit every installed capacity")
+        .freeze();
+    let status = manager.screen_capacity_status_handle();
+    let running = Arc::new(AtomicBool::new(true));
+    let start = Arc::new(Barrier::new(2));
+    let reader_running = Arc::clone(&running);
+    let reader_start = Arc::clone(&start);
+    let reader_steps = Arc::clone(&steps);
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        reader_start.wait();
+        let mut reads = 0;
+        loop {
+            let snapshot = status.snapshot();
+            let observed = (
+                snapshot.physical().capacity(),
+                snapshot.policy().total_capacity(),
+                snapshot.policy().publication_capacity(),
+            );
+            assert!(
+                reader_steps.contains(&observed),
+                "status exposed a torn capacity transition: {observed:?}"
+            );
+            reads += 1;
+            if !reader_running.load(Ordering::Acquire) {
+                break;
+            }
+        }
+        finished_tx
+            .send(reads)
+            .expect("status reader completion should be observed");
+    });
+
+    start.wait();
+    for iteration in 0..1_000 {
+        let (resource, total, publication) = steps[iteration % steps.len()];
+        manager
+            .set_screen_capacity_plan(resource, total, publication)
+            .expect("installed capacity should retain the live reservation");
+        assert!(matches!(
+            manager.set_screen_capacity_plan(
+                ScreenAdmissionCapacity::new(999, 999),
+                ScreenAdmissionCapacity::new(777, 777),
+                ScreenAdmissionCapacity::new(555, 555),
+            ),
+            Err(ScreenByteAdmissionError::CapacityShrinkRejected { .. })
+        ));
+        if iteration % 32 == 0 {
+            std::thread::yield_now();
+        }
+    }
+    running.store(false, Ordering::Release);
+    let reads = finished_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("status reader should finish after capacity transitions stop");
+    reader.join().expect("status reader should not panic");
+    assert!(reads > 0);
 }
 
 #[test]
