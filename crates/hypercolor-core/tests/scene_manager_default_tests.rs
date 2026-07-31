@@ -806,5 +806,8 @@ fn primary_layout_candidate_does_not_mutate_live_scene() {
     assert_eq!(candidate_revision, live_revision + 1);
     assert_eq!(candidate_groups[0].layout, next_layout);
     assert_eq!(manager.active_render_groups_revision(), live_revision);
-    assert_eq!(manager.active_render_groups()[0].layout.id, "layout-current");
+    assert_eq!(
+        manager.active_render_groups()[0].layout.id,
+        "layout-current"
+    );
 }
