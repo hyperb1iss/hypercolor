@@ -657,8 +657,8 @@ async fn apply_capture_config_transaction(
     #[cfg(target_os = "windows")]
     let (plan, capacity_plan, capacity_preparation, admission_coordinator) = {
         let input_manager = state.input_manager.lock().await;
-        let installed_capacity = input_manager.screen_resource_capacity();
         let plan = input_manager.plan_screen_runtime_config(capture.enabled);
+        let installed_capacity = input_manager.screen_resource_capacity();
         let capacity_plan = crate::startup::services::screen_capacity_plan_for_backend(
             &capture,
             installed_capacity.backend_capacity(),
@@ -678,12 +678,12 @@ async fn apply_capture_config_transaction(
                     hypercolor_core::input::screen::ScreenAnalysisResourcePlan::peak_bytes,
                 ),
             )
-            .map_err(|error| CaptureConfigTransactionError::Prepare(anyhow::anyhow!(error)))?
-            .ok_or_else(|| {
-                CaptureConfigTransactionError::Prepare(anyhow::anyhow!(
-                    "screen capacity admission is not installed"
-                ))
-            })?;
+            .map_err(|error| CaptureConfigTransactionError::Prepare(anyhow::anyhow!(error)))?;
+        if plan.enabled() && capacity_preparation.is_none() {
+            return Err(CaptureConfigTransactionError::Prepare(anyhow::anyhow!(
+                "screen capacity admission is not installed"
+            )));
+        }
         (
             plan,
             capacity_plan,
@@ -759,7 +759,9 @@ async fn apply_capture_config_transaction(
         return Err(CaptureConfigTransactionError::Commit(error));
     }
     #[cfg(target_os = "windows")]
-    if let Err(error) = input_manager.validate_screen_capacity(&capacity_preparation) {
+    if let Some(capacity_preparation) = &capacity_preparation
+        && let Err(error) = input_manager.validate_screen_capacity(capacity_preparation)
+    {
         if let Some(persistence) = &persistence {
             persistence.revoke();
         }
@@ -802,9 +804,11 @@ async fn apply_capture_config_transaction(
     }
 
     #[cfg(target_os = "windows")]
-    input_manager
-        .commit_screen_capacity(capacity_preparation)
-        .expect("screen capacity was validated under the same input-manager lock");
+    if let Some(capacity_preparation) = capacity_preparation {
+        input_manager
+            .commit_screen_capacity(capacity_preparation)
+            .expect("screen capacity was validated under the same input-manager lock");
+    }
     let retirement = input_manager
         .commit_screen_runtime_config(&plan, &mut replacement)
         .expect("screen runtime plan was validated under the same input-manager lock");
@@ -1635,7 +1639,16 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("config response body should be readable");
+        assert_eq!(
+            status,
+            axum::http::StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
         assert!(!state.input_manager.lock().await.has_screen_source());
         assert!(stopped.load(Ordering::Acquire));
     }
@@ -1677,7 +1690,16 @@ mod tests {
         drop(input_manager);
 
         let response = request.await.expect("unchanged request should complete");
-        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("config response body should be readable");
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CONFLICT,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
         assert_eq!(manager.get().capture, competing_capture);
         assert!(manager.capture_runtime_matches(&competing_capture));
     }

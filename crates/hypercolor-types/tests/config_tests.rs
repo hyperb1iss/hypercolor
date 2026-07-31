@@ -436,6 +436,18 @@ fn full_config_toml_roundtrip() {
     assert!(!restored.features.wasm_plugins);
 }
 
+#[test]
+fn default_config_json_roundtrip() {
+    let original = HypercolorConfig::default();
+    let json = serde_json::to_value(&original).expect("serialize default HypercolorConfig");
+    let restored: HypercolorConfig =
+        serde_json::from_value(json).expect("deserialize default HypercolorConfig");
+
+    assert_eq!(restored.capture, original.capture);
+    assert_eq!(restored.daemon.canvas_width, original.daemon.canvas_width);
+    assert_eq!(restored.daemon.canvas_height, original.daemon.canvas_height);
+}
+
 // ─── Partial Deserialization (forward compatibility) ─────────────────────────
 
 #[test]
