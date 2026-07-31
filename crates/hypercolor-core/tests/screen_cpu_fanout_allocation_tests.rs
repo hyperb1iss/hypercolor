@@ -1,7 +1,7 @@
 use std::alloc::System;
 use std::hint::black_box;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
@@ -22,7 +22,23 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
-static ALLOCATION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn enter_isolated_allocation_probe(test_name: &str, child_env: &str) -> bool {
+    if std::env::var_os(child_env).is_some() {
+        return true;
+    }
+
+    let status = std::process::Command::new(std::env::current_exe().expect("test path exists"))
+        .args(["--exact", test_name, "--nocapture"])
+        .env(child_env, "1")
+        .status()
+        .expect("allocation probe child starts");
+    assert!(
+        status.success(),
+        "{test_name} allocation probe child failed"
+    );
+    false
+}
 
 fn non_zero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("test value is non-zero")
@@ -107,9 +123,12 @@ fn frame_at(
 
 #[test]
 fn authority_binding_performs_no_heap_allocation() {
-    let _guard = ALLOCATION_TEST_LOCK
-        .lock()
-        .expect("allocation test lock is healthy");
+    if !enter_isolated_allocation_probe(
+        "authority_binding_performs_no_heap_allocation",
+        "HYPERCOLOR_SCREEN_AUTHORITY_ALLOCATION_CHILD",
+    ) {
+        return;
+    }
     let executor = CpuReductionExecutor::new(
         NonZeroUsize::new(2).expect("test worker count is non-zero"),
         non_zero(3),
@@ -286,9 +305,12 @@ fn authority_binding_performs_no_heap_allocation() {
 
 #[test]
 fn warmed_mixed_materialized_fanout_performs_no_heap_allocation() {
-    let _guard = ALLOCATION_TEST_LOCK
-        .lock()
-        .expect("allocation test lock is healthy");
+    if !enter_isolated_allocation_probe(
+        "warmed_mixed_materialized_fanout_performs_no_heap_allocation",
+        "HYPERCOLOR_SCREEN_FANOUT_ALLOCATION_CHILD",
+    ) {
+        return;
+    }
     let executor = CpuReductionExecutor::new(
         NonZeroUsize::new(4).expect("test worker count is non-zero"),
         non_zero(3),
