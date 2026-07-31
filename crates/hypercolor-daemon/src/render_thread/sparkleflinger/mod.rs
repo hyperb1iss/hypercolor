@@ -1215,6 +1215,24 @@ impl SparkleFlinger {
     }
 
     #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn projected_snapshot_retained_bytes_for_test(&self) -> Option<u64> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.projected_snapshot_retained_bytes()),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn compositor_surface_cache_entry_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.compositor_surface_cache_entry_count())
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn screen_layer_host_allocation_count_for_test(&self) -> Option<usize> {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => None,

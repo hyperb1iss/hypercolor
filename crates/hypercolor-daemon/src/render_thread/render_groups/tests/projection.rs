@@ -1269,6 +1269,146 @@ fn projected_bind_groups_retire_by_exact_source_lease_and_surface_generation() {
 
 #[cfg(feature = "wgpu")]
 #[test]
+fn disabled_gpu_projection_releases_active_and_retired_resources() {
+    assert_non_admitted_projection_releases_resources(false);
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn gpu_projection_resource_fallback_releases_active_and_retired_resources() {
+    assert_non_admitted_projection_releases_resources(true);
+}
+
+#[cfg(feature = "wgpu")]
+fn assert_non_admitted_projection_releases_resources(inject_failure: bool) {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let registry = EffectRegistry::default();
+    let mut groups = gpu_projection_group_set(3);
+    groups[0].layout.canvas_width = 2;
+    groups[0].layout.canvas_height = 2;
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let first_dependency = SceneDependencyKey::new(1, registry.generation());
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            first_dependency,
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("mixed-extent projected scene should admit");
+
+    let mut first_layers = render_projected_layers_for_test(
+        &mut runtime,
+        &groups,
+        first_dependency,
+        &registry,
+        0,
+        &mut sparkleflinger,
+    );
+    let stale_layer = first_layers
+        .pop()
+        .expect("projected scene should publish a stale-source candidate");
+    drop(first_layers);
+    assert_eq!(stale_layer.gpu_frame_lease_count_for_test(), Some(2));
+
+    groups.pop();
+    let second_dependency = SceneDependencyKey::new(2, registry.generation());
+    runtime
+        .admit_reconcile(
+            &groups,
+            Some(SceneId::DEFAULT),
+            second_dependency,
+            &registry,
+            &HashMap::new(),
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("source removal should retire its leased bindings");
+    assert_eq!(
+        sparkleflinger.projected_bind_group_entry_count_for_test(),
+        Some(groups.len() * 2)
+    );
+    assert_eq!(
+        sparkleflinger.retired_projected_bind_group_entry_count_for_test(),
+        Some(2)
+    );
+    assert_eq!(stale_layer.gpu_frame_lease_count_for_test(), Some(1));
+
+    let mut current_layers = render_projected_layers_for_test(
+        &mut runtime,
+        &groups,
+        second_dependency,
+        &registry,
+        16,
+        &mut sparkleflinger,
+    );
+    let current_layer = current_layers
+        .pop()
+        .expect("current projected source should remain externally leaseable");
+    drop(current_layers);
+    assert_eq!(current_layer.gpu_frame_lease_count_for_test(), Some(2));
+    assert!(
+        sparkleflinger
+            .projected_snapshot_retained_bytes_for_test()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert!(
+        sparkleflinger
+            .compositor_surface_cache_entry_count_for_test()
+            .is_some_and(|entries| entries > 0)
+    );
+
+    let requirements = projected_group_requirements(&groups);
+    if inject_failure {
+        sparkleflinger.fail_next_projected_scene_preparation_for_test();
+    }
+    let preparation =
+        sparkleflinger.prepare_projected_scene_resources(&requirements, inject_failure, 4, 4, None);
+    sparkleflinger.apply_projected_scene_resources(preparation);
+
+    assert_eq!(
+        sparkleflinger.projected_bind_group_entry_count_for_test(),
+        Some(0)
+    );
+    assert_eq!(
+        sparkleflinger.retired_projected_bind_group_entry_count_for_test(),
+        Some(0)
+    );
+    assert_eq!(
+        sparkleflinger.projected_snapshot_retained_bytes_for_test(),
+        Some(0)
+    );
+    assert_eq!(
+        sparkleflinger.compositor_surface_cache_entry_count_for_test(),
+        Some(0)
+    );
+    assert_eq!(stale_layer.gpu_frame_lease_count_for_test(), Some(1));
+    assert_eq!(current_layer.gpu_frame_lease_count_for_test(), Some(1));
+
+    drop((stale_layer, current_layer));
+    let disabled = sparkleflinger.prepare_projected_scene_resources(&[], false, 4, 4, None);
+    sparkleflinger.apply_projected_scene_resources(disabled);
+    assert_eq!(
+        sparkleflinger.projected_bind_group_entry_count_for_test(),
+        Some(0)
+    );
+    assert_eq!(
+        sparkleflinger.retired_projected_bind_group_entry_count_for_test(),
+        Some(0)
+    );
+    assert_eq!(
+        sparkleflinger.projected_snapshot_retained_bytes_for_test(),
+        Some(0)
+    );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
 fn mixed_screen_and_projected_sources_reuse_upload_scratch_and_preserve_pixels() {
     let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
         return;

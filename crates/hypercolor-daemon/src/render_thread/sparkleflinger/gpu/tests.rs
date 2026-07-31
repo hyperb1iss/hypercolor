@@ -43,7 +43,7 @@ use super::{
     screen_storage_requires_cache_turnover, validate_windows_plan_generation,
 };
 use crate::performance::CompositorBackendKind;
-use crate::render_thread::producer_queue::{GpuTextureFrameOrigin, ProducerFrame};
+use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
 use crate::render_thread::sparkleflinger::{
     CompositionLayer, CompositionPlan, CompositionTransform, DisplayFinalizeCacheKey,
@@ -1754,6 +1754,139 @@ fn gpu_compositor_rejects_stale_mutable_output_handles() {
         .compose(&stale_plan, false, None)
         .expect_err("stale mutable output must not be sampled");
     assert!(error.to_string().contains("aliases compositor storage"));
+}
+
+#[test]
+fn gpu_compositor_rejects_every_cached_surface_texture_before_reactivation() {
+    let mut compositor = match GpuSparkleFlinger::new() {
+        Ok(compositor) => compositor,
+        Err(_) => return,
+    };
+    let preparation = compositor.prepare_canvas_resize(4, 4);
+    assert!(preparation.is_admitted());
+    compositor.apply_canvas_resize(preparation);
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(29))),
+            ),
+            false,
+            None,
+        )
+        .expect("initial 4x4 output should compose");
+
+    let content_generation = compositor.output_generation;
+    let alias_frames = {
+        let surfaces = compositor
+            .surfaces
+            .as_ref()
+            .expect("4x4 surfaces should be active");
+        let make_frame = |texture: &super::GpuCompositorTexture, origin: GpuTextureFrameOrigin| {
+            GpuTextureFrame {
+                width: 4,
+                height: 4,
+                storage_id: texture.storage_id,
+                content_generation,
+                origin,
+                texture: texture.texture.clone(),
+                view: texture.view.clone(),
+                immutable_lease: None,
+                #[cfg(target_os = "windows")]
+                windows_screen_lease: None,
+            }
+        };
+        [
+            (
+                "front",
+                make_frame(&surfaces.front, GpuTextureFrameOrigin::CompositorOutput),
+            ),
+            (
+                "back",
+                make_frame(&surfaces.back, GpuTextureFrameOrigin::CompositorOutput),
+            ),
+            (
+                "source",
+                make_frame(&surfaces.source, GpuTextureFrameOrigin::ProducerTexture),
+            ),
+        ]
+    };
+    assert_ne!(alias_frames[0].1.storage_id, alias_frames[1].1.storage_id);
+    assert_ne!(alias_frames[0].1.storage_id, alias_frames[2].1.storage_id);
+    assert_ne!(alias_frames[1].1.storage_id, alias_frames[2].1.storage_id);
+
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                8,
+                8,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas_with_size(
+                    8, 8, 31,
+                ))),
+            ),
+            false,
+            None,
+        )
+        .expect("8x8 output should cache the 4x4 surfaces");
+
+    for cycle in 0..3 {
+        assert!(
+            compositor
+                .compositor_surface_cache
+                .get(&(4, 4))
+                .is_some_and(Option::is_some),
+            "cycle {cycle} should retain the 4x4 surface set in the cache"
+        );
+        for (name, frame) in &alias_frames {
+            let plan = CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::GpuTexture(frame.clone())),
+            );
+            assert!(
+                !compositor.supports_plan(&plan),
+                "cached {name} storage must fail GPU admission"
+            );
+            let error = compositor
+                .compose(&plan, false, None)
+                .expect_err("cached compositor storage must be rejected before reactivation");
+            assert!(error.to_string().contains("aliases compositor storage"));
+            assert!(
+                compositor
+                    .surfaces
+                    .as_ref()
+                    .is_some_and(|surfaces| { (surfaces.width, surfaces.height) == (8, 8) })
+            );
+        }
+
+        compositor
+            .compose(
+                &CompositionPlan::single(
+                    4,
+                    4,
+                    CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(37 + cycle))),
+                ),
+                false,
+                None,
+            )
+            .expect("valid 4x4 source should reactivate its cached surfaces");
+        compositor
+            .compose(
+                &CompositionPlan::single(
+                    8,
+                    8,
+                    CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas_with_size(
+                        8,
+                        8,
+                        43 + cycle,
+                    ))),
+                ),
+                false,
+                None,
+            )
+            .expect("valid 8x8 source should cache the 4x4 surfaces again");
+    }
 }
 
 #[test]

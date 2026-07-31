@@ -1450,6 +1450,16 @@ pub(crate) struct PreparedProjectedComposeBindGroups {
     retired_entries: HashMap<ComposeSourceBindGroupKey, CachedComposeSourceBindGroup>,
 }
 
+impl PreparedProjectedComposeBindGroups {
+    pub(super) fn empty(target_generation: u64) -> Self {
+        Self {
+            target_generation,
+            entries: HashMap::new(),
+            retired_entries: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Default)]
 #[allow(
     clippy::struct_field_names,
@@ -1579,6 +1589,11 @@ impl ComposeSourceBindGroupCache {
         );
         self.projected_entries = prepared.entries;
         self.retired_projected_entries = prepared.retired_entries;
+    }
+
+    pub(super) fn clear_projected(&mut self) {
+        self.projected_entries.clear();
+        self.retired_projected_entries.clear();
     }
 
     fn get_projected(
