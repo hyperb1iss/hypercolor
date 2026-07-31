@@ -5,8 +5,8 @@ use anyhow::Result;
 use anyhow::bail;
 
 #[cfg(feature = "wgpu")]
-use crate::render_thread::gpu_device::GpuRenderDevice;
-use hypercolor_types::config::RenderAccelerationMode;
+use crate::render_thread::gpu_device::{GpuBackendPreference, GpuRenderDevice};
+use hypercolor_types::config::{RenderAccelerationMode, ServoGpuImportMode};
 
 const GPU_COMPOSITOR_UNAVAILABLE_REASON: &str = "gpu compositor acceleration is unavailable";
 #[cfg(feature = "wgpu")]
@@ -69,6 +69,7 @@ pub(crate) const fn cpu_compositor_acceleration_resolution() -> CompositorAccele
 
 pub(crate) fn resolve_compositor_acceleration_mode(
     requested_mode: RenderAccelerationMode,
+    servo_gpu_import_mode: ServoGpuImportMode,
 ) -> Result<CompositorAccelerationResolution> {
     match requested_mode {
         RenderAccelerationMode::Cpu => Ok(CompositorAccelerationResolution {
@@ -79,9 +80,22 @@ pub(crate) fn resolve_compositor_acceleration_mode(
             #[cfg(feature = "wgpu")]
             gpu_render_device: None,
         }),
-        RenderAccelerationMode::Auto => resolve_auto_mode(requested_mode),
-        RenderAccelerationMode::Gpu => resolve_explicit_gpu_mode(requested_mode),
+        RenderAccelerationMode::Auto => resolve_auto_mode(requested_mode, servo_gpu_import_mode),
+        RenderAccelerationMode::Gpu => {
+            resolve_explicit_gpu_mode(requested_mode, servo_gpu_import_mode)
+        }
     }
+}
+
+#[cfg(feature = "wgpu")]
+const fn gpu_backend_preference(servo_gpu_import_mode: ServoGpuImportMode) -> GpuBackendPreference {
+    #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+    if matches!(servo_gpu_import_mode, ServoGpuImportMode::On) {
+        return GpuBackendPreference::VulkanRequiredForServoImport;
+    }
+
+    let _ = servo_gpu_import_mode;
+    GpuBackendPreference::Default
 }
 
 #[cfg(feature = "wgpu")]
@@ -91,10 +105,11 @@ pub(crate) fn resolve_compositor_acceleration_mode(
 )]
 fn resolve_auto_mode(
     requested_mode: RenderAccelerationMode,
+    servo_gpu_import_mode: ServoGpuImportMode,
 ) -> Result<CompositorAccelerationResolution> {
     Ok(resolve_auto_mode_from_probe(
         requested_mode,
-        probe_gpu_compositor(),
+        probe_gpu_compositor(gpu_backend_preference(servo_gpu_import_mode)),
         AUTO_GPU_PROBE_FAILED_REASON,
     ))
 }
@@ -106,6 +121,7 @@ fn resolve_auto_mode(
 )]
 fn resolve_auto_mode(
     requested_mode: RenderAccelerationMode,
+    _servo_gpu_import_mode: ServoGpuImportMode,
 ) -> Result<CompositorAccelerationResolution> {
     Ok(CompositorAccelerationResolution {
         requested_mode,
@@ -118,8 +134,9 @@ fn resolve_auto_mode(
 #[cfg(feature = "wgpu")]
 fn resolve_explicit_gpu_mode(
     requested_mode: RenderAccelerationMode,
+    servo_gpu_import_mode: ServoGpuImportMode,
 ) -> Result<CompositorAccelerationResolution> {
-    probe_gpu_compositor()
+    probe_gpu_compositor(gpu_backend_preference(servo_gpu_import_mode))
         .and_then(|probe| {
             if let Some(reason) = probe.info.software_adapter_reason {
                 anyhow::bail!("{reason}; refusing explicit GPU compositor path");
@@ -142,6 +159,7 @@ fn resolve_explicit_gpu_mode(
 #[cfg(not(feature = "wgpu"))]
 fn resolve_explicit_gpu_mode(
     _requested_mode: RenderAccelerationMode,
+    _servo_gpu_import_mode: ServoGpuImportMode,
 ) -> Result<CompositorAccelerationResolution> {
     bail!(
         "{GPU_COMPOSITOR_UNAVAILABLE_REASON}; rebuild hypercolor-daemon with the `wgpu` feature or use cpu/auto"
@@ -149,8 +167,24 @@ fn resolve_explicit_gpu_mode(
 }
 
 #[cfg(feature = "wgpu")]
-fn probe_gpu_compositor() -> Result<GpuCompositorProbeResult> {
-    let render_device = GpuRenderDevice::new("SparkleFlinger GPU compositor")?;
+fn probe_gpu_compositor(
+    backend_preference: GpuBackendPreference,
+) -> Result<GpuCompositorProbeResult> {
+    probe_gpu_compositor_with(
+        backend_preference,
+        GpuRenderDevice::new_with_backend_preference,
+    )
+}
+
+#[cfg(feature = "wgpu")]
+fn probe_gpu_compositor_with<F>(
+    backend_preference: GpuBackendPreference,
+    create_render_device: F,
+) -> Result<GpuCompositorProbeResult>
+where
+    F: FnOnce(&'static str, GpuBackendPreference) -> Result<GpuRenderDevice>,
+{
+    let render_device = create_render_device("SparkleFlinger GPU compositor", backend_preference)?;
     let info = crate::render_thread::sparkleflinger::gpu::probe_render_device(&render_device)
         .map(GpuCompositorProbeInfo::from)?;
     Ok(GpuCompositorProbeResult {
@@ -228,14 +262,23 @@ impl From<crate::render_thread::sparkleflinger::gpu::GpuCompositorProbe>
 mod tests {
     #[cfg(feature = "wgpu")]
     use anyhow::anyhow;
-    use hypercolor_types::config::RenderAccelerationMode;
+    use hypercolor_types::config::{RenderAccelerationMode, ServoGpuImportMode};
 
-    use super::resolve_compositor_acceleration_mode;
     #[cfg(feature = "wgpu")]
     use super::{
         AUTO_GPU_PROBE_FAILED_REASON, GpuCompositorProbeInfo, GpuCompositorProbeResult,
         resolve_auto_mode_from_probe,
     };
+    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    use super::{gpu_backend_preference, probe_gpu_compositor_with};
+    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    use crate::render_thread::gpu_device::{GpuBackendPreference, windows_backends_for_preference};
+
+    fn resolve_compositor_acceleration_mode(
+        requested_mode: RenderAccelerationMode,
+    ) -> anyhow::Result<super::CompositorAccelerationResolution> {
+        super::resolve_compositor_acceleration_mode(requested_mode, ServoGpuImportMode::Auto)
+    }
 
     #[cfg(feature = "wgpu")]
     fn test_gpu_probe() -> GpuCompositorProbeInfo {
@@ -261,6 +304,47 @@ mod tests {
         assert_eq!(resolution.effective_mode, RenderAccelerationMode::Cpu);
         assert!(resolution.fallback_reason.is_none());
         assert!(resolution.gpu_probe.is_none());
+    }
+
+    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    #[test]
+    fn windows_startup_defaults_to_dx12_backend_policy() {
+        let preference = gpu_backend_preference(ServoGpuImportMode::Auto);
+
+        assert_eq!(preference, GpuBackendPreference::Default);
+        assert_eq!(
+            windows_backends_for_preference(preference),
+            wgpu::Backends::DX12
+        );
+    }
+
+    #[cfg(all(feature = "wgpu", feature = "servo-gpu-import", target_os = "windows"))]
+    #[test]
+    fn windows_startup_servo_import_on_requires_vulkan_backend() {
+        let preference = gpu_backend_preference(ServoGpuImportMode::On);
+
+        assert_eq!(
+            preference,
+            GpuBackendPreference::VulkanRequiredForServoImport
+        );
+        assert_eq!(
+            windows_backends_for_preference(preference),
+            wgpu::Backends::VULKAN
+        );
+    }
+
+    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    #[test]
+    fn startup_probe_and_device_constructor_share_backend_preference() {
+        let observed = std::cell::Cell::new(None);
+        let expected = gpu_backend_preference(ServoGpuImportMode::Auto);
+        let result = probe_gpu_compositor_with(expected, |_, actual| {
+            observed.set(Some(actual));
+            Err(anyhow!("constructor probe completed"))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(observed.get(), Some(expected));
     }
 
     #[cfg(not(feature = "wgpu"))]

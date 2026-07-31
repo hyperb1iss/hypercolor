@@ -41,7 +41,9 @@ use super::{
     ComposedFrameSet, CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
     ProjectedGroupTextureRequirement, SparkleFlingerSurfacePoolCounts,
 };
-use crate::render_thread::gpu_device::{GpuRenderDevice, texture_format_name};
+use crate::render_thread::gpu_device::{
+    GpuBackendPreference, GpuRenderDevice, texture_format_name,
+};
 #[cfg(target_os = "windows")]
 use crate::render_thread::producer_queue::WindowsScreenTextureLease;
 use crate::render_thread::producer_queue::{
@@ -83,7 +85,6 @@ use pipeline::GpuCompositorPipeline;
 use preview::{
     CachedPreviewSurface, GpuPreviewSurfaceSet, PendingPreviewMap, PendingPreviewReadback,
 };
-use probe::servo_import_backend_preference;
 pub(crate) use probe::{GpuCompositorProbe, probe_render_device};
 use readback::{CachedReadbackKey, CachedReadbackSurface};
 use sampler::CachedSampleResult;
@@ -927,9 +928,15 @@ impl GpuSparkleFlinger {
     }
 
     pub(crate) fn new() -> Result<Self> {
+        Self::new_with_backend_preference(GpuBackendPreference::Default)
+    }
+
+    pub(crate) fn new_with_backend_preference(
+        backend_preference: GpuBackendPreference,
+    ) -> Result<Self> {
         Self::with_render_device(GpuRenderDevice::new_with_backend_preference(
             "SparkleFlinger GPU compositor",
-            servo_import_backend_preference(),
+            backend_preference,
         )?)
     }
 

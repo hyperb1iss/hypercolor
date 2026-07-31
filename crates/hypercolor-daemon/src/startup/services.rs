@@ -104,9 +104,11 @@ impl DaemonState {
             );
         }
 
-        let render_acceleration =
-            resolve_compositor_acceleration_mode(config.effect_engine.compositor_acceleration_mode)
-                .context("failed to resolve compositor acceleration mode")?;
+        let render_acceleration = resolve_compositor_acceleration_mode(
+            config.effect_engine.compositor_acceleration_mode,
+            config.rendering.servo_gpu_import.mode,
+        )
+        .context("failed to resolve compositor acceleration mode")?;
         if let Some(reason) = render_acceleration.fallback_reason {
             warn!(
                 requested_mode = ?render_acceleration.requested_mode,

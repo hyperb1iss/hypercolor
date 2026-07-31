@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use super::COMPOSITOR_TEXTURE_FORMAT;
 use crate::render_thread::gpu_device::{
-    GpuBackendPreference, GpuRenderDevice, backend_name, device_type_name, texture_format_name,
+    GpuRenderDevice, backend_name, device_type_name, texture_format_name,
 };
 
 #[derive(Debug, Clone)]
@@ -46,18 +46,4 @@ pub(crate) fn probe_render_device(render_device: &GpuRenderDevice) -> Result<Gpu
         linux_servo_gpu_import_backend_compatible,
         linux_servo_gpu_import_backend_reason,
     })
-}
-
-pub(super) fn servo_import_backend_preference() -> GpuBackendPreference {
-    #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-    {
-        if matches!(
-            hypercolor_core::effect::servo_gpu_import_mode(),
-            hypercolor_types::config::ServoGpuImportMode::On
-        ) {
-            return GpuBackendPreference::VulkanRequiredForServoImport;
-        }
-    }
-
-    GpuBackendPreference::Default
 }

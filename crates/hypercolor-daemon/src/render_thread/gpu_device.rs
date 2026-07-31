@@ -39,10 +39,6 @@ pub(crate) enum GpuBackendPreference {
 }
 
 impl GpuRenderDevice {
-    pub(crate) fn new(label: &'static str) -> Result<Self> {
-        Self::new_with_backend_preference(label, GpuBackendPreference::Default)
-    }
-
     pub(crate) fn new_with_backend_preference(
         label: &'static str,
         backend_preference: GpuBackendPreference,
@@ -65,13 +61,6 @@ impl GpuRenderDevice {
             for_resource_creation: Some(GPU_RESOURCE_CREATION_BUDGET_PERCENT),
             for_device_loss: Some(GPU_DEVICE_LOSS_BUDGET_PERCENT),
         };
-        #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-        if matches!(
-            backend_preference,
-            GpuBackendPreference::VulkanRequiredForServoImport
-        ) {
-            instance_descriptor.backends = wgpu::Backends::VULKAN;
-        }
         let instance = wgpu::Instance::new(instance_descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -225,7 +214,7 @@ impl GpuRenderDevice {
 }
 
 #[cfg(target_os = "windows")]
-const fn windows_backends_for_preference(
+pub(crate) const fn windows_backends_for_preference(
     backend_preference: GpuBackendPreference,
 ) -> wgpu::Backends {
     match backend_preference {
@@ -580,7 +569,10 @@ mod tests {
 
     #[test]
     fn independent_device_reuses_adapter_without_sharing_device_or_queue() {
-        let Ok(authoritative) = GpuRenderDevice::new("authoritative test device") else {
+        let Ok(authoritative) = GpuRenderDevice::new_with_backend_preference(
+            "authoritative test device",
+            GpuBackendPreference::Default,
+        ) else {
             return;
         };
         let preview = authoritative
