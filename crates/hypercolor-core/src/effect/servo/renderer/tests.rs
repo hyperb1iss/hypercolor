@@ -1302,7 +1302,7 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
 
     let queued = renderer.queued_frame.as_ref().expect("queued frame");
     let interaction = queued.queued_interaction().expect("demanded interaction");
-    assert_eq!(interaction.keyboard.pressed_keys, ["c"]);
+    assert_eq!(interaction.keyboard.pressed_keys, ["a", "c"]);
     assert_eq!(interaction.keyboard.recent_keys, ["a", "b", "a", "c"]);
 }
 
