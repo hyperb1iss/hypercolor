@@ -1164,7 +1164,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use hypercolor_core::config::ConfigManager;
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
     use hypercolor_core::input::{

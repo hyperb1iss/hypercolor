@@ -36,7 +36,6 @@ use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
 use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
-#[cfg(target_os = "windows")]
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
     BrowserInputEdge, InputData, InputSource, SourceIssue, SourceKind, SourceSessionWriter,
@@ -314,7 +313,6 @@ fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, 
             .driver_host
             .with_config_manager(Some(Arc::clone(&manager))),
     );
-    #[cfg(target_os = "windows")]
     {
         let mut input_manager = state
             .input_manager
@@ -1478,7 +1476,6 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
         ObservableInputSource::new("failed_test_audio", true, Duration::from_millis(1));
     {
         let mut manager = state.input_manager.lock().await;
-        #[cfg(target_os = "windows")]
         manager
             .set_screen_capacity_plan(
                 ScreenAdmissionCapacity::new(2_000_000, 1_500_000),

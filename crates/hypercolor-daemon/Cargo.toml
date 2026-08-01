@@ -81,6 +81,7 @@ pollster = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 sd-notify = "0.4"
+sysinfo = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 hypercolor-windows-capture = { workspace = true, optional = true }
