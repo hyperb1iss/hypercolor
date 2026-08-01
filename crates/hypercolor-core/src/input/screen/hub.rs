@@ -15,7 +15,7 @@ use super::plan::{
     ScreenWorkerBinding,
 };
 use super::{
-    CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat,
+    CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat, CaptureSourceId,
     CaptureTransferFunction, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
     ResolvedScreenPublicationDescriptor, ScreenByteLease, ScreenPublicationKind,
     ScreenPublicationResidency,
@@ -1120,6 +1120,7 @@ pub struct ScreenCommittedState {
     plan: Arc<ScreenCapturePlan>,
     branches: Arc<Vec<ScreenCommittedBranch>>,
     worker_bindings: Arc<Vec<ScreenWorkerBinding>>,
+    runtime_bindings: Arc<Vec<ScreenWorkerBinding>>,
     retained_resources: ScreenRetainedResourceLedger,
     slot_policy: ScreenPublicationSlotPolicy,
     pending_retired_bytes: Arc<AtomicU64>,
@@ -1134,6 +1135,7 @@ impl ScreenCommittedState {
             plan: Arc::new(ScreenCapturePlan::default()),
             branches: Arc::new(Vec::new()),
             worker_bindings: Arc::new(Vec::new()),
+            runtime_bindings: Arc::new(Vec::new()),
             retained_resources: ScreenRetainedResourceLedger::default(),
             slot_policy,
             pending_retired_bytes,
@@ -1207,6 +1209,27 @@ impl ScreenCommittedState {
         worker_bindings.sort_unstable_by(compare_bindings);
         worker_bindings.dedup_by(|right, left| left.is_same(right));
 
+        let mut runtime_bindings = Vec::new();
+        runtime_bindings
+            .try_reserve_exact(branches.len())
+            .map_err(|_| ScreenPlanError::AllocationFailed)?;
+        for branch in &branches {
+            let source_id = &branch.entry.descriptor.source_epoch().source_id;
+            let binding = new_bindings
+                .binary_search_by(|binding| binding.source_id().as_str().cmp(source_id.as_str()))
+                .ok()
+                .and_then(|index| new_bindings.get(index))
+                .or_else(|| base.runtime_binding(source_id))
+                .ok_or_else(|| ScreenPlanError::MissingWorkerAcknowledgement {
+                    source_id: source_id.clone(),
+                })?;
+            runtime_bindings.push(binding.clone());
+        }
+        runtime_bindings.sort_unstable_by(|left, right| {
+            left.source_id().as_str().cmp(right.source_id().as_str())
+        });
+        runtime_bindings.dedup_by(|right, left| left.source_id() == right.source_id());
+
         let mut retired_entries = Vec::new();
         retired_entries
             .try_reserve_exact(base.branches.len())
@@ -1273,8 +1296,13 @@ impl ScreenCommittedState {
             .map_err(|_| ScreenPlanError::AllocationFailed)?;
         barrier_bindings.extend(base.worker_bindings.iter().cloned());
         barrier_bindings.extend(worker_bindings.iter().cloned());
-        barrier_bindings.sort_unstable_by(compare_bindings);
-        barrier_bindings.dedup_by(|right, left| left.is_same(right));
+        barrier_bindings.sort_unstable_by(|left, right| {
+            left.source_id()
+                .as_str()
+                .cmp(right.source_id().as_str())
+                .then_with(|| compare_bindings(left, right))
+        });
+        barrier_bindings.dedup_by(|right, left| left.shares_finalization_gate(right));
         let retired_publication_bytes =
             retired_entries.iter().try_fold(0_u64, |total, entry| {
                 total
@@ -1301,6 +1329,7 @@ impl ScreenCommittedState {
                 plan,
                 branches: Arc::new(branches),
                 worker_bindings: Arc::new(worker_bindings),
+                runtime_bindings: Arc::new(runtime_bindings),
                 retained_resources,
                 slot_policy: base.slot_policy,
                 pending_retired_bytes: Arc::clone(&base.pending_retired_bytes),
@@ -1370,6 +1399,21 @@ impl ScreenCommittedState {
         self.worker_bindings.as_slice()
     }
 
+    pub(crate) fn runtime_binding(
+        &self,
+        source_id: &CaptureSourceId,
+    ) -> Option<&ScreenWorkerBinding> {
+        self.runtime_bindings
+            .binary_search_by(|binding| binding.source_id().as_str().cmp(source_id.as_str()))
+            .ok()
+            .and_then(|index| self.runtime_bindings.get(index))
+    }
+
+    pub(crate) fn owns_runtime_binding(&self, binding: &ScreenWorkerBinding) -> bool {
+        self.runtime_binding(binding.source_id())
+            .is_some_and(|current| current.is_same(binding))
+    }
+
     /// Number of exact committed publication branches.
     #[must_use]
     pub fn branch_count(&self) -> usize {
@@ -1394,6 +1438,34 @@ impl ScreenCommittedState {
             }
         })?;
         if !branch.binding.is_same(binding) {
+            return Err(ScreenPublicationHubError::WorkerBindingMismatch {
+                descriptor: Arc::new(descriptor.clone()),
+            });
+        }
+        Ok(ScreenBranchPublisher {
+            branch: branch.entry,
+            binding: branch.binding,
+        })
+    }
+
+    pub(crate) fn publisher_for_runtime(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        runtime_binding: &ScreenWorkerBinding,
+    ) -> Result<ScreenBranchPublisher, ScreenPublicationHubError> {
+        if !self.owns_runtime_binding(runtime_binding) {
+            return Err(ScreenPublicationHubError::WorkerBindingMismatch {
+                descriptor: Arc::new(descriptor.clone()),
+            });
+        }
+        let branch = self.branch(descriptor).cloned().ok_or_else(|| {
+            ScreenPublicationHubError::BranchMissing {
+                descriptor: Arc::new(descriptor.clone()),
+            }
+        })?;
+        if branch.binding.source_id() != runtime_binding.source_id()
+            || !branch.binding.shares_finalization_gate(runtime_binding)
+        {
             return Err(ScreenPublicationHubError::WorkerBindingMismatch {
                 descriptor: Arc::new(descriptor.clone()),
             });
@@ -1437,6 +1509,7 @@ impl fmt::Debug for ScreenCommittedState {
             .field("plan", &self.plan)
             .field("branch_count", &self.branches.len())
             .field("worker_bindings", &self.worker_bindings)
+            .field("runtime_bindings", &self.runtime_bindings)
             .field("retained_resources", &self.retained_resources)
             .field("slot_policy", &self.slot_policy)
             .field(
@@ -1795,7 +1868,7 @@ impl ScreenPublicationHub {
         let binding = first.binding.clone();
         if prepared
             .iter()
-            .any(|publication| !binding.is_same(&publication.binding))
+            .any(|publication| !binding.shares_finalization_gate(&publication.binding))
         {
             return Err(ScreenPublicationHubError::PublicationBatchBindingMismatch);
         }
@@ -2695,7 +2768,7 @@ pub enum ScreenPublicationHubError {
     #[error("publication completion metadata is missing")]
     PublicationCompletionMissing,
     /// One atomic batch mixed reservations from distinct source workers.
-    #[error("publication batch contains more than one worker binding")]
+    #[error("publication batch contains more than one source finalization authority")]
     PublicationBatchBindingMismatch,
     /// Reducer work completed after the source freshness deadline.
     #[error("publication completed after its freshness deadline")]

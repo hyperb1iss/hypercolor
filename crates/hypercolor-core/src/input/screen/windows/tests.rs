@@ -12,10 +12,11 @@ use hypercolor_windows_capture::{
 
 use super::{
     ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactBoxList, ExactPublicationShared,
-    WindowsCaptureResourceAdmission, WindowsPhysicalReductionRoute, WindowsPublicationSource,
-    WindowsScreenCaptureInput, WorkerCaptureSchedule, WorkerCommand, capture_epoch,
+    WindowsCaptureResourceAdmission, WindowsExactRuntime, WindowsExactRuntimes,
+    WindowsPhysicalReductionRoute, WindowsPublicationSource, WindowsScreenCaptureInput,
+    WorkerCaptureSchedule, WorkerCommand, bind_current_exact_runtime, capture_epoch,
     capture_freshness, capture_geometry, capture_gpu_descriptor, capture_gpu_reduction_descriptor,
-    capture_issue, classify_windows_physical_reduction, native_capture_extent,
+    capture_issue, classify_windows_physical_reduction, native_capture_extent, reap_exact_runtimes,
     record_capture_health, resolve_windows_publication_branch, settle_inactive_capture,
     windows_gpu_attempt_at, windows_gpu_candidate_admission, windows_gpu_preparation_gate,
     windows_gpu_retry_at,
@@ -48,15 +49,19 @@ use crate::input::screen::{
     CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureSourceId,
     CaptureStorage, CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent,
-    RawCaptureSurface, RegisteredScreenBranchDemand, ScreenAdmissionCapacity,
-    ScreenAnalysisComputeCapacity, ScreenAspectPolicy, ScreenByteAdmissionCoordinator,
-    ScreenCaptureDemand, ScreenComputeCapacityPolicy, ScreenExtentRequest,
+    RawCaptureSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenPublicationDescriptor, ScreenAdmissionCapacity, ScreenAnalysisComputeCapacity,
+    ScreenAspectPolicy, ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
+    ScreenComputeCapacityPolicy, ScreenExtentRequest, ScreenInputGraphGeneration,
     ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
-    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
+    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPayloadKind,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPreparedWorkerToken,
     ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutor,
     ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency,
-    ScreenReductionFilter, ScreenSourceSelector,
+    ScreenPublicationHealth, ScreenPublicationKind, ScreenPublicationMetadata,
+    ScreenPublicationRequest, ScreenPublicationResidency, ScreenReductionFilter,
+    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparationTicket,
 };
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
 use crate::input::traits::InputSource;
@@ -226,19 +231,117 @@ fn publication_demand_with_format(
     filter: ScreenReductionFilter,
     pixel_format: CapturePixelFormat,
 ) -> RegisteredScreenBranchDemand {
+    publication_demand_with_kind_and_format(
+        selector,
+        ScreenPublicationKind::Surface,
+        executor,
+        filter,
+        pixel_format,
+    )
+}
+
+fn publication_demand_with_kind_and_format(
+    selector: ScreenSourceSelector,
+    kind: ScreenPublicationKind,
+    executor: ScreenPublicationExecutorRequest,
+    filter: ScreenReductionFilter,
+    pixel_format: CapturePixelFormat,
+) -> RegisteredScreenBranchDemand {
+    publication_demand_with_kind_format_and_hz(selector, kind, executor, filter, pixel_format, 144)
+}
+
+fn publication_demand_with_kind_format_and_hz(
+    selector: ScreenSourceSelector,
+    kind: ScreenPublicationKind,
+    executor: ScreenPublicationExecutorRequest,
+    filter: ScreenReductionFilter,
+    pixel_format: CapturePixelFormat,
+    requested_hz: u32,
+) -> RegisteredScreenBranchDemand {
     let mut profile = ScreenProcessingProfileConfig::exact_encoded_identity(pixel_format);
     profile.reduction_filter = filter;
     RegisteredScreenBranchDemand::new(
         ScreenPublicationRequest::new(
             selector,
-            ScreenPublicationKind::Surface,
+            kind,
             executor,
             ScreenExtentRequest::Native,
             ScreenAspectPolicy::Contain,
             Arc::new(ScreenProcessingProfile::new(profile)),
         ),
-        NonZeroU32::new(144).expect("test cadence is non-zero"),
+        NonZeroU32::new(requested_hz).expect("test cadence is non-zero"),
     )
+}
+
+fn lifecycle_publication_source() -> WindowsPublicationSource {
+    let mut source = publication_source();
+    source.native_extent = extent(4, 2);
+    source.logical_extent = extent(4, 2);
+    source.origin = PhysicalOrigin::default();
+    source.rotation = CaptureRotation::Identity;
+    source
+}
+
+fn resolve_publication_demand(
+    source: &WindowsPublicationSource,
+    demand: &RegisteredScreenBranchDemand,
+) -> ResolvedScreenBranchDemand {
+    resolve_windows_publication_branch(source, demand)
+        .expect("test publication demand resolves")
+        .expect("configured test source owns the publication demand")
+}
+
+fn prepare_test_exact_runtime(
+    ticket: ScreenWorkerPreparationTicket,
+    source: &WindowsPublicationSource,
+) -> (
+    ScreenPreparedWorkerToken,
+    ScreenWorkerBinding,
+    WindowsExactRuntime,
+) {
+    let mut ledger =
+        ScreenWorkerExactLedgerBuilder::new(ticket).expect("test exact worker ledger starts");
+    let reports = ledger
+        .ticket()
+        .required_minimums()
+        .iter()
+        .map(|minimum| (Arc::clone(minimum.name()), minimum.minimum_bytes()))
+        .collect::<Vec<_>>();
+    for (name, bytes) in reports {
+        ledger
+            .report(&name, bytes)
+            .expect("test worker reports every exact minimum");
+    }
+    let exact = ledger.finish().expect("test exact worker ledger finishes");
+    let binding = exact.token().binding().clone();
+    let (token, lifetimes) = exact.into_parts();
+    (
+        token,
+        binding.clone(),
+        WindowsExactRuntime {
+            source: source.clone(),
+            binding,
+            gpu: None,
+            cpu: None,
+            _lifetimes: lifetimes,
+        },
+    )
+}
+
+fn publication_intent(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+    binding: &ScreenWorkerBinding,
+    native_sequence: u64,
+    captured_at: Instant,
+) -> ScreenPublicationMetadata {
+    ScreenPublicationMetadata::try_intent(
+        descriptor.source_epoch().clone(),
+        binding.plan_generation(),
+        NonZeroU64::new(native_sequence).expect("test sequence is nonzero"),
+        captured_at,
+        captured_at + Duration::from_secs(1),
+    )
+    .expect("test publication intent is valid")
 }
 
 fn native_target() -> ScreenNativeExecutionTarget {
@@ -394,6 +497,407 @@ fn cpu_executor_is_shared_across_exact_plan_generations() {
             .expect("later plan generations reuse the executor");
         assert!(Arc::ptr_eq(&first, &next));
     }
+}
+
+#[test]
+fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
+    let source = lifecycle_publication_source();
+    let source_id = source.epoch.source_id.clone();
+    let native_surface = resolve_publication_demand(
+        &source,
+        &publication_demand(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationExecutorRequest::SourceNative(native_target()),
+            ScreenReductionFilter::Nearest,
+        ),
+    );
+    let cpu_surface = resolve_publication_demand(
+        &source,
+        &publication_demand(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationExecutorRequest::Cpu,
+            ScreenReductionFilter::Nearest,
+        ),
+    );
+    let zones = resolve_publication_demand(
+        &source,
+        &publication_demand_with_kind_and_format(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Zones {
+                columns: NonZeroU32::new(2).expect("test grid width is nonzero"),
+                rows: NonZeroU32::MIN,
+            },
+            ScreenPublicationExecutorRequest::Cpu,
+            ScreenReductionFilter::Nearest,
+            CapturePixelFormat::Rgba8,
+        ),
+    );
+    let retained_native_surface = resolve_publication_demand(
+        &source,
+        &publication_demand_with_kind_format_and_hz(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::SourceNative(native_target()),
+            ScreenReductionFilter::Nearest,
+            CapturePixelFormat::Rgba8,
+            120,
+        ),
+    );
+    let retained_cpu_surface = resolve_publication_demand(
+        &source,
+        &publication_demand_with_kind_format_and_hz(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::Cpu,
+            ScreenReductionFilter::Nearest,
+            CapturePixelFormat::Rgba8,
+            120,
+        ),
+    );
+    let native_descriptor = native_surface.descriptor().clone();
+    let cpu_descriptor = cpu_surface.descriptor().clone();
+    let zones_descriptor = zones.descriptor().clone();
+    let initial_demands = [native_surface, cpu_surface];
+    let retained_demands = [
+        retained_native_surface.clone(),
+        retained_cpu_surface.clone(),
+    ];
+    let mixed_demands = [retained_native_surface, retained_cpu_surface, zones];
+    let graph_generation = ScreenInputGraphGeneration::new(1);
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let exact = ExactPublicationShared::default();
+    *exact
+        .hub
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&hub));
+    exact.replace_source(Some(source.clone()));
+    let mut runtimes = WindowsExactRuntimes::default();
+
+    let initial_revision = builder
+        .current()
+        .demand_revision()
+        .next()
+        .expect("test demand revision advances");
+    let mut stale_preparing = builder
+        .prepare(
+            mixed_demands.clone(),
+            None,
+            initial_revision,
+            graph_generation,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("concurrent stale Windows candidate prepares");
+    let stale_ticket = stale_preparing
+        .worker_ticket(&source_id)
+        .expect("concurrent stale candidate owns a worker ticket");
+    let (stale_token, stale_binding, stale_runtime) =
+        prepare_test_exact_runtime(stale_ticket, &source);
+    runtimes.push_boxed(WindowsExactRuntimes::boxed_node(stale_runtime));
+    stale_preparing
+        .acknowledge(stale_token)
+        .expect("stale worker token belongs to its plan");
+    let stale_armed = stale_preparing
+        .arm(
+            builder.current().generation(),
+            initial_revision,
+            graph_generation,
+        )
+        .unwrap_or_else(|failure| panic!("stale candidate arms: {}", failure.error()));
+    assert_eq!(stale_binding.state(), ScreenWorkerBindingState::Armed);
+    let mut preparing = builder
+        .prepare(
+            initial_demands,
+            None,
+            initial_revision,
+            graph_generation,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("initial Windows exact plan prepares");
+    let ticket = preparing
+        .worker_ticket(&source_id)
+        .expect("initial source owns a worker ticket");
+    let (token, initial_binding, runtime) = prepare_test_exact_runtime(ticket, &source);
+    runtimes.push_boxed(WindowsExactRuntimes::boxed_node(runtime));
+    preparing
+        .acknowledge(token)
+        .expect("initial worker token belongs to its plan");
+    let armed = preparing
+        .arm(
+            builder.current().generation(),
+            initial_revision,
+            graph_generation,
+        )
+        .unwrap_or_else(|failure| panic!("initial plan arms: {}", failure.error()));
+    assert_eq!(initial_binding.state(), ScreenWorkerBindingState::Armed);
+    assert_eq!(
+        armed.candidate_plan().generation(),
+        stale_armed.candidate_plan().generation(),
+        "concurrent candidates share a structural generation"
+    );
+    assert!(
+        armed
+            .candidate_state()
+            .owns_runtime_binding(&initial_binding)
+    );
+    let committed = builder
+        .commit(armed, initial_revision, graph_generation)
+        .unwrap_or_else(|failure| panic!("initial plan commits: {}", failure.error()));
+    committed
+        .into_parts()
+        .1
+        .try_reclaim()
+        .expect("initial plan retires no exact runtime resources");
+    reap_exact_runtimes(&mut runtimes, &exact);
+    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+        .expect("initial runtime binds")
+        .expect("initial committed runtime is selected");
+    assert!(selected.binding.is_same(&initial_binding));
+    assert!(!selected.binding.is_same(&stale_binding));
+    drop(stale_armed.abort());
+    assert_eq!(stale_binding.state(), ScreenWorkerBindingState::Aborted);
+
+    let retained_revision = initial_revision
+        .next()
+        .expect("test demand revision advances");
+    let mut retained_preparing = builder
+        .prepare(
+            retained_demands,
+            None,
+            retained_revision,
+            graph_generation,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("retained-only Windows exact plan prepares");
+    assert_ne!(
+        retained_preparing.candidate_plan().generation(),
+        builder.current().generation(),
+        "cadence-only retention still advances the immutable plan generation"
+    );
+    let retained_ticket = retained_preparing
+        .worker_ticket(&source_id)
+        .expect("retained-only source owns a successor ticket");
+    assert_eq!(retained_ticket.source_delta().retained_branches().len(), 2);
+    assert!(retained_ticket.source_delta().added_branches().is_empty());
+    assert!(retained_ticket.source_delta().removed_branches().is_empty());
+    let (retained_token, retained_binding, retained_runtime) =
+        prepare_test_exact_runtime(retained_ticket, &source);
+    runtimes.push_boxed(WindowsExactRuntimes::boxed_node(retained_runtime));
+    retained_preparing
+        .acknowledge(retained_token)
+        .expect("retained-only token belongs to its plan");
+    let armed = retained_preparing
+        .arm(
+            builder.current().generation(),
+            retained_revision,
+            graph_generation,
+        )
+        .unwrap_or_else(|failure| panic!("retained-only plan arms: {}", failure.error()));
+    assert_eq!(retained_binding.state(), ScreenWorkerBindingState::Armed);
+    assert!(
+        armed
+            .candidate_state()
+            .owns_runtime_binding(&retained_binding)
+    );
+    assert!(
+        !armed
+            .candidate_state()
+            .owns_runtime_binding(&initial_binding),
+        "retained successor replaces the previous runtime identity"
+    );
+    let committed = builder
+        .commit(armed, retained_revision, graph_generation)
+        .unwrap_or_else(|failure| panic!("retained-only plan commits: {}", failure.error()));
+    let (_, retained_retirement) = committed.into_parts();
+    reap_exact_runtimes(&mut runtimes, &exact);
+    assert_eq!(runtimes.iter().count(), 1);
+    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+        .expect("retained-only runtime binds")
+        .expect("retained-only committed runtime is selected");
+    assert!(selected.binding.is_same(&retained_binding));
+    assert!(!selected.binding.is_same(&initial_binding));
+    retained_retirement
+        .try_reclaim()
+        .expect("stale retained runtime resources reclaim after reaping");
+
+    let mixed_revision = retained_revision
+        .next()
+        .expect("test demand revision advances");
+    let mut mixed_preparing = builder
+        .prepare(
+            mixed_demands,
+            None,
+            mixed_revision,
+            graph_generation,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("mixed retained and added Windows exact plan prepares");
+    let mixed_ticket = mixed_preparing
+        .worker_ticket(&source_id)
+        .expect("mixed source owns a successor ticket");
+    assert_eq!(mixed_ticket.source_delta().retained_branches().len(), 2);
+    assert_eq!(mixed_ticket.source_delta().added_branches().len(), 1);
+    let (mixed_token, mixed_binding, mixed_runtime) =
+        prepare_test_exact_runtime(mixed_ticket, &source);
+    runtimes.push_boxed(WindowsExactRuntimes::boxed_node(mixed_runtime));
+    mixed_preparing
+        .acknowledge(mixed_token)
+        .expect("mixed token belongs to its plan");
+    let armed = mixed_preparing
+        .arm(
+            builder.current().generation(),
+            mixed_revision,
+            graph_generation,
+        )
+        .unwrap_or_else(|failure| panic!("mixed plan arms: {}", failure.error()));
+    assert_eq!(mixed_binding.state(), ScreenWorkerBindingState::Armed);
+    let candidate = armed.candidate_state();
+    assert!(candidate.owns_runtime_binding(&mixed_binding));
+    let native_publisher = candidate
+        .publisher_for_runtime(&native_descriptor, &mixed_binding)
+        .expect("mixed runtime binds the retained native branch");
+    let cpu_publisher = candidate
+        .publisher_for_runtime(&cpu_descriptor, &mixed_binding)
+        .expect("mixed runtime binds the retained CPU branch");
+    let zones_publisher = candidate
+        .publisher_for_runtime(&zones_descriptor, &mixed_binding)
+        .expect("mixed runtime binds the added Zones branch");
+    assert_eq!(
+        mixed_binding.plan_generation(),
+        candidate.plan().generation()
+    );
+    assert_eq!(
+        native_publisher.plan_generation(),
+        initial_binding.plan_generation(),
+        "retained GPU metadata keeps its branch worker generation"
+    );
+    assert_ne!(
+        native_publisher.plan_generation(),
+        mixed_binding.plan_generation(),
+        "GPU runtime generation is separate from retained branch metadata"
+    );
+    assert_eq!(
+        cpu_publisher.plan_generation(),
+        initial_binding.plan_generation()
+    );
+    assert_eq!(
+        zones_publisher.plan_generation(),
+        mixed_binding.plan_generation()
+    );
+    let committed = builder
+        .commit(armed, mixed_revision, graph_generation)
+        .unwrap_or_else(|failure| panic!("mixed plan commits: {}", failure.error()));
+    let (_, mixed_retirement) = committed.into_parts();
+    reap_exact_runtimes(&mut runtimes, &exact);
+    assert_eq!(runtimes.iter().count(), 1);
+    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+        .expect("mixed runtime binds")
+        .expect("mixed committed runtime is selected");
+    assert!(selected.binding.is_same(&mixed_binding));
+    mixed_retirement
+        .try_reclaim()
+        .expect("retained-only runtime resources reclaim after mixed reaping");
+
+    let captured_at = Instant::now();
+    let mut cpu_publication = hub
+        .prepare_writable_publication(
+            &cpu_publisher,
+            ScreenPayloadKind::Surface,
+            &publication_intent(&cpu_descriptor, &initial_binding, 1, captured_at),
+        )
+        .expect("retained CPU surface reserves a writable slot");
+    cpu_publication
+        .surface_pixels_mut()
+        .expect("retained CPU surface exposes writable pixels")
+        .fill(0x5a);
+    let mut zones_publication = hub
+        .prepare_writable_publication(
+            &zones_publisher,
+            ScreenPayloadKind::Zones,
+            &publication_intent(&zones_descriptor, &mixed_binding, 1, captured_at),
+        )
+        .expect("added Zones branch reserves a writable slot");
+    zones_publication
+        .zone_colors_mut()
+        .expect("added Zones branch exposes writable colors")
+        .fill([0x21, 0x43, 0x65]);
+    hub.finalize_writable_publications(
+        &mut [cpu_publication, zones_publication],
+        Instant::now(),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("mixed old and new bindings finalize atomically through one source gate");
+    assert_eq!(
+        hub.lease(&cpu_descriptor)
+            .expect("retained CPU branch has a lease")
+            .read()
+            .expect("retained CPU branch publishes")
+            .worker_plan_generation(),
+        initial_binding.plan_generation()
+    );
+    assert_eq!(
+        hub.lease(&zones_descriptor)
+            .expect("added Zones branch has a lease")
+            .read()
+            .expect("added Zones branch publishes")
+            .worker_plan_generation(),
+        mixed_binding.plan_generation()
+    );
+    drop((native_publisher, cpu_publisher, zones_publisher));
+
+    let removal_revision = mixed_revision
+        .next()
+        .expect("test demand revision advances");
+    let mut removal_preparing = builder
+        .prepare(
+            std::iter::empty::<ResolvedScreenBranchDemand>(),
+            None,
+            removal_revision,
+            graph_generation,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("full Windows source removal prepares");
+    let removal_ticket = removal_preparing
+        .worker_ticket(&source_id)
+        .expect("full removal owns a worker ticket");
+    assert!(removal_ticket.source_delta().retained_branches().is_empty());
+    assert_eq!(removal_ticket.source_delta().removed_branches().len(), 3);
+    let (removal_token, removal_binding, removal_runtime) =
+        prepare_test_exact_runtime(removal_ticket, &source);
+    drop(removal_runtime);
+    removal_preparing
+        .acknowledge(removal_token)
+        .expect("removal token belongs to the empty successor");
+    let armed = removal_preparing
+        .arm(
+            builder.current().generation(),
+            removal_revision,
+            graph_generation,
+        )
+        .unwrap_or_else(|failure| panic!("removal plan arms: {}", failure.error()));
+    assert_eq!(removal_binding.state(), ScreenWorkerBindingState::Armed);
+    assert!(
+        armed
+            .candidate_state()
+            .runtime_binding(&source_id)
+            .is_none()
+    );
+    let committed = builder
+        .commit(armed, removal_revision, graph_generation)
+        .unwrap_or_else(|failure| panic!("removal plan commits: {}", failure.error()));
+    let (_, retirement) = committed.into_parts();
+    reap_exact_runtimes(&mut runtimes, &exact);
+    assert_eq!(runtimes.iter().count(), 0);
+    assert!(
+        builder
+            .committed_state()
+            .runtime_binding(&source_id)
+            .is_none()
+    );
+    assert_eq!(removal_binding.state(), ScreenWorkerBindingState::Retired);
+    retirement
+        .try_reclaim()
+        .expect("removed branch and runtime resources reclaim after reaping");
 }
 
 #[test]

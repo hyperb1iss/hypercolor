@@ -513,9 +513,6 @@ impl PreparedCpuSurfaceMaterializer {
         publication: &mut PreparedScreenPublication,
     ) -> Result<(), CpuSurfaceMaterializationError> {
         self.validate_generation(plan_generation)?;
-        if publication.worker_plan_generation() != plan_generation {
-            return Err(CpuSurfaceMaterializationError::PublicationPlanGenerationMismatch);
-        }
         if self.staged_capture_at.is_some() {
             return Err(CpuSurfaceMaterializationError::PublicationStagePending);
         }
@@ -1008,14 +1005,6 @@ impl PreparedCpuZoneMaterializer {
         publication: &mut PreparedScreenPublication,
     ) -> Result<StagedCpuZonePublication, CpuZoneMaterializationError> {
         self.validate_generation(plan_generation)?;
-        if publication.worker_plan_generation() != plan_generation {
-            return Err(
-                CpuZoneMaterializationError::PublicationPlanGenerationMismatch {
-                    expected: plan_generation.get(),
-                    actual: publication.worker_plan_generation().get(),
-                },
-            );
-        }
         if self.staged.is_some() {
             return Err(CpuZoneMaterializationError::PublicationStagePending);
         }
@@ -1604,9 +1593,6 @@ pub enum CpuSurfaceMaterializationError {
     /// The prepared and attempted plan generations differ.
     #[error("CPU surface materializer plan generation mismatch")]
     PlanGenerationMismatch,
-    /// The writable reservation belongs to another worker generation.
-    #[error("CPU surface publication belongs to another plan generation")]
-    PublicationPlanGenerationMismatch,
     /// A caller tried to stage another frame before resolving the first.
     #[error("CPU surface materializer already has a staged publication")]
     PublicationStagePending,
@@ -1684,9 +1670,6 @@ pub enum CpuZoneMaterializationError {
     /// Stateful branch history cannot cross plan generations.
     #[error("CPU zone plan generation is {actual}; expected {expected}")]
     PlanGenerationMismatch { expected: u64, actual: u64 },
-    /// The writable slot belongs to another committed plan generation.
-    #[error("CPU zone publication generation is {actual}; expected {expected}")]
-    PublicationPlanGenerationMismatch { expected: u64, actual: u64 },
     /// Capture timestamps must not move behind the last accepted frame.
     #[error("CPU zone capture timestamp regressed behind committed history")]
     CaptureTimestampRegressed,

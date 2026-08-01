@@ -8,21 +8,21 @@ use hypercolor_core::input::screen::{
     CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureDynamicRange,
     CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
     CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, ColorTuning,
-    CommittedScreenPlan, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError,
-    CpuReductionExecutor, CpuSurfaceReductionJob, CpuZoneMaterializationError,
-    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PreparedCpuLogicalFanoutKind,
-    PreparedCpuPublicationFanout, PreparedCpuZoneMaterializer, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError, CpuReductionExecutor,
+    CpuSurfaceReductionJob, CpuZoneMaterializationError, KnownCaptureColorimetry, PhysicalOrigin,
+    PixelExtent, PreparedCpuLogicalFanoutKind, PreparedCpuPublicationFanout,
+    PreparedCpuZoneMaterializer, RawCaptureSurface, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
     ScreenColorTuning, ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger,
     ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration, ScreenPayloadKind,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
     ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
-    ScreenReductionFilter, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy, ScreenWorkerBinding,
-    ScreenWorkerPreparationTicket, SourceScale,
+    ScreenPublicationRetirement, ScreenReductionFilter, ScreenResourceApi, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy,
+    ScreenWorkerBinding, ScreenWorkerPreparationTicket, SourceScale,
 };
 use hypercolor_types::canvas::linear_to_srgb_u8;
 
@@ -46,6 +46,14 @@ fn source_with_colorimetry(
     source_extent: PixelExtent,
     colorimetry: CaptureColorimetry,
 ) -> ResolvedScreenSource {
+    source_with_identity(source_id(), source_extent, colorimetry)
+}
+
+fn source_with_identity(
+    source_id: CaptureSourceId,
+    source_extent: PixelExtent,
+    colorimetry: CaptureColorimetry,
+) -> ResolvedScreenSource {
     let geometry = CaptureGeometry::new(
         PhysicalOrigin::default(),
         source_extent,
@@ -58,7 +66,7 @@ fn source_with_colorimetry(
     ResolvedScreenSource::new(
         ScreenSourceSelector::Configured,
         CaptureEpoch {
-            source_id: source_id(),
+            source_id,
             topology_generation: 3,
             session_generation: 5,
         },
@@ -164,6 +172,21 @@ fn commit(
     builder: &mut ScreenPlanBuilder,
     demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
 ) -> (ScreenCapturePlan, ScreenWorkerBinding) {
+    let (plan, binding, retirement) = commit_with_retirement(builder, demands);
+    retirement
+        .try_reclaim()
+        .expect("unobserved retired pools reclaim immediately");
+    (plan, binding)
+}
+
+fn commit_with_retirement(
+    builder: &mut ScreenPlanBuilder,
+    demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
+) -> (
+    ScreenCapturePlan,
+    ScreenWorkerBinding,
+    ScreenPublicationRetirement,
+) {
     let graph_generation = ScreenInputGraphGeneration::new(1);
     let demand_revision = builder
         .current()
@@ -204,7 +227,7 @@ fn commit(
         .commit(armed, demand_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("test plan commits: {}", failure.error()));
     drop(worker_lifetimes);
-    let plan = reclaim(committed);
+    let (plan, retirement) = committed.into_parts();
     let binding = builder
         .committed_state()
         .worker_bindings()
@@ -212,15 +235,7 @@ fn commit(
         .find(|binding| binding.source_id() == &source_id())
         .cloned()
         .expect("committed source has a worker binding");
-    (plan, binding)
-}
-
-fn reclaim(committed: CommittedScreenPlan) -> ScreenCapturePlan {
-    let (plan, retirement) = committed.into_parts();
-    retirement
-        .try_reclaim()
-        .expect("unobserved retired pools reclaim immediately");
-    plan
+    (plan, binding, retirement)
 }
 
 fn frame(source: &ResolvedScreenSource) -> CaptureFrame<RawCaptureSurface> {
@@ -668,13 +683,34 @@ fn executable_fanout_preserves_branch_cadence_pressure_and_authority() {
             ScreenPublicationHealth::Healthy,
         )
         .expect("old fanout records pending work before authority changes");
-    let (_replacement, _replacement_binding) = commit(&mut builder, [surface, zones]);
+    let (_replacement, _replacement_binding) =
+        commit(&mut builder, [surface.clone(), zones.clone()]);
     let fourth = frame_with_sequence(&source, 4);
-    assert!(matches!(
-        fanout.publish_due(
+    fanout
+        .publish_due(
             &hub,
             Some(&fourth),
             fourth.metadata().captured_at,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("unchanged source authority retains its executable fanout");
+
+    let replacement_surface = demand_for_kind_at_hz(
+        &source,
+        extent(13, 9),
+        ScreenPublicationKind::Surface,
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+        60,
+    );
+    let (_replacement, _replacement_binding, retirement) =
+        commit_with_retirement(&mut builder, [replacement_surface, zones]);
+    let fifth = frame_with_sequence(&source, 5);
+    assert!(matches!(
+        fanout.publish_due(
+            &hub,
+            Some(&fifth),
+            fifth.metadata().captured_at,
             ScreenPublicationHealth::Healthy,
         ),
         Err(
@@ -683,6 +719,191 @@ fn executable_fanout_preserves_branch_cadence_pressure_and_authority() {
             )
         )
     ));
+    drop(fanout);
+    drop(surface_publisher);
+    retirement
+        .try_reclaim()
+        .expect("replaced fanout storage reclaims after stale handles drop");
+}
+
+#[test]
+fn mixed_fanout_materializes_retained_and_added_branch_bindings() {
+    let executor = executor();
+    let source = source(extent(17, 11));
+    let zones = demand_for_kind(
+        &source,
+        extent(17, 11),
+        ScreenPublicationKind::Zones {
+            columns: non_zero(5),
+            rows: non_zero(3),
+        },
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let surface = demand(
+        &source,
+        extent(17, 11),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (initial_plan, initial_binding) = commit(&mut builder, [zones.clone()]);
+
+    let graph_generation = ScreenInputGraphGeneration::new(1);
+    let demand_revision = builder
+        .current()
+        .demand_revision()
+        .next()
+        .expect("test demand revision remains representable");
+    let mut preparing = builder
+        .prepare(
+            [zones, surface],
+            None,
+            demand_revision,
+            graph_generation,
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("mixed plan prepares");
+    let ticket = preparing
+        .worker_ticket(&source_id())
+        .expect("mixed source has a worker ticket");
+    let (ledger, lifetimes) = exact_resources(&ticket).expect("mixed resources bind");
+    let token = ticket
+        .acknowledge(ledger, &lifetimes)
+        .expect("mixed resources satisfy the ticket");
+    let runtime_binding = token.binding().clone();
+    let candidate_plan = preparing.candidate_plan().clone();
+    let batch = executor
+        .prepare_batch(&source, &candidate_plan)
+        .expect("mixed batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&candidate_plan)
+        .expect("mixed workspace prepares");
+    let candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+        &executor,
+        &batch,
+        workspace,
+        &candidate_plan,
+    )
+    .expect("mixed fanout candidate prepares");
+    preparing
+        .acknowledge(token)
+        .expect("mixed worker token belongs to the candidate");
+    let armed = preparing
+        .arm(
+            builder.current().generation(),
+            demand_revision,
+            graph_generation,
+        )
+        .unwrap_or_else(|failure| panic!("mixed plan arms: {}", failure.error()));
+    let committed = builder
+        .commit(armed, demand_revision, graph_generation)
+        .unwrap_or_else(|failure| panic!("mixed plan commits: {}", failure.error()));
+    drop(lifetimes);
+    let (mixed_plan, retirement) = committed.into_parts();
+    let mut fanout = candidate
+        .bind(builder.committed_state(), &runtime_binding)
+        .expect("mixed fanout binds through its runtime authority");
+    let captured = frame_with_sequence(&source, 41);
+    let report = fanout
+        .publish_due(
+            &hub,
+            Some(&captured),
+            captured.metadata().captured_at,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("mixed fanout publishes retained and added branches");
+    assert_eq!(report.published(), 2);
+    for branch in mixed_plan.branches() {
+        let publication = hub
+            .lease(branch.descriptor())
+            .expect("mixed branch has a lease")
+            .read()
+            .expect("mixed branch receives the frame");
+        assert_eq!(publication.plan_generation(), mixed_plan.generation());
+        match publication.payload() {
+            ScreenBranchPayload::Zones(_) => assert_eq!(
+                publication.worker_plan_generation(),
+                initial_binding.plan_generation()
+            ),
+            ScreenBranchPayload::Surface(_) => assert_eq!(
+                publication.worker_plan_generation(),
+                runtime_binding.plan_generation()
+            ),
+            ScreenBranchPayload::GpuSurface(_) => panic!("CPU fanout cannot publish GPU storage"),
+        }
+    }
+    assert_ne!(initial_plan.generation(), mixed_plan.generation());
+    drop(fanout);
+    retirement
+        .try_reclaim()
+        .expect("mixed transition has no pinned retired storage");
+}
+
+#[test]
+fn unbound_fanout_survives_an_unrelated_source_commit() {
+    let executor = executor();
+    let first_source = source(extent(17, 11));
+    let second_source = source_with_identity(
+        CaptureSourceId::new("synthetic:cpu-publication-second")
+            .expect("second source id is non-empty"),
+        extent(13, 9),
+        CaptureColorimetry::SRGB,
+    );
+    let first_demand = demand_for_kind(
+        &first_source,
+        extent(17, 11),
+        ScreenPublicationKind::Zones {
+            columns: non_zero(5),
+            rows: non_zero(3),
+        },
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let second_demand = demand(
+        &second_source,
+        extent(13, 9),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (first_plan, first_binding) = commit(&mut builder, [first_demand.clone()]);
+    let batch = executor
+        .prepare_batch(&first_source, &first_plan)
+        .expect("first-source batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&first_plan)
+        .expect("first-source workspace prepares");
+    let candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+        &executor,
+        &batch,
+        workspace,
+        &first_plan,
+    )
+    .expect("first-source fanout candidate prepares");
+
+    let (successor, carried_binding) = commit(&mut builder, [first_demand, second_demand]);
+    assert_ne!(first_plan.generation(), successor.generation());
+    assert_eq!(
+        first_binding.plan_generation(),
+        carried_binding.plan_generation()
+    );
+    let mut fanout = candidate
+        .bind(builder.committed_state(), &first_binding)
+        .expect("unrelated source commit retains the first runtime authority");
+    assert_eq!(fanout.plan_generation(), first_plan.generation());
+    let captured = frame_with_sequence(&first_source, 43);
+    let report = fanout
+        .publish_due(
+            &hub,
+            Some(&captured),
+            captured.metadata().captured_at,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("carried runtime publishes after the unrelated commit");
+    assert_eq!(report.published(), 1);
 }
 
 #[test]
@@ -902,7 +1123,7 @@ fn fanout_finalize_failure_is_atomic_and_discards_every_staged_branch() {
 }
 
 #[test]
-fn fanout_candidate_rejects_stale_authority_generation() {
+fn fanout_candidate_rejects_stale_runtime_authority() {
     let executor = executor();
     let source = source(extent(17, 11));
     let first = demand(
@@ -928,16 +1149,14 @@ fn fanout_candidate_rejects_stale_authority_generation() {
         ScreenProcessingProfileConfig::default(),
         &executor,
     );
-    drop(first_binding);
     let (second_plan, second_binding) = commit(&mut builder, [second]);
     let second_authority = builder.committed_state();
 
     assert!(matches!(
-        candidate.bind(Arc::clone(&second_authority), &second_binding),
-        Err(hypercolor_core::input::screen::CpuPublicationFanoutError::PlanGenerationMismatch {
-            batch,
-            authority,
-        }) if batch == first_plan.generation() && authority == second_plan.generation()
+        candidate.bind(Arc::clone(&second_authority), &first_binding),
+        Err(
+            hypercolor_core::input::screen::CpuPublicationFanoutError::WorkerRuntimeAuthorityMismatch
+        )
     ));
     assert_eq!(
         second_authority.plan().generation(),

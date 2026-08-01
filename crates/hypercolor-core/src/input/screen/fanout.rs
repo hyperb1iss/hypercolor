@@ -18,6 +18,7 @@ use super::{
     ScreenGridPolicy, ScreenLetterboxFill, ScreenPayloadKind, ScreenPhysicalReductionDescriptor,
     ScreenPlanGeneration, ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
     ScreenPublicationKind, ScreenPublicationMetadata, ScreenSmoothingPolicy, ScreenWorkerBinding,
+    ScreenWorkerBindingState,
 };
 
 /// Plan-time routing class for one exact logical branch.
@@ -347,12 +348,6 @@ impl PreparedCpuPublicationFanoutCandidate {
         authority: Arc<ScreenCommittedState>,
         binding: &ScreenWorkerBinding,
     ) -> Result<PreparedCpuPublicationFanout, CpuPublicationFanoutError> {
-        if authority.plan().generation() != self.batch.plan_generation() {
-            return Err(CpuPublicationFanoutError::PlanGenerationMismatch {
-                batch: self.batch.plan_generation(),
-                authority: authority.plan().generation(),
-            });
-        }
         if binding.source_id() != &self.batch.source().epoch().source_id {
             return Err(CpuPublicationFanoutError::WorkerSourceMismatch);
         }
@@ -362,14 +357,27 @@ impl PreparedCpuPublicationFanoutCandidate {
                 binding: binding.plan_generation(),
             });
         }
+        if !authority.owns_runtime_binding(binding) {
+            return Err(CpuPublicationFanoutError::WorkerRuntimeAuthorityMismatch);
+        }
+        if !matches!(
+            binding.state(),
+            ScreenWorkerBindingState::Active | ScreenWorkerBindingState::Retired
+        ) {
+            return Err(CpuPublicationFanoutError::WorkerBindingNotCommitted {
+                state: binding.state(),
+            });
+        }
         for route in &mut self.physical {
             for branch in &mut route.branches {
-                branch.publisher = Some(authority.publisher(&branch.descriptor, binding)?);
+                branch.publisher =
+                    Some(authority.publisher_for_runtime(&branch.descriptor, binding)?);
                 branch.next_due_at = Some(Instant::now());
             }
         }
         Ok(PreparedCpuPublicationFanout {
             authority,
+            runtime_binding: binding.clone(),
             batch: self.batch,
             physical: self.physical,
             executor: self.executor,
@@ -421,6 +429,7 @@ impl PreparedCpuPhysicalFanout {
 #[derive(Debug)]
 pub struct PreparedCpuPublicationFanout {
     authority: Arc<ScreenCommittedState>,
+    runtime_binding: ScreenWorkerBinding,
     batch: PreparedCpuReductionBatch,
     physical: Box<[PreparedCpuPhysicalFanout]>,
     executor: Option<CpuReductionExecutor>,
@@ -476,10 +485,10 @@ impl PreparedCpuPublicationFanout {
         Ok(candidate.attach_execution(executor.clone(), workspace))
     }
 
-    /// Exact committed plan generation retained by this routing snapshot.
+    /// Worker plan generation that prepared this physical routing snapshot.
     #[must_use]
     pub fn plan_generation(&self) -> ScreenPlanGeneration {
-        self.authority.plan().generation()
+        self.batch.plan_generation()
     }
 
     /// Prepared physical batch retained by this routing snapshot.
@@ -632,7 +641,7 @@ impl PreparedCpuPublicationFanout {
         let native_sequence =
             NonZeroU64::new(sequence).ok_or(CpuPublicationFanoutError::NativeSequenceZero)?;
         let current_authority = hub.committed_state();
-        if !Arc::ptr_eq(&current_authority, &self.authority) {
+        if !current_authority.owns_runtime_binding(&self.runtime_binding) {
             return Err(ScreenPublicationHubError::PublisherStale {
                 expected: current_authority.plan().generation(),
                 observed: self.authority.plan().generation(),
@@ -648,7 +657,7 @@ impl PreparedCpuPublicationFanout {
             .as_mut()
             .ok_or(CpuPublicationFanoutError::ExecutionNotAttached)?;
         let mut report = CpuPublicationFanoutReport::default();
-        let plan_generation = self.authority.plan().generation();
+        let plan_generation = self.batch.plan_generation();
         self.reservations.clear();
         self.publications.clear();
         self.direct_batch_indices.clear();
@@ -671,7 +680,7 @@ impl PreparedCpuPublicationFanout {
                     report.needs_source = true;
                     continue;
                 }
-                let metadata = publication_intent(branch, frame, native_sequence, plan_generation)?;
+                let metadata = publication_intent(branch, frame, native_sequence)?;
                 let payload_kind = match branch.kind {
                     PreparedCpuLogicalFanoutKind::DirectSurface
                     | PreparedCpuLogicalFanoutKind::MaterializedSurface => {
@@ -865,7 +874,7 @@ impl PreparedCpuPublicationFanout {
         let native_sequence = NonZeroU64::new(source_sequence)
             .ok_or(CpuPublicationFanoutError::NativeSequenceZero)?;
         let current_authority = hub.committed_state();
-        if !Arc::ptr_eq(&current_authority, &self.authority) {
+        if !current_authority.owns_runtime_binding(&self.runtime_binding) {
             return Err(ScreenPublicationHubError::PublisherStale {
                 expected: current_authority.plan().generation(),
                 observed: self.authority.plan().generation(),
@@ -873,7 +882,7 @@ impl PreparedCpuPublicationFanout {
             .into());
         }
 
-        let plan_generation = self.authority.plan().generation();
+        let plan_generation = self.batch.plan_generation();
         let mut report = CpuPublicationFanoutReport::default();
         self.reservations.clear();
         self.publications.clear();
@@ -892,7 +901,7 @@ impl PreparedCpuPublicationFanout {
             }
             let metadata = ScreenPublicationMetadata::try_intent(
                 branch.descriptor.source_epoch().clone(),
-                plan_generation,
+                branch.publisher().plan_generation(),
                 native_sequence,
                 captured_at,
                 branch.cadence.freshness_deadline(captured_at)?,
@@ -1197,11 +1206,10 @@ fn publication_intent(
     branch: &PreparedCpuLogicalFanout,
     frame: &CaptureFrame<RawCaptureSurface>,
     native_sequence: NonZeroU64,
-    plan_generation: ScreenPlanGeneration,
 ) -> Result<ScreenPublicationMetadata, CpuPublicationFanoutError> {
     Ok(ScreenPublicationMetadata::try_intent(
         branch.descriptor.source_epoch().clone(),
-        plan_generation,
+        branch.publisher().plan_generation(),
         native_sequence,
         frame.metadata().captured_at,
         branch
@@ -1651,12 +1659,6 @@ pub enum CpuPublicationFanoutError {
         batch: ScreenPlanGeneration,
         candidate: ScreenPlanGeneration,
     },
-    /// Prepared physical work and committed authority name different generations.
-    #[error("CPU fanout batch generation {batch:?} does not match authority {authority:?}")]
-    PlanGenerationMismatch {
-        batch: ScreenPlanGeneration,
-        authority: ScreenPlanGeneration,
-    },
     /// Retained physical storage was prepared from another batch identity.
     #[error("CPU fanout workspace belongs to another prepared batch")]
     WorkspaceBatchMismatch,
@@ -1669,6 +1671,12 @@ pub enum CpuPublicationFanoutError {
         candidate: ScreenPlanGeneration,
         binding: ScreenPlanGeneration,
     },
+    /// Worker authority is not the committed runtime owner for its source.
+    #[error("CPU fanout worker binding is not the committed runtime authority")]
+    WorkerRuntimeAuthorityMismatch,
+    /// Candidate binding has not reached a committed terminal state.
+    #[error("CPU fanout worker binding is not committed: {state:?}")]
+    WorkerBindingNotCommitted { state: ScreenWorkerBindingState },
     /// A prepared physical key is absent from the committed plan.
     #[error("CPU fanout physical key {batch_index} is absent from committed authority")]
     PhysicalPlanMismatch { batch_index: usize },

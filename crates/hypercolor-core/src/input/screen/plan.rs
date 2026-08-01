@@ -927,7 +927,7 @@ struct ScreenWorkerBindingInner {
     transaction_id: ScreenPlanTransactionId,
     worker_nonce: NonZeroU64,
     activation: Arc<ScreenWorkerActivationLatch>,
-    finalization: Mutex<()>,
+    finalization: Arc<Mutex<()>>,
     retired: AtomicBool,
 }
 
@@ -945,6 +945,7 @@ impl ScreenWorkerBinding {
         transaction_id: ScreenPlanTransactionId,
         worker_nonce: NonZeroU64,
         activation: Arc<ScreenWorkerActivationLatch>,
+        finalization: Arc<Mutex<()>>,
     ) -> Self {
         Self {
             inner: Arc::new(ScreenWorkerBindingInner {
@@ -954,7 +955,7 @@ impl ScreenWorkerBinding {
                 transaction_id,
                 worker_nonce,
                 activation,
-                finalization: Mutex::new(()),
+                finalization,
                 retired: AtomicBool::new(false),
             }),
         }
@@ -1004,6 +1005,14 @@ impl ScreenWorkerBinding {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    pub(crate) fn shares_finalization_gate(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner.finalization, &other.inner.finalization)
+    }
+
+    pub(crate) fn finalization_gate(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.inner.finalization)
+    }
+
     pub(crate) fn lock_finalization(&self) -> MutexGuard<'_, ()> {
         self.inner
             .finalization
@@ -1025,6 +1034,7 @@ pub struct ScreenWorkerPreparationTicket {
     transaction_id: ScreenPlanTransactionId,
     worker_nonce: NonZeroU64,
     activation: Arc<ScreenWorkerActivationLatch>,
+    finalization: Arc<Mutex<()>>,
     candidate: Arc<ScreenCapturePlan>,
     source_delta: Arc<ScreenSourcePlanDelta>,
     required_minimums: Arc<Vec<ScreenRequiredResourceMinimum>>,
@@ -1283,6 +1293,7 @@ impl ScreenWorkerPreparationTicket {
             self.transaction_id,
             self.worker_nonce,
             Arc::clone(&self.activation),
+            Arc::clone(&self.finalization),
         );
         Ok(ScreenPreparedWorkerToken {
             source_id: self.source_id.clone(),
@@ -1528,6 +1539,15 @@ impl PreparingScreenPlan {
             .staged_reservation
             .split_off(source_admission_bytes)
             .expect("staged admission covers every issued source ticket");
+        let finalization = self
+            .base_state
+            .worker_bindings()
+            .iter()
+            .find(|binding| binding.source_id() == source_id)
+            .map_or_else(
+                || Arc::new(Mutex::new(())),
+                ScreenWorkerBinding::finalization_gate,
+            );
         Ok(ScreenWorkerPreparationTicket {
             source_id: source_id.clone(),
             plan_generation: self.candidate.generation,
@@ -1535,6 +1555,7 @@ impl PreparingScreenPlan {
             transaction_id: self.transaction_id,
             worker_nonce,
             activation: Arc::clone(&self.activation),
+            finalization,
             candidate: Arc::clone(&self.candidate),
             source_delta,
             required_minimums,

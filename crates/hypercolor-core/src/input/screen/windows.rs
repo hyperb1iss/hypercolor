@@ -44,8 +44,8 @@ use crate::input::screen::{
     CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureDynamicRange,
     CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePacer,
     CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction,
-    CpuCaptureStorage, CpuExactReductionWorkPlan, CpuReductionExecutor, PhysicalOrigin,
-    PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
+    CpuCaptureStorage, CpuExactReductionWorkPlan, CpuReductionExecutor, ExactBoxList, ExactBoxNode,
+    PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
     PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
     ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity,
@@ -380,75 +380,6 @@ impl WindowsPublicationSource {
     }
 }
 
-struct ExactBoxNode<T> {
-    value: T,
-    next: Option<Box<Self>>,
-}
-
-struct ExactBoxList<T> {
-    head: Option<Box<ExactBoxNode<T>>>,
-}
-
-impl<T> Default for ExactBoxList<T> {
-    fn default() -> Self {
-        Self { head: None }
-    }
-}
-
-impl<T> ExactBoxList<T> {
-    fn boxed_node(value: T) -> Box<ExactBoxNode<T>> {
-        Box::new(ExactBoxNode { value, next: None })
-    }
-
-    fn push_boxed(&mut self, mut node: Box<ExactBoxNode<T>>) {
-        node.next = self.head.take();
-        self.head = Some(node);
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &T> {
-        let mut next = self.head.as_deref();
-        std::iter::from_fn(move || {
-            let node = next?;
-            next = node.next.as_deref();
-            Some(&node.value)
-        })
-    }
-
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        let mut next = self.head.as_deref_mut();
-        std::iter::from_fn(move || {
-            let node = next.take()?;
-            next = node.next.as_deref_mut();
-            Some(&mut node.value)
-        })
-    }
-
-    fn retain(&mut self, mut retain: impl FnMut(&mut T) -> bool) {
-        let mut link = &mut self.head;
-        while let Some(mut node) = link.take() {
-            if retain(&mut node.value) {
-                *link = Some(node);
-                link = &mut link.as_mut().expect("retained node was restored").next;
-            } else {
-                *link = node.next.take();
-            }
-        }
-    }
-
-    fn clear(&mut self) {
-        let mut next = self.head.take();
-        while let Some(mut node) = next {
-            next = node.next.take();
-        }
-    }
-}
-
-impl<T> Drop for ExactBoxList<T> {
-    fn drop(&mut self) {
-        self.clear();
-    }
-}
-
 struct WindowsOwnedSource {
     source_id: CaptureSourceId,
     binding: ScreenWorkerBinding,
@@ -515,10 +446,15 @@ impl ExactPublicationShared {
     }
 
     fn reap_owned_sources(&self) {
+        let authority = self.hub().map(|hub| hub.committed_state());
         self.owned_sources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|source| source.binding.state() == ScreenWorkerBindingState::Active);
+            .retain(|source| {
+                authority
+                    .as_ref()
+                    .is_some_and(|authority| authority.owns_runtime_binding(&source.binding))
+            });
     }
 
     fn clear_owned_sources(&self) {
@@ -842,20 +778,23 @@ struct WindowsExactRuntime {
 type WindowsExactRuntimes = ExactBoxList<WindowsExactRuntime>;
 
 impl WindowsExactRuntime {
-    fn bind_if_active(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
-        if self.binding.state() != ScreenWorkerBindingState::Active {
+    fn bind_if_current(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
+        let authority = hub.committed_state();
+        if !authority.owns_runtime_binding(&self.binding) {
             return Ok(());
         }
-        let authority = hub.committed_state();
-        if authority.plan().generation() != self.binding.plan_generation()
-            || authority.plan().demand_revision() != self.binding.demand_revision()
-        {
-            anyhow::bail!("Windows exact runtime authority does not match its worker binding");
+        match self.binding.state() {
+            ScreenWorkerBindingState::Active | ScreenWorkerBindingState::Retired => {}
+            ScreenWorkerBindingState::Prepared | ScreenWorkerBindingState::Armed => return Ok(()),
+            ScreenWorkerBindingState::Aborted => {
+                anyhow::bail!("Windows exact runtime binding was aborted after commit")
+            }
         }
         if let Some(gpu) = &mut self.gpu {
             for route in &mut gpu.routes {
                 if route.publisher.is_none() {
-                    route.publisher = Some(authority.publisher(&route.descriptor, &self.binding)?);
+                    route.publisher =
+                        Some(authority.publisher_for_runtime(&route.descriptor, &self.binding)?);
                 }
             }
         }
@@ -872,11 +811,9 @@ impl WindowsExactRuntime {
     }
 
     fn is_bound(&self) -> bool {
-        self.binding.state() == ScreenWorkerBindingState::Active
-            && self
-                .gpu
-                .as_ref()
-                .is_none_or(|gpu| gpu.routes.iter().all(|route| route.publisher.is_some()))
+        self.gpu
+            .as_ref()
+            .is_none_or(|gpu| gpu.routes.iter().all(|route| route.publisher.is_some()))
             && self.cpu.as_ref().is_none_or(|cpu| cpu.fanout.is_some())
     }
 }
@@ -2910,7 +2847,12 @@ fn prepare_exact_command(
 
 fn reap_exact_runtimes(runtimes: &mut WindowsExactRuntimes, exact: &ExactPublicationShared) {
     exact.reap_owned_sources();
-    runtimes.retain(|runtime| runtime.binding.state() == ScreenWorkerBindingState::Active);
+    let authority = exact.hub().map(|hub| hub.committed_state());
+    runtimes.retain(|runtime| {
+        authority
+            .as_ref()
+            .is_some_and(|authority| authority.owns_runtime_binding(&runtime.binding))
+    });
 }
 
 fn bind_current_exact_runtime<'a>(
@@ -2918,27 +2860,24 @@ fn bind_current_exact_runtime<'a>(
     source: &WindowsPublicationSource,
     hub: &ScreenPublicationHub,
 ) -> anyhow::Result<Option<&'a mut WindowsExactRuntime>> {
-    let mut selected_generation = None;
-    for runtime in runtimes.iter_mut() {
-        if runtime.source != *source {
-            continue;
-        }
-        runtime.bind_if_active(hub)?;
-        let generation = runtime.binding.plan_generation();
-        if runtime.is_bound() && selected_generation.is_none_or(|current| current < generation) {
-            selected_generation = Some(generation);
-        }
-    }
-    Ok(runtimes.iter_mut().find(|runtime| {
-        runtime.source == *source
-            && runtime.is_bound()
-            && Some(runtime.binding.plan_generation()) == selected_generation
-    }))
+    let authority = hub.committed_state();
+    let Some(current_binding) = authority.runtime_binding(&source.epoch.source_id) else {
+        return Ok(None);
+    };
+    let runtime = runtimes
+        .iter_mut()
+        .find(|runtime| runtime.source == *source && runtime.binding.is_same(current_binding));
+    let Some(runtime) = runtime else {
+        return Ok(None);
+    };
+    runtime.bind_if_current(hub)?;
+    Ok(runtime.is_bound().then_some(runtime))
 }
 
 fn publish_windows_gpu_outcome(
     routes: &mut [WindowsGpuRoute],
     source: &WindowsPublicationSource,
+    runtime_plan_generation: super::ScreenPlanGeneration,
     hub: &ScreenPublicationHub,
     outcome: GpuSurfacePublishOutcome,
 ) -> anyhow::Result<GpuSurfacePublicationDisposition> {
@@ -2968,7 +2907,7 @@ fn publish_windows_gpu_outcome(
         provenance.output_extent.height(),
     )?;
     let valid = provenance.descriptor.as_ref() == route.native.as_ref()
-        && provenance.plan_generation.get() == publisher.plan_generation().get()
+        && provenance.plan_generation.get() == runtime_plan_generation.get()
         && source_id == source.epoch.source_id
         && provenance.topology_generation == source.epoch.topology_generation
         && provenance.duplication_generation == source.duplication_generation
@@ -3262,6 +3201,7 @@ fn pump_windows_exact_runtime(
     }
 
     let source = runtime.source.clone();
+    let runtime_plan_generation = runtime.binding.plan_generation();
     let mut gpu_error = None;
     let mut reduction_error = None;
     let (gpu_plan, mut gpu_routes) = if gpu_requested {
@@ -3303,7 +3243,15 @@ fn pump_windows_exact_runtime(
             let result = gpu_routes
                 .as_deref_mut()
                 .ok_or_else(|| anyhow!("Windows GPU callback has no requested route set"))
-                .and_then(|routes| publish_windows_gpu_outcome(routes, &source, hub, outcome));
+                .and_then(|routes| {
+                    publish_windows_gpu_outcome(
+                        routes,
+                        &source,
+                        runtime_plan_generation,
+                        hub,
+                        outcome,
+                    )
+                });
             match result {
                 Ok(disposition) => disposition,
                 Err(error) => {

@@ -29,6 +29,7 @@ mod plan;
 mod process;
 mod publication;
 mod reducer;
+mod retained;
 mod sampling;
 pub mod sector;
 pub mod smooth;
@@ -131,6 +132,7 @@ pub use reducer::{
     CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
     PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
 };
+pub(crate) use retained::{ExactBoxList, ExactBoxNode};
 pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
     CpuStorageCoordinate,
