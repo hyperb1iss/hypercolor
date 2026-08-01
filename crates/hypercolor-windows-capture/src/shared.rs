@@ -75,20 +75,24 @@ pub trait CaptureResourceAdmission: std::fmt::Debug + Send + Sync {
 }
 
 #[derive(Debug)]
+#[cfg(target_os = "windows")]
 struct UnboundedCaptureResourceAdmission;
 
 #[derive(Debug)]
+#[cfg(target_os = "windows")]
 struct UnboundedCaptureResourceReservation {
     kind: CaptureResourceKind,
     bytes: u64,
 }
 
 #[derive(Debug)]
+#[cfg(target_os = "windows")]
 struct UnboundedCaptureResourceLease {
     kind: CaptureResourceKind,
     bytes: u64,
 }
 
+#[cfg(target_os = "windows")]
 impl CaptureResourceAdmission for UnboundedCaptureResourceAdmission {
     fn try_reserve(
         &self,
@@ -102,6 +106,7 @@ impl CaptureResourceAdmission for UnboundedCaptureResourceAdmission {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl CaptureResourceReservation for UnboundedCaptureResourceReservation {
     fn kind(&self) -> CaptureResourceKind {
         self.kind
@@ -131,6 +136,7 @@ impl CaptureResourceReservation for UnboundedCaptureResourceReservation {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl CaptureResourceLease for UnboundedCaptureResourceLease {
     fn kind(&self) -> CaptureResourceKind {
         self.kind
@@ -141,10 +147,12 @@ impl CaptureResourceLease for UnboundedCaptureResourceLease {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn default_capture_resource_admission() -> Arc<dyn CaptureResourceAdmission> {
     Arc::new(UnboundedCaptureResourceAdmission)
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn reserve_capture_resource(
     admission: &dyn CaptureResourceAdmission,
     kind: CaptureResourceKind,
@@ -164,6 +172,7 @@ pub(crate) fn reserve_capture_resource(
     Ok(reservation)
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn commit_capture_resource(
     reservation: Box<dyn CaptureResourceReservation>,
     retained_bytes: u64,
@@ -1302,6 +1311,8 @@ impl GpuSurfaceTargetPreparationResourceQuote {
         let metadata_byte_len =
             crate::duplication::gpu_surface_target_preparation_metadata_byte_len(slot_count)?;
         #[cfg(not(target_os = "windows"))]
+        let _ = slot_count;
+        #[cfg(not(target_os = "windows"))]
         let metadata_byte_len = 0;
         Ok(Self { metadata_byte_len })
     }
@@ -1736,6 +1747,7 @@ type FramePool = Arc<Mutex<Vec<Vec<u8>>>>;
 #[derive(Debug)]
 pub(crate) struct LegacyFramePlane {
     pub(crate) rgba: Vec<u8>,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) resource_lease: Arc<dyn CaptureResourceLease>,
 }
 
