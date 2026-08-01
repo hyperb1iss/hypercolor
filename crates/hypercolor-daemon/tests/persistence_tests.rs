@@ -79,15 +79,22 @@ fn concurrent_distinct_payloads_commit_only_the_newest_generation() {
     let barrier = Arc::new(Barrier::new(worker_count));
     let mut workers = Vec::with_capacity(worker_count);
 
-    for generation in 0..worker_count {
-        let reservation = writer.reserve();
+    // Admissions are ordered before any commit races: exactly-one-Written is
+    // only guaranteed among payloads whose admission the newest one observed.
+    // Racing admit+commit together lets an older write finish before a newer
+    // admission exists, making two truthful Written outcomes possible.
+    let admitted_writes: Vec<_> = (0..worker_count)
+        .map(|generation| {
+            let payload = format!("generation={generation}");
+            writer.reserve().admit(payload.into_bytes())
+        })
+        .collect();
+
+    for admitted in admitted_writes {
         let barrier = Arc::clone(&barrier);
         workers.push(std::thread::spawn(move || {
             barrier.wait();
-            let payload = format!("generation={generation}");
-            reservation
-                .write(payload.as_bytes())
-                .expect("concurrent write")
+            admitted.commit().expect("concurrent commit")
         }));
     }
 
@@ -101,6 +108,13 @@ fn concurrent_distinct_payloads_commit_only_the_newest_generation() {
             .filter(|outcome| **outcome == AtomicWriteOutcome::Written)
             .count(),
         1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == AtomicWriteOutcome::Superseded)
+            .count(),
+        worker_count - 1
     );
     assert_eq!(
         fs::read_to_string(&path).expect("read newest payload"),
