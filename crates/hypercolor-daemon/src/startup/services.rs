@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use tokio::sync::{Mutex, RwLock, watch};
 use tracing::{info, warn};
@@ -41,7 +41,7 @@ use hypercolor_core::input::screen::WaylandScreenCaptureInput;
 use hypercolor_core::input::screen::{
     CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput,
 };
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 use hypercolor_core::input::screen::{ScreenAdmissionCapacity, ScreenAnalysisResourcePlan};
 use hypercolor_core::input::{InputManager, SensorPoller, SourceStatusHandle};
 use hypercolor_core::scene::SceneManager;
@@ -608,9 +608,9 @@ pub(crate) fn build_input_manager(
     config_manager: &Arc<ConfigManager>,
 ) -> Result<(InputManager, hypercolor_core::input::BrowserInputHandle)> {
     let mut input_manager = InputManager::new();
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let capacity_plan = screen_capacity_plan(&config.capture)?;
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     input_manager.set_screen_capacity_plan(
         capacity_plan.resource_capacity(),
         capacity_plan.total_capacity(),
@@ -648,7 +648,7 @@ pub(crate) fn build_input_manager(
     }
 
     if config.capture.enabled {
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             let admission_coordinator = input_manager.screen_admission_coordinator();
             input_manager.add_source(build_platform_screen_capture_source(
@@ -658,7 +658,7 @@ pub(crate) fn build_input_manager(
                 capacity_plan.total_capacity(),
             )?);
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         input_manager.add_source(build_platform_screen_capture_source(
             &config.capture,
             Arc::clone(config_manager),
@@ -669,14 +669,14 @@ pub(crate) fn build_input_manager(
     Ok((input_manager, browser_input))
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenCapacityPlan {
     resource: ScreenAdmissionCapacity,
     total: ScreenAdmissionCapacity,
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 impl ScreenCapacityPlan {
     pub(crate) const fn resource_capacity(self) -> ScreenAdmissionCapacity {
         self.resource
@@ -687,7 +687,7 @@ impl ScreenCapacityPlan {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn screen_capacity_plan(
     capture: &hypercolor_types::config::CaptureConfig,
 ) -> Result<ScreenCapacityPlan> {
@@ -695,7 +695,7 @@ pub(crate) fn screen_capacity_plan(
     screen_capacity_plan_for_backend(capture, backend_capacity)
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(crate) fn screen_capacity_plan_for_backend(
     capture: &hypercolor_types::config::CaptureConfig,
     backend_capacity: u64,
@@ -709,7 +709,7 @@ pub(crate) fn screen_capacity_plan_for_backend(
     Ok(ScreenCapacityPlan { resource, total })
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(crate) fn screen_analysis_plan_for_demand(
     capture: &hypercolor_types::config::CaptureConfig,
     demand: hypercolor_core::input::screen::ScreenCaptureDemand,
@@ -729,7 +729,7 @@ pub(crate) fn screen_analysis_plan_for_demand(
     .context("screen analysis demand exceeds configured steady capacity")
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn available_host_memory_bytes() -> Result<u64> {
     let mut system = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
@@ -742,7 +742,7 @@ fn available_host_memory_bytes() -> Result<u64> {
     Ok(available)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn build_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
@@ -759,7 +759,7 @@ pub(crate) fn build_platform_screen_capture_source(
     )
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn build_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
@@ -769,7 +769,7 @@ pub(crate) fn build_platform_screen_capture_source(
     build_platform_screen_capture_source_with_persistence(capture, persistence)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn prepare_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
@@ -790,7 +790,7 @@ pub(crate) fn prepare_platform_screen_capture_source(
     Ok((source, persistence))
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn prepare_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
@@ -805,14 +805,22 @@ pub(crate) fn prepare_platform_screen_capture_source(
     Ok((source, persistence))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn build_platform_screen_capture_source_with_persistence(
     capture: &hypercolor_types::config::CaptureConfig,
     persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+    #[cfg(target_os = "windows")]
     let source = build_windows_screen_capture_source(
+        capture,
+        persistence.clone(),
+        admission_coordinator,
+        capacity,
+    )?;
+    #[cfg(target_os = "linux")]
+    let source = build_screen_capture_source(
         capture,
         persistence.clone(),
         admission_coordinator,
@@ -825,26 +833,13 @@ fn build_platform_screen_capture_source_with_persistence(
     Ok(source)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn build_platform_screen_capture_source_with_persistence(
     capture: &hypercolor_types::config::CaptureConfig,
     persistence: CaptureConfigPersistenceGate,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
-    #[cfg(target_os = "linux")]
-    let source = build_screen_capture_source(capture, persistence.clone())?;
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (capture, persistence);
-        anyhow::bail!("screen capture is not supported on this platform")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let status = source
-            .source_status_handle()
-            .context("screen capture source must expose lifecycle status")?;
-        persistence.bind_source(status);
-        Ok(source)
-    }
+    let _ = (capture, persistence);
+    anyhow::bail!("screen capture is not supported on this platform")
 }
 
 #[derive(Clone)]
@@ -1138,8 +1133,10 @@ pub(crate) fn build_interaction_source(
 pub(crate) fn build_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     persistence: CaptureConfigPersistenceGate,
+    admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
+    capacity: ScreenAdmissionCapacity,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
-    let capture_config = screen_capture_config_from(capture)?;
+    let capture_config = screen_capture_config_with_capacity_from(capture, capacity)?;
     let configured = capture.restore_token.clone();
     let sink = Arc::new(move |token: Option<String>| {
         persistence.publish(CaptureConfigPersistenceUpdate::RestoreToken {
@@ -1149,7 +1146,11 @@ pub(crate) fn build_screen_capture_source(
     });
 
     Ok(Box::new(
-        WaylandScreenCaptureInput::new(capture_config).with_restore_token_sink(sink),
+        WaylandScreenCaptureInput::with_admission_coordinator(
+            capture_config,
+            admission_coordinator,
+        )
+        .with_restore_token_sink(sink),
     ))
 }
 
@@ -1186,6 +1187,14 @@ fn windows_screen_capture_config_from(
     capture: &hypercolor_types::config::CaptureConfig,
     capacity: ScreenAdmissionCapacity,
 ) -> Result<ScreenCaptureConfig> {
+    screen_capture_config_with_capacity_from(capture, capacity)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn screen_capture_config_with_capacity_from(
+    capture: &hypercolor_types::config::CaptureConfig,
+    capacity: ScreenAdmissionCapacity,
+) -> Result<ScreenCaptureConfig> {
     let analysis_memory_bytes = capacity.byte_budget().min(capacity.backend_capacity());
     ScreenAnalysisResourcePlan::try_new(
         capture.grid_cols,
@@ -1217,5 +1226,5 @@ fn noise_gate_to_db(noise_gate: f32) -> f32 {
     20.0 * linear.log10()
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
 mod tests;

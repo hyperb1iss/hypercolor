@@ -654,7 +654,7 @@ async fn apply_capture_config_transaction(
             "config manager unavailable"
         )));
     };
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let (plan, capacity_plan, capacity_preparation, admission_coordinator) = {
         let input_manager = state.input_manager.lock().await;
         let plan = input_manager.plan_screen_runtime_config(capture.enabled);
@@ -691,13 +691,13 @@ async fn apply_capture_config_transaction(
             input_manager.screen_admission_coordinator(),
         )
     };
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     let plan = {
         let input_manager = state.input_manager.lock().await;
         input_manager.plan_screen_runtime_config(capture.enabled)
     };
     let (mut replacement, persistence) = if plan.enabled() {
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         let (mut source, persistence) =
             crate::startup::services::prepare_platform_screen_capture_source(
                 &capture,
@@ -707,7 +707,7 @@ async fn apply_capture_config_transaction(
                 capacity_plan.total_capacity(),
             )
             .map_err(CaptureConfigTransactionError::Prepare)?;
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let (mut source, persistence) =
             crate::startup::services::prepare_platform_screen_capture_source(
                 &capture,
@@ -758,7 +758,7 @@ async fn apply_capture_config_transaction(
         stop_prepared_capture_source(replacement).await;
         return Err(CaptureConfigTransactionError::Commit(error));
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     if let Some(capacity_preparation) = &capacity_preparation
         && let Err(error) = input_manager.validate_screen_capacity(capacity_preparation)
     {
@@ -803,7 +803,7 @@ async fn apply_capture_config_transaction(
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let retirement = if let Some(capacity_preparation) = capacity_preparation {
         input_manager.commit_screen_capacity_and_runtime_config(
             capacity_preparation,
@@ -814,7 +814,7 @@ async fn apply_capture_config_transaction(
         input_manager.commit_screen_runtime_config(&plan, &mut replacement)
     }
     .expect("screen capacity and runtime were validated under the same input-manager lock");
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     let retirement = input_manager
         .commit_screen_runtime_config(&plan, &mut replacement)
         .expect("screen runtime plan was validated under the same input-manager lock");
@@ -1462,7 +1462,7 @@ mod tests {
         assert!(stopped.load(Ordering::Acquire));
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[tokio::test]
     async fn capture_transaction_applies_publication_capacity_with_config() {
         let tempdir = tempfile::tempdir().expect("temporary config directory should build");
@@ -1507,7 +1507,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[tokio::test]
     async fn capture_transaction_conflict_preserves_publication_capacity() {
         let tempdir = tempfile::tempdir().expect("temporary config directory should build");

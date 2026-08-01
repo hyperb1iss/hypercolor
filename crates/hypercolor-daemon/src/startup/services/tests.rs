@@ -1,19 +1,21 @@
+#[cfg(target_os = "windows")]
 use std::sync::Arc;
 
+#[cfg(target_os = "windows")]
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::input::screen::{
-    PixelExtent, ResolvedCaptureSource, ScreenAdmissionCapacity, ScreenCaptureDemand,
-};
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::ResolvedCaptureSource;
+use hypercolor_core::input::screen::{PixelExtent, ScreenAdmissionCapacity, ScreenCaptureDemand};
+#[cfg(target_os = "windows")]
 use hypercolor_core::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 
+#[cfg(target_os = "windows")]
+use super::{CaptureConfigPersistenceGate, windows_capture_source_sink};
 use super::{
-    CaptureConfigPersistenceGate, screen_analysis_plan_for_demand,
-    screen_capacity_plan_for_backend, screen_capture_config_from, windows_capture_source_sink,
+    screen_analysis_plan_for_demand, screen_capacity_plan, screen_capacity_plan_for_backend,
+    screen_capture_config_from, screen_capture_config_with_capacity_from,
 };
-#[cfg(target_os = "windows")]
-use super::{screen_capacity_plan, windows_screen_capture_config_from};
 
-#[cfg(target_os = "windows")]
 #[test]
 fn steady_capacity_uses_configured_budget_and_live_backend_memory() {
     let capture = hypercolor_types::config::CaptureConfig {
@@ -79,6 +81,7 @@ fn analysis_quote_uses_the_actual_requested_extent() {
     );
 }
 
+#[cfg(target_os = "windows")]
 fn persistence_gate(
     manager: &Arc<ConfigManager>,
     committed: bool,
@@ -93,6 +96,7 @@ fn persistence_gate(
     (persistence, expected)
 }
 
+#[cfg(target_os = "windows")]
 fn live_screen_status() -> SourceStatusHandle {
     let mut reporter =
         SourceStatusReporter::new("test-screen", SourceKind::Screen, "test", true, true, true);
@@ -105,6 +109,7 @@ fn live_screen_status() -> SourceStatusHandle {
     reporter.handle()
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 fn resolved_windows_capture_source_survives_daemon_restart() {
     let directory = tempfile::tempdir().expect("test config directory is created");
@@ -124,6 +129,7 @@ fn resolved_windows_capture_source_survives_daemon_restart() {
     assert_eq!(restarted.get().capture.source, "monitor:display:stable");
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 fn resolved_windows_capture_source_does_not_overwrite_a_newer_selection() {
     let directory = tempfile::tempdir().expect("test config directory is created");
@@ -143,6 +149,7 @@ fn resolved_windows_capture_source_does_not_overwrite_a_newer_selection() {
     assert_eq!(restarted.get().capture.source, "monitor:new-choice");
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 fn resolved_windows_capture_source_waits_for_graph_commit() {
     let directory = tempfile::tempdir().expect("test config directory is created");
@@ -173,6 +180,7 @@ fn resolved_windows_capture_source_waits_for_graph_commit() {
     assert!(path.exists());
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 fn stale_windows_callback_cannot_rewrite_a_newer_capture_epoch() {
     let directory = tempfile::tempdir().expect("test config directory is created");
@@ -230,14 +238,13 @@ fn screen_capture_config_conversion_preserves_validated_values_exactly() {
     assert!((runtime.tuning.gamma - 5.0).abs() < f32::EPSILON);
 }
 
-#[cfg(target_os = "windows")]
 #[test]
-fn windows_capture_config_installs_the_steady_analysis_budget() {
+fn platform_capture_config_installs_the_steady_analysis_budget() {
     let capture = hypercolor_types::config::CaptureConfig::default();
     let capacity = ScreenAdmissionCapacity::new(1_000_000, 2_000_000);
 
-    let runtime = windows_screen_capture_config_from(&capture, capacity)
-        .expect("Windows analysis capacity should be admitted");
+    let runtime = screen_capture_config_with_capacity_from(&capture, capacity)
+        .expect("platform analysis capacity should be admitted");
 
     assert_eq!(runtime.analysis_memory_bytes, 1_000_000);
 }
