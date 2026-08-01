@@ -10,7 +10,8 @@ use hypercolor_core::input::screen::{
     CaptureFrameError, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool,
     CaptureRotation, CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction,
     CpuCaptureStorage, KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface, SourceScale,
+    PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface, ScreenAdmissionCapacity,
+    ScreenByteAdmissionCoordinator, SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -727,6 +728,37 @@ fn failed_plane_growth_preserves_the_reusable_allocation() {
         .try_acquire(48)
         .expect("last-good plane remains reusable");
     assert_eq!(reused.as_ptr(), pointer);
+}
+
+#[test]
+fn admitted_plane_pool_rejects_before_allocating() {
+    let coordinator = ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(47, 47));
+    let pool = CapturePlanePool::with_admission_coordinator(coordinator.clone());
+
+    assert!(matches!(
+        pool.try_acquire(48),
+        Err(CaptureFrameError::PlaneCapacityExceeded {
+            requested_bytes: 48,
+            available_bytes: 47,
+        })
+    ));
+    assert_eq!(pool.allocation_count(), 0);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+}
+
+#[test]
+fn admitted_plane_pool_retains_capacity_for_available_and_published_planes() {
+    let coordinator = ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(48, 48));
+    let pool = CapturePlanePool::with_admission_coordinator(coordinator.clone());
+    let mut lease = pool.try_acquire(48).expect("admitted plane allocates");
+    lease.resize(48, 7);
+    let plane = lease.freeze();
+
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 48);
+    drop(pool);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 48);
+    drop(plane);
+    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
 }
 
 #[test]

@@ -11,6 +11,10 @@ use std::time::Instant;
 
 use thiserror::Error;
 
+use super::admission::{
+    ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteLease,
+    ScreenByteReservation,
+};
 use super::plan::ScreenResourceLifetime;
 
 /// Stable logical identity of one capture source.
@@ -1002,19 +1006,52 @@ impl fmt::Debug for CpuCaptureStorage {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct CapturePlanePoolInner {
-    available: Mutex<Vec<Vec<u8>>>,
+    available: Mutex<Vec<CapturePlaneBacking>>,
     allocations: AtomicUsize,
+    admission_coordinator: Option<ScreenByteAdmissionCoordinator>,
+}
+
+#[derive(Debug)]
+struct CapturePlaneBacking {
+    buffer: Vec<u8>,
+    _admission: Option<ScreenByteLease>,
 }
 
 /// Reusable owner pool for capture adapters that must materialize CPU pixels.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct CapturePlanePool {
     inner: Arc<CapturePlanePoolInner>,
 }
 
+impl Default for CapturePlanePool {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(CapturePlanePoolInner {
+                available: Mutex::new(Vec::new()),
+                allocations: AtomicUsize::new(0),
+                admission_coordinator: None,
+            }),
+        }
+    }
+}
+
 impl CapturePlanePool {
+    /// Create a pool whose backing planes share a process-wide byte fence.
+    #[must_use]
+    pub fn with_admission_coordinator(
+        admission_coordinator: ScreenByteAdmissionCoordinator,
+    ) -> Self {
+        Self {
+            inner: Arc::new(CapturePlanePoolInner {
+                available: Mutex::new(Vec::new()),
+                allocations: AtomicUsize::new(0),
+                admission_coordinator: Some(admission_coordinator),
+            }),
+        }
+    }
+
     /// Acquire exclusive mutable storage with at least `minimum_capacity` bytes.
     ///
     /// # Errors
@@ -1031,27 +1068,72 @@ impl CapturePlanePool {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let index = available
             .iter()
-            .position(|buffer| buffer.capacity() >= minimum_capacity);
-        let (mut buffer, created) = match index {
-            Some(index) => (available.swap_remove(index), false),
-            None => available
-                .pop()
-                .map_or_else(|| (Vec::new(), true), |buffer| (buffer, false)),
+            .position(|backing| backing.buffer.capacity() >= minimum_capacity);
+        let (backing, created) = if let Some(index) = index {
+            (available.swap_remove(index), false)
+        } else if let Some(admission_coordinator) = &self.inner.admission_coordinator {
+            let requested_bytes = u64::try_from(minimum_capacity)
+                .map_err(|_| CaptureFrameError::StorageSizeOverflow)?;
+            let reservation = admission_coordinator.try_acquire(requested_bytes).map_err(
+                |error| match error {
+                    ScreenByteAdmissionError::CapacityExceeded {
+                        requested_bytes,
+                        available_bytes,
+                    } => CaptureFrameError::PlaneCapacityExceeded {
+                        requested_bytes,
+                        available_bytes,
+                    },
+                    ScreenByteAdmissionError::CapacityShrinkRejected { .. }
+                    | ScreenByteAdmissionError::RevisionExhausted => {
+                        CaptureFrameError::PlaneAllocationFailed {
+                            byte_len: minimum_capacity,
+                        }
+                    }
+                },
+            )?;
+            let mut buffer = Vec::new();
+            if buffer.try_reserve_exact(minimum_capacity).is_err() {
+                return Err(CaptureFrameError::PlaneAllocationFailed {
+                    byte_len: minimum_capacity,
+                });
+            }
+            available.retain(|backing| backing.buffer.capacity() >= minimum_capacity);
+            (
+                CapturePlaneBacking {
+                    buffer,
+                    _admission: Some(ScreenByteReservation::freeze(reservation)),
+                },
+                true,
+            )
+        } else {
+            let (mut backing, created) = available.pop().map_or_else(
+                || {
+                    (
+                        CapturePlaneBacking {
+                            buffer: Vec::new(),
+                            _admission: None,
+                        },
+                        true,
+                    )
+                },
+                |backing| (backing, false),
+            );
+            if backing.buffer.capacity() < minimum_capacity
+                && backing.buffer.try_reserve_exact(minimum_capacity).is_err()
+            {
+                available.push(backing);
+                return Err(CaptureFrameError::PlaneAllocationFailed {
+                    byte_len: minimum_capacity,
+                });
+            }
+            (backing, created)
         };
-        if buffer.capacity() < minimum_capacity
-            && buffer.try_reserve_exact(minimum_capacity).is_err()
-        {
-            available.push(buffer);
-            return Err(CaptureFrameError::PlaneAllocationFailed {
-                byte_len: minimum_capacity,
-            });
-        }
         if created {
             self.inner.allocations.fetch_add(1, Ordering::Relaxed);
         }
         drop(available);
         Ok(CapturePlaneLease {
-            buffer: Some(buffer),
+            backing: Some(backing),
             pool: Arc::downgrade(&self.inner),
         })
     }
@@ -1075,7 +1157,7 @@ impl CapturePlanePool {
 
 /// Exclusive mutable lease that freezes into an immutable pooled frame plane.
 pub struct CapturePlaneLease {
-    buffer: Option<Vec<u8>>,
+    backing: Option<CapturePlaneBacking>,
     pool: Weak<CapturePlanePoolInner>,
 }
 
@@ -1084,7 +1166,7 @@ impl CapturePlaneLease {
     #[must_use]
     pub fn freeze(mut self) -> PooledCapturePlane {
         PooledCapturePlane {
-            buffer: self.buffer.take(),
+            backing: self.backing.take(),
             pool: self.pool.clone(),
         }
     }
@@ -1094,55 +1176,60 @@ impl Deref for CapturePlaneLease {
     type Target = Vec<u8>;
 
     fn deref(&self) -> &Self::Target {
-        self.buffer
+        &self
+            .backing
             .as_ref()
             .expect("capture plane lease owns a buffer")
+            .buffer
     }
 }
 
 impl DerefMut for CapturePlaneLease {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.buffer
+        &mut self
+            .backing
             .as_mut()
             .expect("capture plane lease owns a buffer")
+            .buffer
     }
 }
 
 impl Drop for CapturePlaneLease {
     fn drop(&mut self) {
-        recycle_plane(self.buffer.take(), &self.pool);
+        recycle_plane(self.backing.take(), &self.pool);
     }
 }
 
 /// Immutable CPU plane whose allocation returns to its pool after publication.
 pub struct PooledCapturePlane {
-    buffer: Option<Vec<u8>>,
+    backing: Option<CapturePlaneBacking>,
     pool: Weak<CapturePlanePoolInner>,
 }
 
 impl AsRef<[u8]> for PooledCapturePlane {
     fn as_ref(&self) -> &[u8] {
-        self.buffer
-            .as_deref()
+        self.backing
+            .as_ref()
+            .map(|backing| backing.buffer.as_slice())
             .expect("pooled capture plane owns a buffer")
     }
 }
 
 impl Drop for PooledCapturePlane {
     fn drop(&mut self) {
-        recycle_plane(self.buffer.take(), &self.pool);
+        recycle_plane(self.backing.take(), &self.pool);
     }
 }
 
-fn recycle_plane(buffer: Option<Vec<u8>>, pool: &Weak<CapturePlanePoolInner>) {
-    let (Some(mut buffer), Some(pool)) = (buffer, pool.upgrade()) else {
+fn recycle_plane(backing: Option<CapturePlaneBacking>, pool: &Weak<CapturePlanePoolInner>) {
+    let (Some(mut backing), Some(pool)) = (backing, pool.upgrade()) else {
         return;
     };
-    buffer.clear();
+    backing.buffer.clear();
     pool.available
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(buffer);
+        .push(backing);
 }
 
 /// Platform family of an opaque GPU surface.
@@ -1782,6 +1869,14 @@ pub enum CaptureFrameError {
     /// A demanded CPU capture plane could not be allocated.
     #[error("could not allocate {byte_len} bytes for a capture plane")]
     PlaneAllocationFailed { byte_len: usize },
+    /// A demanded CPU capture plane exceeded the shared source byte fence.
+    #[error(
+        "capture plane needs {requested_bytes} bytes but only {available_bytes} admitted bytes remain"
+    )]
+    PlaneCapacityExceeded {
+        requested_bytes: u64,
+        available_bytes: u64,
+    },
     /// Opaque GPU handles reserve zero as invalid.
     #[error("GPU surface handle id must be non-zero")]
     InvalidGpuHandle,
