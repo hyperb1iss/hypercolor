@@ -94,8 +94,8 @@ jobs:
       docs: ${{ steps.filter.outputs.docs }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v4.0.1
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4.0.2
         id: filter
         with:
           filters: |
@@ -151,7 +151,7 @@ jobs:
     if: needs.changes.outputs.workflow == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
 
@@ -165,7 +165,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-shared
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -208,7 +208,7 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
         with:
           key: effects-${{ hashFiles('sdk/bun.lock') }}
@@ -251,7 +251,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -286,7 +286,7 @@ jobs:
           path: effects/hypercolor
 
       - name: Install nextest
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: cargo-nextest
 
@@ -369,7 +369,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/servo
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -480,7 +480,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -500,7 +500,7 @@ jobs:
           path: effects/hypercolor
 
       - name: Install nextest
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: cargo-nextest
 
@@ -561,7 +561,7 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           arguments: ""
@@ -578,7 +578,7 @@ jobs:
       needs.changes.outputs.compat == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - name: Verify compatibility matrix is current
         run: bun scripts/gen-compat.ts --check
@@ -595,7 +595,7 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -603,7 +603,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: python/uv.lock
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version-file: python/.python-version
 
@@ -643,7 +643,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-test-daemon
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -665,7 +665,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: python/uv.lock
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version-file: python/.python-version
 
@@ -695,12 +695,12 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version-file: python/.python-version
 
@@ -737,7 +737,7 @@ jobs:
       run:
         working-directory: sdk
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
         with:
           key: sdk-${{ hashFiles('sdk/bun.lock') }}
@@ -761,7 +761,7 @@ jobs:
       run:
         working-directory: crates/hypercolor-ui
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
         with:
           key: ui-${{ hashFiles('crates/hypercolor-ui/bun.lock') }}
@@ -775,7 +775,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: cargo test
       - name: Install Trunk
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: trunk@0.21.14
       - run: env -u NO_COLOR trunk build --release
@@ -798,7 +798,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-test-daemon
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -909,7 +909,7 @@ jobs:
       HYPERCOLOR_E2E_UI_DIST_DIR: ${{ github.workspace }}/crates/hypercolor-ui/dist
       HYPERCOLOR_E2E_STACK: ${{ matrix.suite }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download e2e stack
         uses: actions/download-artifact@v8
@@ -931,7 +931,7 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           # Node 24.16+ hangs `playwright install` in extract-zip
           # (microsoft/playwright#41000, fixed in Playwright 1.60); stay on
@@ -989,7 +989,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Zola
         run: |
@@ -1019,7 +1019,7 @@ jobs:
       inputs.release_artifacts != 'none')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
         with:
           key: web-assets-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/bun.lock') }}
@@ -1032,7 +1032,7 @@ jobs:
           key: web-assets
 
       - name: Install Trunk
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
         with:
           tool: trunk@0.21.14
 
@@ -1110,7 +1110,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: target
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -1122,7 +1122,7 @@ jobs:
           key: native-app-${{ matrix.target }}
           workspaces: . -> target
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.4
         with:
           tool: cargo-binstall
 
@@ -1305,7 +1305,7 @@ jobs:
     needs: web-assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -1427,7 +1427,7 @@ jobs:
             rust-target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -1549,7 +1549,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v8
         with:
@@ -1606,11 +1606,11 @@ jobs:
       contents: read
       id-token: write # npm trusted publishing / provenance
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -1680,7 +1680,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Determine version
         id: version
@@ -1776,7 +1776,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Determine version
         id: version
