@@ -2,7 +2,6 @@
 
 use std::mem::{align_of, size_of};
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use std::time::Instant;
 
 use thiserror::Error;
@@ -345,7 +344,7 @@ impl PreparedCpuPublicationFanoutCandidate {
     /// generation without exposing a partially bound fanout.
     pub fn bind(
         mut self,
-        authority: Arc<ScreenCommittedState>,
+        authority: &ScreenCommittedState,
         binding: &ScreenWorkerBinding,
     ) -> Result<PreparedCpuPublicationFanout, CpuPublicationFanoutError> {
         if binding.source_id() != &self.batch.source().epoch().source_id {
@@ -376,7 +375,6 @@ impl PreparedCpuPublicationFanoutCandidate {
             }
         }
         Ok(PreparedCpuPublicationFanout {
-            authority,
             runtime_binding: binding.clone(),
             batch: self.batch,
             physical: self.physical,
@@ -426,9 +424,12 @@ impl PreparedCpuPhysicalFanout {
 }
 
 /// Allocation-complete CPU routing snapshot for one source and plan generation.
+///
+/// Holds no `ScreenCommittedState`: the bind-time authority snapshot pins
+/// every branch entry of its generation, and a runtime-lifetime pin would
+/// block retired-branch reclamation for as long as the worker survives.
 #[derive(Debug)]
 pub struct PreparedCpuPublicationFanout {
-    authority: Arc<ScreenCommittedState>,
     runtime_binding: ScreenWorkerBinding,
     batch: PreparedCpuReductionBatch,
     physical: Box<[PreparedCpuPhysicalFanout]>,
@@ -644,7 +645,7 @@ impl PreparedCpuPublicationFanout {
         if !current_authority.owns_runtime_binding(&self.runtime_binding) {
             return Err(ScreenPublicationHubError::PublisherStale {
                 expected: current_authority.plan().generation(),
-                observed: self.authority.plan().generation(),
+                observed: self.batch.plan_generation(),
             }
             .into());
         }
@@ -877,7 +878,7 @@ impl PreparedCpuPublicationFanout {
         if !current_authority.owns_runtime_binding(&self.runtime_binding) {
             return Err(ScreenPublicationHubError::PublisherStale {
                 expected: current_authority.plan().generation(),
-                observed: self.authority.plan().generation(),
+                observed: self.batch.plan_generation(),
             }
             .into());
         }

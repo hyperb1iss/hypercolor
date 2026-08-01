@@ -356,7 +356,7 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
         .expect("shared physical fanout candidate prepares");
     assert!(fanout.allocation_byte_len() > 0);
     let mut fanout = fanout
-        .bind(builder.committed_state(), &binding)
+        .bind(&builder.committed_state(), &binding)
         .expect("shared physical fanout binds");
     let frame = frame(&source);
 
@@ -595,7 +595,7 @@ fn executable_fanout_preserves_branch_cadence_pressure_and_authority() {
     )
     .expect("executable fanout prepares");
     let mut fanout = candidate
-        .bind(builder.committed_state(), &binding)
+        .bind(&builder.committed_state(), &binding)
         .expect("executable fanout binds");
     let first = frame_with_sequence(&source, 1);
     let initial = Instant::now();
@@ -803,7 +803,7 @@ fn mixed_fanout_materializes_retained_and_added_branch_bindings() {
     drop(lifetimes);
     let (mixed_plan, retirement) = committed.into_parts();
     let mut fanout = candidate
-        .bind(builder.committed_state(), &runtime_binding)
+        .bind(&builder.committed_state(), &runtime_binding)
         .expect("mixed fanout binds through its runtime authority");
     let captured = frame_with_sequence(&source, 41);
     let report = fanout
@@ -891,7 +891,7 @@ fn unbound_fanout_survives_an_unrelated_source_commit() {
         carried_binding.plan_generation()
     );
     let mut fanout = candidate
-        .bind(builder.committed_state(), &first_binding)
+        .bind(&builder.committed_state(), &first_binding)
         .expect("unrelated source commit retains the first runtime authority");
     assert_eq!(fanout.plan_generation(), first_plan.generation());
     let captured = frame_with_sequence(&first_source, 43);
@@ -936,7 +936,7 @@ fn masked_native_and_prereduced_routes_share_one_sequence_without_duplicates() {
     )
     .expect("mixed executable fanout prepares");
     let mut fanout = candidate
-        .bind(builder.committed_state(), &binding)
+        .bind(&builder.committed_state(), &binding)
         .expect("mixed executable fanout binds");
     assert_eq!(fanout.len(), 2);
 
@@ -1044,7 +1044,7 @@ fn fanout_finalize_failure_is_atomic_and_discards_every_staged_branch() {
     )
     .expect("materialized fanout prepares");
     let mut fanout = candidate
-        .bind(builder.committed_state(), &binding)
+        .bind(&builder.committed_state(), &binding)
         .expect("materialized fanout binds");
     let first_descriptor = fanout.physical()[0].branches()[0].descriptor().clone();
     let second_descriptor = fanout.physical()[1].branches()[0].descriptor().clone();
@@ -1153,7 +1153,7 @@ fn fanout_candidate_rejects_stale_runtime_authority() {
     let second_authority = builder.committed_state();
 
     assert!(matches!(
-        candidate.bind(Arc::clone(&second_authority), &first_binding),
+        candidate.bind(&second_authority, &first_binding),
         Err(
             hypercolor_core::input::screen::CpuPublicationFanoutError::WorkerRuntimeAuthorityMismatch
         )
@@ -1236,7 +1236,7 @@ fn materialization_workspace_retains_only_branch_local_physical_keys() {
         .expect("branch-local workspace prepares");
     let fanout = PreparedCpuPublicationFanout::prepare_candidate(&batch, &workspace, &plan)
         .expect("mixed physical fanout candidate prepares")
-        .bind(builder.committed_state(), &binding)
+        .bind(&builder.committed_state(), &binding)
         .expect("mixed physical fanout binds");
     let frame = frame(&source);
 
@@ -1953,4 +1953,56 @@ fn branch_local_materialization_is_rejected_before_surface_writes() {
             .iter()
             .all(|byte| *byte == 0xA5)
     );
+}
+
+#[test]
+fn superseded_source_reclaims_while_unrelated_bound_fanout_survives() {
+    let executor = executor();
+    let retained_source = source(extent(17, 11));
+    let retired_source = source_with_identity(
+        CaptureSourceId::new("synthetic:cpu-publication-retired")
+            .expect("retired source id is non-empty"),
+        extent(13, 9),
+        CaptureColorimetry::SRGB,
+    );
+    let retained_demand = demand(
+        &retained_source,
+        extent(9, 5),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let retired_demand = demand(
+        &retired_source,
+        extent(7, 3),
+        ScreenProcessingProfileConfig::default(),
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (first_plan, retained_binding) =
+        commit(&mut builder, [retained_demand.clone(), retired_demand]);
+    let batch = executor
+        .prepare_batch(&retained_source, &first_plan)
+        .expect("retained-source batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&first_plan)
+        .expect("retained-source workspace prepares");
+    let candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+        &executor,
+        &batch,
+        workspace,
+        &first_plan,
+    )
+    .expect("retained-source fanout candidate prepares");
+    let fanout = candidate
+        .bind(&builder.committed_state(), &retained_binding)
+        .expect("retained-source fanout binds");
+
+    let (_second_plan, _second_binding, retirement) =
+        commit_with_retirement(&mut builder, [retained_demand]);
+    retirement
+        .try_reclaim()
+        .expect("retired-source pools reclaim while an unrelated bound fanout survives");
+    assert_eq!(hub.pending_retired_bytes(), 0);
+    assert_eq!(fanout.plan_generation(), first_plan.generation());
 }

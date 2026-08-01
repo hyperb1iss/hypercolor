@@ -805,7 +805,7 @@ impl WindowsExactRuntime {
                 .fanout_candidate
                 .take()
                 .ok_or_else(|| anyhow!("Windows CPU fanout candidate was already consumed"))?;
-            cpu.fanout = Some(candidate.bind(authority, &self.binding)?);
+            cpu.fanout = Some(candidate.bind(&authority, &self.binding)?);
         }
         Ok(())
     }

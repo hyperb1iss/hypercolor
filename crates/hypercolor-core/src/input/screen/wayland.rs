@@ -2861,7 +2861,7 @@ impl WaylandExactRuntime {
             .fanout_candidate
             .take()
             .ok_or_else(|| anyhow!("Wayland CPU fanout candidate was already consumed"))?;
-        self.fanout = Some(candidate.bind(authority, &self.binding)?);
+        self.fanout = Some(candidate.bind(&authority, &self.binding)?);
         Ok(())
     }
 }

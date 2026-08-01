@@ -235,7 +235,7 @@ fn authority_binding_performs_no_heap_allocation() {
     region.reset();
 
     let fanout = black_box(candidate)
-        .bind(black_box(authority), black_box(&binding))
+        .bind(black_box(&authority), black_box(&binding))
         .expect("candidate binds to committed authority");
     black_box(&fanout);
     let change = region.change();
@@ -259,7 +259,7 @@ fn authority_binding_performs_no_heap_allocation() {
     )
     .expect("executable fanout prepares");
     let mut executable = executable
-        .bind(builder.committed_state(), &binding)
+        .bind(&builder.committed_state(), &binding)
         .expect("executable fanout binds");
     let first = frame(&source, 1);
     let warm_now = Instant::now();
@@ -534,7 +534,7 @@ fn warmed_mixed_materialized_fanout_performs_no_heap_allocation() {
     );
     assert_eq!(candidate.allocation_byte_len(), fanout_quote);
     let mut fanout = candidate
-        .bind(builder.committed_state(), &binding)
+        .bind(&builder.committed_state(), &binding)
         .expect("mixed executable fanout binds");
     assert_eq!(fanout.branch_count(), 4);
     assert_eq!(fanout.batch().len(), 3);
