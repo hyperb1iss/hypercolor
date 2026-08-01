@@ -1521,27 +1521,25 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     .expect("status request should succeed");
     let json = body_json(response).await;
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["windows_admission_enforced"],
-        cfg!(target_os = "windows")
+        json["data"]["screen_capture_capacity"]["admission_enforced"],
+        true
     );
-    if cfg!(target_os = "windows") {
-        assert_eq!(
-            json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
-            2_000_000
-        );
-        assert_eq!(
-            json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
-            1_500_000
-        );
-        assert_eq!(
-            json["data"]["screen_capture_capacity"]["physical_available_bytes"],
-            1_500_000
-        );
-        assert_eq!(
-            json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
-            1_000_000
-        );
-    }
+    assert_eq!(
+        json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
+        2_000_000
+    );
+    assert_eq!(
+        json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
+        1_500_000
+    );
+    assert_eq!(
+        json["data"]["screen_capture_capacity"]["physical_available_bytes"],
+        1_500_000
+    );
+    assert_eq!(
+        json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
+        1_000_000
+    );
     let failed = json["data"]["input"]["sources"]
         .as_array()
         .expect("sources should be an array")

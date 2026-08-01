@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
-#[cfg(target_os = "windows")]
 use hypercolor_core::input::screen::{
     PixelExtent, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan,
 };
@@ -74,7 +73,7 @@ pub struct SystemStatus {
 /// Installed byte fences for transactional screen publication admission.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ScreenCaptureCapacityStatus {
-    pub windows_admission_enforced: bool,
+    pub admission_enforced: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub physical_transition_byte_capacity: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,9 +111,9 @@ pub struct ScreenCaptureCapacityStatus {
 }
 
 impl ScreenCaptureCapacityStatus {
-    const fn without_capacity(windows_admission_enforced: bool) -> Self {
+    const fn without_capacity(admission_enforced: bool) -> Self {
         Self {
-            windows_admission_enforced,
+            admission_enforced,
             physical_transition_byte_capacity: None,
             physical_transition_backend_capacity: None,
             physical_reserved_bytes: None,
@@ -836,7 +835,6 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
     let input_status = input_status_snapshot(&state);
-    #[cfg(target_os = "windows")]
     let screen_capture_capacity = {
         let capacity_snapshot = state.screen_capacity_status.snapshot();
         let policy = capacity_snapshot.policy();
@@ -851,7 +849,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
             let analysis_compute = policy.analysis_compute_capacity();
             let extent = demand.requested_extent();
             ScreenCaptureCapacityStatus {
-                windows_admission_enforced: true,
+                admission_enforced: true,
                 physical_transition_byte_capacity: Some(resource_capacity.byte_budget()),
                 physical_transition_backend_capacity: Some(resource_capacity.backend_capacity()),
                 physical_reserved_bytes: Some(resource_snapshot.reserved_bytes()),
@@ -882,8 +880,6 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
             ScreenCaptureCapacityStatus::without_capacity(false)
         }
     };
-    #[cfg(not(target_os = "windows"))]
-    let screen_capture_capacity = ScreenCaptureCapacityStatus::without_capacity(false);
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();
@@ -1798,41 +1794,33 @@ mod tests {
         assert!(json["data"]["compositor_acceleration"]["fallback_reason"].is_null());
         assert!(json["data"]["compositor_acceleration"]["gpu_probe"].is_null());
         assert_eq!(
-            json["data"]["screen_capture_capacity"]["windows_admission_enforced"],
-            cfg!(target_os = "windows")
+            json["data"]["screen_capture_capacity"]["admission_enforced"],
+            true
         );
-        if cfg!(target_os = "windows") {
-            assert_eq!(
-                json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
-                2_000_000
-            );
-            assert_eq!(
-                json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
-                2_000_000
-            );
-            assert_eq!(
-                json["data"]["screen_capture_capacity"]["physical_reserved_bytes"],
-                0
-            );
-            assert_eq!(
-                json["data"]["screen_capture_capacity"]["physical_available_bytes"],
-                2_000_000
-            );
-            assert_eq!(
-                json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
-                123
-            );
-            assert_eq!(
-                json["data"]["screen_capture_capacity"]["steady_publication_byte_budget"],
-                123
-            );
-        } else {
-            assert!(
-                json["data"]["screen_capture_capacity"]
-                    .as_object()
-                    .is_some_and(|capacity| capacity.len() == 1)
-            );
-        }
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
+            2_000_000
+        );
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
+            2_000_000
+        );
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["physical_reserved_bytes"],
+            0
+        );
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["physical_available_bytes"],
+            2_000_000
+        );
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
+            123
+        );
+        assert_eq!(
+            json["data"]["screen_capture_capacity"]["steady_publication_byte_budget"],
+            123
+        );
         assert!(json["data"]["screen_capture_capacity"]["analysis_retained_bytes"].is_null());
         assert_eq!(json["data"]["latest_frame"]["frame_token"], 77);
         assert_eq!(
