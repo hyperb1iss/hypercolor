@@ -29,6 +29,13 @@ use super::capture_demand::{CaptureDemand, CaptureDemandState};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+/// Retry cadence for an exact plan that failed with no committed plan to
+/// replace: the source itself must change (session, consent, capacity)
+/// before another attempt can succeed, and nothing graph-visible signals
+/// that yet, so this is a bounded liveness probe rather than a recovery
+/// path. Spec 74 folds the source resolution revision into the pump key,
+/// which turns this into an event-driven re-arm.
+const EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const SOURCE_KINDS: [SourceKind; 5] = [
     SourceKind::Audio,
     SourceKind::Screen,
@@ -984,7 +991,7 @@ fn exact_screen_failure_retry_at(
     if purpose == ExactScreenTransitionPurpose::ApplyDemand && !committed_plan_is_empty {
         now
     } else {
-        now + LIFECYCLE_PROBE_INTERVAL
+        now + EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL
     }
 }
 
@@ -1087,6 +1094,7 @@ async fn run_pump(
     let mut applied_exact_screen = None;
     let mut exact_screen_retry = None;
     let mut exact_screen_recovery = None;
+    let mut exact_screen_failure_streak: u64 = 0;
     let mut exact_screen_transition: Option<ExactScreenTransitionTask> = None;
     let mut publication_retirements = VecDeque::new();
     let mut worker_retirement_tasks = JoinSet::new();
@@ -1115,6 +1123,13 @@ async fn run_pump(
             );
             match transition.join().await {
                 Ok(Ok(committed)) => {
+                    if exact_screen_failure_streak > 0 {
+                        info!(
+                            suppressed_failures = exact_screen_failure_streak,
+                            "exact screen publication recovered"
+                        );
+                        exact_screen_failure_streak = 0;
+                    }
                     if transition_key == current_key {
                         match transition_purpose {
                             ExactScreenTransitionPurpose::ApplyDemand => {
@@ -1144,7 +1159,19 @@ async fn run_pump(
                     }
                 }
                 Ok(Err(error)) => {
-                    tracing::warn!(%error, "exact screen publication transition failed");
+                    // The same doomed attempt repeats until the source
+                    // changes; one warning per streak keeps the log honest
+                    // without flooding it at the retry cadence.
+                    if exact_screen_failure_streak == 0 {
+                        tracing::warn!(%error, "exact screen publication transition failed");
+                    } else if exact_screen_failure_streak.is_multiple_of(60) {
+                        tracing::warn!(
+                            %error,
+                            suppressed_failures = exact_screen_failure_streak,
+                            "exact screen publication still failing"
+                        );
+                    }
+                    exact_screen_failure_streak = exact_screen_failure_streak.saturating_add(1);
                     if transition_key == current_key {
                         applied_exact_screen = None;
                         exact_screen_recovery = Some(transition_key);
@@ -1159,7 +1186,10 @@ async fn run_pump(
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "exact screen publication transition task terminated");
+                    if exact_screen_failure_streak == 0 {
+                        tracing::warn!(%error, "exact screen publication transition task terminated");
+                    }
+                    exact_screen_failure_streak = exact_screen_failure_streak.saturating_add(1);
                     if transition_key == current_key {
                         applied_exact_screen = None;
                         exact_screen_recovery = Some(transition_key);

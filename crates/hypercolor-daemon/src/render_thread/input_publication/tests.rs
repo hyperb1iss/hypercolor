@@ -23,7 +23,8 @@ use super::{
     ExactScreenTransitionPurpose, InputPublicationCadence, InputPublicationConsumer,
     InputPublicationDemand, InputPublicationDemandHandle, InputPublicationPump,
     InputPublicationReader, InputPublicationSchedule, InputPublicationStatus,
-    InputScreenBranchDemand, LIFECYCLE_PROBE_INTERVAL, cadence_interval,
+    EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL, InputScreenBranchDemand, LIFECYCLE_PROBE_INTERVAL,
+    cadence_interval,
     exact_screen_failure_retry_at, run_exact_screen_transition,
 };
 use crate::render_thread::producer_queue::ProducerFrame;
@@ -431,11 +432,11 @@ fn exact_screen_failure_retries_retirement_immediately_but_backs_off_when_empty(
     );
     assert_eq!(
         exact_screen_failure_retry_at(ExactScreenTransitionPurpose::ApplyDemand, true, now),
-        now + LIFECYCLE_PROBE_INTERVAL
+        now + EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL
     );
     assert_eq!(
         exact_screen_failure_retry_at(ExactScreenTransitionPurpose::RetireForRetry, false, now),
-        now + LIFECYCLE_PROBE_INTERVAL
+        now + EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL
     );
 }
 
