@@ -946,7 +946,25 @@ impl CaptureConfigPersistenceGate {
             if state.revoked {
                 None
             } else if state.committed {
-                source_identity(&state).map(|source| (state.epoch, source, update))
+                match source_identity(&state) {
+                    Some(source) => {
+                        // A newer update supersedes anything parked earlier.
+                        state.pending = None;
+                        Some((state.epoch, source, update))
+                    }
+                    None => {
+                        // The status snapshot has not caught up with the live
+                        // session yet. Losing the update here replays consumed
+                        // restore tokens on the next reconnect; park it until
+                        // an identity-bearing publish or commit can flush it.
+                        warn!(
+                            "capture persistence update parked: source identity \
+                             not yet observable"
+                        );
+                        state.pending = Some(update);
+                        None
+                    }
+                }
             } else {
                 state.pending = Some(update);
                 None
@@ -968,11 +986,24 @@ impl CaptureConfigPersistenceGate {
                 return;
             }
             state.committed = true;
-            let source = source_identity(&state);
-            state
-                .pending
-                .take()
-                .and_then(|update| source.map(|source| (state.epoch, source, update)))
+            match source_identity(&state) {
+                Some(source) => state
+                    .pending
+                    .take()
+                    .map(|update| (state.epoch, source, update)),
+                None => {
+                    // Keep the parked update: taking it here without an
+                    // identity would silently drop a freshly rotated restore
+                    // token and force re-consent on the next reconnect.
+                    if state.pending.is_some() {
+                        warn!(
+                            "capture persistence commit deferred: source \
+                             identity not yet observable"
+                        );
+                    }
+                    None
+                }
+            }
         };
         if let Some((epoch, source, update)) = persistence {
             self.persist(epoch, source, update, true);
