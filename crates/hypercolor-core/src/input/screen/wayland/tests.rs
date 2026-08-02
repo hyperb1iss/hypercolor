@@ -893,7 +893,7 @@ fn retired_worker_cannot_read_or_update_successor_settings() {
         .restore_token = Some("successor".to_owned());
     let sink_calls = Arc::new(AtomicUsize::new(0));
     let sink_calls_for_callback = Arc::clone(&sink_calls);
-    let sink: RestoreTokenSink = Arc::new(move |_| {
+    let sink: RestoreTokenSink = Arc::new(move |_, _| {
         sink_calls_for_callback.fetch_add(1, Ordering::Relaxed);
     });
 

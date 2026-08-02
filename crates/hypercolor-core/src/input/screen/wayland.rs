@@ -480,7 +480,10 @@ pub fn decode_chunk(view: &SpaChunkView<'_>, buffers: &mut DoubleBuffer) -> Copy
 /// Callback invoked when the portal hands back a new restore token (or the
 /// token is cleared before a re-pick). The daemon persists it to config so
 /// the picked source survives restarts without re-prompting.
-pub type RestoreTokenSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
+/// Receives `(session_generation, restore_token)` under the session-epoch
+/// guard, so persistence can attribute the token to its exact session even
+/// when external status snapshots lag behind the live worker.
+pub type RestoreTokenSink = Arc<dyn Fn(u64, Option<String>) + Send + Sync>;
 
 /// Settings shared between the input source handle and the capture worker.
 ///
@@ -1334,7 +1337,7 @@ impl SharedSettings {
             .restore_token
             .clone_from(&restore_token);
         if let Some(sink) = token_sink {
-            sink(restore_token);
+            sink(session_generation, restore_token);
         }
         true
     }
@@ -1777,7 +1780,12 @@ impl WaylandScreenCaptureInput {
             current.restore_token = None;
         }
         if let Some(sink) = &self.token_sink {
-            sink(None);
+            // The clear belongs to the current session lineage; generation 0
+            // lets persistence fall back to its status-snapshot identity.
+            sink(
+                self.settings.session_generation.load(Ordering::Acquire),
+                None,
+            );
         }
 
         if !self.running || !self.capture_demand.is_active() {

@@ -878,6 +878,10 @@ enum CaptureConfigPersistenceUpdate {
     RestoreToken {
         configured: Option<String>,
         resolved: Option<String>,
+        /// Stamped by the worker under its session-epoch guard; outranks the
+        /// status snapshot, which can lag the live session and previously
+        /// caused freshly rotated tokens to be dropped or parked.
+        session_generation: u64,
     },
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     Unsupported,
@@ -946,7 +950,7 @@ impl CaptureConfigPersistenceGate {
             if state.revoked {
                 None
             } else if state.committed {
-                match source_identity(&state) {
+                match identity_for_update(&state, &update) {
                     Some(source) => {
                         // A newer update supersedes anything parked earlier.
                         state.pending = None;
@@ -986,7 +990,11 @@ impl CaptureConfigPersistenceGate {
                 return;
             }
             state.committed = true;
-            match source_identity(&state) {
+            match state
+                .pending
+                .as_ref()
+                .and_then(|update| identity_for_update(&state, update))
+            {
                 Some(source) => state
                     .pending
                     .take()
@@ -1044,6 +1052,7 @@ impl CaptureConfigPersistenceGate {
             CaptureConfigPersistenceUpdate::RestoreToken {
                 configured,
                 resolved,
+                ..
             } => {
                 if deferred {
                     snapshot.capture.restore_token == *configured
@@ -1087,6 +1096,34 @@ fn source_identity(state: &CaptureConfigPersistenceState) -> Option<CapturePersi
         status.source_graph_generation,
         status.session_generation,
     ))
+}
+
+/// Resolve the persistence identity for one update, preferring the session
+/// generation the worker stamped into the update over the status snapshot,
+/// which lags the live session and would otherwise drop or park a freshly
+/// rotated restore token.
+fn identity_for_update(
+    state: &CaptureConfigPersistenceState,
+    update: &CaptureConfigPersistenceUpdate,
+) -> Option<CapturePersistenceSource> {
+    #[cfg(target_os = "linux")]
+    if let CaptureConfigPersistenceUpdate::RestoreToken {
+        session_generation, ..
+    } = update
+        && *session_generation != 0
+    {
+        let status = state.source_status.as_ref()?.snapshot();
+        if status.source_graph_generation == 0 {
+            return None;
+        }
+        return Some(CapturePersistenceSource::new(
+            Arc::clone(&status.source_id),
+            status.source_graph_generation,
+            *session_generation,
+        ));
+    }
+    let _ = update;
+    source_identity(state)
 }
 
 #[cfg(target_os = "windows")]
@@ -1169,10 +1206,11 @@ pub(crate) fn build_screen_capture_source(
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
     let capture_config = screen_capture_config_with_capacity_from(capture, capacity)?;
     let configured = capture.restore_token.clone();
-    let sink = Arc::new(move |token: Option<String>| {
+    let sink = Arc::new(move |session_generation: u64, token: Option<String>| {
         persistence.publish(CaptureConfigPersistenceUpdate::RestoreToken {
             configured: configured.clone(),
             resolved: token,
+            session_generation,
         });
     });
 
