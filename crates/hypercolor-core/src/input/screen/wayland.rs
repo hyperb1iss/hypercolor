@@ -3831,6 +3831,8 @@ fn run_capture_worker(
                 continue;
             }
             Ok(PipeWireLoopExit::Unavailable(reason)) => {
+                extent_corrections = 0;
+                native_extent_override = None;
                 let parking = park_unavailable_worker(&flags.demand_state, session_demand_epoch);
                 warn!(%reason, "Wayland screen capture format is unavailable");
                 if let Some(status) = status_writer.as_ref() {
@@ -3858,6 +3860,12 @@ fn run_capture_worker(
             Ok(PipeWireLoopExit::Terminal(reason)) => reason,
             Err(error) => error.to_string(),
         };
+        // Any outcome other than a correction ends the discovery dance: the
+        // next session lineage re-derives its extent from portal truth so a
+        // stale override cannot burn the correction budget or retry a
+        // topology that no longer exists.
+        extent_corrections = 0;
+        native_extent_override = None;
         warn!(%reason, "Wayland screen capture stream terminated; reconnecting");
         if let Some(status) = status_writer.as_ref() {
             settings.publish_status_for_session(
@@ -4243,12 +4251,24 @@ fn run_pipewire_loop(
     let requested_output_extent = demand
         .requested_extent()
         .context("active Wayland capture demand must carry an extent")?;
-    let initial_request = PipeWireFormatRequest::new_with_compute_policy(
+    // Admission rejections here are typed capacity outcomes, not stream
+    // faults: park the demand as unavailable instead of feeding the generic
+    // reconnect loop, which would churn portal sessions every retry interval
+    // against an extent that can never be admitted.
+    let initial_request = match PipeWireFormatRequest::new_with_compute_policy(
         requested_extent,
         requested_output_extent,
         config,
         settings.compute_capacity_policy,
-    )?;
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(unavailable_format_outcome(
+                false,
+                format!("capture admission rejected extent {requested_extent:?}: {error}"),
+            ));
+        }
+    };
     let format_bytes = build_format_params(config.target_fps, requested_extent)?;
     let callback_capacity = NegotiatedFormat {
         width: requested_extent.width(),
@@ -4257,10 +4277,18 @@ fn run_pipewire_loop(
     }
     .byte_len()
     .ok_or(CaptureFrameError::StorageSizeOverflow)?;
-    let callback_buffers = DoubleBuffer::try_with_capacity_and_admission(
+    let callback_buffers = match DoubleBuffer::try_with_capacity_and_admission(
         callback_capacity,
         &settings.admission_coordinator,
-    )?;
+    ) {
+        Ok(buffers) => buffers,
+        Err(error) => {
+            return Ok(unavailable_format_outcome(
+                false,
+                format!("capture admission rejected extent {requested_extent:?}: {error}"),
+            ));
+        }
+    };
     let decoding_enabled = Arc::new(AtomicBool::new(false));
     let format_state = Arc::new(Mutex::new(PipeWireFormatState {
         current: initial_request,
