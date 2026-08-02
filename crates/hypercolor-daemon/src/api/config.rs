@@ -847,11 +847,26 @@ async fn apply_capture_config_transaction(
     Ok(())
 }
 
+/// How long a prepared replacement source may take to become usable.
+///
+/// Windows rebuilds in-process and settles in tens of milliseconds. A
+/// Wayland rebuild is a D-Bus portal round trip plus PipeWire negotiation:
+/// a restore-token reconnect settles in one to three seconds, so a 500ms
+/// gate rejected every live capture reconfiguration on Linux while the
+/// last-good publication stayed correctly retained. The gate still exists
+/// and still fails typed when consent is required but never granted.
+#[cfg(target_os = "linux")]
+const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(6);
+#[cfg(not(target_os = "linux"))]
+const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration =
+    std::time::Duration::from_millis(500);
+
 async fn validate_prepared_capture_status(
     status: hypercolor_core::input::SourceStatusHandle,
 ) -> anyhow::Result<()> {
     let mut subscription = status.subscribe();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    let deadline = tokio::time::Instant::now() + PREPARED_CAPTURE_USABILITY_DEADLINE;
     loop {
         let snapshot = subscription.snapshot();
         match snapshot.state {
@@ -871,7 +886,10 @@ async fn validate_prepared_capture_status(
         match tokio::time::timeout_at(deadline, subscription.changed()).await {
             Ok(Some(_)) => {}
             Ok(None) => anyhow::bail!("capture source status closed before becoming usable"),
-            Err(_) => anyhow::bail!("capture source did not become usable within 500ms"),
+            Err(_) => anyhow::bail!(
+                "capture source did not become usable within {:?}",
+                PREPARED_CAPTURE_USABILITY_DEADLINE
+            ),
         }
     }
 }
@@ -1339,7 +1357,7 @@ mod tests {
             .await
             .expect_err("starting capture must become usable before commit");
 
-        assert!(error.to_string().contains("within 500ms"));
+        assert!(error.to_string().contains("did not become usable within"));
     }
 
     #[tokio::test]
