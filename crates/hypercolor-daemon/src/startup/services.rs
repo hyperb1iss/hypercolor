@@ -949,27 +949,22 @@ impl CaptureConfigPersistenceGate {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.revoked {
                 None
-            } else if state.committed {
-                match identity_for_update(&state, &update) {
-                    Some(source) => {
-                        // A newer update supersedes anything parked earlier.
-                        state.pending = None;
-                        Some((state.epoch, source, update))
-                    }
-                    None => {
-                        // The status snapshot has not caught up with the live
-                        // session yet. Losing the update here replays consumed
-                        // restore tokens on the next reconnect; park it until
-                        // an identity-bearing publish or commit can flush it.
-                        warn!(
-                            "capture persistence update parked: source identity \
-                             not yet observable"
-                        );
-                        state.pending = Some(update);
-                        None
-                    }
-                }
+            } else if !state.committed {
+                state.pending = Some(update);
+                None
+            } else if let Some(source) = identity_for_update(&state, &update) {
+                // A newer update supersedes anything parked earlier.
+                state.pending = None;
+                Some((state.epoch, source, update))
             } else {
+                // The status snapshot has not caught up with the live
+                // session yet. Losing the update here replays consumed
+                // restore tokens on the next reconnect; park it until an
+                // identity-bearing publish or commit can flush it.
+                warn!(
+                    "capture persistence update parked: source identity \
+                     not yet observable"
+                );
                 state.pending = Some(update);
                 None
             }
@@ -990,27 +985,26 @@ impl CaptureConfigPersistenceGate {
                 return;
             }
             state.committed = true;
-            match state
+            let identity = state
                 .pending
                 .as_ref()
-                .and_then(|update| identity_for_update(&state, update))
-            {
-                Some(source) => state
+                .and_then(|update| identity_for_update(&state, update));
+            if let Some(source) = identity {
+                state
                     .pending
                     .take()
-                    .map(|update| (state.epoch, source, update)),
-                None => {
-                    // Keep the parked update: taking it here without an
-                    // identity would silently drop a freshly rotated restore
-                    // token and force re-consent on the next reconnect.
-                    if state.pending.is_some() {
-                        warn!(
-                            "capture persistence commit deferred: source \
-                             identity not yet observable"
-                        );
-                    }
-                    None
+                    .map(|update| (state.epoch, source, update))
+            } else {
+                // Keep the parked update: taking it here without an
+                // identity would silently drop a freshly rotated restore
+                // token and force re-consent on the next reconnect.
+                if state.pending.is_some() {
+                    warn!(
+                        "capture persistence commit deferred: source \
+                         identity not yet observable"
+                    );
                 }
+                None
             }
         };
         if let Some((epoch, source, update)) = persistence {
