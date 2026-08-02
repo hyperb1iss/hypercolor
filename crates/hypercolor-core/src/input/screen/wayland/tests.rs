@@ -13,7 +13,8 @@ use super::{
     WaylandAnalysisState, WaylandCaptureUserData, WaylandExactPublicationShared,
     WaylandScreenCaptureInput, WaylandSourceMetadata, WaylandTopologySignature,
     build_format_params, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
-    fence_previous_publication, initial_worker_demand, park_unavailable_worker,
+    fence_previous_publication, initial_native_extent_correction, initial_worker_demand,
+    park_unavailable_worker,
     prepare_wayland_exact_runtime, publish_unexpected_exit_status, reap_wayland_exact_runtimes,
     request_active_worker_demand, set_worker_demand, settle_pipewire_restoration,
     unavailable_format_outcome, wait_for_adoption_result, worker_demand_epoch, worker_demanded,
@@ -1524,8 +1525,13 @@ fn rejected_adoption_settles_only_after_prior_format_ack() {
         PipeWireFormatAcknowledgment::Rejected
     );
     assert_eq!(
-        state.acknowledgment(negotiated_format(1920, 1080, 59)),
+        state.acknowledgment(negotiated_format(1920, 1088, 60)),
         PipeWireFormatAcknowledgment::Rejected
+    );
+    assert_eq!(
+        state.acknowledgment(negotiated_format(1920, 1080, 59)),
+        PipeWireFormatAcknowledgment::Pending,
+        "transport rate differences are advisory, not rejections"
     );
     assert!(state.cancel(10).is_none());
     assert_eq!(state.pending.as_ref().map(|pending| pending.id), Some(11));
@@ -1829,18 +1835,155 @@ fn commit_winner_completes_install_before_signalling_success() {
 }
 
 #[test]
-fn exact_pipewire_format_has_no_local_cadence_or_extent_range() {
+fn format_pod_offers_negotiable_extent_and_transport_rate_ranges() {
     let requested = extent(7680, 4320);
     let bytes = build_format_params(10_000, requested)
         .expect("representable high cadence and extent serialize");
-    let pod = pipewire::spa::pod::Pod::from_bytes(&bytes).expect("format pod deserializes");
-    let mut info = pipewire::spa::param::video::VideoInfoRaw::default();
-    info.parse(pod).expect("exact video format parses");
 
-    assert_eq!(info.size().width, requested.width());
-    assert_eq!(info.size().height, requested.height());
-    assert_eq!(info.framerate().num, 10_000);
-    assert_eq!(info.framerate().denom, 1);
+    let (_, value) = pipewire::spa::pod::deserialize::PodDeserializer::deserialize_any_from(&bytes)
+        .expect("format pod deserializes to a value");
+    let pipewire::spa::pod::Value::Object(object) = value else {
+        panic!("format pod is not an object");
+    };
+
+    let size = object
+        .properties
+        .iter()
+        .find(|property| {
+            property.key == pipewire::spa::param::format::FormatProperties::VideoSize.as_raw()
+        })
+        .expect("format pod carries a size property");
+    let pipewire::spa::pod::Value::Choice(pipewire::spa::pod::ChoiceValue::Rectangle(choice)) =
+        &size.value
+    else {
+        panic!("size must be a rectangle choice so scaled outputs can fixate");
+    };
+    let pipewire::spa::utils::Choice(
+        _,
+        pipewire::spa::utils::ChoiceEnum::Range { default, min, max },
+    ) = choice
+    else {
+        panic!("size choice must be a range");
+    };
+    assert_eq!(
+        (default.width, default.height),
+        (requested.width(), requested.height()),
+        "requested extent stays the preference"
+    );
+    assert_eq!((min.width, min.height), (1, 1));
+    assert_eq!((max.width, max.height), (16_384, 16_384));
+
+    let framerate = object
+        .properties
+        .iter()
+        .find(|property| {
+            property.key == pipewire::spa::param::format::FormatProperties::VideoFramerate.as_raw()
+        })
+        .expect("format pod carries a framerate property");
+    let pipewire::spa::pod::Value::Choice(pipewire::spa::pod::ChoiceValue::Fraction(choice)) =
+        &framerate.value
+    else {
+        panic!("framerate must be a fraction choice, not a fixed fraction");
+    };
+    let pipewire::spa::utils::Choice(
+        _,
+        pipewire::spa::utils::ChoiceEnum::Range { default, min, max },
+    ) = choice
+    else {
+        panic!("framerate choice must be a range");
+    };
+    assert_eq!((default.num, default.denom), (10_000, 1));
+    assert_eq!(
+        (min.num, min.denom),
+        (0, 1),
+        "variable rate must be admissible"
+    );
+    assert_eq!((max.num, max.denom), (1000, 1));
+}
+
+#[test]
+fn initial_extent_correction_only_fires_before_first_acknowledgment() {
+    let make_state = |acknowledged: bool| {
+        std::sync::Mutex::new(PipeWireFormatState {
+            current: format_request(2560, 1440, 30),
+            current_format_bytes: vec![1],
+            current_acknowledged: acknowledged,
+            pending: None,
+            restoring: None,
+        })
+    };
+
+    let corrected = initial_native_extent_correction(
+        &make_state(false),
+        negotiated_format(3840, 2160, 0),
+    )
+    .expect("scaled-output fixation corrects the acquisition extent");
+    assert_eq!((corrected.width(), corrected.height()), (3840, 2160));
+
+    assert!(
+        initial_native_extent_correction(&make_state(false), negotiated_format(2560, 1440, 0))
+            .is_none(),
+        "matching extent needs no correction"
+    );
+    assert!(
+        initial_native_extent_correction(&make_state(true), negotiated_format(3840, 2160, 0))
+            .is_none(),
+        "post-acknowledgment renegotiation keeps the strict rejection path"
+    );
+
+    let pending_state = make_state(false);
+    pending_state
+        .lock()
+        .expect("fresh mutex")
+        .pending
+        .replace(pending_adoption(7, format_request(1920, 1080, 30)));
+    assert!(
+        initial_native_extent_correction(&pending_state, negotiated_format(3840, 2160, 0))
+            .is_none(),
+        "in-flight adoption keeps the transactional path"
+    );
+}
+
+#[test]
+fn format_acknowledgment_treats_transport_rate_as_advisory() {
+    let requested = extent(2560, 1440);
+    let config = CaptureConfig {
+        target_fps: 30,
+        ..CaptureConfig::default()
+    };
+    let request = PipeWireFormatRequest::new_with_compute_capacity(
+        requested,
+        extent(640, 480),
+        &config,
+        unlimited_compute_capacity(),
+    )
+    .expect("format request builds");
+
+    assert!(
+        request.matches(negotiated_format(2560, 1440, 30)),
+        "exact target rate acknowledges"
+    );
+    assert!(
+        request.matches(negotiated_format(2560, 1440, 0)),
+        "variable-rate transport acknowledges"
+    );
+    assert!(
+        request.matches(negotiated_format(2560, 1440, 60)),
+        "display-pinned transport acknowledges"
+    );
+    let malformed = NegotiatedPipeWireFormat {
+        frame: NegotiatedFormat {
+            width: 2560,
+            height: 1440,
+            format: SpaVideoFormat::Rgba,
+        },
+        framerate: pipewire::spa::utils::Fraction { num: 30, denom: 0 },
+    };
+    assert!(!request.matches(malformed), "zero-denominator rate rejects");
+    assert!(
+        !request.matches(negotiated_format(1920, 1080, 30)),
+        "extent stays exact"
+    );
 }
 
 #[test]

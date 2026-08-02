@@ -703,13 +703,15 @@ impl PipeWireFormatRequest {
     }
 
     fn matches(self, negotiated: NegotiatedPipeWireFormat) -> bool {
+        // The transport tick rate is advisory: compositors negotiate 0/1
+        // (variable) or their own display rate, and CapturePacer governs the
+        // capture cadence regardless. Extent stays exact.
         let rate = negotiated.framerate;
         self.analysis_work_plan.input_extent() == self.extent
             && self.analysis_work_plan.target_fps() == self.target_fps
             && negotiated.frame.width == self.extent.width()
             && negotiated.frame.height == self.extent.height()
             && rate.denom != 0
-            && u64::from(rate.num) == u64::from(self.target_fps) * u64::from(rate.denom)
     }
 }
 
@@ -3549,6 +3551,9 @@ fn run_analysis_worker(
         let transform = decoded.transform;
         drop(decoded);
 
+        // Every format we offer is 8-bit raw SDR, and PipeWire's raw-video
+        // default without negotiated colorimetry metadata is sRGB. Replace
+        // with derived values once SPA colorimetry negotiation lands.
         let frame = match state.capture_frame(
             captured_at,
             width,
@@ -3556,7 +3561,7 @@ fn run_analysis_worker(
             crop,
             transform,
             plane.freeze(),
-            CaptureColorimetry::unknown(),
+            CaptureColorimetry::SRGB,
         ) {
             Ok(frame) => frame,
             Err(error) => {
@@ -3675,6 +3680,8 @@ fn run_capture_worker(
     };
 
     let mut command_rx = Some(command_rx);
+    let mut native_extent_override: Option<PixelExtent> = None;
+    let mut extent_corrections: u8 = 0;
     loop {
         flags.portal_pending.store(false, Ordering::SeqCst);
         if !wait_for_demand(&flags) {
@@ -3767,6 +3774,7 @@ fn run_capture_worker(
             Arc::clone(&flags.cancel),
             session_generation,
             status_writer.clone(),
+            native_extent_override,
         );
         settings.invalidate_session(&latest_snapshot, session_generation);
         if let Err(error) = runtime.block_on(session.close()) {
@@ -3778,6 +3786,50 @@ fn run_capture_worker(
 
         let reason = match loop_outcome {
             Ok(PipeWireLoopExit::Stopped) => return,
+            Ok(PipeWireLoopExit::RequiresNativeExtent(extent)) => {
+                if extent_corrections >= 3 {
+                    let parking =
+                        park_unavailable_worker(&flags.demand_state, session_demand_epoch);
+                    warn!(
+                        ?extent,
+                        "Wayland native extent kept changing; parking capture"
+                    );
+                    if let Some(status) = status_writer.as_ref() {
+                        settings.publish_status_for_session(
+                            session_generation,
+                            &flags.cancel,
+                            status,
+                            |status| {
+                                status.unavailable(
+                                    SourceIssue::new(
+                                        "wayland_exact_format_unavailable",
+                                        "PipeWire kept fixating new native extents \
+                                         during initial negotiation"
+                                            .to_owned(),
+                                        true,
+                                    )
+                                    .with_remediation(
+                                        "check for display configuration churn and retry",
+                                    ),
+                                )
+                            },
+                        );
+                    }
+                    debug!(?parking, "Settled unavailable Wayland capture demand");
+                    extent_corrections = 0;
+                    native_extent_override = None;
+                    continue;
+                }
+                extent_corrections += 1;
+                native_extent_override = Some(extent);
+                info!(
+                    ?extent,
+                    attempt = extent_corrections,
+                    "Adopting native extent fixated by PipeWire for the next \
+                     capture session"
+                );
+                continue;
+            }
             Ok(PipeWireLoopExit::Unavailable(reason)) => {
                 let parking = park_unavailable_worker(&flags.demand_state, session_demand_epoch);
                 warn!(%reason, "Wayland screen capture format is unavailable");
@@ -3941,6 +3993,31 @@ enum PipeWireLoopExit {
     Stopped,
     Terminal(String),
     Unavailable(String),
+    /// Initial negotiation fixated a different native extent than requested
+    /// (fractionally scaled outputs report logical size through the portal
+    /// while the node streams physical pixels). The worker replans the next
+    /// session iteration around this extent.
+    RequiresNativeExtent(PixelExtent),
+}
+
+/// Detect an initial-negotiation fixation whose only disagreement is extent.
+///
+/// Only fires before the first acknowledgment with no adoption or restoration
+/// in flight; renegotiations after acknowledgment keep the strict rejection
+/// path so a mid-stream change cannot silently rewrite committed geometry.
+fn initial_native_extent_correction(
+    format_state: &Mutex<PipeWireFormatState>,
+    negotiated: NegotiatedPipeWireFormat,
+) -> Option<PixelExtent> {
+    let state = format_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.current_acknowledged || state.pending.is_some() || state.restoring.is_some() {
+        return None;
+    }
+    let fixated =
+        PixelExtent::new(negotiated.frame.width, negotiated.frame.height).ok()?;
+    (fixated != state.current.extent).then_some(fixated)
 }
 
 fn unavailable_format_outcome(current_acknowledged: bool, reason: String) -> PipeWireLoopExit {
@@ -4144,17 +4221,25 @@ fn run_pipewire_loop(
     cancel: Arc<AtomicBool>,
     session_generation: u64,
     status_writer: Option<SourceSessionWriter>,
+    native_extent_override: Option<PixelExtent>,
 ) -> anyhow::Result<PipeWireLoopExit> {
     pw::init();
     let source = WaylandSourceMetadata::from_stream(&portal_stream, session_generation)?;
     let exchange = Arc::new(AnalysisExchange::default());
     let callback_metrics = Arc::new(CaptureCallbackMetrics::default());
     let loop_exit = Arc::new(Mutex::new(None::<PipeWireLoopExit>));
-    let requested_extent = source.signature.logical_extent.unwrap_or(
-        demand
-            .requested_extent()
-            .context("active Wayland capture demand must carry an extent")?,
-    );
+    // A fixated native extent from a prior iteration outranks the portal's
+    // logical size: scaled outputs stream physical pixels.
+    let requested_extent = native_extent_override
+        .or(source.signature.logical_extent)
+        .map_or_else(
+            || {
+                demand
+                    .requested_extent()
+                    .context("active Wayland capture demand must carry an extent")
+            },
+            Ok,
+        )?;
     let requested_output_extent = demand
         .requested_extent()
         .context("active Wayland capture demand must carry an extent")?;
@@ -4387,6 +4472,18 @@ fn run_pipewire_loop(
                     }
                     PipeWireFormatAcknowledgment::Cancelled
                     | PipeWireFormatAcknowledgment::Rejected => {
+                        if acknowledgment == PipeWireFormatAcknowledgment::Rejected
+                            && let Some(extent) =
+                                initial_native_extent_correction(&format_state, negotiated)
+                        {
+                            user_data.fence_decoding();
+                            terminate_pipewire_loop(
+                                &mainloop,
+                                &loop_exit,
+                                PipeWireLoopExit::RequiresNativeExtent(extent),
+                            );
+                            return;
+                        }
                         let reason = format!(
                             "PipeWire negotiated {size:?} at {:?} instead of the exact requested format",
                             user_data.format.framerate()
@@ -4857,19 +4954,47 @@ fn build_format_params(target_fps: u32, requested_extent: PixelExtent) -> anyhow
             spa::param::video::VideoFormat::xRGB,
             spa::param::video::VideoFormat::xBGR,
         ),
+        // The portal reports the LOGICAL output size, but compositors stream
+        // PHYSICAL pixels: a 4K output at 150% scale reports 2560x1440 while
+        // its node offers only 3840x2160, and a fixed logical rectangle makes
+        // the intersection empty ("no more output formats"). Offer a range so
+        // the node fixates its native extent; the acknowledgment path owns
+        // deciding what to do with a fixated extent that differs.
         spa::pod::property!(
             spa::param::format::FormatProperties::VideoSize,
+            Choice,
+            Range,
             Rectangle,
             spa::utils::Rectangle {
                 width: requested_extent.width(),
                 height: requested_extent.height(),
+            },
+            spa::utils::Rectangle {
+                width: 1,
+                height: 1,
+            },
+            spa::utils::Rectangle {
+                width: 16_384,
+                height: 16_384,
             }
         ),
+        // Screencast nodes commonly pin framerate to 0/1 (variable) or the
+        // display rate, so a fixed fraction yields an empty intersection and
+        // the server kills the link with "no more output formats". Offer the
+        // full transport range with the target as preference; CapturePacer
+        // enforces the actual capture cadence downstream.
         spa::pod::property!(
             spa::param::format::FormatProperties::VideoFramerate,
+            Choice,
+            Range,
             Fraction,
             spa::utils::Fraction {
                 num: target_fps,
+                denom: 1,
+            },
+            spa::utils::Fraction { num: 0, denom: 1 },
+            spa::utils::Fraction {
+                num: 1000,
                 denom: 1,
             }
         ),
