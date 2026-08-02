@@ -4031,8 +4031,7 @@ fn initial_native_extent_correction(
     if state.current_acknowledged || state.pending.is_some() || state.restoring.is_some() {
         return None;
     }
-    let fixated =
-        PixelExtent::new(negotiated.frame.width, negotiated.frame.height).ok()?;
+    let fixated = PixelExtent::new(negotiated.frame.width, negotiated.frame.height).ok()?;
     (fixated != state.current.extent).then_some(fixated)
 }
 

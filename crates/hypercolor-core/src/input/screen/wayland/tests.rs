@@ -14,10 +14,10 @@ use super::{
     WaylandScreenCaptureInput, WaylandSourceMetadata, WaylandTopologySignature,
     build_format_params, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
     fence_previous_publication, initial_native_extent_correction, initial_worker_demand,
-    park_unavailable_worker,
-    prepare_wayland_exact_runtime, publish_unexpected_exit_status, reap_wayland_exact_runtimes,
-    request_active_worker_demand, set_worker_demand, settle_pipewire_restoration,
-    unavailable_format_outcome, wait_for_adoption_result, worker_demand_epoch, worker_demanded,
+    park_unavailable_worker, prepare_wayland_exact_runtime, publish_unexpected_exit_status,
+    reap_wayland_exact_runtimes, request_active_worker_demand, set_worker_demand,
+    settle_pipewire_restoration, unavailable_format_outcome, wait_for_adoption_result,
+    worker_demand_epoch, worker_demanded,
 };
 use crate::input::screen::{
     AnalyzedScreenSnapshot, CaptureColorimetry, CaptureConfig, CaptureFrame, CaptureFrameError,
@@ -1913,11 +1913,9 @@ fn initial_extent_correction_only_fires_before_first_acknowledgment() {
         })
     };
 
-    let corrected = initial_native_extent_correction(
-        &make_state(false),
-        negotiated_format(3840, 2160, 0),
-    )
-    .expect("scaled-output fixation corrects the acquisition extent");
+    let corrected =
+        initial_native_extent_correction(&make_state(false), negotiated_format(3840, 2160, 0))
+            .expect("scaled-output fixation corrects the acquisition extent");
     assert_eq!((corrected.width(), corrected.height()), (3840, 2160));
 
     assert!(
