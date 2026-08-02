@@ -1,7 +1,7 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::Arc;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use hypercolor_core::config::ConfigManager;
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::screen::ResolvedCaptureSource;
@@ -9,8 +9,12 @@ use hypercolor_core::input::screen::{PixelExtent, ScreenAdmissionCapacity, Scree
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use super::CaptureConfigPersistenceGate;
+#[cfg(target_os = "linux")]
+use super::CaptureConfigPersistenceUpdate;
 #[cfg(target_os = "windows")]
-use super::{CaptureConfigPersistenceGate, windows_capture_source_sink};
+use super::windows_capture_source_sink;
 use super::{
     screen_analysis_plan_for_demand, screen_capacity_plan, screen_capacity_plan_for_backend,
     screen_capture_config_from, screen_capture_config_with_capacity_from,
@@ -279,4 +283,78 @@ fn daemon_initialization_rejects_invalid_capture_config_before_startup() {
     };
 
     assert!(format!("{error:#}").contains("capture.capture_fps"));
+}
+
+#[cfg(target_os = "linux")]
+fn linux_gate(manager: &Arc<ConfigManager>) -> CaptureConfigPersistenceGate {
+    let expected = Arc::clone(&manager.get());
+    CaptureConfigPersistenceGate::new(Arc::clone(manager), &expected, true)
+        .expect("capture persistence authority is reserved")
+}
+
+#[cfg(target_os = "linux")]
+fn publish_token(gate: &CaptureConfigPersistenceGate, token: &str) {
+    gate.publish(CaptureConfigPersistenceUpdate::RestoreToken {
+        configured: None,
+        resolved: Some(token.to_owned()),
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restore_token_persists_without_source_status() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let path = directory.path().join("hypercolor.toml");
+    let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
+
+    let gate = linux_gate(&manager);
+    publish_token(&gate, "granted-token");
+
+    assert_eq!(
+        manager.get().capture.restore_token.as_deref(),
+        Some("granted-token"),
+        "tokens authorize by epoch alone; no status identity is required"
+    );
+    drop(manager);
+    let restarted = ConfigManager::new(path).expect("config manager reopens");
+    assert_eq!(
+        restarted.get().capture.restore_token.as_deref(),
+        Some("granted-token")
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restore_token_rotations_persist_across_session_generations() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let manager = Arc::new(
+        ConfigManager::new(directory.path().join("hypercolor.toml")).expect("config manager opens"),
+    );
+
+    let gate = linux_gate(&manager);
+    publish_token(&gate, "first-session-token");
+    publish_token(&gate, "successor-session-token");
+    publish_token(&gate, "post-flap-token");
+
+    assert_eq!(
+        manager.get().capture.restore_token.as_deref(),
+        Some("post-flap-token"),
+        "later sessions must rotate freely; a first-persist pin strands \
+         consumed tokens"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn revoked_gate_drops_restore_token_updates() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let manager = Arc::new(
+        ConfigManager::new(directory.path().join("hypercolor.toml")).expect("config manager opens"),
+    );
+
+    let gate = linux_gate(&manager);
+    gate.revoke();
+    publish_token(&gate, "late-token");
+
+    assert_eq!(manager.get().capture.restore_token, None);
 }

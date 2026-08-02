@@ -480,10 +480,9 @@ pub fn decode_chunk(view: &SpaChunkView<'_>, buffers: &mut DoubleBuffer) -> Copy
 /// Callback invoked when the portal hands back a new restore token (or the
 /// token is cleared before a re-pick). The daemon persists it to config so
 /// the picked source survives restarts without re-prompting.
-/// Receives `(session_generation, restore_token)` under the session-epoch
-/// guard, so persistence can attribute the token to its exact session even
-/// when external status snapshots lag behind the live worker.
-pub type RestoreTokenSink = Arc<dyn Fn(u64, Option<String>) + Send + Sync>;
+/// Invoked under the session-epoch guard, which serializes token grants
+/// and clears; persistence authorizes tokens by epoch alone.
+pub type RestoreTokenSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
 
 /// Settings shared between the input source handle and the capture worker.
 ///
@@ -1337,7 +1336,7 @@ impl SharedSettings {
             .restore_token
             .clone_from(&restore_token);
         if let Some(sink) = token_sink {
-            sink(session_generation, restore_token);
+            sink(restore_token);
         }
         true
     }
@@ -1776,16 +1775,21 @@ impl WaylandScreenCaptureInput {
             return Ok(());
         }
 
-        if let Ok(mut current) = self.settings.config.lock() {
-            current.restore_token = None;
-        }
-        if let Some(sink) = &self.token_sink {
-            // The clear belongs to the current session lineage; generation 0
-            // lets persistence fall back to its status-snapshot identity.
-            sink(
-                self.settings.session_generation.load(Ordering::Acquire),
-                None,
-            );
+        {
+            // The session-epoch lock serializes this clear against the
+            // worker's own token persist, so a grant landing concurrently
+            // cannot interleave with the clear in either order.
+            let _session_guard = self
+                .settings
+                .expected_epoch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Ok(mut current) = self.settings.config.lock() {
+                current.restore_token = None;
+            }
+            if let Some(sink) = &self.token_sink {
+                sink(None);
+            }
         }
 
         if !self.running || !self.capture_demand.is_active() {
@@ -3703,8 +3707,8 @@ fn run_capture_worker(
         flags.portal_pending.store(true, Ordering::SeqCst);
         let portal_result =
             runtime.block_on(open_portal_session_while_demanded(&startup.config, &flags));
-        flags.portal_pending.store(false, Ordering::SeqCst);
         let Some(portal_result) = portal_result else {
+            flags.portal_pending.store(false, Ordering::SeqCst);
             if !settings.session_is_current(session_generation, &flags.cancel) {
                 return;
             }
@@ -3713,6 +3717,7 @@ fn run_capture_worker(
         let (portal, restore_token) = match portal_result {
             Ok(portal) => portal,
             Err(error) => {
+                flags.portal_pending.store(false, Ordering::SeqCst);
                 if !settings.session_is_current(session_generation, &flags.cancel) {
                     return;
                 }
@@ -3765,6 +3770,10 @@ fn run_capture_worker(
         {
             return;
         }
+        // Cleared only after the granted token persists: a re-pick arriving
+        // between portal grant and persist would otherwise clear state the
+        // worker immediately rewrites, silently reconnecting the old source.
+        flags.portal_pending.store(false, Ordering::SeqCst);
 
         let PortalCaptureSession {
             session,

@@ -878,10 +878,6 @@ enum CaptureConfigPersistenceUpdate {
     RestoreToken {
         configured: Option<String>,
         resolved: Option<String>,
-        /// Stamped by the worker under its session-epoch guard; outranks the
-        /// status snapshot, which can lag the live session and previously
-        /// caused freshly rotated tokens to be dropped or parked.
-        session_generation: u64,
     },
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     Unsupported,
@@ -952,14 +948,17 @@ impl CaptureConfigPersistenceGate {
             } else if !state.committed {
                 state.pending = Some(update);
                 None
-            } else if let Some(source) = identity_for_update(&state, &update) {
+            } else if !requires_source_identity(&update) {
                 // A newer update supersedes anything parked earlier.
                 state.pending = None;
-                Some((state.epoch, source, update))
+                Some((state.epoch, None, update))
+            } else if let Some(source) = source_identity(&state) {
+                state.pending = None;
+                Some((state.epoch, Some(source), update))
             } else {
                 // The status snapshot has not caught up with the live
-                // session yet. Losing the update here replays consumed
-                // restore tokens on the next reconnect; park it until an
+                // session yet. Losing the update here replays stale
+                // state on the next reconnect; park it until an
                 // identity-bearing publish or commit can flush it.
                 warn!(
                     "capture persistence update parked: source identity \
@@ -985,10 +984,11 @@ impl CaptureConfigPersistenceGate {
                 return;
             }
             state.committed = true;
-            let identity = state
-                .pending
-                .as_ref()
-                .and_then(|update| identity_for_update(&state, update));
+            let identity = match state.pending.as_ref() {
+                Some(update) if !requires_source_identity(update) => Some(None),
+                Some(_) => source_identity(&state).map(Some),
+                None => None,
+            };
             if let Some(source) = identity {
                 state
                     .pending
@@ -1029,7 +1029,7 @@ impl CaptureConfigPersistenceGate {
     fn persist(
         &self,
         epoch: CapturePersistenceEpoch,
-        source: CapturePersistenceSource,
+        source: Option<CapturePersistenceSource>,
         update: CaptureConfigPersistenceUpdate,
         deferred: bool,
     ) {
@@ -1061,21 +1061,34 @@ impl CaptureConfigPersistenceGate {
             return;
         }
 
-        let result =
-            config_manager.modify_capture_if_authorized(epoch, source, |capture| match update {
-                #[cfg(target_os = "windows")]
-                CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
-                    capture.source = resolved.stable_source;
-                }
-                #[cfg(target_os = "linux")]
-                CaptureConfigPersistenceUpdate::RestoreToken { resolved, .. } => {
-                    capture.restore_token = resolved;
-                }
-                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-                CaptureConfigPersistenceUpdate::Unsupported => {}
-            });
-        if let Err(error) = result {
-            warn!(%error, "Failed to persist resolved screen capture identity");
+        let mutate = |capture: &mut hypercolor_types::config::CaptureConfig| match update {
+            #[cfg(target_os = "windows")]
+            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
+                capture.source = resolved.stable_source;
+            }
+            #[cfg(target_os = "linux")]
+            CaptureConfigPersistenceUpdate::RestoreToken { resolved, .. } => {
+                capture.restore_token = resolved;
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            CaptureConfigPersistenceUpdate::Unsupported => {}
+        };
+        let result = match source {
+            Some(source) => config_manager.modify_capture_if_authorized(epoch, source, mutate),
+            None => config_manager.modify_capture_if_epoch_current(epoch, mutate),
+        };
+        match result {
+            Ok(Some(_)) => {}
+            // A rejection here is a stale epoch or a superseded source, and
+            // it means the update is gone; silence would look identical to
+            // success and rot the persisted state.
+            Ok(None) => warn!(
+                "capture persistence rejected: epoch or source authority \
+                 superseded"
+            ),
+            Err(error) => {
+                warn!(%error, "Failed to persist resolved screen capture identity");
+            }
         }
     }
 }
@@ -1092,32 +1105,22 @@ fn source_identity(state: &CaptureConfigPersistenceState) -> Option<CapturePersi
     ))
 }
 
-/// Resolve the persistence identity for one update, preferring the session
-/// generation the worker stamped into the update over the status snapshot,
-/// which lags the live session and would otherwise drop or park a freshly
-/// rotated restore token.
-fn identity_for_update(
-    state: &CaptureConfigPersistenceState,
-    update: &CaptureConfigPersistenceUpdate,
-) -> Option<CapturePersistenceSource> {
-    #[cfg(target_os = "linux")]
-    if let CaptureConfigPersistenceUpdate::RestoreToken {
-        session_generation, ..
-    } = update
-        && *session_generation != 0
-    {
-        let status = state.source_status.as_ref()?.snapshot();
-        if status.source_graph_generation == 0 {
-            return None;
-        }
-        return Some(CapturePersistenceSource::new(
-            Arc::clone(&status.source_id),
-            status.source_graph_generation,
-            *session_generation,
-        ));
+/// Whether an update's authorization must pin a source identity.
+///
+/// Restore tokens do not: the capture worker serializes them under its
+/// session-epoch guard, their session generations legitimately advance
+/// across in-worker reconnects, and pinning the first observed generation
+/// rejects every later rotation, stranding consumed tokens on disk. They
+/// authorize by persistence epoch alone.
+fn requires_source_identity(update: &CaptureConfigPersistenceUpdate) -> bool {
+    match update {
+        #[cfg(target_os = "windows")]
+        CaptureConfigPersistenceUpdate::WindowsSource(_) => true,
+        #[cfg(target_os = "linux")]
+        CaptureConfigPersistenceUpdate::RestoreToken { .. } => false,
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        CaptureConfigPersistenceUpdate::Unsupported => false,
     }
-    let _ = update;
-    source_identity(state)
 }
 
 #[cfg(target_os = "windows")]
@@ -1200,11 +1203,10 @@ pub(crate) fn build_screen_capture_source(
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
     let capture_config = screen_capture_config_with_capacity_from(capture, capacity)?;
     let configured = capture.restore_token.clone();
-    let sink = Arc::new(move |session_generation: u64, token: Option<String>| {
+    let sink = Arc::new(move |token: Option<String>| {
         persistence.publish(CaptureConfigPersistenceUpdate::RestoreToken {
             configured: configured.clone(),
             resolved: token,
-            session_generation,
         });
     });
 

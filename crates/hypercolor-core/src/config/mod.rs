@@ -344,6 +344,48 @@ impl ConfigManager {
         Ok(Some(candidate))
     }
 
+    /// Mutate capture config while the persistence epoch is current, without
+    /// the pinned-source check.
+    ///
+    /// Restore tokens serialize through the capture worker's session-epoch
+    /// guard, and their session generations legitimately advance across
+    /// in-worker reconnects, so a first-persist source pin would reject
+    /// every rotation after the first and strand consumed tokens on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying persistence error when writing the candidate
+    /// config fails.
+    pub fn modify_capture_if_epoch_current(
+        &self,
+        epoch: CapturePersistenceEpoch,
+        mutate: impl FnOnce(&mut CaptureConfig),
+    ) -> Result<Option<Arc<HypercolorConfig>>> {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.config.load_full();
+        let Some(authority) = writer.capture_persistence_authority.as_ref() else {
+            return Ok(None);
+        };
+        if authority.epoch != epoch || !Arc::ptr_eq(&authority.config, &current) {
+            return Ok(None);
+        }
+        let mut candidate = (*current).clone();
+        mutate(&mut candidate.capture);
+        let candidate = Arc::new(normalize_config(candidate));
+        self.persist(&candidate)?;
+        let authority = writer
+            .capture_persistence_authority
+            .as_mut()
+            .expect("capture authority was validated under the writer lock");
+        authority.config = Arc::clone(&candidate);
+        writer.applied_capture = Some(candidate.capture.clone());
+        self.config.store(Arc::clone(&candidate));
+        Ok(Some(candidate))
+    }
+
     /// Revoke a staged or active capture persistence epoch.
     pub fn revoke_capture_persistence(&self, epoch: CapturePersistenceEpoch) {
         let mut writer = self
