@@ -29,9 +29,9 @@ use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, TransportScanner,
+    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, TransportScanner,
 };
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceColorFormat, DeviceId, DeviceInfo};
 
 use cache::{build_device_info, wled_fingerprint};
 use health::{
@@ -141,6 +141,9 @@ impl WledBackend {
 
     /// Seed the backend with a discovered device entry.
     pub fn remember_device(&mut self, device_id: DeviceId, ip: IpAddr, info: WledDeviceInfo) {
+        if !self.known_ips.contains(&ip) {
+            self.known_ips.push(ip);
+        }
         self.device_ips.insert(device_id, ip);
         self.device_infos.insert(device_id, info);
     }
@@ -423,6 +426,59 @@ impl DeviceBackend for WledBackend {
         }
 
         Ok(discovered)
+    }
+
+    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+        let Some(ip) = discovered
+            .metadata
+            .get("ip")
+            .and_then(|ip| ip.parse::<IpAddr>().ok())
+        else {
+            debug!(
+                device_id = %discovered.info.id,
+                "WLED discovery result omitted a usable IP"
+            );
+            return;
+        };
+        let rgbw = discovered
+            .info
+            .zones
+            .first()
+            .is_some_and(|zone| matches!(zone.color_format, DeviceColorFormat::Rgbw));
+        let mac = discovered
+            .fingerprint
+            .0
+            .strip_prefix("net:")
+            .filter(|value| !value.starts_with("wled:"))
+            .unwrap_or_default()
+            .to_owned();
+        let info = WledDeviceInfo {
+            firmware_version: discovered
+                .info
+                .firmware_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned()),
+            build_id: 0,
+            mac,
+            name: discovered.info.name.clone(),
+            led_count: u16::try_from(discovered.info.total_led_count()).unwrap_or(u16::MAX),
+            rgbw,
+            max_segments: 1,
+            fps: u8::try_from(discovered.info.capabilities.max_fps).unwrap_or(u8::MAX),
+            power_draw_ma: 0,
+            max_power_ma: 0,
+            free_heap: 0,
+            uptime_secs: 0,
+            arch: discovered
+                .metadata
+                .get("arch")
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_owned()),
+            is_wifi: true,
+            effect_count: 0,
+            palette_count: 0,
+        };
+        self.remember_device(discovered.info.id, ip, info);
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {

@@ -2,6 +2,7 @@
 //!
 //! Tests use parsing/unit checks plus local loopback UDP for streaming behavior.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::IpAddr;
@@ -12,14 +13,17 @@ use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveryConnectBehavior, TransportScanner,
+    DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner,
 };
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
     WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledScanner, WledSegmentInfo,
     build_ddp_frame, universes_needed,
 };
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex as AsyncMutex;
@@ -1002,6 +1006,57 @@ async fn backend_connect_without_discover_fails() {
         result.is_err(),
         "connecting without prior discovery should fail"
     );
+}
+
+#[tokio::test]
+async fn backend_connects_from_scanner_seed_without_backend_discover() {
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+    let fingerprint = DeviceFingerprint("net:aabbccddeeff".to_owned());
+    let device_id = fingerprint.stable_device_id();
+    let discovered = DiscoveredDevice {
+        fingerprint,
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        info: DeviceInfo {
+            id: device_id,
+            name: "Scanner Seed".to_owned(),
+            vendor: "WLED".to_owned(),
+            family: DeviceFamily::new_static("wled", "WLED"),
+            model: None,
+            connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 60,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: Some("0.15.3".to_owned()),
+            capabilities: DeviceCapabilities {
+                led_count: 60,
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
+                max_fps: 40,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
+                features: DeviceFeatures::default(),
+            },
+        },
+        metadata: HashMap::from([
+            ("ip".to_owned(), "127.0.0.1".to_owned()),
+            ("arch".to_owned(), "esp32".to_owned()),
+        ]),
+    };
+
+    backend.remember_discovered_device(&discovered);
+    backend
+        .connect(&device_id)
+        .await
+        .expect("scanner metadata should seed the live backend");
+
+    assert!(backend.connected_socket_local_addr(&device_id).is_some());
 }
 
 #[tokio::test]

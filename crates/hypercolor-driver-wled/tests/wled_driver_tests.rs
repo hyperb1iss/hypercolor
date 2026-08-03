@@ -97,13 +97,7 @@ fn resolve_probe_targets_prefers_tracked_metadata() {
         &[],
         &[WledKnownTarget {
             ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
-            hostname: None,
-            fingerprint: None,
-            name: None,
-            led_count: None,
-            firmware_version: None,
-            max_fps: None,
-            rgbw: None,
+            ..WledKnownTarget::from_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)))
         }],
     );
 
@@ -112,6 +106,47 @@ fn resolve_probe_targets_prefers_tracked_metadata() {
     assert_eq!(resolved[0].hostname.as_deref(), Some("desk.local"));
     assert_eq!(resolved[0].led_count, Some(60));
     assert_eq!(resolved[0].rgbw, Some(true));
+}
+
+#[test]
+fn tracked_identity_refreshes_metadata_and_replaces_learned_ip() {
+    let tracked = tracked_wled_device("10.0.0.8", "desk.local", "Desk Strip Renamed");
+    let old_ip = "10.0.0.5".parse::<IpAddr>().expect("valid old IP");
+    let new_ip = "10.0.0.8".parse::<IpAddr>().expect("valid new IP");
+    let cached = WledKnownTarget {
+        ip: old_ip,
+        fingerprint: tracked.fingerprint.clone(),
+        name: Some("Stale Name".to_owned()),
+        led_count: Some(12),
+        firmware_version: Some("0.13.0".to_owned()),
+        max_fps: Some(20),
+        rgbw: Some(false),
+        extra: BTreeMap::from([("future_field".to_owned(), serde_json::json!(true))]),
+        ..WledKnownTarget::from_ip(old_ip)
+    };
+
+    let targets = resolve_wled_probe_targets_from_sources(
+        &WledConfig::default(),
+        std::slice::from_ref(&tracked),
+        &[old_ip],
+        std::slice::from_ref(&cached),
+    );
+    let ips = resolve_wled_probe_ips_from_sources(
+        &WledConfig::default(),
+        &[tracked],
+        &[old_ip],
+        &[cached],
+    );
+
+    assert_eq!(ips, vec![new_ip]);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].ip, new_ip);
+    assert_eq!(targets[0].name.as_deref(), Some("Desk Strip Renamed"));
+    assert_eq!(targets[0].firmware_version.as_deref(), Some("0.15.0"));
+    assert_eq!(targets[0].led_count, Some(60));
+    assert_eq!(targets[0].max_fps, Some(55));
+    assert_eq!(targets[0].rgbw, Some(true));
+    assert_eq!(targets[0].extra["future_field"], serde_json::json!(true));
 }
 
 #[tokio::test]
@@ -161,7 +196,13 @@ fn forgetting_wled_device_removes_only_matching_inventory() {
                     fingerprint: forgotten.fingerprint.clone(),
                     ..WledKnownTarget::from_ip(forgotten_ip)
                 },
-                WledKnownTarget::from_ip(retained_ip)
+                WledKnownTarget {
+                    extra: BTreeMap::from([(
+                        "future_field".to_owned(),
+                        serde_json::json!({"preserve": true})
+                    )]),
+                    ..WledKnownTarget::from_ip(retained_ip)
+                }
             ]),
         ),
         (
@@ -179,7 +220,12 @@ fn forgetting_wled_device_removes_only_matching_inventory() {
     assert_eq!(updated["probe_ips"], serde_json::json!(["10.4.22.169"]));
     let targets: Vec<WledKnownTarget> =
         serde_json::from_value(updated["probe_targets"].clone()).expect("updated targets");
-    assert_eq!(targets, vec![WledKnownTarget::from_ip(retained_ip)]);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].ip, retained_ip);
+    assert_eq!(
+        targets[0].extra["future_field"],
+        serde_json::json!({"preserve": true})
+    );
     assert_eq!(updated["future_key"], cache["future_key"]);
 }
 

@@ -822,22 +822,36 @@ pub fn resolve_wled_probe_ips_from_sources(
     cached_probe_ips: &[IpAddr],
     cached_targets: &[WledKnownTarget],
 ) -> Vec<IpAddr> {
-    let mut known_ips: HashSet<IpAddr> = config.known_ips.iter().copied().collect();
-    known_ips.extend(cached_probe_ips.iter().copied());
-    known_ips.extend(cached_targets.iter().map(|target| target.ip));
-
-    for tracked in tracked_devices {
-        let Some(ip_raw) = tracked.metadata.get("ip") else {
-            continue;
-        };
-        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
-            continue;
-        };
-        let Ok(ip) = validate_ip(ip) else {
-            continue;
-        };
-        known_ips.insert(ip);
-    }
+    let configured_ips: HashSet<IpAddr> = config.known_ips.iter().copied().collect();
+    let tracked_targets = tracked_devices
+        .iter()
+        .filter_map(tracked_wled_target)
+        .collect::<Vec<_>>();
+    let moved_ips = cached_targets
+        .iter()
+        .filter(|cached| {
+            cached.fingerprint.as_ref().is_some_and(|fingerprint| {
+                tracked_targets.iter().any(|tracked| {
+                    tracked.fingerprint.as_ref() == Some(fingerprint) && tracked.ip != cached.ip
+                })
+            })
+        })
+        .map(|target| target.ip)
+        .collect::<HashSet<_>>();
+    let mut known_ips = configured_ips.clone();
+    known_ips.extend(
+        cached_probe_ips
+            .iter()
+            .copied()
+            .filter(|ip| configured_ips.contains(ip) || !moved_ips.contains(ip)),
+    );
+    known_ips.extend(
+        cached_targets
+            .iter()
+            .map(|target| target.ip)
+            .filter(|ip| configured_ips.contains(ip) || !moved_ips.contains(ip)),
+    );
+    known_ips.extend(tracked_targets.iter().map(|target| target.ip));
 
     let mut resolved: Vec<IpAddr> = known_ips.into_iter().collect();
     resolved.sort_unstable();
@@ -852,6 +866,7 @@ pub fn resolve_wled_probe_targets_from_sources(
     cached_probe_ips: &[IpAddr],
     cached_targets: &[WledKnownTarget],
 ) -> Vec<WledKnownTarget> {
+    let configured_ips = config.known_ips.iter().copied().collect::<HashSet<_>>();
     let mut known_targets: std::collections::HashMap<IpAddr, WledKnownTarget> = config
         .known_ips
         .iter()
@@ -873,43 +888,60 @@ pub fn resolve_wled_probe_targets_from_sources(
             .or_insert_with(|| target.clone());
     }
 
-    for tracked in tracked_devices {
-        let Some(ip_raw) = tracked.metadata.get("ip") else {
-            continue;
-        };
-        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
-            continue;
-        };
-        let Ok(ip) = validate_ip(ip) else {
-            continue;
-        };
-
-        let rgbw = tracked.info.zones.first().map(|zone| {
-            matches!(
-                zone.color_format,
-                hypercolor_types::device::DeviceColorFormat::Rgbw
-            )
-        });
-        let target = WledKnownTarget {
-            ip,
-            hostname: tracked.metadata.get("hostname").cloned(),
-            fingerprint: tracked.fingerprint.clone(),
-            name: Some(tracked.info.name.clone()),
-            led_count: Some(tracked.info.total_led_count()),
-            firmware_version: tracked.info.firmware_version.clone(),
-            max_fps: Some(tracked.info.capabilities.max_fps),
-            rgbw,
-        };
+    for mut target in tracked_devices.iter().filter_map(tracked_wled_target) {
+        if let Some(fingerprint) = target.fingerprint.as_ref() {
+            let prior_ips = known_targets
+                .iter()
+                .filter(|(ip, known)| {
+                    **ip != target.ip && known.fingerprint.as_ref() == Some(fingerprint)
+                })
+                .map(|(ip, _)| *ip)
+                .collect::<Vec<_>>();
+            for prior_ip in prior_ips {
+                if let Some(prior) = known_targets.remove(&prior_ip) {
+                    target.merge_from(&prior);
+                }
+                if configured_ips.contains(&prior_ip) {
+                    known_targets.insert(prior_ip, WledKnownTarget::from_ip(prior_ip));
+                }
+            }
+        }
 
         known_targets
-            .entry(ip)
-            .and_modify(|existing| existing.merge_from(&target))
+            .entry(target.ip)
+            .and_modify(|existing| {
+                existing.merge_from(&target);
+                existing.refresh_from(&target);
+            })
             .or_insert(target);
     }
 
     let mut resolved: Vec<WledKnownTarget> = known_targets.into_values().collect();
     resolved.sort_by_key(|target| target.ip);
     resolved
+}
+
+fn tracked_wled_target(tracked: &DriverTrackedDevice) -> Option<WledKnownTarget> {
+    let ip = tracked.metadata.get("ip")?.parse::<IpAddr>().ok()?;
+    let ip = validate_ip(ip).ok()?;
+    let rgbw = tracked.info.zones.first().map(|zone| {
+        matches!(
+            zone.color_format,
+            hypercolor_types::device::DeviceColorFormat::Rgbw
+        )
+    });
+
+    Some(WledKnownTarget {
+        ip,
+        hostname: tracked.metadata.get("hostname").cloned(),
+        fingerprint: tracked.fingerprint.clone(),
+        name: Some(tracked.info.name.clone()),
+        led_count: Some(tracked.info.total_led_count()),
+        firmware_version: tracked.info.firmware_version.clone(),
+        max_fps: Some(tracked.info.capabilities.max_fps),
+        rgbw,
+        extra: BTreeMap::new(),
+    })
 }
 
 fn load_cached_probe_ips(host: &dyn DriverHost) -> Result<Vec<IpAddr>> {

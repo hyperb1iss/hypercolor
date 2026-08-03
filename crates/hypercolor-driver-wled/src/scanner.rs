@@ -3,7 +3,7 @@
 //! Implements [`TransportScanner`] to discover WLED controllers on the
 //! local network via `_wled._tcp.local.` service browsing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -51,6 +51,9 @@ pub struct WledKnownTarget {
     /// Whether the device reported RGBW support.
     #[serde(default)]
     pub rgbw: Option<bool>,
+    /// Forward-compatible driver-owned fields.
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl WledKnownTarget {
@@ -66,6 +69,7 @@ impl WledKnownTarget {
             firmware_version: None,
             max_fps: None,
             rgbw: None,
+            extra: BTreeMap::new(),
         }
     }
 
@@ -92,6 +96,37 @@ impl WledKnownTarget {
         if self.rgbw.is_none() {
             self.rgbw = other.rgbw;
         }
+        for (key, value) in &other.extra {
+            self.extra
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+    }
+
+    /// Refresh fields observed during a positive discovery without dropping extensions.
+    pub fn refresh_from(&mut self, other: &Self) {
+        if other.hostname.is_some() {
+            self.hostname.clone_from(&other.hostname);
+        }
+        if other.fingerprint.is_some() {
+            self.fingerprint.clone_from(&other.fingerprint);
+        }
+        if other.name.is_some() {
+            self.name.clone_from(&other.name);
+        }
+        if other.led_count.is_some() {
+            self.led_count = other.led_count;
+        }
+        if other.firmware_version.is_some() {
+            self.firmware_version.clone_from(&other.firmware_version);
+        }
+        if other.max_fps.is_some() {
+            self.max_fps = other.max_fps;
+        }
+        if other.rgbw.is_some() {
+            self.rgbw = other.rgbw;
+        }
+        self.extra.extend(other.extra.clone());
     }
 }
 

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -25,6 +25,8 @@ pub struct GoveeKnownDevice {
     pub sku: Option<String>,
     #[serde(default)]
     pub mac: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl GoveeKnownDevice {
@@ -34,6 +36,7 @@ impl GoveeKnownDevice {
             ip,
             sku: None,
             mac: None,
+            extra: BTreeMap::new(),
         }
     }
 }

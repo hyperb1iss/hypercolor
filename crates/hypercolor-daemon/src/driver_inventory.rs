@@ -2,11 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::Mutex as StdMutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
 use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::DriverHost;
@@ -74,6 +75,15 @@ pub enum DriverInventoryError {
         #[source]
         source: PersistenceError,
     },
+    /// A driver-owned inventory update failed.
+    #[error("failed to update {driver_id} discovery inventory: {source}")]
+    Update {
+        /// Driver whose semantic update failed.
+        driver_id: String,
+        /// Driver-owned update error.
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 /// Thread-safe durable store for opaque, driver-owned discovery hints.
@@ -81,7 +91,8 @@ pub enum DriverInventoryError {
 pub struct DriverInventoryStore {
     path: PathBuf,
     writer: AtomicFileWriter,
-    document: Mutex<DriverInventoryDocument>,
+    operation_gate: AsyncMutex<()>,
+    document: StdMutex<DriverInventoryDocument>,
 }
 
 impl DriverInventoryStore {
@@ -107,7 +118,8 @@ impl DriverInventoryStore {
         let store = Self {
             path,
             writer,
-            document: Mutex::new(document),
+            operation_gate: AsyncMutex::new(()),
+            document: StdMutex::new(document),
         };
 
         if migrated {
@@ -167,28 +179,52 @@ impl DriverInventoryStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if serialization or atomic replacement fails.
-    pub fn replace_driver(
+    /// Returns an error if the replacement cannot be serialized. Once admitted,
+    /// replacement failures remain queued for the persistence retry worker.
+    pub async fn replace_driver(
         &self,
         driver_id: &str,
         cache: BTreeMap<String, Value>,
     ) -> Result<(), DriverInventoryError> {
-        let mut document = self
-            .document
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut candidate = document.clone();
-        if cache.is_empty() {
-            candidate.drivers.remove(driver_id);
-        } else {
-            candidate.drivers.insert(
-                driver_id.to_owned(),
-                Value::Object(cache.into_iter().collect()),
-            );
-        }
-        self.persist_document(&candidate)?;
-        *document = candidate;
+        let guard = self.operation_gate.lock().await;
+        self.replace_driver_guarded(&guard, driver_id, cache)?;
         Ok(())
+    }
+
+    /// Atomically transform one driver's complete cache map.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the driver transform or serialization fails.
+    pub async fn update_driver(
+        &self,
+        driver_id: &str,
+        update: impl FnOnce(&BTreeMap<String, Value>) -> anyhow::Result<BTreeMap<String, Value>>,
+    ) -> Result<bool, DriverInventoryError> {
+        let guard = self.operation_gate.lock().await;
+        self.update_driver_guarded(&guard, driver_id, update)
+    }
+
+    pub(crate) async fn operation_guard(&self) -> MutexGuard<'_, ()> {
+        self.operation_gate.lock().await
+    }
+
+    pub(crate) fn update_driver_guarded(
+        &self,
+        guard: &MutexGuard<'_, ()>,
+        driver_id: &str,
+        update: impl FnOnce(&BTreeMap<String, Value>) -> anyhow::Result<BTreeMap<String, Value>>,
+    ) -> Result<bool, DriverInventoryError> {
+        let current = self.driver_cache(driver_id);
+        let updated = update(&current).map_err(|source| DriverInventoryError::Update {
+            driver_id: driver_id.to_owned(),
+            source,
+        })?;
+        if updated == current {
+            return Ok(false);
+        }
+        self.replace_driver_guarded(guard, driver_id, updated)?;
+        Ok(true)
     }
 
     /// Refresh every driver-owned inventory snapshot without clearing prior data on failure.
@@ -204,6 +240,7 @@ impl DriverInventoryStore {
             let Some(provider) = driver.runtime_cache() else {
                 continue;
             };
+            let guard = self.operation_gate.lock().await;
 
             match provider.snapshot(host).await {
                 Ok(cache) if cache.is_empty() => {
@@ -213,7 +250,7 @@ impl DriverInventoryStore {
                         "Preserving driver inventory after empty snapshot"
                     );
                 }
-                Ok(cache) => match self.replace_driver(&driver_id, cache) {
+                Ok(cache) => match self.merge_driver_guarded(&guard, &driver_id, cache) {
                     Ok(()) => updated += 1,
                     Err(error) => {
                         failed += 1;
@@ -249,21 +286,59 @@ impl DriverInventoryStore {
             .document
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.persist_document(&document)
+        let bytes = serialize_json_pretty(&*document).map_err(DriverInventoryError::Serialize)?;
+        let pending = self.writer.reserve().admit(bytes);
+        if let Err(error) = pending.commit() {
+            warn!(
+                path = %self.path.display(),
+                %error,
+                "Failed to persist driver inventory; retry remains active"
+            );
+        }
+        Ok(())
     }
 
-    fn persist_document(
+    fn replace_driver_guarded(
         &self,
-        document: &DriverInventoryDocument,
+        _guard: &MutexGuard<'_, ()>,
+        driver_id: &str,
+        cache: BTreeMap<String, Value>,
     ) -> Result<(), DriverInventoryError> {
-        let bytes = serialize_json_pretty(document).map_err(DriverInventoryError::Serialize)?;
-        self.writer
-            .write(&bytes)
-            .map(|_| ())
-            .map_err(|source| DriverInventoryError::Persist {
-                path: self.path.clone(),
-                source,
-            })
+        let mut document = self
+            .document
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut candidate = document.clone();
+        if cache.is_empty() {
+            candidate.drivers.remove(driver_id);
+        } else {
+            candidate.drivers.insert(
+                driver_id.to_owned(),
+                Value::Object(cache.into_iter().collect()),
+            );
+        }
+        let bytes = serialize_json_pretty(&candidate).map_err(DriverInventoryError::Serialize)?;
+        let pending = self.writer.reserve().admit(bytes);
+        *document = candidate;
+        if let Err(error) = pending.commit() {
+            warn!(
+                path = %self.path.display(),
+                %error,
+                "Failed to persist driver inventory; retry remains active"
+            );
+        }
+        Ok(())
+    }
+
+    fn merge_driver_guarded(
+        &self,
+        guard: &MutexGuard<'_, ()>,
+        driver_id: &str,
+        cache: BTreeMap<String, Value>,
+    ) -> Result<(), DriverInventoryError> {
+        let mut merged = self.driver_cache(driver_id);
+        merged.extend(cache);
+        self.replace_driver_guarded(guard, driver_id, merged)
     }
 }
 
@@ -333,9 +408,10 @@ fn quarantine_path(path: &Path) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
-    let file_name = path
-        .file_name()
-        .map_or_else(|| "driver-inventory.json".into(), std::borrow::ToOwned::to_owned);
+    let file_name = path.file_name().map_or_else(
+        || "driver-inventory.json".into(),
+        std::borrow::ToOwned::to_owned,
+    );
     let mut quarantine_name = file_name;
     quarantine_name.push(format!(".corrupt-{timestamp}"));
     path.with_file_name(quarantine_name)

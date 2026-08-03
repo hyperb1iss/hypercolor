@@ -6,7 +6,7 @@
 //! per-SKU capability database maps model numbers to LED counts, topology, and protocol
 //! flags. Pairing stores a Govee account API key validated against the cloud.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -494,6 +494,7 @@ pub fn resolve_govee_probe_devices(
     tracked_devices: &[DriverTrackedDevice],
     cached_devices: &[GoveeKnownDevice],
 ) -> Vec<GoveeKnownDevice> {
+    let configured_ips = config.known_ips.iter().copied().collect::<HashSet<_>>();
     let mut known_devices: HashMap<IpAddr, GoveeKnownDevice> = config
         .known_ips
         .iter()
@@ -509,25 +510,38 @@ pub fn resolve_govee_probe_devices(
             .or_insert_with(|| cached.clone());
     }
 
-    for tracked in tracked_devices {
-        let Some(ip_raw) = tracked.metadata.get("ip") else {
-            continue;
-        };
-        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
-            continue;
-        };
-        let Ok(ip) = validate_ip(ip) else {
-            continue;
-        };
+    for mut known in tracked_devices
+        .iter()
+        .filter_map(tracked_govee_known_device)
+    {
+        if let Some(mac) = known.mac.as_ref().map(|mac| normalize_inventory_mac(mac)) {
+            let prior_ips = known_devices
+                .iter()
+                .filter(|(ip, cached)| {
+                    **ip != known.ip
+                        && cached
+                            .mac
+                            .as_ref()
+                            .is_some_and(|cached_mac| normalize_inventory_mac(cached_mac) == mac)
+                })
+                .map(|(ip, _)| *ip)
+                .collect::<Vec<_>>();
+            for prior_ip in prior_ips {
+                if let Some(prior) = known_devices.remove(&prior_ip) {
+                    merge_known_device(&mut known, &prior);
+                }
+                if configured_ips.contains(&prior_ip) {
+                    known_devices.insert(prior_ip, GoveeKnownDevice::from_ip(prior_ip));
+                }
+            }
+        }
 
-        let known = GoveeKnownDevice {
-            ip,
-            sku: tracked.metadata.get("sku").cloned(),
-            mac: tracked.metadata.get("mac").cloned(),
-        };
         known_devices
-            .entry(ip)
-            .and_modify(|existing| merge_known_device(existing, &known))
+            .entry(known.ip)
+            .and_modify(|existing| {
+                merge_known_device(existing, &known);
+                refresh_known_device(existing, &known);
+            })
             .or_insert(known);
     }
 
@@ -552,6 +566,33 @@ fn merge_known_device(existing: &mut GoveeKnownDevice, incoming: &GoveeKnownDevi
     if existing.mac.is_none() {
         existing.mac.clone_from(&incoming.mac);
     }
+    for (key, value) in &incoming.extra {
+        existing
+            .extra
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+}
+
+fn refresh_known_device(existing: &mut GoveeKnownDevice, incoming: &GoveeKnownDevice) {
+    if incoming.sku.is_some() {
+        existing.sku.clone_from(&incoming.sku);
+    }
+    if incoming.mac.is_some() {
+        existing.mac.clone_from(&incoming.mac);
+    }
+    existing.extra.extend(incoming.extra.clone());
+}
+
+fn tracked_govee_known_device(tracked: &DriverTrackedDevice) -> Option<GoveeKnownDevice> {
+    let ip = tracked.metadata.get("ip")?.parse::<IpAddr>().ok()?;
+    let ip = validate_ip(ip).ok()?;
+    Some(GoveeKnownDevice {
+        ip,
+        sku: tracked.metadata.get("sku").cloned(),
+        mac: tracked.metadata.get("mac").cloned(),
+        extra: BTreeMap::new(),
+    })
 }
 
 fn auth_summary_without_account_key(device: &TrackedDeviceCtx<'_>) -> DeviceAuthSummary {

@@ -93,6 +93,7 @@ fn resolve_probe_devices_merges_cached_runtime_hints() {
         ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
         sku: Some("H619A".to_owned()),
         mac: Some("001122334455".to_owned()),
+        ..GoveeKnownDevice::from_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)))
     }];
 
     let resolved = resolve_govee_probe_devices(&config, &[], &cached);
@@ -101,6 +102,27 @@ fn resolve_probe_devices_merges_cached_runtime_hints() {
     assert_eq!(resolved[0].ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
     assert_eq!(resolved[0].sku.as_deref(), Some("H619A"));
     assert_eq!(resolved[0].mac.as_deref(), Some("001122334455"));
+}
+
+#[test]
+fn tracked_identity_refreshes_metadata_and_replaces_learned_ip() {
+    let tracked = tracked_govee_device("10.0.0.8", "H619A", "aa:bb:cc:dd:ee:ff");
+    let old_ip = "10.0.0.5".parse::<IpAddr>().expect("valid old IP");
+    let new_ip = "10.0.0.8".parse::<IpAddr>().expect("valid new IP");
+    let cached = GoveeKnownDevice {
+        ip: old_ip,
+        sku: Some("H6163".to_owned()),
+        mac: Some("aabbccddeeff".to_owned()),
+        extra: BTreeMap::from([("future_field".to_owned(), serde_json::json!(true))]),
+    };
+
+    let resolved = resolve_govee_probe_devices(&GoveeConfig::default(), &[tracked], &[cached]);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].ip, new_ip);
+    assert_eq!(resolved[0].sku.as_deref(), Some("H619A"));
+    assert_eq!(resolved[0].mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+    assert_eq!(resolved[0].extra["future_field"], serde_json::json!(true));
 }
 
 #[tokio::test]
@@ -148,7 +170,8 @@ fn forgetting_govee_device_removes_only_matching_inventory() {
                 {
                     "ip": "10.4.22.81",
                     "sku": "H6163",
-                    "mac": "aabbccddeeff"
+                    "mac": "aabbccddeeff",
+                    "future_field": {"preserve": true}
                 }
             ]),
         ),
@@ -169,7 +192,8 @@ fn forgetting_govee_device_removes_only_matching_inventory() {
         serde_json::json!([{
             "ip": "10.4.22.81",
             "sku": "H6163",
-            "mac": "aabbccddeeff"
+            "mac": "aabbccddeeff",
+            "future_field": {"preserve": true}
         }])
     );
     assert_eq!(updated["future_key"], cache["future_key"]);

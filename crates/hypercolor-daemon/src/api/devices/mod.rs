@@ -394,11 +394,11 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
         return ApiError::not_found(format!("Device not found: {id}"));
     };
     let driver_id = tracked.info.driver_id().to_owned();
-    if let Some(driver) = state.driver_registry.get(&driver_id)
+    let removed = if let Some(driver) = state.driver_registry.get(&driver_id)
         && let Some(provider) = driver.runtime_cache()
     {
         let inventory = state.driver_host.driver_inventory();
-        let current = inventory.driver_cache(&driver_id);
+        let guard = inventory.operation_guard().await;
         let device = DriverTrackedDevice {
             info: tracked.info.clone(),
             metadata: state
@@ -409,24 +409,21 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
             fingerprint: state.device_registry.fingerprint_for_id(&device_id).await,
             current_state: tracked.state,
         };
-        let updated = match provider.forget_device(&current, &device) {
-            Ok(updated) => updated,
-            Err(error) => {
-                return ApiError::internal(format!(
-                    "Failed to forget {driver_id} discovery inventory: {error}"
-                ));
-            }
-        };
-        if updated != current
-            && let Err(error) = inventory.replace_driver(&driver_id, updated)
-        {
+        if let Err(error) = inventory.update_driver_guarded(&guard, &driver_id, |current| {
+            provider.forget_device(current, &device)
+        }) {
             return ApiError::internal(format!(
-                "Failed to persist {driver_id} discovery inventory: {error}"
+                "Failed to forget {driver_id} discovery inventory: {error}"
             ));
         }
-    }
+        let removed = state.device_registry.remove(&device_id).await;
+        drop(guard);
+        removed
+    } else {
+        state.device_registry.remove(&device_id).await
+    };
 
-    if state.device_registry.remove(&device_id).await.is_none() {
+    if removed.is_none() {
         return ApiError::not_found(format!("Device not found: {id}"));
     }
     crate::api::prune_scene_display_groups_for_device(&state, device_id).await;

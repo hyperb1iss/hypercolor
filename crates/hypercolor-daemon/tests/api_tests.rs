@@ -13882,6 +13882,7 @@ async fn delete_device_forgets_learned_wled_inventory() {
                 ("future_key".to_owned(), serde_json::json!(true)),
             ]),
         )
+        .await
         .expect("seed WLED inventory");
     let app = test_app_with_state(Arc::clone(&state));
 
