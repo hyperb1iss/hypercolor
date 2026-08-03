@@ -335,7 +335,7 @@ fn quarantine_path(path: &Path) -> PathBuf {
         .map_or(0, |duration| duration.as_millis());
     let file_name = path
         .file_name()
-        .map_or_else(|| "driver-inventory.json".into(), |name| name.to_owned());
+        .map_or_else(|| "driver-inventory.json".into(), std::borrow::ToOwned::to_owned);
     let mut quarantine_name = file_name;
     quarantine_name.push(format!(".corrupt-{timestamp}"));
     path.with_file_name(quarantine_name)
