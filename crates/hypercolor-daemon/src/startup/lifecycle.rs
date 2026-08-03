@@ -404,11 +404,10 @@ impl DaemonState {
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
         snapshot.global_brightness = current_global_brightness(&self.power_state);
-        snapshot.driver_runtime_cache = runtime_state::collect_driver_runtime_cache(
-            self.driver_registry.as_ref(),
-            self.driver_host.as_ref(),
-        )
-        .await;
+        self.driver_host
+            .driver_inventory()
+            .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
+            .await;
 
         runtime_state::save_reserved(pending_save, &snapshot).map_err(Into::into)
     }

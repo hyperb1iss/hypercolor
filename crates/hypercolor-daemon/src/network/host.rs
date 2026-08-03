@@ -34,9 +34,9 @@ use tracing::warn;
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{self, DiscoveryRuntime};
+use crate::driver_inventory::DriverInventoryStore;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
-use crate::runtime_state;
 use crate::scene_transactions::SceneTransactionQueue;
 
 /// Daemon-owned host adapter passed to built-in drivers.
@@ -57,6 +57,7 @@ pub struct DaemonDriverHost {
     attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
     device_settings: Arc<RwLock<DeviceSettingsStore>>,
     runtime_state_path: PathBuf,
+    driver_inventory: Arc<DriverInventoryStore>,
     usb_protocol_configs: UsbProtocolConfigStore,
     credential_store: Arc<CredentialStore>,
     driver_registry: Arc<DriverModuleRegistry>,
@@ -84,6 +85,7 @@ impl DaemonDriverHost {
         attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
         device_settings: Arc<RwLock<DeviceSettingsStore>>,
         runtime_state_path: PathBuf,
+        driver_inventory: Arc<DriverInventoryStore>,
         usb_protocol_configs: UsbProtocolConfigStore,
         credential_store: Arc<CredentialStore>,
         driver_registry: Arc<DriverModuleRegistry>,
@@ -107,6 +109,7 @@ impl DaemonDriverHost {
             attachment_profiles,
             device_settings,
             runtime_state_path,
+            driver_inventory,
             usb_protocol_configs,
             credential_store,
             driver_registry,
@@ -159,6 +162,11 @@ impl DaemonDriverHost {
     #[must_use]
     pub fn credential_store(&self) -> Arc<CredentialStore> {
         Arc::clone(&self.credential_store)
+    }
+
+    #[must_use]
+    pub fn driver_inventory(&self) -> Arc<DriverInventoryStore> {
+        Arc::clone(&self.driver_inventory)
     }
 
     fn current_config(&self) -> Arc<HypercolorConfig> {
@@ -252,8 +260,7 @@ impl DriverDiscoveryState for DaemonDriverHost {
     }
 
     fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
-        runtime_state::load_driver_cached_json(&self.runtime_state_path, driver_id, key)
-            .map_err(Into::into)
+        Ok(self.driver_inventory.load_cached_json(driver_id, key))
     }
 }
 

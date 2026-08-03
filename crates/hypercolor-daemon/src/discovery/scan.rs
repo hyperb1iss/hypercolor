@@ -380,6 +380,11 @@ pub async fn execute_discovery_scan(
         vanished_devices.push(id.to_string());
     }
 
+    driver_host
+        .driver_inventory()
+        .refresh(driver_registry.as_ref(), driver_host.as_ref())
+        .await;
+
     let duration_ms = u64::try_from(report.scan_duration.as_millis()).unwrap_or(u64::MAX);
     runtime
         .event_bus

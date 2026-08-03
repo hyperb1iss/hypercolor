@@ -21,6 +21,7 @@ use hypercolor_daemon::discovery::{
     DiscoveryRuntime, DiscoveryTarget, execute_discovery_scan, execute_discovery_scan_if_idle,
     sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
 };
+use hypercolor_daemon::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::network::{self, DaemonDriverHost};
@@ -414,6 +415,13 @@ fn make_runtime(
     );
     let in_progress = Arc::new(AtomicBool::new(true));
     let runtime_state_path_for_host = runtime_state_path.clone();
+    let driver_inventory = Arc::new(
+        DriverInventoryStore::open(
+            runtime_state_path.with_file_name(DRIVER_INVENTORY_FILENAME),
+            &runtime_state_path_for_host,
+        )
+        .expect("test driver inventory"),
+    );
     let scene_transactions = SceneTransactionQueue::default();
     let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
     let runtime = DiscoveryRuntime {
@@ -461,6 +469,7 @@ fn make_runtime(
         attachment_profiles,
         device_settings,
         runtime_state_path_for_host,
+        driver_inventory,
         usb_protocol_configs,
         credential_store,
         Arc::clone(&driver_registry),

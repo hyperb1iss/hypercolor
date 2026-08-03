@@ -9131,8 +9131,12 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
         persisted.active_layout_id.as_deref(),
         Some(candidate.id.as_str())
     );
+    assert!(persisted.driver_runtime_cache.is_empty());
     assert_eq!(
-        persisted.driver_runtime_cache["runtime_cache_test"]["revision"],
+        state
+            .driver_host
+            .driver_inventory()
+            .driver_cache("runtime_cache_test")["revision"],
         serde_json::json!(2)
     );
 }

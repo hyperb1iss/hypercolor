@@ -54,6 +54,7 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
+use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::effect_layouts;
 use crate::extensions::ExtensionRegistry;
 use crate::interaction_routing::InteractionRoutingControl;
@@ -257,6 +258,13 @@ impl DaemonState {
         info!("Spatial engine created (empty default layout)");
 
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
+        let driver_inventory = Arc::new(
+            DriverInventoryStore::open(
+                ConfigManager::data_dir().join(DRIVER_INVENTORY_FILENAME),
+                &runtime_state_path,
+            )
+            .context("failed to open driver inventory store")?,
+        );
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&ConfigManager::data_dir())
                 .context("failed to open driver credential store")?,
@@ -498,6 +506,7 @@ impl DaemonState {
             Arc::clone(&attachment_profiles),
             Arc::clone(&device_settings),
             runtime_state_path.clone(),
+            driver_inventory,
             usb_protocol_configs.clone(),
             Arc::clone(&credential_store),
             Arc::clone(&driver_registry),

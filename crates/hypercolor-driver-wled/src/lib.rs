@@ -699,13 +699,19 @@ impl DriverRuntimeCacheProvider for WledDriverModule {
         host: &dyn DriverHost,
     ) -> Result<std::collections::BTreeMap<String, serde_json::Value>> {
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
-        let probe_ips =
-            resolve_wled_probe_ips_from_sources(&WledConfig::default(), &tracked_devices, &[], &[]);
+        let cached_probe_ips = load_cached_probe_ips(host)?;
+        let cached_targets = load_cached_probe_targets(host)?;
+        let probe_ips = resolve_wled_probe_ips_from_sources(
+            &WledConfig::default(),
+            &tracked_devices,
+            &cached_probe_ips,
+            &cached_targets,
+        );
         let probe_targets = resolve_wled_probe_targets_from_sources(
             &WledConfig::default(),
             &tracked_devices,
-            &[],
-            &[],
+            &cached_probe_ips,
+            &cached_targets,
         );
 
         Ok(std::collections::BTreeMap::from([

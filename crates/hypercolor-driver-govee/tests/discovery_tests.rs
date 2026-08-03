@@ -7,7 +7,7 @@ use anyhow::Result;
 use hypercolor_driver_api::{
     BackendRebindActions, ControlApplyTarget, DeviceControlStore, DriverConfigView,
     DriverControlHost, DriverControlProvider, DriverControlStore, DriverCredentialStore,
-    DriverDiscoveryState, DriverHost, DriverLifecycleActions, DriverRuntimeActions,
+    DriverDiscoveryState, DriverHost, DriverLifecycleActions, DriverModule, DriverRuntimeActions,
     DriverTrackedDevice, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_govee::cloud::V1Device;
@@ -101,6 +101,36 @@ fn resolve_probe_devices_merges_cached_runtime_hints() {
     assert_eq!(resolved[0].ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
     assert_eq!(resolved[0].sku.as_deref(), Some("H619A"));
     assert_eq!(resolved[0].mac.as_deref(), Some("001122334455"));
+}
+
+#[tokio::test]
+async fn runtime_snapshot_preserves_cached_devices_without_tracked_devices() {
+    let host = TestControlHost::default();
+    host.cache_value(
+        "govee",
+        "probe_devices",
+        serde_json::json!([{
+            "ip": "10.4.22.80",
+            "sku": "H619A",
+            "mac": "001122334455"
+        }]),
+    );
+
+    let cache = GoveeDriverModule::new(GoveeConfig::default())
+        .runtime_cache()
+        .expect("Govee should expose runtime cache")
+        .snapshot(&host)
+        .await
+        .expect("snapshot should preserve cached inventory");
+
+    assert_eq!(
+        cache["probe_devices"],
+        serde_json::json!([{
+            "ip": "10.4.22.80",
+            "sku": "H619A",
+            "mac": "001122334455"
+        }])
+    );
 }
 
 #[test]
@@ -398,6 +428,7 @@ fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
 #[derive(Default)]
 struct TestControlHost {
     driver_values: Mutex<HashMap<String, ControlValueMap>>,
+    cached_values: Mutex<HashMap<(String, String), serde_json::Value>>,
     rebinds: AtomicUsize,
     rescans: AtomicUsize,
 }
@@ -410,6 +441,13 @@ impl TestControlHost {
             .get(driver_id)
             .cloned()
             .expect("driver values should be saved")
+    }
+
+    fn cache_value(&self, driver_id: &str, key: &str, value: serde_json::Value) {
+        self.cached_values
+            .lock()
+            .expect("test cache mutex should not be poisoned")
+            .insert((driver_id.to_owned(), key.to_owned()), value);
     }
 }
 
@@ -455,8 +493,13 @@ impl DriverDiscoveryState for TestControlHost {
         Vec::new()
     }
 
-    fn load_cached_json(&self, _driver_id: &str, _key: &str) -> Result<Option<serde_json::Value>> {
-        Ok(None)
+    fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .cached_values
+            .lock()
+            .expect("test cache mutex should not be poisoned")
+            .get(&(driver_id.to_owned(), key.to_owned()))
+            .cloned())
     }
 }
 

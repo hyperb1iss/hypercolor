@@ -7,7 +7,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+use hypercolor_driver_api::DriverHost;
+use hypercolor_network::DriverModuleRegistry;
 
 use crate::persistence::{AtomicFileWriter, PersistenceError, serialize_json_pretty};
 use crate::runtime_state;
@@ -186,6 +189,59 @@ impl DriverInventoryStore {
         self.persist_document(&candidate)?;
         *document = candidate;
         Ok(())
+    }
+
+    /// Refresh every driver-owned inventory snapshot without clearing prior data on failure.
+    pub async fn refresh(&self, registry: &DriverModuleRegistry, host: &dyn DriverHost) {
+        let mut updated = 0_usize;
+        let mut preserved = 0_usize;
+        let mut failed = 0_usize;
+
+        for driver_id in registry.ids() {
+            let Some(driver) = registry.get(&driver_id) else {
+                continue;
+            };
+            let Some(provider) = driver.runtime_cache() else {
+                continue;
+            };
+
+            match provider.snapshot(host).await {
+                Ok(cache) if cache.is_empty() => {
+                    preserved += 1;
+                    debug!(
+                        driver_id,
+                        "Preserving driver inventory after empty snapshot"
+                    );
+                }
+                Ok(cache) => match self.replace_driver(&driver_id, cache) {
+                    Ok(()) => updated += 1,
+                    Err(error) => {
+                        failed += 1;
+                        warn!(
+                            driver_id,
+                            %error,
+                            "Failed to persist refreshed driver inventory"
+                        );
+                    }
+                },
+                Err(error) => {
+                    failed += 1;
+                    warn!(
+                        driver_id,
+                        %error,
+                        "Preserving driver inventory after snapshot failure"
+                    );
+                }
+            }
+        }
+
+        debug!(
+            path = %self.path.display(),
+            updated,
+            preserved,
+            failed,
+            "Driver inventory refresh complete"
+        );
     }
 
     fn persist_current(&self) -> Result<(), DriverInventoryError> {

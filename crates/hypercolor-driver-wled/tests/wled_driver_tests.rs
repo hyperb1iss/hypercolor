@@ -114,6 +114,35 @@ fn resolve_probe_targets_prefers_tracked_metadata() {
     assert_eq!(resolved[0].rgbw, Some(true));
 }
 
+#[tokio::test]
+async fn runtime_snapshot_preserves_cached_targets_without_tracked_devices() {
+    let host = TestControlHost::default();
+    host.cache_value("wled", "probe_ips", serde_json::json!(["10.4.22.69"]));
+    host.cache_value(
+        "wled",
+        "probe_targets",
+        serde_json::json!([WledKnownTarget::from_ip(
+            "10.4.22.69".parse::<IpAddr>().expect("valid cached IP")
+        )]),
+    );
+
+    let cache = WledDriverModule::new(false)
+        .runtime_cache()
+        .expect("WLED should expose runtime cache")
+        .snapshot(&host)
+        .await
+        .expect("snapshot should preserve cached inventory");
+
+    assert_eq!(cache["probe_ips"], serde_json::json!(["10.4.22.69"]));
+    let targets: Vec<WledKnownTarget> =
+        serde_json::from_value(cache["probe_targets"].clone()).expect("cached targets");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        targets[0].ip,
+        "10.4.22.69".parse::<IpAddr>().expect("valid IP")
+    );
+}
+
 #[test]
 fn wled_module_advertises_control_surface_capability() {
     let descriptor = WledDriverModule::new(false).module_descriptor();
@@ -320,6 +349,7 @@ async fn wled_device_apply_persists_values_without_running_host_impacts() {
 struct TestControlHost {
     driver_values: Mutex<HashMap<String, ControlValueMap>>,
     device_values: Mutex<HashMap<DeviceId, ControlValueMap>>,
+    cached_values: Mutex<HashMap<(String, String), serde_json::Value>>,
     reconnects: AtomicUsize,
 }
 
@@ -331,6 +361,13 @@ impl TestControlHost {
             .get(&device_id)
             .cloned()
             .expect("device values should be saved")
+    }
+
+    fn cache_value(&self, driver_id: &str, key: &str, value: serde_json::Value) {
+        self.cached_values
+            .lock()
+            .expect("test cache mutex should not be poisoned")
+            .insert((driver_id.to_owned(), key.to_owned()), value);
     }
 }
 
@@ -376,8 +413,13 @@ impl DriverDiscoveryState for TestControlHost {
         Vec::new()
     }
 
-    fn load_cached_json(&self, _driver_id: &str, _key: &str) -> Result<Option<serde_json::Value>> {
-        Ok(None)
+    fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .cached_values
+            .lock()
+            .expect("test cache mutex should not be poisoned")
+            .get(&(driver_id.to_owned(), key.to_owned()))
+            .cloned())
     }
 }
 

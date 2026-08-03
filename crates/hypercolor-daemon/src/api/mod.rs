@@ -85,6 +85,7 @@ use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
+use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
@@ -509,6 +510,13 @@ impl AppState {
         let effect_layout_links = Arc::new(RwLock::new(HashMap::new()));
         let effect_layout_links_path = data_dir.join("effect-layouts.json");
         let runtime_state_path = data_dir.join("runtime-state.json");
+        let driver_inventory = Arc::new(
+            DriverInventoryStore::open(
+                data_dir.join(DRIVER_INVENTORY_FILENAME),
+                &runtime_state_path,
+            )
+            .expect("default app state should open driver inventory"),
+        );
         let driver_registry = Arc::new(
             network::build_builtin_driver_module_registry(
                 &HypercolorConfig::default(),
@@ -532,6 +540,7 @@ impl AppState {
             Arc::clone(&attachment_profiles),
             Arc::clone(&device_settings),
             runtime_state_path.clone(),
+            driver_inventory,
             usb_protocol_configs.clone(),
             Arc::clone(&credential_store),
             Arc::clone(&driver_registry),
@@ -1024,11 +1033,11 @@ pub(crate) async fn build_runtime_session_snapshot(
         snapshot.active_layout_id = Some(spatial.layout().id.clone());
     }
     snapshot.global_brightness = current_global_brightness(&state.power_state);
-    snapshot.driver_runtime_cache = runtime_state::collect_driver_runtime_cache(
-        state.driver_registry.as_ref(),
-        state.driver_host.as_ref(),
-    )
-    .await;
+    state
+        .driver_host
+        .driver_inventory()
+        .refresh(state.driver_registry.as_ref(), state.driver_host.as_ref())
+        .await;
     snapshot
 }
 

@@ -5,14 +5,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use hypercolor_core::scene::SceneManager;
+use hypercolor_types::scene::{SceneId, Zone};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::warn;
-
-use hypercolor_core::scene::SceneManager;
-use hypercolor_driver_api::DriverHost;
-use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::scene::{SceneId, Zone};
 
 use crate::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
@@ -36,7 +32,7 @@ pub struct RuntimeSessionSnapshot {
     /// User-configured global output brightness.
     pub global_brightness: f32,
 
-    /// Driver-scoped runtime cache payloads.
+    /// Legacy driver cache retained only as a one-time inventory migration source.
     pub driver_runtime_cache: BTreeMap<String, BTreeMap<String, Value>>,
 }
 
@@ -107,46 +103,6 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
             source,
         })?;
     Ok(Some(snapshot))
-}
-
-/// Load one driver-scoped cached JSON payload from `path`.
-pub fn load_driver_cached_json(
-    path: &Path,
-    driver_id: &str,
-    key: &str,
-) -> Result<Option<Value>, RuntimeSessionError> {
-    Ok(load(path)?
-        .and_then(|mut snapshot| snapshot.driver_runtime_cache.remove(driver_id))
-        .and_then(|mut cache| cache.remove(key)))
-}
-
-/// Collect all driver-owned runtime cache payloads.
-pub async fn collect_driver_runtime_cache(
-    driver_registry: &DriverModuleRegistry,
-    host: &dyn DriverHost,
-) -> BTreeMap<String, BTreeMap<String, Value>> {
-    let mut cache = BTreeMap::new();
-
-    for driver_id in driver_registry.ids() {
-        let Some(driver) = driver_registry.get(&driver_id) else {
-            continue;
-        };
-        let Some(provider) = driver.runtime_cache() else {
-            continue;
-        };
-
-        match provider.snapshot(host).await {
-            Ok(values) if !values.is_empty() => {
-                cache.insert(driver_id, values);
-            }
-            Ok(_) => {}
-            Err(error) => {
-                warn!(driver_id, %error, "Failed to collect driver runtime cache");
-            }
-        }
-    }
-
-    cache
 }
 
 /// Persist a runtime snapshot to `path` using atomic replace semantics.

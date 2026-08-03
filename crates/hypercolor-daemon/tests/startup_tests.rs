@@ -1122,7 +1122,7 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
 }
 
 #[tokio::test]
-async fn runtime_state_captures_default_scene_groups() {
+async fn runtime_state_and_driver_inventory_persist_independently() {
     let guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
@@ -1198,12 +1198,10 @@ async fn runtime_state_captures_default_scene_groups() {
         Some(metadata.id)
     );
     assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
-    let wled_cache = snapshot
-        .driver_runtime_cache
-        .get("wled")
-        .expect("WLED runtime cache should be persisted");
+    assert!(snapshot.driver_runtime_cache.is_empty());
+    let wled_cache = state.driver_host.driver_inventory().driver_cache("wled");
     let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
-        .expect("probe IP cache should deserialize");
+        .expect("probe IP inventory should deserialize");
     assert_eq!(
         probe_ips,
         vec!["10.0.0.42".parse::<std::net::IpAddr>().expect("valid IP"),]
