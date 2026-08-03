@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -141,6 +141,46 @@ async fn runtime_snapshot_preserves_cached_targets_without_tracked_devices() {
         targets[0].ip,
         "10.4.22.69".parse::<IpAddr>().expect("valid IP")
     );
+}
+
+#[test]
+fn forgetting_wled_device_removes_only_matching_inventory() {
+    let forgotten = tracked_wled_device("10.4.22.69", "gledopto.local", "WLED Gledopto");
+    let forgotten_ip = "10.4.22.69".parse::<IpAddr>().expect("valid forgotten IP");
+    let retained_ip = "10.4.22.169".parse::<IpAddr>().expect("valid retained IP");
+    let cache = BTreeMap::from([
+        (
+            "probe_ips".to_owned(),
+            serde_json::json!(["10.4.22.69", "10.4.22.169"]),
+        ),
+        (
+            "probe_targets".to_owned(),
+            serde_json::json!([
+                WledKnownTarget {
+                    ip: forgotten_ip,
+                    fingerprint: forgotten.fingerprint.clone(),
+                    ..WledKnownTarget::from_ip(forgotten_ip)
+                },
+                WledKnownTarget::from_ip(retained_ip)
+            ]),
+        ),
+        (
+            "future_key".to_owned(),
+            serde_json::json!({"preserve": true}),
+        ),
+    ]);
+
+    let updated = WledDriverModule::new(false)
+        .runtime_cache()
+        .expect("WLED should expose runtime cache")
+        .forget_device(&cache, &forgotten)
+        .expect("forget should update WLED inventory");
+
+    assert_eq!(updated["probe_ips"], serde_json::json!(["10.4.22.169"]));
+    let targets: Vec<WledKnownTarget> =
+        serde_json::from_value(updated["probe_targets"].clone()).expect("updated targets");
+    assert_eq!(targets, vec![WledKnownTarget::from_ip(retained_ip)]);
+    assert_eq!(updated["future_key"], cache["future_key"]);
 }
 
 #[test]

@@ -20,6 +20,7 @@ use serde::Deserialize;
 use tracing::{debug, warn};
 
 use hypercolor_core::device::{BackendIo, DeviceLifecycleManager, DirectControlGuard};
+use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot};
 use hypercolor_types::device::{
     DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings, DriverTransportKind,
@@ -388,6 +389,42 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
         Ok(id) => id,
         Err(response) => return response,
     };
+
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {id}"));
+    };
+    let driver_id = tracked.info.driver_id().to_owned();
+    if let Some(driver) = state.driver_registry.get(&driver_id)
+        && let Some(provider) = driver.runtime_cache()
+    {
+        let inventory = state.driver_host.driver_inventory();
+        let current = inventory.driver_cache(&driver_id);
+        let device = DriverTrackedDevice {
+            info: tracked.info.clone(),
+            metadata: state
+                .device_registry
+                .metadata_for_id(&device_id)
+                .await
+                .unwrap_or_default(),
+            fingerprint: state.device_registry.fingerprint_for_id(&device_id).await,
+            current_state: tracked.state,
+        };
+        let updated = match provider.forget_device(&current, &device) {
+            Ok(updated) => updated,
+            Err(error) => {
+                return ApiError::internal(format!(
+                    "Failed to forget {driver_id} discovery inventory: {error}"
+                ));
+            }
+        };
+        if updated != current
+            && let Err(error) = inventory.replace_driver(&driver_id, updated)
+        {
+            return ApiError::internal(format!(
+                "Failed to persist {driver_id} discovery inventory: {error}"
+            ));
+        }
+    }
 
     if state.device_registry.remove(&device_id).await.is_none() {
         return ApiError::not_found(format!("Device not found: {id}"));

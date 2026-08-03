@@ -134,6 +134,48 @@ async fn runtime_snapshot_preserves_cached_devices_without_tracked_devices() {
 }
 
 #[test]
+fn forgetting_govee_device_removes_only_matching_inventory() {
+    let forgotten = tracked_govee_device("10.4.22.80", "H619A", "00:11:22:33:44:55");
+    let cache = BTreeMap::from([
+        (
+            "probe_devices".to_owned(),
+            serde_json::json!([
+                {
+                    "ip": "10.4.22.80",
+                    "sku": "H619A",
+                    "mac": "001122334455"
+                },
+                {
+                    "ip": "10.4.22.81",
+                    "sku": "H6163",
+                    "mac": "aabbccddeeff"
+                }
+            ]),
+        ),
+        (
+            "future_key".to_owned(),
+            serde_json::json!({"preserve": true}),
+        ),
+    ]);
+
+    let updated = GoveeDriverModule::new(GoveeConfig::default())
+        .runtime_cache()
+        .expect("Govee should expose runtime cache")
+        .forget_device(&cache, &forgotten)
+        .expect("forget should update Govee inventory");
+
+    assert_eq!(
+        updated["probe_devices"],
+        serde_json::json!([{
+            "ip": "10.4.22.81",
+            "sku": "H6163",
+            "mac": "aabbccddeeff"
+        }])
+    );
+    assert_eq!(updated["future_key"], cache["future_key"]);
+}
+
+#[test]
 fn cloud_inventory_device_uses_mac_fingerprint_when_device_id_is_mac() {
     let discovered = build_cloud_discovered_device(V1Device {
         device: "AA:BB:CC:DD:EE:FF".to_owned(),

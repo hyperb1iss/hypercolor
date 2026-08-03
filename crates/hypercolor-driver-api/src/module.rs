@@ -6,6 +6,7 @@ use hypercolor_types::device::{
     DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
 };
 
+use crate::DriverTrackedDevice;
 use crate::{
     DeviceBackend, DiscoveryCapability, DriverConfigProvider, DriverConfigView,
     DriverControlProvider, DriverDescriptor, DriverHost, PairingCapability,
@@ -20,6 +21,21 @@ pub trait DriverRuntimeCacheProvider: Send + Sync {
     ///
     /// Returns an error if cache serialization fails.
     async fn snapshot(&self, host: &dyn DriverHost) -> Result<BTreeMap<String, serde_json::Value>>;
+
+    /// Remove learned inventory for one explicitly forgotten device.
+    ///
+    /// Drivers own the cache schema and must preserve unrelated and unknown fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the driver-owned cache cannot be decoded or updated safely.
+    fn forget_device(
+        &self,
+        cache: &BTreeMap<String, serde_json::Value>,
+        _device: &DriverTrackedDevice,
+    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        Ok(cache.clone())
+    }
 }
 
 /// Driver capability for exposing protocol descriptors to the host.

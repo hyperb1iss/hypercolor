@@ -726,6 +726,59 @@ impl DriverRuntimeCacheProvider for WledDriverModule {
             ),
         ]))
     }
+
+    fn forget_device(
+        &self,
+        cache: &BTreeMap<String, serde_json::Value>,
+        device: &DriverTrackedDevice,
+    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        let mut updated = cache.clone();
+        let mut probe_ips: Vec<IpAddr> = cache
+            .get("probe_ips")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .context("failed to parse cached WLED probe IPs")?
+            .unwrap_or_default();
+        let mut probe_targets: Vec<WledKnownTarget> = cache
+            .get("probe_targets")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .context("failed to parse cached WLED probe targets")?
+            .unwrap_or_default();
+        let device_ip = device
+            .metadata
+            .get("ip")
+            .and_then(|ip| ip.parse::<IpAddr>().ok());
+        let mut forgotten_ips = device_ip.into_iter().collect::<HashSet<_>>();
+
+        probe_targets.retain(|target| {
+            let fingerprint_matches = device
+                .fingerprint
+                .as_ref()
+                .is_some_and(|fingerprint| target.fingerprint.as_ref() == Some(fingerprint));
+            let ip_matches = device_ip.is_some_and(|ip| target.ip == ip);
+            if fingerprint_matches || ip_matches {
+                forgotten_ips.insert(target.ip);
+                false
+            } else {
+                true
+            }
+        });
+        probe_ips.retain(|ip| !forgotten_ips.contains(ip));
+
+        updated.insert(
+            "probe_ips".to_owned(),
+            serde_json::to_value(probe_ips).context("failed to serialize WLED probe IPs")?,
+        );
+        updated.insert(
+            "probe_targets".to_owned(),
+            serde_json::to_value(probe_targets)
+                .context("failed to serialize WLED probe targets")?,
+        );
+        Ok(updated)
+    }
 }
 
 /// Build the runtime WLED backend using config and cached discovery hints.

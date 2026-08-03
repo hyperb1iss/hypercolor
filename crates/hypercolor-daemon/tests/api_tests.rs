@@ -13832,6 +13832,79 @@ async fn delete_device_by_name_returns_canonical_id() {
 }
 
 #[tokio::test]
+async fn delete_device_forgets_learned_wled_inventory() {
+    let state = Arc::new(isolated_state());
+    let device_id = DeviceId::new();
+    let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+    let info = DeviceInfo {
+        id: device_id,
+        name: "WLED Gledopto".to_owned(),
+        vendor: "WLED".to_owned(),
+        family: DeviceFamily::new_static("wled", "WLED"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 60,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: Some("0.15.3".to_owned()),
+        capabilities: DeviceCapabilities::default(),
+    };
+    state
+        .device_registry
+        .add_with_fingerprint_and_metadata(
+            info,
+            fingerprint.clone(),
+            HashMap::from([("ip".to_owned(), "10.4.22.69".to_owned())]),
+        )
+        .await;
+    state
+        .driver_host
+        .driver_inventory()
+        .replace_driver(
+            "wled",
+            BTreeMap::from([
+                (
+                    "probe_ips".to_owned(),
+                    serde_json::json!(["10.4.22.69", "10.4.22.169"]),
+                ),
+                (
+                    "probe_targets".to_owned(),
+                    serde_json::json!([
+                        {"ip": "10.4.22.69", "fingerprint": fingerprint},
+                        {"ip": "10.4.22.169"}
+                    ]),
+                ),
+                ("future_key".to_owned(), serde_json::json!(true)),
+            ]),
+        )
+        .expect("seed WLED inventory");
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/devices/{device_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(state.device_registry.get(&device_id).await.is_none());
+    let cache = state.driver_host.driver_inventory().driver_cache("wled");
+    assert_eq!(cache["probe_ips"], serde_json::json!(["10.4.22.169"]));
+    assert_eq!(cache["probe_targets"][0]["ip"], "10.4.22.169");
+    assert_eq!(cache["future_key"], serde_json::json!(true));
+}
+
+#[tokio::test]
 async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanup() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;

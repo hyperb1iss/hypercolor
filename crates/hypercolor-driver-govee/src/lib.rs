@@ -320,6 +320,53 @@ impl DriverRuntimeCacheProvider for GoveeDriverModule {
                 .context("failed to serialize Govee probe devices")?,
         )]))
     }
+
+    fn forget_device(
+        &self,
+        cache: &BTreeMap<String, serde_json::Value>,
+        device: &DriverTrackedDevice,
+    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        let mut updated = cache.clone();
+        let mut probe_devices: Vec<GoveeKnownDevice> = cache
+            .get("probe_devices")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .context("failed to parse cached Govee probe devices")?
+            .unwrap_or_default();
+        let device_ip = device
+            .metadata
+            .get("ip")
+            .and_then(|ip| ip.parse::<IpAddr>().ok());
+        let device_mac = device
+            .metadata
+            .get("mac")
+            .map(|mac| normalize_inventory_mac(mac));
+
+        probe_devices.retain(|known| {
+            let ip_matches = device_ip.is_some_and(|ip| known.ip == ip);
+            let mac_matches = device_mac.as_ref().is_some_and(|mac| {
+                known
+                    .mac
+                    .as_ref()
+                    .is_some_and(|known_mac| normalize_inventory_mac(known_mac) == *mac)
+            });
+            !(ip_matches || mac_matches)
+        });
+        updated.insert(
+            "probe_devices".to_owned(),
+            serde_json::to_value(probe_devices)
+                .context("failed to serialize Govee probe devices")?,
+        );
+        Ok(updated)
+    }
+}
+
+fn normalize_inventory_mac(mac: &str) -> String {
+    mac.chars()
+        .filter(char::is_ascii_hexdigit)
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
 }
 
 #[async_trait]
