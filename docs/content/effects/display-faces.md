@@ -181,7 +181,12 @@ Faces render in Servo, not Chrome. The pixel-proven matrix (asserted by
 
 | Works | Silently ignored |
 |---|---|
-| flexbox (row / column / gap), transforms, `clip-path: circle()` | CSS grid layout, aspect-ratio media queries |
+| flexbox (row / column / gap), transforms, `clip-path: circle()`, aspect-ratio media queries | CSS grid layout |
+
+Aspect-ratio media queries are safe for visual refinements such as
+switching ornament density between a square face and a wide strip. Keep
+device class, circular safe areas, and exact geometry driven by
+`ctx.display`, since aspect ratio alone does not carry those contracts.
 
 {% callout(type="danger") %}
 Never structure a layout with CSS grid. Children render stacked

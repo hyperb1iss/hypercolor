@@ -7,7 +7,7 @@
 //! pixels. The asserted matrix below gates which CSS the SDK layout module
 //! may rely on — JS layout over the display descriptor stays the baseline.
 //!
-//! ## Support matrix (Servo 0.2, software GL — verified by this test)
+//! ## Support matrix (Servo 0.4, software GL, verified by this test)
 //!
 //! | Probe                | 480x480 | 960x160 |
 //! |----------------------|---------|---------|
@@ -16,13 +16,13 @@
 //! | flex-gap             | yes     | yes     |
 //! | grid                 | NO      | NO      |
 //! | clip-path-circle     | yes     | yes     |
-//! | aspect-media-query   | NO      | NO      |
+//! | aspect-media-query   | yes     | yes     |
 //! | transform-translate  | yes     | yes     |
 //!
-//! Consequences for the SDK: flexbox (including gap), transforms, and
-//! `clip-path: circle()` (the face circular mask) are safe; CSS grid layout and
-//! aspect-ratio media queries are NOT rendered by Servo — grid and
-//! shape-adaptive layout must stay JS over the display descriptor.
+//! Consequences for the SDK: flexbox (including gap), transforms,
+//! `clip-path: circle()` (the face circular mask), and aspect-ratio media
+//! queries are safe. CSS grid layout is not rendered by Servo, and JS over the
+//! display descriptor remains the baseline for device-specific geometry.
 //!
 //! Heavy fixture: set `HYPERCOLOR_RUN_SERVO_CSS_PROBES=1` to run. The child
 //! process pattern mirrors the Servo GPU parity test — Servo teardown can
@@ -57,8 +57,8 @@ const COLOR_TOLERANCE: i16 = 12;
 /// changes coverage fails this test loudly instead of silently shifting
 /// what the SDK may rely on.
 const EXPECTED_MATRIX: &str = "\
-aspect-media 480x480 fail
-aspect-media 960x160 fail
+aspect-media 480x480 pass
+aspect-media 960x160 pass
 clip-path-circle 480x480 pass
 clip-path-circle 960x160 pass
 flex-column 480x480 pass

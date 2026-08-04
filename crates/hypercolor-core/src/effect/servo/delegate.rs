@@ -154,7 +154,7 @@ impl HypercolorWebViewDelegate {
         });
 
         match level {
-            ConsoleLogLevel::Log | ConsoleLogLevel::Info => {
+            ConsoleLogLevel::Log | ConsoleLogLevel::Info | ConsoleLogLevel::Dir => {
                 trace!(message = message, "Servo console");
             }
             ConsoleLogLevel::Debug => debug!(message = message, "Servo console"),
@@ -233,6 +233,7 @@ fn level_label(level: &ConsoleLogLevel) -> &'static str {
         ConsoleLogLevel::Warn => "warn",
         ConsoleLogLevel::Error => "error",
         ConsoleLogLevel::Trace => "trace",
+        ConsoleLogLevel::Dir => "dir",
     }
 }
 
@@ -294,6 +295,9 @@ mod tests {
         assert_eq!(drained[0].message, "m2");
         assert_eq!(drained[MAX_CONSOLE_MESSAGES - 1].message, "m129");
         assert!(delegate.drain_console_messages().is_empty());
+
+        delegate.on_console_message(&ConsoleLogLevel::Dir, "object");
+        assert_eq!(delegate.drain_console_messages()[0].level, "dir");
     }
 
     #[test]
