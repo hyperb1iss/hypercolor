@@ -29,11 +29,25 @@ pub(super) fn PipelinePanel(
             let diff = |later: f64, earlier: f64| (later - earlier).max(0.0);
             let postprocess = m.stages.preview_postprocess_ms;
             let publish_phase = diff(t.publish_done_ms, t.output_done_ms);
+            // The two hidden stages land inside the sampling difference (see
+            // phase_timeline::phase_frame_from_timeline); carve them out so
+            // this panel's Sample segment matches the waterfall's.
+            let sample_span = diff(t.sampling_done_ms, t.composition_done_ms);
+            let deferred_sample = t.deferred_sample_ms.max(0.0).min(sample_span);
+            let preview_advance = t
+                .preview_advance_ms
+                .max(0.0)
+                .min(sample_span - deferred_sample);
             vec![
                 StackSegment {
                     label: "Input",
                     value: diff(t.input_done_ms, t.scene_snapshot_done_ms),
                     color: "#80ffea",
+                },
+                StackSegment {
+                    label: "Deferred sample",
+                    value: deferred_sample,
+                    color: "#ffb86c",
                 },
                 StackSegment {
                     label: "Producer",
@@ -46,8 +60,13 @@ pub(super) fn PipelinePanel(
                     color: "#ff6ac1",
                 },
                 StackSegment {
+                    label: "Preview advance",
+                    value: preview_advance,
+                    color: "#82aaff",
+                },
+                StackSegment {
                     label: "Sample",
-                    value: diff(t.sampling_done_ms, t.composition_done_ms),
+                    value: sample_span - deferred_sample - preview_advance,
                     color: "#ff99ff",
                 },
                 StackSegment {

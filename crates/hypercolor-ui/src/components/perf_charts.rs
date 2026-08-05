@@ -381,11 +381,19 @@ pub fn StackedBar(
 /// A single frame's phase-breakdown durations in milliseconds. Captured
 /// each metrics tick and pushed into a ring buffer so the waterfall has
 /// history to render.
+///
+/// `deferred_sample` and `preview_advance` are the two stages the daemon
+/// measures separately because the milestone timeline bills both to the
+/// sampler: the previous frame's deferred zone readback and the GPU preview
+/// submit. Both are carved out of `sample` so that bar shows only the time
+/// the sampler itself spent.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PhaseFrame {
     pub input: f32,
+    pub deferred_sample: f32,
     pub producer: f32,
     pub compose: f32,
+    pub preview_advance: f32,
     pub sample: f32,
     pub output: f32,
     pub publish: f32,
@@ -396,8 +404,10 @@ impl PhaseFrame {
     #[inline]
     pub fn total(self) -> f32 {
         self.input
+            + self.deferred_sample
             + self.producer
             + self.compose
+            + self.preview_advance
             + self.sample
             + self.output
             + self.publish
@@ -406,15 +416,20 @@ impl PhaseFrame {
 }
 
 // Ordering here defines bottom→top stacking in the waterfall columns and
-// is aligned with the Pipeline Breakdown panel's legend colors.
-const PHASE_COLORS: [&str; 7] = [
-    "#80ffea", // input    — cyan
-    "#e135ff", // producer — electric purple
-    "#ff6ac1", // compose  — coral
-    "#ff99ff", // sample   — pink
-    "#f1fa8c", // output   — yellow
-    "#50fa7b", // publish  — green
-    "#8b85a0", // overhead — muted lavender
+// is aligned with the Pipeline Breakdown panel's legend colors. The two
+// carved-out stages take the hues left free by their neighbours: amber
+// between cyan input and purple producer, info blue between the coral and
+// pink of compose and sample.
+const PHASE_COLORS: [&str; 9] = [
+    "#80ffea", // input           — cyan
+    "#ffb86c", // deferred sample — amber
+    "#e135ff", // producer        — electric purple
+    "#ff6ac1", // compose         — coral
+    "#82aaff", // preview advance — info blue
+    "#ff99ff", // sample          — pink
+    "#f1fa8c", // output          — yellow
+    "#50fa7b", // publish         — green
+    "#8b85a0", // overhead        — muted lavender
 ];
 
 /// Shared per-tick geometry for the waterfall: vertical scale, budget
@@ -453,7 +468,7 @@ fn waterfall_scale(max_total: f32, budget: f32) -> WaterfallScale {
 }
 
 /// Pre-formatted style strings for one waterfall column — the column
-/// container plus its seven phase segments (bottom→top, [`PHASE_COLORS`]
+/// container plus its nine phase segments (bottom→top, [`PHASE_COLORS`]
 /// order). Zero-duration phases keep an empty style string: a zero-height
 /// absolutely-positioned div paints nothing, exactly like the segment not
 /// being rendered at all.
@@ -461,7 +476,7 @@ fn waterfall_scale(max_total: f32, budget: f32) -> WaterfallScale {
 struct WaterfallColumnStyles {
     container: String,
     title: String,
-    segments: [String; 7],
+    segments: [String; 9],
 }
 
 fn waterfall_column_styles(
@@ -481,10 +496,12 @@ fn waterfall_column_styles(
         ""
     };
 
-    let segs: [f32; 7] = [
+    let segs: [f32; 9] = [
         frame.input,
+        frame.deferred_sample,
         frame.producer,
         frame.compose,
+        frame.preview_advance,
         frame.sample,
         frame.output,
         frame.publish,
@@ -492,7 +509,7 @@ fn waterfall_column_styles(
     ];
 
     let mut cursor = 0.0_f32;
-    let mut segments: [String; 7] = Default::default();
+    let mut segments: [String; 9] = Default::default();
     for (phase_idx, v) in segs.iter().enumerate() {
         if *v <= 0.0 {
             continue;
@@ -509,9 +526,23 @@ fn waterfall_column_styles(
         );
     }
 
+    let mut title = format!("frame {index}: {:.2} ms total", frame.total());
+    if frame.deferred_sample > 0.0 {
+        title.push_str(&format!(
+            " · deferred sample {:.2} ms",
+            frame.deferred_sample
+        ));
+    }
+    if frame.preview_advance > 0.0 {
+        title.push_str(&format!(
+            " · preview advance {:.2} ms",
+            frame.preview_advance
+        ));
+    }
+
     WaterfallColumnStyles {
         container: format!("height: {col_h_pct:.2}%; opacity: {age_opacity:.2}; {glow}"),
-        title: format!("frame {index}: {:.2} ms total", frame.total()),
+        title,
         segments,
     }
 }
@@ -615,7 +646,17 @@ pub fn PhaseWaterfall(
 
             // Phase legend row — dots + labels (fully static)
             <div class="flex items-center flex-wrap gap-x-3 gap-y-1 text-[9px] font-mono uppercase tracking-[0.08em] text-fg-tertiary">
-                {["input", "producer", "compose", "sample", "output", "publish", "overhead"]
+                {[
+                    "input",
+                    "deferred sample",
+                    "producer",
+                    "compose",
+                    "preview advance",
+                    "sample",
+                    "output",
+                    "publish",
+                    "overhead",
+                ]
                     .iter()
                     .enumerate()
                     .map(|(i, label)| {

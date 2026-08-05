@@ -254,8 +254,21 @@ pub struct MetricsTimeline {
     pub scene_transition_active: bool,
     pub scene_snapshot_done_ms: f64,
     pub input_done_ms: f64,
+    /// Duration, not a milestone: the previous frame's deferred GPU zone
+    /// readback, which the daemon runs after input sampling and before
+    /// composition. It is billed into the `sampling_done_ms` difference, not
+    /// the producer one. Absent from pre-attribution daemons, where the
+    /// container-level `serde(default)` leaves it at zero and the phase split
+    /// collapses back to the plain milestone difference.
+    pub deferred_sample_ms: f64,
     pub producer_done_ms: f64,
     pub composition_done_ms: f64,
+    /// Duration, not a milestone: the GPU preview surface submit and resolve,
+    /// which the daemon runs between composition and sampling and which is
+    /// non-zero only while a preview consumer is attached. Lands in the same
+    /// difference as `deferred_sample_ms`, with the same zero-default
+    /// tolerance.
+    pub preview_advance_ms: f64,
     pub sampling_done_ms: f64,
     pub output_done_ms: f64,
     pub publish_done_ms: f64,

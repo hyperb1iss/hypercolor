@@ -1418,8 +1418,22 @@ pub(super) struct MetricsTimeline {
     pub(super) scene_transition_active: bool,
     pub(super) scene_snapshot_done_ms: f64,
     pub(super) input_done_ms: f64,
+    /// Duration, not a milestone: finalizing the *previous* frame's deferred
+    /// GPU zone readback, which runs after input sampling and before
+    /// composition starts. `producer_done_ms` and `composition_done_ms` are
+    /// derived from the composition stage's own clock while
+    /// `sampling_done_ms` is absolute, so this time falls inside the
+    /// `sampling_done_ms - composition_done_ms` difference. A consumer
+    /// charting phases has to subtract it there.
+    pub(super) deferred_sample_ms: f64,
     pub(super) producer_done_ms: f64,
     pub(super) composition_done_ms: f64,
+    /// Duration, not a milestone: submitting and resolving the GPU preview
+    /// surface, non-zero only while a preview consumer is attached. It runs
+    /// between composition and sampling, so it lands in the same
+    /// `sampling_done_ms - composition_done_ms` difference as
+    /// `deferred_sample_ms` and needs the same subtraction.
+    pub(super) preview_advance_ms: f64,
     pub(super) sampling_done_ms: f64,
     pub(super) output_done_ms: f64,
     pub(super) publish_done_ms: f64,

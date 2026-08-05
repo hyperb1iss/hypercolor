@@ -1123,6 +1123,8 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["scene_snapshot_done_ms"], 0.12);
     assert_eq!(json["timeline"]["composition_done_ms"], 1.34);
     assert_eq!(json["timeline"]["frame_done_ms"], 1.85);
+    assert_eq!(json["timeline"]["deferred_sample_ms"], 0.06);
+    assert_eq!(json["timeline"]["preview_advance_ms"], 0.05);
     assert_eq!(json["stages"]["producer_effect_rendering_ms"], 0.64);
     assert_eq!(json["stages"]["producer_preview_compose_ms"], 0.11);
     assert_eq!(json["stages"]["publish_frame_data_ms"], 0.07);
@@ -1165,6 +1167,90 @@ async fn metrics_message_includes_latest_frame_timeline() {
         true
     );
     assert_eq!(json["preview"]["screen_canvas_demand"]["any_rgba"], true);
+}
+
+/// The tolerant subset a metrics client decodes from the timeline payload:
+/// unknown keys are ignored and absent keys fall back to zero, so a payload
+/// from either side of a version skew still decodes.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names must match the protocol keys they decode"
+)]
+struct ClientTimelineSubset {
+    input_done_ms: f64,
+    deferred_sample_ms: f64,
+    producer_done_ms: f64,
+    composition_done_ms: f64,
+    preview_advance_ms: f64,
+    sampling_done_ms: f64,
+}
+
+#[tokio::test]
+async fn metrics_timeline_carries_hidden_stage_durations_tolerantly() {
+    let tempdir = tempfile::tempdir().expect("metrics test data dir should be created");
+    let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
+    // The metrics builder zeroes the whole frame timeline while the render
+    // loop is idle.
+    state.render_loop.write().await.start();
+    {
+        let mut performance = state.performance.write().await;
+        performance.record_frame(&LatestFrameMetrics {
+            deferred_sample_us: 250,
+            preview_advance_us: 1_400,
+            timeline: FrameTimeline {
+                frame_token: 5,
+                input_done_us: 320,
+                producer_done_us: 1_040,
+                composition_done_us: 1_340,
+                sample_done_us: 2_900,
+                ..FrameTimeline::default()
+            },
+            ..LatestFrameMetrics::default()
+        });
+    }
+
+    let ServerMessage::Metrics { data, .. } = build_metrics_message(&state, 0.0).await else {
+        panic!("expected metrics message");
+    };
+    let json = serde_json::to_value(&data).expect("metrics payload should serialize");
+    let timeline = json["timeline"].clone();
+
+    assert_eq!(timeline["deferred_sample_ms"], 0.25);
+    assert_eq!(timeline["preview_advance_ms"], 1.4);
+
+    let decoded: ClientTimelineSubset =
+        serde_json::from_value(timeline.clone()).expect("current payload should decode");
+    assert_eq!(decoded.deferred_sample_ms, 0.25);
+    assert_eq!(decoded.preview_advance_ms, 1.4);
+    assert_eq!(decoded.producer_done_ms, 1.04);
+    assert_eq!(decoded.sampling_done_ms, 2.9);
+
+    // Older daemon: the two duration keys are simply absent.
+    let mut legacy = timeline.clone();
+    let legacy_object = legacy
+        .as_object_mut()
+        .expect("timeline payload should be an object");
+    legacy_object.remove("deferred_sample_ms");
+    legacy_object.remove("preview_advance_ms");
+    let legacy_decoded: ClientTimelineSubset =
+        serde_json::from_value(legacy).expect("legacy payload should still decode");
+    assert_eq!(legacy_decoded.deferred_sample_ms, 0.0);
+    assert_eq!(legacy_decoded.preview_advance_ms, 0.0);
+    assert_eq!(legacy_decoded.producer_done_ms, 1.04);
+    assert_eq!(legacy_decoded.sampling_done_ms, 2.9);
+
+    // Newer daemon: an unknown stage key must not break an older client.
+    let mut future = timeline;
+    future
+        .as_object_mut()
+        .expect("timeline payload should be an object")
+        .insert("future_stage_ms".to_owned(), serde_json::json!(3.5));
+    let future_decoded: ClientTimelineSubset =
+        serde_json::from_value(future).expect("future payload should still decode");
+    assert_eq!(future_decoded.deferred_sample_ms, 0.25);
+    assert_eq!(future_decoded.input_done_ms, 0.32);
 }
 
 #[test]

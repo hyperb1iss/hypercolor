@@ -218,6 +218,43 @@ fn performance_metrics_preserves_zero_delivered_fps() {
 }
 
 #[test]
+fn performance_metrics_decodes_hidden_stage_durations() {
+    let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
+        "timeline": {
+            "input_done_ms": 0.32,
+            "deferred_sample_ms": 0.25,
+            "producer_done_ms": 1.04,
+            "composition_done_ms": 1.34,
+            "preview_advance_ms": 1.4,
+            "sampling_done_ms": 2.9,
+            "future_stage_ms": 3.5
+        }
+    }))
+    .expect("timeline with hidden stage durations should deserialize");
+
+    assert_eq!(metrics.timeline.deferred_sample_ms, 0.25);
+    assert_eq!(metrics.timeline.preview_advance_ms, 1.4);
+    assert_eq!(metrics.timeline.producer_done_ms, 1.04);
+}
+
+#[test]
+fn performance_metrics_defaults_hidden_stage_durations_for_legacy_daemon() {
+    let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
+        "timeline": {
+            "input_done_ms": 0.32,
+            "producer_done_ms": 1.04,
+            "composition_done_ms": 1.34,
+            "sampling_done_ms": 2.9
+        }
+    }))
+    .expect("legacy timeline payload should deserialize");
+
+    assert_eq!(metrics.timeline.deferred_sample_ms, 0.0);
+    assert_eq!(metrics.timeline.preview_advance_ms, 0.0);
+    assert_eq!(metrics.timeline.sampling_done_ms, 2.9);
+}
+
+#[test]
 fn performance_metrics_falls_back_for_legacy_payload_without_delivered_fps() {
     let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
         "fps": {

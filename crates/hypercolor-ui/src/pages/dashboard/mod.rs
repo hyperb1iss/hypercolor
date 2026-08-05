@@ -37,6 +37,7 @@ mod gauges;
 mod header;
 mod layout;
 mod panel_frame;
+pub mod phase_timeline;
 mod renderer;
 mod timeline;
 
@@ -46,6 +47,7 @@ use gauges::{HeroGauges, MemoryAndDevicesPanel, ReuseRatesPanel};
 use header::{StatusSkeleton, StatusStrip};
 use layout::{DashboardLayout, PanelId};
 use panel_frame::PanelFrame;
+use phase_timeline::phase_frame_from_timeline;
 use renderer::RendererHardwarePanel;
 use timeline::{BackpressureBanner, FrameTimelinePanel, LatestFramePanel, PacingPanel};
 
@@ -140,20 +142,7 @@ struct MetricsSample {
 
 impl MetricsSample {
     fn from_metrics(m: &PerformanceMetrics, preview_fps: f32, preview_target_fps: u32) -> Self {
-        let t = &m.timeline;
-        // Phase durations are derived from the cumulative milestone timeline.
-        // Any given milestone may briefly regress by a hair under load, so
-        // clamp to zero to keep the waterfall bars well-formed.
-        let diff = |later: f64, earlier: f64| (later - earlier).max(0.0) as f32;
-        let phase = PhaseFrame {
-            input: diff(t.input_done_ms, t.scene_snapshot_done_ms),
-            producer: diff(t.producer_done_ms, t.input_done_ms),
-            compose: diff(t.composition_done_ms, t.producer_done_ms),
-            sample: diff(t.sampling_done_ms, t.composition_done_ms),
-            output: diff(t.output_done_ms, t.sampling_done_ms),
-            publish: diff(t.publish_done_ms, t.output_done_ms),
-            overhead: diff(t.frame_done_ms, t.publish_done_ms),
-        };
+        let phase = phase_frame_from_timeline(&m.timeline);
 
         Self {
             engine_fps: stabilize_fps_for_display(m.fps.delivered_or_legacy(), m.fps.target),
