@@ -177,6 +177,7 @@ enum PreviewBuildResult {
         frame_number: u32,
         transport: PreviewTransport,
         area: Rect,
+        fullscreen: bool,
         build_duration: Duration,
         error: String,
     },
@@ -585,6 +586,7 @@ impl PreviewManager {
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
                                         area: request.area,
+                                        fullscreen: request.fullscreen,
                                         build_duration: build_started.elapsed(),
                                         error,
                                     })
@@ -639,6 +641,7 @@ impl PreviewManager {
                                         frame_number: request.frame.frame_number,
                                         transport: request.transport,
                                         area: request.area,
+                                        fullscreen: request.fullscreen,
                                         build_duration: build_started.elapsed(),
                                         error,
                                     })
@@ -672,6 +675,7 @@ impl PreviewManager {
                                     frame_number: request.frame.frame_number,
                                     transport: request.transport,
                                     area: request.area,
+                                    fullscreen: request.fullscreen,
                                     build_duration: build_started.elapsed(),
                                     error,
                                 })
@@ -695,6 +699,7 @@ impl PreviewManager {
                                     frame_number: request.frame.frame_number,
                                     transport: request.transport,
                                     area: request.area,
+                                    fullscreen: request.fullscreen,
                                     build_duration: build_started.elapsed(),
                                     error: error.to_string(),
                                 })
@@ -830,6 +835,7 @@ impl PreviewManager {
                     frame_number,
                     transport,
                     area,
+                    fullscreen,
                     build_duration,
                     error,
                 } => {
@@ -851,7 +857,7 @@ impl PreviewManager {
                                 ?transport,
                                 area_width = area.width,
                                 area_height = area.height,
-                                fullscreen = self.fullscreen,
+                                fullscreen,
                                 "preview build failed for frame {frame_number}: {error}"
                             );
                         } else {
@@ -1316,16 +1322,28 @@ mod tests {
         })
     }
 
-    fn drain_until_current(manager: &mut super::PreviewManager, deadline_ms: u64) -> bool {
+    fn drain_until_area(manager: &mut super::PreviewManager, area: Rect, deadline_ms: u64) -> bool {
+        // Kitty keeps the previous surface across fullscreen toggles, so a
+        // bare has_current_frame() check passes vacuously; only a surface
+        // built for the expected normalized area proves the rebuild landed.
+        let expected = super::PreviewManager::resize_area(area);
         let deadline = std::time::Instant::now() + Duration::from_millis(deadline_ms);
         while std::time::Instant::now() < deadline {
             manager.drain_resize_results();
-            if manager.has_current_frame() {
+            if manager
+                .current
+                .as_ref()
+                .is_some_and(|surface| surface.matches_area(expected))
+            {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        false
+        manager.drain_resize_results();
+        manager
+            .current
+            .as_ref()
+            .is_some_and(|surface| surface.matches_area(expected))
     }
 
     #[test]
@@ -1346,32 +1364,24 @@ mod tests {
         manager.render(Some(windowed_area), &mut buf);
         manager.on_frame(test_frame(1), false);
         assert!(
-            drain_until_current(&mut manager, 2_000),
-            "windowed kitty surface should build"
+            drain_until_area(&mut manager, windowed_area, 5_000),
+            "windowed kitty surface should build for the windowed area"
         );
 
         manager.set_fullscreen(true);
         let fullscreen_area = Rect::new(0, 0, 220, 54);
         manager.render(Some(fullscreen_area), &mut buf);
-        for frame_number in 2..30 {
-            manager.on_frame(test_frame(frame_number), true);
-            manager.drain_resize_results();
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        manager.on_frame(test_frame(2), true);
         assert!(
-            drain_until_current(&mut manager, 2_000),
-            "fullscreen kitty surface should build after toggle"
+            drain_until_area(&mut manager, fullscreen_area, 5_000),
+            "fullscreen kitty surface should rebuild for the fullscreen area"
         );
 
         manager.set_fullscreen(false);
         manager.render(Some(windowed_area), &mut buf);
-        for frame_number in 30..40 {
-            manager.on_frame(test_frame(frame_number), false);
-            manager.drain_resize_results();
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        manager.on_frame(test_frame(3), false);
         assert!(
-            drain_until_current(&mut manager, 2_000),
+            drain_until_area(&mut manager, windowed_area, 5_000),
             "windowed kitty surface should rebuild after exiting fullscreen"
         );
 
