@@ -521,6 +521,7 @@ pub(crate) struct PreviewManager {
     current: Option<PreviewSurface>,
     current_frame_number: Option<u32>,
     current_transport: Option<PreviewTransport>,
+    consecutive_build_failures: u32,
     preview_area: Option<Rect>,
     latest_frame: Option<Arc<CanvasFrame>>,
     fullscreen: bool,
@@ -737,6 +738,7 @@ impl PreviewManager {
             current: None,
             current_frame_number: None,
             current_transport: None,
+            consecutive_build_failures: 0,
             preview_area: None,
             latest_frame: None,
             fullscreen: false,
@@ -814,6 +816,7 @@ impl PreviewManager {
                             self.build_backpressure
                                 .observe_build(completed.build_duration);
                         }
+                        self.consecutive_build_failures = 0;
                         self.current = Some(completed.surface);
                         self.current_frame_number = Some(completed.frame_number);
                         self.current_transport = Some(completed.transport);
@@ -837,10 +840,31 @@ impl PreviewManager {
                         if transport == PreviewTransport::Primary {
                             self.build_backpressure.observe_build(build_duration);
                         }
+                        self.consecutive_build_failures =
+                            self.consecutive_build_failures.saturating_add(1);
+                        // A failing streak leaves the preview frozen or blank
+                        // with no visible cause, so surface the first failure
+                        // at the default log level instead of drowning it in
+                        // per-frame debug noise.
+                        if self.consecutive_build_failures == 1 {
+                            tracing::warn!(
+                                ?transport,
+                                area_width = area.width,
+                                area_height = area.height,
+                                fullscreen = self.fullscreen,
+                                "preview build failed for frame {frame_number}: {error}"
+                            );
+                        } else {
+                            tracing::debug!(
+                                "preview build failed for frame {frame_number}: {error}"
+                            );
+                        }
                     } else {
                         self.telemetry.note_stale_result();
+                        tracing::debug!(
+                            "stale preview build failed for frame {frame_number}: {error}"
+                        );
                     }
-                    tracing::debug!("preview build failed for frame {frame_number}: {error}");
                 }
             }
         }
@@ -1096,6 +1120,7 @@ impl PreviewManager {
 
     fn reset_protocols(&mut self) {
         self.invalidate_current();
+        self.consecutive_build_failures = 0;
         self.preview_area = None;
         self.build_backpressure.reset();
         self.draw_backpressure.reset();
@@ -1280,6 +1305,78 @@ mod tests {
     use ratatui_image::picker::ProtocolType;
     use std::sync::Arc;
     use std::time::Duration;
+
+    fn test_frame(frame_number: u32) -> Arc<CanvasFrame> {
+        Arc::new(CanvasFrame {
+            frame_number,
+            timestamp_ms: frame_number * 16,
+            width: 640,
+            height: 480,
+            pixels: Bytes::from(vec![0x40; 640 * 480 * 3]),
+        })
+    }
+
+    fn drain_until_current(manager: &mut super::PreviewManager, deadline_ms: u64) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_millis(deadline_ms);
+        while std::time::Instant::now() < deadline {
+            manager.drain_resize_results();
+            if manager.has_current_frame() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    }
+
+    #[test]
+    #[expect(
+        deprecated,
+        reason = "from_fontsize is the only way to build a kitty-protocol picker without querying a real terminal"
+    )]
+    fn kitty_fullscreen_toggle_rebuilds_surface() {
+        use ratatui::buffer::Buffer;
+        use ratatui_image::picker::Picker;
+
+        let mut picker = Picker::from_fontsize((9, 18));
+        picker.set_protocol_type(ProtocolType::Kitty);
+        let mut manager = super::PreviewManager::new(picker);
+
+        let windowed_area = Rect::new(100, 2, 110, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 220, 55));
+        manager.render(Some(windowed_area), &mut buf);
+        manager.on_frame(test_frame(1), false);
+        assert!(
+            drain_until_current(&mut manager, 2_000),
+            "windowed kitty surface should build"
+        );
+
+        manager.set_fullscreen(true);
+        let fullscreen_area = Rect::new(0, 0, 220, 54);
+        manager.render(Some(fullscreen_area), &mut buf);
+        for frame_number in 2..30 {
+            manager.on_frame(test_frame(frame_number), true);
+            manager.drain_resize_results();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            drain_until_current(&mut manager, 2_000),
+            "fullscreen kitty surface should build after toggle"
+        );
+
+        manager.set_fullscreen(false);
+        manager.render(Some(windowed_area), &mut buf);
+        for frame_number in 30..40 {
+            manager.on_frame(test_frame(frame_number), false);
+            manager.drain_resize_results();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            drain_until_current(&mut manager, 2_000),
+            "windowed kitty surface should rebuild after exiting fullscreen"
+        );
+
+        manager.shutdown();
+    }
 
     #[test]
     fn default_policy_uses_primary_windowed_and_halfblocks_fullscreen() {
