@@ -215,25 +215,32 @@ Audio config changes applied via `config set --live` or the REST API take effect
 
 ## `[capture]`
 
-Screen capture for ambient lighting effects. Disabled by default.
+Screen capture for ambient lighting effects. On Windows it is on by default: Desktop Duplication asks for no permission, shows no picker, and draws no capture indicator, so an ambient effect just works. On Linux and macOS it is opt-in, because the XDG portal opens a picker and macOS gates capture behind a TCC prompt, and answering either on your behalf at daemon start would be an ambush.
 
 ```toml
 [capture]
-enabled                = false    # Enable screen capture
-source                 = "auto"   # "auto" | "pipewire" | "x11" | "dxgi" (Windows)
+enabled                = false    # Grant screen capture (default: true on Windows)
+source                 = "auto"   # "auto", or a monitor selector on Windows
 capture_fps            = 30       # Capture rate, independent of render FPS
 grid_cols              = 8        # Ambilight sector grid columns
 grid_rows              = 6        # Ambilight sector grid rows
 smoothing              = 0.3      # Temporal smoothing (0.0 = frozen, 1.0 = raw)
 scene_cut_threshold    = 100.0    # Frame-difference that bypasses smoothing on scene cuts
-letterbox              = true     # Auto-detect and crop black bars
+letterbox              = false    # Auto-detect and crop black bars
 letterbox_threshold    = 0.02     # Luminance threshold for bar detection
 saturation             = 1.0      # Saturation boost applied to zone colors
 brightness             = 1.0      # Brightness multiplier applied to zone colors
 gamma                  = 1.0      # Gamma shaping (1.0 = neutral, >1 darkens midtones)
+# publication_memory_bytes        # Optional byte budget; unset snapshots host memory at startup
 ```
 
-On Linux the source is selected through the XDG desktop portal picker. The chosen source is persisted in `restore_token` (written automatically) so it survives daemon restarts without re-prompting.
+**`enabled`** grants permission and nothing more. The capture backend opens on demand and stays closed until a screen-reactive effect actually asks for pixels.
+
+**`source`** must be `"auto"` on Linux: the XDG desktop portal owns the selection, and the chosen source is persisted in `restore_token` (written automatically) so it survives daemon restarts without re-prompting. On Windows the value addresses a display directly, either `"auto"` for the primary output or a monitor selector such as `monitor:<stable-id>`. A bare number or `display:<n>` is accepted as a legacy output index and rewritten to its stable form once resolved.
+
+**`letterbox`** is off by default. Ambient lighting almost always mirrors a desktop rather than a letterboxed film, and dark desktop content trips the bar detector into cropping real picture away. Turn it on when you are mirroring video that genuinely has bars.
+
+**`publication_memory_bytes`** is an optional process-memory byte budget shared by capture analysis and screen publications. Leave it unset and the daemon snapshots available host memory at startup. Capture dimensions are not capped by a fixed axis or pixel count: the analyzer reserves its peak first, publication plans consume the remainder, and checked memory and compute admission decide whether a requested configuration fits. A configuration that does not fit is rejected with a typed capacity error rather than silently clamped. `/api/v1/status` reports the installed fences under `screen_capture_capacity`, whose `admission_enforced` flag tells you whether the budget is active on this host.
 
 Capture config changes apply live: enabling/disabling adds or removes the source from the running pipeline; grid, smoothing, and color settings reconfigure the capture worker in place.
 

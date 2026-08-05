@@ -38,9 +38,11 @@ previews, and screen zones — use a **single tag byte** at offset 0. That tag b
 is the channel identity. There is no schema byte; these codecs version their layout
 through the tag space itself and through fixed header lengths.
 
-The **preview chunk envelope** uses tag `0x0F` at offset 0 and schema `1` at
-offset 1. It carries routing, publication, and reassembly metadata before one
-slice of a larger encoded preview.
+The **preview transport control frames** use a tag byte at offset 0 and schema
+`1` at offset 1. The chunk envelope (`0x0F`) carries routing, publication, and
+reassembly metadata before one slice of a larger encoded preview, and the
+cancellation frame (`0x10`) retires a publication a client may still be
+reassembling.
 
 The **RPC frames** — request and response — use a **two-byte prefix**: a tag byte
 at offset 0 followed by a schema byte at offset 1. This is the `BinaryFrameSchema`
@@ -48,10 +50,10 @@ contract (`TAG`, `SCHEMA`, `NAME`), and decoders validate both bytes with
 `validate_frame_prefix` before touching the body.
 
 {% callout(type="warning") %}
-Direct streaming frames do **not** carry a schema byte. Preview chunks and RPC
-frames do. A decoder that blindly skips two bytes on a spectrum frame will read
-its `timestamp_ms` one byte short. Branch on the first byte first, then apply the
-right convention.
+Direct streaming frames do **not** carry a schema byte. Preview transport control
+frames and RPC frames do. A decoder that blindly skips two bytes on a spectrum
+frame will read its `timestamp_ms` one byte short. Branch on the first byte
+first, then apply the right convention.
 {% end %}
 
 ## Tag byte map
@@ -75,6 +77,8 @@ magic numbers, taken straight from the source constants.
 | `0x0D` | Wide interactive preview | single byte | `WIDE_INTERACTIVE_PREVIEW_FRAME_TAG` |
 | `0x0E` | Wide screen zones | single byte | `WIDE_SCREEN_ZONES_FRAME_TAG` |
 | `0x0F` | Preview chunk envelope | tag + schema | `PREVIEW_CHUNK_FRAME_TAG` |
+| `0x10` | Preview publication cancellation | tag + schema | `PREVIEW_CANCEL_FRAME_TAG` |
+| `0x11` | Extended screen zones | single byte | `EXTENDED_SCREEN_ZONES_FRAME_TAG` |
 | `0x80` | RPC request | tag + schema | `RPC_REQUEST_TAG` |
 | `0x81` | RPC response | tag + schema | `RPC_RESPONSE_TAG` |
 
@@ -214,6 +218,32 @@ resource budget. Passive width and height may both be zero to select source size
 if exactly one is zero, the daemon preserves the source aspect ratio. Interactive
 previews require both axes to be nonzero.
 
+## Extended screen zones frame (`0x11`)
+
+Screen zones widen in two steps rather than one. Its grid and letterbox fields
+are `u8` in the legacy layout, so a grid can outgrow 255 sectors on an axis while
+the source dimensions still fit `u16`. Tag `0x0E` widens only the source
+dimensions; tag `0x11` widens everything, so `grid_cols`, `grid_rows`, and the
+four letterbox bars each become `u32` and the header is 41 bytes
+(`EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN = 41`).
+
+```text
+offset  size  field
+0       1     tag (0x11)
+1       4     frame_number   u32
+5       4     timestamp_ms   u32
+9       4     source_width   u32
+13      4     source_height  u32
+17      4     grid_cols      u32
+21      4     grid_rows      u32
+25      16    letterbox      4 × u32 (top, bottom, left, right)
+41      ..    payload (grid_cols * grid_rows * 3 bytes, row-major RGB)
+```
+
+The encoder picks the narrowest layout each frame fits, so a client must accept
+all three tags on the `screen_zones` channel and read the grid from whichever
+header it received.
+
 ## Preview chunk envelope (`0x0F`)
 
 Preview publications larger than the 1 MiB per-message budget are sent as ordered
@@ -245,6 +275,33 @@ bytes for a zone stream, and the UTF-8 preview id for an interactive stream.
 Clients reassemble by stream and publication id, require contiguous ordered
 chunks with stable metadata, and bound both per-publication and per-connection
 memory. Reassembly state is connection-scoped and must be cleared on reconnect.
+
+The envelope carries no payload format of its own. Reassembled bytes are one of
+the ordinary frames documented above, identified by the `channel` byte at offset
+3, so a client concatenates the chunks and hands the result to the same decoder
+it would have used for a direct publication.
+
+## Preview cancellation (`0x10`)
+
+The daemon retires a publication a client may still be holding partial chunks
+for by sending a cancellation frame. The header is 14 bytes plus the stream
+identity (`PREVIEW_CANCEL_FIXED_HEADER_LEN = 14`, `PREVIEW_CANCEL_SCHEMA = 1`).
+
+```text
+offset  size  field
+0       1     tag = 0x10
+1       1     schema = 1
+2       1     stream_kind (0=passive, 1=zone, 2=interactive, 3=screen_zones)
+3       1     channel tag
+4       2     stream_identity_len u16
+6       8     publication_id u64
+14      N     stream identity
+```
+
+The `stream_kind`, `channel`, and identity fields address the stream exactly as
+they do in the chunk envelope. On receipt, drop any partial reassembly buffer
+held for that publication id and release its memory; the publication will not be
+completed.
 
 ## Spectrum frame (`0x02`)
 
@@ -345,9 +402,16 @@ The `SchemaRange` and `negotiate_highest_common_schema` helpers exist for versio
 frames that carry a schema byte. A client advertises the inclusive range of schema
 versions it understands, the server does the same, and the negotiated version is the
 highest value in the intersection of the two ranges. If the ranges do not overlap,
-negotiation returns `None` and the two peers have no common version to speak. Today
-only the RPC frames carry a schema byte, so this machinery is forward-looking
-headroom for the streaming frames rather than something every frame exercises.
+negotiation returns `None` and the two peers have no common version to speak. Every
+schema byte on the wire today is `1`, on the RPC frames and on the two preview
+transport control frames alike, so this machinery is headroom rather than something
+any frame currently exercises.
+
+The preview transport's own `v1` and `v2` capability strings are a separate
+mechanism, and they never reach the binary wire. They negotiate the memory
+budgets a receiver will honor, in JSON, on the control channel; see the
+[WebSocket protocol reference](@/api/websocket.md#the-hello-handshake). A decoder
+reading the bytes on this page never needs to know which one was negotiated.
 
 ## Where this lives
 
@@ -359,9 +423,13 @@ headroom for the streaming frames rather than something every frame exercises.
 | Spectrum codec | `ws/spectrum.rs` |
 | RPC request/response, `RpcStatus`, client/server | `ws/rpc.rs` |
 | Schema range negotiation | `ws/schema.rs` |
-| Round-trip conformance tests | `daemon/src/api/ws/tests.rs` |
+| Codec round-trip tests | `crates/hypercolor-leptos-ext/tests/ws_preview_frame_tests.rs` |
+| Daemon conformance tests | `daemon/src/api/ws/tests.rs` |
+| Machine-checked frame manifest | `protocol/websocket-v1.json` |
 
-All paths are relative to `crates/hypercolor-leptos-ext/src/` except the test file,
-which lives in the daemon crate. When any layout on this page changes, the source
-constant and its round-trip test change with it — read those, never this prose, when
-the bytes have to be exactly right.
+All source paths are relative to `crates/hypercolor-leptos-ext/src/`; the two test
+paths and the manifest are repo-relative. The manifest lists every tag, layout
+name, and transport budget, and the daemon test suite asserts it against the code,
+so a layout change that skips the manifest fails CI. When any layout on this page
+changes, the source constant and its round-trip test change with it — read those,
+never this prose, when the bytes have to be exactly right.

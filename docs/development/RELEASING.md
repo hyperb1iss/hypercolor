@@ -58,11 +58,9 @@ every file above carries the same version; the release workflow runs it
 after stamping, and the CI `python-build` job independently rejects tags
 whose pyproject version does not match.
 
-History note: before the first automated release, published versions had
-drifted (engine `0.1.0`, npm SDK `0.1.2`, scaffolder `0.1.1`, PyPI
-`0.2.0a1`). Registries refuse re-published versions, so the first aligned
-release must be **`0.2.0` or higher** — `0.2.0` clears npm (`> 0.1.2`) and
-PyPI (`0.2.0 > 0.2.0a1`) simultaneously.
+Every version-bearing file now tracks the same number, so the only floor a
+new release has to clear is the latest tag, which validation enforces in
+step 1.
 
 ## Rehearsals
 

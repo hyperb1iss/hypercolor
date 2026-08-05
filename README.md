@@ -244,7 +244,7 @@ Runs wherever you have a terminal.
 </table>
 
 - **Live effect preview** rendered in true-color half-block characters
-- **Fullscreen mode** (F11) fills the entire terminal with the active effect
+- **Fullscreen mode** (`z`) fills the entire terminal with the active effect
 - **Audio spectrum** with level meter and beat indicators
 - **Quick actions:** number keys for instant effect switching
 

@@ -138,7 +138,7 @@ Press `z` (or `Z`) from any screen to expand the canvas preview to fill the enti
 
 ![Fullscreen cymatics effect](/img/tui/tui-fullscreen-cymatics.png)
 
-In fullscreen mode, the preview transport is chosen automatically based on your terminal's capabilities and the render cost. In Kitty the TUI uses a fast direct-protocol path; in other terminals it falls back to sixel or Unicode quarter-blocks.
+In fullscreen mode, the preview transport is chosen automatically based on your terminal's capabilities and the render cost. In Kitty the TUI uses a fast direct-protocol path; in other terminals it falls back to the best graphics protocol the terminal advertises, and to Unicode block-character rendering where none is available.
 
 Press `z` or `Esc` to return to the normal layout.
 
@@ -205,7 +205,7 @@ See [configuration](@/guide/configuration.md) for the full precedence rules.
 
 **Audio strip shows "No audio"** — no audio source is configured or the daemon cannot open the system audio device. See [audio setup](@/guide/audio-setup.md).
 
-**Preview looks pixelated or uses block characters** — your terminal does not support the Kitty or sixel graphics protocol. The TUI automatically falls back to Unicode quarter-blocks, which is correct behavior. Switch to a Kitty-compatible terminal for full-resolution preview.
+**Preview looks pixelated or uses block characters** — your terminal does not support the Kitty or sixel graphics protocol. The TUI automatically falls back to Unicode block-character rendering, which is correct behavior. Switch to a Kitty-compatible terminal for full-resolution preview.
 
 **TUI does not start or crashes immediately** — check `$TMPDIR/hypercolor-tui.log`. The most common cause is the daemon not running on the expected address. Start the daemon first with `just daemon` (or the desktop app, which supervises it), then re-launch the TUI. `just tui` handles this for you by auto-starting a local daemon when one is not already reachable.
 

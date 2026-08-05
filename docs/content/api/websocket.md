@@ -143,6 +143,7 @@ subscribed.
     "metrics", "device_metrics", "sensors", "display_preview", "input_events",
     "commands", "canvas_format_jpeg", "interactive_previews",
     "wide_preview_frames", "preview_chunking",
+    "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
     "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096"
   ],
   "subscriptions": ["events"]
@@ -152,22 +153,39 @@ subscribed.
 `version` is the protocol version (`"1.0"`), distinct from the
 `server.version` daemon build string. `capabilities` lists all 14 channel names
 plus feature flags such as `commands`, `canvas_format_jpeg`,
-`interactive_previews`, `wide_preview_frames`, and `preview_chunking`. The
-`preview_transport_v1` capability advertises the receiver's decoded,
-encoded, connection, stream, tombstone, idle-time, message, and chunk-count
-budgets. A client sends its own capability string in the optional
-`preview_transport` field of its first `subscribe`; the daemon applies the
-field-by-field minimum before activating preview channels and returns the
-effective capability in `subscribed`. A legacy client that omits the field uses
-the daemon's advertised defaults. Renegotiation after a preview publication is
-active is rejected instead of changing limits underneath in-flight state.
+`interactive_previews`, `wide_preview_frames`, and `preview_chunking`.
+
+The daemon advertises two preview transport capabilities, `preview_transport_v2`
+first and `preview_transport_v1` behind it. Both describe the receiver's memory
+contract for preview publications, and they differ in what the intermediate
+limits count. V1 bounds reassembly by object counts (`streams`, a tombstone
+count, and `chunks`); V2 states the same ceilings in bytes (`reassembly`,
+`tombstones` as a byte budget, `sender`, and `cursors`) and derives the chunk
+ceiling from the encoded budget instead of pinning it. Both versions carry
+`decoded`, `encoded`, `connection`, `idle_ms`, and `message`.
+
+A client sends its own capability string in the optional `preview_transport`
+field of its first `subscribe`; the daemon applies the field-by-field minimum
+before activating preview channels and returns the effective capability in
+`subscribed`. Version selection is part of that minimum: the negotiated
+transport is V2 only when both peers advertise V2, and a single V1 peer
+downgrades the whole session. A client that omits the field uses the daemon's
+advertised defaults. Renegotiation after a preview publication is active is
+rejected instead of changing limits underneath in-flight state.
+
 The advertised message budget must be at least 184 bytes so every bounded
-stream identity can still carry a one-byte publication fragment.
-The encoded budget cannot exceed the bytes representable by the advertised
-message and chunk counts. The connection budget must hold two maximum encoded
+stream identity can still carry a one-byte publication fragment. Under V1 the
+encoded budget cannot exceed the bytes representable by the advertised message
+and chunk counts, and the connection budget must hold two maximum encoded
 publications so latest-value replacement can retain the active writer until its
-cancellation is observed while admitting the replacement without exceeding the
-negotiated memory contract.
+cancellation is observed while admitting the replacement. V2 tracks that
+retention through its explicit sender and cursor byte budgets, so it requires
+only that the connection budget hold one maximum encoded publication.
+
+Neither version changes a single byte on the binary wire. Chunked publications
+use the same `0x0F` envelope at schema `1` in both, so a decoder never has to
+ask which version negotiated the stream it is reading.
+
 `subscriptions` shows
 what is already live — only `events` by default.
 
@@ -177,7 +195,7 @@ The `effect`, `scene`, `profile`, and `layout` fields are nullable: each is
 
 ## Channels
 
-Thirteen subscription channels carry the daemon's live surface. Subscribe by
+Fourteen subscription channels carry the daemon's live surface. Subscribe by
 name; the daemon relays each channel's frames until you unsubscribe or the
 socket closes.
 
@@ -196,13 +214,14 @@ socket closes.
 | `device_metrics` | JSON | Periodic per-device output telemetry. |
 | `sensors` | JSON | Periodic host sensor snapshot (system telemetry). |
 | `display_preview` | Binary | Per-display JPEG preview for LCD/display devices. |
+| `input_events` | JSON | Timed keyboard and pointer events from the input pipeline. Control-tier only. |
 
 {% callout(type="warning") %}
-`screen_canvas` and `screen_zones` expose live screen-capture pixels, so they
-require a control-tier subscription. On a secured daemon, subscribing without a
-control key returns an `error` with code `forbidden` and `required_tier:
-"control"`. On the default unsecured loopback daemon there is no key to provide
-and the subscription succeeds.
+`screen_canvas`, `screen_zones`, and `input_events` expose live screen-capture
+pixels and input activity, so they require a control-tier subscription. On a
+secured daemon, subscribing without a control key returns an `error` with code
+`forbidden` and `required_tier: "control"`. On the default unsecured loopback
+daemon there is no key to provide and the subscription succeeds.
 {% end %}
 
 ## Client messages
@@ -215,15 +234,16 @@ canonical inventory lives in `protocol/websocket-v1.json`.
 
 Subscribe to one or more channels. An optional `config` patch tunes per-channel
 parameters in the same message; only the channels you name are touched, and the
-rest keep their current settings. Preview-capable clients should also send their
-`preview_transport_v1` capability string in `preview_transport` on the first
-subscription so both peers enforce the same physical budgets.
+rest keep their current settings. Preview-capable clients should also send a
+`preview_transport` capability string on the first subscription so both peers
+enforce the same physical budgets. Send `preview_transport_v2` unless you only
+implement the V1 count-based limits.
 
 ```json
 {
   "type": "subscribe",
   "channels": ["frames", "metrics"],
-  "preview_transport": "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
+  "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
   "config": {
     "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
     "metrics": { "interval_ms": 1000 }
@@ -238,7 +258,7 @@ currently subscribed channel that exposes one:
 {
   "type": "subscribed",
   "channels": ["frames", "metrics"],
-  "preview_transport": "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
+  "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
   "config": {
     "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
     "metrics": { "interval_ms": 1000 }
@@ -588,6 +608,7 @@ at offset 1. All integers are little-endian.
 | `0x0E` | wide screen zones | 23 bytes |
 | `0x0F` | chunked preview envelope | 55 bytes + stream identity |
 | `0x10` | preview publication cancellation | 14 bytes + stream identity |
+| `0x11` | extended screen zones | 41 bytes |
 | `0x80` | RPC request | 2-byte prefix |
 | `0x81` | RPC response | 2-byte prefix |
 

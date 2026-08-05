@@ -90,6 +90,8 @@ WLED strips, Philips Hue bridges, Nanoleaf panels, and Govee lights are discover
 
 If auto-discovery does not find your device, the vendor-specific pages cover each protocol's pairing requirements in detail: [Hue](@/hardware/hue.md), [Nanoleaf](@/hardware/nanoleaf.md), [WLED](@/hardware/wled.md), [Govee](@/hardware/govee.md).
 
+**WLED and Govee addresses are remembered.** Once discovery has found one of those devices, the daemon records its address in `driver-inventory.json` under the data directory (`~/.local/share/hypercolor/` on Linux) and probes it directly at startup and on every later scan. A strip stays reachable through a quiet mDNS responder or a multicast-filtering router, and an unreadable inventory file is set aside rather than blocking startup. Deleting a device drops its entry, so a device you removed on purpose is not learned back on the next scan.
+
 ## Pairing network devices that require credentials
 
 WLED devices that support DDP appear automatically once discovery finds them. Devices that require a credential exchange (Philips Hue with its link button, Nanoleaf with its power-button pairing mode) need one extra step: `devices pair`.

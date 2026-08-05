@@ -142,6 +142,17 @@ Actions builds with:
 - `.cache/hypercolor/toolchain`
 - `.cache/hypercolor/ccache`
 
+Each lane passes its own `shared-key` and shards its target dir to match
+(`shared-key: servo` builds into `.cache/hypercolor/target/servo`), so lanes
+with incompatible feature shapes never share an entry.
+
+**Only the default branch saves.** The action's `save-if` input defaults to
+`auto`, which resolves to true only on `refs/heads/main`. The repo has a 10GB
+Actions cache quota and GitHub evicts least-recently-used entries to stay under
+it, so PR and tag runs that each saved their own copy would push the warm Servo
+entry out and hand the next job a cold native build. PR and tag lanes restore
+without competing; `save-if: "false"` opts a lane out of saving even on main.
+
 CI does not run sccache today: hosted runners do not preinstall it and the
 workflows do not set it up. The wrappers honor `HYPERCOLOR_FORCE_SCCACHE=1`
 and a pre-set `CARGO_INCREMENTAL=0`, so a future CI sccache lane only needs
@@ -174,13 +185,18 @@ shape for builtin-driver coverage and release confidence.
 
 When CI starts compiling Servo from scratch:
 
-1. Check whether `servo-cache-warm.yml` is green on the same branch or `main`.
+1. Check whether `servo-cache-warm.yml` is green on `main`. Dispatching the
+   warmer on a feature branch restores but does not save, so only a `main` run
+   populates the entry the PR lanes read.
 2. Confirm the PR lane uses the same `shared-key`, `key`, and target directory
    shape as the warmer.
 3. Confirm `Cargo.lock`, `rust-toolchain.toml`, and Servo feature sets did not
    change.
 4. Inspect `Swatinem/rust-cache` restore logs for a key miss.
-5. Inspect `sccache --show-stats` when a job exposes stats.
+5. Check the repo's Actions cache list for eviction. The Servo entry is large
+   and the quota is 10GB, so a burst of other saved entries can push it out
+   even when every key is correct. A key that was fine yesterday and misses
+   today with no input change is the signature.
 
 If the pinned Servo version and toolchain are unchanged, warm builds should
 avoid repeating the costly native compile.
