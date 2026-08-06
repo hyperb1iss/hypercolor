@@ -856,8 +856,7 @@ async fn apply_capture_config_transaction(
 /// last-good publication stayed correctly retained. The gate still exists
 /// and still fails typed when consent is required but never granted.
 #[cfg(target_os = "linux")]
-const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration =
-    std::time::Duration::from_secs(6);
+const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6);
 #[cfg(not(target_os = "linux"))]
 const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration =
     std::time::Duration::from_millis(500);
