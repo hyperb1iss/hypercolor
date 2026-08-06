@@ -1636,6 +1636,23 @@ fn build_synthetic_capture_stream(
     })
 }
 
+/// Downgrade a PulseAudio query failure into "Pulse has no answer".
+///
+/// An unreachable sound server says nothing about whether the requested device
+/// exists, so propagating the connection error would strand every ALSA-only or
+/// headless machine on an opaque failure instead of letting the cpal lookup
+/// below decide.
+#[cfg(target_os = "linux")]
+fn pulse_lookup<T>(result: anyhow::Result<T>, query: &str) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::debug!(%error, query, "PulseAudio lookup unavailable; falling back to cpal");
+            None
+        }
+    }
+}
+
 fn select_input_device(
     host: &cpal::Host,
     source: &AudioSourceType,
@@ -1644,7 +1661,8 @@ fn select_input_device(
         AudioSourceType::None => Err(anyhow!("audio source is disabled")),
         AudioSourceType::Named(name) => {
             #[cfg(target_os = "linux")]
-            if linux_audio::pulse_source_exists(name)? {
+            if pulse_lookup(linux_audio::pulse_source_exists(name), "named source").unwrap_or(false)
+            {
                 return Ok(find_linux_pulse_capture_device(name));
             }
 
@@ -1654,7 +1672,12 @@ fn select_input_device(
         }
         AudioSourceType::SystemMonitor => {
             #[cfg(target_os = "linux")]
-            if let Some(selected) = find_linux_system_monitor_input_device(host)? {
+            if let Some(selected) = pulse_lookup(
+                find_linux_system_monitor_input_device(host),
+                "system monitor",
+            )
+            .flatten()
+            {
                 return Ok(selected);
             }
 
