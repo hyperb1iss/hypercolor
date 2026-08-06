@@ -282,8 +282,12 @@ async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_featu
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Auto;
 
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("auto render acceleration should initialize with CPU fallback");
+    state
+        .start()
+        .await
+        .expect("subsystems should start before the API reads live state");
     let response = get_status(State(Arc::new(AppState::from_daemon_state(&state)))).await;
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
