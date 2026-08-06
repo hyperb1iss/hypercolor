@@ -84,6 +84,10 @@ impl HueStreamSession {
             cipher_suites: vec![CipherSuiteId::Tls_Psk_With_Aes_128_Gcm_Sha256],
             insecure_skip_verify: true,
             flight_interval: HUE_STREAM_CONNECT_TIMEOUT,
+            // webrtc-util's `Conn` impl for UdpSocket always returns `None` from
+            // `remote_addr()`, so leaving this empty makes webrtc-dtls warn and fall
+            // back to "localhost" on every handshake. PSK auth never consults it.
+            server_name: bridge_ip.to_string(),
             ..Default::default()
         };
 

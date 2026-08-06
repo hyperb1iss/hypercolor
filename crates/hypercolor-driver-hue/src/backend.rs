@@ -12,8 +12,8 @@ use tracing::{info, warn};
 
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDeliveryObserver, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
@@ -27,6 +27,16 @@ use super::types::{
 };
 
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
+
+/// Deadline covering the whole bridge handshake, not a single request.
+///
+/// `connect` issues four sequential authenticated HTTP calls (identity, lights,
+/// entertainment configs, start streaming) before the DTLS handshake even
+/// begins, and every one of those carries its own five second client timeout
+/// with an https-then-http scheme fallback. The shared default of five seconds
+/// is the budget for one of those calls, so it expires on any slow bridge and
+/// pushes a healthy connect into the reconnect path.
+const HUE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Philips Hue backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +280,12 @@ impl DeviceBackend for HueBackend {
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
         true
+    }
+
+    fn lifecycle_policy(&self, _info: &DeviceInfo) -> DeviceLifecyclePolicy {
+        DeviceLifecyclePolicy::default()
+            .with_connect_timeout(HUE_CONNECT_TIMEOUT)
+            .with_connect_execution(ConnectExecution::Background)
     }
 
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {

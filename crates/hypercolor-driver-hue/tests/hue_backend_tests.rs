@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DeviceBackend;
+use hypercolor_driver_api::DeviceLifecyclePolicy;
 use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_driver_hue::{
     GAMUT_C, HueBackend, HueConfig, HueDiscoveredBridge, build_device_info, rgb_to_cie_xyb,
@@ -179,6 +180,28 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
     );
 
     http_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn lifecycle_policy_outlasts_the_bridge_handshake_round_trips() -> TestResult {
+    let tempdir = tempfile::tempdir()?;
+    let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
+    let backend = HueBackend::with_mdns_enabled(HueConfig::default(), store, false);
+    let info = build_device_info("test-bridge", "Living Room Bridge", None, None, None, &[]);
+
+    let policy = backend.lifecycle_policy(&info);
+
+    assert!(
+        policy.connect_timeout() > DeviceLifecyclePolicy::DEFAULT_CONNECT_TIMEOUT * 4,
+        "connect budget must cover four sequential bridge requests plus the DTLS handshake, got {:?}",
+        policy.connect_timeout()
+    );
+    assert!(
+        policy.connect_execution().is_background(),
+        "a slow bridge must not stall the discovery sweep"
+    );
+    assert!(policy.retry_on_connect_timeout());
     Ok(())
 }
 
