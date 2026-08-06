@@ -193,8 +193,8 @@ async fn lifecycle_policy_outlasts_the_bridge_handshake_round_trips() -> TestRes
     let policy = backend.lifecycle_policy(&info);
 
     assert!(
-        policy.connect_timeout() > DeviceLifecyclePolicy::DEFAULT_CONNECT_TIMEOUT * 2,
-        "connect budget must outlast a single bridge request, got {:?}",
+        policy.connect_timeout() >= DeviceLifecyclePolicy::DEFAULT_CONNECT_TIMEOUT * 3,
+        "connect budget must outlast several sequential bridge requests, not one, got {:?}",
         policy.connect_timeout()
     );
     assert!(

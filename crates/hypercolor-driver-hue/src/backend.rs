@@ -28,7 +28,7 @@ use super::types::{
 
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
-/// Deadline covering the whole bridge handshake, not a single request.
+/// Deadline for a healthy bridge handshake, not for a single request.
 ///
 /// `connect` issues four sequential authenticated HTTP calls (identity, lights,
 /// entertainment configs, start streaming) before the DTLS handshake even
@@ -37,8 +37,11 @@ const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 /// is the budget for one of those calls, so it expires on any slow bridge and
 /// pushes a healthy connect into the reconnect path.
 ///
-/// Connects run inline with the discovery sweep, so this also bounds how long
-/// one unresponsive bridge can hold the sweep open.
+/// This cannot cover the pathological case where every request burns its full
+/// allowance, because connects run inline and the deadline therefore doubles as
+/// the ceiling on how long one unresponsive bridge holds the discovery sweep
+/// open. A bridge that sick should land in the reconnect path. Covering the
+/// pathological case needs a tracked, cancellable background connect instead.
 const HUE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Philips Hue backend configuration.
