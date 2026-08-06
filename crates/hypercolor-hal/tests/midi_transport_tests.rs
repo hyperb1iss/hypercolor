@@ -1,7 +1,6 @@
 use hypercolor_hal::transport::midi::{
-    classify_push2_port_for_testing, midi_output_path_requires_pacing_for_testing,
-    midi_packet_spacing_for_testing, midi_usb_paths_match_for_testing,
-    select_push2_port_identity_for_testing,
+    classify_push2_port_for_testing, midi_packet_spacing_for_testing,
+    midi_usb_paths_match_for_testing, select_push2_port_identity_for_testing,
 };
 
 use std::time::Duration;
@@ -10,6 +9,7 @@ use std::time::Duration;
 use hypercolor_hal::transport::midi::{
     midi_usb_path_from_sound_card_sysfs_for_testing,
     rawmidi_name_from_sound_card_and_seq_port_for_testing, rawmidi_open_retry_for_testing,
+    rawmidi_write_deadline_for_testing,
 };
 
 #[test]
@@ -83,17 +83,49 @@ fn midi_packet_spacing_paces_sysex_more_than_short_led_updates() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
-fn push2_midi_pacing_only_applies_to_sequencer_output() {
-    assert_eq!(
-        midi_output_path_requires_pacing_for_testing("sequencer"),
-        Some(true)
+fn rawmidi_write_deadline_times_out_when_device_stops_draining() {
+    let result = rawmidi_write_deadline_for_testing(
+        &[Err(std::io::ErrorKind::WouldBlock)],
+        false,
+        Duration::from_secs(1),
+        6,
     );
-    #[cfg(target_os = "linux")]
-    assert_eq!(
-        midi_output_path_requires_pacing_for_testing("rawmidi"),
-        Some(false)
+
+    assert_eq!(result, Err("timeout".to_owned()));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rawmidi_write_deadline_times_out_after_repeated_spurious_polls() {
+    let result = rawmidi_write_deadline_for_testing(
+        &[Err(std::io::ErrorKind::WouldBlock)],
+        true,
+        Duration::from_millis(500),
+        6,
     );
+
+    assert_eq!(result, Err("timeout".to_owned()));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rawmidi_write_deadline_completes_across_partial_writes() {
+    let result = rawmidi_write_deadline_for_testing(
+        &[
+            Ok(2),
+            Err(std::io::ErrorKind::WouldBlock),
+            Ok(1),
+            Err(std::io::ErrorKind::Interrupted),
+            Ok(usize::MAX),
+        ],
+        true,
+        Duration::from_secs(1),
+        6,
+    );
+
+    assert_eq!(result, Ok(()));
 }
 
 #[cfg(target_os = "linux")]

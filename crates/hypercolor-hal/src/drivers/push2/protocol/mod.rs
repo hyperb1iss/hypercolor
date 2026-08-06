@@ -26,6 +26,10 @@ const PUSH2_PAD_COUNT: usize = 64;
 const PUSH2_TOUCH_STRIP_LED_COUNT: usize = 31;
 const PUSH2_RGB_BUTTON_COUNT: usize = 28;
 const PUSH2_PALETTE_SIZE: usize = 128;
+// Bounds SET_PALETTE_ENTRY sysex per frame; fast-churn effects approximate via
+// nearest existing entries and converge over subsequent frames. Unbounded
+// palette rewrites flood the firmware's MIDI parser until it wedges.
+const PUSH2_PALETTE_WRITE_BUDGET_PER_FRAME: usize = 16;
 const PUSH2_RGB_SLOT_LIMIT: usize = 97;
 const PUSH2_WHITE_SLOT_START: u8 = 97;
 const PUSH2_WHITE_SLOT_COUNT: u8 = 31;

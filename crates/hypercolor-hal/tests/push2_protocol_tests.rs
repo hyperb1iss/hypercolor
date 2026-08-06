@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::time::Duration;
 
 use hypercolor_hal::drivers::push2::{Push2Protocol, build_push2_protocol};
-use hypercolor_hal::protocol::{Protocol, ResponseStatus, TransferType};
+use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
 use hypercolor_types::device::{DeviceColorFormat, DeviceTopologyHint};
 use image::{ColorType, ImageEncoder, RgbImage, codecs::jpeg::JpegEncoder};
 
@@ -23,6 +23,95 @@ fn solid_red_jpeg() -> Vec<u8> {
         .write_image(image.as_raw(), 4, 4, ColorType::Rgb8.into())
         .expect("JPEG encoding should succeed");
     bytes
+}
+
+fn count_palette_writes(commands: &[ProtocolCommand]) -> usize {
+    commands
+        .iter()
+        .filter(|command| command.data.len() == 17 && command.data.get(6) == Some(&0x03))
+        .count()
+}
+
+fn unique_pad_colors() -> Vec<[u8; 3]> {
+    let mut colors = vec![[0_u8; 3]; 160];
+    for (index, color) in colors.iter_mut().enumerate().take(64) {
+        *color = [
+            u8::try_from(index).expect("pad index fits in u8") + 1,
+            40,
+            200,
+        ];
+    }
+    colors
+}
+
+#[test]
+fn push2_palette_writes_respect_per_frame_budget() {
+    let protocol = Push2Protocol::new();
+
+    let commands = protocol.encode_frame(&unique_pad_colors());
+
+    assert_eq!(count_palette_writes(&commands), 16);
+}
+
+#[test]
+fn push2_palette_budget_converges_across_frames() {
+    let protocol = Push2Protocol::new();
+    let colors = unique_pad_colors();
+
+    let per_frame: Vec<usize> = (0..6)
+        .map(|_| count_palette_writes(&protocol.encode_frame(&colors)))
+        .collect();
+
+    assert_eq!(per_frame, vec![16, 16, 16, 16, 0, 0]);
+
+    let steady_state = protocol.encode_frame(&colors);
+    assert!(steady_state.is_empty());
+}
+
+#[test]
+fn push2_budget_fallback_maps_to_nearest_existing_entry() {
+    let protocol = Push2Protocol::new();
+    protocol
+        .parse_response(&palette_reply(90, [255, 0, 0, 54]))
+        .expect("palette reply should parse");
+
+    let mut colors = vec![[0_u8; 3]; 160];
+    for (index, color) in colors.iter_mut().enumerate().take(16) {
+        *color = [
+            40,
+            u8::try_from(index).expect("pad index fits in u8") + 1,
+            200,
+        ];
+    }
+    colors[16] = [250, 0, 0];
+
+    let commands = protocol.encode_frame(&colors);
+
+    assert_eq!(count_palette_writes(&commands), 16);
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.data == vec![0x90, 52, 90]),
+        "over-budget near-red pad should map to the seeded red entry in slot 90"
+    );
+}
+
+#[test]
+fn push2_white_button_palette_writes_bypass_rgb_budget() {
+    let protocol = Push2Protocol::new();
+    let mut colors = unique_pad_colors();
+    colors[92] = [255, 255, 255];
+
+    let commands = protocol.encode_frame(&colors);
+
+    let white_writes = commands
+        .iter()
+        .filter(|command| {
+            command.data.len() == 17 && command.data.get(6) == Some(&0x03) && command.data[7] >= 97
+        })
+        .count();
+    assert_eq!(white_writes, 1);
+    assert_eq!(count_palette_writes(&commands), 17);
 }
 
 #[test]

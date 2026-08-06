@@ -11,11 +11,11 @@ use crate::protocol::{CommandBuffer, ProtocolCommand, ProtocolError, TransferTyp
 
 use super::{
     PAD_NOTE_MAP, PUSH2_CMD_SET_TOUCH_STRIP_LEDS, PUSH2_MIDI_LED_COUNT, PUSH2_PAD_COUNT,
-    PUSH2_PALETTE_SIZE, PUSH2_REAPPLY_PALETTE_MESSAGE, PUSH2_RGB_BUTTON_COUNT, PUSH2_RGB_LED_COUNT,
-    PUSH2_RGB_SLOT_LIMIT, PUSH2_TOUCH_STRIP_LED_COUNT, PUSH2_WHITE_BUTTON_COUNT,
-    PUSH2_WHITE_SLOT_COUNT, PUSH2_WHITE_SLOT_START, Push2State, RGB_BUTTON_CC_MAP,
-    WHITE_BUTTON_CC_MAP, decode_sysex_byte, primary_command, primary_command_slice,
-    set_palette_entry_message,
+    PUSH2_PALETTE_SIZE, PUSH2_PALETTE_WRITE_BUDGET_PER_FRAME, PUSH2_REAPPLY_PALETTE_MESSAGE,
+    PUSH2_RGB_BUTTON_COUNT, PUSH2_RGB_LED_COUNT, PUSH2_RGB_SLOT_LIMIT, PUSH2_TOUCH_STRIP_LED_COUNT,
+    PUSH2_WHITE_BUTTON_COUNT, PUSH2_WHITE_SLOT_COUNT, PUSH2_WHITE_SLOT_START, Push2State,
+    RGB_BUTTON_CC_MAP, WHITE_BUTTON_CC_MAP, decode_sysex_byte, primary_command,
+    primary_command_slice, set_palette_entry_message,
 };
 
 pub(super) fn restore_factory_palette_commands(state: &mut Push2State) -> Vec<ProtocolCommand> {
@@ -68,6 +68,11 @@ pub(super) fn encode_led_frame(
 
     let mut command_buffer = CommandBuffer::new(commands);
     let mut palette_dirty = false;
+    let mut palette_budget = if force_palette_write {
+        usize::MAX
+    } else {
+        PUSH2_PALETTE_WRITE_BUDGET_PER_FRAME
+    };
 
     for (index, color) in rgb_colors.iter().enumerate() {
         if color_slots.contains_key(color) {
@@ -75,68 +80,36 @@ pub(super) fn encode_led_frame(
         }
 
         let entry = palette_entry(*color);
-        let slot = if let Some(preferred) =
-            preferred_rgb_slot(state, rgb_colors, index, entry, &assigned_slots)
-        {
-            if force_palette_write || state.palette[usize::from(preferred)] != entry {
-                let message = set_palette_entry_message(preferred, entry);
-                command_buffer.push_slice(
-                    &message,
-                    false,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    TransferType::Primary,
-                );
-                state.palette[usize::from(preferred)] = entry;
-                palette_dirty = true;
+        let choice = choose_rgb_slot(
+            state,
+            rgb_colors,
+            index,
+            entry,
+            &assigned_slots,
+            &live_rgb_slots,
+            force_palette_write,
+            palette_budget > 0,
+        );
+        let slot = match choice {
+            Some((slot, needs_write)) => {
+                if needs_write {
+                    let message = set_palette_entry_message(slot, entry);
+                    command_buffer.push_slice(
+                        &message,
+                        false,
+                        Duration::ZERO,
+                        Duration::ZERO,
+                        TransferType::Primary,
+                    );
+                    state.palette[usize::from(slot)] = entry;
+                    palette_dirty = true;
+                    palette_budget = palette_budget.saturating_sub(1);
+                }
+                assigned_slots[usize::from(slot)] = true;
+                slot
             }
-            preferred
-        } else if let Some(existing) = find_existing_slot(state, entry, &assigned_slots) {
-            if force_palette_write {
-                let message = set_palette_entry_message(existing, entry);
-                command_buffer.push_slice(
-                    &message,
-                    false,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    TransferType::Primary,
-                );
-                state.palette[usize::from(existing)] = entry;
-                palette_dirty = true;
-            }
-            existing
-        } else if let Some(free_slot) = next_free_inactive_slot(&assigned_slots, &live_rgb_slots) {
-            if force_palette_write || state.palette[usize::from(free_slot)] != entry {
-                let message = set_palette_entry_message(free_slot, entry);
-                command_buffer.push_slice(
-                    &message,
-                    false,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    TransferType::Primary,
-                );
-                state.palette[usize::from(free_slot)] = entry;
-                palette_dirty = true;
-            }
-            free_slot
-        } else {
-            let free_slot = next_free_slot(&assigned_slots)
-                .expect("Push 2 RGB zones use at most 92 unique colors");
-            if force_palette_write || state.palette[usize::from(free_slot)] != entry {
-                let message = set_palette_entry_message(free_slot, entry);
-                command_buffer.push_slice(
-                    &message,
-                    false,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    TransferType::Primary,
-                );
-                state.palette[usize::from(free_slot)] = entry;
-                palette_dirty = true;
-            }
-            free_slot
+            None => nearest_existing_rgb_slot(&state.palette, entry),
         };
-        assigned_slots[usize::from(slot)] = true;
         color_slots.insert(*color, slot);
     }
 
@@ -363,6 +336,79 @@ fn rgb_slot_rewrite_is_safe(
         .zip(rgb_colors.iter())
         .filter(|(current_slot, _)| **current_slot == slot)
         .all(|(_, color)| palette_entry(*color) == entry)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "slot choice needs the full per-frame assignment context"
+)]
+fn choose_rgb_slot(
+    state: &Push2State,
+    rgb_colors: &[[u8; 3]],
+    led_index: usize,
+    entry: [u8; 4],
+    assigned_slots: &[bool; 128],
+    live_slots: &[bool; 128],
+    force_palette_write: bool,
+    can_write: bool,
+) -> Option<(u8, bool)> {
+    debug_assert!(
+        !force_palette_write || can_write,
+        "force_palette_write implies an unlimited write budget"
+    );
+
+    if let Some(preferred) = preferred_rgb_slot(state, rgb_colors, led_index, entry, assigned_slots)
+    {
+        let needs_write = force_palette_write || state.palette[usize::from(preferred)] != entry;
+        if !needs_write || can_write {
+            return Some((preferred, needs_write));
+        }
+    }
+
+    if let Some(existing) = find_existing_slot(state, entry, assigned_slots) {
+        return Some((existing, force_palette_write));
+    }
+
+    if !can_write {
+        return None;
+    }
+
+    let free_slot = next_free_inactive_slot(assigned_slots, live_slots).unwrap_or_else(|| {
+        next_free_slot(assigned_slots).expect("Push 2 RGB zones use at most 92 unique colors")
+    });
+    let needs_write = force_palette_write || state.palette[usize::from(free_slot)] != entry;
+    Some((free_slot, needs_write))
+}
+
+fn nearest_existing_rgb_slot(palette: &[[u8; 4]; PUSH2_PALETTE_SIZE], entry: [u8; 4]) -> u8 {
+    let mut best_slot = 0_u8;
+    let mut best_distance = u32::MAX;
+    for (index, current) in palette.iter().enumerate().take(PUSH2_RGB_SLOT_LIMIT) {
+        let distance = rgb_distance_sq(*current, entry);
+        if distance < best_distance {
+            best_distance = distance;
+            best_slot = u8::try_from(index).unwrap_or(u8::MAX);
+        }
+    }
+    best_slot
+}
+
+fn rgb_distance_sq(a: [u8; 4], b: [u8; 4]) -> u32 {
+    // Host-written entries derive W from RGB; factory entries carry
+    // device-chosen W, so a fallback match may briefly show a W mismatch
+    // until the budget allows an exact rewrite.
+    (0..3)
+        .map(|channel| {
+            let delta = i32::from(a[channel]) - i32::from(b[channel]);
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "square of an i32 delta is non-negative"
+            )]
+            {
+                (delta * delta) as u32
+            }
+        })
+        .sum()
 }
 
 fn next_free_inactive_slot(assigned_slots: &[bool; 128], live_slots: &[bool; 128]) -> Option<u8> {

@@ -10,6 +10,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
+use alsa::poll::Descriptors as _;
+#[cfg(target_os = "linux")]
 use alsa::{Direction, Rawmidi, seq::Seq};
 use async_trait::async_trait;
 use midir::{
@@ -77,30 +79,12 @@ enum Push2MidiOutput {
     Raw(Rawmidi),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Push2MidiOutputPath {
-    Sequencer,
-    #[cfg(target_os = "linux")]
-    RawMidi,
-}
-
 impl Push2MidiOutput {
-    fn output_path(&self) -> Push2MidiOutputPath {
-        match self {
-            Self::Midir(_) => Push2MidiOutputPath::Sequencer,
-            #[cfg(target_os = "linux")]
-            Self::Raw(_) => Push2MidiOutputPath::RawMidi,
-        }
-    }
-
     fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
         match self {
             Self::Midir(midi_out) => midi_out.send(data).map_err(map_midi_send_error),
             #[cfg(target_os = "linux")]
-            Self::Raw(rawmidi) => {
-                let mut io = rawmidi.io();
-                std::io::Write::write_all(&mut io, data).map_err(map_rawmidi_send_error)
-            }
+            Self::Raw(rawmidi) => write_rawmidi_with_deadline(rawmidi, data, DEFAULT_IO_TIMEOUT),
         }
     }
 }
@@ -242,9 +226,9 @@ impl Push2Transport {
             "push2 midi send"
         );
 
-        if self.midi_output_requires_pacing()? {
-            self.pace_midi_send(data.len()).await;
-        }
+        // Push 2 firmware wedges under unpaced MIDI bursts until power cycled,
+        // so every output path gets inter-message spacing, raw MIDI included.
+        self.pace_midi_send(data.len()).await;
 
         let midi_out = Arc::clone(&self.midi_out);
         let packet = data.to_vec();
@@ -252,11 +236,6 @@ impl Push2Transport {
             lock_mutex(midi_out.as_ref(), "MIDI output")?.send(packet.as_slice())
         })
         .await
-    }
-
-    fn midi_output_requires_pacing(&self) -> Result<bool, TransportError> {
-        let midi_out = lock_mutex(self.midi_out.as_ref(), "MIDI output")?;
-        Ok(midi_output_path_requires_pacing(midi_out.output_path()))
     }
 
     async fn pace_midi_send(&self, packet_len: usize) {
@@ -523,7 +502,7 @@ fn open_push2_rawmidi_with_retry(
     rawmidi_name: &str,
 ) -> Result<(Rawmidi, u32, Duration), alsa::Error> {
     retry_rawmidi_open(
-        || Rawmidi::new(rawmidi_name, Direction::Playback, false),
+        || Rawmidi::new(rawmidi_name, Direction::Playback, true),
         std::thread::sleep,
         {
             let started_at = Instant::now();
@@ -556,6 +535,73 @@ fn retry_rawmidi_open<T, E>(
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn write_rawmidi_with_deadline(
+    rawmidi: &Rawmidi,
+    data: &[u8],
+    timeout: Duration,
+) -> Result<(), TransportError> {
+    let started_at = Instant::now();
+    let mut io = rawmidi.io();
+    write_with_deadline(
+        |chunk| std::io::Write::write(&mut io, chunk),
+        |remaining| wait_rawmidi_writable(rawmidi, remaining),
+        move || started_at.elapsed(),
+        data,
+        timeout,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn wait_rawmidi_writable(rawmidi: &Rawmidi, timeout: Duration) -> Result<bool, TransportError> {
+    let mut fds = rawmidi.get().map_err(|error| TransportError::IoError {
+        detail: format!("rawmidi poll descriptors unavailable: {error}"),
+    })?;
+    let timeout_ms = i32::try_from(timeout.as_millis())
+        .unwrap_or(i32::MAX)
+        .max(1);
+    let ready =
+        alsa::poll::poll(&mut fds, timeout_ms).map_err(|error| TransportError::IoError {
+            detail: format!("rawmidi poll failed: {error}"),
+        })?;
+    Ok(ready > 0)
+}
+
+#[cfg(target_os = "linux")]
+fn write_with_deadline(
+    mut write: impl FnMut(&[u8]) -> std::io::Result<usize>,
+    mut wait_writable: impl FnMut(Duration) -> Result<bool, TransportError>,
+    mut elapsed: impl FnMut() -> Duration,
+    data: &[u8],
+    timeout: Duration,
+) -> Result<(), TransportError> {
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let mut offset = 0;
+    while offset < data.len() {
+        match write(&data[offset..]) {
+            Ok(0) => {
+                return Err(TransportError::IoError {
+                    detail: "raw MIDI write made no progress".to_owned(),
+                });
+            }
+            Ok(written) => offset += written,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let waited = elapsed();
+                if waited >= timeout || !wait_writable(timeout.saturating_sub(waited))? {
+                    return Err(TransportError::Timeout { timeout_ms });
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                if elapsed() >= timeout {
+                    return Err(TransportError::Timeout { timeout_ms });
+                }
+            }
+            Err(error) => return Err(map_rawmidi_send_error(error)),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -778,14 +824,6 @@ fn midi_packet_spacing(packet_len: usize) -> Duration {
     }
 }
 
-fn midi_output_path_requires_pacing(path: Push2MidiOutputPath) -> bool {
-    match path {
-        Push2MidiOutputPath::Sequencer => true,
-        #[cfg(target_os = "linux")]
-        Push2MidiOutputPath::RawMidi => false,
-    }
-}
-
 #[doc(hidden)]
 #[must_use]
 pub fn classify_push2_port_for_testing(name: &str) -> Option<&'static str> {
@@ -853,19 +891,40 @@ pub fn midi_packet_spacing_for_testing(packet_len: usize) -> Duration {
     midi_packet_spacing(packet_len)
 }
 
+#[cfg(target_os = "linux")]
 #[doc(hidden)]
-#[must_use]
-pub fn midi_output_path_requires_pacing_for_testing(path: &str) -> Option<bool> {
-    match path {
-        "sequencer" => Some(midi_output_path_requires_pacing(
-            Push2MidiOutputPath::Sequencer,
-        )),
-        #[cfg(target_os = "linux")]
-        "rawmidi" => Some(midi_output_path_requires_pacing(
-            Push2MidiOutputPath::RawMidi,
-        )),
-        _ => None,
-    }
+pub fn rawmidi_write_deadline_for_testing(
+    write_results: &[Result<usize, std::io::ErrorKind>],
+    poll_ready: bool,
+    timeout: Duration,
+    data_len: usize,
+) -> Result<(), String> {
+    use std::cell::Cell;
+
+    let step = Cell::new(0_usize);
+    let simulated_elapsed = Cell::new(Duration::ZERO);
+    let data = vec![0_u8; data_len];
+    write_with_deadline(
+        |chunk| {
+            let index = step.get().min(write_results.len().saturating_sub(1));
+            step.set(step.get() + 1);
+            match write_results[index] {
+                Ok(written) => Ok(written.min(chunk.len())),
+                Err(kind) => Err(std::io::Error::from(kind)),
+            }
+        },
+        |_remaining| {
+            simulated_elapsed.set(simulated_elapsed.get() + Duration::from_millis(100));
+            Ok(poll_ready)
+        },
+        || simulated_elapsed.get(),
+        &data,
+        timeout,
+    )
+    .map_err(|error| match error {
+        TransportError::Timeout { .. } => "timeout".to_owned(),
+        other => other.to_string(),
+    })
 }
 
 #[doc(hidden)]
