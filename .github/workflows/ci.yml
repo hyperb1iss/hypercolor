@@ -69,6 +69,10 @@ env:
     --exclude hypercolor-tray
     --exclude hypercolor-cli
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
+  # Tests resolve bundled effects next to the running executable unless this is
+  # set, and CI invokes cargo directly instead of through the justfile that
+  # normally exports it. Every job that stages generated effects puts them here.
+  HYPERCOLOR_EFFECTS_DIR: ${{ github.workspace }}/effects/hypercolor
   CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
   CARGO_INCREMENTAL: "0"
@@ -362,7 +366,7 @@ jobs:
   # target, and cache because the daemon graph contains the core graph.
   rust-test-servo:
     name: Rust Servo + E2E Build
-    needs: changes
+    needs: [changes, generated-effects]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -400,6 +404,12 @@ jobs:
             .cache/hypercolor/toolchain
             .cache/hypercolor/ccache
           cache-on-failure: "false"
+
+      - name: Download generated effects
+        uses: actions/download-artifact@v8
+        with:
+          name: generated-effects
+          path: effects/hypercolor
 
       - name: Build Servo e2e binaries
         run: >-
