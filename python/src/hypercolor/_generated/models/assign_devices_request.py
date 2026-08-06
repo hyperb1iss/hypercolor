@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..types import UNSET, Unset
+
 if TYPE_CHECKING:
     from ..models.assign_devices_request_device_zones_item import (
         AssignDevicesRequestDeviceZonesItem,
@@ -21,9 +23,14 @@ class AssignDevicesRequest:
 
     Attributes:
         device_zones (list[AssignDevicesRequestDeviceZonesItem]):
+        preserve_placement (bool | Unset): Keep the position and size carried by each assignment instead of
+            auto-placing it into the target zone's next grid slot. Clients set
+            this when they authored a deliberate arrangement — a hardware
+            footprint, say — that grid placement would destroy.
     """
 
     device_zones: list[AssignDevicesRequestDeviceZonesItem]
+    preserve_placement: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,6 +39,8 @@ class AssignDevicesRequest:
             device_zones_item = device_zones_item_data.to_dict()
             device_zones.append(device_zones_item)
 
+        preserve_placement = self.preserve_placement
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -39,6 +48,8 @@ class AssignDevicesRequest:
                 "device_zones": device_zones,
             }
         )
+        if preserve_placement is not UNSET:
+            field_dict["preserve_placement"] = preserve_placement
 
         return field_dict
 
@@ -58,8 +69,11 @@ class AssignDevicesRequest:
 
             device_zones.append(device_zones_item)
 
+        preserve_placement = d.pop("preserve_placement", UNSET)
+
         assign_devices_request = cls(
             device_zones=device_zones,
+            preserve_placement=preserve_placement,
         )
 
         assign_devices_request.additional_properties = d

@@ -272,6 +272,7 @@ from .sampling_mode_type_2 import SamplingModeType2
 from .sampling_mode_type_2_type import SamplingModeType2Type
 from .sampling_mode_type_3 import SamplingModeType3
 from .sampling_mode_type_3_type import SamplingModeType3Type
+from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
 from .set_brightness_request import SetBrightnessRequest
@@ -554,6 +555,7 @@ __all__ = (
     "SamplingModeType2Type",
     "SamplingModeType3",
     "SamplingModeType3Type",
+    "ScreenCaptureCapacityStatus",
     "ServerIdentity",
     "ServerInfo",
     "SetBrightnessRequest",

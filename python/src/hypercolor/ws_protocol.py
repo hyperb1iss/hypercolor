@@ -45,6 +45,7 @@ WS_CAPABILITIES: Final = (
     "interactive_previews",
     "wide_preview_frames",
     "preview_chunking",
+    "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
     "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
 )
 

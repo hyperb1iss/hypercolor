@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..models.preview_runtime_status import PreviewRuntimeStatus
     from ..models.render_acceleration_status import RenderAccelerationStatus
     from ..models.render_loop_status import RenderLoopStatus
+    from ..models.screen_capture_capacity_status import ScreenCaptureCapacityStatus
     from ..models.server_identity import ServerIdentity
 
 
@@ -53,6 +54,8 @@ class ApiResponseSystemStatusData:
         render_loop (RenderLoopStatus):
         running (bool):
         scene_count (int):
+        screen_capture_capacity (ScreenCaptureCapacityStatus): Installed byte fences for transactional screen
+            publication admission.
         server (ServerIdentity): Stable identity exposed by each Hypercolor daemon instance.
         uptime_seconds (int):
         version (str):
@@ -79,6 +82,7 @@ class ApiResponseSystemStatusData:
     render_loop: RenderLoopStatus
     running: bool
     scene_count: int
+    screen_capture_capacity: ScreenCaptureCapacityStatus
     server: ServerIdentity
     uptime_seconds: int
     version: str
@@ -125,6 +129,8 @@ class ApiResponseSystemStatusData:
         running = self.running
 
         scene_count = self.scene_count
+
+        screen_capture_capacity = self.screen_capture_capacity.to_dict()
 
         server = self.server.to_dict()
 
@@ -174,6 +180,7 @@ class ApiResponseSystemStatusData:
                 "render_loop": render_loop,
                 "running": running,
                 "scene_count": scene_count,
+                "screen_capture_capacity": screen_capture_capacity,
                 "server": server,
                 "uptime_seconds": uptime_seconds,
                 "version": version,
@@ -196,6 +203,7 @@ class ApiResponseSystemStatusData:
         from ..models.preview_runtime_status import PreviewRuntimeStatus
         from ..models.render_acceleration_status import RenderAccelerationStatus
         from ..models.render_loop_status import RenderLoopStatus
+        from ..models.screen_capture_capacity_status import ScreenCaptureCapacityStatus
         from ..models.server_identity import ServerIdentity
 
         d = dict(src_dict)
@@ -236,6 +244,10 @@ class ApiResponseSystemStatusData:
         running = d.pop("running")
 
         scene_count = d.pop("scene_count")
+
+        screen_capture_capacity = ScreenCaptureCapacityStatus.from_dict(
+            d.pop("screen_capture_capacity")
+        )
 
         server = ServerIdentity.from_dict(d.pop("server"))
 
@@ -297,6 +309,7 @@ class ApiResponseSystemStatusData:
             render_loop=render_loop,
             running=running,
             scene_count=scene_count,
+            screen_capture_capacity=screen_capture_capacity,
             server=server,
             uptime_seconds=uptime_seconds,
             version=version,
