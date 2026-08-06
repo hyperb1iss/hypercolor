@@ -12,8 +12,8 @@ use tracing::{info, warn};
 
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
@@ -36,7 +36,10 @@ const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 /// with an https-then-http scheme fallback. The shared default of five seconds
 /// is the budget for one of those calls, so it expires on any slow bridge and
 /// pushes a healthy connect into the reconnect path.
-const HUE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// Connects run inline with the discovery sweep, so this also bounds how long
+/// one unresponsive bridge can hold the sweep open.
+const HUE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Philips Hue backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,9 +286,7 @@ impl DeviceBackend for HueBackend {
     }
 
     fn lifecycle_policy(&self, _info: &DeviceInfo) -> DeviceLifecyclePolicy {
-        DeviceLifecyclePolicy::default()
-            .with_connect_timeout(HUE_CONNECT_TIMEOUT)
-            .with_connect_execution(ConnectExecution::Background)
+        DeviceLifecyclePolicy::default().with_connect_timeout(HUE_CONNECT_TIMEOUT)
     }
 
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
