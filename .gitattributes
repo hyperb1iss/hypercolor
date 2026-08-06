@@ -1,0 +1,12 @@
+# Rust embeds text assets with include_str! and asserts on their contents with
+# LF separators, so a CRLF checkout breaks those tests on Windows. Normalize
+# every text file to LF in the working tree on all platforms.
+* text=auto eol=lf
+
+# Binary assets must never be normalized.
+*.png binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
