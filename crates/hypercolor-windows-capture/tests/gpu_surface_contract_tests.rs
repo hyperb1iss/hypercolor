@@ -77,7 +77,12 @@ fn reduction_admission_accounts_output_and_descriptor_readback_ring() {
     assert_eq!(quote.allocation_byte_len(), 384);
     assert_eq!(quote.readback_byte_len(), 288);
     assert_eq!(quote.publication_buffer_byte_len(), 96);
-    assert_eq!(quote.constant_buffer_byte_len(), 240);
+    // Shader parameter blocks live in the Windows-only duplication module, so
+    // the accounting is a stub everywhere else.
+    assert_eq!(
+        quote.constant_buffer_byte_len(),
+        if cfg!(target_os = "windows") { 240 } else { 0 }
+    );
     assert_eq!(
         quote.retained_byte_len(),
         480 + quote.constant_buffer_byte_len() + quote.metadata_byte_len()
@@ -155,7 +160,10 @@ fn admission_has_no_artificial_resolution_axis_cap() {
         .expect("large descriptor resources quote without an axis cap");
 
     assert_eq!(quote.allocation_byte_len(), 1_061_683_200);
-    assert_eq!(quote.constant_buffer_byte_len(), 80);
+    assert_eq!(
+        quote.constant_buffer_byte_len(),
+        if cfg!(target_os = "windows") { 80 } else { 0 }
+    );
     assert_eq!(
         quote.retained_byte_len(),
         1_061_683_200 + quote.constant_buffer_byte_len() + quote.metadata_byte_len()

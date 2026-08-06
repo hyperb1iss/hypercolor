@@ -221,7 +221,10 @@ fn capture_config_accepts_optional_nonzero_publication_memory_budget() {
 
 #[test]
 fn capture_config_validates_source_by_backend() {
+    // Capture defaults to enabled only on Windows, and the portal gate below
+    // is reachable only while capture is on.
     let mut config = CaptureConfig {
+        enabled: true,
         source: r"monitor:\\?\DISPLAY#DEL40A9#stable".to_owned(),
         ..CaptureConfig::default()
     };
