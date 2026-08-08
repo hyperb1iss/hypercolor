@@ -421,3 +421,52 @@ async fn default_face_survives_scene_switches() {
         );
     }
 }
+
+// ── Device deletion ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn deleting_a_display_prunes_its_default_face_and_preference() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = register_display(&state, "Doomed Display").await;
+    let effect_id = register_face_effect(&state, "Doomed Face").await;
+    let app = api::build_router(Arc::clone(&state), None);
+
+    put_face(&app, device_id, effect_id, "default").await;
+    {
+        let scene_manager = state.scene_manager.read().await;
+        assert!(
+            scene_manager.default_display_group_for(device_id).is_some(),
+            "default face should be live before deletion"
+        );
+    }
+
+    let response = send(
+        &app,
+        delete_request(format!("/api/v1/simulators/displays/{device_id}")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = body_json(response).await;
+    assert_eq!(payload["data"]["deleted"], true);
+
+    let scene_manager = state.scene_manager.read().await;
+    assert!(
+        scene_manager.default_display_group_for(device_id).is_none(),
+        "deleted display must not keep a runtime default face zone"
+    );
+    assert!(
+        !scene_manager.active_render_groups().iter().any(|zone| {
+            zone.display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == device_id)
+        }),
+        "deleted display must not keep demanding face frames"
+    );
+    drop(scene_manager);
+
+    let store = state.display_preferences.read().await;
+    assert!(
+        store.get(device_id).is_none(),
+        "deleted display must not keep a stored default-face preference"
+    );
+}

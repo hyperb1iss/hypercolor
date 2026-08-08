@@ -954,33 +954,73 @@ async fn resolve_effect_ref_for_fallback(state: &AppState, effect_id: &str) -> E
     }
 }
 
+/// Remove every display assignment a deleted device leaves behind: its
+/// scene-bound display groups, its runtime default face zone, and its
+/// stored default-face preference. The default zone and preference are
+/// pruned even when scene-store persistence fails — a deleted device must
+/// never keep a live render group demanding face frames, and the deleted
+/// device cannot be resolved later to clear them through the displays API.
 pub(crate) async fn prune_scene_display_groups_for_device(
     state: &Arc<AppState>,
     device_id: DeviceId,
 ) {
     let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (removed_groups, pending) = {
+    let (removed_groups, pending, removed_default, active_scene_id) = {
         let mut scene_manager = state.scene_manager.write().await;
         let rollback = scene_manager.clone();
         let removed = scene_manager.remove_display_groups_for_device(device_id);
-        if removed.is_empty() {
-            return;
-        }
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                warn!(%error, %device_id, "Failed to prepare display-group pruning persistence");
-                return;
+        let (removed, pending) = if removed.is_empty() {
+            (Vec::new(), None)
+        } else {
+            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
+                Ok(pending) => (removed, Some(pending)),
+                Err(error) => {
+                    // The manager rolled back, so the scene groups are
+                    // still live and must not be reported as removed.
+                    warn!(%error, %device_id, "Failed to prepare display-group pruning persistence");
+                    (Vec::new(), None)
+                }
             }
         };
-        (removed, pending)
+        let removed_default = scene_manager.default_display_group_for(device_id).cloned();
+        if removed_default.is_some() {
+            scene_manager.remove_default_display_group(device_id);
+        }
+        let active_scene_id = scene_manager.active_scene().map(|scene| scene.id);
+        (removed, pending, removed_default, active_scene_id)
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
+
+    let removed_preference = {
+        let mut store = state.display_preferences.write().await;
+        match store.remove(device_id) {
+            Ok(removed) => removed.is_some(),
+            Err(error) => {
+                warn!(%error, %device_id, "Failed to prune display preference for deleted device");
+                false
+            }
+        }
+    };
+
+    if removed_groups.is_empty() && removed_default.is_none() && !removed_preference {
+        return;
+    }
+
+    if let Some(pending) = pending
+        && let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await
+    {
         warn!(%error, %device_id, "Failed to persist display-group pruning; retry remains active");
     }
 
     for (scene_id, group) in &removed_groups {
         publish_render_group_changed(state.as_ref(), *scene_id, group, ZoneChangeKind::Removed);
+    }
+    if let Some(group) = &removed_default {
+        publish_render_group_changed(
+            state.as_ref(),
+            active_scene_id.unwrap_or(SceneId::DEFAULT),
+            group,
+            ZoneChangeKind::Removed,
+        );
     }
     persist_runtime_session(state).await;
 }
