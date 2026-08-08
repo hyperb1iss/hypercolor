@@ -113,6 +113,11 @@ jobs:
               - 'scripts/cargo-cache-build.*'
               - '.github/actions/rust-build-cache/**'
               - '.github/workflows/ci.yml'
+              # Decides whether Windows sees LF or CRLF, which changes what
+              # include_str! embeds and what those tests can match.
+              - '.gitattributes'
+              # Embedded with include_str! and asserted on by the HAL tests.
+              - 'data/drivers/**'
             python:
               - 'python/**'
               - 'protocol/**'
