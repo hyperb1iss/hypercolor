@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
+use hypercolor_types::portable::PortableIdentityClaim;
 
 /// A single-transport device scanner.
 #[async_trait::async_trait]
@@ -63,4 +64,10 @@ pub struct DiscoveredDevice {
 
     /// Additional scanner metadata.
     pub metadata: HashMap<String, String>,
+
+    /// Proof of a stable OS-independent identity, when the scanner can give
+    /// one. `None` is a deliberate refusal, not an omission: the field has
+    /// no default so every scanner states its answer, and a device without
+    /// a claim simply re-binds per machine.
+    pub claim: Option<PortableIdentityClaim>,
 }

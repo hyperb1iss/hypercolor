@@ -13,6 +13,7 @@ use tracing::warn;
 
 use hypercolor_driver_api::{CredentialStore, MdnsBrowser};
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_types::portable::PortableIdentityClaim;
 
 use super::fetch_device_info;
 use super::fetch_panel_layout;
@@ -281,6 +282,16 @@ async fn build_discovered_device(
         &candidate,
         (!serial_no.is_empty()).then_some(serial_no.as_str()),
     );
+    // Claimed from the controller's real serial fields only. The device key
+    // is not enough: it falls back to a name and then an address, and a
+    // host-local value must never become an account-wide identity.
+    let claim = if serial_no.is_empty() {
+        (!candidate.device_id.is_empty())
+            .then(|| PortableIdentityClaim::nanoleaf_serial(&candidate.device_id, candidate.ip))
+            .flatten()
+    } else {
+        PortableIdentityClaim::nanoleaf_serial(&serial_no, candidate.ip)
+    };
 
     let info = build_device_info(
         &device_key,
@@ -313,6 +324,7 @@ async fn build_discovered_device(
         panel_ids,
         connect_behavior,
         metadata,
+        claim,
     })
 }
 

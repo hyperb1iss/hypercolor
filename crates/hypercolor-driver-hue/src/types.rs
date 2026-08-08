@@ -10,6 +10,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::portable::PortableIdentityClaim;
 
 use super::color::{ColorGamut, GAMUT_A, GAMUT_B, GAMUT_C};
 
@@ -121,12 +122,16 @@ impl HueDiscoveredBridge {
     #[must_use]
     pub fn into_discovered(self) -> DiscoveredDevice {
         let fingerprint = DeviceFingerprint(format!("hue:{}", self.bridge_id));
+        // The bridge id is MAC-derived and fixed for the life of the
+        // bridge, which is exactly what a portable identity requires.
+        let claim = PortableIdentityClaim::hue_bridge_id(&self.bridge_id, self.ip);
 
         DiscoveredDevice {
             fingerprint,
             connect_behavior: self.connect_behavior,
             info: self.info,
             metadata: self.metadata,
+            claim,
         }
     }
 }

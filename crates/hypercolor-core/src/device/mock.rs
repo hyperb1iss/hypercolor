@@ -262,6 +262,8 @@ impl MockTransportScanner {
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
             metadata: HashMap::new(),
+            // Deliberate refusal: simulated hardware has no portable identity.
+            claim: None,
         });
         self
     }

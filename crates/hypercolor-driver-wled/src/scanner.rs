@@ -18,6 +18,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 
 /// mDNS service type for WLED devices.
 const WLED_SERVICE_TYPE: &str = "_wled._tcp.local.";
@@ -271,6 +272,9 @@ impl WledScanner {
             },
             info: device_info,
             metadata,
+            // The device just reported its own MAC; the constructor refuses
+            // the unstable ones (locally administered, multicast, all-zero).
+            claim: PortableIdentityClaim::mac_address(&mac, NetworkAttachment::Peer(ip)),
         }
     }
 
@@ -339,6 +343,11 @@ impl WledScanner {
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: device_info,
             metadata,
+            // Deliberate refusal: this path rebuilds a device from cached
+            // strings, and a cached fingerprint is not an observation.
+            // Portability is never inferred from a string; the device
+            // re-claims when a live probe reads its MAC.
+            claim: None,
         })
     }
 

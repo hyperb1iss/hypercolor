@@ -218,6 +218,9 @@ async fn remember_discovered_device(
             connect_behavior: tracked.connect_behavior,
             info: tracked.info,
             metadata,
+            // Reconstructed from the registry, which holds no claim; a
+            // remembered device re-claims when a scanner sees it live.
+            claim: None,
         })
         .await;
 }

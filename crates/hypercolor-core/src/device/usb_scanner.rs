@@ -9,12 +9,26 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceIdentifier,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, USB_OUTPUT_BACKEND_ID,
 };
+use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry};
 
 use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+
+/// The serial normalizations reviewed for cross-OS stability.
+///
+/// Empty is the correct starting state, not a stub: registering a
+/// `(vendor, product)` pair asserts that its serial reporting has been
+/// checked byte-for-byte across the OS stacks we support, and no pair has
+/// that evidence yet. Until one does, USB devices re-bind per machine,
+/// which is the designed fallback rather than a failure.
+#[must_use]
+pub fn reviewed_serial_normalizers() -> SerialNormalizerRegistry {
+    SerialNormalizerRegistry::new()
+}
 
 /// USB transport scanner that discovers HAL-backed devices by VID/PID.
 pub struct UsbScanner {
     enabled_driver_ids: Option<BTreeSet<String>>,
+    serial_normalizers: SerialNormalizerRegistry,
 }
 
 impl UsbScanner {
@@ -23,6 +37,7 @@ impl UsbScanner {
     pub fn new() -> Self {
         Self {
             enabled_driver_ids: None,
+            serial_normalizers: reviewed_serial_normalizers(),
         }
     }
 
@@ -31,6 +46,7 @@ impl UsbScanner {
     pub fn with_enabled_driver_ids(enabled_driver_ids: BTreeSet<String>) -> Self {
         Self {
             enabled_driver_ids: Some(enabled_driver_ids),
+            serial_normalizers: reviewed_serial_normalizers(),
         }
     }
 
@@ -143,6 +159,20 @@ impl TransportScanner for UsbScanner {
                 fingerprint.stable_device_id(),
             );
 
+            // Claimed here, where serial-vs-path is still a known fact; the
+            // fingerprint string discards it. Refusal (no registered
+            // normalizer, placeholder serial, no serial at all) yields None
+            // and the device re-binds per machine.
+            let claim = usb.serial_number().and_then(|serial| {
+                PortableIdentityClaim::usb_serial(
+                    vendor_id,
+                    product_id,
+                    serial,
+                    path.clone(),
+                    &self.serial_normalizers,
+                )
+            });
+
             let mut metadata = HashMap::new();
             metadata.insert("vendor_id".to_owned(), format!("0x{vendor_id:04X}"));
             metadata.insert("product_id".to_owned(), format!("0x{product_id:04X}"));
@@ -161,6 +191,7 @@ impl TransportScanner for UsbScanner {
                 connect_behavior: DiscoveryConnectBehavior::AutoConnect,
                 info,
                 metadata,
+                claim,
             });
         }
 

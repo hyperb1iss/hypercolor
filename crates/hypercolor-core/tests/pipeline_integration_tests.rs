@@ -217,6 +217,7 @@ fn make_discovered_device(name: &str, led_count: u32) -> DiscoveredDevice {
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info,
         metadata: HashMap::new(),
+        claim: None,
     }
 }
 
@@ -1451,6 +1452,7 @@ async fn multiple_scanners_aggregate_results() {
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
             metadata: HashMap::new(),
+            claim: None,
         }
     };
     orchestrator.add_scanner(Box::new(TestScanner::new("usb", vec![usb_device])));

@@ -8,6 +8,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
@@ -196,6 +197,9 @@ fn build_discovered_device(device: GoveeLanDevice) -> DiscoveredDevice {
         fingerprint: fingerprint_for_mac(&device.mac),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info,
+        // The device answered a LAN probe with its own MAC, so the peer
+        // address is real attachment evidence.
+        claim: PortableIdentityClaim::mac_address(&device.mac, NetworkAttachment::Peer(device.ip)),
         metadata,
     }
 }

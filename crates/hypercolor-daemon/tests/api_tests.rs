@@ -11647,6 +11647,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
             connect_behavior: DiscoveryConnectBehavior::Deferred,
             info: info.clone(),
             metadata: HashMap::new(),
+            claim: None,
         })
         .await;
     state

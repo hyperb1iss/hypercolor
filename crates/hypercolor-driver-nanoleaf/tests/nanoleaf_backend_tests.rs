@@ -91,6 +91,7 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
         panel_ids: Vec::new(),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         metadata: HashMap::new(),
+        claim: None,
     };
     let device_id = discovered.info.id;
     backend.remember_device(discovered);

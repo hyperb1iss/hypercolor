@@ -1048,6 +1048,7 @@ async fn backend_connects_from_scanner_seed_without_backend_discover() {
             ("ip".to_owned(), "127.0.0.1".to_owned()),
             ("arch".to_owned(), "esp32".to_owned()),
         ]),
+        claim: None,
     };
 
     backend.remember_discovered_device(&discovered);
