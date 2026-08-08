@@ -436,22 +436,21 @@ pub fn DashboardPage() -> impl IntoView {
                     </div>
                 </HeaderTrailing>
                 <HeaderToolbar slot>
-                    // Stats only in here (no dropdowns), so the strip can be
-                    // its own scroll box where the phone width runs out.
-                    <div class="flex h-full w-full min-w-0 items-center overflow-x-auto scrollbar-none">
-                        <Suspense fallback=move || view! { <StatusSkeleton /> }>
-                            {move || status_resource.get().map(|result| {
-                                match result {
-                                    Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
-                                    Err(e) => view! {
-                                        <div class="text-[11px] text-status-error shrink-0">
-                                            "Failed to connect: " {e}
-                                        </div>
-                                    }.into_any(),
-                                }
-                            })}
-                        </Suspense>
-                    </div>
+                    // No overflow value here: the scene pill anchors a
+                    // dropdown, and any scroll box would clip it. The strip
+                    // is condensed enough to fit a phone outright.
+                    <Suspense fallback=move || view! { <StatusSkeleton /> }>
+                        {move || status_resource.get().map(|result| {
+                            match result {
+                                Ok(status) => view! { <StatusStrip status=status /> }.into_any(),
+                                Err(e) => view! {
+                                    <div class="text-[11px] text-status-error shrink-0">
+                                        "Failed to connect: " {e}
+                                    </div>
+                                }.into_any(),
+                            }
+                        })}
+                    </Suspense>
                 </HeaderToolbar>
             </PageHeader>
 

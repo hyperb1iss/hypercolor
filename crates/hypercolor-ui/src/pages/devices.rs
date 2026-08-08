@@ -18,7 +18,6 @@ use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredenti
 use crate::components::empty_state::EmptyState;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
-use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::storage;
@@ -182,24 +181,9 @@ pub fn DevicesPage() -> impl IntoView {
         }
     });
 
-    // Resizable sidebar
-    let (sidebar_width, set_sidebar_width) = signal(load_sidebar_width());
-    let sidebar_start = StoredValue::new(0.0_f64);
-
-    let on_drag_start = Callback::new(move |()| {
-        sidebar_start.set_value(sidebar_width.get_untracked());
-    });
-    let on_drag = Callback::new(move |delta: f64| {
-        if let Some(start) = sidebar_start.try_get_value() {
-            let clamped = (start - delta).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
-            set_sidebar_width.set(clamped);
-        }
-    });
-    let on_drag_end = Callback::new(move |()| {
-        if let Some(width) = sidebar_width.try_get_untracked() {
-            ls_set(LS_SIDEBAR, &format!("{width:.0}"));
-        }
-    });
+    // Detail overlay width — the stored value from the old resizable
+    // sidebar is still honored as the desktop drawer width.
+    let (sidebar_width, _set_sidebar_width) = signal(load_sidebar_width());
 
     let filtered_devices = Memo::new(move |_| {
         let Some(Ok(devices)) = ctx.devices_resource.get() else {
@@ -332,7 +316,11 @@ pub fn DevicesPage() -> impl IntoView {
 
     let _close_listener = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Escape" {
-            set_filter_dropdown_open.set(false);
+            if filter_dropdown_open.get_untracked() {
+                set_filter_dropdown_open.set(false);
+            } else {
+                set_selected_device.set(None);
+            }
         }
     });
 
@@ -492,12 +480,8 @@ pub fn DevicesPage() -> impl IntoView {
                                         />
                                     }.into_any()
                                 } else {
-                                    let has_selected = selected_device.get().is_some();
-                                    let grid_class = if has_selected {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2.5"
-                                    } else {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3"
-                                    };
+                                    let grid_class =
+                                        "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3";
                                     view! {
                                         <div class=grid_class>
                                             {devices.into_iter().enumerate().map(|(i, dev)| {
@@ -520,14 +504,33 @@ pub fn DevicesPage() -> impl IntoView {
                         </Suspense>
                     </div>
 
+                    // Detail is an overlay drawer at every width: the grid
+                    // never reflows, the scrim reads as "tap to dismiss",
+                    // and Escape or the X close it. Same z-band as the
+                    // studio drawer (scrim 42 over the mobile nav at 40,
+                    // panel 45, command palette 50 above).
                     {move || selected_device.get().map(|id| {
                         let device_id = Signal::derive(move || id.clone());
                         view! {
-                            <ResizeHandle on_drag_start=on_drag_start on_drag=on_drag on_drag_end=on_drag_end />
+                            <div
+                                class="fixed inset-0 z-[42] bg-black/55 animate-enter-fade"
+                                on:click=move |_| set_selected_device.set(None)
+                            />
                             <aside
-                                class="shrink-0 overflow-y-auto pb-6 pr-6 pt-4 scrollbar-none animate-enter-right"
+                                class="fixed inset-y-0 right-0 z-[45] overflow-y-auto scrollbar-none
+                                       bg-surface-raised border-l border-edge-subtle animate-enter-right
+                                       px-6 pb-6 pt-4 max-md:w-full! max-md:border-l-0 max-md:px-4
+                                       max-md:pb-[calc(1.5rem+env(safe-area-inset-bottom))]"
                                 style=move || format!("width: {:.0}px", sidebar_width.get())
                             >
+                                <button
+                                    class="absolute top-3 right-3 z-10 flex h-9 w-9 items-center justify-center
+                                           rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 glow-ring"
+                                    aria-label="Close device details"
+                                    on:click=move |_| set_selected_device.set(None)
+                                >
+                                    <Icon icon=LuX width="16px" height="16px" />
+                                </button>
                                 <DeviceDetail device_id=device_id on_pair=on_pair_device on_forget=on_forget_device on_delete_simulator=on_delete_simulator />
                             </aside>
                         }

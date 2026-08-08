@@ -13,7 +13,6 @@ use crate::components::scene_switcher::{
 };
 use crate::components::status_pill::StatusPill;
 use crate::icons::*;
-use crate::ws::PerformanceMetrics;
 use crate::zones::ScenesContext;
 
 // ── Status strip ─────────────────────────────────────────────────────
@@ -21,10 +20,7 @@ use crate::zones::ScenesContext;
 /// Inline status pills — no outer padding or border, so it can sit on the
 /// same row as the page title in the dashboard header.
 #[component]
-pub(super) fn StatusStrip(
-    status: SystemStatus,
-    #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
-) -> impl IntoView {
+pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
     let running = status.running;
     let uptime = format_uptime(status.uptime_seconds);
     let device_count = status.device_count;
@@ -32,47 +28,62 @@ pub(super) fn StatusStrip(
     let active_scene = status.active_scene;
     let active_scene_snapshot_locked = status.active_scene_snapshot_locked;
 
-    let ws_clients =
-        Memo::new(move |_| metrics.with(|m| m.as_ref().map_or(0, |m| m.websocket.client_count)));
+    let status_color = if running {
+        "var(--color-success-green)"
+    } else {
+        "var(--color-error-red)"
+    };
 
     view! {
-        <div class="flex items-center gap-4 shrink-0">
-            <StatusPill
-                label="Status"
-                value=if running { "Running" } else { "Stopped" }
-                color=if running { "var(--color-success-green)" } else { "var(--color-error-red)" }
-                pulsing=running
-            />
-            <div class="w-px h-5 bg-edge-subtle/30" />
-            <StatusPill
-                label="Uptime"
-                value=uptime.as_str()
-                color="var(--color-neon-cyan)"
-                pulsing=false
-            />
-            <div class="w-px h-5 bg-edge-subtle/30" />
-            <StatusPill
-                label="Devices"
-                value=format!("{device_count}")
-                color="var(--color-coral)"
-                pulsing=false
-            />
-            <div class="w-px h-5 bg-edge-subtle/30" />
-            <StatusPill
-                label="Effects"
-                value=format!("{effect_count}")
-                color="var(--color-electric-purple)"
-                pulsing=false
-            />
+        // Desktop keeps the pill grammar, minus the WS Clients pill —
+        // that number is developer telemetry and lives with the perf
+        // panels. Phones condense to one mono line where the pulsing dot
+        // carries the running state; only the scene pill stays a control.
+        <div class="flex items-center gap-4 shrink-0 max-md:gap-2.5">
+            <div class="max-md:hidden flex items-center gap-4">
+                <StatusPill
+                    label="Status"
+                    value=if running { "Running" } else { "Stopped" }
+                    color=status_color
+                    pulsing=running
+                />
+                <div class="w-px h-5 bg-edge-subtle/30" />
+                <StatusPill
+                    label="Uptime"
+                    value=uptime.as_str()
+                    color="var(--color-neon-cyan)"
+                    pulsing=false
+                />
+                <div class="w-px h-5 bg-edge-subtle/30" />
+                <StatusPill
+                    label="Devices"
+                    value=format!("{device_count}")
+                    color="var(--color-coral)"
+                    pulsing=false
+                />
+                <div class="w-px h-5 bg-edge-subtle/30" />
+                <StatusPill
+                    label="Effects"
+                    value=format!("{effect_count}")
+                    color="var(--color-electric-purple)"
+                    pulsing=false
+                />
+            </div>
+            <div class="md:hidden flex items-center gap-2 min-w-0 text-[11px] font-mono text-fg-tertiary">
+                <div
+                    class="w-2 h-2 rounded-full shrink-0"
+                    class=("animate-pulse", running)
+                    style=format!("background: {status_color}; box-shadow: 0 0 8px {status_color}")
+                />
+                <span class="tabular-nums shrink-0">{uptime.clone()}</span>
+                <span class="text-fg-tertiary/40">"·"</span>
+                <span class="tabular-nums shrink-0">{format!("{device_count} dev")}</span>
+                <span class="text-fg-tertiary/40">"·"</span>
+                <span class="tabular-nums shrink-0">{format!("{effect_count} fx")}</span>
+            </div>
             <ScenePill
                 fallback_scene=active_scene
                 fallback_locked=active_scene_snapshot_locked
-            />
-            <div class="w-px h-5 bg-edge-subtle/30" />
-            <StatusPillDynamic
-                label="WS Clients"
-                value=Memo::new(move |_| ws_clients.get().to_string())
-                color="var(--color-electric-yellow)"
             />
         </div>
     }
@@ -163,17 +174,6 @@ fn ScenePill(fallback_scene: Option<String>, fallback_locked: bool) -> impl Into
                 }}
             }
         })}
-    }
-}
-
-#[component]
-fn StatusPillDynamic(
-    label: &'static str,
-    #[prop(into)] value: Signal<String>,
-    color: &'static str,
-) -> impl IntoView {
-    view! {
-        {move || view! { <StatusPill label=label value=value.get() color=color pulsing=false /> }}
     }
 }
 
