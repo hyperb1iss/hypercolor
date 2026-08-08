@@ -9,6 +9,7 @@ use hypercolor_types::scene::ZoneRole;
 
 use crate::api::DeviceSummary;
 use crate::app::{DevicesContext, WsContext};
+use crate::components::delete_simulator_modal::DeleteSimulatorModal;
 use crate::components::device_card::{
     DeviceCard, brand_colors, brand_label, classify_brand, driver_identifier_label,
 };
@@ -294,6 +295,17 @@ pub fn DevicesPage() -> impl IntoView {
         }
     });
 
+    // Simulator deletion confirm state
+    let (delete_sim_device, set_delete_sim_device) = signal(Option::<DeviceSummary>::None);
+
+    let on_delete_simulator = Callback::new(move |device_id: String| {
+        if let Some(Ok(devices)) = ctx.devices_resource.get()
+            && let Some(dev) = devices.into_iter().find(|d| d.id == device_id)
+        {
+            set_delete_sim_device.set(Some(dev));
+        }
+    });
+
     let active_filter_count = Memo::new(move |_| {
         let mut count = 0usize;
         if status_filter.get() != "all" {
@@ -516,7 +528,7 @@ pub fn DevicesPage() -> impl IntoView {
                                 class="shrink-0 overflow-y-auto pb-6 pr-6 pt-4 scrollbar-none animate-enter-right"
                                 style=move || format!("width: {:.0}px", sidebar_width.get())
                             >
-                                <DeviceDetail device_id=device_id on_pair=on_pair_device on_forget=on_forget_device />
+                                <DeviceDetail device_id=device_id on_pair=on_pair_device on_forget=on_forget_device on_delete_simulator=on_delete_simulator />
                             </aside>
                         }
                     })}
@@ -550,6 +562,25 @@ pub fn DevicesPage() -> impl IntoView {
                         on_forgot=Callback::new(move |forgot_id: String| {
                             if forget_device.get().as_ref().is_some_and(|d| d.id == forgot_id) {
                                 set_forget_device.set(None);
+                            }
+                        })
+                    />
+                }
+            })}
+
+            // ── Delete simulator modal overlay ───────────────────────────
+            {move || delete_sim_device.get().map(|dev| {
+                view! {
+                    <DeleteSimulatorModal
+                        device=dev
+                        on_close=Callback::new(move |()| set_delete_sim_device.set(None))
+                        on_deleted=Callback::new(move |deleted_id: String| {
+                            if delete_sim_device.get().as_ref().is_some_and(|d| d.id == deleted_id) {
+                                set_delete_sim_device.set(None);
+                            }
+                            // The device is gone — drop any selection pointing at it.
+                            if selected_device.get().as_deref() == Some(&deleted_id) {
+                                set_selected_device.set(None);
                             }
                         })
                     />

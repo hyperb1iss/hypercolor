@@ -414,7 +414,7 @@ pub fn needs_pairing(auth: &Option<DeviceAuthSummary>) -> bool {
 // ── Shared modal backdrop ──────────────────────────────────────────────────
 
 #[component]
-fn ModalBackdrop(
+pub(crate) fn ModalBackdrop(
     #[prop(into)] on_close: Callback<()>,
     #[prop(into, optional)] label: MaybeProp<String>,
     children: Children,

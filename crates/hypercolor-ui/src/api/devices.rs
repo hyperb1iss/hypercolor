@@ -230,6 +230,14 @@ pub async fn unpair_device(id: &str) -> Result<DeletePairingResponse, String> {
         .map_err(Into::into)
 }
 
+/// `DELETE /api/v1/simulators/displays/{id}` — remove a simulated display
+/// device along with its stored config and face assignments.
+pub async fn delete_simulated_display(id: &str) -> Result<(), String> {
+    client::delete_empty(&format!("/api/v1/simulators/displays/{id}"))
+        .await
+        .map_err(Into::into)
+}
+
 /// Fetch the current global brightness.
 pub async fn fetch_global_brightness() -> Result<u8, String> {
     let resp: BrightnessSettingsResponse =

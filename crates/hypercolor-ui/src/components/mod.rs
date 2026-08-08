@@ -5,6 +5,7 @@ pub mod canvas_preview;
 pub mod color_wheel;
 pub mod component_picker;
 pub mod control_panel;
+pub mod delete_simulator_modal;
 pub mod device_brightness_slider;
 pub mod device_card;
 pub mod device_detail;

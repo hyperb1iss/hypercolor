@@ -26,6 +26,7 @@ pub fn DeviceDetail(
     #[prop(into)] device_id: Signal<String>,
     #[prop(into)] on_pair: Callback<String>,
     #[prop(into)] on_forget: Callback<String>,
+    #[prop(into)] on_delete_simulator: Callback<String>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
@@ -518,6 +519,31 @@ pub fn DeviceDetail(
 
                     // ── Channels (unified: zone info + component editor) ─────
                     <WiringPanel device_id=device_id device=device_signal />
+
+                    // ── Simulator lifecycle ─────────────────────────────────
+                    {(dev.origin.driver_id == "simulator").then(|| {
+                        let delete_id = dev.id.clone();
+                        view! {
+                            <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
+                                <div class="px-4 py-3 flex items-center justify-between gap-3">
+                                    <div>
+                                        <h3 class="text-[11px] font-medium text-fg-secondary mb-0.5">"Simulated display"</h3>
+                                        <p class="text-[10px] text-fg-tertiary/60 leading-relaxed">
+                                            "Deleting stops its face rendering and removes it from layouts and scenes."
+                                        </p>
+                                    </div>
+                                    <button
+                                        class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press shrink-0"
+                                        style="background: rgba(255, 99, 99, 0.08); color: rgb(255, 99, 99); border: 1px solid rgba(255, 99, 99, 0.15)"
+                                        on:click=move |_| on_delete_simulator.run(delete_id.clone())
+                                    >
+                                        <Icon icon=LuTrash2 width="9px" height="9px" />
+                                        "Delete"
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    })}
                 }
             })}
         </div>
