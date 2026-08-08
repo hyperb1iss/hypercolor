@@ -35,6 +35,7 @@ use hypercolor_types::device::{
     DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DriverPresentation,
     DriverTransportKind, ZoneInfo,
 };
+use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 use serde_json::json;
 use tracing::warn;
 
@@ -709,6 +710,12 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
             device.support_cmds.join(","),
         );
     }
+    // A cloud-inventory MAC is a real claim with honest evidence: no local
+    // attachment exists, so a collision here can never be proven
+    // automatically and CloudInventory says exactly that.
+    let claim = mac
+        .as_deref()
+        .and_then(|mac| PortableIdentityClaim::mac_address(mac, NetworkAttachment::CloudInventory));
     if let Some(mac) = mac {
         metadata.insert("mac".to_owned(), mac);
     }
@@ -718,6 +725,7 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
         fingerprint,
         metadata,
         connect_behavior: DiscoveryConnectBehavior::Deferred,
+        claim,
     }
 }
 

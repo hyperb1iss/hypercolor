@@ -1049,6 +1049,9 @@ impl From<ControllerRoute> for DiscoveredDevice {
             } else {
                 DiscoveryConnectBehavior::Deferred
             },
+            // Deliberate refusal: OpenRGB device ids are bridge-local and
+            // their stability across hosts has not been reviewed.
+            claim: None,
             info: route.info,
             metadata,
         }

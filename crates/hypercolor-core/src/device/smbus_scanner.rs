@@ -58,6 +58,9 @@ impl TransportScanner for SmBusScanner {
                 connect_behavior: DiscoveryConnectBehavior::AutoConnect,
                 info: probe.info,
                 metadata: probe.metadata,
+                // Deliberate refusal: a bus path plus address locates a
+                // device on this host and identifies nothing across hosts.
+                claim: None,
             })
             .collect())
     }

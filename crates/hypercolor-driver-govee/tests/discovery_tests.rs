@@ -241,6 +241,7 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
                 ("sku".to_owned(), "H619A".to_owned()),
                 ("mac".to_owned(), "001122334455".to_owned()),
             ]),
+            claim: None,
         },
     )];
 

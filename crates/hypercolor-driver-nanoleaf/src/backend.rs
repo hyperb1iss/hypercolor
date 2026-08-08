@@ -373,6 +373,7 @@ impl DeviceBackend for NanoleafBackend {
                 panel_ids,
                 connect_behavior: discovered.connect_behavior,
                 metadata: discovered.metadata,
+                claim: discovered.claim,
             },
         );
 

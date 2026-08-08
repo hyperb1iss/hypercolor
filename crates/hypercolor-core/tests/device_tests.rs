@@ -267,6 +267,7 @@ fn mock_discovered(name: &str, fingerprint: &str) -> DiscoveredDevice {
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: mock_device_info(name),
         metadata: HashMap::new(),
+        claim: None,
     }
 }
 
@@ -1420,6 +1421,7 @@ async fn orchestrator_tracks_reappeared_devices() {
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: existing,
         metadata: HashMap::new(),
+        claim: None,
     };
 
     orchestrator.add_scanner(Box::new(MockScanner::new("mDNS", vec![rediscovered])));
@@ -1456,6 +1458,7 @@ async fn orchestrator_tracks_vanished_devices() {
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: keep,
             metadata: HashMap::new(),
+            claim: None,
         }],
     )));
 
@@ -1485,6 +1488,7 @@ async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_i
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: rediscovered,
             metadata: HashMap::new(),
+            claim: None,
         }],
     )));
 

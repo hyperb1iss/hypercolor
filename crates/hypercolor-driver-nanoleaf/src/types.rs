@@ -10,6 +10,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::portable::PortableIdentityClaim;
 
 use super::topology::NanoleafShapeType;
 
@@ -78,6 +79,10 @@ pub struct NanoleafDiscoveredDevice {
     pub panel_ids: Vec<u16>,
     pub connect_behavior: DiscoveryConnectBehavior,
     pub metadata: HashMap<String, String>,
+    /// Built by the scanner, which knows whether `device_key` came from a
+    /// real serial or fell back to a name or address; the key alone cannot
+    /// say, so the claim is never derived from it.
+    pub claim: Option<PortableIdentityClaim>,
 }
 
 impl NanoleafDiscoveredDevice {
@@ -91,6 +96,7 @@ impl NanoleafDiscoveredDevice {
             connect_behavior: self.connect_behavior,
             info: self.info,
             metadata: self.metadata,
+            claim: self.claim,
         }
     }
 }

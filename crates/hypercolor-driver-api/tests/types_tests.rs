@@ -531,6 +531,7 @@ fn discovered_device_payload_keeps_connect_behavior() {
         fingerprint: DeviceFingerprint("fixture:desk-strip".to_owned()),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.50".to_owned())]),
         connect_behavior: DiscoveryConnectBehavior::Deferred,
+        claim: None,
     };
 
     assert_eq!(discovered.metadata.get("ip"), Some(&"10.0.0.50".to_owned()));
@@ -572,6 +573,7 @@ fn discovered_device_converts_from_core_payload() {
         fingerprint: DeviceFingerprint("net:fixture:bridge".to_owned()),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.8".to_owned())]),
         connect_behavior: DiscoveryConnectBehavior::Deferred,
+        claim: None,
     });
 
     assert_eq!(discovered.metadata.get("ip"), Some(&"10.0.0.8".to_owned()));

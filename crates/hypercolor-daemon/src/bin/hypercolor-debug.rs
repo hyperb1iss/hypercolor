@@ -493,6 +493,7 @@ fn driver_discovered_to_device(device: DriverDiscoveredDevice) -> DiscoveredDevi
         connect_behavior: device.connect_behavior,
         info: device.info,
         metadata: device.metadata,
+        claim: device.claim,
     }
 }
 

@@ -117,5 +117,8 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info,
         metadata,
+        // Deliberate refusal: blocksd owns these devices, and its uid and
+        // serial semantics have not been reviewed as cross-OS identities.
+        claim: None,
     }
 }

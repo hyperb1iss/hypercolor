@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
+use hypercolor_types::portable::PortableIdentityClaim;
 
 use crate::{DiscoveredDevice, DiscoveryConnectBehavior, DriverConfigView, DriverHost};
 
@@ -21,6 +22,10 @@ pub struct DriverDiscoveredDevice {
     pub fingerprint: DeviceFingerprint,
     pub metadata: HashMap<String, String>,
     pub connect_behavior: DiscoveryConnectBehavior,
+    /// Proof of a stable OS-independent identity, when the driver can give
+    /// one. Preserved through every conversion; `None` is a deliberate
+    /// refusal.
+    pub claim: Option<PortableIdentityClaim>,
 }
 
 impl From<DiscoveredDevice> for DriverDiscoveredDevice {
@@ -30,6 +35,7 @@ impl From<DiscoveredDevice> for DriverDiscoveredDevice {
             fingerprint: device.fingerprint,
             metadata: device.metadata,
             connect_behavior: device.connect_behavior,
+            claim: device.claim,
         }
     }
 }

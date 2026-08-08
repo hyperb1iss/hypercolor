@@ -580,6 +580,7 @@ fn discovered_smbus_device_at(
         ]
         .into_iter()
         .collect(),
+        claim: None,
     }
 }
 
