@@ -38,8 +38,10 @@ gate on `@media (hover: hover)` rather than width.
   padding, active-route indicator. Sidebar hidden below `md`.
 - `<main>` bottom padding matches the bar height plus safe-area inset;
   `viewport-fit=cover` enables the inset env vars.
-- Page header: `px-4` on phones, toolbar row scrolls horizontally to
-  preserve the fixed 104px header contract.
+- Page header: `px-4` on phones. Toolbar overflow stays visible at
+  every width: Effects and Devices hang non-portaling filter panels
+  off toolbar children, and any `overflow` value on the row becomes a
+  44px clip box that shreds them.
 - Dashboard hero row stacks: full-width 16:9 preview over a
   fixed-height favorites panel, splitter hidden.
 
@@ -67,6 +69,19 @@ Studio's spatial editor stays tablet-and-up; phones get a read-only
 zone summary with per-zone effect switching rather than a cramped
 editor. Modals and dropdowns get a phone pass (SilkSelect already
 portals, so clipping is contained).
+
+Wave 2 also owns three decisions the shell prototype surfaces:
+
+- Toolbar width strategy on phones. Horizontal scrolling requires the
+  Effects/Devices filter panels to portal first (SilkSelect-style
+  `fixed` positioning); until then toolbars must fit or wrap.
+- A phone home for the sidebar's non-nav functions, which `hidden
+  md:flex` removes wholesale: Now Playing controls, global
+  brightness, and the scene chip. Likely a bottom-sheet off a
+  now-playing surface, or a dashboard card.
+- An extension-item policy for the bottom bar: six core tabs fit a
+  390px phone, and every extension nav item shrinks all of them.
+  Probably a "More" overflow tab past six.
 
 ### Wave 3 — Touch polish
 

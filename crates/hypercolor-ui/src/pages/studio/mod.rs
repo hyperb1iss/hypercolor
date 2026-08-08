@@ -305,7 +305,13 @@ pub fn StudioPage() -> impl IntoView {
 
             <div class="relative flex min-h-0 flex-1 overflow-hidden">
                 <div
-                    class="w-80 shrink-0 overflow-hidden lg:w-[var(--tree-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-40 max-lg:border-r max-lg:border-edge-subtle/70 max-lg:transition-transform max-lg:duration-200"
+                    // z-index 45: the drawer must paint over the mobile
+                    // bottom nav (40, later in the DOM) and add its
+                    // safe-area padding, since as a fixed overlay it
+                    // deliberately covers the bar instead of stacking above
+                    // it. Keep bracket class syntax out of comments; the
+                    // Tailwind scanner reads them and emits dead rules.
+                    class="w-80 shrink-0 overflow-hidden lg:w-[var(--tree-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-[45] max-lg:border-r max-lg:border-edge-subtle/70 max-lg:transition-transform max-lg:duration-200 max-md:pb-[env(safe-area-inset-bottom)]"
                     class=("max-lg:-translate-x-full", move || !tree_drawer.get())
                     style:--tree-w=move || format!("{}px", tree_width.get())
                 >
@@ -344,7 +350,11 @@ pub fn StudioPage() -> impl IntoView {
 
                 <Show when=move || tree_drawer.get()>
                     <div
-                        class="fixed inset-0 z-30 bg-black/55 lg:hidden"
+                        // Above the mobile bottom nav (40), below the drawer
+                        // (45): while the drawer is open a tap anywhere
+                        // outside it, nav bar included, closes it instead of
+                        // navigating away.
+                        class="fixed inset-0 z-[42] bg-black/55 lg:hidden"
                         on:click=move |_| tree_drawer.set(false)
                     />
                 </Show>

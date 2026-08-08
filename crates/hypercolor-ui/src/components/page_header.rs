@@ -107,9 +107,11 @@ pub fn PageHeader(
                 </div>
             </div>
 
-            // On phones the toolbar scrolls horizontally instead of wrapping,
-            // preserving the fixed 104px header contract at every width.
-            <div class="h-[44px] px-4 md:px-6 flex items-center gap-3 overflow-x-auto md:overflow-visible">
+            // Overflow stays visible at every width: several pages hang
+            // non-portaling dropdown panels off toolbar children, and any
+            // overflow value here turns the row into a 44px clip box that
+            // shreds them (spec 75 wave 2 covers the phone-width strategy).
+            <div class="h-[44px] px-4 md:px-6 flex items-center gap-3">
                 {header_toolbar.map(|t| (t.children)())}
             </div>
         </header>

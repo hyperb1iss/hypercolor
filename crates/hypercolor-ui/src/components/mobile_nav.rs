@@ -12,9 +12,6 @@ use leptos_router::hooks::use_location;
 
 use crate::nav::{NavExtensionItems, nav_model};
 
-/// Bottom tab bar height, mirrored by the shell's mobile content padding.
-pub const MOBILE_NAV_HEIGHT_REM: f32 = 3.5;
-
 #[component]
 pub fn MobileNav() -> impl IntoView {
     let location = use_location();
