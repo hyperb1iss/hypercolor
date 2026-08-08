@@ -64,9 +64,12 @@ async function runCommand(cmd: string[], cwd: string, env: Record<string, string
     expect(exitCode).toBe(0)
 }
 
+// This hook compiles the SDK rather than arranging fixtures, so it needs a
+// build-shaped deadline. Bun's five second default is sized for test setup and
+// kills a cold runner mid-build.
 beforeAll(async () => {
     await runCommand(['bun', 'run', '--filter', 'hypercolor', 'build'], SDK_ROOT)
-})
+}, 120_000)
 
 describe('create-hypercolor', () => {
     test('renders adjacent and mixed-case template placeholders independently', () => {
