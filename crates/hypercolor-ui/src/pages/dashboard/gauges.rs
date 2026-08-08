@@ -3,7 +3,7 @@
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use crate::components::perf_charts::{HitRateBar, ProgressRing, RadialGauge, Sparkline};
+use crate::components::perf_charts::{HitRateBar, ProgressRing, Sparkline};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::preview_telemetry::PreviewPresenterTelemetry;
@@ -150,6 +150,13 @@ pub(super) fn HeroGauges(
         })
     });
 
+    // Health gates for the warning tint: engine within 10% of target,
+    // frame time inside budget. Preview and clients stay neutral.
+    let engine_healthy = Memo::new(move |_| engine_value.get() >= engine_max.get() * 0.9);
+    let frame_healthy = Memo::new(move |_| frame_value.get() <= frame_budget.get());
+    let ws_clients =
+        Memo::new(move |_| metrics.with(|m| m.as_ref().map_or(0, |m| m.websocket.client_count)));
+
     view! {
         <div
             class="rounded-lg bg-surface-overlay/40 border border-transparent"
@@ -158,79 +165,91 @@ pub(super) fn HeroGauges(
             <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
                     <Icon icon=LuActivity width="14px" height="14px" style="color: var(--color-neon-cyan)" />
-                    <h2 class="text-[13px] font-medium text-fg-secondary">"Render Engine"</h2>
+                    <h2 class="text-[13px] font-medium text-fg-secondary">"Performance"</h2>
                 </div>
                 <div class="text-[10px] font-mono text-fg-tertiary/70">
                     {move || dropped_text.get()}
                 </div>
             </div>
-            <div class="px-4 pb-4 grid grid-cols-3 gap-3 max-md:px-3 max-md:pb-3 max-md:gap-2">
-                <GaugeWithSparkline
-                    caption="Engine"
-                    gauge_value=engine_value
-                    gauge_max=engine_max
-                    primary=engine_primary
-                    secondary=engine_secondary
-                    gauge_color="var(--color-neon-cyan)"
-                    sparkline_values=engine_fps_series
-                    sparkline_color="var(--color-neon-cyan)"
+            <div class="px-4 pb-4 grid grid-cols-4 gap-2 max-md:grid-cols-2 max-md:px-3 max-md:pb-3">
+                <StatTile
+                    label="Engine"
+                    value=engine_primary
+                    detail=engine_secondary
+                    series=engine_fps_series
+                    color="var(--color-neon-cyan)"
+                    healthy=engine_healthy
                 />
-                <GaugeWithSparkline
-                    caption="Frame Time"
-                    gauge_value=Memo::new(move |_| {
-                        // Invert: budget - actual, so ring fills more when we have headroom.
-                        let b = frame_budget.get();
-                        (b - frame_value.get()).max(0.0)
-                    })
-                    gauge_max=frame_budget
-                    primary=frame_primary
-                    secondary=frame_secondary
-                    gauge_color="var(--color-electric-purple)"
-                    sparkline_values=frame_time_series
-                    sparkline_color="var(--color-electric-purple)"
+                <StatTile
+                    label="Frame"
+                    value=frame_primary
+                    detail=frame_secondary
+                    series=frame_time_series
+                    color="var(--color-electric-purple)"
+                    healthy=frame_healthy
                 />
-                <GaugeWithSparkline
-                    caption="Preview"
-                    gauge_value=preview_value
-                    gauge_max=preview_max
-                    primary=preview_primary
-                    secondary=preview_secondary
-                    gauge_color="var(--color-coral)"
-                    sparkline_values=preview_fps_series
-                    sparkline_color="var(--color-coral)"
+                <StatTile
+                    label="Preview"
+                    value=preview_primary
+                    detail=preview_secondary
+                    series=preview_fps_series
+                    color="var(--color-coral)"
+                />
+                <StatTile
+                    label="Clients"
+                    value=Memo::new(move |_| ws_clients.get().to_string())
+                    detail=Signal::derive(|| "ws connected".to_owned())
+                    color="var(--color-electric-yellow)"
                 />
             </div>
         </div>
     }
 }
 
+/// One KPI in the performance strip: a hero number with its context line
+/// and a thin sparkline. The colored dot carries series identity so the
+/// number itself stays in text tokens; it only takes the warning tint
+/// when `healthy` reports false, and the detail line's target/budget
+/// text says why, so state is never color-alone.
 #[component]
-fn GaugeWithSparkline(
-    caption: &'static str,
-    #[prop(into)] gauge_value: Signal<f64>,
-    #[prop(into)] gauge_max: Signal<f64>,
-    #[prop(into)] primary: Signal<String>,
-    #[prop(into)] secondary: Signal<String>,
-    gauge_color: &'static str,
-    #[prop(into)] sparkline_values: Signal<Vec<f64>>,
-    sparkline_color: &'static str,
+fn StatTile(
+    label: &'static str,
+    #[prop(into)] value: Signal<String>,
+    #[prop(into)] detail: Signal<String>,
+    #[prop(optional, into)] series: Option<Signal<Vec<f64>>>,
+    #[prop(default = "var(--color-neon-cyan)")] color: &'static str,
+    #[prop(optional, into)] healthy: Option<Signal<bool>>,
 ) -> impl IntoView {
+    let value_style = move || match healthy {
+        Some(h) if !h.get() => "color: var(--color-electric-yellow)",
+        _ => "",
+    };
+
     view! {
-        <div class="rounded-md bg-surface-overlay/20 px-3 py-3 flex flex-col items-center gap-2">
-            <RadialGauge
-                caption=caption
-                value=gauge_value
-                max=gauge_max
-                primary=primary
-                secondary=secondary
-                color=gauge_color
-            />
-            <div class="w-full h-12">
-                <Sparkline
-                    values=sparkline_values
-                    stroke=sparkline_color
+        <div class="rounded-md bg-surface-overlay/20 px-3 pt-2.5 pb-2 flex flex-col gap-1 min-w-0">
+            <div class="flex items-center justify-between gap-2">
+                <span class="text-[9px] font-mono uppercase tracking-[0.16em] text-fg-tertiary">
+                    {label}
+                </span>
+                <span
+                    class="w-1.5 h-1.5 rounded-full shrink-0"
+                    style=format!("background: {color}; box-shadow: 0 0 6px {color}")
                 />
             </div>
+            <div
+                class="text-xl font-semibold tabular-nums leading-none text-fg-primary"
+                style=value_style
+            >
+                {move || value.get()}
+            </div>
+            <div class="text-[10px] font-mono text-fg-tertiary/70 truncate">
+                {move || detail.get()}
+            </div>
+            {series.map(|s| view! {
+                <div class="h-7 mt-0.5">
+                    <Sparkline values=s stroke=color />
+                </div>
+            })}
         </div>
     }
 }

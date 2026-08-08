@@ -53,7 +53,7 @@ impl PanelId {
     /// Short, human-readable label for menus and drag tooltips.
     pub fn label(self) -> &'static str {
         match self {
-            PanelId::HeroGauges => "Render Engine",
+            PanelId::HeroGauges => "Performance",
             PanelId::Pipeline => "Pipeline Breakdown",
             PanelId::RendererHardware => "Renderer & Hardware",
             PanelId::FrameTimeline => "Frame Timeline",
@@ -133,64 +133,28 @@ pub struct DashboardLayout {
 }
 
 impl DashboardLayout {
-    /// Ships-by-default arrangement — matches the hardcoded stats
-    /// section we had before the layout system was introduced. The two
-    /// half-width pairs (distribution/pacing and reuse/memory) preserve
-    /// the previous `xl:grid-cols-2` rows as their starting layout.
+    /// Ships-by-default arrangement: the Performance strip alone.
+    /// The deep telemetry panels (pipeline, timeline, distribution,
+    /// pacing, reuse, memory, throughput, latest frame) stay one
+    /// toggle away in the layout menu instead of a default wall of
+    /// meters; the half-width pairs keep their old side-by-side shape
+    /// for whoever re-enables them.
     pub fn default_layout() -> Self {
         Self {
-            panels: vec![
-                PanelConfig {
-                    id: PanelId::HeroGauges,
-                    visible: true,
-                    width: PanelWidth::Full,
-                },
-                PanelConfig {
-                    id: PanelId::Pipeline,
-                    visible: true,
-                    width: PanelWidth::Full,
-                },
-                PanelConfig {
-                    id: PanelId::RendererHardware,
-                    visible: true,
-                    width: PanelWidth::Full,
-                },
-                PanelConfig {
-                    id: PanelId::FrameTimeline,
-                    visible: true,
-                    width: PanelWidth::Full,
-                },
-                PanelConfig {
-                    id: PanelId::Distribution,
-                    visible: true,
-                    width: PanelWidth::Half,
-                },
-                PanelConfig {
-                    id: PanelId::Pacing,
-                    visible: true,
-                    width: PanelWidth::Half,
-                },
-                PanelConfig {
-                    id: PanelId::ReuseRates,
-                    visible: true,
-                    width: PanelWidth::Half,
-                },
-                PanelConfig {
-                    id: PanelId::MemoryAndDevices,
-                    visible: true,
-                    width: PanelWidth::Half,
-                },
-                PanelConfig {
-                    id: PanelId::Throughput,
-                    visible: true,
-                    width: PanelWidth::Full,
-                },
-                PanelConfig {
-                    id: PanelId::LatestFrame,
-                    visible: true,
-                    width: PanelWidth::Full,
-                },
-            ],
+            panels: PanelId::ALL
+                .into_iter()
+                .map(|id| PanelConfig {
+                    id,
+                    visible: matches!(id, PanelId::HeroGauges),
+                    width: match id {
+                        PanelId::Distribution
+                        | PanelId::Pacing
+                        | PanelId::ReuseRates
+                        | PanelId::MemoryAndDevices => PanelWidth::Half,
+                        _ => PanelWidth::Full,
+                    },
+                })
+                .collect(),
         }
     }
 
