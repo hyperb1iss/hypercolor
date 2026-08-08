@@ -164,7 +164,7 @@ pub(super) fn HeroGauges(
                     {move || dropped_text.get()}
                 </div>
             </div>
-            <div class="px-4 pb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div class="px-4 pb-4 grid grid-cols-3 gap-3 max-md:px-3 max-md:pb-3 max-md:gap-2">
                 <GaugeWithSparkline
                     caption="Engine"
                     gauge_value=engine_value

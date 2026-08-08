@@ -96,7 +96,15 @@ pub fn PageHeader(
             // navigation at either size. The title is shrink-proof on
             // phones; trailing content shrinks and pages diet it instead.
             <div class="h-12 md:h-[60px] px-4 md:px-6 flex items-center justify-between gap-3 md:gap-4">
-                <div class="min-w-0 max-md:shrink-0 flex items-center gap-3">
+                <div class="min-w-0 max-md:shrink-0 flex items-center gap-3 max-md:gap-2.5">
+                    // The sidebar carries the brand on desktop; with it
+                    // hidden below md, the mark anchors every page header.
+                    <img
+                        src="/assets/brand/mark-color.png"
+                        alt=""
+                        class="md:hidden w-6 h-6 select-none shrink-0"
+                        draggable="false"
+                    />
                     <span class="shrink-0" style=icon_style>
                         <Icon icon=icon width="20px" height="20px" />
                     </span>

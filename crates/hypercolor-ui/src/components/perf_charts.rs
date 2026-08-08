@@ -179,12 +179,14 @@ pub fn RadialGauge(
                     {caption}
                 </div>
             })}
-            <div class="relative" style=format!("width: {SIZE}px; height: {SIZE}px; overflow: visible")>
+            // Important width/height beat the inline desktop sizing below
+            // md; the viewBox keeps ring geometry scaling with the box.
+            <div class="relative max-md:w-[84px]! max-md:h-[84px]!" style=format!("width: {SIZE}px; height: {SIZE}px; overflow: visible")>
                 <svg
                     width=SIZE
                     height=SIZE
                     viewBox=format!("0 0 {SIZE} {SIZE}")
-                    class="block -rotate-90"
+                    class="block -rotate-90 max-md:w-[84px] max-md:h-[84px]"
                     style="overflow: visible"
                     role="img"
                     aria-label=if aria_label.is_empty() {

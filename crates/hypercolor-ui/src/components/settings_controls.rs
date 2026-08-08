@@ -108,7 +108,9 @@ pub fn SettingSlider(
         }
     };
     view! {
-        <div class="flex items-start justify-between gap-4 py-3 setting-row">
+        // Phones stack label over a full-width slider (same shape as the
+        // select row below); the desktop keeps the label|control split.
+        <div class="flex flex-col gap-2 py-3 setting-row md:flex-row md:items-start md:justify-between md:gap-4">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
@@ -116,10 +118,10 @@ pub fn SettingSlider(
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
-            <div class="flex items-center gap-3 shrink-0">
+            <div class="flex items-center gap-3 shrink-0 max-md:shrink max-md:w-full">
                 <input
                     type="range"
-                    class="w-28 h-1 rounded-full appearance-none cursor-pointer"
+                    class="w-28 h-1 rounded-full appearance-none cursor-pointer max-md:w-full max-md:flex-1 max-md:h-1.5"
                     style="accent-color: rgb(225, 53, 255); background: rgba(139, 133, 160, 0.15)"
                     prop:value=move || value.get().to_string()
                     min=min.to_string()
