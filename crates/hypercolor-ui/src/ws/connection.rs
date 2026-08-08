@@ -903,15 +903,19 @@ fn dispose_existing_socket(
 
 /// Build WS URL from current page origin.
 ///
-/// When running on the Trunk dev server (:9430), connects directly to the
-/// daemon (:9420) since Trunk's proxy doesn't reliably handle WebSocket
-/// upgrades. In production the daemon serves the UI itself, so same-origin works.
+/// Dev builds (Trunk dev server, any port) connect directly to the daemon
+/// (:9420) since Trunk's proxy doesn't handle WebSocket upgrades. Release
+/// builds are served by the daemon itself, so same-origin works.
 fn build_ws_url() -> String {
     let location = current_page_location();
     let ws_protocol = location.websocket_protocol();
 
-    // Trunk dev server → bypass proxy, connect directly to daemon
-    let host = if location.port == "9430" {
+    // Dev builds only ever run on the Trunk dev server, whose proxy
+    // can't upgrade WebSockets — connect straight to the daemon. The
+    // dev port is configurable (`just ui-dev 9431`), so the split keys
+    // on build profile, not a port literal. Release builds are served
+    // by the daemon itself, where same-origin always works.
+    let host = if cfg!(debug_assertions) {
         format!("{}:9420", location.hostname)
     } else {
         location.host()
