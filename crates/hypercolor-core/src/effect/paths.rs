@@ -89,7 +89,31 @@ fn installed_effects_candidates() -> Vec<PathBuf> {
         candidates.push(contents.join("Resources").join("effects").join("bundled"));
     }
 
+    candidates.extend(dev_tree_effects_candidates(exe_dir));
+
     candidates
+}
+
+/// Cargo dev-tree candidates, probed after every install layout.
+///
+/// A dev build runs from `<workspace>/target/<profile>/` (test binaries one
+/// level deeper, under `deps/`), and `just effects-build` writes the catalog
+/// to `<workspace>/effects/hypercolor`. A wrapper workspace reaches the same
+/// output through its `oss/` link. Without these candidates, a bare
+/// `cargo run` finds no catalog and the daemon comes up with builtins only.
+fn dev_tree_effects_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    let Some(workspace) = exe_dir
+        .ancestors()
+        .find(|dir| dir.file_name().and_then(std::ffi::OsStr::to_str) == Some("target"))
+        .and_then(Path::parent)
+    else {
+        return Vec::new();
+    };
+
+    vec![
+        workspace.join("effects").join("hypercolor"),
+        workspace.join("oss").join("effects").join("hypercolor"),
+    ]
 }
 
 /// Return the curated screenshot override directory.
@@ -181,9 +205,26 @@ mod tests {
 
         let name = root.file_name().and_then(|v| v.to_str());
         assert!(
-            name == Some("effects") || name == Some("bundled"),
-            "expected 'effects' or 'bundled', got {name:?}"
+            name == Some("effects") || name == Some("bundled") || name == Some("hypercolor"),
+            "expected 'effects', 'bundled', or 'hypercolor', got {name:?}"
         );
+    }
+
+    #[test]
+    fn dev_tree_candidates_derive_workspace_from_target_ancestor() {
+        let from_profile = super::dev_tree_effects_candidates(Path::new("/ws/target/preview"));
+        assert_eq!(
+            from_profile,
+            vec![
+                PathBuf::from("/ws/effects/hypercolor"),
+                PathBuf::from("/ws/oss/effects/hypercolor"),
+            ]
+        );
+
+        let from_deps = super::dev_tree_effects_candidates(Path::new("/ws/target/debug/deps"));
+        assert_eq!(from_deps, from_profile);
+
+        assert!(super::dev_tree_effects_candidates(Path::new("/usr/bin")).is_empty());
     }
 
     #[test]
