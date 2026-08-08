@@ -116,7 +116,7 @@ fn ApplyTargetSelect(
 
     view! {
         <div class="flex shrink-0 items-center gap-1.5">
-            <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Apply to"</span>
+            <span class=format!("max-md:hidden {}", label_class(LabelSize::Micro, LabelTone::Default))>"Apply to"</span>
             <div class="min-w-[130px]">
                 <SilkSelect
                     value=value
@@ -541,7 +541,7 @@ pub fn EffectsPage() -> impl IntoView {
             >
                 <HeaderTrailing slot>
                     <ApplyTargetSelect scene=apply_target_scene />
-                    <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
+                    <span class="max-md:hidden shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
                         {move || {
                             let total = total_effects.get();
                             let filtered = filtered_effects.get().len();
@@ -784,12 +784,15 @@ pub fn EffectsPage() -> impl IntoView {
                 </div>
             })}
 
-            <div class="flex-1 min-h-0 px-6 pb-6 pt-4 flex">
+            // Desktop: pane row (grid | handle | detail) with independent
+            // inner scrolls. Phone: one flowing page scroll — detail first
+            // like a now-playing card, full-width grid below, no splitter.
+            <div class="flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4">
                 // Left column — effect grid, independent from the detail panels
-                <div class="flex-1 min-w-0 flex flex-col" style="min-width: 120px">
+                <div class="flex-1 min-w-0 flex flex-col max-md:flex-none" style="min-width: 120px">
 
                 // Effect grid — independently scrollable, below the locked header
-                <div class="flex-1 min-h-0 overflow-y-auto">
+                <div class="flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible">
                     <Suspense fallback=move || view! { <LoadingSkeleton /> }>
                         {move || {
                             let effects = filtered_effects.get();
@@ -872,15 +875,18 @@ pub fn EffectsPage() -> impl IntoView {
                     view! {
                         <div style="display: contents">
                             // Resize handle between grid and preview
-                            <ResizeHandle
-                                on_drag_start=on_detail_drag_start
-                                on_drag=on_detail_drag
-                                on_drag_end=on_detail_drag_end
-                            />
+                            <div class="max-md:hidden flex items-stretch">
+                                <ResizeHandle
+                                    on_drag_start=on_detail_drag_start
+                                    on_drag=on_detail_drag
+                                    on_drag_end=on_detail_drag_end
+                                />
+                            </div>
 
                             // Preview panel (always visible when effect selected)
                             <aside
-                                class="shrink-0 flex flex-col min-h-0 animate-enter-right"
+                                class="shrink-0 flex flex-col min-h-0 animate-enter-right
+                                       max-md:w-full! max-md:order-first max-md:flex-none max-md:pb-3"
                                 style=move || format!("width: {}px", detail_width.get())
                             >
                                 // Input-access remediation — renders only when the active
@@ -901,7 +907,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 {move || (!controls_detached.get()).then(|| {
                                     view! {
                                         <div
-                                            class="flex-1 min-h-0 overflow-y-auto"
+                                            class="flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible"
                                             style="overscroll-behavior: contain"
                                         >
                                             <div class="space-y-3">

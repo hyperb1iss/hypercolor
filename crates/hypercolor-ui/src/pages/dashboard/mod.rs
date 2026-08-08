@@ -436,18 +436,22 @@ pub fn DashboardPage() -> impl IntoView {
                     </div>
                 </HeaderTrailing>
                 <HeaderToolbar slot>
-                    <Suspense fallback=move || view! { <StatusSkeleton /> }>
-                        {move || status_resource.get().map(|result| {
-                            match result {
-                                Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
-                                Err(e) => view! {
-                                    <div class="text-[11px] text-status-error shrink-0">
-                                        "Failed to connect: " {e}
-                                    </div>
-                                }.into_any(),
-                            }
-                        })}
-                    </Suspense>
+                    // Stats only in here (no dropdowns), so the strip can be
+                    // its own scroll box where the phone width runs out.
+                    <div class="flex h-full w-full min-w-0 items-center overflow-x-auto scrollbar-none">
+                        <Suspense fallback=move || view! { <StatusSkeleton /> }>
+                            {move || status_resource.get().map(|result| {
+                                match result {
+                                    Ok(status) => view! { <StatusStrip status=status metrics=ws.metrics /> }.into_any(),
+                                    Err(e) => view! {
+                                        <div class="text-[11px] text-status-error shrink-0">
+                                            "Failed to connect: " {e}
+                                        </div>
+                                    }.into_any(),
+                                }
+                            })}
+                        </Suspense>
+                    </div>
                 </HeaderToolbar>
             </PageHeader>
 

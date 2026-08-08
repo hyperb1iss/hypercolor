@@ -91,8 +91,12 @@ pub fn PageHeader(
 
     view! {
         <header class="page-header sticky top-0 z-30 shrink-0 glass-subtle page-header-elevation">
-            <div class="h-[60px] px-4 md:px-6 flex items-center justify-between gap-4">
-                <div class="min-w-0 flex items-center gap-3">
+            // Phone rows are 48px + 40px (88px total) versus the desktop
+            // 60px + 44px; both are fixed so content never shifts Y on
+            // navigation at either size. The title is shrink-proof on
+            // phones; trailing content shrinks and pages diet it instead.
+            <div class="h-12 md:h-[60px] px-4 md:px-6 flex items-center justify-between gap-3 md:gap-4">
+                <div class="min-w-0 max-md:shrink-0 flex items-center gap-3">
                     <span class="shrink-0" style=icon_style>
                         <Icon icon=icon width="20px" height="20px" />
                     </span>
@@ -102,7 +106,7 @@ pub fn PageHeader(
                         </h1>
                     </div>
                 </div>
-                <div class="flex items-center gap-3 shrink-0">
+                <div class="flex items-center gap-3 shrink-0 max-md:gap-2 max-md:min-w-0 max-md:shrink">
                     {header_trailing.map(|t| (t.children)())}
                 </div>
             </div>
@@ -111,7 +115,7 @@ pub fn PageHeader(
             // non-portaling dropdown panels off toolbar children, and any
             // overflow value here turns the row into a 44px clip box that
             // shreds them (spec 75 wave 2 covers the phone-width strategy).
-            <div class="h-[44px] px-4 md:px-6 flex items-center gap-3">
+            <div class="h-10 md:h-[44px] px-4 md:px-6 flex items-center gap-3">
                 {header_toolbar.map(|t| (t.children)())}
             </div>
         </header>

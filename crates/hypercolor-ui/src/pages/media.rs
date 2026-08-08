@@ -252,7 +252,9 @@ pub fn MediaPage() -> impl IntoView {
                 </HeaderTrailing>
                 <HeaderToolbar slot>
                     <PageSearchBar placeholder="Search media..." value=search set_value=set_search />
-                    <div class="flex shrink-0 items-center gap-1.5">
+                    // Chips scroll in their own strip on phones (buttons
+                    // only, no dropdowns, so the clip box is safe).
+                    <div class="flex shrink-0 items-center gap-1.5 max-md:shrink max-md:min-w-0 max-md:overflow-x-auto scrollbar-none">
                         {filter_chips(MEDIA_FILTERS, kind_filter, set_kind_filter)}
                     </div>
                 </HeaderToolbar>
@@ -268,8 +270,10 @@ pub fn MediaPage() -> impl IntoView {
             />
 
             <div class="flex-1 overflow-hidden">
-                <div class="flex h-full">
-                    <main class="min-w-0 flex-1 overflow-y-auto px-6 pb-6 pt-4">
+                // Desktop: grid beside a fixed detail rail. Phone: one page
+                // scroll, detail full-width on top, grid below.
+                <div class="flex h-full max-md:flex-col max-md:overflow-y-auto">
+                    <main class="min-w-0 flex-1 overflow-y-auto px-6 pb-6 pt-4 max-md:flex-none max-md:overflow-visible max-md:px-4 max-md:pb-4">
                         <Suspense fallback=move || view! { <MediaLoadingSkeleton /> }>
                             {move || match media_resource.get() {
                                 None => view! { <MediaLoadingSkeleton /> }.into_any(),
@@ -320,7 +324,8 @@ pub fn MediaPage() -> impl IntoView {
                     </main>
 
                     <Show when=move || show_rail.get()>
-                        <aside class="w-[380px] shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 pt-4 scrollbar-none">
+                        <aside class="w-[380px] shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 pt-4 scrollbar-none
+                                      max-md:w-full max-md:order-first max-md:flex-none max-md:overflow-visible max-md:border-l-0 max-md:border-b">
                             <MediaDetail asset=selected_asset on_changed=on_changed />
                         </aside>
                     </Show>

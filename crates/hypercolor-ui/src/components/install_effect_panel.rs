@@ -139,7 +139,7 @@ pub fn InstallEffectPanel() -> impl IntoView {
                 on:click=move |_| open_picker.run(())
             >
                 <Icon icon=LuFolder width="14px" height="14px" />
-                <span>{move || if is_uploading.get() { "Installing..." } else if is_parsing.get() { "Parsing..." } else { "Install Effect" }}</span>
+                <span class="max-md:hidden">{move || if is_uploading.get() { "Installing..." } else if is_parsing.get() { "Parsing..." } else { "Install Effect" }}</span>
             </button>
 
             {move || panel_open.get().then(|| view! {

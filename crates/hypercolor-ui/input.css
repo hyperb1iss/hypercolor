@@ -881,6 +881,14 @@ input[type="range"].slider-silk::-moz-range-track {
     -webkit-text-fill-color: transparent;
 }
 
+/* Phone header ramp: the 21px title reads oversized against a 390px
+   canvas, so it steps down with the tighter 48px title row. */
+@media (max-width: 767.98px) {
+    .page-title {
+        font-size: 17px;
+    }
+}
+
 .page-title-purple {
     background-image: linear-gradient(100deg,
         color-mix(in oklch, var(--color-electric-purple) 30%, white) 0%,

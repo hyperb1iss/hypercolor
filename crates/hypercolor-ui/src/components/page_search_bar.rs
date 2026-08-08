@@ -23,7 +23,7 @@ pub fn PageSearchBar(
     set_value: WriteSignal<String>,
 ) -> impl IntoView {
     view! {
-        <div class="relative flex-1 min-w-0">
+        <div class="relative flex-1 min-w-0 max-md:min-w-28">
             <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
                 <Icon icon=LuSearch width="14px" height="14px" />
             </span>
