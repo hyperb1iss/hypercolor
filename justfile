@@ -676,9 +676,12 @@ dev *args='':
 dev *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/dev-windows.ps1 {{ args }}
 
-# Start the UI dev server (Trunk + hot reload on :9430)
-ui-dev:
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev
+# Start the UI dev server (Trunk + hot reload, :9430 by default). Pass a
+# port and optionally a bind address to run beside another stack:
+# `just ui-dev 9431`, or `just ui-dev 9431 0.0.0.0` to reach it from a
+# phone on the LAN. The API proxy target (:9420) is unaffected.
+ui-dev port='9430' host='127.0.0.1':
+    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
 
 # Build the UI for production
 ui-build:
