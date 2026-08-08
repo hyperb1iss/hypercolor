@@ -452,17 +452,22 @@ pub fn DashboardPage() -> impl IntoView {
             </PageHeader>
 
             <div class="flex-1 min-h-0 overflow-y-auto">
-                <div class="p-6 pt-4 flex flex-col gap-4 min-h-full">
+                <div class="p-4 pt-3 md:p-6 md:pt-4 flex flex-col gap-4 min-h-full">
                     // ── Hero row: preview on the left, favorites on the
                     // right, draggable splitter between them. Fixed height
                     // so the stats section below stays visible on load. ──
+                    // Below `md` the splitter row stacks: full-width 16:9
+                    // preview over a fixed-height favorites panel, no drag
+                    // handle. The `!` overrides beat the splitter's inline
+                    // pixel height/width, which only mean anything with a
+                    // horizontal layout to divide.
                     <div
-                        class="flex items-stretch gap-0 shrink-0"
+                        class="flex items-stretch gap-0 shrink-0 max-md:flex-col max-md:gap-3 max-md:h-auto!"
                         style=move || format!("height: {HERO_ROW_HEIGHT_PX}px")
                     >
                         <div
                             node_ref=preview_wrapper_ref
-                            class="shrink-0 h-full"
+                            class="shrink-0 h-full max-md:w-full! max-md:h-auto max-md:aspect-video"
                             class:fullscreen-preview=move || fullscreen.get()
                             style=move || {
                                 if fullscreen.get() {
@@ -483,13 +488,15 @@ pub fn DashboardPage() -> impl IntoView {
                             />
                         </div>
 
-                        <ResizeHandle
-                            on_drag_start=on_drag_start
-                            on_drag=on_drag
-                            on_drag_end=on_drag_end
-                        />
+                        <div class="max-md:hidden flex items-stretch h-full">
+                            <ResizeHandle
+                                on_drag_start=on_drag_start
+                                on_drag=on_drag
+                                on_drag_end=on_drag_end
+                            />
+                        </div>
 
-                        <div class="flex-1 min-w-0 h-full flex flex-col min-h-0">
+                        <div class="flex-1 min-w-0 h-full flex flex-col min-h-0 max-md:flex-none max-md:h-72">
                             <FavoritesPanel />
                         </div>
                     </div>

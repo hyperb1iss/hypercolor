@@ -219,7 +219,7 @@ pub fn Sidebar() -> impl IntoView {
 
     view! {
         <nav
-            class="flex flex-col h-full bg-surface-raised border-r border-edge-subtle shrink-0 transition-[width] duration-250 ease-out relative"
+            class="hidden md:flex flex-col h-full bg-surface-raised border-r border-edge-subtle shrink-0 transition-[width] duration-250 ease-out relative"
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >

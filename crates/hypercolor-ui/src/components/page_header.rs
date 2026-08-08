@@ -91,7 +91,7 @@ pub fn PageHeader(
 
     view! {
         <header class="page-header sticky top-0 z-30 shrink-0 glass-subtle page-header-elevation">
-            <div class="h-[60px] px-6 flex items-center justify-between gap-4">
+            <div class="h-[60px] px-4 md:px-6 flex items-center justify-between gap-4">
                 <div class="min-w-0 flex items-center gap-3">
                     <span class="shrink-0" style=icon_style>
                         <Icon icon=icon width="20px" height="20px" />
@@ -107,7 +107,9 @@ pub fn PageHeader(
                 </div>
             </div>
 
-            <div class="h-[44px] px-6 flex items-center gap-3">
+            // On phones the toolbar scrolls horizontally instead of wrapping,
+            // preserving the fixed 104px header contract at every width.
+            <div class="h-[44px] px-4 md:px-6 flex items-center gap-3 overflow-x-auto md:overflow-visible">
                 {header_toolbar.map(|t| (t.children)())}
             </div>
         </header>

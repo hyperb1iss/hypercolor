@@ -10,6 +10,7 @@ use wasm_bindgen::JsCast;
 use hypercolor_types::scene::SceneMutationMode;
 
 use crate::app::{EffectsContext, FrameAnalysisContext};
+use crate::components::mobile_nav::MobileNav;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::scene_switcher::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
@@ -117,9 +118,11 @@ pub fn Shell(children: Children) -> impl IntoView {
             tabindex="-1"
         >
             <Sidebar />
-            <main class="flex-1 min-h-0 min-w-0 overflow-auto">
+            <main class="flex-1 min-h-0 min-w-0 overflow-auto
+                         max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
                 {children()}
             </main>
+            <MobileNav />
 
             // Command palette overlay
             {move || palette_open.get().then(|| {
