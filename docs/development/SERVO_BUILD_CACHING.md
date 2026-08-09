@@ -108,7 +108,7 @@ sharing layer is the compile cache, not the target dir:
 ## Disk Bounds
 
 Target dirs grow without bound as toolchains, lockfiles, and feature shapes
-churn — Cargo never garbage-collects them. Bound them with:
+churn; Cargo never garbage-collects them. Bound them with:
 
 ```bash
 just disk          # per-profile + shared-cache usage report

@@ -1,6 +1,7 @@
 # Hypercolor Architecture
 
-Hypercolor is a daemon-first RGB lighting engine for Linux. The daemon owns
+Hypercolor is a daemon-first RGB lighting engine for Linux, Windows, and
+macOS. The daemon owns
 hardware access, rendering, scene state, and persistence. Every user surface
 talks to that daemon through REST, WebSocket, or MCP instead of touching devices
 directly.
@@ -91,7 +92,13 @@ graph TD
 
     subgraph Platform
         LGPU[hypercolor-linux-gpu-interop]
+        MGPU[hypercolor-macos-gpu-interop]
+        WGPU[hypercolor-windows-gpu-interop]
         WPAW[hypercolor-windows-pawnio]
+        WCAP[hypercolor-windows-capture]
+        WINP[hypercolor-windows-input]
+        WHLP[hypercolor-windows-helper]
+        PFS[hypercolor-platform-fs]
     end
 
     subgraph Drivers
@@ -101,6 +108,8 @@ graph TD
         NL[hypercolor-driver-nanoleaf]
         WLED[hypercolor-driver-wled]
         GOV[hypercolor-driver-govee]
+        ORS[hypercolor-openrgb-sdk]
+        ORD[hypercolor-driver-openrgb]
         NET[hypercolor-network]
     end
 
@@ -126,14 +135,17 @@ graph TD
     DAPI --> NL
     DAPI --> WLED
     DAPI --> GOV
+    ORS & DAPI --> ORD
     DAPI & CORE --> DBI
     DAPI --> NET
     LMAC --> LEXT
-    CORE & HAL & DAPI & NET --> D
+    CORE & HAL & DAPI & NET & PFS --> D
     LEXT --> D
+    LEXT --> TUI
     DBI -.->|optional| D
     CORE --> CLI
     T --> TUI
+    TUI -.->|optional| CLI
     CORE & T --> TRAY
     CORE & T --> APP
     T & LEXT --> UI
@@ -148,8 +160,11 @@ Key rules:
   feature flags.
 - `hypercolor-leptos-ext-macros` is a proc-macro crate with no hypercolor deps;
   `hypercolor-leptos-ext` depends on it and on no other internal crate.
-- `hypercolor-linux-gpu-interop` and `hypercolor-windows-pawnio` are unsafe
-  opt-out crates with no hypercolor deps; they isolate platform calls.
+- The Platform subgraph crates isolate unsafe platform calls; `hypercolor-core`
+  and the daemon consume them behind target and feature gates, so those edges
+  stay off the graph. `hypercolor-platform-fs` is an unconditional daemon
+  dependency and is drawn. `hypercolor-windows-helper` is a standalone signed
+  binary that `hypercolor-app` invokes as a subprocess.
 - `hypercolor-ui` is excluded from the Cargo workspace and builds separately
   through Trunk.
 - Cross-crate circular dependencies are forbidden.
@@ -177,18 +192,29 @@ Events are history. High-frequency data streams are latest value.
 
 ## Platform And Safety
 
-Linux is the supported launch platform because hardware permissions, udev,
-PipeWire/audio capture, systemd user services, and release verification are all
-gated there. macOS release artifacts and Windows source builds are experimental
-until the same installer and runtime gates exist.
+All three platforms ship installers: Linux gets a tarball, a `.deb`, an AUR
+package, and a Homebrew formula; Windows gets a per-machine NSIS installer;
+macOS gets DMGs for both architectures plus a Homebrew cask. CI gates Linux
+and Windows on every push, while macOS compiles only on release tags.
+Linux-specific runtime integration (udev rules, PipeWire portal capture,
+systemd user services, logind session events) has no Windows or macOS
+equivalent yet, and macOS has no screen capture or SMBus support.
 
 Application, driver, and domain crates inherit `unsafe_code = "forbid"`. The
-current opt-outs are dedicated interop crates:
+current opt-outs are the audited platform crates plus the app shell:
 
-- `hypercolor-linux-gpu-interop` for Linux GPU surface import.
-- `hypercolor-windows-pawnio` for Windows service/process boundaries.
+- `hypercolor-linux-gpu-interop`, `hypercolor-macos-gpu-interop`, and
+  `hypercolor-windows-gpu-interop` for GPU surface import.
+- `hypercolor-windows-pawnio` for SMBus access through the PawnIO kernel
+  driver.
+- `hypercolor-windows-capture` and `hypercolor-windows-input` for Desktop
+  Duplication capture and Raw Input.
+- `hypercolor-windows-helper` for the signed elevated helper binary.
+- `hypercolor-platform-fs` for privileged filesystem operations (unsafe is
+  still forbidden there off Windows).
+- `hypercolor-app` for the Win32 power-event message pump.
 
-Those crates isolate platform calls and deny undocumented unsafe blocks.
+Every opt-out denies `clippy::undocumented_unsafe_blocks`.
 
 ## Current Stack
 

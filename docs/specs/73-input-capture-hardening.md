@@ -6,6 +6,8 @@ final delta
 Author: Nova
 Date: 2026-07-26
 Depends on: spec 14, spec 71, spec 72
+Acceptance: physical validation follows
+[docs/development/LINUX_CAPTURE_ACCEPTANCE.md](../development/LINUX_CAPTURE_ACCEPTANCE.md)
 Scope: the complete input data plane and the screen/video capture stack on Linux
 and Windows, including daemon, renderer, SDK, UI, diagnostics, and CI consumers.
 

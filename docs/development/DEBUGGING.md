@@ -94,7 +94,7 @@ Table mode uses SilkCircuit-colored status icons:
 **Source:** `crates/hypercolor-daemon/src/bin/hypercolor-debug.rs`
 
 Standalone binary for debugging device discovery and USB hotplug events. Runs
-outside the daemon — useful for isolating detection issues.
+outside the daemon, useful for isolating detection issues.
 
 ```bash
 cargo run -p hypercolor-daemon --bin hypercolor-debug -- <COMMAND> [OPTIONS]
@@ -102,7 +102,7 @@ cargo run -p hypercolor-daemon --bin hypercolor-debug -- <COMMAND> [OPTIONS]
 
 ### Subcommands
 
-#### `detect` — Run Discovery Sweeps
+#### `detect`: Run Discovery Sweeps
 
 Continuously scans for devices and reacts to USB hotplug events.
 
@@ -239,9 +239,9 @@ Setting `system: true` adds uptime information.
 
 #### Status Values
 
-- `pass` — healthy
-- `warning` — degraded (e.g., render loop stopped, config using defaults)
-- `fail` — broken
+- `pass`: healthy
+- `warning`: degraded (e.g., render loop stopped, config using defaults)
+- `fail`: broken
 
 #### Quick Test
 
@@ -259,7 +259,7 @@ curl -s -X POST http://localhost:9420/api/v1/diagnose \
 
 ## Device Debug Endpoints
 
-**Source:** `crates/hypercolor-daemon/src/api/devices.rs`
+**Source:** `crates/hypercolor-daemon/src/api/devices/`
 
 ### `GET /api/v1/devices/debug/queues`
 
@@ -270,7 +270,7 @@ counts, and last write timing for each device backend.
 curl -s http://localhost:9420/api/v1/devices/debug/queues | jq .
 ```
 
-Returns the result of `BackendManager::debug_snapshot()` — the exact shape
+Returns the result of `BackendManager::debug_snapshot()`. The exact shape
 depends on the backend manager implementation, but exposes per-device queue
 depth and throughput information.
 
@@ -283,7 +283,7 @@ table the render pipeline uses to dispatch LED frames.
 curl -s http://localhost:9420/api/v1/devices/debug/routing | jq .
 ```
 
-Returns the result of `BackendManager::routing_snapshot()` — shows which layout
+Returns the result of `BackendManager::routing_snapshot()`: which layout
 device IDs route to which physical backends, with segment ranges and zone
 mappings.
 
@@ -312,7 +312,7 @@ curl -s -X POST http://localhost:9420/api/v1/devices/abc123/identify \
 
 **Route:** `ws://localhost:9420/api/v1/ws`
 **Protocol Version:** `1.0`
-**Source:** `crates/hypercolor-daemon/src/api/ws.rs`
+**Source:** `crates/hypercolor-daemon/src/api/ws/`
 
 Bidirectional WebSocket for real-time event streaming, binary frame data,
 performance metrics, and REST-equivalent command execution.
@@ -321,7 +321,7 @@ performance metrics, and REST-equivalent command execution.
 
 | Channel    | Default      | Description                     | Config Options                                |
 | ---------- | ------------ | ------------------------------- | --------------------------------------------- |
-| `events`   | subscribed   | System events and state changes | —                                             |
+| `events`   | subscribed   | System events and state changes | none                                          |
 | `frames`   | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `format` (binary/json), `zones` |
 | `spectrum` | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)         |
 | `canvas`   | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)             |
@@ -496,29 +496,31 @@ echo '{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_
 
 ## MCP Tools
 
-**Source:** `crates/hypercolor-daemon/src/mcp/tools.rs`
+**Source:** `crates/hypercolor-daemon/src/mcp/tools/`
 
-Hypercolor exposes 14 MCP tools for AI assistant integration. These give agents
+Hypercolor exposes 16 MCP tools for AI assistant integration. These give agents
 programmatic control over the lighting system.
 
 ### Tool Inventory
 
-| Tool              | Read-Only | Description                                                        |
-| ----------------- | --------- | ------------------------------------------------------------------ |
-| `set_effect`      | no        | Apply a lighting effect (supports fuzzy/natural language matching) |
-| `list_effects`    | yes       | Browse the effect library with category/audio filters              |
-| `stop_effect`     | no        | Stop the current effect                                            |
-| `set_color`       | no        | Set a static color on devices                                      |
-| `get_devices`     | yes       | List connected devices                                             |
-| `set_brightness`  | no        | Set brightness (0-100)                                             |
-| `get_status`      | yes       | Current daemon state snapshot                                      |
-| `activate_scene`  | no        | Activate a saved scene                                             |
-| `list_scenes`     | yes       | List available scenes                                              |
-| `create_scene`    | no        | Create a new scene from current state                              |
-| `get_audio_state` | yes       | Audio input and spectrum data                                      |
-| `set_profile`     | no        | Switch device profile                                              |
-| `get_layout`      | yes       | Current layout mapping                                             |
-| **`diagnose`**    | **yes**   | **System/device diagnostics**                                      |
+| Tool               | Read-Only | Description                                                        |
+| ------------------ | --------- | ------------------------------------------------------------------ |
+| `set_effect`       | no        | Apply a lighting effect (supports fuzzy/natural language matching) |
+| `list_effects`     | yes       | Browse the effect library with category/audio filters              |
+| `stop_effect`      | no        | Stop the current effect                                            |
+| `set_color`        | no        | Set a static color on devices                                      |
+| `get_devices`      | yes       | List connected devices                                             |
+| `set_brightness`   | no        | Set brightness (0-100)                                             |
+| `get_status`       | yes       | Current daemon state snapshot                                      |
+| `activate_scene`   | no        | Activate a saved scene                                             |
+| `list_scenes`      | yes       | List available scenes                                              |
+| `create_scene`     | no        | Create a new scene from current state                              |
+| `get_audio_state`  | yes       | Audio input and spectrum data                                      |
+| `set_profile`      | no        | Switch device profile                                              |
+| `get_layout`       | yes       | Current layout mapping                                             |
+| `get_sensor_data`  | yes       | System telemetry snapshot (CPU, GPU, memory, temperatures)         |
+| `set_display_face` | no        | Assign or clear an HTML display-face effect on a display device    |
+| **`diagnose`**     | **yes**   | **System/device diagnostics**                                      |
 
 ### `diagnose` Tool (Detail)
 
@@ -562,7 +564,7 @@ or a specific device.
 
 ### `get_status` Tool
 
-Quick system state snapshot — useful as a first check before deeper
+Quick system state snapshot, useful as a first check before deeper
 diagnostics.
 
 **Output includes:** running state, paused state, brightness, FPS
@@ -833,11 +835,11 @@ assert!(matches!(backend.calls()[0], MockCall::Discover));
 ### Inspection API
 
 ```rust
-backend.calls()             // &[MockCall] — ordered call log
-backend.write_count()       // u64 — total write_colors calls
-backend.last_colors(&id)    // Option<&Vec<[u8; 3]>> — last frame data
-backend.is_connected(&id)   // bool — connection state
-backend.device_infos()      // &[DeviceInfo] — configured devices
+backend.calls()             // &[MockCall]: ordered call log
+backend.write_count()       // u64: total write_colors calls
+backend.last_colors(&id)    // Option<&Vec<[u8; 3]>>: last frame data
+backend.is_connected(&id)   // bool: connection state
+backend.device_infos()      // &[DeviceInfo]: configured devices
 ```
 
 ### Failure Injection
@@ -936,7 +938,7 @@ just loc
 
 ## udev Setup
 
-**Source:** `udev/99-hypercolor.rules`
+**Source:** `udev/99-hypercolor.rules`, `udev/70-hypercolor-input.rules`
 
 USB and I2C device access requires udev rules. Without them, you'll get
 `PermissionDenied` errors from transport layers.
@@ -946,13 +948,20 @@ USB and I2C device access requires udev rules. Without them, you'll get
 just udev-install
 ```
 
-This copies `99-hypercolor.rules` to `/etc/udev/rules.d/` and triggers
-reloading for these subsystems:
+This copies `99-hypercolor.rules` and `70-hypercolor-input.rules` to
+`/etc/udev/rules.d/` and triggers reloading for these subsystems:
 
-- `hidraw` — USB HID raw access
-- `usb` — USB device access
-- `tty` — Serial port access
-- `i2c-dev` — SMBus/I2C access
+- `hidraw`: USB HID raw access
+- `usb`: USB device access
+- `tty`: Serial port access
+- `i2c-dev`: SMBus/I2C access
+- `input`: event nodes of supported RGB keyboards and mice, so effects can
+  react to keystrokes and pointer motion
+
+`70-hypercolor-input.rules` ships in the 0.3.0 release payloads (tarball,
+`.deb`, AUR). The broader `udev/70-hypercolor-input-all.rules` grants the
+active session read access to ALL input event nodes; it lives only in the
+repo as an explicit opt-in and is never installed or shipped by default.
 
 ### Diagnosing Permission Issues
 
@@ -1014,7 +1023,7 @@ RUST_LOG=hypercolor_core::device::usb_backend=debug just daemon 2>&1 | grep -i "
 ### "Colors look wrong"
 
 ```bash
-# 1. Check routing — are zones mapped to the right backends?
+# 1. Check routing: are zones mapped to the right backends?
 curl -s http://localhost:9420/api/v1/devices/debug/routing | jq .
 
 # 2. Monitor frame data via WebSocket

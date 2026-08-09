@@ -1,5 +1,10 @@
 # Linux Capture Acceptance Handoff
 
+> **Status (2026-08-09):** physical validation is still pending. The baseline
+> commit `5ce4298e` predates portable device identity and settings schema v2
+> landing on `main`; re-verify the capture surfaces against current HEAD when
+> running this pass.
+
 Status: ready for physical validation on Linux as of 2026-08-01.
 
 Baseline: `main` at `5ce4298e`.

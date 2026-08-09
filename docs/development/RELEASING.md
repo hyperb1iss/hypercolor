@@ -7,7 +7,7 @@ AI-generated notes, and registry publishes.
 ## Cutting a release
 
 1. Open **Actions → Release → Run workflow**.
-2. Enter the version without the leading `v` (e.g. `0.2.0` or `0.2.0-rc.1`).
+2. Enter the version without the leading `v` (e.g. `0.3.0` or `0.3.0-rc.1`).
 3. Leave **dry run** checked for the first pass. Review the
    `release-preview-v<version>` artifact (release notes + changelog).
 4. Re-run with dry run unchecked to ship.
@@ -18,12 +18,14 @@ What the Release workflow does, in order:
    not already tagged, and not already published on npm or PyPI.
 2. **Stamps** every version-bearing file via `scripts/set-version.ts`
    (`just set-version <v>` locally):
-   - `Cargo.toml` `[workspace.package]` — every workspace crate inherits it
-   - `crates/hypercolor-ui/Cargo.toml` — workspace-excluded (standalone WASM
+   - `Cargo.toml` `[workspace.package]`: every workspace crate inherits it
+   - `crates/hypercolor-ui/Cargo.toml`: workspace-excluded (standalone WASM
      build), so it carries its own stamped version
    - `crates/hypercolor-app/tauri.conf.json`
    - `python/pyproject.toml` (semver prerelease translated to PEP 440:
      `-alpha.N` → `aN`, `-beta.N` → `bN`, `-rc.N` → `rcN`)
+   - `python/src/hypercolor/__init__.py`: the runtime `__version__`, stamped
+     in the same PEP 440 form as pyproject
    - `packaging/aur/PKGBUILD` (stable releases only)
    - `sdk/packages/core/package.json`, `sdk/packages/create-effect/package.json`
 3. **Refreshes lockfiles**: `cargo update --workspace`, `bun install`
@@ -67,5 +69,5 @@ step 1.
 - Artifact-only rehearsal without a tag: dispatch **CI/CD** with
   `release_artifacts: full` (or `smoke` for the tarball smoke test).
 - Full rehearsal without pushing: dispatch **Release** with dry run
-  checked — everything is prepared and uploaded as an artifact, nothing
+  checked. Everything is prepared and uploaded as an artifact, and nothing
   leaves the runner.

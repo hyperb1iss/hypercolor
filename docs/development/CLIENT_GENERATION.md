@@ -52,19 +52,16 @@ just python-ws-protocol-check
 
 ## CI Gates
 
-The Python job runs hand-written client checks:
-
-```bash
-just python-verify
-```
-
-That includes Ruff, Ruff format, ty, WebSocket protocol drift, and pytest.
+The Python job runs the hand-written client checks as individual `uv run`
+steps, the same set `just python-verify` runs locally: Ruff check, Ruff
+format check, ty, WebSocket protocol drift, and pytest.
 Generated OpenAPI drift runs in the separate `Python Generated Client` job
 because it compiles the Rust daemon exporter.
 
-The Python client is published to PyPI as `hypercolor` (alpha). Stable release
-tags build sdist and wheel artifacts; registry publishes are still a manual
-release-time step.
+The Python client is published to PyPI as `hypercolor`. Publishing is
+automated: stable release tags build sdist and wheel artifacts, and the
+`publish-pypi` job in `ci.yml` uploads them through PyPI trusted publishing
+(OIDC, no token).
 
 ## TypeScript Client Path
 

@@ -9,15 +9,17 @@ drivers, effects, UI improvements, documentation, bug reports, and ideas.
 # Clone and build
 git clone https://github.com/hyperb1iss/hypercolor.git
 cd hypercolor
-just verify        # fmt + lint + test — run this after every change
+just verify        # fmt + lint + test: run this after every change
 ```
 
 **Requirements:**
 
-- Rust 1.94+ (edition 2024)
+- Rust 1.94+ (edition 2024; `rust-toolchain.toml` pins 1.95.0 via rustup, and
+  1.94 is the minimum supported version)
 - [just](https://github.com/casey/just) command runner
 - [Bun](https://bun.sh/) for the effect SDK
-- Linux recommended for full functionality (USB/HID, screen capture, audio)
+- Linux, Windows, and macOS are all supported; Linux additionally integrates
+  udev rules and systemd user services
 
 ## What to Work On
 
@@ -75,7 +77,9 @@ open a PR:
   that opt out must document the boundary and keep it reviewed.
 - **No `unwrap()`.** Use `?`, `.ok()`, or `expect("reason")`.
 - **Clippy pedantic** is enforced at deny level. Run `just lint` before submitting.
-- **Tests go in `tests/` directories**, not inline `#[cfg(test)]` blocks.
+- **Tests:** integration and public-API coverage lives in `tests/` directories,
+  named `{feature}_tests.rs`. Small private-internals unit tests may use
+  `#[cfg(test)]` modules; avoid large inline test bodies.
 - **Conventional commits**: `feat(scope):`, `fix(scope):`, `refactor(scope):`, etc.
 - **Emoji in docs/UI**: expressive, not excessive. Prefer 💜 🔮 ⚡ 💎 🌈 🌊 🎯.
   Avoid 🚀 ✨ 💯. One per heading max, never in body text.
@@ -101,7 +105,7 @@ If you have the hardware but aren't sure where to start, open an issue and we'll
 figure out the protocol.
 
 **Testing on real hardware matters.** We mark PRs with whether they've been validated on actual
-devices. If you can test, please do. If you can't, say so — someone else may be able to help.
+devices. If you can test, please do. If you can't, say so, and someone else may be able to help.
 
 ## Reporting Issues
 
