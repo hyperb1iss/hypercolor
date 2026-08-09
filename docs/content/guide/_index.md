@@ -6,7 +6,7 @@ weight = 10
 template = "section.html"
 +++
 
-Hypercolor is an open-source RGB lighting orchestration engine for Linux, Windows, and macOS, written in Rust. One daemon drives every RGB device you own (Razer peripherals, WLED strips, ASUS motherboards, Corsair gear, Philips Hue, Nanoleaf panels, Govee lights, and more), all running from the same render engine at up to 60 fps.
+Hypercolor is an open-source RGB lighting orchestration engine for Linux, Windows, and macOS, written in Rust. One app drives every RGB device you own (Razer peripherals, WLED strips, ASUS motherboards, Corsair gear, Philips Hue, Nanoleaf panels, Govee lights, and more), all running from the same render engine at up to 60 fps.
 
 Effects are HTML Canvas pages rendered by an embedded Servo browser. Audio FFT, screen capture, and keyboard input feed the render every frame. A spatial sampler maps canvas pixels onto your physical LED positions. The result: one effect paints your whole rig, synchronized, regardless of how many devices or protocols are involved.
 

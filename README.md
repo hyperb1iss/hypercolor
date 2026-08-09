@@ -47,7 +47,7 @@ Windows-only, and behind a subscription.
 
 **Hypercolor is the fix.**
 
-One daemon. Every RGB device you own. Motherboards, keyboards, mice, LED strips, smart lights,
+One app. Every RGB device you own. Motherboards, keyboards, mice, LED strips, smart lights,
 case fans, all driven by the same engine at up to 60fps. Effects aren't hardcoded routines.
 They're web pages, rendered by an embedded Servo browser and sampled onto your physical LED
 layout every frame. And it runs on Linux, Windows, and macOS.
@@ -196,9 +196,10 @@ polling bridge on macOS.
 
 ## 💎 The UI
 
-A web UI served directly by the daemon. Browse effects, tweak controls live, manage devices,
-and design spatial layouts from any browser. The whole thing is responsive, so your phone
-works as a remote control for the rig.
+The web UI is built right in: open `http://localhost:9420` and everything is there, no
+separate install. Browse effects, tweak controls live, manage devices, and design spatial
+layouts from any browser. The whole thing is responsive, so your phone works as a remote
+control for the rig.
 
 <table>
   <tr>
@@ -356,8 +357,11 @@ boundary; run it in your session for interactive effects.
 
 ### Run
 
+Installed the desktop app? Just launch **Hypercolor** and you're done: it starts the
+engine, sits in your tray, and opens the UI. The terminal route works everywhere too:
+
 ```bash
-# Start the daemon (serves UI at http://localhost:9420)
+# Start the engine (serves the UI at http://localhost:9420)
 hypercolor-daemon
 
 # Control from the command line

@@ -9,7 +9,7 @@ weight = 0
 RGB lighting is fragmented. Vendor tools that don't talk to each other, half-working
 daemons, and effects that look like they were designed in 2012. Hypercolor is the fix.
 
-One daemon. Every device you own. Keyboards, mice, LED strips, case fans, smart lights:
+One app. Every device you own. Keyboards, mice, LED strips, case fans, smart lights:
 all driven by the same engine at adaptive 10-60 fps. Effects aren't hardcoded routines.
 They're web pages, rendered by an embedded [Servo](https://servo.org) browser and sampled
 onto your physical LED layout every frame. And it runs on Linux, Windows, and macOS.
