@@ -445,6 +445,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         nav_items: extension_nav,
         settings_sections: extension_settings,
         sidebar_widgets: extension_widgets,
+        on_setup,
     } = ext;
     provide_meta_context();
     leptoaster::provide_toaster();
@@ -455,6 +456,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     provide_context(crate::extensions::SidebarExtensionWidgets(
         std::sync::Arc::new(extension_widgets),
     ));
+    provide_context(crate::extensions::UiChromeFlags::default());
 
     // Global WebSocket connection
     let ws = WsManager::new();
@@ -869,6 +871,12 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             current_scene_event
         },
     );
+
+    // Embedder startup hooks run last: every app-wide context above is
+    // available to them, and nothing has rendered yet.
+    for hook in on_setup {
+        hook();
+    }
 
     view! {
         <Meta charset="UTF-8" />

@@ -27,9 +27,9 @@ pub fn DeleteSimulatorModal(
     let device_name = device.name.clone();
     let (submitting, set_submitting) = signal(false);
 
-    let do_delete = {
+    let do_delete = Callback::new({
         let device_id = device_id.clone();
-        move || {
+        move |()| {
             let device_id = device_id.clone();
             set_submitting.set(true);
             let devices_resource = ctx.devices_resource;
@@ -47,7 +47,7 @@ pub fn DeleteSimulatorModal(
                 }
             });
         }
-    };
+    });
 
     view! {
         <ModalBackdrop on_close=on_close label="Delete simulator">
@@ -59,7 +59,7 @@ pub fn DeleteSimulatorModal(
                 <h2 class="text-sm font-medium text-fg-primary mb-1">"Delete simulator?"</h2>
                 <p class="text-xs text-fg-tertiary mb-4">
                     "This will remove "
-                    <span class="text-fg-secondary font-medium">{device_name}</span>
+                    <span class="text-fg-secondary font-medium">{device_name.clone()}</span>
                     " along with its face assignment and layout placements. This cannot be undone."
                 </p>
                 <div class="flex items-center gap-2 justify-center">
@@ -68,7 +68,7 @@ pub fn DeleteSimulatorModal(
                                border"
                         style="background: rgba(255, 99, 99, 0.1); color: rgb(255, 99, 99); border-color: rgba(255, 99, 99, 0.2)"
                         disabled=move || submitting.get()
-                        on:click=move |_| do_delete()
+                        on:click=move |_| do_delete.run(())
                     >
                         {move || if submitting.get() { "Deleting..." } else { "Delete simulator" }}
                     </button>

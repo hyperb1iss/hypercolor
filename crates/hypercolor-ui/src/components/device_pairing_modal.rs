@@ -149,8 +149,8 @@ pub fn DevicePairingModal(
                     <Icon icon=LuKeyRound width="20px" height="20px" style=format!("color: rgba({rgb}, 0.7)") />
                 </div>
                 <div class="flex-1 min-w-0">
-                    <h2 class="text-sm font-medium text-fg-primary">{title}</h2>
-                    <p class="text-[11px] text-fg-tertiary truncate">{device_name}</p>
+                    <h2 class="text-sm font-medium text-fg-primary">{title.clone()}</h2>
+                    <p class="text-[11px] text-fg-tertiary truncate">{device_name.clone()}</p>
                 </div>
                 <button
                     class="w-7 h-7 rounded-lg flex items-center justify-center text-fg-tertiary hover:text-fg-secondary hover:bg-surface-hover/40 transition-colors"
@@ -163,7 +163,7 @@ pub fn DevicePairingModal(
 
             // Instructions
             <div class="space-y-2 mb-4">
-                {instructions.into_iter().enumerate().map(|(i, instruction)| {
+                {instructions.clone().into_iter().enumerate().map(|(i, instruction)| {
                     let rgb = rgb.clone();
                     view! {
                         <div class="flex items-start gap-2.5">
@@ -334,9 +334,9 @@ pub fn ForgetCredentialsModal(
     let device_name = device.name.clone();
     let (submitting, set_submitting) = signal(false);
 
-    let do_forget = {
+    let do_forget = Callback::new({
         let device_id = device_id.clone();
-        move || {
+        move |()| {
             let device_id = device_id.clone();
             set_submitting.set(true);
             let devices_resource = ctx.devices_resource;
@@ -354,7 +354,7 @@ pub fn ForgetCredentialsModal(
                 }
             });
         }
-    };
+    });
 
     view! {
         <ModalBackdrop on_close=on_close label="Forget credentials">
@@ -366,7 +366,7 @@ pub fn ForgetCredentialsModal(
                 <h2 class="text-sm font-medium text-fg-primary mb-1">"Forget credentials?"</h2>
                 <p class="text-xs text-fg-tertiary mb-4">
                     "This will remove stored credentials for "
-                    <span class="text-fg-secondary font-medium">{device_name}</span>
+                    <span class="text-fg-secondary font-medium">{device_name.clone()}</span>
                     ". You'll need to pair the device again."
                 </p>
                 <div class="flex items-center gap-2 justify-center">
@@ -375,7 +375,7 @@ pub fn ForgetCredentialsModal(
                                border"
                         style="background: rgba(255, 99, 99, 0.1); color: rgb(255, 99, 99); border-color: rgba(255, 99, 99, 0.2)"
                         disabled=move || submitting.get()
-                        on:click=move |_| do_forget()
+                        on:click=move |_| do_forget.run(())
                     >
                         {move || if submitting.get() { "Removing..." } else { "Forget credentials" }}
                     </button>
@@ -417,7 +417,7 @@ pub fn needs_pairing(auth: &Option<DeviceAuthSummary>) -> bool {
 pub(crate) fn ModalBackdrop(
     #[prop(into)] on_close: Callback<()>,
     #[prop(into, optional)] label: MaybeProp<String>,
-    children: Children,
+    children: ChildrenFn,
 ) -> impl IntoView {
     view! {
         <Modal

@@ -40,11 +40,6 @@ impl NavEntry {
         }
     }
 
-    const fn with_divider(mut self) -> Self {
-        self.divider_before = true;
-        self
-    }
-
     fn from_extension(item: UiNavItem) -> Self {
         Self {
             path: item.path,
@@ -62,8 +57,7 @@ impl NavEntry {
 #[derive(Clone, Default)]
 pub struct NavExtensionItems(pub Vec<UiNavItem>);
 
-/// The core nav set (Spec 65 §5.1). `Settings` always sits last with a
-/// divider above it.
+/// The core nav set (Spec 65 §5.1). `Settings` always sits last.
 fn core_nav() -> Vec<NavEntry> {
     use crate::icons::*;
 
@@ -73,7 +67,7 @@ fn core_nav() -> Vec<NavEntry> {
         NavEntry::core("/studio", "Studio", LuLayoutTemplate),
         NavEntry::core("/media", "Media", LuImages),
         NavEntry::core("/devices", "Devices", LuCpu),
-        NavEntry::core("/settings", "Settings", LuSettings).with_divider(),
+        NavEntry::core("/settings", "Settings", LuSettings),
     ]
 }
 

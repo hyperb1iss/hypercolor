@@ -63,7 +63,8 @@ use leptos::prelude::mount_to_body;
 // Default-empty, so the standalone OSS app is unchanged. See `extensions` and
 // `nav` for the contract.
 pub use extensions::{
-    UiExtensions, UiNavItem, UiSettingsSection, UiSidebarWidget, UiViewBuilder, parent_route,
+    UiChromeFlags, UiExtensions, UiNavItem, UiSettingsSection, UiSetupHook, UiSidebarWidget,
+    UiViewBuilder, parent_route,
     ui_route,
 };
 pub use nav::{NavEntry, NavExtensionItems, nav_model, nav_shortcut_path};
