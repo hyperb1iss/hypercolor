@@ -1,5 +1,5 @@
 title = "Hypercolor"
-description = "Open-source RGB lighting orchestration engine for Linux"
+description = "Open-source RGB lighting orchestration engine for Linux, Windows, and macOS"
 base_url = "https://hyperb1iss.github.io/hypercolor"
 compile_sass = true
 build_search_index = true
@@ -32,7 +32,7 @@ github_url = "https://github.com/hyperb1iss/hypercolor"
 license = "Apache-2.0"
 author = "Stefanie Jane"
 
-# Top navigation — the 11 doc front doors, in order. Plain url paths (not
+# Top navigation: the 11 doc front doors, in order. Plain url paths (not
 # @/…_index.md colocation lookups) so the build never trips on a section that
 # is still being authored (e.g. agents/). `prefix` drives the active-link
 # highlight via current_path matching.

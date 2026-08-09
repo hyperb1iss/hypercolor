@@ -5,7 +5,7 @@
 <h1 align="center">Hypercolor</h1>
 
 <p align="center">
-  <strong>Linux-first open-source RGB lighting engine</strong><br>
+  <strong>Open-source RGB lighting engine for Linux, Windows, and macOS</strong><br>
   <sub>✦ Your world is a canvas: paint every pixel. ✦</sub>
 </p>
 
@@ -48,9 +48,9 @@ Windows-only, and behind a subscription.
 **Hypercolor is the fix.**
 
 One daemon. Every RGB device you own. Motherboards, keyboards, mice, LED strips, smart lights,
-case fans, all driven by the same engine at 60fps. Effects aren't hardcoded routines. They're
-web pages, rendered by an embedded Servo browser and sampled onto your physical LED layout
-every frame.
+case fans, all driven by the same engine at up to 60fps. Effects aren't hardcoded routines.
+They're web pages, rendered by an embedded Servo browser and sampled onto your physical LED
+layout every frame. And it runs on Linux, Windows, and macOS.
 
 Your world is a canvas. Paint every pixel.
 
@@ -143,11 +143,14 @@ New drivers land often. Full matrix: [docs/content/hardware/compatibility.md](do
   60fps. Existing community effects work unmodified.
 - **wgpu:** native GPU shaders compiled to Vulkan, OpenGL, or Metal for maximum performance.
 
-### 🎨 44 Built-In Effects
+### 🎨 57 Built-In Effects
 
-Hypercolor ships 44 built-in effects spanning ambient, audio-reactive, shader, and generative
-styles. Ambient backgrounds, shader-heavy showpieces, and beat-synced visualizers. Every one is
-open source and built to be forked.
+Hypercolor ships 57 built-in effects (46 authored with the SDK, 11 native Rust) spanning
+ambient, audio-reactive, shader, generative, and interactive styles, plus 7 display faces
+for devices with LCD panels. Ambient backgrounds, shader-heavy showpieces, beat-synced
+visualizers, and Keystrike, an interactive effect that lights up under your keystrokes.
+Every one is open source and built to be forked, and the catalog ships with curated cover
+art and tuned presets.
 
 |               |                   |               |               |
 | ------------- | ----------------- | ------------- | ------------- |
@@ -169,20 +172,33 @@ FFT with beat detection, mel-band analysis, chromagram, and spectral features. E
 to bass hits, BPM, spectral centroid, or the full 200-bin spectrum. Lock-free buffering keeps
 the render loop from ever blocking on audio.
 
+### ⌨️ Interactive Effects
+
+Effects can react to your keyboard and mouse. The input pipeline is consent-gated and
+demand-driven: it is off by default, sources open devices only while an interactive effect
+is running, and input events ride a dedicated control-tier channel that never leaves the
+render pipeline. Native backends per platform: evdev on Linux, Raw Input on Windows, and a
+polling bridge on macOS.
+
 ### 🌊 And More
 
 - **Scene engine** with priority stacking, Oklab cross-fades, and automation rules
+- **Display faces** for LCD-equipped devices: clocks, sensor dashboards, now-playing panels
+- **Screen capture** input for ambient backlighting: Desktop Duplication on Windows
+  (works out of the box), Wayland portal on Linux (opt-in)
+- **Portable device identity**: devices keep their identity across cable moves, IP churn,
+  and BIOS renumbering, and layouts can be rebound after hardware swaps
 - **REST API + WebSocket** for full programmatic control
 - **MCP server** for AI assistant integration (Claude Code, Cursor, and friends)
 - **CLI tool** (`hypercolor`) with table/JSON output and shell completions
 - **Hot-reload** on effect changes, no restart required
-- **Screen capture** input for ambient backlighting
-- **Linux session integration** (logind, screensaver) via D-Bus
+- **Session and power awareness** on Linux (logind, screensaver) via D-Bus
 
 ## 💎 The UI
 
 A web UI served directly by the daemon. Browse effects, tweak controls live, manage devices,
-and design spatial layouts from any browser.
+and design spatial layouts from any browser. The whole thing is responsive, so your phone
+works as a remote control for the rig.
 
 <table>
   <tr>
@@ -208,11 +224,11 @@ and design spatial layouts from any browser.
   <tr>
     <td align="center">
       <img src="docs/images/canvas-fullscreen-bubbles.png" alt="Bubble Garden on the fullscreen canvas" width="400"><br>
-      <sub>Fullscreen canvas — Bubble Garden</sub>
+      <sub>Fullscreen canvas: Bubble Garden</sub>
     </td>
     <td align="center">
       <img src="docs/images/canvas-fullscreen-cymatics.png" alt="Cymatics on the fullscreen canvas" width="400"><br>
-      <sub>Fullscreen canvas — Cymatics, audio-reactive</sub>
+      <sub>Fullscreen canvas: Cymatics, audio-reactive</sub>
     </td>
   </tr>
 </table>
@@ -250,10 +266,25 @@ Runs wherever you have a terminal.
 
 ## 🎯 Get Started
 
-Hypercolor is Linux-first. macOS release builds and Windows source builds exist, but Linux is
-the supported launch path for hardware permissions, services, and full runtime verification.
+Hypercolor ships installers for Linux, Windows, and macOS with every release. Grab the
+artifact for your platform from the
+[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases), or use one
+of the paths below.
 
 ### Install on Linux
+
+The release installer downloads the right tarball, verifies its checksum, sets up the
+systemd user service, and offers to install udev rules and `i2c-dev` persistence:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
+```
+
+Debian and Ubuntu users can install the `.deb` from the releases page. Arch users have
+[`hypercolor-bin`](https://aur.archlinux.org/packages/hypercolor-bin) on the AUR, and the
+Homebrew formula works on Linux too: `brew install hyperb1iss/tap/hypercolor`.
+
+Building from source instead:
 
 ```bash
 git clone https://github.com/hyperb1iss/hypercolor.git
@@ -265,25 +296,30 @@ just install
 
 Setup installs the Rust toolchain, system packages, Bun, Trunk, cargo-deny, and frontend
 dependencies. The installer then builds the daemon, CLI, TUI, web UI, and bundled effects,
-installs a systemd user service, sets up udev rules for USB device access, and persists
-`i2c-dev` so SMBus RGB devices survive reboot.
+installs a systemd user service, sets up udev rules for USB and input device access, and
+persists `i2c-dev` so SMBus RGB devices survive reboot.
 
 ### Install on Windows
 
 Grab `Hypercolor_<version>_x64-setup.exe` from the
-[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases).
-Per-user install (no UAC unless you opt into motherboard/RAM RGB hardware support, which
-installs the [PawnIO](https://github.com/namazso/PawnIO) kernel driver via a one-click
-flow). Tested on Windows 10 22H2 and Windows 11 23H2/24H2, x64.
+[GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). The install is
+per-machine, so expect one UAC prompt; hardware setup runs inside that same elevated pass,
+including the optional [PawnIO](https://github.com/namazso/PawnIO) driver that unlocks
+motherboard and DRAM SMBus lighting (ASUS Aura and friends). Hypercolor only offers the
+PawnIO step when compatible hardware is detected. Tested on Windows 10 22H2 and
+Windows 11 23H2/24H2, x64.
 
-Hue, WLED, Nanoleaf, Govee, and USB-HID lighting (Razer, Corsair, Lian Li, etc.) work out
-of the box. Motherboard / DRAM SMBus lighting (ASUS Aura, MSI, Gigabyte) requires the
-optional PawnIO install — Hypercolor prompts you only if compatible hardware is detected.
+> Current Windows builds are not code-signed, so SmartScreen will warn on first run.
+> Choose **More info**, then **Run anyway**.
+
+Hue, WLED, Nanoleaf, Govee, and USB-HID lighting (Razer, Corsair, Lian Li, and friends)
+work out of the box. So do screen-reactive effects: Windows capture uses Desktop
+Duplication and is enabled by default.
 
 ### Install on macOS
 
-The macOS DMGs — `Hypercolor-<version>-arm64.dmg` (Apple Silicon) and `-x86_64.dmg`
-(Intel) — are on the
+The macOS DMGs (`Hypercolor-<version>-arm64.dmg` for Apple Silicon, `-x86_64.dmg` for
+Intel) are on the
 [GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag the app
 into `/Applications` and launch. Minimum macOS 11 (Big Sur).
 
@@ -293,13 +329,30 @@ Or via Homebrew Cask:
 brew install --cask hyperb1iss/tap/hypercolor-app
 ```
 
-> While we're finishing the Developer ID + notarization rollout, current builds are
-> unsigned. Gatekeeper will block them on first launch — right-click the app and choose
-> **Open** to confirm. Signed + notarized builds land with the next release.
+> Current builds carry an ad-hoc signature rather than a notarized Developer ID one, so
+> Gatekeeper flags the first launch. Right-click the app and choose **Open** to confirm.
 
-Hue, WLED, Nanoleaf, Govee, and USB-HID lighting (Razer, Corsair, Lian Li, etc.) work
-out of the box. On first run, Hypercolor will prompt for Microphone and Screen Recording
-permissions only if you enable audio- or screen-reactive effects.
+Hue, WLED, Nanoleaf, Govee, and USB-HID lighting all work out of the box. On first run,
+macOS prompts for Microphone access if you enable audio-reactive effects.
+
+### What works where
+
+| Capability | Linux | Windows | macOS |
+| --- | --- | --- | --- |
+| Effects, devices, web UI, TUI, CLI | ✓ | ✓ | ✓ |
+| Audio-reactive (microphone) | ✓ | ✓ | ✓ |
+| Audio-reactive (system audio) | ✓ native monitor | loopback device¹ | loopback device¹ |
+| Screen capture | Wayland portal, opt-in | Desktop Duplication, default on | not available |
+| Keyboard/mouse input | evdev | Raw Input² | polling bridge |
+| Motherboard / DRAM RGB (SMBus) | `i2c-dev` | PawnIO helper | not available |
+| Session and power integration | logind + screensaver | not yet | not yet |
+| Background service | systemd user service | Windows service³ | launchd agent |
+
+¹ System-audio reactivity needs a loopback input the OS exposes: Stereo Mix or a virtual
+cable on Windows, BlackHole or Loopback on macOS.
+² A daemon installed as a Windows service cannot see host input across the session
+boundary; run it in your session for interactive effects.
+³ Or per-user autostart via the desktop app.
 
 ### Run
 
@@ -378,7 +431,11 @@ graph TD
     end
 
     subgraph platform [Platform Interop]
-        LGI[linux-gpu-interop<br><i>GL→wgpu texture import</i>]
+        LGI[linux-gpu-interop<br><i>GL→wgpu import</i>]
+        MGI[macos-gpu-interop<br><i>IOSurface import</i>]
+        WGI[windows-gpu-interop<br><i>ANGLE/D3D11 import</i>]
+        WCA[windows-capture<br><i>Desktop Duplication</i>]
+        WIN[windows-input<br><i>Raw Input</i>]
         WPI[windows-pawnio<br><i>SMBus via PawnIO</i>]
     end
 
@@ -409,9 +466,9 @@ graph TD
         APP[app<br><i>unified shell</i>]
     end
 
-    T --> H & C & LGI & WPI
+    T --> H & C & LGI & MGI & WGI & WCA & WIN & WPI
     H --> C
-    LGI & WPI --> C
+    LGI & MGI & WGI & WCA & WIN & WPI --> C
     C --> API
     H --> DB
     C & H & DB --> D
@@ -433,28 +490,29 @@ at zero allocation cost per frame. The spatial engine caches LED positions and s
 composed frame with configurable interpolation (nearest, bilinear, area average, Gaussian).
 
 Workspace lints forbid `unsafe` in application, driver, and domain crates. The explicit
-exceptions are audited platform interop crates:
-[`hypercolor-linux-gpu-interop`](crates/hypercolor-linux-gpu-interop) for Linux GPU
-surface import and [`hypercolor-windows-pawnio`](crates/hypercolor-windows-pawnio)
-for Windows service/process boundaries. Both deny undocumented unsafe blocks. Edition
-2024. Rust 1.94+.
+exceptions are the audited platform interop crates (GPU surface import on all three
+platforms, Windows capture, host input, the PawnIO SMBus broker, and platform filesystem
+glue) plus the desktop app shell; each opts out explicitly and denies undocumented unsafe
+blocks. Edition 2024. Rust 1.94+.
 
 ## 📡 Status
 
-Hypercolor is in active development (v0.2.1). The core engine, effect SDK, web UI, TUI, and
-12 shipping driver families all work today on Linux. The macOS DMGs and Windows installer
-ship with every release but stay experimental until their runtime gates match Linux.
-Every screenshot in this README was captured from a live instance running on real hardware.
+Hypercolor is in active development. The core engine, effect SDK, web UI, TUI, and 12
+shipping driver families work today on Linux, Windows, and macOS, and every release ships
+installers for all three. Every screenshot in this README was captured from a live
+instance running on real hardware.
 
-Known launch limitations:
+Worth knowing before you install:
 
-- Linux is the only fully supported install and runtime path today.
+- macOS has no screen capture path yet, and SMBus (motherboard/DRAM RGB) is Linux and
+  Windows only. The "What works where" table above has the full picture.
+- Session and power integration (idle dim, sleep/resume device rescan) is Linux-only today.
+- Windows and macOS binaries are not yet code-signed, so expect a SmartScreen or
+  Gatekeeper speed bump on first launch.
 - The [`hypercolor`](https://www.npmjs.com/package/hypercolor) SDK and
-  [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder are on npm;
-  scaffold an effect workspace with `bun create hypercolor`.
-- The Python client is published to PyPI as
-  [`hypercolor`](https://pypi.org/project/hypercolor/).
-- Windows hardware service setup remains experimental.
+  [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder are on
+  npm; scaffold an effect workspace with `bun create hypercolor`. The Python client is on
+  PyPI as [`hypercolor`](https://pypi.org/project/hypercolor/).
 
 **Coming soon:** effect marketplace, Wasmtime plugin system for community backends, Wooting
 analog keyboards, and driver families for Cooler Master, NZXT, and Logitech. See the

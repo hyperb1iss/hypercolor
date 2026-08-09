@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ config.title }} — {{ config.description }}{% endblock title %}
+{% block title %}{{ config.title }}: {{ config.description }}{% endblock title %}
 
 {% block content %}
 <main id="main-content">
@@ -25,7 +25,7 @@
 
     <h1 class="hero__title gradient-text"><span class="hero__title-hyper">hyper</span><span class="hero__title-color">color</span></h1>
 
-    <p class="hero__tagline">RGB lighting orchestration for Linux. Open source, Rust-powered, endlessly extensible.</p>
+    <p class="hero__tagline">RGB lighting orchestration for your whole desk. Open source, Rust-powered, endlessly extensible.</p>
 
     <div class="hero__actions">
       <a class="btn btn--primary" href="{{ config.base_url | safe }}/guide/">Get Started</a>
