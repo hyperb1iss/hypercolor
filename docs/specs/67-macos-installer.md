@@ -181,7 +181,7 @@ Once the cert is in your local keychain (System keychain → "My Certificates"):
 
 ```bash
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Stefanie Jane (TEAMID)"
-export APPLE_ID="stef@hyperbliss.tech"
+export APPLE_ID="<your-apple-id-email>"
 export APPLE_TEAM_ID="TEAMID"
 export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
 just mac-installer --notarize

@@ -2,14 +2,19 @@
 
 ## Supported Versions
 
-Hypercolor is currently in pre-release (v0.1.x). Security fixes are applied to the latest
-release on the `main` branch.
+Hypercolor is pre-1.0. Security fixes land on the latest release line only.
+
+| Version | Supported |
+| ------- | --------- |
+| 0.3.x   | yes       |
+| < 0.3   | no        |
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, please report it responsibly.
-
-**Email:** stef@hyperbliss.tech
+If you discover a security vulnerability, please report it responsibly through
+[GitHub private vulnerability reporting](https://github.com/hyperb1iss/hypercolor/security/advisories/new).
+Reports filed there reach the maintainers privately without exposing details in
+the public issue tracker.
 
 **What to include:**
 

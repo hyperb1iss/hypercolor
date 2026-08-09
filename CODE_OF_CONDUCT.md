@@ -55,8 +55,9 @@ and when an individual is representing the project in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project
-maintainers at **stef@hyperbliss.tech**. All complaints will be reviewed and investigated promptly
-and fairly. Maintainers are obligated to maintain confidentiality with regard to the reporter.
+maintainers by contacting [@hyperb1iss](https://github.com/hyperb1iss) directly on GitHub. All
+complaints will be reviewed and investigated promptly and fairly. Maintainers are obligated to
+maintain confidentiality with regard to the reporter.
 
 Project maintainers who do not follow or enforce the Code of Conduct in good faith may face
 temporary or permanent consequences as determined by other members of the project's leadership.
