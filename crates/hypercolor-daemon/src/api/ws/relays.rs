@@ -2546,14 +2546,43 @@ where
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             if stream != "backpressure" {
-                debug!(
-                    stream,
-                    "Dropping queued WebSocket JSON message for slow consumer"
-                );
+                note_slow_consumer_drop(stream);
             }
             false
         }
         Err(TrySendError::Closed(_)) => false,
+    }
+}
+
+/// Aggregate slow-consumer drops into one periodic summary per stream.
+///
+/// Dropping is the intended backpressure for live telemetry (newest
+/// frame wins), so at 30 fps a slow consumer used to produce a log line
+/// per dropped frame, which buries everything else at debug level. The
+/// counter keeps every drop; the log line appears at most once per
+/// stream per window, carrying the count.
+fn note_slow_consumer_drop(stream: &str) {
+    const SUMMARY_WINDOW: Duration = Duration::from_secs(10);
+    static DROPS: std::sync::Mutex<Option<HashMap<String, (Instant, u64)>>> =
+        std::sync::Mutex::new(None);
+
+    let mut drops = DROPS.lock().expect("slow-consumer drop counter poisoned");
+    let drops = drops.get_or_insert_with(HashMap::new);
+    let now = Instant::now();
+    // Back-dating the first window start makes the very first drop log
+    // immediately; after that, summaries wait out a full window.
+    let entry = drops
+        .entry(stream.to_owned())
+        .or_insert_with(|| (now.checked_sub(SUMMARY_WINDOW).unwrap_or(now), 0));
+    entry.1 += 1;
+    if now.duration_since(entry.0) >= SUMMARY_WINDOW {
+        debug!(
+            stream,
+            dropped = entry.1,
+            window_secs = SUMMARY_WINDOW.as_secs(),
+            "Dropped queued WebSocket JSON messages for slow consumer"
+        );
+        *entry = (now, 0);
     }
 }
 
