@@ -70,50 +70,6 @@ pub fn SessionSection(
                 value=enabled
                 on_change=on_change
             />
-            <SettingDropdown
-                label="Screen Lock Behavior"
-                description="Choose what happens when the session locks or the display manager blanks the screen"
-                key="session.on_screen_lock"
-                value=screen_lock_behavior
-                options=screen_behavior_options
-                on_change=on_change
-            />
-            <Show when=move || screen_lock_behavior.get() == "dim">
-                <SettingSlider
-                    label="Screen Lock Brightness"
-                    description="Brightness multiplier applied while the screen is locked"
-                    key="session.screen_lock_brightness"
-                    value=screen_lock_brightness
-                    on_change=on_change
-                    min=0.0 max=1.0 step=0.05
-                />
-            </Show>
-            <SettingDropdown
-                label="Suspend Behavior"
-                description="What happens when the system suspends"
-                key="session.on_suspend"
-                value=suspend_behavior
-                options=suspend_behavior_options
-                on_change=on_change
-            />
-            <SettingDropdown
-                label="Off Output Behavior"
-                description="When a session event turns output off, either hold a static frame/color or release devices back to firmware"
-                key="session.off_output_behavior"
-                value=off_output_behavior
-                options=off_output_behavior_options
-                on_change=on_change
-            />
-            <Show when=move || off_output_behavior.get() == "static">
-                <SettingTextInput
-                    label="Off Hold Color"
-                    description="Hex RGB color used for static hold mode, including LCD pause frames"
-                    key="session.off_output_color"
-                    value=off_output_color
-                    on_change=on_change
-                    placeholder="#000000"
-                />
-            </Show>
             <SettingToggle
                 label="Idle Detection"
                 description="Dim or turn off LEDs after a period of inactivity"
@@ -137,6 +93,52 @@ pub fn SessionSection(
                 on_change=on_change
                 min=0.0 max=7200.0 step=30.0
             />
+            <AdvancedDisclosure>
+                <SettingDropdown
+                    label="Screen Lock Behavior"
+                    description="Choose what happens when the session locks or the display manager blanks the screen"
+                    key="session.on_screen_lock"
+                    value=screen_lock_behavior
+                    options=screen_behavior_options
+                    on_change=on_change
+                />
+                <Show when=move || screen_lock_behavior.get() == "dim">
+                    <SettingSlider
+                        label="Screen Lock Brightness"
+                        description="Brightness multiplier applied while the screen is locked"
+                        key="session.screen_lock_brightness"
+                        value=screen_lock_brightness
+                        on_change=on_change
+                        min=0.0 max=1.0 step=0.05
+                    />
+                </Show>
+                <SettingDropdown
+                    label="Suspend Behavior"
+                    description="What happens when the system suspends"
+                    key="session.on_suspend"
+                    value=suspend_behavior
+                    options=suspend_behavior_options
+                    on_change=on_change
+                />
+                <SettingDropdown
+                    label="Off Output Behavior"
+                    description="When a session event turns output off, either hold a static frame/color or release devices back to firmware"
+                    key="session.off_output_behavior"
+                    value=off_output_behavior
+                    options=off_output_behavior_options
+                    on_change=on_change
+                />
+                <Show when=move || off_output_behavior.get() == "static">
+                    <SettingTextInput
+                        label="Off Hold Color"
+                        description="Hex RGB color used for static hold mode, including LCD pause frames"
+                        key="session.off_output_color"
+                        value=off_output_color
+                        on_change=on_change
+                        placeholder="#000000"
+                    />
+                </Show>
+            </AdvancedDisclosure>
             <SectionReset section_label="Session" on_reset=Callback::new(move |()| on_reset.run("session".to_string())) />
         </section>
     }

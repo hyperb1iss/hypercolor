@@ -201,39 +201,41 @@ pub fn AudioSection(
                 disabled=audio_device_disabled
                 on_change=on_change
             />
-            <SettingDropdown
-                label="FFT Size"
-                description="Frequency resolution — higher values give finer detail but more latency"
-                key="audio.fft_size"
-                value=fft_size
-                options=Signal::stored(fft_options)
-                on_change=on_change
-                numeric=true
-            />
-            <SettingSlider
-                label="Smoothing"
-                description="Temporal smoothing for spectrum analysis"
-                key="audio.smoothing"
-                value=smoothing
-                on_change=on_change
-                min=0.0 max=1.0 step=0.01
-            />
-            <SettingSlider
-                label="Noise Gate"
-                description="Minimum signal threshold to filter background noise"
-                key="audio.noise_gate"
-                value=noise_gate
-                on_change=on_change
-                min=0.0 max=0.5 step=0.01
-            />
-            <SettingSlider
-                label="Beat Sensitivity"
-                description="How aggressively the beat detector triggers"
-                key="audio.beat_sensitivity"
-                value=beat_sensitivity
-                on_change=on_change
-                min=0.0 max=2.0 step=0.05
-            />
+            <AdvancedDisclosure>
+                <SettingDropdown
+                    label="FFT Size"
+                    description="Frequency resolution — higher values give finer detail but more latency"
+                    key="audio.fft_size"
+                    value=fft_size
+                    options=Signal::stored(fft_options)
+                    on_change=on_change
+                    numeric=true
+                />
+                <SettingSlider
+                    label="Smoothing"
+                    description="Temporal smoothing for spectrum analysis"
+                    key="audio.smoothing"
+                    value=smoothing
+                    on_change=on_change
+                    min=0.0 max=1.0 step=0.01
+                />
+                <SettingSlider
+                    label="Noise Gate"
+                    description="Minimum signal threshold to filter background noise"
+                    key="audio.noise_gate"
+                    value=noise_gate
+                    on_change=on_change
+                    min=0.0 max=0.5 step=0.01
+                />
+                <SettingSlider
+                    label="Beat Sensitivity"
+                    description="How aggressively the beat detector triggers"
+                    key="audio.beat_sensitivity"
+                    value=beat_sensitivity
+                    on_change=on_change
+                    min=0.0 max=2.0 step=0.05
+                />
+            </AdvancedDisclosure>
             <SectionReset section_label="Audio" on_reset=Callback::new(move |()| on_reset.run("audio".to_string())) />
         </section>
     }

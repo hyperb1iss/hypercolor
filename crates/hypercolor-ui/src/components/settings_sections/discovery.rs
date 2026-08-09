@@ -40,14 +40,6 @@ pub fn DiscoverySection(
                 on_change=on_change
                 restart_required=true
             />
-            <SettingNumberInput
-                label="Scan Interval"
-                description="Seconds between automatic discovery scans"
-                key="discovery.scan_interval_secs"
-                value=scan_interval
-                on_change=on_change
-                min=30.0 max=3600.0 step=30.0
-            />
             <div class="pt-2 space-y-2">
                 <For
                     each=move || discovery_drivers.get()
@@ -67,6 +59,16 @@ pub fn DiscoverySection(
                     }
                 />
             </div>
+            <AdvancedDisclosure>
+                <SettingNumberInput
+                    label="Scan Interval"
+                    description="Seconds between automatic discovery scans"
+                    key="discovery.scan_interval_secs"
+                    value=scan_interval
+                    on_change=on_change
+                    min=30.0 max=3600.0 step=30.0
+                />
+            </AdvancedDisclosure>
             <SectionReset section_label="Discovery" on_reset=Callback::new(move |()| on_reset.run("discovery".to_string())) />
         </section>
     }

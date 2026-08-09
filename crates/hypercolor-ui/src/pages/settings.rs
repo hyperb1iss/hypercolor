@@ -19,15 +19,16 @@ use crate::settings_audio_devices::{
 };
 use hypercolor_leptos_ext::events::{document as browser_document, scroll_into_view_start};
 
-/// Section IDs for nav and scroll spy.
+/// Section IDs for nav and scroll spy, in visual order. Sections cluster
+/// into the four tab groups (General, Behavior, Connectivity, System).
 const SECTION_IDS: &[&str] = &[
     "audio",
-    "input",
     "capture",
-    "rendering",
-    "network",
+    "input",
     "session",
+    "network",
     "discovery",
+    "rendering",
     "developer",
     "about",
 ];
@@ -220,66 +221,43 @@ pub fn SettingsPage() -> impl IntoView {
 
     // Tab data
     struct TabEntry {
+        /// Scroll target — the first section of the group.
         id: &'static str,
         label: &'static str,
         icon: icondata_core::Icon,
         separator_before: bool,
+        /// Section IDs this tab lights up for as the scroll spy passes them.
+        members: Vec<&'static str>,
     }
 
     let mut tabs = vec![
         TabEntry {
             id: "audio",
-            label: "Audio",
-            icon: LuAudioLines,
+            label: "General",
+            icon: LuSlidersHorizontal,
             separator_before: false,
-        },
-        TabEntry {
-            id: "input",
-            label: "Input",
-            icon: LuKeyboard,
-            separator_before: false,
-        },
-        TabEntry {
-            id: "capture",
-            label: "Capture",
-            icon: LuMonitor,
-            separator_before: false,
-        },
-        TabEntry {
-            id: "rendering",
-            label: "Rendering",
-            icon: LuGauge,
-            separator_before: false,
-        },
-        TabEntry {
-            id: "network",
-            label: "Network",
-            icon: LuGlobe,
-            separator_before: false,
+            members: vec!["audio", "capture", "input"],
         },
         TabEntry {
             id: "session",
-            label: "Session",
+            label: "Behavior",
             icon: LuPower,
             separator_before: false,
+            members: vec!["session"],
         },
         TabEntry {
-            id: "discovery",
-            label: "Discovery",
-            icon: LuRadar,
+            id: "network",
+            label: "Connectivity",
+            icon: LuGlobe,
             separator_before: false,
+            members: vec!["network", "discovery"],
         },
         TabEntry {
-            id: "developer",
-            label: "Developer",
-            icon: LuCode,
-            separator_before: true,
-        },
-        TabEntry {
-            id: "about",
-            label: "About",
-            icon: LuInfo,
+            id: "rendering",
+            label: "System",
+            icon: LuGauge,
             separator_before: false,
+            members: vec!["rendering", "developer", "about"],
         },
     ];
     tabs.extend(
@@ -291,6 +269,7 @@ pub fn SettingsPage() -> impl IntoView {
                 id: section.id,
                 label: section.label,
                 icon: section.icon,
+                members: vec![section.id],
                 separator_before: index == 0,
             }),
     );
@@ -315,7 +294,11 @@ pub fn SettingsPage() -> impl IntoView {
                     <div class="flex items-center gap-0.5 w-full h-full overflow-x-auto scrollbar-none">
                         {tabs.into_iter().map(|tab| {
                             let id = tab.id;
-                            let is_active = Memo::new(move |_| active_section.get() == id);
+                            let members = tab.members.clone();
+                            let is_active = Memo::new(move |_| {
+                                let current = active_section.get();
+                                members.iter().any(|member| *member == current)
+                            });
 
                             let separator = if tab.separator_before {
                                 Some(view! {
@@ -409,30 +392,33 @@ pub fn SettingsPage() -> impl IntoView {
                                     })
                                 />
                             </div>
+                            // Card order mirrors the four tab groups:
+                            // General (audio, capture, input), Behavior
+                            // (session), Connectivity (network, discovery),
+                            // System (rendering, developer, about).
                             <div
                                 class="settings-card"
                                 style="animation: enter-fade 0.4s ease-out 0.1s both"
                             >
-                                <InputSection config=config on_change=on_change on_reset=on_reset />
+                                <CaptureSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
                                 style="animation: enter-fade 0.4s ease-out 0.125s both"
                             >
-                                <CaptureSection config=config on_change=on_change on_reset=on_reset />
-                                <RenderingSection config=config on_change=on_change on_reset=on_reset />
+                                <InputSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
                                 style="animation: enter-fade 0.4s ease-out 0.15s both"
                             >
-                                <NetworkSection config=config on_change=on_change on_reset=on_reset />
+                                <SessionSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
                                 style="animation: enter-fade 0.4s ease-out 0.2s both"
                             >
-                                <SessionSection config=config on_change=on_change on_reset=on_reset />
+                                <NetworkSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
@@ -448,6 +434,12 @@ pub fn SettingsPage() -> impl IntoView {
                             <div
                                 class="settings-card"
                                 style="animation: enter-fade 0.4s ease-out 0.3s both"
+                            >
+                                <RenderingSection config=config on_change=on_change on_reset=on_reset />
+                            </div>
+                            <div
+                                class="settings-card"
+                                style="animation: enter-fade 0.4s ease-out 0.325s both"
                             >
                                 <DeveloperSection config=config on_change=on_change on_reset=on_reset />
                             </div>

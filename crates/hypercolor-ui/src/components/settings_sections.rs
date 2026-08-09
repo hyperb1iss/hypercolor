@@ -174,7 +174,6 @@ pub fn CaptureSection(
         options
     });
 
-    let (show_advanced, set_show_advanced) = signal(false);
 
     let (picking, set_picking) = signal(false);
     let pick_source = move |_| {
@@ -233,21 +232,7 @@ pub fn CaptureSection(
             // features (letterbox crop, scene cuts), sampling resolution
             // that layouts depend on, and color shaping. Collapsed so the
             // section reads as two decisions — on, and which monitor.
-            <button
-                type="button"
-                class="flex w-full items-center gap-1.5 py-3 text-left text-[12px] font-medium text-fg-tertiary hover:text-fg-secondary transition-colors"
-                on:click=move |_| set_show_advanced.update(|open| *open = !*open)
-            >
-                <Icon
-                    icon=Signal::derive(move || {
-                        if show_advanced.get() { LuChevronDown } else { LuChevronRight }
-                    })
-                    width="14px"
-                    height="14px"
-                />
-                {move || if show_advanced.get() { "Hide advanced tuning" } else { "Advanced tuning" }}
-            </button>
-            <Show when=move || show_advanced.get()>
+            <AdvancedDisclosure>
                 <SettingNumberInput
                     label="Capture FPS"
                     description="How often the screen is sampled per second"
@@ -333,7 +318,7 @@ pub fn CaptureSection(
                     min=0.0 max=500.0 step=10.0
                     decimals=0
                 />
-            </Show>
+            </AdvancedDisclosure>
             <SectionReset section_label="Capture" on_reset=Callback::new(move |()| on_reset.run("capture".to_string())) />
         </section>
     }
@@ -509,6 +494,7 @@ pub fn NetworkSection(
                     restart_required=true
                 />
             </Show>
+            <AdvancedDisclosure>
             <Show when=move || access_mode.get() == "custom">
             <SettingSegmented
                 label="Listen Scope"
@@ -578,6 +564,7 @@ pub fn NetworkSection(
                 on_change=on_change
                 restart_required=true
             />
+            </AdvancedDisclosure>
             <SectionReset section_label="Network" on_reset=Callback::new(move |()| {
                 for key in &[
                     "daemon.listen_address", "daemon.port", "network.access_mode",
@@ -695,6 +682,7 @@ pub fn RenderingSection(
                 on_change=on_change
                 numeric=true
             />
+            <AdvancedDisclosure>
             <SettingDropdown
                 label="Canvas Resolution"
                 description="Internal render surface size. Higher values improve gradient smoothness on large layouts at the cost of CPU"
@@ -738,6 +726,7 @@ pub fn RenderingSection(
                 options=Signal::stored(fallback_options)
                 on_change=on_change
             />
+            </AdvancedDisclosure>
             <SectionReset section_label="Rendering" on_reset=Callback::new(move |()| {
                 for key in &[
                     "daemon.target_fps",

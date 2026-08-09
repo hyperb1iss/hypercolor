@@ -5,7 +5,7 @@ use super::read_config;
 use crate::api::{self, InputSourceStatus, InputStatus};
 use crate::app::WsContext;
 use crate::components::settings_controls::{
-    SectionHeader, SectionReset, SettingDropdown, SettingToggle,
+    AdvancedDisclosure, SectionHeader, SectionReset, SettingDropdown, SettingToggle,
 };
 use crate::icons::LuKeyboard;
 use crate::input_access::{
@@ -67,36 +67,38 @@ pub fn InputSection(
                 value=enabled
                 on_change=on_change
             />
-            <SettingToggle
-                label="Keyboard"
-                description="Capture physical key state and ordered key events while an effect demands them"
-                key="input.keyboard"
-                value=keyboard
-                on_change=on_change
-            />
-            <SettingToggle
-                label="Mouse"
-                description="Capture pointer position, buttons, wheel travel, and motion while demanded"
-                key="input.mouse"
-                value=mouse
-                on_change=on_change
-            />
-            <SettingDropdown
-                label="Daemon effects"
-                description="Choose which interaction source authoritative device output receives"
-                key="input.daemon_route"
-                value=daemon_route
-                options=route_options
-                on_change=on_change
-            />
-            <SettingDropdown
-                label="Interactive previews"
-                description="Route each preview to its addressed browser input, host input, or both"
-                key="input.preview_route"
-                value=preview_route
-                options=route_options
-                on_change=on_change
-            />
+            <AdvancedDisclosure>
+                <SettingToggle
+                    label="Keyboard"
+                    description="Capture physical key state and ordered key events while an effect demands them"
+                    key="input.keyboard"
+                    value=keyboard
+                    on_change=on_change
+                />
+                <SettingToggle
+                    label="Mouse"
+                    description="Capture pointer position, buttons, wheel travel, and motion while demanded"
+                    key="input.mouse"
+                    value=mouse
+                    on_change=on_change
+                />
+                <SettingDropdown
+                    label="Daemon effects"
+                    description="Choose which interaction source authoritative device output receives"
+                    key="input.daemon_route"
+                    value=daemon_route
+                    options=route_options
+                    on_change=on_change
+                />
+                <SettingDropdown
+                    label="Interactive previews"
+                    description="Route each preview to its addressed browser input, host input, or both"
+                    key="input.preview_route"
+                    value=preview_route
+                    options=route_options
+                    on_change=on_change
+                />
+            </AdvancedDisclosure>
 
             <div class="mt-3 rounded-xl border border-edge-subtle bg-surface-sunken/40 px-4 py-3">
                 <div class="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-tertiary">

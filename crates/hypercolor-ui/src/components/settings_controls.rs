@@ -530,3 +530,35 @@ pub fn SectionReset(section_label: &'static str, on_reset: Callback<()>) -> impl
         </div>
     }
 }
+
+// ── Advanced Disclosure ────────────────────────────────────────────────────
+
+/// Collapsed-by-default container for a section's tuning and plumbing
+/// knobs. The everyday controls above it stay the whole visible surface;
+/// opening this is a deliberate act, so the settings page reads as a
+/// product, not a config editor. State is per-mount and intentionally
+/// not persisted — advanced starts closed every visit.
+#[component]
+pub fn AdvancedDisclosure(children: Children) -> impl IntoView {
+    let (open, set_open) = signal(false);
+
+    view! {
+        <div class="mt-2 border-t border-edge-subtle/40">
+            <button
+                class="w-full flex items-center gap-2 py-2.5 text-fg-tertiary hover:text-fg-secondary transition-colors duration-200 glow-ring rounded-md"
+                on:click=move |_| set_open.update(|v| *v = !*v)
+            >
+                <span
+                    class="flex items-center justify-center w-4 h-4 transition-transform duration-200"
+                    class:rotate-90=move || open.get()
+                >
+                    <Icon icon=crate::icons::LuChevronRight width="13px" height="13px" />
+                </span>
+                <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Advanced"</span>
+            </button>
+            <div class="pl-1" class:hidden=move || !open.get()>
+                {children()}
+            </div>
+        </div>
+    }
+}
