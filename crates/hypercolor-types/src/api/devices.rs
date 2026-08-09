@@ -101,3 +101,57 @@ pub struct IdentifyRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
 }
+
+/// Response for `GET /api/v1/devices/bindings`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeviceBindingsResponse {
+    /// Layout bindings that no attached device currently resolves.
+    pub unresolved: Vec<UnresolvedBindingSummary>,
+    /// Attached devices no layout binding references, offered for re-bind.
+    pub candidates: Vec<RebindCandidateSummary>,
+}
+
+/// One layout binding with no attached device behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UnresolvedBindingSummary {
+    /// The layout binding id the zones reference.
+    pub layout_device_id: String,
+    /// The layouts whose zones reference it.
+    pub layout_ids: Vec<String>,
+    /// Whether a recorded identity exists for this binding, which is what
+    /// a durable re-bind needs to inherit.
+    pub rebindable: bool,
+}
+
+/// One attached device offered as a re-bind target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RebindCandidateSummary {
+    pub device_id: String,
+    pub name: String,
+    /// The layout binding id this device currently derives.
+    pub layout_device_id: String,
+    pub status: String,
+    /// The device's portable key. Only claimed devices can inherit a
+    /// binding durably; a claimless candidate re-binds by layout edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portable_key: Option<String>,
+}
+
+/// Request body for `POST /api/v1/devices/rebind`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RebindDeviceRequest {
+    /// The orphaned layout binding to inherit.
+    pub layout_device_id: String,
+    /// The attached, claimed device that should inherit it.
+    pub device_id: String,
+}
+
+/// Response for `POST /api/v1/devices/rebind`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RebindDeviceResponse {
+    pub device_id: String,
+    /// The layout binding id the device now resolves to.
+    pub layout_device_id: String,
+    /// The portable key that was re-pinned to the inherited identity.
+    pub portable_key: String,
+}

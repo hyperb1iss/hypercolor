@@ -5,6 +5,7 @@
 //! submodules.
 
 mod attachments;
+mod bindings;
 mod discovery;
 mod logical;
 mod pairing;
@@ -37,6 +38,7 @@ pub use attachments::{
     DeviceComponentsResponse, DeviceComponentsUpdateResponse, UpdateAttachmentsRequest,
     delete_attachments, get_attachments, preview_attachments, update_attachments,
 };
+pub use bindings::{get_device_bindings, rebind_device};
 pub use discovery::{DiscoverRequest, discover_devices};
 pub use logical::{
     CreateLogicalDeviceRequest, ListLogicalDevicesQuery, LogicalDeviceListResponse,
@@ -54,8 +56,9 @@ pub use pairing::{
 // re-exports keep daemon-internal paths (`api::devices::Pagination`) stable.
 pub use hypercolor_types::api::common::Pagination;
 pub use hypercolor_types::api::devices::{
-    DeviceConnectionSummary, DeviceListResponse, DeviceSummary, IdentifyRequest,
-    UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
+    DeviceBindingsResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
+    IdentifyRequest, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
+    UnresolvedBindingSummary, UpdateDeviceRequest, ZoneSummary, ZoneTopologySummary,
 };
 
 #[derive(Debug, Deserialize)]

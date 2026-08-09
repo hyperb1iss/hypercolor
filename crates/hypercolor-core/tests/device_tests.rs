@@ -483,11 +483,12 @@ async fn registry_add_with_fingerprint_reuses_existing_device() {
 }
 
 /// Build a claimed network discovery for portable-identity tests.
-///
-/// Every call claims the same MAC, so devices built here share one
-/// portable key while carrying whatever fingerprint and peer evidence the
-/// test needs.
-fn discovered_with_shared_key(name: &str, fingerprint: &str, peer_octet: u8) -> DiscoveredDevice {
+fn discovered_with_mac(
+    name: &str,
+    fingerprint: &str,
+    mac: &str,
+    peer_octet: u8,
+) -> DiscoveredDevice {
     use std::net::{IpAddr, Ipv4Addr};
 
     use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
@@ -498,10 +499,17 @@ fn discovered_with_shared_key(name: &str, fingerprint: &str, peer_octet: u8) -> 
         info: mock_device_info(name),
         metadata: HashMap::new(),
         claim: PortableIdentityClaim::mac_address(
-            "2C:F4:32:11:22:33",
+            mac,
             NetworkAttachment::Peer(IpAddr::V4(Ipv4Addr::new(192, 168, 1, peer_octet))),
         ),
     }
+}
+
+/// Every call claims the same MAC, so devices built here share one
+/// portable key while carrying whatever fingerprint and peer evidence the
+/// test needs.
+fn discovered_with_shared_key(name: &str, fingerprint: &str, peer_octet: u8) -> DiscoveredDevice {
+    discovered_with_mac(name, fingerprint, "2C:F4:32:11:22:33", peer_octet)
 }
 
 #[tokio::test]
@@ -626,6 +634,98 @@ async fn registry_reconnecting_holder_rebinds_instead_of_quarantining() {
     assert_eq!(first_id, second_id);
     assert!(registry.drain_portable_key_collisions().await.is_empty());
     assert!(registry.quarantined_portable_keys().await.is_empty());
+}
+
+#[tokio::test]
+async fn registry_rebind_inherits_identity_and_settings_from_replaced_device() {
+    use hypercolor_core::device::PortableRebindError;
+
+    let registry = DeviceRegistry::new();
+
+    // The dead predecessor: registered, customized, no longer renderable.
+    let old_id = registry
+        .add_discovered(discovered_with_mac(
+            "Shelf Strip",
+            "net:wled:dead",
+            "2C:F4:32:00:00:01",
+            40,
+        ))
+        .await;
+    registry
+        .update_user_settings(
+            &old_id,
+            Some("Bliss Shelf".to_owned()),
+            Some(false),
+            Some(0.4),
+        )
+        .await
+        .expect("predecessor exists");
+
+    // The replacement hardware, attached under its own key.
+    let new_id = registry
+        .add_discovered(discovered_with_mac(
+            "Shelf Strip",
+            "net:wled:replacement",
+            "2C:F4:32:00:00:02",
+            41,
+        ))
+        .await;
+
+    let rebound = registry
+        .rebind_portable_identity(&new_id, DeviceFingerprint("net:wled:dead".to_owned()))
+        .await
+        .expect("rebind succeeds");
+
+    assert_eq!(registry.len().await, 1, "the predecessor entry is retired");
+    assert_eq!(
+        registry.fingerprint_for_id(&new_id).await,
+        Some(DeviceFingerprint("net:wled:dead".to_owned())),
+        "the replacement inherits the identity its layouts reference"
+    );
+    assert_eq!(rebound.user_settings.name.as_deref(), Some("Bliss Shelf"));
+    assert!(!rebound.user_settings.enabled);
+
+    // The decision is durable: the key now pins to the inherited
+    // fingerprint, so a rescan resolves straight back to it.
+    let rescan_id = registry
+        .add_discovered(discovered_with_mac(
+            "Shelf Strip",
+            "net:wled:replacement",
+            "2C:F4:32:00:00:02",
+            41,
+        ))
+        .await;
+    assert_eq!(rescan_id, new_id);
+    assert_eq!(registry.len().await, 1);
+
+    // Guardrails: a renderable holder refuses, a claimless device
+    // cannot re-bind durably.
+    let active_id = registry
+        .add_discovered(discovered_with_mac(
+            "Desk Strip",
+            "net:wled:active",
+            "2C:F4:32:00:00:03",
+            42,
+        ))
+        .await;
+    registry.set_state(&active_id, DeviceState::Connected).await;
+    assert_eq!(
+        registry
+            .rebind_portable_identity(&new_id, DeviceFingerprint("net:wled:active".to_owned()))
+            .await
+            .expect_err("active holders refuse"),
+        PortableRebindError::TargetActive
+    );
+
+    let claimless = mock_device_info("Anonymous");
+    let claimless_id = registry.add(claimless).await;
+    assert_eq!(
+        registry
+            .rebind_portable_identity(&claimless_id, DeviceFingerprint("net:wled:dead".to_owned()))
+            .await
+            .expect_err("claimless devices refuse"),
+        PortableRebindError::Unclaimed
+    );
 }
 
 #[tokio::test]

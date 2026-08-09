@@ -49,9 +49,12 @@ use crate::api::{
             envelope::ApiResponse<effects::EffectDetailResponse>,
             envelope::ApiResponse<effects::ActiveEffectResponse>,
             envelope::ApiResponse<effects::ApplyEffectResponse>,
+            envelope::ApiResponse<devices::DeviceBindingsResponse>,
+            envelope::ApiResponse<devices::RebindDeviceResponse>,
             devices::UpdateDeviceRequest,
             devices::IdentifyRequest,
             devices::DiscoverRequest,
+            devices::RebindDeviceRequest,
             effects::UpdateCurrentControlsRequest,
             layers::BroadcastMediaLayerRequest,
             layers::BroadcastMediaLayerTarget,
@@ -356,6 +359,19 @@ pub const ROUTES: &[RouteSpec] = &[
         "devices",
         "List device metrics",
     ),
+    RouteSpec::get(
+        "/api/v1/devices/bindings",
+        "get_device_bindings",
+        "devices",
+        "List unresolved layout bindings and re-bind candidates",
+    ),
+    RouteSpec::post(
+        "/api/v1/devices/rebind",
+        "rebind_device",
+        "devices",
+        "Re-bind an orphaned layout binding onto an attached claimed device",
+    )
+    .with_request_body("RebindDeviceRequest", true),
     RouteSpec::get(
         "/api/v1/devices/debug/queues",
         "debug_output_queues",
