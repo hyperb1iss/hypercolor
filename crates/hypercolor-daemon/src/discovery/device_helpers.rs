@@ -26,14 +26,12 @@ pub(crate) async fn apply_persisted_device_settings(
         .get(&device_id)
         .await
         .map_or_else(DeviceUserSettings::default, |tracked| tracked.user_settings);
-    let key = runtime
-        .device_registry
-        .fingerprint_for_id(&device_id)
-        .await
-        .map_or_else(
-            || device_id.to_string(),
-            |fingerprint| fingerprint.to_string(),
-        );
+    let key = crate::device_settings::resolve_device_settings_key(
+        &runtime.device_registry,
+        &runtime.device_settings,
+        device_id,
+    )
+    .await;
     let persisted_settings = {
         let store = runtime.device_settings.read().await;
         store

@@ -1018,14 +1018,12 @@ async fn resolved_layout_device_id(state: &AppState, device_info: &DeviceInfo) -
 }
 
 pub(super) async fn device_settings_key(state: &AppState, device_id: DeviceId) -> String {
-    state
-        .device_registry
-        .fingerprint_for_id(&device_id)
-        .await
-        .map_or_else(
-            || device_id.to_string(),
-            |fingerprint| fingerprint.to_string(),
-        )
+    crate::device_settings::resolve_device_settings_key(
+        &state.device_registry,
+        &state.device_settings,
+        device_id,
+    )
+    .await
 }
 
 pub(crate) async fn persist_device_settings_for(
