@@ -115,6 +115,13 @@ const TARGETS: Target[] = [
         current: (c) => /"version": "([^"]+)"/.exec(c)?.[1] ?? null,
         expected: (v) => v,
     },
+    {
+        // The runtime __version__ must match pyproject; PEP 440 form like it.
+        path: 'python/src/hypercolor/__init__.py',
+        stamp: lineReplace(/^__version__ = "[^"]+"$/m, (v) => `__version__ = "${pep440(v)}"`),
+        current: (c) => /^__version__ = "([^"]+)"$/m.exec(c)?.[1] ?? null,
+        expected: (v) => pep440(v),
+    },
 ]
 
 function main(): void {
