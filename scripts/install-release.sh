@@ -42,6 +42,7 @@ LAUNCHD_PLIST="${LAUNCHD_DIR}/${LAUNCHD_LABEL}.plist"
 LOG_DIR="${HOME}/Library/Logs/hypercolor"
 
 UDEV_RULES_PATH="/etc/udev/rules.d/99-hypercolor.rules"
+INPUT_UDEV_RULES_PATH="/etc/udev/rules.d/70-hypercolor-input.rules"
 
 VERSION=""
 NO_SERVICE=false
@@ -446,6 +447,11 @@ prompt_udev_rules() {
     info "Installing udev rules..."
     sudo install -Dm644 "$rules_src" "$UDEV_RULES_PATH"
 
+    local input_rules_src="${RELEASE_DIR}/lib/udev/rules.d/70-hypercolor-input.rules"
+    if [[ -f "$input_rules_src" ]]; then
+        sudo install -Dm644 "$input_rules_src" "$INPUT_UDEV_RULES_PATH"
+    fi
+
     # Load i2c-dev module if not already loaded
     if ! lsmod 2>/dev/null | grep -q i2c_dev; then
         sudo modprobe i2c-dev 2>/dev/null || true
@@ -630,7 +636,7 @@ do_uninstall() {
                     read -r answer
                     case "$answer" in
                         [yY]|[yY][eE][sS])
-                            sudo rm -f "$UDEV_RULES_PATH"
+                            sudo rm -f "$UDEV_RULES_PATH" "$INPUT_UDEV_RULES_PATH"
                             sudo udevadm control --reload-rules 2>/dev/null || true
                             success "Removed udev rules"
                             ;;
@@ -639,7 +645,7 @@ do_uninstall() {
                             ;;
                     esac
                 else
-                    sudo rm -f "$UDEV_RULES_PATH"
+                    sudo rm -f "$UDEV_RULES_PATH" "$INPUT_UDEV_RULES_PATH"
                     sudo udevadm control --reload-rules 2>/dev/null || true
                     success "Removed udev rules"
                 fi

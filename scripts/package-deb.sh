@@ -101,6 +101,10 @@ if [[ -f "${DIST_DIR}/lib/udev/rules.d/99-hypercolor.rules" ]]; then
   install -Dm644 "${DIST_DIR}/lib/udev/rules.d/99-hypercolor.rules" \
     "${PACKAGE_ROOT}/usr/lib/udev/rules.d/99-hypercolor.rules"
 fi
+if [[ -f "${DIST_DIR}/lib/udev/rules.d/70-hypercolor-input.rules" ]]; then
+  install -Dm644 "${DIST_DIR}/lib/udev/rules.d/70-hypercolor-input.rules" \
+    "${PACKAGE_ROOT}/usr/lib/udev/rules.d/70-hypercolor-input.rules"
+fi
 
 if [[ -f "${DIST_DIR}/etc/modules-load.d/i2c-dev.conf" ]]; then
   install -Dm644 "${DIST_DIR}/etc/modules-load.d/i2c-dev.conf" \

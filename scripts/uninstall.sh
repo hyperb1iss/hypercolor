@@ -115,9 +115,9 @@ fi
 
 # ── System Hooks ─────────────────────────────────────────────
 if [[ "${REMOVE_SYSTEM}" -eq 1 ]]; then
-  if [[ -f /etc/udev/rules.d/99-hypercolor.rules ]]; then
+  if [[ -f /etc/udev/rules.d/99-hypercolor.rules || -f /etc/udev/rules.d/70-hypercolor-input.rules ]]; then
     info "Removing udev rules (requires sudo)"
-    sudo rm -f /etc/udev/rules.d/99-hypercolor.rules
+    sudo rm -f /etc/udev/rules.d/99-hypercolor.rules /etc/udev/rules.d/70-hypercolor-input.rules
     sudo udevadm control --reload-rules 2>/dev/null || true
   fi
   if [[ -f /etc/modules-load.d/i2c-dev.conf ]]; then

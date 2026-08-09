@@ -90,6 +90,8 @@ package() {
   # udev rules
   install -Dm644 lib/udev/rules.d/99-hypercolor.rules \
     "${pkgdir}/usr/lib/udev/rules.d/99-hypercolor.rules"
+  install -Dm644 lib/udev/rules.d/70-hypercolor-input.rules \
+    "${pkgdir}/usr/lib/udev/rules.d/70-hypercolor-input.rules"
 
   # i2c-dev module persistence
   install -Dm644 etc/modules-load.d/i2c-dev.conf \
