@@ -211,16 +211,24 @@ pub(super) async fn handle_set_brightness_with_state(
     let normalized = f32::from(brightness_u16) / 100.0;
 
     set_global_brightness(&state.power_state, normalized);
-    {
+    let persisted = {
         let mut settings = state.device_settings.write().await;
         settings.set_global_brightness(normalized);
-        if let Err(error) = settings.save() {
-            tracing::warn!(%error, "Failed to persist global brightness");
+        match settings.save() {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "Failed to persist global brightness");
+                false
+            }
         }
+    };
+    // The hint promises persisted state changed; a failed save must not
+    // send sync consumers to re-read a store that did not move.
+    if persisted {
+        state
+            .event_bus
+            .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
     }
-    state
-        .event_bus
-        .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
 
     state.event_bus.publish(HypercolorEvent::BrightnessChanged {
         old: previous,

@@ -343,8 +343,10 @@ impl DeviceControlStore for DaemonDriverHost {
             store.set_driver_control_values(&key, values);
             store.save()?;
         }
+        // Driver control rows live in their own map, not the per-device
+        // settings rows a `Some` key names, so this hint is store-scoped.
         self.event_bus
-            .publish(HypercolorEvent::DeviceSettingsChanged { key: Some(key) });
+            .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
         Ok(())
     }
 }
