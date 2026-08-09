@@ -817,6 +817,9 @@ pub fn resolve_nanoleaf_probe_devices_from_sources(
             })
             .or_insert_with(|| NanoleafKnownDevice {
                 device_id: device_key,
+                // Cached metadata cannot prove where its device_key came
+                // from; the id upgrades when live mDNS re-proves it.
+                device_id_is_identifier: false,
                 ip,
                 port,
                 name: tracked.info.name.clone(),

@@ -542,6 +542,48 @@ impl DeviceRegistry {
         std::mem::take(&mut inner.collision_log)
     }
 
+    /// Record a collision proven outside the registry, quarantining the
+    /// key.
+    ///
+    /// Two units sharing a constant serial or MAC usually share a
+    /// fingerprint too, so the discovery orchestrator's aggregation
+    /// collapses them before the registry could compare their evidence.
+    /// Detection has to run before deduplication, and aggregation is the
+    /// only place both observations are still visible; this is its
+    /// channel to the quarantine.
+    pub async fn report_portable_key_collision(
+        &self,
+        device_id: DeviceId,
+        fingerprint: DeviceFingerprint,
+        existing_claim: PortableIdentityClaim,
+        incoming_claim: PortableIdentityClaim,
+    ) {
+        let mut inner = self.inner.write().await;
+        let key = existing_claim.key().clone();
+        if inner.quarantined_keys.contains(&key) {
+            return;
+        }
+
+        warn!(
+            key = %key,
+            device_id = %device_id,
+            existing_evidence = ?existing_claim.evidence(),
+            incoming_evidence = ?incoming_claim.evidence(),
+            "Two simultaneously present devices share one fingerprint and portable key; quarantining"
+        );
+        inner.collision_log.push(PortableKeyCollision {
+            key: key.clone(),
+            existing_device: device_id,
+            existing_fingerprint: fingerprint.clone(),
+            existing_claim,
+            incoming_fingerprint: fingerprint,
+            incoming_claim,
+        });
+        inner.quarantined_keys.insert(key.clone());
+        inner.portable_key_pins.remove(&key);
+        self.bump_generation();
+    }
+
     /// Re-point a claimed device onto another fingerprint, adopting the
     /// identity that fingerprint's layouts reference.
     ///
@@ -563,14 +605,14 @@ impl DeviceRegistry {
     ) -> Result<TrackedDevice, PortableRebindError> {
         let mut inner = self.inner.write().await;
 
+        if !inner.devices.contains_key(id) {
+            return Err(PortableRebindError::UnknownDevice);
+        }
         let claim = inner
             .claims_by_id
             .get(id)
             .cloned()
             .ok_or(PortableRebindError::Unclaimed)?;
-        if !inner.devices.contains_key(id) {
-            return Err(PortableRebindError::UnknownDevice);
-        }
 
         let mut inherited_settings = None;
         if let Some(&holder_id) = inner.fingerprints.get(&fingerprint)

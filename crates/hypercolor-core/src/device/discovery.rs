@@ -184,19 +184,44 @@ impl DiscoveryOrchestrator {
                             for device in devices {
                                 let fingerprint = device.fingerprint.clone();
 
-                                let merged =
-                                    if let Some(existing) = aggregated.get_mut(&fingerprint) {
-                                        Self::merge_discovered(existing, &device);
-                                        existing.clone()
-                                    } else {
-                                        aggregated.insert(fingerprint.clone(), device);
-                                        aggregated
-                                            .get(&fingerprint)
-                                            .cloned()
-                                            .expect("inserted discovery entry should exist")
-                                    };
+                                // Two units with a duplicated serial or MAC
+                                // usually share a fingerprint, so this merge
+                                // is the last place both observations exist.
+                                // Capture the proof before dedup erases it.
+                                let mut same_key_collision = None;
+                                let merged = if let Some(existing) =
+                                    aggregated.get_mut(&fingerprint)
+                                {
+                                    if let (Some(held), Some(incoming)) =
+                                        (existing.claim.as_ref(), device.claim.as_ref())
+                                        && held.key() == incoming.key()
+                                        && held
+                                            .evidence()
+                                            .proves_distinct_from(&incoming.evidence())
+                                    {
+                                        same_key_collision = Some((held.clone(), incoming.clone()));
+                                    }
+                                    Self::merge_discovered(existing, &device);
+                                    existing.clone()
+                                } else {
+                                    aggregated.insert(fingerprint.clone(), device);
+                                    aggregated
+                                        .get(&fingerprint)
+                                        .cloned()
+                                        .expect("inserted discovery entry should exist")
+                                };
 
                                 let id = self.registry.add_discovered(merged).await;
+                                if let Some((held, incoming)) = same_key_collision {
+                                    self.registry
+                                        .report_portable_key_collision(
+                                            id,
+                                            fingerprint.clone(),
+                                            held,
+                                            incoming,
+                                        )
+                                        .await;
+                                }
 
                                 if seen_ids.insert(id) {
                                     if known_ids_before.contains(&id) {

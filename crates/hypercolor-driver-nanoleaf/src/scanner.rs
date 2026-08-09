@@ -29,6 +29,13 @@ const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NanoleafKnownDevice {
     pub device_id: String,
+    /// Whether `device_id` came from a real device identifier (a live
+    /// `mDNS` `id` record) rather than a cached name or address
+    /// fallback. Only identifier-grade values may become portable
+    /// claims: a probe target rebuilt from tracked metadata can carry a
+    /// display name here, and two controllers named "Nanoleaf Shapes"
+    /// must never share an account-wide identity.
+    pub device_id_is_identifier: bool,
     pub ip: IpAddr,
     pub port: u16,
     pub name: String,
@@ -42,6 +49,7 @@ impl NanoleafKnownDevice {
     pub fn from_ip(ip: IpAddr) -> Self {
         Self {
             device_id: String::new(),
+            device_id_is_identifier: false,
             ip,
             port: DEFAULT_NANOLEAF_API_PORT,
             name: String::new(),
@@ -51,8 +59,15 @@ impl NanoleafKnownDevice {
     }
 
     fn merge_from(&mut self, other: &Self) {
-        if self.device_id.is_empty() {
+        // An identifier-grade id replaces a fallback-grade one: a probe
+        // target rebuilt from cached metadata upgrades when live mDNS
+        // supplies the controller's real id.
+        if !other.device_id.is_empty()
+            && (self.device_id.is_empty()
+                || (!self.device_id_is_identifier && other.device_id_is_identifier))
+        {
             self.device_id.clone_from(&other.device_id);
+            self.device_id_is_identifier = other.device_id_is_identifier;
         }
         if self.port == 0 {
             self.port = other.port;
@@ -152,8 +167,10 @@ impl NanoleafScanner {
                 .browse(NANOLEAF_SERVICE_TYPE, self.scan_timeout)
                 .await?;
             for service in services {
+                let mdns_id = service.txt.get("id").cloned().unwrap_or_default();
                 let discovered = NanoleafKnownDevice {
-                    device_id: service.txt.get("id").cloned().unwrap_or_default(),
+                    device_id_is_identifier: !mdns_id.is_empty(),
+                    device_id: mdns_id,
                     ip: service.host,
                     port: service.port,
                     name: service
@@ -282,11 +299,13 @@ async fn build_discovered_device(
         &candidate,
         (!serial_no.is_empty()).then_some(serial_no.as_str()),
     );
-    // Claimed from the controller's real serial fields only. The device key
-    // is not enough: it falls back to a name and then an address, and a
-    // host-local value must never become an account-wide identity.
+    // Claimed from the controller's real serial fields only: a fetched
+    // serial, else a live mDNS id. A candidate rebuilt from cached
+    // metadata can carry a display name in device_id, and a host-local
+    // value must never become an account-wide identity; such a device
+    // re-claims when a live source next proves who it is.
     let claim = if serial_no.is_empty() {
-        (!candidate.device_id.is_empty())
+        (candidate.device_id_is_identifier && !candidate.device_id.is_empty())
             .then(|| PortableIdentityClaim::nanoleaf_serial(&candidate.device_id, candidate.ip))
             .flatten()
     } else {

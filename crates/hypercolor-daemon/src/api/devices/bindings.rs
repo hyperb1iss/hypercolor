@@ -19,7 +19,7 @@ use hypercolor_types::api::devices::{
     DeviceBindingsResponse, RebindCandidateSummary, RebindDeviceRequest, RebindDeviceResponse,
     UnresolvedBindingSummary,
 };
-use hypercolor_types::device::{DeviceFingerprint, DeviceId};
+use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceState};
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
@@ -32,8 +32,19 @@ pub async fn get_device_bindings(State(state): State<Arc<AppState>>) -> Response
     let attached = attached_devices(&state).await;
 
     let referenced_ids: BTreeSet<String> = referenced.keys().cloned().collect();
+
+    // A Reconnecting device is hardware that vanished: its binding is an
+    // orphan to surface and it is not a re-bind target, but it IS a
+    // recorded identity a replacement can inherit.
+    let reconnecting = DeviceState::Reconnecting.variant_name().to_lowercase();
     let derived_ids: BTreeSet<&str> = attached
         .iter()
+        .filter(|device| device.status != reconnecting)
+        .map(|device| device.layout_device_id.as_str())
+        .collect();
+    let registry_recorded: BTreeSet<&str> = attached
+        .iter()
+        .filter(|device| device.status == reconnecting)
         .map(|device| device.layout_device_id.as_str())
         .collect();
 
@@ -49,7 +60,8 @@ pub async fn get_device_bindings(State(state): State<Arc<AppState>>) -> Response
         .into_iter()
         .filter(|(layout_device_id, _)| !derived_ids.contains(layout_device_id.as_str()))
         .map(|(layout_device_id, layout_ids)| UnresolvedBindingSummary {
-            rebindable: recorded_bindings.contains(layout_device_id.as_str()),
+            rebindable: recorded_bindings.contains(layout_device_id.as_str())
+                || registry_recorded.contains(layout_device_id.as_str()),
             layout_device_id,
             layout_ids: layout_ids.into_iter().collect(),
         })
@@ -57,7 +69,9 @@ pub async fn get_device_bindings(State(state): State<Arc<AppState>>) -> Response
 
     let candidates = attached
         .into_iter()
-        .filter(|device| !referenced_ids.contains(&device.layout_device_id))
+        .filter(|device| {
+            device.status != reconnecting && !referenced_ids.contains(&device.layout_device_id)
+        })
         .collect();
 
     ApiResponse::ok(DeviceBindingsResponse {
@@ -85,6 +99,21 @@ pub async fn rebind_device(
             "no recorded identity derives layout binding '{layout_device_id}'"
         ));
     };
+
+    // A cross-driver inheritance would pin the key but derive a
+    // different layout id (the owner prefix comes from the device), so
+    // the binding would stay orphaned while the response said healed.
+    // Refuse before mutating anything.
+    if let Some(target) = state.device_registry.get(&device_id).await {
+        let would_derive =
+            DeviceLifecycleManager::canonical_layout_device_id(&target.info, Some(&fingerprint));
+        if would_derive != layout_device_id {
+            return ApiError::validation(format!(
+                "device would derive layout binding '{would_derive}', not \
+                 '{layout_device_id}'; a binding can only be inherited within its driver"
+            ));
+        }
+    }
 
     let rebound = match state
         .device_registry
@@ -124,6 +153,20 @@ pub async fn rebind_device(
         .unwrap_or_default();
     let resolved_layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(&rebound.info, Some(&fingerprint));
+
+    // A live device keeps rendering through its pre-rebind layout id
+    // until routing is re-pointed; the registry alone is not enough.
+    let remap = {
+        let mut lifecycle = state.lifecycle_manager.lock().await;
+        lifecycle.rebind_layout_device_id(device_id, resolved_layout_device_id.clone())
+    };
+    if let Some((backend_id, previous_layout_id)) = remap
+        && previous_layout_id != resolved_layout_device_id
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.unmap_device(&previous_layout_id);
+        manager.map_device(resolved_layout_device_id.clone(), backend_id, device_id);
+    }
 
     state.event_bus.publish(HypercolorEvent::DeviceRebound {
         device_id: device_id.to_string(),
