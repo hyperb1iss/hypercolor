@@ -143,9 +143,9 @@ async function assignFace(simulators: SimulatorConfig[], effectId: string): Prom
 }
 
 function openDisplaysPage(): void {
-    const url = process.env.HYPERCOLOR_UI_URL ?? `${DAEMON_URL}/displays`
+    const url = process.env.HYPERCOLOR_UI_URL ?? `${DAEMON_URL}/devices`
     Bun.spawn(['xdg-open', url], { stderr: 'ignore', stdout: 'ignore' }).exited.catch(() => {})
-    console.log(`displays page: ${url}`)
+    console.log(`devices page (display management): ${url}`)
 }
 
 async function cycle(simulators: SimulatorConfig[], reason: string): Promise<void> {
