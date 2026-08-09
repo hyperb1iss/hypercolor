@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_driver_api::CredentialStore;
@@ -11,21 +11,12 @@ use hypercolor_driver_nanoleaf::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::Mutex;
 use tokio::time::timeout;
-
-static UDP_PORT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-fn udp_test_port_lock() -> &'static Mutex<()> {
-    UDP_PORT_LOCK.get_or_init(|| Mutex::new(()))
-}
-
 #[tokio::test]
 async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
-    let _guard = udp_test_port_lock().lock().await;
-
     let api_listener = TcpListener::bind("127.0.0.1:0").await?;
     let api_port = api_listener.local_addr()?.port();
     let api_task = tokio::spawn(async move {
@@ -57,7 +48,8 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
         }
     });
 
-    let receiver = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 60_222))).await?;
+    let receiver = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+    let stream_port = receiver.local_addr()?.port();
 
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
@@ -75,7 +67,8 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
         device_ips: Vec::new(),
         transition_time: 1,
     };
-    let mut backend = NanoleafBackend::with_mdns_enabled(config, Arc::clone(&store), false);
+    let mut backend = NanoleafBackend::with_mdns_enabled(config, Arc::clone(&store), false)
+        .with_stream_port(stream_port);
 
     let discovered = NanoleafDiscoveredDevice {
         device_key: "living-room".to_owned(),

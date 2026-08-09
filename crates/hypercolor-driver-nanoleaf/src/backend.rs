@@ -18,7 +18,7 @@ use hypercolor_driver_api::{
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use super::scanner::{NanoleafKnownDevice, NanoleafScanner, load_auth_token};
-use super::streaming::NanoleafStreamSession;
+use super::streaming::{DEFAULT_NANOLEAF_STREAM_PORT, NanoleafStreamSession};
 use super::types::{NanoleafDiscoveredDevice, build_device_info, panel_ids_from_layout};
 use super::{fetch_device_info, fetch_panel_layout};
 
@@ -54,6 +54,7 @@ pub struct NanoleafBackend {
     config: NanoleafConfig,
     credential_store: Arc<CredentialStore>,
     mdns_enabled: bool,
+    stream_port: u16,
     discovered: HashMap<DeviceId, NanoleafDiscoveredDevice>,
     devices: HashMap<DeviceId, Arc<Mutex<NanoleafDeviceState>>>,
 }
@@ -87,9 +88,22 @@ impl NanoleafBackend {
             config,
             credential_store,
             mdns_enabled,
+            stream_port: DEFAULT_NANOLEAF_STREAM_PORT,
             discovered: HashMap::new(),
             devices: HashMap::new(),
         }
+    }
+
+    /// Override the `UDP` port this backend streams external control to.
+    ///
+    /// Hardware always listens on [`DEFAULT_NANOLEAF_STREAM_PORT`]. Tests
+    /// override it so their receiver can take an ephemeral port: binding the
+    /// fixed one fails with `WSAEACCES` on Windows whenever it lands inside a
+    /// range the OS has reserved for dynamic allocation.
+    #[must_use]
+    pub fn with_stream_port(mut self, stream_port: u16) -> Self {
+        self.stream_port = stream_port;
+        self
     }
 
     /// Seed the backend with a previously discovered device.
@@ -344,9 +358,10 @@ impl DeviceBackend for NanoleafBackend {
             );
         }
 
-        let stream = NanoleafStreamSession::connect(
+        let stream = NanoleafStreamSession::connect_with_udp_port(
             discovered.ip,
             discovered.api_port,
+            self.stream_port,
             &auth_token,
             panel_ids.clone(),
         )
