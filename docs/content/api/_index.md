@@ -1,13 +1,13 @@
 +++
 title = "API overview"
-description = "REST, WebSocket, CLI, and MCP — the four interfaces for driving the Hypercolor daemon on :9420."
+description = "REST, WebSocket, CLI, and MCP: the four interfaces for driving the Hypercolor daemon on :9420."
 sort_by = "weight"
 weight = 0
 template = "section.html"
 +++
 
-Hypercolor is a daemon with four front doors. Every interface — REST, WebSocket,
-the `hypercolor` CLI, and the MCP server — talks to the same engine state through
+Hypercolor is a daemon with four front doors. Every interface (REST, WebSocket,
+the `hypercolor` CLI, and the MCP server) talks to the same engine state through
 the same event bus, so a brightness change made over the CLI shows up instantly
 in the web UI's preview and in any subscribed WebSocket client. There is one
 source of truth and four ways to reach it.
@@ -25,16 +25,16 @@ source of truth and four ways to reach it.
 
 REST and WebSocket share the same port and the same `AppState`. The CLI is a thin
 HTTP client over the REST surface with table/JSON/plain rendering on top. MCP is a
-separate protocol mounted at `/mcp`, and it is the canonical AI-control path — the
+separate protocol mounted at `/mcp`, and it is the canonical AI-control path; the
 [Agents & MCP](@/agents/_index.md) section owns its full reference.
 
 ## Base URL and the surface map
 
 Everything the daemon serves lives at one of three places:
 
-- `/api/v1/...` — the REST and WebSocket surface (the bulk of the contract)
-- `/health` and `/preview` — top-level, not under `/api/v1`
-- `/mcp` — the MCP server, top-level, mounted only when MCP is enabled
+- `/api/v1/...`: the REST and WebSocket surface (the bulk of the contract)
+- `/health` and `/preview`: top-level, not under `/api/v1`
+- `/mcp`: the MCP server, top-level, mounted only when MCP is enabled
 
 The REST router groups its routes by domain. The full set, enumerated straight
 from the daemon's `build_router()`, is assets, attachments, capture, controls,
@@ -94,8 +94,8 @@ the CLI, TUI, and web UI all talk to a local daemon out of the box.
 
 Once you expose the daemon beyond loopback, two-tier bearer auth applies:
 
-- `HYPERCOLOR_API_KEY` — full control (read and write)
-- `HYPERCOLOR_READ_API_KEY` — read-only access
+- `HYPERCOLOR_API_KEY`: full control (read and write)
+- `HYPERCOLOR_READ_API_KEY`: read-only access
 
 Both are sent as `Authorization: Bearer <token>`. The CLI's `--api-key` flag sets
 the control key for you. CORS follows the same logic: loopback origins are always
@@ -105,7 +105,7 @@ allowed, and configured `cors_origins` are honored only when API auth is enabled
 
 The MCP server speaks **Streamable HTTP** (not stdio, not plain SSE), mounted at
 `/mcp` by default and configurable through `McpConfig::base_path`. It is **off by
-default** — enable it before any agent can connect.
+default**, so enable it before any agent can connect.
 
 {% callout(type="warning") %}
 MCP must be turned on. Set `mcp.enabled = true` in your config (or use the
@@ -130,7 +130,7 @@ graph TD
 
 ## Where to go next
 
-- [REST API reference](@/api/rest.md) — every `/api/v1` endpoint, grouped by domain, with the envelope and error model.
-- [WebSocket protocol](@/api/websocket.md) — the `hypercolor-v1` subprotocol, JSON channels, and binary canvas/spectrum frames.
-- [CLI reference](@/api/cli.md) — the command tree, global flags, and environment variables. Note that `server`, `servers`, and `service` are three distinct commands: `server` targets this daemon, `servers` is the multi-daemon registry, and `service` manages the system service.
-- [MCP server](@/api/mcp.md) — the pointer into the canonical [Agents & MCP](@/agents/_index.md) reference for tools, resources, and prompts.
+- [REST API reference](@/api/rest.md): every `/api/v1` endpoint, grouped by domain, with the envelope and error model.
+- [WebSocket protocol](@/api/websocket.md): the `hypercolor-v1` subprotocol, JSON channels, and binary canvas/spectrum frames.
+- [CLI reference](@/api/cli.md): the command tree, global flags, and environment variables. Note that `server`, `servers`, and `service` are three distinct commands: `server` targets this daemon, `servers` is the multi-daemon registry, and `service` manages the system service.
+- [MCP server](@/api/mcp.md): the pointer into the canonical [Agents & MCP](@/agents/_index.md) reference for tools, resources, and prompts.

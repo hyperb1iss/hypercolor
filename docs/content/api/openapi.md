@@ -13,9 +13,9 @@ handlers serialize, so it never drifts from the wire. This page covers where to
 reach it, how to export it for codegen, and the boundary of what it covers.
 
 {% callout(type="info") %}
-The OpenAPI document and Swagger UI are always mounted — they are not gated
-behind the MCP feature flag or an API key on loopback. If the daemon is up on
-`:9420`, the spec is reachable.
+The OpenAPI document and Swagger UI are always mounted. They are not gated
+behind the MCP feature flag or an API key on loopback, so if the daemon is up
+on `:9420`, the spec is reachable.
 {% end %}
 
 ## Where to reach it
@@ -25,7 +25,7 @@ entry points, all relative to the daemon base URL (default `http://localhost:942
 
 | Path | What it serves |
 |---|---|
-| `/api/v1/docs` | Swagger UI — interactive browser for the spec |
+| `/api/v1/docs` | Swagger UI, the interactive browser for the spec |
 | `/api/v1/openapi.json` | The raw OpenAPI 3.1 document as JSON |
 | `/api/v1/docs/openapi.json` | Same document, resolved by the Swagger UI bundle |
 
@@ -44,8 +44,8 @@ curl -s http://localhost:9420/api/v1/openapi.json | jq '.info'
 {% callout(type="tip") %}
 Loopback clients are exempt from API-key auth, so the local `curl` above works
 with no token. Over the network, send `Authorization: Bearer <token>` when a read
-key is configured. The daemon uses a dual-key model — a control key
-(`HYPERCOLOR_API_KEY`) and a read-only key (`HYPERCOLOR_READ_API_KEY`) — with
+key is configured. The daemon uses a dual-key model (a control key,
+`HYPERCOLOR_API_KEY`, and a read-only key, `HYPERCOLOR_READ_API_KEY`) with
 loopback always exempt.
 {% end %}
 
@@ -81,11 +81,17 @@ graph TD
 {% end %}
 
 A handful of endpoints (system, drivers, devices, effects) carry full utoipa
-`#[utoipa::path]` annotations with request and response schemas. Every other route
-is registered through the static `ROUTES` catalog, so the document lists the
-complete path-and-method surface even where a per-operation body schema is not yet
-annotated. The catalog mirrors the live router; the two stay in lockstep because
-both describe `/api/v1`.
+`#[utoipa::path]` annotations with request and response schemas. Most other
+routes are registered through the static `ROUTES` catalog, so the document
+lists the path-and-method surface even where a per-operation body schema is
+not yet annotated. The document covers the cataloged surface, and the parity
+test asserts one direction only: every cataloged route must appear in the
+document. A router path missing from the catalog is not caught, and eight
+`/api/v1` paths currently live in the router without a catalog entry:
+`/assets`, `/assets/{id}`, `/assets/{id}/blob`, `/assets/{id}/thumbnail`,
+`/capture/source/pick`, `/capture/monitors`, `/diagnose/memory`, and
+`/effects/screenshots`. The [REST reference](@/api/rest.md) documents those
+routes; the OpenAPI document does not list them until they are cataloged.
 
 The schema components are drawn from `hypercolor-types`, the shared contract crate.
 
@@ -99,7 +105,7 @@ OpenAPI document references a schema like `EffectSummary` or `CreateZoneRequest`
 it is referencing those shared definitions.
 
 {% callout(type="info") %}
-Diagnostic telemetry — system status internals and metrics payloads — deliberately
+Diagnostic telemetry (system status internals and metrics payloads) deliberately
 stays daemon-local and is not part of `hypercolor-types::api`. Those shapes move
 fast with performance work, and clients consume tolerant subsets of them by
 design. Treat the OpenAPI schemas for status as descriptive, not a frozen contract.
@@ -116,7 +122,8 @@ The document describes the REST surface only. A few things are out of scope:
 - **MCP** at `/mcp` is a separate Streamable HTTP surface with its own tool,
   resource, and prompt schemas. See the [Agents & MCP](@/agents/_index.md) section.
 - **Per-operation request bodies** are fully annotated for the core endpoints and
-  catalogued (path + method + standard responses) for the rest. The
+  catalogued (path + method + standard responses) for the rest of the cataloged
+  surface; the eight uncataloged paths above are absent entirely. The
   [REST reference](@/api/rest.md) is the human-readable companion enumerated from
   the same router.
 
@@ -130,7 +137,7 @@ The repository's Python client is generated directly from this document. The
 `just python-generate` recipe runs `cargo run -p hypercolor-daemon --bin
 hypercolor-openapi`, writes the JSON to a temp file, and feeds it to the codegen
 script; `just python-generate-check` verifies the committed client is current. The
-same export binary is the right starting point for any other language client —
+same export binary is the right starting point for any other language client:
 point your generator of choice at the emitted `openapi.json`.
 
 ## Try this
@@ -148,7 +155,7 @@ it into a client generator.
 
 ## Related
 
-- [API overview](@/api/_index.md) — the four daemon surfaces and the response envelope.
-- [REST reference](@/api/rest.md) — every `/api/v1` endpoint, grouped by domain.
-- [Envelope & errors](@/api/rest-envelope-and-errors.md) — the `{ data, meta }` and `{ error, meta }` shapes and the `ErrorCode`-to-HTTP-status table.
-- Auth & security — the dual-key Bearer model (`HYPERCOLOR_API_KEY` for control, `HYPERCOLOR_READ_API_KEY` for read) and the loopback exemption.
+- [API overview](@/api/_index.md): the four daemon surfaces and the response envelope.
+- [REST reference](@/api/rest.md): every `/api/v1` endpoint, grouped by domain.
+- [Envelope & errors](@/api/rest-envelope-and-errors.md): the `{ data, meta }` and `{ error, meta }` shapes and the `ErrorCode`-to-HTTP-status table.
+- [Auth & security](@/api/auth-and-security.md): the dual-key Bearer model (`HYPERCOLOR_API_KEY` for control, `HYPERCOLOR_READ_API_KEY` for read) and the loopback exemption.

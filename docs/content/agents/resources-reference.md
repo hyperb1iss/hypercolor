@@ -41,6 +41,8 @@ Current daemon state. Read this first to orient before making any change.
   "brightness": 100,
   "fps": {
     "target": 60,
+    "capacity": 59.8,
+    "delivered": 59.2,
     "actual": 59.8
   },
   "effect": {
@@ -63,8 +65,8 @@ Current daemon state. Read this first to orient before making any change.
 
 Field notes worth pinning:
 
-- `brightness` is an integer percentage from `0` to `100`, matching the `set_brightness` tool's scale, not a `0.0`–`1.0` float.
-- `fps.target` is the current adaptive tier (one of `10`, `20`, `30`, `45`, `60`); `fps.actual` is the measured rate. A gap between them is the first signal of render pressure. See the [render pipeline](@/architecture/render-pipeline.md) for how the controller shifts tiers.
+- `brightness` is an integer percentage from `0` to `100`, matching the `set_brightness` tool's scale, not a `0.0`-`1.0` float.
+- `fps.target` is the current adaptive tier (one of `10`, `20`, `30`, `45`, `60`). `fps.capacity` is a capacity estimate (theoretical throughput derived from smoothed frame time, capped at the tier), and `fps.actual` mirrors it; the measured delivery rate is `fps.delivered`. A gap between target and capacity is the first signal of render pressure. See the [render pipeline](@/architecture/render-pipeline.md) for how the controller shifts tiers.
 - `effect` is `null` when nothing is applied, otherwise an object with `id` and `name`.
 - `inputs.audio` and `inputs.screen` are each `"enabled"`, `"disabled"`, or `"unknown"` (the last only when config is unavailable).
 - `version` is the daemon's package version, baked in at build time.

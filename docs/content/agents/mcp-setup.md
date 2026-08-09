@@ -28,7 +28,7 @@ That single flag is the difference between a live server and a 404. The remainin
 | `base_path` | `"/mcp"` | The mount path. Empty or `"/"` normalizes back to `/mcp`; a leading slash is added and trailing slashes are trimmed, so `base_path = "mcp"` still serves at `/mcp`. |
 | `stateful_mode` | `true` | Keeps per-session state across requests (the standard mode for conversational clients). |
 | `json_response` | `false` | When `false`, responses stream over SSE. Set `true` for minimal HTTP clients that want single-shot JSON. |
-| `sse_keep_alive_secs` | `30` | SSE keep-alive interval. Set to `0` to disable keep-alive pings. |
+| `sse_keep_alive_secs` | `15` | SSE keep-alive interval. Set to `0` to disable keep-alive pings. |
 
 Restart the daemon after editing config so the router picks up the change.
 
@@ -142,8 +142,8 @@ Authorization: Bearer <token>
 
 Tokens come from two environment variables read by the daemon at startup:
 
-- `HYPERCOLOR_API_KEY` — the control tier, allowed to mutate state.
-- `HYPERCOLOR_READ_API_KEY` — the optional read-only tier.
+- `HYPERCOLOR_API_KEY`: the control tier, allowed to mutate state.
+- `HYPERCOLOR_READ_API_KEY`: the optional read-only tier.
 
 {% callout(type="warning") %}
 The `?token=` query-string fallback is accepted only on the `/api/v1/ws` WebSocket route, never on `/mcp`. Remote MCP clients must use the `Authorization: Bearer` header. Reaching a non-loopback daemon also requires that the client's address pass the daemon's network-access policy, so an exposed rig needs both a valid key and an allowed origin.
@@ -157,7 +157,7 @@ If the agent and the daemon are on different machines, first locate the daemon. 
 hypercolor servers discover
 ```
 
-Point the MCP URL at the discovered host and port (`http://<host>:9420/mcp`), bind the daemon to a reachable interface via `listen_address`, set `HYPERCOLOR_API_KEY` on the daemon, and send the matching bearer token from the client. For the full security model, including remote-client allowlisting and the dual-key tiers, see the API reference for auth and security if that page is present in your build; otherwise the `security` module in the daemon is the source of truth.
+Point the MCP URL at the discovered host and port (`http://<host>:9420/mcp`), bind the daemon to a reachable interface via `listen_address`, set `HYPERCOLOR_API_KEY` on the daemon, and send the matching bearer token from the client. For the full security model, including remote-client allowlisting and the dual-key tiers, see [auth and security](@/api/auth-and-security.md).
 
 ## Troubleshooting
 
@@ -173,8 +173,8 @@ Point the MCP URL at the discovered host and port (`http://<host>:9420/mcp`), bi
 
 Once the server is connected, learn what it can do:
 
-- **[Agents & MCP](@/agents/_index.md)** — The three-primitive model and how MCP and the CLI complement each other.
-- **[Tools reference](@/agents/tools-reference.md)** — All 16 tools with arguments, defaults, enums, and worked calls.
-- **[Resources reference](@/agents/resources-reference.md)** — The 5 `hypercolor://` resources and their payload shapes.
-- **[Prompt templates](@/agents/prompt-templates.md)** — The 3 shipped prompts and when each fits.
-- **[CLI scripting for agents](@/agents/cli-scripting.md)** — Drive the daemon from a shell when an agent cannot speak MCP.
+- **[Agents & MCP](@/agents/_index.md)**: The three-primitive model and how MCP and the CLI complement each other.
+- **[Tools reference](@/agents/tools-reference.md)**: All 16 tools with arguments, defaults, enums, and worked calls.
+- **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources and their payload shapes.
+- **[Prompt templates](@/agents/prompt-templates.md)**: The 3 shipped prompts and when each fits.
+- **[CLI scripting for agents](@/agents/cli-scripting.md)**: Drive the daemon from a shell when an agent cannot speak MCP.

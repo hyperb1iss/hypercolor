@@ -50,8 +50,9 @@ hypercolor [OPTIONS] <COMMAND>
 {% callout(type="tip") %}
 `--format` hides its allowed values in `--help`, so they are easy to miss. The
 three valid formats are **`table`** (the styled default), **`json`** (machine
-output, the full daemon envelope), and **`plain`** (one bare value per line,
-ideal for piping into `cut`, `grep`, or a shell loop).
+output: the daemon's `data` payload with the envelope stripped), and
+**`plain`** (one bare value per line, ideal for piping into `cut`, `grep`, or
+a shell loop).
 {% end %}
 
 ### Loopback needs no key
@@ -60,7 +61,8 @@ Connecting from the same machine? You do not need an API key. The daemon exempts
 loopback clients from authentication, which is why local CLI, TUI, and web UI
 all work with zero configuration. You only need `--api-key` (or
 `HYPERCOLOR_API_KEY`) when reaching a daemon over the network with auth enabled.
-The full auth model lives in the [REST reference](@/api/rest.md).
+The full auth model lives on the [auth and security](@/api/auth-and-security.md)
+page.
 
 ## Command tree
 
@@ -430,6 +432,10 @@ hypercolor server info     # Version, identity, capabilities
 hypercolor server health   # Quick health check
 ```
 
+`server health` probes the daemon's top-level `/health` route, the same
+unversioned liveness endpoint a readiness probe hits, so it works even when
+the versioned API surface is unavailable.
+
 ### servers
 
 Find other Hypercolor daemons on the local network over mDNS and save them as
@@ -555,10 +561,12 @@ The CLI is built for automation. Three output modes cover the common shapes:
 ```bash
 hypercolor effects list --format table   # Styled, human-readable (default)
 hypercolor effects list --format plain   # One name per line, no decoration
-hypercolor effects list --json           # Full daemon envelope, for jq
+hypercolor effects list --json           # Data payload as JSON, for jq
 ```
 
-JSON output returns the daemon's response envelope. Pull fields with `jq`:
+JSON output is the `data` payload with the daemon's `{ data, meta }` envelope
+stripped, so you query fields directly rather than reaching through `.data`.
+Pull them with `jq`:
 
 ```bash
 # Current effect name
@@ -575,7 +583,7 @@ fi
 
 On error the CLI prints the message to stderr and exits non-zero, so the usual
 shell control flow (`&&`, `||`, `set -e`) works as expected. Pair `--quiet` with
-`--plain` or `--json` to keep output clean inside scripts.
+`--format plain` or `--json` to keep output clean inside scripts.
 
 ## Environment variables
 
@@ -589,10 +597,10 @@ shell control flow (`&&`, `||`, `set -e`) works as expected. Pair `--quiet` with
 
 ## Related references
 
-- [REST API reference](@/api/rest.md) — every route these commands call.
-- [Agents & MCP](@/agents/_index.md) — driving Hypercolor from AI agents, over
+- [REST API reference](@/api/rest.md): every route these commands call.
+- [Agents & MCP](@/agents/_index.md): driving Hypercolor from AI agents, over
   both this CLI and the MCP server.
-- [Guide](@/guide/_index.md) — installation, first launch, audio setup, and the
+- [Guide](@/guide/_index.md): installation, first launch, audio setup, and the
   full configuration schema.
-- [Hardware](@/hardware/_index.md) — per-vendor discovery and pairing flows for
+- [Hardware](@/hardware/_index.md): per-vendor discovery and pairing flows for
   Hue, Nanoleaf, WLED, and Govee.

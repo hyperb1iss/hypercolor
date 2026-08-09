@@ -33,8 +33,8 @@ which carries explicit total length, offset, and chunk-count fields.
 Hypercolor uses three binary framing conventions on the wire, and the first
 byte tells you which one you are looking at. Do not assume a uniform header.
 
-The **streaming data frames** — preview canvases, the audio spectrum, zone
-previews, and screen zones — use a **single tag byte** at offset 0. That tag byte
+The **streaming data frames** (preview canvases, the audio spectrum, zone
+previews, and screen zones) use a **single tag byte** at offset 0. That tag byte
 is the channel identity. There is no schema byte; these codecs version their layout
 through the tag space itself and through fixed header lengths.
 
@@ -44,7 +44,7 @@ reassembly metadata before one slice of a larger encoded preview, and the
 cancellation frame (`0x10`) retires a publication a client may still be
 reassembling.
 
-The **RPC frames** — request and response — use a **two-byte prefix**: a tag byte
+The **RPC frames** (request and response) use a **two-byte prefix**: a tag byte
 at offset 0 followed by a schema byte at offset 1. This is the `BinaryFrameSchema`
 contract (`TAG`, `SCHEMA`, `NAME`), and decoders validate both bytes with
 `validate_frame_prefix` before touching the body.
@@ -65,10 +65,10 @@ magic numbers, taken straight from the source constants.
 |---|---|---|---|
 | `0x01` | LED color frames | single byte | `led_frame` |
 | `0x02` | Audio spectrum | single byte | `SPECTRUM_FRAME_TAG` |
-| `0x03` | Preview — render canvas | single byte | `PreviewFrameChannel::Canvas` |
-| `0x05` | Preview — screen-capture canvas | single byte | `PreviewFrameChannel::ScreenCanvas` |
-| `0x06` | Preview — web viewport canvas | single byte | `PreviewFrameChannel::WebViewportCanvas` |
-| `0x07` | Preview — display face | single byte | `PreviewFrameChannel::DisplayPreview` |
+| `0x03` | Preview: render canvas | single byte | `PreviewFrameChannel::Canvas` |
+| `0x05` | Preview: screen-capture canvas | single byte | `PreviewFrameChannel::ScreenCanvas` |
+| `0x06` | Preview: web viewport canvas | single byte | `PreviewFrameChannel::WebViewportCanvas` |
+| `0x07` | Preview: display face | single byte | `PreviewFrameChannel::DisplayPreview` |
 | `0x08` | Zone preview | single byte | `ZONE_PREVIEW_FRAME_TAG` |
 | `0x09` | Screen zones (ambilight grid) | single byte | `SCREEN_ZONES_FRAME_TAG` |
 | `0x0A` | Addressed interactive preview | single byte | `INTERACTIVE_PREVIEW_FRAME_TAG` |
@@ -84,7 +84,7 @@ magic numbers, taken straight from the source constants.
 
 {% callout(type="info") %}
 `0x04` is intentionally unused in the current channel set. Treat any unknown tag
-as a frame you should skip rather than reject the connection — the channel space
+as a frame you should skip rather than reject the connection; the channel space
 is designed to grow.
 {% end %}
 
@@ -117,7 +117,7 @@ The `format` byte selects the payload encoding through `PreviewPixelFormat`:
 
 For the raw formats (`Rgb`, `Rgba`) the payload is tightly packed, row-major,
 top-left origin, and its length is fully determined by `width`, `height`, and the
-per-pixel byte count. For `Jpeg` there is no fixed length — the payload is a
+per-pixel byte count. For `Jpeg` there is no fixed length; the payload is a
 complete JPEG image that runs from offset 14 to the end of the direct publication.
 
 {% callout(type="tip") %}
@@ -129,7 +129,7 @@ whole frame with one boundary crossing through `to_rgba_vec`.
 {% end %}
 
 The default render canvas is 640×480 but is configurable, so never hardcode
-dimensions — always read `width` and `height` from the header. The canvas can resize
+dimensions, so always read `width` and `height` from the header. The canvas can resize
 live, and the next frame's header will simply carry the new size.
 
 ## Legacy zone preview frame (`0x08`)
@@ -165,8 +165,8 @@ land at offsets 41 and 43, not 9 and 11. The two layouts are not interchangeable
 branch on the tag and apply the matching offsets.
 {% end %}
 
-For the REST and concurrency side of zones — the routes, `If-Match` revisions, and
-`ZoneOutcome::Stale` — see the Studio zone documentation. This page covers only the
+For the REST and concurrency side of zones (the routes, `If-Match` revisions, and
+`ZoneOutcome::Stale`) see the Studio zone documentation. This page covers only the
 preview wire format.
 
 ## Legacy screen zones frame (`0x09`)
@@ -431,5 +431,5 @@ All source paths are relative to `crates/hypercolor-leptos-ext/src/`; the two te
 paths and the manifest are repo-relative. The manifest lists every tag, layout
 name, and transport budget, and the daemon test suite asserts it against the code,
 so a layout change that skips the manifest fails CI. When any layout on this page
-changes, the source constant and its round-trip test change with it — read those,
+changes, the source constant and its round-trip test change with it; read those,
 never this prose, when the bytes have to be exactly right.

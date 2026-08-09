@@ -60,8 +60,8 @@ Tool output schemas are intentionally broad right now. The shapes shown below ar
 Apply a lighting effect. The `query` argument is fuzzy-matched against effect names, partial names, and natural-language descriptions of the desired visual. It returns the matched effect, a confidence score, and alternatives.
 
 - **Mutates state.** `read_only: false`, `idempotent: true`.
-- **Required:** `query` (string) — effect name or natural-language description.
-- **Optional:** `controls` (object) — parameter overrides as key-value pairs; `transition_ms` (integer, default `500`, range 0–10000) — accepted and echoed for forward compatibility; `devices` (array of strings) — accepted by the schema for forward compatibility, but the live handler applies to the active output today.
+- **Required:** `query` (string): effect name or natural-language description.
+- **Optional:** `controls` (object): parameter overrides as key-value pairs; `transition_ms` (integer, default `500`, range 0-10000): accepted and echoed for forward compatibility; `devices` (array of strings): accepted by the schema for forward compatibility, but the live handler applies to the active output today.
 
 A display-face effect cannot be applied through `set_effect`; it returns an invalid-parameter error pointing you at [`set_display_face`](#set-display-face).
 Effect switches are immediate today; `transition_ms` does not produce a crossfade yet.
@@ -94,7 +94,7 @@ Response (abridged):
 
 Browse the effect catalog with optional filters. Read-only, idempotent. Returns effect names, descriptions, categories, tags, and each effect's control schema.
 
-- **Optional:** `category` (enum) — one of `ambient`, `reactive`, `audio`, `gaming`, `productivity`, `utility`, `interactive`, `generative`; `audio_reactive` (boolean) — filter to audio-reactive effects; `query` (string) — full-text search across names, descriptions, and tags; `limit` (integer, default `20`, range 1–100); `offset` (integer, default `0`).
+- **Optional:** `category` (enum): one of `ambient`, `reactive`, `audio`, `gaming`, `productivity`, `utility`, `interactive`, `generative`; `audio_reactive` (boolean): filter to audio-reactive effects; `query` (string): full-text search across names, descriptions, and tags; `limit` (integer, default `20`, range 1-100); `offset` (integer, default `0`).
 
 ```json
 { "name": "list_effects", "arguments": { "category": "audio", "limit": 10 } }
@@ -108,7 +108,7 @@ The response carries `effects`, `total`, `has_more`, `limit`, and `offset`. The 
 
 Stop the currently running effect. LEDs go dark unless a fallback is configured. Mutates state, idempotent.
 
-- **Optional:** `transition_ms` (integer, default `300`, range 0–5000) — accepted and echoed for forward compatibility; the stop is immediate today.
+- **Optional:** `transition_ms` (integer, default `300`, range 0-5000): accepted and echoed for forward compatibility; the stop is immediate today.
 
 ```json
 { "name": "stop_effect", "arguments": { "transition_ms": 600 } }
@@ -121,7 +121,7 @@ Set a solid color globally. Under the hood this applies the `solid_color` effect
 The `color` argument accepts CSS color names (`coral`, `dodgerblue`), hex (`#ff6ac1`), `rgb()`, `hsl()`, and natural-language descriptions (`warm sunset orange`, `deep ocean blue`), all resolved by the daemon's fuzzy color resolver.
 
 - **Required:** `color` (string).
-- **Optional:** `brightness` (integer, range 0–100). The tool schema also exposes `transition_ms` and `devices` for forward compatibility, but the live handler ignores them today.
+- **Optional:** `brightness` (integer, range 0-100). The tool schema also exposes `transition_ms` and `devices` for forward compatibility, but the live handler ignores them today.
 
 ```json
 { "name": "set_color", "arguments": { "color": "#e135ff", "brightness": 70 } }
@@ -137,7 +137,7 @@ The response includes `resolved_color` (with `hex`, `name`, and `rgb`), `applied
 
 Enumerate known RGB devices with connection status, driver origin, output backend, LED count, and zone configuration. Read-only, idempotent.
 
-- **Optional:** `status` (enum, default `all`) — one of `all`, `connected`, `disconnected`; `driver_id` (string) — filter by driver module id; `backend_id` (string) — filter by output backend id.
+- **Optional:** `status` (enum, default `all`): one of `all`, `connected`, `disconnected`; `driver_id` (string): filter by driver module id; `backend_id` (string): filter by output backend id.
 
 ```json
 { "name": "get_devices", "arguments": { "status": "disconnected" } }
@@ -149,10 +149,10 @@ The response carries a `devices` array plus a `summary` with `total`, `connected
 
 ### set_brightness
 
-Set the global brightness level. Brightness is a **percentage from 0 to 100** (not a 0.0–1.0 float); the daemon normalizes it internally. Mutates state, idempotent.
+Set the global brightness level. Brightness is a **percentage from 0 to 100** (not a 0.0-1.0 float); the daemon normalizes it internally. Mutates state, idempotent.
 
-- **Required:** `brightness` (integer, range 0–100).
-- **Optional:** `device_id` (string) and `transition_ms` (integer, default `300`, range 0–5000) are accepted by the schema for forward compatibility, but the live handler applies a global, immediate brightness change today.
+- **Required:** `brightness` (integer, range 0-100).
+- **Optional:** `device_id` (string) and `transition_ms` (integer, default `300`, range 0-5000) are accepted by the schema for forward compatibility, but the live handler applies a global, immediate brightness change today.
 
 ```json
 { "name": "set_brightness", "arguments": { "brightness": 35 } }
@@ -171,7 +171,7 @@ Scenes are whole-rig configurations: a scene bundles effects, device assignments
 Activate a named scene by exact name or fuzzy query. Mutates state, idempotent.
 
 - **Required:** `name` (string).
-- **Optional:** `transition_ms` (integer, default `1000`, range 0–10000).
+- **Optional:** `transition_ms` (integer, default `1000`, range 0-10000).
 
 ```json
 { "name": "activate_scene", "arguments": { "name": "Evening Calm" } }
@@ -197,8 +197,8 @@ Each entry includes `id`, `name`, `description`, `enabled`, `mutation_mode`, and
 
 Create a new scene. This is the **only non-idempotent tool**: `read_only: false`, `idempotent: false`. It is more constrained than "save the current state" implies, requiring three arguments.
 
-- **Required:** `name` (string); `profile_id` (string) — must reference an existing profile, or the call fails with an invalid-parameter error; `trigger` (object) — whose `type` is one of `schedule`, `sunset`, `sunrise`, `device_connect`, `device_disconnect`, `audio_beat`, `webhook`. For `schedule`, supply a `cron` expression inside the trigger object.
-- **Optional:** `description` (string); `enabled` (boolean, default `true`); `mutation_mode` (enum, default `live`) — `live` lets runtime effect and display-face actions rewrite the scene, `snapshot` freezes it. The schema accepts `transition_ms` for forward compatibility, but `create_scene` does not store it yet.
+- **Required:** `name` (string); `profile_id` (string): must reference an existing profile, or the call fails with an invalid-parameter error; `trigger` (object): its `type` is one of `schedule`, `sunset`, `sunrise`, `device_connect`, `device_disconnect`, `audio_beat`, `webhook`. For `schedule`, supply a `cron` expression inside the trigger object.
+- **Optional:** `description` (string); `enabled` (boolean, default `true`); `mutation_mode` (enum, default `live`): `live` lets runtime effect and display-face actions rewrite the scene, `snapshot` freezes it. The schema accepts `transition_ms` for forward compatibility, but `create_scene` does not store it yet.
 
 ```json
 {
@@ -221,7 +221,7 @@ The response returns `scene_id`, `name`, `enabled`, and `mutation_mode`.
 
 Get the current daemon state: active effect, global brightness, connected device count, effect and scene counts, FPS metrics, audio and screen input status, and uptime. Read-only, idempotent. Takes no arguments.
 
-This is the tool to call first. The reported `fps.target` is the current adaptive tier (the render loop shifts between 10/20/30/45/60 Hz), and `fps.actual` is the real delivery rate capped at that tier, so never read it as a fixed ceiling.
+This is the tool to call first. The reported `fps.target` is the current adaptive tier (the render loop shifts between 10/20/30/45/60 Hz). `fps.capacity` is a capacity estimate: the theoretical throughput derived from smoothed frame time, capped at the tier. `fps.actual` mirrors `fps.capacity`, so it is **not** measured delivery; the real delivery rate is the separate `fps.delivered` field. Never read any of them as a fixed ceiling.
 
 ```json
 { "name": "get_status", "arguments": {} }
@@ -234,7 +234,7 @@ Response (abridged):
   "running": true,
   "paused": false,
   "brightness": 70,
-  "fps": { "target": 60, "actual": 59.4 },
+  "fps": { "target": 60, "capacity": 59.4, "delivered": 58.7, "actual": 59.4 },
   "effect": { "id": "...", "name": "Borealis" },
   "effect_count": 59,
   "scene_count": 4,
@@ -269,7 +269,7 @@ The response carries a `layout` object (`id`, `name`, `description`, `canvas_wid
 
 Get the latest system telemetry snapshot, or one named sensor reading: CPU, GPU, memory, and raw component temperatures. Read-only, idempotent.
 
-- **Optional:** `label` (string) — a sensor label such as `cpu_temp`, `gpu_load`, `ram_used`, or a normalized raw component label. Omit for the full snapshot.
+- **Optional:** `label` (string): a sensor label such as `cpu_temp`, `gpu_load`, `ram_used`, or a normalized raw component label. Omit for the full snapshot.
 
 ```json
 { "name": "get_sensor_data", "arguments": { "label": "gpu_load" } }
@@ -279,15 +279,15 @@ The response returns a `snapshot` object and a `reading` field (populated only w
 
 ### diagnose
 
-Run live diagnostics on the whole system or a specific device: connectivity, frame delivery, latency, and error rates. Read-only, idempotent. This returns rich, real metrics, not a placeholder.
+Run live system diagnostics: connectivity, frame delivery, latency, and error rates. Read-only, idempotent. This returns rich, real metrics, not a placeholder.
 
-- **Optional:** `device_id` (string) — omit for full-system diagnostics; `checks` (array of enums, default `["all"]`) — any of `connectivity`, `latency`, `frame_delivery`, `color_accuracy`, `protocol`, `all`.
+- **Optional:** `device_id` (string) and `checks` (array of enums, default `["all"]`, any of `connectivity`, `latency`, `frame_delivery`, `color_accuracy`, `protocol`, `all`) are accepted by the schema for forward compatibility, mirroring the `transition_ms` treatment, but the live handler ignores both: every call runs the full-system pass.
 
 ```json
 { "name": "diagnose", "arguments": {} }
 ```
 
-The response carries `overall_status` (`healthy` or `warning`), a `findings` array (each with a `severity` and `message`), and a deep `metrics` object: capacity and delivered FPS, frame timing, a per-frame `latest_frame` block, a `render_window` block, a `device_output` block with accepted and delivered rates, coalescing reasons, transport terminal counters, and actor latency, plus a `usb_actor` block. This is the backbone of the diagnose flow in [agent workflows](@/agents/workflows.md).
+The response carries `overall_status` (`healthy`, `warning`, or `unhealthy`; any finding with `severity: "error"` makes it `unhealthy`), a `findings` array (each with a `severity` and `message`), and a deep `metrics` object: capacity and delivered FPS, frame timing, a per-frame `latest_frame` block, a `render_window` block, a `device_output` block with accepted and delivered rates, coalescing reasons, transport terminal counters, and actor latency, plus a `usb_actor` block. This is the backbone of the diagnose flow in [agent workflows](@/agents/workflows.md).
 
 ---
 
@@ -299,8 +299,8 @@ Assign or clear an HTML display-face effect on a display device (an LCD or simil
 
 The target effect must be in the `Display` category **and** be an HTML source; anything else returns an invalid-parameter error. This is the only path to drive a display face; `set_effect` will refuse a display effect.
 
-- **Required:** `device` (string) — display device ID or exact display name.
-- **Optional:** `effect_id` (string) — display-face effect UUID, exact name, or source stem; omit when clearing. `clear` (boolean) — when true, removes the assignment on the chosen scope. `scope` (enum) — `default` (the default) persists the face across scenes; `scene` writes the active scene's display zone and wins while that scene is active. `controls` (object) — control overrides stored on the display-face group.
+- **Required:** `device` (string): display device ID or exact display name.
+- **Optional:** `effect_id` (string): display-face effect UUID, exact name, or source stem; omit when clearing. `clear` (boolean): when true, removes the assignment on the chosen scope. `scope` (enum): `default` (the default) persists the face across scenes; `scene` writes the active scene's display zone and wins while that scene is active. `controls` (object): control overrides stored on the display-face group.
 
 ```json
 {
@@ -323,8 +323,8 @@ To clear a face, pass `"clear": true` and the same `scope`. See [display faces](
 
 Activate a saved profile by name or fuzzy query. A profile captures the complete lighting state: effect, control parameters, device selection, and brightness. Mutates state, idempotent.
 
-- **Required:** `query` (string) — profile name or description.
-- **Optional:** `transition_ms` (integer, default `1000`, range 0–10000) is accepted by the schema for forward compatibility, but profile apply is immediate today.
+- **Required:** `query` (string): profile name or description.
+- **Optional:** `transition_ms` (integer, default `1000`, range 0-10000) is accepted by the schema for forward compatibility, but profile apply is immediate today.
 
 ```json
 { "name": "set_profile", "arguments": { "query": "Focus" } }
@@ -340,7 +340,7 @@ There is no MCP tool to install or rescan effects. Agents can apply, browse, and
 
 ## Where to go next
 
-- **[Resources reference](@/agents/resources-reference.md)** — The 5 `hypercolor://` resources an agent reads to orient itself.
-- **[Prompt templates](@/agents/prompt-templates.md)** — The 3 guided flows that compose these tools.
-- **[Agent workflows](@/agents/workflows.md)** — Worked playbooks with real call-and-response pairs.
-- **[MCP server reference](@/api/mcp.md)** — Transport, config keys, and the raw protocol surface.
+- **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources an agent reads to orient itself.
+- **[Prompt templates](@/agents/prompt-templates.md)**: The 3 guided flows that compose these tools.
+- **[Agent workflows](@/agents/workflows.md)**: Worked playbooks with real call-and-response pairs.
+- **[MCP server reference](@/api/mcp.md)**: Transport, config keys, and the raw protocol surface.

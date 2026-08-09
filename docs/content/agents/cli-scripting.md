@@ -152,7 +152,7 @@ Read back and compare. Because mutations exit non-zero on failure, the simplest 
 
 ```bash
 hypercolor effects activate borealis -j > /dev/null \
-  && hypercolor status -j | jq -r '.effect.name'
+  && hypercolor status -j | jq -r '.active_effect'
 ```
 
 ## jq recipes
@@ -181,7 +181,7 @@ hypercolor effects activate "$EFFECT"
 The current effect and live FPS from `status`:
 
 ```bash
-hypercolor status -j | jq '{ effect: .effect.name, fps: .fps }'
+hypercolor status -j | jq '{ effect: .active_effect, fps: .render_loop }'
 ```
 
 Audio-reactive effect names only, sorted:
@@ -236,12 +236,12 @@ hypercolor effects rescan
 hypercolor effects activate aurora
 ```
 
-`bunx hypercolor` resolves the workspace's `hypercolor` dependency — the npm release by default, or a local `file:` build in engine-development workspaces. See [effects setup](@/effects/setup.md) for the authoring side.
+`bunx hypercolor` resolves the workspace's `hypercolor` dependency: the npm release by default, or a local `file:` build in engine-development workspaces. See [effects setup](@/effects/setup.md) for the authoring side.
 
 ## Where to go next
 
-- [MCP setup](@/agents/mcp-setup.md) — the typed, schema-validated alternative to shell scripting.
-- [Tools reference](@/agents/tools-reference.md) — all 16 MCP tools with arguments and return shapes.
-- [Prompt templates](@/agents/prompt-templates.md) — the three shipped prompts agents can invoke.
-- [CLI reference](@/api/cli.md) — the complete command tree, human-facing.
-- [REST API reference](@/api/rest.md) — the daemon contract the CLI sits on top of.
+- [MCP setup](@/agents/mcp-setup.md): the typed, schema-validated alternative to shell scripting.
+- [Tools reference](@/agents/tools-reference.md): all 16 MCP tools with arguments and return shapes.
+- [Prompt templates](@/agents/prompt-templates.md): the three shipped prompts agents can invoke.
+- [CLI reference](@/api/cli.md): the complete command tree, human-facing.
+- [REST API reference](@/api/rest.md): the daemon contract the CLI sits on top of.

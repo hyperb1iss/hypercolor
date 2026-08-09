@@ -48,7 +48,7 @@ The `io.github.<owner>/<repo>` form ties the listing to the GitHub account that 
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.hyperb1iss/hypercolor",
   "description": "AI-powered RGB lighting control for Linux with effects, devices, layouts, profiles, scenes, and diagnostics.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "websiteUrl": "https://github.com/hyperb1iss/hypercolor",
   "repository": {
     "url": "https://github.com/hyperb1iss/hypercolor",
@@ -122,8 +122,8 @@ A registry entry is a promise about a live server, so it has to stay true as Hyp
 
 This page is the publish-side counterpart to the connect-side setup. If you are wiring an assistant to a daemon you already run, you do not need the registry at all.
 
-- **[MCP setup](@/agents/mcp-setup.md)** — Enable the server and connect a client by hand, the path most users actually take.
-- **[Tools reference](@/agents/tools-reference.md)** — The 16 tools a registry client discovers once connected.
-- **[Resources reference](@/agents/resources-reference.md)** — The 5 `hypercolor://` resources, with payload shapes and freshness notes.
-- **[Prompt templates](@/agents/prompt-templates.md)** — The 3 shipped prompts a connected client can surface as slash commands.
-- **[Agents & MCP overview](@/agents/_index.md)** — The three-primitive model and how MCP and the CLI fit together.
+- **[MCP setup](@/agents/mcp-setup.md)**: Enable the server and connect a client by hand, the path most users actually take.
+- **[Tools reference](@/agents/tools-reference.md)**: The 16 tools a registry client discovers once connected.
+- **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources, with payload shapes and freshness notes.
+- **[Prompt templates](@/agents/prompt-templates.md)**: The 3 shipped prompts a connected client can surface as slash commands.
+- **[Agents & MCP overview](@/agents/_index.md)**: The three-primitive model and how MCP and the CLI fit together.

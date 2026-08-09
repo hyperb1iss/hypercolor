@@ -60,7 +60,7 @@ Error bodies replace `data` with `error`:
 {
   "error": {
     "code": "validation_error",
-    "message": "brightness must be between 0.0 and 1.0",
+    "message": "brightness must be between 0 and 100",
     "details": null
   },
   "meta": {
@@ -107,7 +107,7 @@ There are two keys: `HYPERCOLOR_API_KEY` grants control (writes), and
 `HYPERCOLOR_READ_API_KEY` grants read-only access. CORS allows loopback origins
 unconditionally; configured `cors_origins` are only honored once API auth is
 enabled. The auth and rate-limiting model is documented in full on the
-[auth and security](@/api/_index.md) overview.
+[auth and security](@/api/auth-and-security.md) page.
 
 ## Concurrency: revisions and `If-Match`
 
@@ -143,6 +143,28 @@ availability, global brightness, and live render-loop timing.
     "active_effect": "borealis",
     "global_brightness": 85,
     "audio_available": true,
+    "screen_capture_capacity": {
+      "admission_enforced": true,
+      "physical_transition_byte_capacity": 268435456,
+      "physical_transition_backend_capacity": 4,
+      "physical_reserved_bytes": 33177600,
+      "physical_available_bytes": 235257856,
+      "steady_total_byte_budget": 134217728,
+      "steady_total_backend_capacity": 2,
+      "steady_publication_byte_budget": 134217728,
+      "transition_publication_backend_capacity": 2
+    },
+    "input": {
+      "enabled": true,
+      "host_capture_registered": true,
+      "host_capturing": true,
+      "devices_opened": 3,
+      "devices_denied": 1,
+      "degraded": "access_denied",
+      "backends": ["evdev"],
+      "source_graph_generation": 2,
+      "sources": []
+    },
     "render_loop": {
       "state": "running",
       "target_fps": 60,
@@ -162,6 +184,24 @@ availability, global brightness, and live render-loop timing.
 `effect_count` reflects whatever the registry holds at request time (native
 built-ins plus discovered HTML effects); treat it as live, not a fixed product
 number.
+
+`screen_capture_capacity` reports the byte fences that gate screen-capture
+publication admission. The fences are installed on Linux and Windows, where
+`admission_enforced` is `true` and the capacity fields are populated; on other
+platforms the object collapses to `{ "admission_enforced": false }` with every
+fence field omitted. When an analysis plan is active, additional
+`analysis_*` fields describe its resolution, byte budgets, and compute
+capacity.
+
+`input` is the host keyboard/mouse capture health snapshot. `enabled` is the
+consent gate from config, `host_capturing` reports whether a host backend is
+actively reading input, and `devices_opened` versus `devices_denied` separates
+"input is off" from "input is on but blocked". The denied counter counts
+device nodes that are present but unreadable, a Linux-specific failure (udev
+rules missing); Windows has no per-node denial, so its session-level failure
+arrives through `degraded` instead, as one of `no_interactive_session`,
+`access_denied`, or `unavailable`. Each entry in `sources` carries per-source
+lifecycle, freshness, and issue detail.
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/server") %}
@@ -284,6 +324,37 @@ Patch controls on a specific effect by ID, whether or not it is the active one.
 
 {% api_endpoint(method="POST", path="/api/v1/effects/stop") %}
 Stop the running effect. Output goes dark.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/effects/pause") %}
+Pause output without clearing the active effect. The render loop pauses, and
+devices hold the configured static off color until a resume. Returns `404`
+when no effect is active.
+
+**Response:**
+
+```json
+{
+  "paused": true,
+  "effect": { "id": "borealis", "name": "Borealis" },
+  "off_output_behavior": "static",
+  "off_output_color": [0, 0, 0]
+}
+```
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/effects/resume") %}
+Resume output for the preserved active effect after a pause. Returns `404`
+when no effect is active.
+
+**Response:**
+
+```json
+{
+  "resumed": true,
+  "effect": { "id": "borealis", "name": "Borealis" }
+}
+```
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/effects/rescan") %}
@@ -428,6 +499,64 @@ Create a logical-device segment on a physical device.
 
 {% api_endpoint(method="GET", path="/api/v1/devices/metrics") %}
 Per-device output telemetry snapshot: frame counts, errors, latency.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/devices/bindings") %}
+New in 0.3.0. Surfaces the two halves of a re-bind decision: layout bindings
+that no attached device currently resolves, and attached devices that no
+layout references.
+
+**Response:**
+
+```json
+{
+  "unresolved": [
+    {
+      "layout_device_id": "wled-desk-strip",
+      "layout_ids": ["desk-ring"],
+      "rebindable": true
+    }
+  ],
+  "candidates": [
+    {
+      "device_id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90",
+      "name": "WLED Desk Strip",
+      "layout_device_id": "wled-desk-strip-2",
+      "status": "connected",
+      "portable_key": "net:aabbccddeeff"
+    }
+  ]
+}
+```
+
+`rebindable` reports whether a recorded identity exists for the binding, which
+is what a durable re-bind needs to inherit. A device that is reconnecting
+(hardware that vanished) is surfaced as an orphaned binding rather than a
+candidate, but its recorded identity remains inheritable. Candidates without a
+`portable_key` can only be re-bound by editing the layout.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/devices/rebind") %}
+New in 0.3.0. Executes a re-bind: re-pins the chosen device's portable key
+onto the orphaned binding's recorded identity, which heals the layouts without
+editing them and holds across restarts.
+
+**Request body:**
+
+```json
+{
+  "layout_device_id": "wled-desk-strip",
+  "device_id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90"
+}
+```
+
+**Response:** the `device_id`, the `layout_device_id` the device now resolves
+to, and the `portable_key` that was re-pinned.
+
+A binding can only be inherited within its driver; a cross-driver re-bind is
+rejected with `422` before anything mutates. When the binding's current device
+is still renderable, the call returns `409 Conflict` and nothing is replaced.
+An unknown device or a binding with no recorded identity returns `404`.
 {% end %}
 
 The router also exposes `/api/v1/devices/debug/queues` and
@@ -963,13 +1092,14 @@ The current global brightness level.
 {% end %}
 
 {% api_endpoint(method="PUT", path="/api/v1/settings/brightness") %}
-Set global brightness, `0.0` to `1.0`.
+Set global brightness as an integer percent, `0` to `100`. An out-of-range
+value returns `422` with the message `brightness must be between 0 and 100`.
 
 **Request body:**
 
 ```json
 {
-  "brightness": 0.8
+  "brightness": 80
 }
 ```
 {% end %}
@@ -984,6 +1114,32 @@ of your output, not a microphone, if you want lights to follow what's playing.
 {% api_endpoint(method="POST", path="/api/v1/capture/source/pick") %}
 Open the platform picker so the user can choose a screen or window capture
 source for screen-reactive effects.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/capture/monitors") %}
+New in 0.3.0. List the display outputs the capture backend can address, for
+building a monitor picker. Each entry carries a ready-to-store `value` for the
+`capture.source` config key.
+
+**Response:**
+
+```json
+[
+  {
+    "index": 0,
+    "id": "DP-1",
+    "name": "\\\\.\\DISPLAY1",
+    "width": 2560,
+    "height": 1440,
+    "primary": true,
+    "value": "monitor:DP-1"
+  }
+]
+```
+
+The list is empty on platforms where the backend picks its own source (the
+XDG portal on Linux); a UI uses that emptiness to decide between a monitor
+dropdown and the portal picker button.
 {% end %}
 
 ## Configuration

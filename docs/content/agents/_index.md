@@ -58,12 +58,12 @@ The server ships its own operating instructions to every connected client: start
 New to agent control? Walk it in order: enable the server, learn the tools, then study a worked playbook.
 {% end %}
 
-- **[MCP setup](@/agents/mcp-setup.md)** — Turn the server on, then copy-paste connection config for Claude Code, Claude Desktop, Cursor, Zed, and generic MCP clients.
-- **[Tools reference](@/agents/tools-reference.md)** — All 16 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.
-- **[Resources reference](@/agents/resources-reference.md)** — The 5 `hypercolor://` resources, their payload shapes, and how fresh each one is.
-- **[Prompt templates](@/agents/prompt-templates.md)** — The 3 shipped prompts, their arguments, and when each one fits.
-- **[CLI scripting for agents](@/agents/cli-scripting.md)** — Drive the daemon from a shell: `--json` output, exit codes, env vars, and a state-first workflow.
-- **[Agent workflows](@/agents/workflows.md)** — End-to-end playbooks with real call-and-response pairs: set a calm scene, build and apply an effect, diagnose a sick device.
+- **[MCP setup](@/agents/mcp-setup.md)**: Turn the server on, then copy-paste connection config for Claude Code, Claude Desktop, Cursor, Zed, and generic MCP clients.
+- **[Tools reference](@/agents/tools-reference.md)**: All 16 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.
+- **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources, their payload shapes, and how fresh each one is.
+- **[Prompt templates](@/agents/prompt-templates.md)**: The 3 shipped prompts, their arguments, and when each one fits.
+- **[CLI scripting for agents](@/agents/cli-scripting.md)**: Drive the daemon from a shell: `--json` output, exit codes, env vars, and a state-first workflow.
+- **[Agent workflows](@/agents/workflows.md)**: End-to-end playbooks with real call-and-response pairs: set a calm scene, build and apply an effect, diagnose a sick device.
 
 ## Authentication in one line
 
@@ -73,9 +73,9 @@ Local agents need no credentials. Loopback requests bypass auth entirely, so an 
 
 Any agent that can run a shell command can drive Hypercolor without speaking MCP at all. The `hypercolor` CLI emits machine-readable JSON with `-j` (or `--format json`) and exits non-zero on failure, so an agent can branch on the result. Three top-level commands are easy to confuse, so keep them straight:
 
-- `hypercolor server` — query the daemon's identity, version, capabilities, and run a quick health check.
-- `hypercolor servers` — discover Hypercolor daemons advertised over mDNS on the local network and save them as connection profiles.
-- `hypercolor service` — manage the daemon's lifecycle (start, stop, restart, enable or disable autostart, tail logs).
+- `hypercolor server`: query the daemon's identity, version, capabilities, and run a quick health check.
+- `hypercolor servers`: discover Hypercolor daemons advertised over mDNS on the local network and save them as connection profiles.
+- `hypercolor service`: manage the daemon's lifecycle (start, stop, restart, enable or disable autostart, tail logs).
 
 Read the full command tree and agent recipes in [CLI scripting for agents](@/agents/cli-scripting.md), backed by the complete [CLI reference](@/api/cli.md).
 

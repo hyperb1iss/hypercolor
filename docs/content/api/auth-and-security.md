@@ -20,7 +20,7 @@ daemon to a LAN address or put it behind a reverse proxy.
 
 {% callout(type="info") %}
 Authentication is **opt-in**. With no API-key environment variables set, the
-daemon enforces no keys at all — loopback is trusted and remote clients are
+daemon enforces no keys at all: loopback is trusted and remote clients are
 governed only by the network allowlist (default: local-only). Setting a key
 flips on the full Bearer-token gate.
 {% end %}
@@ -67,10 +67,10 @@ Whitespace-only values are treated as unset. With neither set, the API-key gate
 is bypassed and only the network allowlist applies.
 
 ```bash
-# Control tier only — one key that can do everything
+# Control tier only: one key that can do everything
 HYPERCOLOR_API_KEY="hc_ak_super_secret" hypercolor-daemon
 
-# Split tiers — a write key plus a read-only key for dashboards/scripts
+# Split tiers: a write key plus a read-only key for dashboards/scripts
 HYPERCOLOR_API_KEY="hc_ak_super_secret" \
 HYPERCOLOR_READ_API_KEY="hc_ak_r_dashboard_only" \
   hypercolor-daemon
@@ -99,7 +99,7 @@ hypercolor --host studio.local --api-key "hc_ak_super_secret" devices list
 The tier a token grants is resolved against the configured keys:
 
 - A token matching `HYPERCOLOR_READ_API_KEY` always grants the **read** tier.
-- A token matching `HYPERCOLOR_API_KEY` normally grants the **control** tier —
+- A token matching `HYPERCOLOR_API_KEY` normally grants the **control** tier,
   **unless** that key string begins with the prefix `hc_ak_r_`, in which case it
   is treated as read-only even though it sits in the control slot. Use the
   `hc_ak_r_` convention to name keys you intend to be read-only and the daemon
@@ -130,7 +130,7 @@ all work with no key on a default install. The daemon derives the client IP
 from the peer socket; when the peer is itself loopback (a reverse proxy on the
 same host) it honors `X-Forwarded-For` / `X-Real-IP` so the real remote IP is
 used for auth and allowlisting. Forwarded headers from a **non-loopback** peer
-are ignored — you cannot spoof your way to a loopback exemption.
+are ignored, so you cannot spoof your way to a loopback exemption.
 
 ### CSRF protection on loopback
 
@@ -172,7 +172,7 @@ How the scopes resolve when remote access is on:
 - **`private_ranges`** trusts the RFC 1918 / link-local / ULA ranges:
   `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `fc00::/7`,
   `fe80::/10`.
-- **`custom`** trusts only the explicit `allowed_clients` you list — no built-in
+- **`custom`** trusts only the explicit `allowed_clients` you list; no built-in
   scope is added.
 
 `allowed_clients` entries are always layered on top of the resolved scope. A
@@ -189,12 +189,28 @@ allowed_clients = ["192.168.1.0/24"]
 
 {% callout(type="danger") %}
 `access_mode = "lan_trusted"` allows **unauthenticated** remote access by
-design — any client on the trusted subnets can control your lights without a
+design: any client on the trusted subnets can control your lights without a
 key. For a network-reachable daemon you usually want `lan_protected` (remote
 allowed, but a key is required) plus `HYPERCOLOR_API_KEY`. Only set
 `allow_unauthenticated_remote_access = true` if you genuinely want keyless LAN
 control and understand the exposure.
 {% end %}
+
+### Fail-closed startup binds
+
+The bind address itself is enforced at startup, so a network-reachable daemon
+without auth never comes up by accident. The validation
+(`validate_network_bind_auth` in the daemon) refuses to bind the control API
+to any non-loopback address unless `HYPERCOLOR_API_KEY` is configured or
+`network.allow_unauthenticated_remote_access = true` is set; an explicit
+non-loopback bind flag (`--bind`, `--listen-address`, `--listen-all`) without
+either aborts startup with an error naming those exact remedies.
+
+A non-loopback target that comes from **config** rather than a flag degrades
+instead of aborting: the daemon falls back to loopback at startup and logs a
+warning naming the requested and effective targets. Either way the daemon
+fails closed. It serves loopback or it serves an authenticated network bind,
+never an open one.
 
 ## CORS
 
@@ -212,7 +228,7 @@ Each configured origin must be a bare `scheme://host[:port]` with an `http` or
 `https` scheme and no path; malformed entries are logged and dropped. The
 allowed methods are `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, `DELETE`,
 and the allowed request headers are `Accept`, `Authorization`, and
-`Content-Type`. When auth is **off**, configured origins are ignored — only
+`Content-Type`. When auth is **off**, configured origins are ignored; only
 loopback gets CORS, matching the local-only posture.
 
 ## Rate limiting
@@ -256,11 +272,11 @@ Exceeding a limit returns `429` with the `rate_limited` error code:
 
 ## Exempt paths
 
-Two routes bypass the entire security stack — no auth, no rate limiting — so
+Two routes bypass the entire security stack (no auth, no rate limiting) so
 health checks and instance discovery work regardless of configuration:
 
-- `GET /health` — liveness probe.
-- `GET /api/v1/server` — server identity for multi-daemon clients.
+- `GET /health`: liveness probe.
+- `GET /api/v1/server`: server identity for multi-daemon clients.
 
 The MCP server (mounted at `/mcp` when `mcp.enabled` is true) sits outside the
 `/api/v1` middleware stack. MCP is **off by default**; enable it before using

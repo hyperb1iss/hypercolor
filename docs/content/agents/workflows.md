@@ -32,13 +32,16 @@ The most common request: "make the lights calm." This is a read-then-act loop en
 Read the live state before changing anything. Either call the `get_status` tool or read the `hypercolor://state` resource.
 
 ```json
-// get_status → returns
+// get_status → returns (abridged)
 {
   "running": true,
-  "active_effect": { "name": "Hyperspace", "category": "ambient" },
-  "device_count": 4,
-  "fps": { "actual": 60, "target": 60 },
-  "brightness": 80
+  "paused": false,
+  "brightness": 80,
+  "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8, "actual": 60.0 },
+  "effect": { "id": "hyperspace", "name": "Hyperspace" },
+  "effect_count": 59,
+  "scene_count": 4,
+  "devices": { "connected": 4, "total": 4, "total_leds": 432 }
 }
 ```
 
@@ -51,11 +54,15 @@ Browse the catalog instead of guessing an effect name. Filter `list_effects` to 
 ```json
 // list_effects with { "category": "ambient", "limit": 10 }
 {
-  "items": [
-    { "name": "Borealis", "category": "ambient", "audio_reactive": false },
-    { "name": "Deep Current", "category": "ambient", "audio_reactive": false },
-    { "name": "Nebula Drift", "category": "ambient", "audio_reactive": false }
-  ]
+  "effects": [
+    { "id": "borealis", "name": "Borealis", "category": "ambient", "audio_reactive": false },
+    { "id": "deep-current", "name": "Deep Current", "category": "ambient", "audio_reactive": false },
+    { "id": "nebula-drift", "name": "Nebula Drift", "category": "ambient", "audio_reactive": false }
+  ],
+  "total": 3,
+  "has_more": false,
+  "limit": 10,
+  "offset": 0
 }
 ```
 
@@ -71,11 +78,15 @@ Call `set_effect`. The required argument is `query`, which does fuzzy and natura
   "query": "calm blue borealis",
   "controls": { "speed": 2 }
 }
-// → returns
+// → returns (abridged)
 {
-  "matched_effect": { "name": "Borealis" },
+  "matched_effect": { "id": "borealis", "name": "Borealis" },
   "confidence": 0.94,
-  "alternatives": ["Deep Current", "Nebula Drift"]
+  "alternatives": [
+    { "id": "deep-current", "name": "Deep Current", "score": 0.71 },
+    { "id": "nebula-drift", "name": "Nebula Drift", "score": 0.64 }
+  ],
+  "applied": true
 }
 ```
 
@@ -115,14 +126,14 @@ hypercolor effects activate "calm blue borealis" --speed 2
 hypercolor brightness set 35
 ```
 
-Note the CLI surface differs from the MCP tool. The activate verb uses `--speed`, `--intensity`, and repeatable `--param key=value` shorthands. The CLI's `scenes create` is lighter than the MCP tool, taking just a `name` and an optional `--mutation-mode`.
+Note the CLI surface differs from the MCP tool. The activate verb uses `--speed`, `--intensity`, and repeatable `--param key=value` shorthands. The CLI's `scenes create` is lighter than the MCP tool, taking a `name` plus optional `--description`, `--enabled`, and `--mutation-mode` flags.
 
 ## Workflow B: build an effect, then apply it
 
 This is the playbook that crosses both CLIs. You author an HTML effect with the SDK, install it into the daemon, then apply it. There is no MCP tool to install or rescan effects, so this path has to cross from the authoring CLI to the daemon CLI or an MCP `set_effect` call.
 
 {% callout(type="info") %}
-Inside a scaffolded effect workspace, `bunx hypercolor` resolves the workspace's `hypercolor` dependency — the npm release by default, or a local build when the workspace was scaffolded with a `file:` SDK spec. These instructions assume you are in such a workspace.
+Inside a scaffolded effect workspace, `bunx hypercolor` resolves the workspace's `hypercolor` dependency: the npm release by default, or a local build when the workspace was scaffolded with a `file:` SDK spec. These instructions assume you are in such a workspace.
 {% end %}
 
 ### 1. Build in the SDK workspace
@@ -188,27 +199,27 @@ A device stops responding, or the frame rate drops. This playbook narrows from t
 Start broad. `get_status` shows whether the engine is running and whether the actual frame rate is tracking the target.
 
 ```json
-// get_status → returns
+// get_status → returns (abridged)
 {
   "running": true,
-  "fps": { "actual": 22, "target": 60 },
-  "device_count": 4,
-  "connected_count": 3
+  "fps": { "target": 60, "capacity": 22.4, "delivered": 21.8, "actual": 22.4 },
+  "devices": { "connected": 3, "total": 4, "total_leds": 432 }
 }
 ```
 
-Actual FPS well below target and one device missing from the connected count. Two threads to pull.
+Capacity well below target and one device missing from the connected count. Two threads to pull.
 
 ### 2. Find the offender
 
 Filter `get_devices` by connection status to surface the disconnected device.
 
 ```json
-// get_devices with { "status": "disconnected" } → returns
+// get_devices with { "status": "disconnected" } → returns (abridged)
 {
-  "items": [
-    { "id": "dev_wled_a4cf21", "name": "Desk Strip", "status": "disconnected", "transport": "network" }
-  ]
+  "devices": [
+    { "id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90", "name": "Desk Strip", "state": "disconnected", "transport": "network", "led_count": 90 }
+  ],
+  "summary": { "total": 1, "connected": 0, "total_leds": 90 }
 }
 ```
 
@@ -220,25 +231,29 @@ hypercolor devices list --status disconnected -j
 
 ### 3. Run diagnostics
 
-Call the `diagnose` tool. Omit `device_id` for a full-system pass, or pass it to scope the checks to one device. The live tool returns an `overall_status`, a `findings[]` array with per-finding `severity`, and a deep `metrics` object covering frame rate, render-window timing, and per-device output queues.
+Call the `diagnose` tool. The schema accepts `device_id` and `checks` for forward compatibility, mirroring the `transition_ms` treatment elsewhere, but the live handler ignores both: every call runs the full-system pass. That is fine for this playbook, since the full pass includes the per-device output queues you need. The tool returns an `overall_status`, a `findings[]` array with per-finding `severity`, and a deep `metrics` object covering frame rate, render-window timing, and per-device output queues.
 
 ```json
-// diagnose with { "device_id": "dev_wled_a4cf21" } → returns
+// diagnose with {} → returns (abridged)
 {
   "overall_status": "warning",
   "findings": [
     {
+      "severity": "info",
+      "message": "1 of 4 devices are disconnected."
+    },
+    {
       "severity": "warning",
-      "message": "Device unreachable: no ACK for 3.2s on udp/4048"
+      "message": "Device output queues show lag/drops: lagging=1, dropped_total=184."
     }
   ],
   "metrics": {
-    "fps": 22,
+    "fps": 22.4,
     "target_fps": 60,
     "consecutive_misses": 2,
     "device_output": {
       "items": [
-        { "id": "dev_wled_a4cf21", "delivered_fps": 0, "accepted_fps": 60, "coalesced_backend_overrun": 184, "transport_failed": 41 }
+        { "id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90", "delivered_fps": 0, "accepted_fps": 60, "coalesced_backend_overrun": 184, "transport_failed": 41 }
       ]
     }
   }
@@ -264,8 +279,8 @@ The pattern repeats across all three workflows: orient on shared state, narrow w
 
 ## Where to go next
 
-- **[Tools reference](@/agents/tools-reference.md)** — Every tool's full argument schema, defaults, enums, and read-only and idempotency flags.
-- **[Resources reference](@/agents/resources-reference.md)** — The `hypercolor://` resources these workflows read, with payload shapes and freshness notes.
-- **[Prompt templates](@/agents/prompt-templates.md)** — The `mood_lighting`, `troubleshoot`, and `setup_automation` prompts these playbooks mirror.
-- **[CLI scripting for agents](@/agents/cli-scripting.md)** — The full agent-facing CLI contract: JSON output, exit codes, env vars, and jq recipes.
-- **[CLI reference](@/api/cli.md)** — The complete command tree behind every shell example above.
+- **[Tools reference](@/agents/tools-reference.md)**: Every tool's full argument schema, defaults, enums, and read-only and idempotency flags.
+- **[Resources reference](@/agents/resources-reference.md)**: The `hypercolor://` resources these workflows read, with payload shapes and freshness notes.
+- **[Prompt templates](@/agents/prompt-templates.md)**: The `mood_lighting`, `troubleshoot`, and `setup_automation` prompts these playbooks mirror.
+- **[CLI scripting for agents](@/agents/cli-scripting.md)**: The full agent-facing CLI contract: JSON output, exit codes, env vars, and jq recipes.
+- **[CLI reference](@/api/cli.md)**: The complete command tree behind every shell example above.

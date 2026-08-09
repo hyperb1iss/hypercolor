@@ -120,7 +120,7 @@ mapping.
 | `code` | HTTP status | Meaning |
 | --- | --- | --- |
 | `bad_request` | `400 Bad Request` | Malformed request: bad JSON, missing required field, unparseable parameter. |
-| `unauthorized` | `401 Unauthorized` | Missing or invalid credentials. See [auth & security](@/api/rest.md). |
+| `unauthorized` | `401 Unauthorized` | Missing or invalid credentials. See [auth & security](@/api/auth-and-security.md). |
 | `forbidden` | `403 Forbidden` | Credentials are valid but lack the permission for this operation (for example, a read-only key attempting a write). |
 | `not_found` | `404 Not Found` | The resource does not exist: unknown effect ID, scene ID, device ID. |
 | `conflict` | `409 Conflict` | A state conflict, including optimistic-concurrency failures where a revision token no longer matches. |
@@ -153,16 +153,19 @@ graph LR
 ## Rate-limit responses
 
 A `rate_limited` error (HTTP 429) carries extra signal beyond the envelope. The
-daemon attaches a `details.retry_after` field (seconds until the window resets)
-and a set of response headers so a client can back off precisely instead of
-guessing.
+`details` object reports the `limit` for the operation class, the
+`window_seconds` of the rolling window, and `retry_after` (seconds until the
+window resets), and a set of response headers lets a client back off precisely
+instead of guessing.
 
 ```json
 {
   "error": {
     "code": "rate_limited",
-    "message": "discovery rate limit exceeded. Retry in 12 seconds.",
+    "message": "Discovery operation rate limit exceeded. Retry in 12 seconds.",
     "details": {
+      "limit": 2,
+      "window_seconds": 60,
       "retry_after": 12
     }
   },

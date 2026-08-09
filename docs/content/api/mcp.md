@@ -13,20 +13,20 @@ transport, mounted at `/mcp` on the same `:9420` port as everything else.
 
 {% callout(type="info") %}
 This page is the compact API-reference entry point for the MCP surface. The
-full, worked documentation — client setup, every tool schema, the resource
-shapes, and the prompt templates — lives in the **Agents** section. Start there:
+full, worked documentation (client setup, every tool schema, the resource
+shapes, and the prompt templates) lives in the **Agents** section. Start there:
 
-- [Agents & MCP overview](@/agents/_index.md) — MCP vs CLI and the three primitives
-- [MCP setup](@/agents/mcp-setup.md) — Claude Code / Desktop / Cursor / Zed config
-- [Tools reference](@/agents/tools-reference.md) — all 16 tools, full JSON schema
-- [Resources reference](@/agents/resources-reference.md) — the 5 `hypercolor://` resources
-- [Prompt templates](@/agents/prompt-templates.md) — the 3 shipped prompts
+- [Agents & MCP overview](@/agents/_index.md): MCP vs CLI and the three primitives
+- [MCP setup](@/agents/mcp-setup.md): Claude Code / Desktop / Cursor / Zed config
+- [Tools reference](@/agents/tools-reference.md): all 16 tools, full JSON schema
+- [Resources reference](@/agents/resources-reference.md): the 5 `hypercolor://` resources
+- [Prompt templates](@/agents/prompt-templates.md): the 3 shipped prompts
 {% end %}
 
 ## The transport at a glance
 
 The server is built on `rmcp`'s `StreamableHttpService`. One endpoint handles the
-whole protocol — tool listing and calls, resource reads, prompt fetches — over
+whole protocol (tool listing and calls, resource reads, prompt fetches) over
 HTTP with optional Server-Sent Events for streaming.
 
 | Property | Value |
@@ -56,7 +56,7 @@ defaults below match the daemon's `McpConfig`:
 
 ```toml
 [mcp]
-enabled = true            # off by default — this is the switch
+enabled = true            # off by default; this is the switch
 base_path = "/mcp"        # endpoint path under :9420
 stateful_mode = true      # session-tracked transport
 json_response = false     # SSE streaming responses (set true for plain JSON)
@@ -106,8 +106,8 @@ agents can reason about retries. `create_scene` is the one tool flagged
 non-idempotent, because each call writes a new scene from current state.
 
 **Resources** are live read-only snapshots the agent can pull for context. The
-`hypercolor://audio` resource updates at roughly 10 Hz when audio is active — not
-per render frame — so it is a summary surface, not a spectrum stream.
+`hypercolor://audio` resource updates at roughly 10 Hz when audio is active (not
+per render frame) so it is a summary surface, not a spectrum stream.
 
 **Prompts** are guided workflows: `mood_lighting` (vibe to effect), `troubleshoot`
 (diagnostics-driven fixes, the only prompt with a required argument: `issue`), and
@@ -159,13 +159,13 @@ are flexible canvas partitions; the tools follow that vocabulary exactly.
 ## CLI as the scripting alternative
 
 MCP is the structured-agent path. The `hypercolor` CLI is the scripting path for
-the same engine, and it carries a few capabilities MCP does not — notably effect
+the same engine, and it carries a few capabilities MCP does not, notably effect
 installation and rescan. The CLI exposes three distinct top-level commands that are
 easy to confuse:
 
-- `hypercolor server` — operate against the local daemon process
-- `hypercolor servers` — manage multiple known daemon endpoints
-- `hypercolor service` — manage the daemon as a system service
+- `hypercolor server`: operate against the local daemon process
+- `hypercolor servers`: manage multiple known daemon endpoints
+- `hypercolor service`: manage the daemon as a system service
 
 There is no MCP command in the CLI, and there is no install-or-rescan tool over
 MCP, so a build-and-apply workflow crosses from MCP to the CLI. See
@@ -174,7 +174,7 @@ MCP, so a build-and-apply workflow crosses from MCP to the CLI. See
 
 ## Where to go next
 
-- [Agents & MCP overview](@/agents/_index.md) — the canonical MCP home
-- [MCP setup](@/agents/mcp-setup.md) — enable it, then configure your client
-- [Tools reference](@/agents/tools-reference.md) — every tool's schema and a worked example
-- [REST API reference](@/api/rest.md) — the surface MCP tools sit on top of
+- [Agents & MCP overview](@/agents/_index.md): the canonical MCP home
+- [MCP setup](@/agents/mcp-setup.md): enable it, then configure your client
+- [Tools reference](@/agents/tools-reference.md): every tool's schema and a worked example
+- [REST API reference](@/api/rest.md): the surface MCP tools sit on top of

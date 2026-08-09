@@ -7,7 +7,7 @@ template = "page.html"
 
 One WebSocket carries the daemon's entire live surface. Open `/api/v1/ws`, read
 the `hello` snapshot, subscribe to the channels you want, and the daemon streams
-exactly those — JSON for control, events, metrics, and sensors; binary frames for
+exactly those: JSON for control, events, metrics, and sensors; binary frames for
 LED color, audio spectrum, and canvas previews. The web UI, the TUI, and any
 custom client all speak this one protocol, so you never poll and never juggle a
 second HTTP connection.
@@ -17,7 +17,7 @@ The wire contract here is generated from the daemon source on `main`. The JSON
 message shapes come from `crates/hypercolor-daemon/src/api/ws/protocol.rs`; the
 binary frame layouts are owned by `hypercolor-leptos-ext::ws` and round-trip
 tested against the daemon encoders in `daemon/src/api/ws/tests.rs`. When the code
-and this page disagree, the code wins — file an issue.
+and this page disagree, the code wins; file an issue.
 {% end %}
 
 ## Connect
@@ -40,8 +40,8 @@ ws://localhost:9420/api/v1/ws?token=<your-api-key>
 
 Native clients that control the request headers should instead send
 `Authorization: Bearer <your-api-key>`, the same scheme the REST API uses. See
-[auth and security](@/api/_index.md) for the dual-key model. Loopback clients on
-the default unsecured daemon need no key at all.
+[auth and security](@/api/auth-and-security.md) for the dual-key model.
+Loopback clients on the default unsecured daemon need no key at all.
 
 {% callout(type="warning") %}
 Browser origin is enforced on the upgrade. Requests with no `Origin` header
@@ -129,7 +129,7 @@ subscribed.
     "running": true,
     "paused": false,
     "brightness": 100,
-    "fps": { "target": 60, "actual": 59.8 },
+    "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8, "actual": 60.0 },
     "effect": { "id": "borealis", "name": "Borealis" },
     "scene": { "id": "late-night", "name": "Late Night", "snapshot_locked": false },
     "profile": null,
@@ -187,7 +187,7 @@ use the same `0x0F` envelope at schema `1` in both, so a decoder never has to
 ask which version negotiated the stream it is reading.
 
 `subscriptions` shows
-what is already live — only `events` by default.
+what is already live, only `events` by default.
 
 The `effect`, `scene`, `profile`, and `layout` fields are nullable: each is
 `null` when nothing is active. The `scene` reference additionally carries
@@ -344,7 +344,7 @@ control-tier key.
 ```
 
 `scene_id` accepts a scene UUID or the literal `default`; `zone_id` must be a
-zone UUID. The preview layout must contain exactly the selected zone's outputs —
+zone UUID. The preview layout must contain exactly the selected zone's outputs,
 no more, no fewer. For the difference between scenes (whole-rig configs) and
 zones (canvas partitions), see [the Studio docs](@/studio/_index.md).
 
@@ -436,7 +436,7 @@ Common event names include `effect_started`, `effect_stopped`,
 ### metrics
 
 Periodic render-performance snapshot on the `metrics` channel, sent at the
-configured `interval_ms` (default 1000 ms). The `data` object is large — it
+configured `interval_ms` (default 1000 ms). The `data` object is large: it
 includes FPS, frame-time percentiles, per-stage timing, pacing jitter, effect
 and Servo health counters, render-surface pool gauges, preview demand, memory,
 device output, and WebSocket statistics. A representative subset:
@@ -446,7 +446,7 @@ device output, and WebSocket statistics. A representative subset:
   "type": "metrics",
   "timestamp": "2026-06-24T18:03:11.482Z",
   "data": {
-    "fps": { "target": 60, "ceiling": 60, "actual": 59.8, "dropped": 0 },
+    "fps": { "target": 60, "ceiling": 60, "capacity": 59.8, "delivered": 59.2, "actual": 59.8, "dropped": 0 },
     "frame_time": { "avg_ms": 4.2, "p95_ms": 5.1, "p99_ms": 6.0, "max_ms": 8.3 },
     "devices": { "connected": 3, "total_leds": 432, "output_errors": 0 }
   }
@@ -467,8 +467,8 @@ governed by `interval_ms`.
 
 ### sensors
 
-Latest host sensor snapshot on the `sensors` channel — system telemetry the TUI
-and dashboard surface. The `data` object is a `SystemSnapshot`.
+Latest host sensor snapshot on the `sensors` channel: the system telemetry the
+TUI and dashboard surface. The `data` object is a `SystemSnapshot`.
 
 ```json
 {
@@ -558,7 +558,7 @@ axis exceeds 65,535 pixels. The daemon never silently resizes an over-limit
 request.
 
 The canvas dimensions default to the daemon's configured render size, which is
-640×480 unless `daemon.canvas_width`/`daemon.canvas_height` change it — never
+640×480 unless `daemon.canvas_width`/`daemon.canvas_height` change it, so never
 assume a fixed size. If both dimensions are zero, the daemon publishes the source
 size. If exactly one is zero, it derives that axis from the source aspect ratio.
 Admission is based on checked pixel and byte counts, not an arbitrary axis ceiling.
@@ -581,7 +581,7 @@ The maximum accepted preview surface is currently 512 MiB at four bytes per pixe
 current target untouched, send a string to follow that display, or send `null`
 to detach. Frames on this channel are always JPEG.
 
-`screen_zones` has no client-tunable config — it relays the daemon's
+`screen_zones` has no client-tunable config; it relays the daemon's
 screen-capture grid as produced.
 
 ## Binary frame formats
@@ -642,7 +642,7 @@ instead. Binary is strongly preferred for throughput.
 ### spectrum (0x02)
 
 Audio spectrum, summary levels, and beat detection. Header is 27 bytes, then the
-per-bin magnitudes. BPM is not in this frame — read it from the `metrics`
+per-bin magnitudes. BPM is not in this frame; read it from the `metrics`
 channel.
 
 ```
@@ -701,7 +701,7 @@ Byte(s)  Field
 
 ### screen_zones (0x09)
 
-The smoothed ambilight grid extracted from screen capture — the same per-sector
+The smoothed ambilight grid extracted from screen capture, the same per-sector
 colors screen-reactive effects sample. Header is 19 bytes, then a row-major RGB
 grid of `grid_cols × grid_rows × 3` bytes.
 
@@ -784,8 +784,8 @@ older tombstones are reclaimed within the advertised bound.
 ### RPC frames (0x80 / 0x81)
 
 The CinderRPC request/response frames are the one binary type that uses the
-two-byte `BinaryFrameSchema` prefix — byte 0 is the tag, byte 1 is the schema
-version (currently `1`) — before the body. They are part of the shared
+two-byte `BinaryFrameSchema` prefix (byte 0 is the tag, byte 1 is the schema
+version, currently `1`) before the body. They are part of the shared
 `hypercolor-leptos-ext::ws` wire vocabulary and are not part of the standard
 subscription channel set; most clients never need them. Request bodies carry a
 `u64` id, a length-prefixed method string, and an opaque payload; responses
