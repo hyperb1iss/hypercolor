@@ -491,7 +491,10 @@ jobs:
     needs: [changes, generated-effects]
     if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
-    timeout-minutes: 60
+    # Sized for a cold run. The steps below sweep five mutually invalidating
+    # feature sets, so almost all of the wall time is rustc, not tests, and a
+    # cache miss puts the whole sweep well past an hour.
+    timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows
     steps:
@@ -506,7 +509,10 @@ jobs:
         with:
           shared-key: rust-windows
           workspaces: . -> .cache/hypercolor/target/rust-windows
-          cache-on-failure: "false"
+          # Saving only on success is self-perpetuating here: no cache makes
+          # the job slow enough to fail, and failing is what withholds the
+          # cache. Seeding from failed runs is what breaks back out.
+          cache-on-failure: "true"
 
       - name: Download generated effects
         uses: actions/download-artifact@v8
