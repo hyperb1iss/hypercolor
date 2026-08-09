@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
+use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
 use hypercolor_core::spatial::SpatialEngine;
@@ -77,6 +78,15 @@ impl DaemonState {
                 Arc::clone(&self.event_bus),
             ));
         }
+
+        // Seed portable identity pins before the first scan, so a claimed
+        // device's first attach of the session resolves to the identity
+        // its layouts reference.
+        crate::device_aliases::seed_registry(
+            &ConfigManager::data_dir().join(crate::device_aliases::DEVICE_ALIASES_FILE),
+            &self.device_registry,
+        )
+        .await;
 
         // Restore persisted scene state before the render loop begins producing frames.
         self.restore_runtime_session_if_configured(&config).await;
