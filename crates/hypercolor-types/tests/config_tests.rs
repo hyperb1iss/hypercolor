@@ -408,6 +408,7 @@ fn full_config_toml_roundtrip() {
         tui: TuiConfig::default(),
         features: FeatureFlags::default(),
         session: SessionConfig::default(),
+        extensions: std::collections::BTreeMap::new(),
     };
     let toml_str = toml::to_string(&original).expect("serialize HypercolorConfig");
     let restored: HypercolorConfig =

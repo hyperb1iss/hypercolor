@@ -263,6 +263,15 @@ pub struct HypercolorConfig {
 
     #[serde(default)]
     pub features: FeatureFlags,
+
+    /// Top-level sections this build does not model, preserved verbatim.
+    ///
+    /// The daemon persists config as a whole-file rewrite, and extension
+    /// crates (the official cloud daemon's `[cloud]` section, for one)
+    /// share this file. Without a catch-all, every save silently deletes
+    /// their configuration.
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<String, serde_json::Value>,
 }
 
 /// Current schema version for newly created configurations.
@@ -290,6 +299,7 @@ impl Default for HypercolorConfig {
             tui: TuiConfig::default(),
             session: SessionConfig::default(),
             features: FeatureFlags::default(),
+            extensions: BTreeMap::new(),
         }
     }
 }
@@ -1269,4 +1279,41 @@ pub struct FeatureFlags {
 
     #[serde(default)]
     pub midi_input: bool,
+}
+
+#[cfg(test)]
+mod extension_section_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_top_level_sections_survive_a_round_trip() {
+        let source = r"
+schema_version = 4
+
+[daemon]
+port = 9420
+
+[cloud]
+enabled = true
+connect_on_start = true
+";
+        let parsed: HypercolorConfig = toml::from_str(source).expect("parses");
+        assert_eq!(
+            parsed
+                .extensions
+                .get("cloud")
+                .and_then(|section| section.get("enabled"))
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "the [cloud] section lands in the catch-all"
+        );
+
+        let rewritten = toml::to_string_pretty(&parsed).expect("serializes");
+        let reparsed: HypercolorConfig = toml::from_str(&rewritten).expect("reparses");
+        assert_eq!(
+            reparsed.extensions.get("cloud"),
+            parsed.extensions.get("cloud"),
+            "a persist rewrite must not delete extension config"
+        );
+    }
 }
