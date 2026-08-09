@@ -482,6 +482,171 @@ async fn registry_add_with_fingerprint_reuses_existing_device() {
     assert_eq!(tracked.info.name, "Desk Strip Updated");
 }
 
+/// Build a claimed network discovery for portable-identity tests.
+///
+/// Every call claims the same MAC, so devices built here share one
+/// portable key while carrying whatever fingerprint and peer evidence the
+/// test needs.
+fn discovered_with_shared_key(name: &str, fingerprint: &str, peer_octet: u8) -> DiscoveredDevice {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
+
+    DiscoveredDevice {
+        fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        info: mock_device_info(name),
+        metadata: HashMap::new(),
+        claim: PortableIdentityClaim::mac_address(
+            "2C:F4:32:11:22:33",
+            NetworkAttachment::Peer(IpAddr::V4(Ipv4Addr::new(192, 168, 1, peer_octet))),
+        ),
+    }
+}
+
+#[tokio::test]
+async fn registry_pin_rebinds_claimed_device_to_its_first_fingerprint() {
+    let registry = DeviceRegistry::new();
+
+    let first_id = registry
+        .add_discovered(discovered_with_shared_key("Desk Strip", "net:wled:old", 40))
+        .await;
+
+    // Same hardware, new transport identity: a cable move or DHCP-driven
+    // fingerprint change while the old entry is not connected.
+    let second_id = registry
+        .add_discovered(discovered_with_shared_key("Desk Strip", "net:wled:new", 41))
+        .await;
+
+    assert_eq!(first_id, second_id, "portable key should resolve the move");
+    assert_eq!(registry.len().await, 1);
+    assert_eq!(
+        registry.fingerprint_for_id(&first_id).await,
+        Some(DeviceFingerprint("net:wled:old".to_owned())),
+        "the pinned fingerprint is the durable identity"
+    );
+}
+
+#[tokio::test]
+async fn registry_seeded_pin_restores_identity_across_restart() {
+    use std::collections::HashSet;
+
+    let probe = discovered_with_shared_key("probe", "unused", 40);
+    let key = probe.claim.expect("mock claim is valid").key().clone();
+
+    // Fresh registry, as after a daemon restart: the pin comes from the
+    // persisted alias overlay rather than an in-session observation.
+    let registry = DeviceRegistry::new();
+    registry
+        .seed_portable_identity(
+            HashMap::from([(key, DeviceFingerprint("net:wled:original".to_owned()))]),
+            HashSet::new(),
+        )
+        .await;
+
+    let id = registry
+        .add_discovered(discovered_with_shared_key(
+            "Desk Strip",
+            "net:wled:moved",
+            40,
+        ))
+        .await;
+
+    assert_eq!(
+        registry.fingerprint_for_id(&id).await,
+        Some(DeviceFingerprint("net:wled:original".to_owned())),
+        "a re-attached claimed device adopts the identity its layouts reference"
+    );
+}
+
+#[tokio::test]
+async fn registry_quarantines_key_claimed_by_two_present_units() {
+    let registry = DeviceRegistry::new();
+
+    let first_id = registry
+        .add_discovered(discovered_with_shared_key("Unit A", "net:wled:unit-a", 40))
+        .await;
+    registry.set_state(&first_id, DeviceState::Connected).await;
+
+    // A second, simultaneously present unit claims the same key from a
+    // different peer address. That is the one situation that proves the
+    // key names two devices.
+    let second_id = registry
+        .add_discovered(discovered_with_shared_key("Unit B", "net:wled:unit-b", 41))
+        .await;
+
+    assert_ne!(first_id, second_id, "a collision must not merge the units");
+    assert_eq!(registry.len().await, 2);
+
+    let collisions = registry.drain_portable_key_collisions().await;
+    assert_eq!(collisions.len(), 1);
+    assert_eq!(collisions[0].existing_device, first_id);
+    assert_eq!(
+        collisions[0].incoming_fingerprint,
+        DeviceFingerprint("net:wled:unit-b".to_owned())
+    );
+    assert!(
+        registry
+            .quarantined_portable_keys()
+            .await
+            .contains(&collisions[0].key),
+        "the shared key should be quarantined"
+    );
+
+    // A quarantined key resolves no pins: a third observation stays on
+    // its raw fingerprint instead of adopting either unit's identity.
+    let third_id = registry
+        .add_discovered(discovered_with_shared_key("Unit C", "net:wled:unit-c", 42))
+        .await;
+    assert_ne!(third_id, first_id);
+    assert_ne!(third_id, second_id);
+    assert_eq!(
+        registry.fingerprint_for_id(&third_id).await,
+        Some(DeviceFingerprint("net:wled:unit-c".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn registry_reconnecting_holder_rebinds_instead_of_quarantining() {
+    let registry = DeviceRegistry::new();
+
+    let first_id = registry
+        .add_discovered(discovered_with_shared_key("Desk Strip", "net:wled:old", 40))
+        .await;
+    registry
+        .set_state(&first_id, DeviceState::Reconnecting)
+        .await;
+
+    // Reconnecting is the state a cable move passes through: the holder
+    // cannot be proven present, so the new observation is the same unit.
+    let second_id = registry
+        .add_discovered(discovered_with_shared_key("Desk Strip", "net:wled:new", 41))
+        .await;
+
+    assert_eq!(first_id, second_id);
+    assert!(registry.drain_portable_key_collisions().await.is_empty());
+    assert!(registry.quarantined_portable_keys().await.is_empty());
+}
+
+#[tokio::test]
+async fn registry_claimless_rescan_preserves_recorded_claim() {
+    let registry = DeviceRegistry::new();
+
+    let id = registry
+        .add_discovered(discovered_with_shared_key("Desk Strip", "net:wled:a", 40))
+        .await;
+
+    let mut claimless = discovered_with_shared_key("Desk Strip", "net:wled:a", 40);
+    claimless.claim = None;
+    let same_id = registry.add_discovered(claimless).await;
+
+    assert_eq!(id, same_id);
+    assert!(
+        registry.claim_for_id(&id).await.is_some(),
+        "a pass that proves nothing must not erase proven history"
+    );
+}
+
 #[tokio::test]
 async fn registry_reuses_renderable_asus_dram_when_smbus_address_changes() {
     let registry = DeviceRegistry::new();

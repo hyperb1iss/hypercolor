@@ -135,6 +135,11 @@ impl DiscoveryOrchestrator {
     {
         let scan_start = Instant::now();
         let known_before = self.registry.fingerprint_snapshot().await;
+        // Diff by device id, not fingerprint text: a claimed device that
+        // re-attached under a new fingerprint resolves to its existing
+        // identity, and a fingerprint diff would call it new and vanished
+        // at once.
+        let known_ids_before: HashSet<DeviceId> = known_before.values().copied().collect();
 
         // Move scanners out so each can be scanned on its own task.
         // We restore every scanner instance after awaiting task completion.
@@ -155,7 +160,7 @@ impl DiscoveryOrchestrator {
         let mut aggregated: HashMap<DeviceFingerprint, DiscoveredDevice> = HashMap::new();
         let mut new_devices = Vec::new();
         let mut reappeared_devices = Vec::new();
-        let mut seen_fingerprints = HashSet::new();
+        let mut seen_ids = HashSet::new();
 
         while let Some(task) = scan_tasks.join_next().await {
             match task {
@@ -193,8 +198,8 @@ impl DiscoveryOrchestrator {
 
                                 let id = self.registry.add_discovered(merged).await;
 
-                                if seen_fingerprints.insert(fingerprint.clone()) {
-                                    if known_before.contains_key(&fingerprint) {
+                                if seen_ids.insert(id) {
+                                    if known_ids_before.contains(&id) {
                                         reappeared_devices.push(id);
                                         progress.reappeared_devices.push(id);
                                     } else {
@@ -248,11 +253,9 @@ impl DiscoveryOrchestrator {
             .collect();
         scanner_reports.sort_by_key(|(index, _)| *index);
 
-        let mut vanished_devices = known_before
+        let mut vanished_devices = known_ids_before
             .into_iter()
-            .filter_map(|(fingerprint, id)| {
-                (!seen_fingerprints.contains(&fingerprint)).then_some(id)
-            })
+            .filter(|id| !seen_ids.contains(id))
             .collect::<Vec<_>>();
         vanished_devices.sort_by_key(DeviceId::as_uuid);
 
@@ -289,6 +292,10 @@ impl DiscoveryOrchestrator {
 
     fn merge_discovered(existing: &mut DiscoveredDevice, incoming: &DiscoveredDevice) {
         existing.connect_behavior = existing.connect_behavior.merge(incoming.connect_behavior);
+
+        if existing.claim.is_none() {
+            existing.claim.clone_from(&incoming.claim);
+        }
 
         for (key, value) in &incoming.metadata {
             existing

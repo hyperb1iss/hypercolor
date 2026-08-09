@@ -32,7 +32,7 @@ pub use manager::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceOutputStatistics, DirectControlGuard,
     SegmentRange,
 };
-pub use registry::DeviceRegistry;
+pub use registry::{DeviceRegistry, PortableKeyCollision};
 pub use smbus_backend::SmBusBackend;
 pub use smbus_scanner::SmBusScanner;
 pub use state_machine::{

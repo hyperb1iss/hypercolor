@@ -4,7 +4,7 @@
 //! actively connected and previously seen. It is the single source of truth
 //! for device identity, state, and metadata within a running daemon session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,6 +15,7 @@ use super::{DiscoveredDevice, DiscoveryConnectBehavior};
 use crate::types::device::{
     ConnectionType, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
 };
+use crate::types::portable::{PortableDeviceKey, PortableIdentityClaim};
 
 // ── TrackedDevice ────────────────────────────────────────────────────────
 
@@ -66,6 +67,51 @@ struct RegistryInner {
 
     /// Scanner-provided metadata keyed by canonical device ID.
     metadata_by_id: HashMap<DeviceId, HashMap<String, String>>,
+
+    /// Latest portable identity observation per device.
+    claims_by_id: HashMap<DeviceId, PortableIdentityClaim>,
+
+    /// Portable key -> the fingerprint the key was first observed with.
+    ///
+    /// The pin is the durable identity for claimed hardware: a later
+    /// observation of the same key under a different fingerprint (cable
+    /// move, BIOS renumbering, restart) resolves to the pinned fingerprint
+    /// instead of minting a fresh device.
+    portable_key_pins: HashMap<PortableDeviceKey, DeviceFingerprint>,
+
+    /// Keys proven to name more than one physical device. A quarantined
+    /// key resolves no pins; each unit lives under its raw fingerprint.
+    quarantined_keys: HashSet<PortableDeviceKey>,
+
+    /// Proven same-key collisions awaiting persistence by the host.
+    collision_log: Vec<PortableKeyCollision>,
+}
+
+/// One installation observing two simultaneously present units that claim
+/// the same portable key, with evidence strong enough to distinguish them.
+///
+/// This is the only situation that proves a collision: sequential
+/// attachment cannot rule out one device moving between ports, and
+/// observations from two machines describe the dual-boot case.
+#[derive(Debug, Clone)]
+pub struct PortableKeyCollision {
+    /// The key both units claimed.
+    pub key: PortableDeviceKey,
+
+    /// The device already holding the key.
+    pub existing_device: DeviceId,
+
+    /// The holder's fingerprint at observation time.
+    pub existing_fingerprint: DeviceFingerprint,
+
+    /// The holder's claim, carrying its attachment evidence.
+    pub existing_claim: PortableIdentityClaim,
+
+    /// The second unit's fingerprint.
+    pub incoming_fingerprint: DeviceFingerprint,
+
+    /// The second unit's claim, whose evidence differed.
+    pub incoming_claim: PortableIdentityClaim,
 }
 
 impl DeviceRegistry {
@@ -114,6 +160,7 @@ impl DeviceRegistry {
             fingerprint,
             metadata,
             DiscoveryConnectBehavior::AutoConnect,
+            None,
         )
         .await
     }
@@ -125,6 +172,7 @@ impl DeviceRegistry {
             discovered.fingerprint,
             discovered.metadata,
             discovered.connect_behavior,
+            discovered.claim,
         )
         .await
     }
@@ -135,8 +183,10 @@ impl DeviceRegistry {
         fingerprint: DeviceFingerprint,
         metadata: HashMap<String, String>,
         connect_behavior: DiscoveryConnectBehavior,
+        claim: Option<PortableIdentityClaim>,
     ) -> DeviceId {
         let mut inner = self.inner.write().await;
+        let fingerprint = resolve_portable_fingerprint(&mut inner, fingerprint, claim.as_ref());
 
         // Check for existing device by fingerprint
         if let Some(&existing_id) = inner.fingerprints.get(&fingerprint) {
@@ -160,6 +210,7 @@ impl DeviceRegistry {
                 if !metadata.is_empty() {
                     inner.metadata_by_id.insert(existing_id, metadata);
                 }
+                store_portable_claim(&mut inner, existing_id, claim);
                 self.bump_generation();
                 return existing_id;
             }
@@ -194,6 +245,7 @@ impl DeviceRegistry {
                 if !metadata.is_empty() {
                     inner.metadata_by_id.insert(existing_id, metadata);
                 }
+                store_portable_claim(&mut inner, existing_id, claim);
                 self.bump_generation();
                 return existing_id;
             }
@@ -233,6 +285,7 @@ impl DeviceRegistry {
             inner.metadata_by_id.insert(id, metadata);
         }
         inner.devices.insert(id, tracked);
+        store_portable_claim(&mut inner, id, claim);
         self.bump_generation();
 
         info!(device_id = %id, name = %name, "Device added to registry");
@@ -256,6 +309,10 @@ impl DeviceRegistry {
             }
             inner.fingerprints.retain(|_, mapped_id| mapped_id != id);
             inner.metadata_by_id.remove(id);
+            // The key pin outlives the device on purpose: pins are the
+            // durable identity that lets the same hardware resolve back
+            // after a vanish/reappear cycle or a restart.
+            inner.claims_by_id.remove(id);
             self.bump_generation();
             info!(device_id = %id, "Device removed from registry");
         } else {
@@ -422,6 +479,53 @@ impl DeviceRegistry {
         inner.metadata_by_id.get(id).cloned()
     }
 
+    /// The latest portable identity observation for a device, if any.
+    pub async fn claim_for_id(&self, id: &DeviceId) -> Option<PortableIdentityClaim> {
+        let inner = self.inner.read().await;
+        inner.claims_by_id.get(id).cloned()
+    }
+
+    /// Snapshot of every stored portable identity claim, keyed by device.
+    pub async fn claims_snapshot(&self) -> HashMap<DeviceId, PortableIdentityClaim> {
+        let inner = self.inner.read().await;
+        inner.claims_by_id.clone()
+    }
+
+    /// Seed portable identity state persisted by the host, before scans.
+    ///
+    /// Pins recorded in earlier sessions are what let a claimed device
+    /// reattach under a new fingerprint and still resolve to the identity
+    /// its layouts reference. Existing in-session state wins on conflict.
+    pub async fn seed_portable_identity(
+        &self,
+        pins: HashMap<PortableDeviceKey, DeviceFingerprint>,
+        quarantined_keys: HashSet<PortableDeviceKey>,
+    ) {
+        let mut inner = self.inner.write().await;
+        for (key, fingerprint) in pins {
+            inner.portable_key_pins.entry(key).or_insert(fingerprint);
+        }
+        inner.quarantined_keys.extend(quarantined_keys);
+    }
+
+    /// Snapshot of the portable key pins (`key -> pinned fingerprint`).
+    pub async fn portable_key_pins(&self) -> HashMap<PortableDeviceKey, DeviceFingerprint> {
+        let inner = self.inner.read().await;
+        inner.portable_key_pins.clone()
+    }
+
+    /// Keys proven to name more than one physical device.
+    pub async fn quarantined_portable_keys(&self) -> HashSet<PortableDeviceKey> {
+        let inner = self.inner.read().await;
+        inner.quarantined_keys.clone()
+    }
+
+    /// Take the collisions proven since the last drain, for persistence.
+    pub async fn drain_portable_key_collisions(&self) -> Vec<PortableKeyCollision> {
+        let mut inner = self.inner.write().await;
+        std::mem::take(&mut inner.collision_log)
+    }
+
     /// Snapshot of the fingerprint index (`fingerprint -> device_id`).
     ///
     /// Useful for diffing full-scan results (new/reappeared/vanished) without
@@ -469,6 +573,121 @@ fn apply_user_settings_to_info(info: &mut DeviceInfo, settings: &DeviceUserSetti
     if let Some(name) = settings.name.as_ref() {
         info.name.clone_from(name);
     }
+}
+
+/// Resolves the effective fingerprint for a claimed device.
+///
+/// The pin for a portable key is the durable identity: a claimed device
+/// arriving under a new fingerprint adopts the pinned one, which is what
+/// makes a cable move or a restart land on the identity its layouts
+/// reference. Collision detection runs first, because pin resolution is
+/// deduplication and the RFC requires detection before dedup: two
+/// simultaneously present units claiming one key must quarantine the key
+/// rather than silently merge.
+fn resolve_portable_fingerprint(
+    inner: &mut RegistryInner,
+    fingerprint: DeviceFingerprint,
+    claim: Option<&PortableIdentityClaim>,
+) -> DeviceFingerprint {
+    let Some(claim) = claim else {
+        return fingerprint;
+    };
+    if inner.quarantined_keys.contains(claim.key()) {
+        return fingerprint;
+    }
+
+    let Some(pinned) = inner.portable_key_pins.get(claim.key()).cloned() else {
+        inner
+            .portable_key_pins
+            .insert(claim.key().clone(), fingerprint.clone());
+        return fingerprint;
+    };
+    if pinned == fingerprint {
+        return fingerprint;
+    }
+
+    // Only a renderable holder proves simultaneous presence. Reconnecting
+    // is exactly the state a cable move passes through, and treating it as
+    // present would quarantine a healthy key on every port change.
+    let holder_present_claim = inner
+        .fingerprints
+        .get(&pinned)
+        .and_then(|holder_id| {
+            let holder = inner.devices.get(holder_id)?;
+            holder.state.is_renderable().then_some(holder_id)
+        })
+        .and_then(|holder_id| {
+            inner
+                .claims_by_id
+                .get(holder_id)
+                .map(|held| (*holder_id, held.clone()))
+        });
+
+    if let Some((holder_id, held_claim)) = holder_present_claim
+        && held_claim
+            .evidence()
+            .proves_distinct_from(&claim.evidence())
+    {
+        warn!(
+            key = %claim.key(),
+            existing_device = %holder_id,
+            existing_evidence = ?held_claim.evidence(),
+            incoming_evidence = ?claim.evidence(),
+            "Two simultaneously present devices claim one portable key; quarantining"
+        );
+        inner.collision_log.push(PortableKeyCollision {
+            key: claim.key().clone(),
+            existing_device: holder_id,
+            existing_fingerprint: pinned,
+            existing_claim: held_claim,
+            incoming_fingerprint: fingerprint.clone(),
+            incoming_claim: claim.clone(),
+        });
+        inner.quarantined_keys.insert(claim.key().clone());
+        inner.portable_key_pins.remove(claim.key());
+        return fingerprint;
+    }
+
+    debug!(
+        key = %claim.key(),
+        raw_fingerprint = %fingerprint.0,
+        pinned_fingerprint = %pinned.0,
+        "Portable key resolved a re-attached device to its pinned identity"
+    );
+    pinned
+}
+
+/// Stores a claim on a device, keeping the key pins consistent.
+///
+/// `None` preserves whatever was recorded: a scanner that cannot prove
+/// identity on this pass must not erase history a previous pass proved.
+fn store_portable_claim(
+    inner: &mut RegistryInner,
+    id: DeviceId,
+    claim: Option<PortableIdentityClaim>,
+) {
+    let Some(claim) = claim else {
+        return;
+    };
+
+    // A firmware update can change the serial: same device, new key. The
+    // old key stops resolving here; lineage is the sync layer's job.
+    if let Some(previous) = inner.claims_by_id.get(&id)
+        && previous.key() != claim.key()
+    {
+        inner.portable_key_pins.remove(previous.key());
+    }
+
+    if !inner.quarantined_keys.contains(claim.key())
+        && !inner.portable_key_pins.contains_key(claim.key())
+        && let Some(canonical) = inner.id_to_fingerprint.get(&id)
+    {
+        inner
+            .portable_key_pins
+            .insert(claim.key().clone(), canonical.clone());
+    }
+
+    inner.claims_by_id.insert(id, claim);
 }
 
 fn bump_device_revision(entry: &mut TrackedDevice) {
