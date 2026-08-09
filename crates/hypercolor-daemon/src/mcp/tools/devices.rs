@@ -218,6 +218,9 @@ pub(super) async fn handle_set_brightness_with_state(
             tracing::warn!(%error, "Failed to persist global brightness");
         }
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
 
     state.event_bus.publish(HypercolorEvent::BrightnessChanged {
         old: previous,

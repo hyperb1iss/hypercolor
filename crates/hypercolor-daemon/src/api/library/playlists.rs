@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::warn;
 
+use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
 use hypercolor_types::library::{
     EffectPlaylist, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
 };
@@ -124,6 +125,13 @@ pub async fn create_playlist(
     if let Err(error) = state.library_store.insert_playlist(playlist.clone()).await {
         return store_error_to_response(&error);
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::LibraryStoreChanged {
+            collection: LibraryCollection::Playlists,
+            entry_id: playlist.id.to_string(),
+            kind: LibraryChangeKind::Upserted,
+        });
 
     ApiResponse::created(playlist)
 }
@@ -162,6 +170,13 @@ pub async fn update_playlist(
     if let Err(error) = state.library_store.update_playlist(playlist.clone()).await {
         return store_error_to_response(&error);
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::LibraryStoreChanged {
+            collection: LibraryCollection::Playlists,
+            entry_id: playlist.id.to_string(),
+            kind: LibraryChangeKind::Upserted,
+        });
 
     let active = {
         let mut runtime = state.playlist_runtime.lock().await;
@@ -196,6 +211,13 @@ pub async fn delete_playlist(
     if !removed {
         return ApiError::not_found(format!("Playlist not found: {id}"));
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::LibraryStoreChanged {
+            collection: LibraryCollection::Playlists,
+            entry_id: playlist_id.to_string(),
+            kind: LibraryChangeKind::Removed,
+        });
 
     let active = {
         let mut runtime = state.playlist_runtime.lock().await;

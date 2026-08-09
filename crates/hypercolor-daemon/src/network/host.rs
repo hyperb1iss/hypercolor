@@ -338,9 +338,14 @@ impl DeviceControlStore for DaemonDriverHost {
 
     async fn save_device_values(&self, device_id: DeviceId, values: ControlValueMap) -> Result<()> {
         let key = self.device_control_settings_key(device_id).await;
-        let mut store = self.device_settings.write().await;
-        store.set_driver_control_values(&key, values);
-        store.save()
+        {
+            let mut store = self.device_settings.write().await;
+            store.set_driver_control_values(&key, values);
+            store.save()?;
+        }
+        self.event_bus
+            .publish(HypercolorEvent::DeviceSettingsChanged { key: Some(key) });
+        Ok(())
     }
 }
 

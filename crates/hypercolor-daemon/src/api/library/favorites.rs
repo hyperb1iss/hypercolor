@@ -6,6 +6,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
+use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
@@ -98,6 +99,13 @@ pub async fn add_favorite(
         Ok(favorite) => favorite,
         Err(error) => return super::store_error_to_response(&error),
     };
+    state
+        .event_bus
+        .publish(HypercolorEvent::LibraryStoreChanged {
+            collection: LibraryCollection::Favorites,
+            entry_id: favorite.effect_id.to_string(),
+            kind: LibraryChangeKind::Upserted,
+        });
 
     ApiResponse::ok(serde_json::json!({
         "favorite": FavoriteSummary {
@@ -129,6 +137,13 @@ pub async fn remove_favorite(
     if !removed {
         return ApiError::not_found("Favorite effect not found");
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::LibraryStoreChanged {
+            collection: LibraryCollection::Favorites,
+            entry_id: effect.id.to_string(),
+            kind: LibraryChangeKind::Removed,
+        });
 
     ApiResponse::ok(serde_json::json!({
         "effect_id": effect.id.to_string(),
