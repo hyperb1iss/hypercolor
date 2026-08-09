@@ -1,6 +1,6 @@
 +++
 title = "Devices not found"
-description = "USB device missing from Hypercolor? udev rules, logout/login, conflicting software, USB hubs, and the HAL discovery path explained."
+description = "USB device missing from Hypercolor? udev rules, logout/login, conflicting software, USB hubs, and the HAL discovery path explained, plus Windows and macOS notes."
 weight = 10
 template = "page.html"
 +++
@@ -30,16 +30,21 @@ Install the rules:
 just udev-install
 ```
 
-That copies `udev/99-hypercolor.rules` to `/etc/udev/rules.d/`, reloads the udev
-database, and triggers a re-evaluation for hidraw, USB, tty, and i2c-dev subsystems.
+That copies both rules files (`udev/99-hypercolor.rules` and
+`udev/70-hypercolor-input.rules`) to `/etc/udev/rules.d/`, reloads the udev
+database, and triggers a re-evaluation for the hidraw and usb subsystems.
 
-If you installed from a prebuilt binary or are using an AppImage, the rules are
-**not** installed automatically, so you must run this step by hand. Grab the rules file
-from the [Hypercolor releases page](https://github.com/hyperb1iss/hypercolor/releases)
+If you installed from a release, the installer prompts to install the rules for
+you, and the `.deb` and AUR packages install them automatically. Release
+payloads from 0.3.0 onward include the input rules too, under
+`lib/udev/rules.d/` in the release directory. If you declined that prompt, or
+your install predates 0.3.0, grab the rules files from the
+[Hypercolor releases page](https://github.com/hyperb1iss/hypercolor/releases)
 and then:
 
 ```bash
 sudo cp 99-hypercolor.rules /etc/udev/rules.d/
+sudo cp 70-hypercolor-input.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger --action=add --subsystem-match=hidraw
 sudo udevadm trigger --action=add --subsystem-match=usb
@@ -113,11 +118,11 @@ permission denied opening hidraw node ...
 
 Common offenders:
 
-- **openrazer daemon** — grabs Razer USB HID interfaces on boot
-- **OpenRGB** — can hold HID interfaces for any vendor it supports
-- **ASUS Aura Sync / Armoury Crate** (via Wine or native) — holds ENE SMBus and
+- **openrazer daemon**: grabs Razer USB HID interfaces on boot
+- **OpenRGB**: can hold HID interfaces for any vendor it supports
+- **ASUS Aura Sync / Armoury Crate** (via Wine or native): holds ENE SMBus and
   ASUS USB devices
-- **iCUE** (via a Wine layer) — claims Corsair interfaces
+- **iCUE** (via a Wine layer): claims Corsair interfaces
 
 Check whether another process has the device open:
 
@@ -240,10 +245,33 @@ configuration, not permissions. See [network devices](@/hardware/network-devices
 for setup and [network discovery troubleshooting](@/troubleshooting/network-discovery.md)
 for diagnosis.
 
+## Windows
+
+Windows has no udev equivalent: USB HID devices need no permission setup and
+are discovered as soon as the daemon starts. When a device is missing on
+Windows, check two things:
+
+- **Conflicting vendor software.** iCUE, Armoury Crate, SignalRGB, Razer
+  Synapse, MSI Center, and similar tools hold HID devices exclusively, exactly
+  like their Linux counterparts. Close them and rescan.
+- **SMBus hardware support (motherboard and DRAM RGB).** SMBus devices need the
+  PawnIO modules and the `HypercolorSmBus` broker service that the installer
+  sets up. Confirm the broker is running with `Get-Service HypercolorSmBus`,
+  and re-run the setup from Settings → Device Discovery → Hardware Support if
+  it is missing. The tray's Export Diagnostics bundle includes a PawnIO/SMBus
+  probe report.
+
+## macOS
+
+USB HID devices work out of the box on macOS: there is no udev equivalent and
+no permission step for HID lighting. Network devices (Hue, Nanoleaf, WLED,
+Govee) work the same as on other platforms. macOS has no SMBus transport, so
+motherboard and DRAM RGB never appear there.
+
 ## Related pages
 
-- [USB devices](@/hardware/usb-devices.md) — full udev setup, transport variants, replug behavior
-- [Hardware compatibility](@/hardware/compatibility.md) — the full supported-device matrix
-- [Conflicting software](@/hardware/conflicting-software.md) — stopping openrazer, OpenRGB, and other daemons
-- [Common issues](@/troubleshooting/common-issues.md) — port conflicts, systemd service failures
-- [Debugging and diagnostics](@/contributing/debugging.md) — `RUST_LOG` targets, `hypercolor diagnose`, USB packet traces
+- [USB devices](@/hardware/usb-devices.md): full udev setup, transport variants, replug behavior
+- [Hardware compatibility](@/hardware/compatibility.md): the full supported-device matrix
+- [Conflicting software](@/hardware/conflicting-software.md): stopping openrazer, OpenRGB, and other daemons
+- [Common issues](@/troubleshooting/common-issues.md): port conflicts, systemd service failures
+- [Debugging and diagnostics](@/contributing/debugging.md): `RUST_LOG` targets, `hypercolor diagnose`, USB packet traces

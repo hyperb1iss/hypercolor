@@ -61,12 +61,13 @@ Install the rules:
 just udev-install
 ```
 
-This copies `udev/99-hypercolor.rules` to `/etc/udev/rules.d/`, reloads the udev database, and retriggers existing device events. After installation you must either re-plug the device or log out and back in for the session ACLs to take effect.
+This copies both rules files (`udev/99-hypercolor.rules` for USB and hidraw access, `udev/70-hypercolor-input.rules` for input capture) to `/etc/udev/rules.d/`, reloads the udev database, and retriggers existing device events. After installation you must either re-plug the device or log out and back in for the session ACLs to take effect.
 
-If you installed Hypercolor from a prebuilt binary (via `scripts/get-hypercolor.sh` or `scripts/install-release.sh`) rather than from source, run the udev step manually:
+If you installed from a release (via `scripts/install-release.sh`, the `.deb`, or the AUR package), the rules are already handled: the installer prompts before applying them, and the packages install them automatically. Release payloads from 0.3.0 onward carry both files under `lib/udev/rules.d/` inside the release directory. An install made from an older payload lacks the input rules; copy them manually from a repo checkout, or upgrade:
 
 ```bash
 sudo cp /path/to/hypercolor/udev/99-hypercolor.rules /etc/udev/rules.d/
+sudo cp /path/to/hypercolor/udev/70-hypercolor-input.rules /etc/udev/rules.d/
 sudo udevadm control --reload
 sudo udevadm trigger
 ```
@@ -159,6 +160,6 @@ Accepts hex (`#rrggbb`) or named colors.
 
 If a device appears in `lsusb` but not in `hypercolor devices list`, or a network device is on the same subnet but does not show up, the troubleshooting pages cover the full diagnostic flow:
 
-- [Devices not found](@/troubleshooting/devices-not-found.md) — USB permission checks, udev verification, HID conflict diagnosis
-- [Network discovery](@/troubleshooting/network-discovery.md) — mDNS, VLAN, AP isolation, Govee LAN control
-- [Hardware compatibility](@/hardware/compatibility.md) — whether your specific model is supported
+- [Devices not found](@/troubleshooting/devices-not-found.md): USB permission checks, udev verification, HID conflict diagnosis
+- [Network discovery](@/troubleshooting/network-discovery.md): mDNS, VLAN, AP isolation, Govee LAN control
+- [Hardware compatibility](@/hardware/compatibility.md): whether your specific model is supported

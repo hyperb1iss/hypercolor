@@ -6,7 +6,7 @@ sort_by = "weight"
 template = "section.html"
 +++
 
-Something is not working. Find your symptom in the table below and follow the link — each entry goes directly to the relevant fix, not a general overview.
+Something is not working. Find your symptom in the table below and follow the link: each entry goes directly to the relevant fix, not a general overview.
 
 ![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
 
@@ -15,26 +15,26 @@ Something is not working. Find your symptom in the table below and follow the li
 | Symptom | Where to look |
 |---|---|
 | Device is plugged in but does not appear in Hypercolor | [Devices not found](@/troubleshooting/devices-not-found.md) |
-| Device shows up but will not connect or light up | [Devices not found — connection failures](@/troubleshooting/devices-not-found.md) |
-| `Permission denied` on USB device | [Devices not found — udev rules](@/troubleshooting/devices-not-found.md) |
-| Another RGB tool (OpenRGB, Aura Sync, openrazer) is holding the device | [Devices not found — conflicting software](@/troubleshooting/devices-not-found.md) |
-| Lian Li Uni Hub AL detected but not controlling correctly | [Devices not found — firmware split](@/troubleshooting/devices-not-found.md) |
-| PrismRGB Prism 8 shows as "Nollie 8 v2" in the device list | [Devices not found — known rebrands](@/troubleshooting/devices-not-found.md) |
-| Audio-reactive effects are static — no reaction to music | [Audio not reacting](@/troubleshooting/audio-not-reacting.md) |
-| Microphone is selected instead of system speaker output | [Audio not reacting — monitor source](@/troubleshooting/audio-not-reacting.md) |
-| Audio capture shows `audio_available: false` in status | [Audio not reacting — capture pipeline](@/troubleshooting/audio-not-reacting.md) |
+| Device shows up but will not connect or light up | [Devices not found: connection failures](@/troubleshooting/devices-not-found.md) |
+| `Permission denied` on USB device | [Devices not found: udev rules](@/troubleshooting/devices-not-found.md) |
+| Another RGB tool (OpenRGB, Aura Sync, openrazer) is holding the device | [Devices not found: conflicting software](@/troubleshooting/devices-not-found.md) |
+| Lian Li Uni Hub AL detected but not controlling correctly | [Devices not found: firmware split](@/troubleshooting/devices-not-found.md) |
+| PrismRGB Prism 8 shows as "Nollie 8 v2" in the device list | [Devices not found: known rebrands](@/troubleshooting/devices-not-found.md) |
+| Audio-reactive effects are static (no reaction to music) | [Audio not reacting](@/troubleshooting/audio-not-reacting.md) |
+| Microphone is selected instead of system speaker output | [Audio not reacting: monitor source](@/troubleshooting/audio-not-reacting.md) |
+| Audio capture shows `audio_available: false` in status | [Audio not reacting: capture pipeline](@/troubleshooting/audio-not-reacting.md) |
 | WLED / Hue / Nanoleaf / Govee device not discovered | [Network discovery](@/troubleshooting/network-discovery.md) |
-| Govee shows "no devices found" even on the same network | [Network discovery — Govee LAN control](@/troubleshooting/network-discovery.md) |
-| Philips Hue link-button pairing fails or times out | [Network discovery — Hue pairing](@/troubleshooting/network-discovery.md) |
-| Network device vanishes after a DHCP lease renewal | [Network discovery — stable addressing](@/troubleshooting/network-discovery.md) |
-| Effect applies but all LEDs show the same color (no gradient) | [Studio — spatial layout](@/troubleshooting/studio.md) |
+| Govee shows "no devices found" even on the same network | [Network discovery: Govee LAN control](@/troubleshooting/network-discovery.md) |
+| Philips Hue link-button pairing fails or times out | [Network discovery: Hue pairing](@/troubleshooting/network-discovery.md) |
+| Network device vanishes after a DHCP lease renewal | [Network discovery: stable addressing](@/troubleshooting/network-discovery.md) |
+| Effect applies but all LEDs show the same color (no gradient) | [Studio: spatial layout](@/troubleshooting/studio.md) |
 | Scene switcher or zone controls behave unexpectedly | [Studio troubleshooting](@/troubleshooting/studio.md) |
-| Daemon port 9420 already in use | [Common issues — port conflict](@/troubleshooting/common-issues.md) |
-| Daemon fails to start on first login (`XDG_RUNTIME_DIR` not set) | [Common issues — systemd linger](@/troubleshooting/common-issues.md) |
-| Effects apply but the web UI preview is dark | [Common issues — WebSocket preview](@/troubleshooting/common-issues.md) |
+| Daemon port 9420 already in use | [Common issues: port conflict](@/troubleshooting/common-issues.md) |
+| Daemon fails to start on first login (`XDG_RUNTIME_DIR` not set) | [Common issues: systemd linger](@/troubleshooting/common-issues.md) |
+| Effects apply but the web UI preview is dark | [Common issues: WebSocket preview](@/troubleshooting/common-issues.md) |
 | Low FPS, stuttering, or render loop lag | [Performance](@/troubleshooting/performance.md) |
-| Render loop running but no frames are sent to devices | [Performance — device output queues](@/troubleshooting/performance.md) |
-| Servo circuit breaker open — HTML effects frozen | [Performance — Servo circuit breaker](@/troubleshooting/performance.md) |
+| Render loop running but no frames are sent to devices | [Performance: device output queues](@/troubleshooting/performance.md) |
+| Servo circuit breaker open (HTML effects frozen) | [Performance: Servo circuit breaker](@/troubleshooting/performance.md) |
 
 ## Run a quick self-check first
 
@@ -61,7 +61,7 @@ hypercolor diagnose --check devices
 # Check render pipeline only
 hypercolor diagnose --check render
 
-# Full report to file — attach to bug reports
+# Full report to file; attach to bug reports
 hypercolor diagnose --report ~/hypercolor-diag.json --system
 ```
 
@@ -88,7 +88,7 @@ The daemon defaults to `info` level, which is quiet by design. `debug` gives you
 ## Troubleshooting pages
 
 {% callout(type="tip") %}
-Each page below is organized by symptom, not by subsystem. If your symptom does not appear in the table above, check the page closest to your failure category — the symptoms within each page are more specific than the summary table here.
+Each page below is organized by symptom, not by subsystem. If your symptom does not appear in the table above, check the page closest to your failure category: the symptoms within each page are more specific than the summary table here.
 {% end %}
 
 ### [Devices not found](@/troubleshooting/devices-not-found.md)
@@ -109,7 +109,7 @@ Spatial layout problems (all LEDs showing the same color), zone configuration is
 
 ### [Common issues](@/troubleshooting/common-issues.md)
 
-Linux-specific first-run failures that are not hardware or audio related: daemon port conflicts, systemd user session constraints, `XDG_RUNTIME_DIR` not available on headless systems, and the WebSocket preview channel not connecting.
+First-run and daemon startup issues that are not hardware or audio related: daemon port conflicts, systemd user session constraints and `XDG_RUNTIME_DIR` on headless Linux, Windows service and hardware-support quirks, and the WebSocket preview channel not connecting.
 
 ### [Performance](@/troubleshooting/performance.md)
 

@@ -1,6 +1,6 @@
 +++
 title = "The pieces"
-description = "Mental model: daemon, app, tray, TUI, CLI, and web UI — what each is, when to use it, and how they all connect on :9420."
+description = "Mental model: daemon, app, tray, TUI, CLI, and web UI. What each is, when to use it, and how they all connect on :9420."
 weight = 40
 +++
 
@@ -8,9 +8,9 @@ Every interface in Hypercolor talks to one thing: the daemon, which runs on port
 
 ## The daemon is the engine
 
-`hypercolor-daemon` is the heart of the system. It runs the render loop, communicates with your hardware, serves the REST API, streams WebSocket events, and optionally exposes the MCP server for agent integration. Everything else — the app, TUI, CLI, and web UI — is a client.
+`hypercolor-daemon` is the heart of the system. It runs the render loop, communicates with your hardware, serves the REST API, streams WebSocket events, and optionally exposes the MCP server for agent integration. Everything else (the app, TUI, CLI, and web UI) is a client.
 
-The daemon binds to `127.0.0.1:9420` by default. A clean install exposes the web UI from that same port because `web.enabled` is true by default; no separate process is needed for the browser interface. The only time you see `:9430` is during local SDK development (`just ui-dev`), where Trunk runs a hot-reload server that proxies API calls back to `:9420`.
+The daemon binds to `127.0.0.1:9420` by default. A clean install exposes the web UI from that same port because `web.enabled` is true by default; no separate process is needed for the browser interface. The only time you see `:9430` is when developing the web UI itself (`just ui-dev`), where Trunk runs a hot-reload dev server that proxies API calls back to `:9420`.
 
 The daemon enforces a single-instance lock. If you try to start a second one, it exits immediately with "hypercolor-daemon is already running; exiting."
 
@@ -29,7 +29,7 @@ For service management on Linux, `systemctl --user` is the right tool (it is a u
 
 `hypercolor-app` is a [Tauri](https://tauri.app/) shell that owns the native window, the system tray icon, daemon supervision, autostart registration, and single-instance forwarding. When you install Hypercolor on Linux, Windows, or macOS via a desktop package, this is what you get.
 
-The app supervises the daemon — it spawns and watches `hypercolor-daemon` as a child process, restarting it if it exits unexpectedly (up to five rapid restarts within five minutes before the watchdog circuit-breaker trips). On Linux it also probes for a running systemd user service and connects to that instead of spawning a child. You do not need to start the daemon separately when you use the app.
+The app supervises the daemon: it spawns and watches `hypercolor-daemon` as a child process, restarting it if it exits unexpectedly (up to five rapid restarts within five minutes before the watchdog circuit-breaker trips). On Linux it also probes for a running systemd user service and connects to that instead of spawning a child. You do not need to start the daemon separately when you use the app.
 
 The window hosts the web UI at `http://127.0.0.1:9420` (or whatever `HYPERCOLOR_URL` points to). It is a Tauri webview loading the same page any browser would show at that address. New links open in your system browser rather than inside the app window.
 
@@ -57,7 +57,7 @@ The web UI uses a binary WebSocket connection to `:9420/api/v1/ws` for real-time
 
 ## The TUI is the terminal dashboard
 
-The Ratatui terminal UI gives you a live instrument panel without leaving the shell — effects, device status, canvas preview, and a spectrum visualizer, all rendered in your terminal.
+The Ratatui terminal UI gives you a live instrument panel without leaving the shell: effects, device status, canvas preview, and a spectrum visualizer, all rendered in your terminal.
 
 ![TUI dashboard view](/img/tui/tui-dashboard.png)
 
@@ -96,9 +96,9 @@ HYPERCOLOR_HOST=server HYPERCOLOR_PORT=9420 hypercolor effects list
 
 The three top-level commands that look similar but do different things:
 
-- `hypercolor server` — shows the identity and health of the connected daemon instance.
-- `hypercolor servers` — discovers other Hypercolor daemons on the local network.
-- `hypercolor service` — manages the lifecycle of the local daemon process (`start`, `stop`, `restart`, `logs --follow`).
+- `hypercolor server` shows the identity and health of the connected daemon instance.
+- `hypercolor servers` discovers other Hypercolor daemons on the local network.
+- `hypercolor service` manages the lifecycle of the local daemon process (`start`, `stop`, `restart`, `logs --follow`).
 
 For the full CLI reference, see [CLI reference](@/api/cli.md).
 
@@ -112,7 +112,7 @@ just tray    # or run hypercolor-tray directly
 
 Use the standalone tray when you are running the daemon as a service and do not want or need the Tauri window. On a Linux system where autostart brings up the daemon via systemd and you want tray presence without a full native window, `hypercolor-tray` is the right tool.
 
-If you installed the desktop app, you already have a tray icon — the app registers its own tray and you do not need the standalone binary. The two are not meant to run simultaneously.
+If you installed the desktop app, you already have a tray icon: the app registers its own tray and you do not need the standalone binary. The two are not meant to run simultaneously.
 
 ## How they connect
 
@@ -140,4 +140,4 @@ The only port a normal install uses is **9420**. Port 9430 is the Leptos hot-rel
 | Run headless (no window) | Daemon + standalone tray |
 | AI agent integration | Enable MCP in config, then connect your agent |
 
-In most cases, the desktop app is the right answer. It starts the daemon for you, shows up in your tray, and opens the full web UI when you click the window — everything from one install.
+In most cases, the desktop app is the right answer. It starts the daemon for you, shows up in your tray, and opens the full web UI when you click the window: everything from one install.

@@ -7,7 +7,7 @@ template = "page.html"
 
 The Hypercolor desktop app (`hypercolor-app`) is the native shell that wraps the daemon, the tray icon, and the web UI into one installable package. On Windows and macOS it is the primary way most users run Hypercolor. On Linux it is an optional convenience on top of the daemon-only or TUI workflows.
 
-The app does three things the raw daemon cannot: it supervises the daemon process (auto-restarts on crash), registers the system tray icon, and presents the web UI in a native window. Everything it controls is ultimately talking to the daemon on `:9420` — the shell itself has no rendering logic.
+The app does three things the raw daemon cannot: it supervises the daemon process (auto-restarts on crash), registers the system tray icon, and presents the web UI in a native window. Everything it controls is ultimately talking to the daemon on `:9420`; the shell itself has no rendering logic.
 
 ![The Hypercolor dashboard](/img/ui/dashboard.webp)
 
@@ -17,7 +17,7 @@ The app does three things the raw daemon cannot: it supervises the daemon proces
 
 The window hosts the Hypercolor web UI inside a Tauri webview. The default size is 1200×800 (minimum 800×500). Links that point to `http://` or `https://` URLs open in your system browser rather than a new webview.
 
-Closing the window does not quit the app — it hides the window and keeps the daemon running. To bring the window back, click the tray icon (see below) or use **Show Window** in the tray menu.
+Closing the window does not quit the app: it hides the window and keeps the daemon running. To bring the window back, click the tray icon (see below) or use **Show Window** in the tray menu.
 
 ### Window visibility shortcut
 
@@ -31,7 +31,7 @@ Clicking **Settings** in the tray menu shows the window and navigates directly t
 
 ## Tray icon ⚡
 
-The tray icon is the primary control surface when the window is hidden. It refreshes each time the daemon sends a state update — active effect, active scene, and connection status are all reflected in real time.
+The tray icon is the primary control surface when the window is hidden. It refreshes each time the daemon sends a state update: active effect, active scene, and connection status are all reflected in real time.
 
 ### Tooltip
 
@@ -44,7 +44,7 @@ Hovering over the tray icon shows a tooltip with the current effect and, when a 
 - Disconnected: `Hypercolor - Disconnected`
 - Supervisor stopped retrying: `Hypercolor - Supervisor stopped trying to restart the daemon`
 
-### Tray menu — connected state
+### Tray menu: connected state
 
 When the daemon is reachable the menu contains the following items, in order:
 
@@ -68,7 +68,7 @@ When the daemon is reachable the menu contains the following items, in order:
 | (separator) | — | — |
 | **Quit** | Item | Exits the app and stops the daemon |
 
-### Tray menu — disconnected state
+### Tray menu: disconnected state
 
 When the daemon is not reachable the header changes to `Hypercolor (Disconnected)` and a disabled `Daemon not reachable` label replaces the effect/scene labels. The Effects, Profiles, Brightness, and Stop Effect items are removed. The Servers submenu still appears if more than one server is configured, and the app entries (Show Window through Quit) remain available.
 
@@ -122,7 +122,7 @@ hypercolor service logs --follow
 
 ## User Effects folder
 
-**Open User Effects Folder** opens `<data>/effects/user/` — the directory where you can drop custom HTML effect files for Hypercolor to load. Place any `.html` effect file there and it will appear in the Effects list after a rescan.
+**Open User Effects Folder** opens `<data>/effects/user/`, the directory where you can drop custom HTML effect files for Hypercolor to load. Place any `.html` effect file there and it will appear in the Effects list after a rescan.
 
 ```bash
 hypercolor effects rescan
@@ -188,7 +188,7 @@ See [The pieces](@/guide/the-pieces.md) for a full breakdown of what each compon
 
 **Window does not appear after clicking the tray icon.** The window may be off-screen if you changed monitor configurations. Quit and restart the app to reset window position.
 
-**Tray icon shows "Disconnected" at startup.** The supervisor is still launching the daemon. Wait a few seconds — the icon updates automatically when the daemon becomes reachable. If it stays disconnected, check [Common issues](@/troubleshooting/common-issues.md).
+**Tray icon shows "Disconnected" at startup.** The supervisor is still launching the daemon. Wait a few seconds; the icon updates automatically when the daemon becomes reachable. If it stays disconnected, check [Common issues](@/troubleshooting/common-issues.md).
 
 **Export Diagnostics fails.** The Desktop directory must be writable. If the zip is not produced, check app logs (via **Open Logs Folder**) for the error message.
 

@@ -9,11 +9,13 @@ Hypercolor reads its main configuration from a single TOML file. The daemon crea
 
 ## Config file location
 
-```
-~/.config/hypercolor/hypercolor.toml
-```
+| Platform | Path |
+|---|---|
+| Linux | `~/.config/hypercolor/hypercolor.toml` |
+| Windows | `%APPDATA%\hypercolor\hypercolor.toml` |
+| macOS | `~/Library/Application Support/hypercolor/hypercolor.toml` |
 
-The path follows the XDG Base Directory spec (`$XDG_CONFIG_HOME/hypercolor/`, defaulting to `~/.config/hypercolor/`). Point the daemon at a different file with the `--config` flag:
+On Linux the path follows the XDG Base Directory spec (`$XDG_CONFIG_HOME/hypercolor/`, defaulting to `~/.config/hypercolor/`). Point the daemon at a different file with the `--config` flag:
 
 ```bash
 hypercolor-daemon --config /etc/hypercolor/hypercolor.toml
@@ -43,13 +45,14 @@ The root `HypercolorConfig` struct has these sections:
 | `[media]` | Video/stream producer limits |
 | `[audio]` | Audio capture device and FFT analysis |
 | `[capture]` | Screen capture for ambient lighting |
+| `[input]` | Host keyboard/mouse capture consent and routing |
 | `[display]` | LCD face FPS cap |
 | `[discovery]` | mDNS, scan interval, ROLI Blocks |
 | `[network]` | Remote access modes and client scope |
 | `[drivers.<id>]` | Per-driver enable/settings (keyed by driver ID) |
 | `[dbus]` | D-Bus session bus integration (Linux) |
 | `[tui]` | Terminal UI theme, preview FPS, keybindings |
-| `[session]` | Session persistence settings |
+| `[session]` | Idle, lock, suspend, and lid lighting behavior (Linux) |
 | `[features]` | Opt-in experimental flags |
 
 ---
@@ -162,7 +165,7 @@ extra_effect_dirs = ["/home/you/dev/my-effects/dist"]
 
 ## `[rendering]`
 
-Linux-only policy for Servo GPU framebuffer import (zero-copy GL→wgpu).
+Policy for Servo GPU framebuffer import (zero-copy texture sharing into the compositor). GPU import ships on all three platforms.
 
 ```toml
 [rendering]
@@ -215,7 +218,7 @@ Audio config changes applied via `config set --live` or the REST API take effect
 
 ## `[capture]`
 
-Screen capture for ambient lighting effects. On Windows it is on by default: Desktop Duplication asks for no permission, shows no picker, and draws no capture indicator, so an ambient effect just works. On Linux and macOS it is opt-in, because the XDG portal opens a picker and macOS gates capture behind a TCC prompt, and answering either on your behalf at daemon start would be an ambush.
+Screen capture for ambient lighting effects. On Windows it is on by default: DXGI Desktop Duplication asks for no permission, shows no picker, and draws no capture indicator, so an ambient effect works immediately. On Linux it is opt-in: Wayland capture goes through the XDG desktop portal and PipeWire, which opens a picker, and answering it on your behalf at daemon start would be an ambush. X11 sessions have no capture path. macOS has no screen capture at all, and setting `capture.enabled = true` there is rejected by config validation.
 
 ```toml
 [capture]
@@ -246,13 +249,30 @@ Capture config changes apply live: enabling/disabling adds or removes the source
 
 ---
 
+## `[input]`
+
+Host keyboard and mouse capture for interactive effects. Capture is consent-gated and off by default; see [Input capture](@/guide/input-capture.md) for the full consent and platform model.
+
+```toml
+[input]
+enabled       = false      # Master consent switch for host input capture
+keyboard      = true       # Capture key positions (never typed text)
+mouse         = true       # Capture pointer motion, buttons, and wheel
+daemon_route  = "host"     # Input source for device output: host | browser | merge
+preview_route = "browser"  # Input source for interactive previews: host | browser | merge
+```
+
+`keyboard` and `mouse` are independent grants; declining one means that input path is never opened at all. The route keys choose where interaction comes from. `host` uses captured hardware input, `browser` uses input addressed from a web UI preview, and `merge` combines both. `daemon_route` feeds authoritative device output; `preview_route` feeds each interactive browser preview.
+
+---
+
 ## `[display]`
 
 Controls LCD face (device display panel) rendering.
 
 ```toml
 [display]
-face_fps_cap = 30   # Upper FPS bound for HTML face rendering (15–60)
+face_fps_cap = 30   # Upper FPS bound for HTML face rendering (15-60)
 ```
 
 The device transport limit wins below this cap. Clamped to the range `[15, 60]`.
@@ -352,6 +372,55 @@ theme        = "silkcircuit"  # "silkcircuit" | "default" | "minimal"
 preview_fps  = 15             # LED preview refresh rate in the TUI canvas
 keybindings  = "default"      # "default" | "vim" | path to a custom keymap file
 ```
+
+---
+
+## `[session]`
+
+Desktop session and power awareness: idle dimming, screen lock, suspend, and laptop lid behavior. Session events fire on Linux only today; on Windows and macOS these settings are inert.
+
+```toml
+[session]
+enabled = true    # Master switch for session awareness
+```
+
+**Idle dimming.** After a period of no user activity, output dims, then turns off:
+
+```toml
+idle_enabled          = true     # React to idle/active transitions
+idle_backend          = "auto"   # auto | wayland | x11 | dbus | disabled
+idle_dim_timeout_secs = 120      # Idle seconds before dimming
+idle_off_timeout_secs = 600      # Idle seconds before turning output off
+```
+
+**Lock, suspend, and lid behaviors.** Each event maps to a behavior: `off` (fade out and stop output frames), `dim` (drop to a brightness multiplier), `scene` (activate a named scene), or `ignore`.
+
+```toml
+on_screen_lock         = "ignore"  # off | dim | scene | ignore
+screen_lock_brightness = 0.0       # Dim target when on_screen_lock = "dim"
+screen_lock_scene      = ""        # Scene name when on_screen_lock = "scene"
+screen_lock_fade_ms    = 2000
+screen_unlock_fade_ms  = 500
+
+on_suspend      = "off"            # off | dim | scene | ignore
+suspend_fade_ms = 300
+resume_fade_ms  = 150
+
+on_lid_close         = "off"       # off | dim | scene | ignore
+lid_close_brightness = 0.0
+lid_close_scene      = ""
+lid_close_fade_ms    = 500
+lid_open_fade_ms     = 300
+```
+
+**Off-output behavior.** When an `off`-style action fires, these keys decide what devices do while asleep:
+
+```toml
+off_output_behavior = "static"    # static | release
+off_output_color    = "#000000"   # Frame held when off_output_behavior = "static"
+```
+
+`static` holds a solid color frame (black by default) on the device; `release` disconnects and lets the device return to its native firmware behavior.
 
 ---
 

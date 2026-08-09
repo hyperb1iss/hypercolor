@@ -10,11 +10,11 @@ Network devices (Hue, Nanoleaf, WLED, Govee) rely on mDNS multicast for automati
 
 ## How discovery works
 
-When a scan runs — either at startup, on a periodic interval, or triggered manually — each network driver uses mDNS multicast on `224.0.0.251:5353`. Devices on the same Layer 2 segment respond; the daemon registers them and keeps them connected. If mDNS reaches the device, discovery is automatic and requires no configuration.
+When a scan runs (at startup, on a periodic interval, or triggered manually), each network driver uses mDNS multicast on `224.0.0.251:5353`. Devices on the same Layer 2 segment respond; the daemon registers them and keeps them connected. If mDNS reaches the device, discovery is automatic and requires no configuration.
 
 The daemon also advertises itself using the service type `_hypercolor._tcp.local.` via the `network.mdns_publish` config flag (default `true`). If you can resolve that name from another machine on the same subnet, basic mDNS is working.
 
-Discovery is controlled by `discovery.mdns_enabled` in `hypercolor.toml` (default `true`). Disabling it suppresses the mDNS listener but does not affect direct IP probe paths — those run regardless.
+Discovery is controlled by `discovery.mdns_enabled` in `hypercolor.toml` (default `true`). Disabling it suppresses the mDNS listener but does not affect direct IP probe paths; those run regardless.
 
 Default scan timeout is **10 seconds**, clamped between 100 ms and 60 seconds.
 
@@ -63,7 +63,7 @@ If you cannot change the AP policy, use the [known-IP escape hatch](#the-known-i
 
 ### mDNS not crossing subnets
 
-mDNS is link-local by definition: multicast packets with TTL=1 die at the first router hop. If your devices are on a different subnet than the machine running Hypercolor — even a VLAN on the same physical switch — mDNS will not cross that boundary without a multicast proxy.
+mDNS is link-local by definition: multicast packets with TTL=1 die at the first router hop. If your devices are on a different subnet than the machine running Hypercolor (even a VLAN on the same physical switch), mDNS will not cross that boundary without a multicast proxy.
 
 **Fix:** Run an mDNS reflector or proxy on your router to bridge the two segments. Common options:
 
@@ -97,7 +97,7 @@ Persist via your distribution's iptables service or an equivalent nftables rules
 
 ## The known-IP escape hatch
 
-When mDNS is unavailable and you cannot fix the network topology, each network driver supports a list of IPs that are always probed directly during discovery — no multicast required. Add these in `~/.config/hypercolor/hypercolor.toml` (Linux) or `%APPDATA%\hypercolor\hypercolor.toml` (Windows).
+When mDNS is unavailable and you cannot fix the network topology, each network driver supports a list of IPs that are always probed directly during discovery, no multicast required. Add these in `~/.config/hypercolor/hypercolor.toml` (Linux) or `%APPDATA%\hypercolor\hypercolor.toml` (Windows).
 
 The key name differs per driver:
 
@@ -167,7 +167,7 @@ If your network has no mDNS infrastructure and you are using static IPs for all 
 mdns_enabled = false
 ```
 
-This does not affect the known-IP probe path — direct IP probes run regardless of this flag.
+This does not affect the known-IP probe path: direct IP probes run regardless of this flag.
 
 ## Still not found?
 

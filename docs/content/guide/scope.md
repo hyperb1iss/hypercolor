@@ -10,19 +10,19 @@ Hypercolor is an RGB orchestration engine: it sends lighting frames to physical 
 
 Hypercolor drives hardware through two transport layers.
 
-**USB/HID devices** connect over USB and are discovered automatically when you plug them in, provided the [udev rules](@/guide/installation.md) are in place. Supported driver families today:
+**USB/HID devices** connect over USB and are discovered automatically when you plug them in, provided the [udev rules](@/guide/installation.md) are in place on Linux. Supported driver families today:
 
 | Driver family | Examples |
 |---|---|
 | `razer` | BlackWidow, Huntsman, Basilisk, DeathAdder, Leviathan V2, and 60+ more |
 | `corsair` | K100/K70 keyboards, Commander Pro, Lighting Node, iCUE LINK, Corsair mice |
-| `nollie` | Nollie 1/2/4/8/16/32, Nollie L1/L2, Matrix, TT — 19 controllers |
+| `nollie` | Nollie 1/2/4/8/16/32, Nollie L1/L2, Matrix, TT (19 controllers) |
 | `qmk` | Keychron Q/V series, Glorious GMMK Pro, ZSA Moonlander, ZSA Voyager |
-| `asus` | Aura Addressable (Gen 1–4), Aura Motherboard (Gen 1–5), Aura Terminal |
+| `asus` | Aura Addressable (Gen 1-4), Aura Motherboard (Gen 1-5), Aura Terminal, Aura DRAM (SMBus) |
 | `lianli` | Uni Hub (SL, SL V2, SL Infinity, AL, AL V2), TL Fan Hub |
-| `prismrgb` | Prism S, Prism Mini, Prism 8 (the Prism 8 is a Nollie 8 v2 rebrand — shows up correctly) |
+| `prismrgb` | Prism S, Prism Mini, Prism 8 (the Prism 8 is a Nollie 8 v2 rebrand and shows up correctly) |
 | `push2` | Ableton Push 2 (MIDI pads + sideband display) |
-| `dygma` | Dygma Defy wired/wireless — driver present, **blocked** (see below) |
+| `dygma` | Dygma Defy wired/wireless: driver present, **blocked** (see below) |
 
 **Network devices** are discovered over your LAN (mDNS for most, a UDP multicast scan for Govee), then driven in real time over UDP or HTTP:
 
@@ -37,16 +37,16 @@ For the full list with every supported PID and device note, see the [compatibili
 
 ## What Hypercolor does NOT control (yet)
 
-### RAM RGB
+### RAM RGB (non-ASUS)
 
-Hypercolor does not yet control DDR RGB. The SMBus transport layer is implemented and RAM devices from Corsair (Dominator, Dominator Titanium) are researched and in the database, with the wire protocol documented. A driver has not shipped. Until it does, DRAM lighting is outside Hypercolor's scope.
+ASUS Aura DRAM DIMMs are already supported: the `asus_aura_smbus_dram` driver ships today and drives them over SMBus on both Linux (via `i2c-dev`) and Windows (via PawnIO). Other DIMM vendors are not there yet. Corsair RAM (Dominator, Dominator Titanium) is researched and in the database with the wire protocol documented, but no driver has shipped, so non-ASUS DRAM lighting remains outside Hypercolor's scope for now.
 
 ### GPU RGB
 
 GPU RGB via SMBus is researched for several families (ASUS Aura GPU via ENE SMBus, EVGA Pascal/Turing/Ampere, Gigabyte GPU across four generations, and MSI Lovelace), with ASRock AMD GPUs further back at the Known stage. None have a shipping driver. The SMBus transport exists in the codebase; the per-vendor protocol implementations do not. Your GPU will not appear in `hypercolor devices list`.
 
 {% callout(type="info") %}
-SMBus devices (RAM and GPU RGB) require the `i2c-dev` kernel module and i2c group membership. Hypercolor's udev rules already cover the `i2c-dev` subsystem, so once per-vendor drivers ship the access plumbing is in place. Watch the compatibility matrix for status changes.
+SMBus access has its own plumbing per platform. On Linux, SMBus devices need the `i2c-dev` kernel module and i2c group membership, which the install hooks set up. On Windows, the installer's hardware setup (PawnIO plus the HypercolorSmBus broker) provides it. macOS has no SMBus path, and GPU SMBus probing is Linux-only today. Watch the compatibility matrix for status changes.
 {% end %}
 
 ### Blocked devices: Dygma Defy

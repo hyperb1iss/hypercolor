@@ -75,7 +75,7 @@ When you save a profile, the daemon captures:
 - The active effect and all of its current control values (including resolved preset values)
 - Any display-face assignments (for devices with LCD screens)
 - The active spatial layout ID
-- Global brightness as a 0–100 integer
+- Global brightness as a 0-100 integer
 
 On apply, the daemon restores each field. If an effect referenced in a profile is no
 longer installed, the apply fails with an error naming the missing effect; if the
@@ -94,7 +94,7 @@ start_profile = "last"
 ```
 
 The value `"last"` (the default) means the daemon's runtime session is persisted and
-replayed on the next boot — your lights come back to where they were without any
+replayed on the next boot: your lights come back to where they were without any
 action from you. Set this to a specific profile name to always boot into a known
 state:
 
@@ -212,7 +212,7 @@ engine back to Default.
 | Can be locked against live edits | no | yes (`mutation_mode = snapshot`) |
 | Survives reboots automatically | yes (via `start_profile = "last"`) | yes (scene store is persisted) |
 
-Use a profile when you want a quick snapshot restore — "get me back to my Friday
+Use a profile when you want a quick snapshot restore: "get me back to my Friday
 night setup." Use a scene when you want to maintain a named slot that Studio and
 automation can reference by name, or when you need the locking behavior of
 `snapshot` mode.
@@ -229,13 +229,13 @@ Scene endpoints: `GET /scenes`, `GET /scenes/:id`, `GET /scenes/active`,
 `POST /scenes`, `PUT /scenes/:id`, `DELETE /scenes/:id`,
 `POST /scenes/:id/activate`, `POST /scenes/deactivate`.
 
-Names and IDs are interchangeable in path parameters — the daemon fuzzy-matches
+Names and IDs are interchangeable in path parameters; the daemon fuzzy-matches
 by name when a UUID is not provided. See the [REST API reference](@/api/rest.md)
 for the full envelope and error shapes.
 
 ## Further reading
 
-- [Studio: scenes](@/studio/scenes.md) — build and edit scene zone layouts in the UI
-- [Studio: zones](@/studio/zones.md) — zone partition authoring, zone roles, and multi-zone effects
-- [Configuration](@/guide/configuration.md) — full `[daemon]` config reference including `start_profile` and `shutdown_behavior`
-- [CLI reference](@/api/cli.md) — all `profiles` and `scenes` subcommand flags
+- [Studio: scenes](@/studio/scenes.md) to build and edit scene zone layouts in the UI
+- [Studio: zones](@/studio/zones.md) for zone partition authoring, zone roles, and multi-zone effects
+- [Configuration](@/guide/configuration.md) for the full `[daemon]` config reference including `start_profile` and `shutdown_behavior`
+- [CLI reference](@/api/cli.md) for all `profiles` and `scenes` subcommand flags

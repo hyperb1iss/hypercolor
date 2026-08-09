@@ -6,7 +6,7 @@ weight = 60
 
 # Low FPS / stuttering ⚡
 
-Hypercolor's render loop targets up to 60 FPS using an adaptive five-tier controller that shifts between tiers based on measured frame budget. When the system is healthy it runs at **Full (60 FPS)**; sustained budget misses drive it down through **High (45) → Medium (30) → Low (20) → Minimal (10)**. The first sign of a performance problem is usually the tier sitting lower than expected, not a hard crash.
+Hypercolor's render loop targets your configured `daemon.target_fps` ceiling using an adaptive five-tier controller (Minimal 10 → Low 20 → Medium 30 → High 45 → Full 60) that shifts between tiers based on measured frame budget. Healthy means holding the tier that matches your configured target. The default target is **30 FPS**, so on a stock config the loop sits at **Medium** when everything is fine; that is the ceiling, not a downshift. Full (60) only comes into play if you raise `daemon.target_fps`. The first sign of a performance problem is the tier sitting *below your configured target*, not a hard crash.
 
 This page walks you through reading the `diagnose` output, identifying which part of the pipeline is the bottleneck, and fixing the root cause.
 
@@ -51,7 +51,7 @@ The `render` category has three checks for FPS problems.
 render_loop   state=running, tier=medium
 ```
 
-The `tier` field shows where the FPS controller has landed. `medium` (30 FPS) or lower means the loop has downshifted due to budget pressure. If `state` is anything other than `running`, the render loop has stopped — see [common issues](@/troubleshooting/common-issues.md).
+The `tier` field shows where the FPS controller has landed. Compare it against your configured `daemon.target_fps`: on the default config, `medium` (30 FPS) is the healthy steady state. A tier sitting below your configured target means the loop has downshifted under budget pressure. If `state` is anything other than `running`, the render loop has stopped; see [common issues](@/troubleshooting/common-issues.md).
 
 **Tier reference:**
 
@@ -63,7 +63,7 @@ The `tier` field shows where the FPS controller has landed. `medium` (30 FPS) or
 | high | 45 | 22.2 ms |
 | full | 60 | 16.6 ms |
 
-The controller downshifts after 2 consecutive budget misses and only upshifts after sustained headroom, so a stuck tier is a real signal.
+The controller downshifts after 2 consecutive budget misses and only upshifts after sustained headroom, so a tier stuck below your target is a real signal.
 
 ### `frame_liveness`
 
@@ -81,11 +81,11 @@ led_freshness   output_source=current_frame, gpu_sample_stale=false, devices_wri
 
 Key flags to watch:
 
-- `gpu_sample_stale=true` — the GPU-side canvas sample was not ready in time and the compositor reused the previous frame's sample. Sustained stale GPU samples accumulate in the `recent_window` counters (step 4).
-- `gpu_sample_wait_blocked=true` — the render loop blocked on the GPU sample queue, meaning the sampling path is a bottleneck.
-- `gpu_sample_queue_saturated=true` — the GPU import slot pool is exhausted; multiple frames are queued behind a single GPU fence.
-- `output_source` — `current_frame` is healthy. `published_frame` or `routed_reuse` means the loop is serving a cached frame because the current render is not keeping up.
-- `sample_us` / `push_us` — time in microseconds for spatial sampling (canvas to LED positions) and writing to devices. Elevated `push_us` across many devices points to USB saturation (step 3).
+- `gpu_sample_stale=true`: the GPU-side canvas sample was not ready in time and the compositor reused the previous frame's sample. Sustained stale GPU samples accumulate in the `recent_window` counters (step 4).
+- `gpu_sample_wait_blocked=true`: the render loop blocked on the GPU sample queue, meaning the sampling path is a bottleneck.
+- `gpu_sample_queue_saturated=true`: the GPU import slot pool is exhausted; multiple frames are queued behind a single GPU fence.
+- `output_source`: `current_frame` is healthy. `published_frame` or `routed_reuse` means the loop is serving a cached frame because the current render is not keeping up.
+- `sample_us` / `push_us`: time in microseconds for spatial sampling (canvas to LED positions) and writing to devices. Elevated `push_us` across many devices points to USB saturation (step 3).
 
 ---
 
@@ -99,9 +99,9 @@ The `devices` category includes two checks relevant to USB-bus and output latenc
 output_queues   queues=6, usb_queues=4, lagging=1, worker_finished=0, dropped_total=0, errors_total=0
 ```
 
-- `lagging` — queues where completed `delivered_fps` is significantly behind the queued cadence. Use the coalescing split below to distinguish an expected device cap from transport pressure.
-- `worker_finished` — a worker thread exited unexpectedly. Any non-zero value is a hard failure and appears as `fail` status.
-- `dropped_total` — legacy sum of coalesced frames across all device queues.
+- `lagging`: queues where completed `delivered_fps` is significantly behind the queued cadence. Use the coalescing split below to distinguish an expected device cap from transport pressure.
+- `worker_finished`: a worker thread exited unexpectedly. Any non-zero value is a hard failure and appears as `fail` status.
+- `dropped_total`: legacy sum of coalesced frames across all device queues.
 
 For the detailed per-device breakdown, use `-j` and inspect `snapshot.device_output.items`. Compare `delivered_fps` with `accepted_fps` and `fps_target`. Rising `coalesced_target_cadence` is expected pacing; rising `coalesced_backend_overrun`, transport latency, or failures identifies real pressure.
 
@@ -129,9 +129,9 @@ hypercolor diagnose -j | jq '.data.snapshot.render.recent_window'
 
 Fields to watch:
 
-- `gpu_sample_stale` / `gpu_sample_deferred` — count of frames in the recent window where Servo's frame was not ready. A high ratio to `frames` means Servo is your bottleneck.
-- `gpu_sample_cpu_fallback` — Servo fell back from GPU import to a CPU readback path. This adds a full-frame pixel readback cost and is significantly slower.
-- `push_p95_ms` / `publish_p95_ms` — 95th-percentile device write and event-bus publish latency. Healthy values sit well under the frame budget for your current tier.
+- `gpu_sample_stale` / `gpu_sample_deferred`: count of frames in the recent window where Servo's frame was not ready. A high ratio to `frames` means Servo is your bottleneck.
+- `gpu_sample_cpu_fallback`: Servo fell back from GPU import to a CPU readback path. This adds a full-frame pixel readback cost and is significantly slower.
+- `push_p95_ms` / `publish_p95_ms`: 95th-percentile device write and event-bus publish latency. Healthy values sit well under the frame budget for your current tier.
 
 For Servo-specific timings, the daemon status response (`GET /api/v1/status`) carries an effect-health section with fields including `render_frame_max_us`, `render_evaluate_scripts_max_us`, `render_paint_max_us`, and `render_readback_max_us`. A `render_frame_max_us` value near or above the tier budget is a clear Servo bottleneck.
 
@@ -139,8 +139,8 @@ For Servo-specific timings, the daemon status response (`GET /api/v1/status`) ca
 
 Servo uses a circuit breaker to protect the daemon when the effect renderer fails repeatedly. After 3 consecutive failures it opens, blocking new render attempts for a 30-second cooldown with exponential backoff up to 5 minutes. The breaker state is visible in the Servo telemetry fields:
 
-- `breaker_opens_total` non-zero — Servo has tripped the breaker at least once this session.
-- `soft_stalls_total` — frames that stalled without a fatal failure.
+- `breaker_opens_total` non-zero: Servo has tripped the breaker at least once this session.
+- `soft_stalls_total`: frames that stalled without a fatal failure.
 
 When the breaker is open, effects fall back to a black/idle canvas, meaning your LEDs stop updating or hold the last frame. Switching to a native (non-HTML) effect clears the dependency on Servo immediately.
 
@@ -170,7 +170,7 @@ The `snapshot.render.latest_frame` object in the JSON report gives a per-stage b
 }
 ```
 
-At Full tier the budget is 16 666 µs. If `total_us` consistently exceeds the budget, the loop cannot hold 60 FPS regardless of what tier it is targeting.
+At Full tier the budget is 16 666 µs. If `total_us` consistently exceeds the budget for a tier, the loop cannot hold that tier regardless of what it is targeting.
 
 | Field | What it measures | High value means |
 |-------|-----------------|-----------------|
@@ -184,9 +184,9 @@ At Full tier the budget is 16 666 µs. If `total_us` consistently exceeds the bu
 
 ## Common scenarios
 
-### Tier stuck at `medium` or below, no device errors
+### Tier stuck below your configured target, no device errors
 
-The render loop is consistently overrunning its budget. Inspect `total_us` in `latest_frame`. If `render_us` or `producer_us` dominates, the bottleneck is the effect renderer — most likely Servo. If `push_us` is high, it is device output. Address each at its root; do not lower the tier ceiling.
+The render loop is consistently overrunning its budget. Inspect `total_us` in `latest_frame`. If `render_us` or `producer_us` dominates, the bottleneck is the effect renderer, most likely Servo. If `push_us` is high, it is device output. Address each at its root; do not lower the tier ceiling.
 
 ### `gpu_sample_stale` climbing in `recent_window`
 
@@ -202,7 +202,7 @@ N device worker threads have exited. This is a hard error: those devices are no 
 
 ### Servo breaker open
 
-Check daemon logs for Servo-related errors or `session_create_failures`. If the breaker is cycling (opens, cools down, opens again), the effect itself is broken — likely a JavaScript runtime error. Switch effects to confirm, then file a bug with the `--report` output attached.
+Check daemon logs for Servo-related errors or `session_create_failures`. If the breaker is cycling (opens, cools down, opens again), the effect itself is broken, likely from a JavaScript runtime error. Switch effects to confirm, then file a bug with the `--report` output attached.
 
 ---
 

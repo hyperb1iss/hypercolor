@@ -1,6 +1,6 @@
 +++
 title = "Your first session"
-description = "Hands-on walkthrough from daemon start to a saved, audio-reactive setup — devices, effects, layouts, profiles, scenes, and Studio."
+description = "Hands-on walkthrough from daemon start to a saved, audio-reactive setup: devices, effects, layouts, profiles, scenes, and Studio."
 weight = 90
 template = "page.html"
 +++
@@ -128,12 +128,12 @@ hypercolor effects list
 
 A few highlights worth trying first:
 
-- `borealis` — a slow aurora curtain, good for ambient setups
-- `audio-pulse` — a VU meter that reacts to system audio
-- `digital-rain` — falling green characters in the matrix style
-- `nyan-dash` — nyan cat riding a rainbow
-- `breathing` — a gentle sine-wave fade, popular for focus work
-- `color-wave` — a smooth hue rotation across the whole canvas
+- `borealis`: a slow aurora curtain, good for ambient setups
+- `audio-pulse`: a VU meter that reacts to system audio
+- `digital-rain`: falling green characters in the matrix style
+- `nyan-dash`: nyan cat riding a rainbow
+- `breathing`: a gentle sine-wave fade, popular for focus work
+- `color-wave`: a smooth hue rotation across the whole canvas
 
 Filter the list to audio-reactive effects only:
 
@@ -295,7 +295,7 @@ The Studio workspace offers a full visual zone editor for spatial layouts. Open 
 
 ## 8. Set up audio-reactive effects
 
-Audio-reactive effects like `audio-pulse`, `cymatics`, and `frequency-cascade` analyze your system audio in real time and drive the render loop from it. The daemon captures audio via a PipeWire/PulseAudio monitor source — the loopback of your speakers, not a microphone.
+Audio-reactive effects like `audio-pulse`, `cymatics`, and `frequency-cascade` analyze your system audio in real time and drive the render loop from it. The daemon captures audio via a PipeWire/PulseAudio monitor source: the loopback of your speakers, not a microphone.
 
 Apply an audio-reactive effect and watch the lights respond to whatever is playing:
 
@@ -303,7 +303,7 @@ Apply an audio-reactive effect and watch the lights respond to whatever is playi
 hypercolor effects activate audio-pulse
 ```
 
-If the effect doesn't react, the most common cause is that the audio capture device is wrong. First confirm the daemon sees an audio source at all — `status` exposes an `audio_available` flag:
+If the effect doesn't react, the most common cause is that the audio capture device is wrong. First confirm the daemon sees an audio source at all; `status` exposes an `audio_available` flag:
 
 ```bash
 curl http://localhost:9420/api/v1/status | jq '.data.audio_available'
@@ -421,17 +421,17 @@ Studio is the visual authoring surface for scenes. The Studio workspace lets you
 
 Open `http://localhost:9420` in a browser. The daemon serves the embedded Leptos web UI directly, with no separate server process required.
 
-![Hypercolor dashboard — effects browser, canvas preview, device status panel](/img/ui/dashboard.webp)
+![Hypercolor dashboard with effects browser, canvas preview, and device status panel](/img/ui/dashboard.webp)
 
 The UI is organized into panels:
 
-- **Effects browser** — search and filter the full effect catalog, preview effects in the canvas panel before committing to hardware
-- **Controls panel** — per-parameter sliders for the active effect; equivalent to `effects patch` but much easier for exploration
-- **Devices panel** — connection status for every discovered device, per-device brightness, and an identify button to flash a test pattern
-- **Layouts editor** — drag-and-drop zone positioning with topology selection (strip, matrix, ring); the canonical way to build spatial layouts
-- **Profiles** — save, apply, and delete named configurations
-- **Scenes** — create and manage scenes
-- **Studio** — the full multi-zone authoring workspace (see below)
+- **Effects browser**: search and filter the full effect catalog, preview effects in the canvas panel before committing to hardware
+- **Controls panel**: per-parameter sliders for the active effect; equivalent to `effects patch` but much easier for exploration
+- **Devices panel**: connection status for every discovered device, per-device brightness, and an identify button to flash a test pattern
+- **Layouts editor**: drag-and-drop zone positioning with topology selection (strip, matrix, ring); the canonical way to build spatial layouts
+- **Profiles**: save, apply, and delete named configurations
+- **Scenes**: create and manage scenes
+- **Studio**: the full multi-zone authoring workspace (see below)
 
 The canvas preview shows exactly what the render loop is producing, updated at the daemon's current target FPS.
 
@@ -441,15 +441,15 @@ Studio is the advanced authoring workspace inside the web UI. It goes beyond app
 
 Open Studio from the top navigation, or navigate directly to `http://localhost:9420` and click the Studio tab.
 
-![Hypercolor Studio — zone canvas with live preview and effect layers](/img/ui/studio.webp)
+![Hypercolor Studio zone canvas with live preview and effect layers](/img/ui/studio.webp)
 
 What Studio adds on top of the basic effects browser:
 
-- **Zone canvas** — position and resize device zones visually; zones are flexible canvas partitions, not rooms
-- **Per-zone effect layers** — assign a different effect to each zone, with independent control values and priority ordering
-- **Layer compositing** — stack effects with blend modes to create layered lighting compositions
-- **Scene authoring** — save the full multi-zone composition as a scene that can be recalled with one click
-- **Display faces** — when an effect supports it, you can target specific display faces (front, top, rear) of a device; see [Display faces](@/effects/display-faces.md) for how effects declare and use face geometry
+- **Zone canvas**: position and resize device zones visually; zones are flexible canvas partitions, not rooms
+- **Per-zone effect layers**: assign a different effect to each zone, with independent control values and priority ordering
+- **Layer compositing**: stack effects with blend modes to create layered lighting compositions
+- **Scene authoring**: save the full multi-zone composition as a scene that can be recalled with one click
+- **Display faces**: when an effect supports it, you can target specific display faces (front, top, rear) of a device; see [Display faces](@/effects/display-faces.md) for how effects declare and use face geometry
 
 For the full Studio walkthrough, see [Studio overview](@/studio/overview.md) and the [workspace tour](@/studio/workspace-tour.md).
 
@@ -463,10 +463,10 @@ hypercolor tui
 
 The TUI connects to the running daemon via WebSocket and shows:
 
-- A live canvas preview rendered with the terminal's best graphics protocol — Kitty, Sixel, or iTerm2 — with a text-block fallback for terminals without graphics support
+- A live canvas preview rendered with the terminal's best graphics protocol (Kitty, Sixel, or iTerm2), with a text-block fallback for terminals without graphics support
 - A spectrum analyzer panel showing the live audio FFT, updated in real time
 - A device list and status sidebar
-- An effect selector with keyboard navigation — navigate with arrow keys, activate with Enter
+- An effect selector with keyboard navigation: navigate with arrow keys, activate with Enter
 - All changes sync to the daemon immediately, so the web UI and any REST clients see the same state
 
 Exit with `q` or Ctrl-C.
@@ -475,11 +475,11 @@ Exit with `q` or Ctrl-C.
 
 You now have a fully configured Hypercolor setup. Where to go from here:
 
-- [Profiles and scenes](@/guide/profiles-and-scenes.md) — conceptual guide and full CLI/API reference for saved configurations and scene management
-- [Audio setup](@/guide/audio-setup.md) — configure PipeWire/PulseAudio monitor sources for audio-reactive effects
-- [Studio overview](@/studio/overview.md) — multi-zone authoring, scene groups, the visual zone canvas, and the Studio workspace tour
-- [Creating effects](@/effects/creating-effects.md) — write custom effects with the TypeScript SDK and see them appear in the effect browser immediately
-- [Display faces](@/effects/display-faces.md) — how effects target specific geometry faces on multi-face devices
-- [Hardware: Compatibility matrix](@/hardware/compatibility.md) — check driver status for every supported device family
-- [Configuration](@/guide/configuration.md) — full config reference: audio device selection, daemon network settings, the profile and scene JSON schemas, and config hot-reload behavior
-- [API reference](@/api/rest.md) — full REST and WebSocket API documentation for scripting and third-party integration
+- [Profiles and scenes](@/guide/profiles-and-scenes.md): conceptual guide and full CLI/API reference for saved configurations and scene management
+- [Audio setup](@/guide/audio-setup.md): configure monitor or loopback sources for audio-reactive effects
+- [Studio overview](@/studio/overview.md): multi-zone authoring, scene groups, the visual zone canvas, and the Studio workspace tour
+- [Creating effects](@/effects/creating-effects.md): write custom effects with the TypeScript SDK and see them appear in the effect browser immediately
+- [Display faces](@/effects/display-faces.md): how effects target specific geometry faces on multi-face devices
+- [Hardware: Compatibility matrix](@/hardware/compatibility.md): check driver status for every supported device family
+- [Configuration](@/guide/configuration.md): full config reference covering audio device selection, daemon network settings, the profile and scene JSON schemas, and config hot-reload behavior
+- [API reference](@/api/rest.md): full REST and WebSocket API documentation for scripting and third-party integration

@@ -155,7 +155,7 @@ If effects react only to very loud audio but not at normal listening levels, the
 noise_gate = 0.02
 ```
 
-This is a linear amplitude threshold in the range 0.0–1.0. Lower it to make the pipeline more sensitive, or raise it to suppress background noise:
+This is a linear amplitude threshold in the range 0.0-1.0. Lower it to make the pipeline more sensitive, or raise it to suppress background noise:
 
 ```toml
 [audio]

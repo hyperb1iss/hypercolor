@@ -1,12 +1,12 @@
 +++
 title = "Common issues"
-description = "Linux first-run gotchas: port 9420 conflict, systemd-user linger, and XDG_RUNTIME_DIR not set (silent, no error)."
+description = "First-run and daemon startup issues: port 9420 conflicts, systemd-user linger and XDG_RUNTIME_DIR on Linux, and Windows service gotchas."
 weight = 50
 +++
 
-This page covers Linux-specific failures that are not hardware, audio, or network related. They share a common character: the daemon either silently refuses to start, starts with reduced capability, or appears healthy while one subsystem is broken.
+This page covers first-run and daemon startup failures that are not hardware, audio, or network related. They share a common character: the daemon either silently refuses to start, starts with reduced capability, or appears healthy while one subsystem is broken.
 
-Run the built-in self-check first — it catches most of these automatically:
+Run the built-in self-check first; it catches most of these automatically:
 
 ```bash
 hypercolor diagnose
@@ -20,7 +20,7 @@ For devices not showing up at all, see [Devices not found](@/troubleshooting/dev
 
 **Symptom:** The daemon exits immediately with an error containing `failed to bind API server to 127.0.0.1:9420` or `Os error 98 (address already in use)`.
 
-**Why it happens:** Only one process can bind a given address and port. The daemon has a single-instance guard that prints `hypercolor-daemon is already running; exiting` when it fires correctly, but if the previous process died uncleanly — or if something else claimed port 9420 — the TCP bind fails before the guard is relevant.
+**Why it happens:** Only one process can bind a given address and port. The daemon has a single-instance guard that prints `hypercolor-daemon is already running; exiting` when it fires correctly, but if the previous process died uncleanly (or something else claimed port 9420), the TCP bind fails before the guard is relevant.
 
 **Find what is on the port:**
 
@@ -47,7 +47,7 @@ Three outcomes:
    port = 9421
    ```
 
-   Tell the CLI where to reach the daemon — either per-command or exported for the session:
+   Tell the CLI where to reach the daemon, either per-command or exported for the session:
 
    ```bash
    export HYPERCOLOR_PORT=9421
@@ -69,7 +69,7 @@ A `200 OK` with a JSON body (`status`, `version`, `uptime_seconds`, `checks`) me
 
 ---
 
-## Systemd user service fails on first login
+## Systemd user service fails on first login (Linux)
 
 **Symptom:** `hypercolor service status` shows the service as failed or not started after `hypercolor service enable`. Running `hypercolor service start` manually works, but it does not start automatically at login.
 
@@ -129,19 +129,19 @@ Linger requires systemd 230 or later, which is standard on any distribution ship
 
 ---
 
-## XDG_RUNTIME_DIR not set (silent failure)
+## XDG_RUNTIME_DIR not set (Linux, silent failure)
 
 **Symptom:** The daemon starts and LEDs light up, but audio-reactive effects stay static, D-Bus integration is absent, or PipeWire screen capture fails. No error is logged. This appears most often on headless or SSH-only machines.
 
 **Why it happens:** `XDG_RUNTIME_DIR` points to a per-user runtime directory (`/run/user/$UID` on most systems) that holds sockets for PipeWire, PulseAudio, D-Bus, and XDG portals. `systemd-logind` creates it when a user session starts and removes it when the last session ends.
 
-When the daemon runs outside an active user session — started via cron, or via linger but before a first interactive login — `XDG_RUNTIME_DIR` may not exist. The daemon treats the variable as optional and starts successfully, but any subsystem that depends on the runtime directory to locate its socket degrades silently.
+When the daemon runs outside an active user session (started via cron, or via linger but before a first interactive login), `XDG_RUNTIME_DIR` may not exist. The daemon treats the variable as optional and starts successfully, but any subsystem that depends on the runtime directory to locate its socket degrades silently.
 
 Specifically affected:
 
 - **Audio.** PipeWire locates its socket at `$XDG_RUNTIME_DIR/pipewire-0` and PulseAudio at `$XDG_RUNTIME_DIR/pulse/native`. Without the directory, audio capture is unavailable and audio-reactive effects are static.
 - **D-Bus session bus.** The session bus socket lives at `$XDG_RUNTIME_DIR/bus`. Desktop notifications and MPRIS media-player control will not connect.
-- **Screen capture.** `xdg-desktop-portal` — which manages PipeWire screen sharing — depends on the runtime directory.
+- **Screen capture.** `xdg-desktop-portal` (which manages PipeWire screen sharing) depends on the runtime directory.
 
 {% callout(type="warning") %}
 The daemon does not log a warning when `XDG_RUNTIME_DIR` is missing. Silent static effects on a server install with no errors in the log is the tell. Check the runtime directory first.
@@ -171,7 +171,7 @@ systemctl status systemd-logind
 
 **Fix on headless systems:**
 
-Enable linger first (see [Systemd user service fails on first login](#systemd-user-service-fails-on-first-login) above). With linger active, `systemd-logind` maintains `XDG_RUNTIME_DIR` even without an active session.
+Enable linger first (see [Systemd user service fails on first login](#systemd-user-service-fails-on-first-login-linux) above). With linger active, `systemd-logind` maintains `XDG_RUNTIME_DIR` even without an active session.
 
 If audio or D-Bus integration is required on a headless machine, enable socket activation for those services explicitly:
 
@@ -183,11 +183,40 @@ For audio-reactive effects on a headless server you may also need a virtual sink
 
 ---
 
+## Windows: service mode, hardware support, and firewall
+
+Three Windows-specific situations look like general breakage but have narrow causes.
+
+**A daemon installed as a Windows service sees no keyboard or mouse input.**
+Raw Input cannot cross the session boundary: a service runs on its own window
+station and never receives your desktop's input, and no error is produced
+anywhere. Input-reactive effects silently do nothing. Run the daemon in your
+own session (the desktop app does this for you) rather than as a service. Full
+detail in [Input capture](@/guide/input-capture.md).
+
+**PawnIO hardware setup failed during install.** The installer's
+hardware-access step (PawnIO SMBus modules plus the `HypercolorSmBus` broker
+service) can fail without failing the install. USB and network lighting still
+work, but motherboard and DRAM SMBus lighting stays dark. Re-run the setup from
+Settings → Device Discovery → Hardware Support in the app, or run
+`install-windows-hardware-support.ps1` (shipped in the `tools` folder of the
+install directory, and as `scripts/install-windows-hardware-support.ps1` in the
+repo) from an elevated PowerShell.
+
+**Windows Firewall prompts when the daemon binds beyond loopback.** The
+installer pre-grants inbound firewall rules for the installed daemon and app,
+so a default install never prompts. A daemon run from a different path (a
+source build, a portable copy) or reconfigured to bind non-loopback addresses
+triggers the standard Windows Firewall prompt; allow it, or add an equivalent
+inbound rule, otherwise mDNS discovery responses are dropped.
+
+---
+
 ## WebSocket preview not connecting
 
 **Symptom:** The daemon is running and devices are lit up, but the web UI canvas preview shows a black rectangle or the TUI spectrum display is empty. The effect is applying to LEDs correctly.
 
-**Why it happens:** The canvas preview and spectrum data travel over a WebSocket connection to `/api/v1/ws` on port 9420. The preview channel is separate from the LED output pipeline — devices can light up even when the WebSocket handshake fails.
+**Why it happens:** The canvas preview and spectrum data travel over a WebSocket connection to `/api/v1/ws` on port 9420. The preview channel is separate from the LED output pipeline, so devices can light up even when the WebSocket handshake fails.
 
 Common causes:
 

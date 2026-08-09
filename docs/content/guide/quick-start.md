@@ -37,7 +37,7 @@ You should see a table of connected devices with their name, driver, output rout
 ![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
 
 {% callout(type="info") %}
-**No hardware? Use a simulated display.** The daemon has a built-in virtual display simulator — no physical LEDs required. Create one via the REST API and it will appear in `devices list` just like real hardware:
+**No hardware? Use a simulated display.** The daemon has a built-in virtual display simulator; no physical LEDs required. Create one via the REST API and it will appear in `devices list` like real hardware:
 
 ```bash
 curl -s -X POST http://localhost:9420/api/v1/simulators/displays \
@@ -72,7 +72,7 @@ The web UI at `http://localhost:9420` has a visual effect browser with search, c
 
 ## 3. Apply an effect
 
-Effect names are fuzzy-matched — you do not need an exact ID.
+Effect names are fuzzy-matched, so you do not need an exact ID.
 
 ```bash
 # Activate by name (fuzzy match)
@@ -98,7 +98,7 @@ curl -X POST http://localhost:9420/api/v1/effects/borealis/apply \
 
 ## 4. Tweak controls in real time
 
-Most effects expose configurable parameters — speed, color palette, intensity, audio sensitivity. Changes apply immediately without re-applying the effect:
+Most effects expose configurable parameters (speed, color palette, intensity, audio sensitivity). Changes apply immediately without re-applying the effect:
 
 ```bash
 # Patch one or more controls on the running effect
@@ -120,7 +120,7 @@ The render loop picks up new values on the next frame. It targets up to 60 fps a
 
 ## 5. Try the TUI
 
-The terminal UI gives you a full interactive control surface in one pane — device list, effect browser, live canvas preview, and spectrum meter — all over the same WebSocket connection the web UI uses.
+The terminal UI gives you a full interactive control surface in one pane (device list, effect browser, live canvas preview, and spectrum meter), all over the same WebSocket connection the web UI uses.
 
 ```bash
 hypercolor tui
@@ -144,9 +144,9 @@ curl -X POST http://localhost:9420/api/v1/effects/stop
 
 ## What's next
 
-- [Your first 10 minutes](@/guide/your-first-10-minutes.md) — an opinionated golden path through the web UI
-- [First session](@/guide/first-session.md) — a longer hands-on walkthrough: devices, layouts, profiles, and scenes
-- [Audio setup](@/guide/audio-setup.md) — configure PipeWire/PulseAudio so reactive effects respond to your music
-- [Profiles and scenes](@/guide/profiles-and-scenes.md) — save your lighting state and switch between setups
-- [Effect catalog](@/effects/_index.md) — browse every built-in effect with parameters and previews
-- [Configuration](@/guide/configuration.md) — tune FPS, canvas size, network access, and more
+- [Your first 10 minutes](@/guide/your-first-10-minutes.md): an opinionated golden path through the web UI
+- [First session](@/guide/first-session.md): a longer hands-on walkthrough of devices, layouts, profiles, and scenes
+- [Audio setup](@/guide/audio-setup.md): configure an audio loopback source so reactive effects respond to your music
+- [Profiles and scenes](@/guide/profiles-and-scenes.md): save your lighting state and switch between setups
+- [Effect catalog](@/effects/_index.md): browse every built-in effect with parameters and previews
+- [Configuration](@/guide/configuration.md): tune FPS, canvas size, network access, and more

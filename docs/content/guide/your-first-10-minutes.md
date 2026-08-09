@@ -1,6 +1,6 @@
 +++
 title = "Your first 10 minutes"
-description = "Open the app, see your devices, apply an effect, dial in brightness, and save a profile — from zero to lit in under ten minutes."
+description = "Open the app, see your devices, apply an effect, dial in brightness, and save a profile: from zero to lit in under ten minutes."
 weight = 80
 +++
 
@@ -27,12 +27,12 @@ hypercolor status
 You should see daemon version, uptime, and a device count. If you get a connection error, check that port 9420 is not in use by another process.
 
 {% callout(type="warning") %}
-If you have OpenRGB, Aura Sync, or another RGB manager running, it may be holding your USB devices. Stop those tools first — two apps cannot share the same HID device.
+If you have OpenRGB, Aura Sync, or another RGB manager running, it may be holding your USB devices. Stop those tools first; two apps cannot share the same HID device.
 {% end %}
 
 ---
 
-## Step 1 — See your devices
+## Step 1: See your devices
 
 ### In the web UI or desktop app
 
@@ -70,7 +70,7 @@ This prints a table with columns for Device, Driver, Route, LEDs, Status, and Fi
 
 ---
 
-## Step 2 — Apply an effect
+## Step 2: Apply an effect
 
 ### Browse available effects
 
@@ -135,7 +135,7 @@ lands.
 
 ---
 
-## Step 3 — Set brightness
+## Step 3: Set brightness
 
 Global brightness scales all device output uniformly, independent of the effect's own color values.
 
@@ -147,15 +147,15 @@ hypercolor brightness get
 hypercolor brightness set 70
 ```
 
-The value is clamped to 0–100. 0 turns all LEDs off while keeping the effect running.
+The value is clamped to 0-100. Setting 0 turns all LEDs off while keeping the effect running.
 
 In the desktop app, the tray menu's Brightness submenu lets you adjust this without opening the full window.
 
 ---
 
-## Step 4 — Save a profile
+## Step 4: Save a profile
 
-A profile captures the current state — active effect, controls, brightness, scene configuration — so you can restore it later or switch between setups.
+A profile captures the current state (active effect, controls, brightness, scene configuration) so you can restore it later or switch between setups.
 
 ```bash
 hypercolor profiles create "Gaming"
@@ -187,7 +187,7 @@ See [Profiles and scenes](@/guide/profiles-and-scenes.md) for the full picture o
 
 ## No hardware? Use the simulator
 
-The simulator is the documented no-hardware path. It creates a virtual display device that the render engine treats exactly like a real one — effects, controls, and the canvas preview all work.
+The simulator is the documented no-hardware path. It creates a virtual display device that the render engine treats exactly like a real one: effects, controls, and the canvas preview all work.
 
 Create a simulated display via the REST API:
 
@@ -222,7 +222,7 @@ Simulated display configs persist across daemon restarts. Width and height must 
 At the end of this walkthrough you should have:
 
 - At least one device (real or simulated) visible in `hypercolor devices list`
-- An effect running — confirmed by seeing the name in `hypercolor status` or the web UI
+- An effect running, confirmed by seeing the name in `hypercolor status` or the web UI
 - Brightness at a level you set deliberately
 - A saved profile you can restore with `hypercolor profiles apply`
 
@@ -232,8 +232,8 @@ If you hit a wall, [Common issues](@/troubleshooting/common-issues.md) covers po
 
 ## Where to go next
 
-- [Finding devices](@/guide/finding-devices.md) — USB permissions, network discovery, pairing network devices
-- [Audio setup](@/guide/audio-setup.md) — configuring PipeWire/PulseAudio for audio-reactive effects
-- [Profiles and scenes](@/guide/profiles-and-scenes.md) — scheduling, triggers, and multi-scene rigs
-- [Studio](@/studio/overview.md) — the full zone editor for per-LED spatial control
-- [Effects](@/effects/_index.md) — the built-in library and every effect authoring path
+- [Finding devices](@/guide/finding-devices.md): USB permissions, network discovery, pairing network devices
+- [Audio setup](@/guide/audio-setup.md): configuring an audio loopback source for audio-reactive effects
+- [Profiles and scenes](@/guide/profiles-and-scenes.md): scheduling, triggers, and multi-scene rigs
+- [Studio](@/studio/overview.md): the full zone editor for per-LED spatial control
+- [Effects](@/effects/_index.md): the built-in library and every effect authoring path
