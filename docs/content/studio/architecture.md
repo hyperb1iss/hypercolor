@@ -41,10 +41,10 @@ Because the scene is shared and WebSocket-fresh, a zone change made from another
 
 `ZonesContext` derives the rest with memos, not derives, so a refetch returning identical state does not wake every zone-aware surface in the app:
 
-- `zones` — every surface of the active scene in scene order (LED zones and display Screens).
-- `led_zones` — LED-role zones only; what effect application targets.
-- `multi_zone` — whether `led_zone_count(&scene.groups) > 1`. This is the trigger for every per-zone affordance.
-- `focused_zone: RwSignal<Option<String>>` — the zone that quick-applies and the controls panel target. `None` means the primary zone.
+- `zones`: every surface of the active scene in scene order (LED zones and display Screens).
+- `led_zones`: LED-role zones only; what effect application targets.
+- `multi_zone`: whether `led_zone_count(&scene.groups) > 1`. This is the trigger for every per-zone affordance.
+- `focused_zone: RwSignal<Option<String>>`: the zone that quick-applies and the controls panel target. `None` means the primary zone.
 
 ### EffectsContext and the apply-target
 
@@ -126,12 +126,12 @@ Two pieces of Studio are not Studio's at all. They are shared singletons mounted
 
 ### LayerPanel
 
-`LayerPanel` (`components/layer_panel/mod.rs`) is the single layer-stack editor. Studio, `/assets`, and any future surface mount the same component. The mount contract is small and deliberate:
+`LayerPanel` (`components/layer_panel/mod.rs`) is the single layer-stack editor. Studio's composition slide-over is its only mount today; the mount contract keeps it host-agnostic, small, and deliberate:
 
-- **Surface identity** — `active_scene` plus `selected_group_id` name the `(scene id, group id)` pair every mutation is addressed to. The panel never displays the ids.
-- **`layers_version`** — read from `layers_resource` and threaded as the `If-Match` precondition on every mutation.
-- **One mutation callback** — `on_layers_mutated: Callback<()>` fires after every applied or rejected mutation; the host refetches the stack and the active scene in response. There is exactly one.
-- **Internal content selection** — the asset list and effect-name resolution are owned inside the panel, so it is decoupled from any host page's selection state.
+- **Surface identity**: `active_scene` plus `selected_group_id` name the `(scene id, group id)` pair every mutation is addressed to. The panel never displays the ids.
+- **`layers_version`**: read from `layers_resource` and threaded as the `If-Match` precondition on every mutation.
+- **One mutation callback**: `on_layers_mutated: Callback<()>` fires after every applied or rejected mutation; the host refetches the stack and the active scene in response. There is exactly one.
+- **Internal content selection**: the asset list and effect-name resolution are owned inside the panel, so it is decoupled from any host page's selection state.
 
 Studio passes a `surface_label`, which tells the panel to show the selected surface's name in its header and drop its own redundant group selector. The Studio zone tree already owns selection, so that selector would be dead weight.
 
@@ -139,9 +139,9 @@ One display detail worth knowing when you read the code: layers are authored bot
 
 ### LayoutWorkspace and the two providers
 
-`LayoutWorkspace`/`LayoutCanvas` (`components/layout_builder.rs`, `components/layout_canvas.rs`) is the single spatial editor. The standalone `/layout` page and Studio's Stage drive one shared editor; only the header chrome and the scoping provider differ.
+`LayoutWorkspace`/`LayoutCanvas` (`components/layout_builder.rs`, `components/layout_canvas.rs`) is the single spatial editor, and Studio's Stage is its only mount today.
 
-The provider is the seam. Studio's Stage wraps the editor in `ZoneLayoutProvider`, which loads the selected zone's own `Zone.layout` and persists it through the per-zone layout API. The standalone `/layout` page wraps it in `LayoutEditorProvider`, which edits the standalone layouts library that Plan 55 is retiring.
+The provider is the seam. Studio's Stage wraps the editor in `ZoneLayoutProvider`, which loads the selected zone's own `Zone.layout` and persists it through the per-zone layout API. A second provider, `LayoutEditorProvider`, still exists in `layout_builder.rs` and scopes the editor to the standalone layouts library, but no page mounts it.
 
 ```rust
 <ZoneLayoutProvider
@@ -155,9 +155,9 @@ The provider is the seam. Studio's Stage wraps the editor in `ZoneLayoutProvider
 
 `ZoneLayoutProvider` provides three contexts down to the Stage:
 
-- `LayoutEditorContext` — the editor's working state: the in-flight `Signal<Option<SpatialLayout>>`, selection sets, hover sets, compound depth, the `LayoutWriteHandle`, and `can_undo`/`can_redo`.
-- `LayoutZoneDisplayContext` — the per-device attachment profiles resource.
-- `ZoneCanvasActions` — `save`, `revert`, `is_dirty`, and `has_layout`, consumed by the Stage header so the header drives Save and Revert off the same provider state.
+- `LayoutEditorContext`: the editor's working state: the in-flight `Signal<Option<SpatialLayout>>`, selection sets, hover sets, compound depth, the `LayoutWriteHandle`, and `can_undo`/`can_redo`.
+- `LayoutZoneDisplayContext`: the per-device attachment profiles resource.
+- `ZoneCanvasActions`: `save`, `revert`, `is_dirty`, and `has_layout`, consumed by the Stage header so the header drives Save and Revert off the same provider state.
 
 The provider reloads the canvas on a **zone signature**, not on every scene refetch. The signature is the zone id plus its sorted output-id set, so a placement-only change (including this canvas's own saved edits) leaves the signature unchanged. That is what stops an unrelated scene refetch from clobbering in-flight canvas edits.
 
@@ -228,12 +228,10 @@ pub fn zone_crud_ready(&self) -> bool {
 
 `+ New zone` and the zone rows need all three, because a user who can create a zone but cannot render it or move outputs into it would have an unusable zone. The unassigned-lights policy editor gates separately on `scene-unassigned-behavior-write`.
 
-Studio and Media replace Assets/Layout/Displays in the nav only when the browser-local `studio_ui_beta` flag is on (`StudioFlag` in `app.rs`, persisted under `hc-studio-ui-beta`). It is never daemon config, so it flips against a live daemon without a rebuild.
-
 ![The Hypercolor Studio workspace](/img/ui/studio.webp)
 
 ## Where to read next
 
-- [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) — the REST routes, the WebSocket preview protocol, and the full `If-Match` story.
-- [Vocabulary and naming](@/studio/vocabulary-and-naming.md) — the locked type names and the never-rooms rule.
-- [Render pipeline](@/architecture/render-pipeline.md) — how the composited canvas becomes LED color downstream of Studio.
+- [Zone API and concurrency](@/studio/zone-api-and-concurrency.md): the REST routes, the WebSocket preview protocol, and the full `If-Match` story.
+- [Vocabulary and naming](@/studio/vocabulary-and-naming.md): the locked type names and the never-rooms rule.
+- [Render pipeline](@/architecture/render-pipeline.md): how the composited canvas becomes LED color downstream of Studio.

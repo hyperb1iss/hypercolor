@@ -88,11 +88,11 @@ density: num("Particle Density", [10, 1000], 200, {
 
 Options:
 
-- `step` — slider increment
-- `tooltip` — hover tooltip text
-- `group` — UI grouping label
-- `normalize` — `'speed'`, `'percentage'`, or `'none'`. Applies an internal normalization before the value reaches your render function or the shader uniform.
-- `uniform` — override the auto-derived `iSpeed`-style GLSL uniform name
+- `step`: slider increment
+- `tooltip`: hover tooltip text
+- `group`: UI grouping label
+- `normalize`: `'speed'`, `'percentage'`, or `'none'`. Applies an internal normalization before the value reaches your render function or the shader uniform.
+- `uniform`: override the auto-derived `iSpeed`-style GLSL uniform name
 
 ### `combo(label, values, options?)`
 
@@ -129,7 +129,7 @@ Color picker, produces a hex string.
 tint: color("Tint", "#80ffea", { group: "Color" });
 ```
 
-Canvas effects receive `'#rrggbb'` strings. Shader effects receive a `vec3` uniform with components in the `0.0–1.0` range.
+Canvas effects receive `'#rrggbb'` strings. Shader effects receive a `vec3` uniform with components in the `0.0-1.0` range.
 
 ### `toggle(label, default, options?)`
 
@@ -161,7 +161,7 @@ message: text("Display Text", "HYPERCOLOR", { group: "Content" });
 
 ### `font(label, defaultFamily, options?)`
 
-Font family picker. This is syntactic sugar over `combo()` — it produces a `combobox` spec whose values are font family names. The face runtime loads the selected family before the first render, so the glyphs are ready by frame one. Capture mode disables remote font loading.
+Font family picker. This is syntactic sugar over `combo()`: it produces a `combobox` spec whose values are font family names. The face runtime loads the selected family before the first render, so the glyphs are ready by frame one. Capture mode disables remote font loading.
 
 ```typescript
 family: font("Family", "JetBrains Mono", { group: "Typography" });
@@ -171,12 +171,12 @@ If you omit `families`, the SDK uses a curated, LED-legible default list: `JetBr
 
 Options:
 
-- `families` — override the curated list with your own families
+- `families`: override the curated list with your own families
 - `tooltip`, `group`
 
 ### `sensor(label, default, options?)`
 
-Sensor picker. The user chooses from the live system sensors the daemon exposes (CPU temperature, GPU load, network throughput, and so on). The runtime value is the **sensor label string**, not a reading — pass it to the engine's sensor API to get the current value each frame.
+Sensor picker. The user chooses from the live system sensors the daemon exposes (CPU temperature, GPU load, network throughput, and so on). The runtime value is the **sensor label string**, not a reading; pass it to the engine's sensor API to get the current value each frame.
 
 ```typescript
 import { face, sensor } from "hypercolor";
@@ -208,7 +208,7 @@ backdrop: asset("Backdrop", "image", { group: "Content" });
 
 ### `rect(label, default, options?)`
 
-Interactive viewport rectangle. The user drags a rectangle over a live preview, and the value is `{ x, y, width, height }` in normalized `[0, 1]` coordinates — resolution-independent, like every spatial value in Hypercolor.
+Interactive viewport rectangle. The user drags a rectangle over a live preview, and the value is `{ x, y, width, height }` in normalized `[0, 1]` coordinates, resolution-independent like every spatial value in Hypercolor.
 
 ```typescript
 viewport: rect(
@@ -223,8 +223,8 @@ viewport: rect(
 
 Options:
 
-- `aspectLock` — lock the aspect ratio while the user drags
-- `preview` — `'screen'`, `'web'`, or `'canvas'`, picking the backdrop the picker draws the rectangle over
+- `aspectLock`: lock the aspect ratio while the user drags
+- `preview`: `'screen'`, `'web'`, or `'canvas'`, picking the backdrop the picker draws the rectangle over
 - `tooltip`, `group`
 
 ## Groups
@@ -266,12 +266,12 @@ The runtime re-polls control values during playback (every 0.1s, or immediately 
 
 ## Auto-normalized speed
 
-One control name triggers automatic normalization. The SDK's `MAGIC_NAMES` table holds exactly one entry: `speed`. When a control is keyed `speed` and you haven't set an explicit `normalize` option, its value runs through `normalizeSpeed()` — `max(0.2, (speed / 5) ** 1.5)`, a multiplier in the `0.2–3.0` range — before your function or the shader sees it, so a slider value of `5` maps to a `1.0` time multiplier. In shaders it surfaces as `uniform float iSpeed`. No other key is normalized automatically.
+One control name triggers automatic normalization. The SDK's `MAGIC_NAMES` table holds exactly one entry: `speed`. When a control is keyed `speed` and you haven't set an explicit `normalize` option, its value runs through `normalizeSpeed()` (`max(0.2, (speed / 5) ** 1.5)`, a multiplier in the `0.2-3.0` range) before your function or the shader sees it, so a slider value of `5` maps to a `1.0` time multiplier. In shaders it surfaces as `uniform float iSpeed`. No other key is normalized automatically.
 
 To opt out, either rename the key (for example `speedMult`) and normalize the value yourself, or set an explicit `normalize: 'none'` on the factory. The `normalize` option on `num` also lets you apply `'speed'` or `'percentage'` normalization to a differently-named control on purpose. Normalization keys off the resolved hint, which is your explicit option first and the `MAGIC_NAMES` lookup only as a fallback.
 
 {% callout(type="tip") %}
-`'percentage'` normalization maps a `0–200` slider to a `0–2` multiplier via `normalizePercentage()` (`max(0.01, value / 100)`), so `100` reads as `1.0`. It is the right hint for "intensity" or "scale" controls you want centered on unity.
+`'percentage'` normalization maps a `0-200` slider to a `0-2` multiplier via `normalizePercentage()` (`max(0.01, value / 100)`), so `100` reads as `1.0`. It is the right hint for "intensity" or "scale" controls you want centered on unity.
 {% end %}
 
 ## Palette controls

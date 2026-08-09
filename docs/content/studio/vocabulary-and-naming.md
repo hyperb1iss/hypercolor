@@ -4,7 +4,7 @@ description = "The locked Studio vocabulary, the kill list (never 'rooms' or 'Al
 weight = 130
 +++
 
-The Studio vocabulary is locked. A **scene** is a whole-rig config, a **zone** is a flexible partition of that scene's canvas, and the default zone is always called **"Default zone."** Smart-home language — "rooms," "All Lights," "Lights" — never appears in user-facing strings, and a layer's content kind always renders in plain words ("Effect," "Media," "Color"), never as a raw enum name or a UUID. This page is the canonical reference for that vocabulary, the words that are banned, and the small set of rendering rules in `crates/hypercolor-ui/src/zones/surface.rs` that enforce them.
+The Studio vocabulary is locked. A **scene** is a whole-rig config, a **zone** is a flexible partition of that scene's canvas, and the default zone is always called **"Default zone."** Smart-home language ("rooms," "All Lights," "Lights") never appears in user-facing strings, and a layer's content kind always renders in plain words ("Effect," "Media," "Color"), never as a raw enum name or a UUID. This page is the canonical reference for that vocabulary, the words that are banned, and the small set of rendering rules in `crates/hypercolor-ui/src/zones/surface.rs` that enforce them.
 
 The internal Rust type names that back these concepts are documented in [Studio architecture](@/studio/architecture.md). They differ from the user-facing words by design, and the difference is wire-safe; the relevant subtlety is summarized at the end of this page.
 
@@ -113,7 +113,7 @@ fn layer_source_kind(source: &LayerSource) -> &'static str {
 }
 ```
 
-This is the fallback. A layer's top-line caption prefers the user's own name for the layer (`top_layer_label`); only when the layer is unnamed does the source kind stand in. So a tile reads "Aurora" when the user named it that, and "Effect" when they did not — never `Effect { id: "…" }` and never the UUID. See [Layers](@/studio/layers.md) for the full layer model.
+This is the fallback. A layer's top-line caption prefers the user's own name for the layer (`top_layer_label`); only when the layer is unnamed does the source kind stand in. So a tile reads "Aurora" when the user named it that, and "Effect" when they did not: never `Effect { id: "…" }` and never the UUID. See [Layers](@/studio/layers.md) for the full layer model.
 
 ### The Unassigned entry is not a zone
 
@@ -126,7 +126,7 @@ The headline domain types in `crates/hypercolor-types/src/scene.rs` already carr
 The one subtlety worth flagging when you write docs: the rename is a **Rust-identifier rename, not a wire change.** Serialized field names and enum-variant strings are frozen so persisted scenes and the REST and WebSocket contracts never shift. The clearest live example is the scene-change event, whose `event_type` string is still `"render_group_changed"` on the wire even though the Rust enum that classifies it is `ZoneChangeKind`:
 
 ```rust
-// crates/hypercolor-ui/src/ws/messages.rs — the wire literal is frozen
+// crates/hypercolor-ui/src/ws/messages.rs: the wire literal is frozen
 let is_render_group_changed = event_type == "render_group_changed";
 ```
 

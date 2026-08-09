@@ -5,8 +5,8 @@ weight = 10
 template = "page.html"
 +++
 
-When things go wrong — devices not responding, effects rendering incorrectly, audio not reacting,
-Servo hanging — here is how to find and fix the problem.
+When things go wrong (devices not responding, effects rendering incorrectly, audio not reacting,
+Servo hanging), here is how to find and fix the problem.
 
 ## Daemon logs
 
@@ -228,8 +228,8 @@ delivery to the effect.
 
 ## Servo troubleshooting
 
-HTML effects — TypeScript SDK canvas effects, GLSL shaders (via WebGL2), raw HTML, and display
-faces — all render through the Servo worker. Servo has its own failure modes.
+HTML effects (TypeScript SDK canvas effects, GLSL shaders via WebGL2, raw HTML, and display
+faces) all render through the Servo worker. Servo has its own failure modes.
 
 ### Start the Servo-enabled daemon
 
@@ -266,7 +266,7 @@ Signs the breaker has opened:
 - `servo_breaker_opens_total` increments in the `effect_health` field of the status endpoint.
 
 The breaker resets automatically after the cooldown. Restarting the daemon also clears it.
-Servo telemetry lives under `effect_health` on the status endpoint — not in the diagnose
+Servo telemetry lives under `effect_health` on the status endpoint, not in the diagnose
 snapshot:
 
 ```bash
@@ -350,7 +350,7 @@ curl -s -X POST http://localhost:9420/api/v1/simulators/displays \
 ```
 
 The SDK's `just face-dev NAME` command builds and installs the face, creates a round and a strip
-simulator display, assigns the face to both, and rebuilds on save — it is the recommended
+simulator display, assigns the face to both, and rebuilds on save; it is the recommended
 development loop for display faces.
 
 ### Inspect simulator output
@@ -385,8 +385,8 @@ the face is actually submitting render requests.
 
 ### Two-geometry face dev
 
-`just face-dev NAME` spins up two simulators at once — a 480x480 round display and a 960x160
-strip — so you can watch a face render on both a circular and a rectangular surface side by
+`just face-dev NAME` spins up two simulators at once (a 480x480 round display and a 960x160
+strip) so you can watch a face render on both a circular and a rectangular surface side by
 side. Validate the built artifact before installing with `bun run validate`, which checks
 metadata and render surfaces.
 
@@ -400,33 +400,33 @@ If a face looks wrong on the round display:
 
 ## Common issues quick reference
 
-**"Permission denied" on USB devices** — install udev rules with `just udev-install`, then
+**"Permission denied" on USB devices**: install udev rules with `just udev-install`, then
 re-plug the device or reboot so existing nodes pick up the new ACLs. The rules use `uaccess`
 for the logged-in user with `GROUP="users"` as a fallback.
 
-**Daemon starts but no devices connect** — run `lsusb` to confirm the device is visible. If
+**Daemon starts but no devices connect**: run `lsusb` to confirm the device is visible. If
 visible, the VID/PID may not be in the device database. Run at `debug` level and look for
 discovery output from `hypercolor_hal`.
 
-**Effects apply but LEDs show wrong colors** — likely a spatial layout mismatch. Verify device
+**Effects apply but LEDs show wrong colors**: likely a spatial layout mismatch. Verify device
 zones are positioned correctly. Use `hypercolor devices identify <id>` to confirm the device is
 receiving data.
 
-**Low FPS in the render loop** — enable `RUST_LOG=hypercolor_core::engine=trace` and look for
+**Low FPS in the render loop**: enable `RUST_LOG=hypercolor_core::engine=trace` and look for
 frame time spikes. Common causes: slow USB writes (check `avg_write_ms` per device in the
 diagnose snapshot), Servo rendering overhead (check `servo_render_frame_max_ms` under
 `effect_health` on the status endpoint), or too many devices on one USB controller.
 
-**WebSocket connection drops** — the daemon pings clients periodically and drops non-responding
+**WebSocket connection drops**: the daemon pings clients periodically and drops non-responding
 ones. Verify your client handles WebSocket ping/pong. Also check for reverse proxy or firewall
 idle-connection timeouts.
 
-**Servo circuit breaker open, effects frozen** — wait for the cooldown to expire (30 s minimum,
+**Servo circuit breaker open, effects frozen**: wait for the cooldown to expire (30 s minimum,
 up to 5 min with repeated failures) or restart the daemon. If it reopens immediately, set
 `RUST_LOG=hypercolor_core::effect::servo=trace` to capture the failure reason before the
 breaker trips again.
 
-**Servo memory diagnostics return 404** — this endpoint is disabled on Windows. On Linux/macOS
+**Servo memory diagnostics return 404**: this endpoint is disabled on Windows. On Linux/macOS
 with the `servo` feature it should always be available; without the feature it also returns
 `404`.
 

@@ -19,10 +19,10 @@ Every command below runs through `bunx hypercolor` inside your workspace, resolv
 
 The build always stamps these tags from your effect definition:
 
-- `<meta name="hypercolor-version" content="1">` — the artifact format version.
-- `<title>` — the effect display name.
-- `<meta description="...">` and `<meta publisher="...">` — your description and author. When you omit an author, the publisher defaults to `Hypercolor`, not your username, so set `author` in the effect options if you want attribution.
-- `<meta audio-reactive="...">` and `<meta screen-reactive="...">` — the reactivity flags.
+- `<meta name="hypercolor-version" content="1">`: the artifact format version.
+- `<title>`: the effect display name.
+- `<meta description="...">` and `<meta publisher="...">`: your description and author. When you omit an author, the publisher defaults to `Hypercolor`, not your username, so set `author` in the effect options if you want attribution.
+- `<meta audio-reactive="...">` and `<meta screen-reactive="...">`: the reactivity flags.
 - One `<meta property=...>` per control, plus one `<meta preset=... preset-controls='{json}'>` per preset.
 
 You do not hand-write any of this. Authoring the effect through `canvas()`, `effect()`, or `face()` and declaring controls is what produces the tags.
@@ -45,13 +45,13 @@ These are **errors** that fail the build or the install:
 - An `asset` control with an unrecognized media kind (valid kinds are `any`, `image`, `video`, `lottie`).
 - A preset whose `preset-controls` JSON does not parse.
 
-These are **warnings** — the effect still installs, but clean them up before sharing:
+These are **warnings**: the effect still installs, but clean them up before sharing:
 
 - Missing `hypercolor-version`, `description`, or `publisher` metadata.
 - A control default that falls outside its declared range.
-- Canvas width or height outside the 100–1920 range.
+- Canvas width or height outside the 100-1920 range.
 - A preset referencing a control that does not exist, or a combobox preset value not in the control's options.
-- External `<script>` or `<link>` references, which mean the artifact may not be self-contained — a hard rule for a publishable effect.
+- External `<script>` or `<link>` references, which mean the artifact may not be self-contained, a hard rule for a publishable effect.
 
 {% callout(type="tip") %}
 Treat `--strict` as your publish bar. `bunx hypercolor validate dist/*.html --strict` exits non-zero on any warning, so a clean strict pass means the artifact has full metadata, no external references, and consistent presets. That is the standard for an effect you intend to share.
@@ -79,7 +79,7 @@ bunx hypercolor install dist/*.html
 bun run ship
 ```
 
-Artifacts land in `$XDG_DATA_HOME/hypercolor/effects/user/`, falling back to `~/.local/share/hypercolor/effects/user/` when `XDG_DATA_HOME` is unset. If a file with the same name already exists, the installer does not overwrite it — it dedupes by appending a counter, so `aurora-drift.html` becomes `aurora-drift-2.html`, then `aurora-drift-3.html`, and so on.
+Artifacts land in `$XDG_DATA_HOME/hypercolor/effects/user/`, falling back to `~/.local/share/hypercolor/effects/user/` when `XDG_DATA_HOME` is unset. If a file with the same name already exists, the installer does not overwrite it; it dedupes by appending a counter, so `aurora-drift.html` becomes `aurora-drift-2.html`, then `aurora-drift-3.html`, and so on.
 
 The daemon scans the user effects directory on startup. To pick up a freshly installed effect without restarting, ask the running daemon to rescan with the system CLI:
 
@@ -150,7 +150,7 @@ graph TD
 
 ## Where to go next
 
-- [Dev workflow](@/effects/dev-workflow.md) — the full edit-build-ship loop and the authoring-vs-system CLI distinction.
-- [Effect troubleshooting](@/effects/troubleshooting.md) — the build-time hard errors and how to clear them.
-- [SDK CLI reference](@/effects/sdk-cli-reference.md) — every `bunx hypercolor` flag, exit code, and environment variable.
-- [Display faces](@/effects/display-faces.md) — the same publish path applies to full-screen faces for LCD devices.
+- [Dev workflow](@/effects/dev-workflow.md): the full edit-build-ship loop and the authoring-vs-system CLI distinction.
+- [Effect troubleshooting](@/effects/troubleshooting.md): the build-time hard errors and how to clear them.
+- [SDK CLI reference](@/effects/sdk-cli-reference.md): every `bunx hypercolor` flag, exit code, and environment variable.
+- [Display faces](@/effects/display-faces.md): the same publish path applies to full-screen faces for LCD devices.

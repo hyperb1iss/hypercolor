@@ -94,7 +94,7 @@ channels you want, send them to the new zone, and leave the rest where they are.
 {% callout(type="warning") %}
 Each device output belongs to exactly one zone at a time. Assigning an output to
 a new zone always removes it from its previous owner. There is no "copy an output
-into two zones" — exclusivity is the invariant that keeps each zone's output
+into two zones"; exclusivity is the invariant that keeps each zone's output
 correct.
 {% end %}
 
@@ -159,12 +159,12 @@ side effect (you deleted a zone, and its outputs fell out). The scene decides
 what those outputs do.
 
 In a multi-zone scene the tree shows a synthetic **Unassigned** entry. It is not
-a surface — no layer stack, no canvas — so selecting it shows the scene-level
+a surface (no layer stack, no canvas), so selecting it shows the scene-level
 policy instead. Pick one of:
 
-- **Turn off** — unassigned outputs are cleared to black. This is the default.
-- **Hold last colors** — unassigned outputs keep whatever they last rendered.
-- **Follow &lt;zone&gt;** — unassigned outputs are routed through a named zone,
+- **Turn off**: unassigned outputs are cleared to black. This is the default.
+- **Hold last colors**: unassigned outputs keep whatever they last rendered.
+- **Follow &lt;zone&gt;**: unassigned outputs are routed through a named zone,
   so they mirror that zone's effect.
 
 The policy is editable only when the daemon advertises the
@@ -200,11 +200,11 @@ whenever you want it back.
 
 ## Where to go next
 
-- [Zones](@/studio/zones.md) — the full zone lifecycle: rename, color, enable,
+- [Zones](@/studio/zones.md): the full zone lifecycle: rename, color, enable,
   make-default, delete.
-- [Device grouping](@/studio/device-grouping.md) — the device card, channels,
+- [Device grouping](@/studio/device-grouping.md): the device card, channels,
   hide, identify, and remove.
-- [Scenes](@/studio/scenes.md) — saving and switching whole-rig configurations.
-- [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) — the REST
+- [Scenes](@/studio/scenes.md): saving and switching whole-rig configurations.
+- [Zone API and concurrency](@/studio/zone-api-and-concurrency.md): the REST
   routes and the `groups_revision` optimistic-concurrency contract behind every
   move you just made.

@@ -62,10 +62,10 @@ Performance baselines are product contracts. The tier ceiling, canvas resolution
 Drive every animation from `delta_secs` (the wall-clock time since the previous frame) or `time_secs` (elapsed seconds since activation). Both stay correct across all five tiers.
 
 ```typescript
-// Wrong — speed is tied to the tier.
+// Wrong: speed is tied to the tier.
 position += 2;
 
-// Right — speed is the same at 10, 30, or 60 FPS.
+// Right: speed is the same at 10, 30, or 60 FPS.
 position += pixelsPerSecond * ctx.delta;
 ```
 

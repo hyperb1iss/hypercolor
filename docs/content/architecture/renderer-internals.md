@@ -1,10 +1,8 @@
 +++
 title = "Renderer internals"
-description = "The EffectRenderer trait, EffectSource variants, factory dispatch, the Servo session model, and GPU lane status."
+description = "The EffectRenderer trait, EffectSource variants, factory dispatch, the Servo session model, and the GPU compositor lane."
 weight = 30
 +++
-
-# Renderer internals
 
 This page is a reference map of how effect rendering works from metadata discovery
 through pixel output. It covers the `EffectRenderer` trait contract, the three
@@ -22,13 +20,15 @@ loop. This page goes one level deeper into the renderers themselves.
 Before diving into types, the most important thing to establish: there are exactly
 **two runnable rendering paths today**.
 
-- **Compiled-in Rust renderers** — pure CPU canvas effects registered in
+- **Compiled-in Rust renderers**: pure CPU canvas effects registered in
   `crates/hypercolor-core/src/effect/builtin/`. Selected by `EffectSource::Native`.
-- **Servo HTML/WebGL2 renderers** — HTML files executed inside a headless Servo
+- **Servo HTML/WebGL2 renderers**: HTML files executed inside a headless Servo
   browser engine. Covers TypeScript canvas effects and GLSL shaders bundled as
   WebGL2 by the SDK. Selected by `EffectSource::Html`.
 
-There is no wgpu/GPU native shader lane available at runtime. `EffectSource::Shader`
+There is no wgpu native **shader-effect** lane available at runtime (the
+compositor's GPU lane is a separate, shipped path; see
+[GPU compositor lane](#gpu-compositor-lane)). `EffectSource::Shader`
 exists in the type system as a reserved variant, but the factory bails immediately:
 
 ```rust
@@ -40,11 +40,13 @@ EffectSource::Shader { path } => bail!(
 ),
 ```
 
-`RenderAccelerationMode::Gpu` returns an error; `Auto` silently falls back to CPU
-with `fallback_reason = "gpu effect renderer acceleration is not available yet"`.
+For the effect-renderer resolver specifically, `RenderAccelerationMode::Gpu`
+returns an error and `Auto` silently falls back to CPU with
+`fallback_reason = "gpu effect renderer acceleration is not available yet"`.
 The wgpu compute/fragment shader lane is planned future work. GLSL effects work
 today because they run as **WebGL2 inside Servo** as `EffectSource::Html`, not
-through any wgpu path.
+through any wgpu path. None of this constrains the compositor, whose own
+`compositor_acceleration_mode` key can and does resolve to GPU.
 
 The doc-comments on `EffectSource::Native` ("rendered by `WgpuRenderer`") are stale
 aspirational text from an earlier design. Treat them as forward-looking internal notes,
@@ -52,19 +54,19 @@ not current behavior.
 
 ---
 
-## `EffectSource` — the three variants
+## The three `EffectSource` variants
 
 `EffectSource` is the discriminant that routes effect metadata to a renderer. Defined
 in `crates/hypercolor-types/src/effect.rs`:
 
 ```rust
 pub enum EffectSource {
-    /// "Native" — despite the WgpuRenderer comment, this dispatches to a
+    /// "Native": despite the WgpuRenderer comment, this dispatches to a
     /// compiled-in CPU renderer keyed by path stem.
     Native { path: PathBuf },
     /// HTML/Canvas/WebGL effect executed by ServoRenderer.
     Html { path: PathBuf },
-    /// GPU shader lane — not runnable yet. Factory returns Err.
+    /// GPU shader lane, not runnable yet. Factory returns Err.
     Shader { path: PathBuf },
 }
 ```
@@ -73,9 +75,9 @@ What each variant **actually does** at runtime:
 
 | Variant  | Renderer                          | GPU | `servo` feature required |
 |----------|-----------------------------------|-----|--------------------------|
-| `Native` | Rust struct from `builtin/`       | No — CPU only | No |
-| `Html`   | `ServoRenderer`                   | No (CPU readback); optional GPU import via `servo-gpu-import` | Yes |
-| `Shader` | None — factory returns `Err`      | N/A | N/A |
+| `Native` | Rust struct from `builtin/`       | No, CPU only | No |
+| `Html`   | `ServoRenderer`                   | GPU framebuffer import when available (default `auto`); CPU readback is the fallback path | Yes |
+| `Shader` | None; factory returns `Err`       | N/A | N/A |
 
 The `source_stem()` helper extracts the file stem of the source path as
 `Option<&str>`. The factory uses it as the lookup key for native effects, falling
@@ -87,19 +89,19 @@ back to the effect's display name when the stem is unavailable.
 Loading → Initializing → Running → Paused → Destroying
 ```
 
-- `Loading` — source files discovered, metadata parsed and validated.
-- `Initializing` — `init_with_canvas_size` called; HTML load or resource
+- `Loading`: source files discovered, metadata parsed and validated.
+- `Initializing`: `init_with_canvas_size` called; HTML load or resource
   allocation in progress.
-- `Running` — `render_into` called every render tick.
-- `Paused` — renderer alive, not producing frames (crossfade transitions).
-- `Destroying` — `destroy()` called; Servo session or other resources released.
+- `Running`: `render_into` called every render tick.
+- `Paused`: renderer alive, not producing frames (crossfade transitions).
+- `Destroying`: `destroy()` called; Servo session or other resources released.
 
 ---
 
 ## `EffectRenderer` trait
 
 The full trait surface is in `crates/hypercolor-core/src/effect/traits.rs`. Every
-renderer — built-in Rust or Servo-backed HTML — implements it.
+renderer (built-in Rust or Servo-backed HTML) implements it.
 
 ```rust
 pub trait EffectRenderer: Send {
@@ -141,7 +143,7 @@ behind a `Mutex`, never `RwLock`. Servo's renderer is pinned to one OS thread, w
 makes `Sync` impossible.
 
 `tick` is a legacy convenience wrapper that allocates a fresh `Canvas` and calls
-`render_into`. Prefer `render_into` for new renderers — it lets the engine pass a
+`render_into`. Prefer `render_into` for new renderers; it lets the engine pass a
 pre-allocated target and avoids an allocation per frame.
 
 ### `FrameInput` fields
@@ -167,7 +169,7 @@ The default canvas dimensions are **640×480** (`DEFAULT_CANVAS_WIDTH` /
 `DEFAULT_CANVAS_HEIGHT` in `hypercolor-types::canvas`). Both values are configurable
 and can change live via `SceneTransaction::ResizeCanvas`. Never hardcode them.
 
-Animate against `delta_secs` or `time_secs`, not `frame_number` — the render loop
+Animate against `delta_secs` or `time_secs`, not `frame_number`: the render loop
 runs at adaptive FPS across five tiers (10 / 20 / 30 / 45 / 60). The integer frame
 counter is monotonic but not wall-clock proportional.
 
@@ -224,7 +226,9 @@ EffectSource::Shader { path }
   └── bail!("shader effect '...' is not runnable yet")
 ```
 
-Before dispatch, the factory resolves the requested `RenderAccelerationMode`:
+Before dispatch, the factory resolves the requested `RenderAccelerationMode` for
+the effect-renderer lane (this resolver is separate from the compositor's
+startup resolution of `compositor_acceleration_mode`):
 
 | Requested mode | Effective mode | Outcome |
 |----------------|----------------|---------|
@@ -276,12 +280,12 @@ mapping supports configurable deadband and temporal smoothing.
 
 There are two frame production paths on the pool:
 
-- `render_group_into` / `render_layer_into` — writes pixels into a caller-owned
+- `render_group_into` / `render_layer_into`: writes pixels into a caller-owned
   `Canvas`. Standard path.
-- `render_group_output` / `render_layer_output` — returns an `EffectRenderOutput`,
+- `render_group_output` / `render_layer_output`: returns an `EffectRenderOutput`,
   enabling GPU-resident frames. Used by the compositor when the `servo-gpu-import`
   feature is active.
-- `advance_layer_output` — ticks a renderer forward without requiring the caller to
+- `advance_layer_output`: ticks a renderer forward without requiring the caller to
   consume a frame immediately. Used for prefetch/pipeline staging.
 
 ---
@@ -293,17 +297,17 @@ discovered effects, keyed by `EffectId` (UUID v7).
 
 Key operations:
 
-- `register(entry)` — add or replace an entry; bumps the monotonic generation counter
+- `register(entry)`: add or replace an entry; bumps the monotonic generation counter
   when metadata, source path, or modification time changes.
-- `resolve_id(id)` — resolves a compatibility alias to a canonical `EffectId`.
-- `rescan()` — full filesystem rescan: re-registers all HTML effects, prunes deleted
-  files. Called at startup and when the file watcher detects bulk changes.
-- `reload_single(path)` — fast-path single-file hot-reload triggered by the watcher
+- `resolve_id(id)`: resolves a compatibility alias to a canonical `EffectId`.
+- `rescan()`: full filesystem rescan that re-registers all HTML effects and prunes
+  deleted files. Called at startup and when the file watcher detects bulk changes.
+- `reload_single(path)`: fast-path single-file hot-reload triggered by the watcher
   on a single `.html` change.
-- `prune_missing()` — removes entries whose source file no longer exists on disk.
+- `prune_missing()`: removes entries whose source file no longer exists on disk.
   Native effects are exempt since they have no on-disk source to check.
 
-HTML effects support **compatibility aliases** — multiple `EffectId` values that
+HTML effects support **compatibility aliases**: multiple `EffectId` values that
 resolve to the same canonical entry. This allows renamed effects to retain existing
 scene references without breaking user data.
 
@@ -324,16 +328,16 @@ loop on any thread.
 
 The Servo subsystem is split into focused modules:
 
-- `worker` — OS thread spawn and teardown, `ServoWorkerRuntime`, the shared
+- `worker`: OS thread spawn and teardown, `ServoWorkerRuntime`, the shared
   `SERVO_WORKER` global.
-- `worker_client` — client-side `Idle → Loading → Running` state machine and the
+- `worker_client`: client-side `Idle → Loading → Running` state machine and the
   command channel.
-- `session` — `ServoSessionHandle` per effect, bridging a `ServoWorkerClient` to the
+- `session`: `ServoSessionHandle` per effect, bridging a `ServoWorkerClient` to the
   renderer.
-- `renderer` — the `EffectRenderer` facade that drives the worker from the render loop.
-- `delegate` — `WebViewDelegate` implementation handling frame readiness, console
+- `renderer`: the `EffectRenderer` facade that drives the worker from the render loop.
+- `delegate`: `WebViewDelegate` implementation handling frame readiness, console
   messages, and page-load state.
-- `circuit_breaker` — consecutive-failure tracker with exponential cooldown.
+- `circuit_breaker`: consecutive-failure tracker with exponential cooldown.
 
 ### Session lifecycle
 
@@ -351,32 +355,32 @@ ServoSessionHandle
 The session is created via `ServoSessionHandle::new_shared`, which acquires a client
 handle to the shared `SERVO_WORKER` global. When the renderer is destroyed,
 `recycle_servo_session` queues the teardown on the worker thread rather than blocking
-the render loop — a slow Servo close never stalls output to devices. Despite the name,
+the render loop, so a slow Servo close never stalls output to devices. Despite the name,
 this is a detached close; sessions are not pooled or reused across effect activations.
 
 ### Per-frame flow
 
 Each `render_into` call drives four steps in sequence:
 
-1. `poll_load_task` — check whether the HTML file has finished loading and advance
+1. `poll_load_task`: check whether the HTML file has finished loading and advance
    the session state if so.
-2. `queue_frame` — capture the current `FrameInput` for injection. Data sources
+2. `queue_frame`: capture the current `FrameInput` for injection. Data sources
    included (audio, interaction, sensor, media, lighting, net) are gated per-effect
    by metadata tags to avoid injecting unnecessary payload.
-3. `poll_in_flight_render` — check whether the previous render request has returned
+3. `poll_in_flight_render`: check whether the previous render request has returned
    a completed frame. If so, latch it into `last_canvas`.
-4. `try_submit_queued_frame` — if the worker is idle, submit the queued frame input
+4. `try_submit_queued_frame`: if the worker is idle, submit the queued frame input
    as a new render request.
 
 The output is the **most recently completed frame**, not a synchronous per-tick
-render. Servo renders on its own thread; CPU pixel readback arrives one or more ticks
-later. While a frame is in flight, `render_into` returns the previous canvas. During
+render. Servo renders on its own thread; the completed frame (GPU-imported, or CPU
+pixel readback on the fallback path) arrives one or more ticks later. While a frame is in flight, `render_into` returns the previous canvas. During
 initial load before any frame is ready, a placeholder canvas is returned.
 
 ### Animation cadence
 
 By default, HTML canvas effects and WebGL2 shader effects run with
-`AnimationCadence::MatchRenderLoop` — the host submits a new render request each
+`AnimationCadence::MatchRenderLoop`: the host submits a new render request each
 tick. Effects tagged `webgl` or `canvas2d` switch to `host_driven_animation` mode;
 the Servo animation loop drives the cadence instead. This distinction matters for
 effects with internal `requestAnimationFrame` loops: host-driven effects respect the
@@ -392,14 +396,19 @@ payload assembly. The daemon calls `set_display_descriptor` before
 area, FPS policy) before the first frame. See [display faces](@/effects/display-faces.md)
 for the full face authoring contract.
 
-### GPU import (optional)
+### GPU framebuffer import
 
-When the `servo-gpu-import` feature is enabled, the renderer can request GPU-resident
-frames via `request_render_gpu`. The `render_output` override returns
-`EffectRenderOutput::Gpu(ImportedEffectFrame)` when a GPU-resident frame is available,
-bypassing the CPU readback entirely. This is an optional zero-copy path using the
-platform interop crate (`hypercolor-linux-gpu-interop` on Linux). It is entirely
-separate from the unimplemented `EffectSource::Shader` lane.
+Servo GPU framebuffer import ships on all three platforms and is governed by the
+`rendering.servo_gpu_import.mode` config key (`ServoGpuImportMode`, default
+`auto`): `auto` attempts import when startup capabilities indicate it can work
+and falls back to CPU readback otherwise, `on` requires import and reports frame
+errors instead of silently reading back, and `off` disables it. When import is
+active the renderer requests GPU-resident frames via `request_render_gpu`, and
+the `render_output` override returns `EffectRenderOutput::Gpu(ImportedEffectFrame)`,
+bypassing the CPU readback entirely (on Linux the zero-copy path goes through the
+`hypercolor-linux-gpu-interop` crate). CPU readback remains the fallback path,
+not the only path. This import lane is entirely separate from the unimplemented
+`EffectSource::Shader` lane.
 
 ### Circuit breaker
 
@@ -410,15 +419,57 @@ shared Servo worker process.
 
 ---
 
-## GPU lane status ⚡
+## GPU compositor lane
 
-There is no runnable wgpu compute or fragment shader lane in the current release.
+The scene compositor (SparkleFlinger, in
+`crates/hypercolor-daemon/src/render_thread/sparkleflinger/`) has a shipped GPU
+lane alongside its CPU path. The `compositor_acceleration_mode` config key
+selects it (`RenderAccelerationMode`, default `auto`; the serde alias
+`render_acceleration_mode` is accepted for older configs). At daemon startup the
+mode is resolved against a wgpu adapter probe: `auto` takes the GPU lane when a
+compatible non-software adapter passes the probe and falls back to CPU with a
+recorded reason otherwise; `gpu` requires the lane and refuses software
+adapters; `cpu` forces the CPU path. SparkleFlinger is then constructed with the
+resolved mode, and a runtime GPU failure downgrades the compositor back to the
+CPU path rather than dropping frames.
+
+On the GPU lane, per-producer surfaces upload to textures and the blend,
+transform, and preview passes run as wgpu compute shaders. Spatial sampling runs
+on the GPU too (`gpu_sampling.rs`, `sample.wgsl`): the prepared zone plan
+becomes a buffer of per-LED sample points (nearest, bilinear, or area), and
+sampled `ZoneColors` return through triple-buffered async readback slots so the
+render thread never blocks on the GPU.
+
+Area sampling is where the GPU lane changes the algorithm, not just the venue.
+Instead of the CPU path's `(2r+1)²` reads per LED, the compositor builds a
+summed-area table over the composed canvas (`gpu_area_sat.rs`, `area_sat.wgsl`):
+workgroup prefix scans accumulate 64-bit-wide per-channel sums in 256-wide
+tiles, and a hierarchical scan (`area_hierarchy.wgsl`) stitches the tiles into
+full-canvas prefix sums. Any-radius area samples then cost four table lookups.
+
+Resource management on this lane is transactional. Zone sampling plans and
+projected-scene resources are prepared first (`prepare_zone_sampling_plan`,
+`prepare_projected_scene_resources`, `prepare_canvas_resize`), producing a
+preparation object that is either applied atomically (`apply_zone_sampling_plan`
+activates the new layout's sample-point buffers, keyed by plan generation) or
+discarded with a fallback, so a failed allocation never leaves the compositor
+holding half-built state. Display finalize also runs on the GPU
+(`display_finalize.wgsl`): scene and face textures blend per display (replace,
+alpha, tint, luma-reveal, add, screen modes) with brightness, edge, and viewport
+transforms, writing both RGBA output and YUV420 planes through its own
+triple-buffered readback set.
+
+## Native shader lane status ⚡
+
+There is no runnable wgpu compute or fragment **shader-effect** lane in the
+current release; the GPU compositor lane above is what runs on the GPU today.
 
 The planned architecture has `EffectSource::Shader` dispatching to a `WgpuRenderer`
-with `RenderAccelerationMode::Gpu` enabling it. Neither exists as callable code today.
-The factory returns an error for `Shader` sources; the acceleration mode resolver
-returns an error for `Gpu` mode. When this path lands it will be documented in a
-dedicated page and the resolver will return a real GPU resolution.
+with the effect-renderer acceleration resolver enabling it. Neither exists as
+callable code today. The factory returns an error for `Shader` sources, and the
+effect-renderer resolver returns an error for `Gpu` mode. When this path lands it
+will be documented in a dedicated page and the resolver will return a real GPU
+resolution.
 
 If you need GLSL today, the correct path is **GLSL-as-WebGL2 via the TypeScript SDK**:
 see [GLSL effects](@/effects/glsl-effects.md).
@@ -427,16 +478,16 @@ see [GLSL effects](@/effects/glsl-effects.md).
 
 ## Cross-links
 
-- [Render pipeline](@/architecture/render-pipeline.md) — the compositor and
+- [Render pipeline](@/architecture/render-pipeline.md): the compositor and
   FPS controller that call into `EffectPool`.
-- [Event bus](@/architecture/event-bus.md) — how completed canvas frames are published
+- [Event bus](@/architecture/event-bus.md): how completed canvas frames are published
   downstream to devices and the preview WebSocket channel.
-- [Adding an effect](@/contributing/adding-an-effect.md) — how to implement and
+- [Adding an effect](@/contributing/adding-an-effect.md): how to implement and
   register a compiled-in `EffectRenderer` in `builtin/`.
-- [GLSL effects](@/effects/glsl-effects.md) — GLSL fragment shaders running as WebGL2
+- [GLSL effects](@/effects/glsl-effects.md): GLSL fragment shaders running as WebGL2
   inside Servo.
-- [Display faces](@/effects/display-faces.md) — full-screen HTML faces for LCD devices,
+- [Display faces](@/effects/display-faces.md): full-screen HTML faces for LCD devices,
   the `Display` category, and the `set_display_descriptor` contract.
-- [Native Rust effects](@/effects/native-rust-effects.md) — authoring compiled-in Rust
+- [Native Rust effects](@/effects/native-rust-effects.md): authoring compiled-in Rust
   `EffectRenderer` implementations: `FrameInput`, `Canvas` API, controls, registration,
   and testing.

@@ -140,10 +140,10 @@ In shaders, the same `palette` shorthand becomes an integer index uniform (`unif
 
 The validator also emits **warnings** that do not fail the build unless you pass `--strict`. The most useful ones to know:
 
-- `MISSING_VERSION` — the `hypercolor-version` meta tag is absent. The build normally writes it; its absence means a hand-built or stale artifact.
-- `DEFAULT_OUT_OF_RANGE` — a control's default sits outside its own declared `[min, max]`.
-- `EXTERNAL_ASSET_REFERENCE` — the artifact references an external script or link tag, so it is not self-contained. Effects must inline everything; a CDN reference will not load on a daemon without network access.
-- `UNUSUAL_CANVAS_WIDTH` / `UNUSUAL_CANVAS_HEIGHT` — a declared canvas dimension falls outside the sane `100–1920` band. Usually a sign you hardcoded a size; effects should read `ctx.canvas.width`/`ctx.canvas.height` per frame instead, since the daemon canvas defaults to 640×480 but is configurable.
+- `MISSING_VERSION`: the `hypercolor-version` meta tag is absent. The build normally writes it; its absence means a hand-built or stale artifact.
+- `DEFAULT_OUT_OF_RANGE`: a control's default sits outside its own declared `[min, max]`.
+- `EXTERNAL_ASSET_REFERENCE`: the artifact references an external script or link tag, so it is not self-contained. Effects must inline everything; a CDN reference will not load on a daemon without network access.
+- `UNUSUAL_CANVAS_WIDTH` / `UNUSUAL_CANVAS_HEIGHT`: a declared canvas dimension falls outside the sane `100-1920` band. Usually a sign you hardcoded a size; effects should read `ctx.canvas.width`/`ctx.canvas.height` per frame instead, since the daemon canvas defaults to 640×480 but is configurable.
 
 ## "hypercolor dev has been removed"
 
@@ -168,7 +168,7 @@ A clean `build` plus `validate` is the contract. If both pass, every check on th
 
 ## Quick reference
 
-```mermaid
+{% mermaid() %}
 graph TD
   A[bunx hypercolor build] -->|no canvas/effect/face call| B[no effect definitions registered]
   A -->|reads audio without flag| C[missing audio: true]
@@ -178,6 +178,6 @@ graph TD
   E -->|ok| G[bunx hypercolor install]
   G -->|local path| H[hypercolor effects rescan]
   G -->|--daemon| I[appears immediately]
-```
+{% end %}
 
 For the authoring CLI flags behind these commands, see [SDK CLI reference](@/effects/sdk-cli-reference.md).

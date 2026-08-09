@@ -4,7 +4,7 @@ description = "Tier 1/Tier 2 OKLCH tables for both themes and the drift-from-can
 weight = 10
 +++
 
-The Hypercolor docs theme runs **Luminary** — the same design system as the web UI, ported to Zola/SCSS. Tokens are the contract that makes a theme swap a single attribute flip and keeps both dark and light modes internally consistent.
+The Hypercolor docs theme runs **Luminary**, the same design system as the web UI, ported to Zola/SCSS. Tokens are the contract that makes a theme swap a single attribute flip and keeps both dark and light modes internally consistent.
 
 The authoritative source of token values is the CSS, not this page. When this page and the CSS disagree, fix this page.
 
@@ -27,14 +27,14 @@ Tier 1  Primitive    Raw OKLCH values. Constant across themes.
                      Components never reference these directly.
 
 Tier 2  Semantic     Intent-mapped tokens. Swapped per theme via [data-theme].
-                     Components reference these — var(--surface-base) not var(--color-void-1).
+                     Components reference these: var(--surface-base) not var(--color-void-1).
 
 Tier 3  Utilities    Tailwind utility classes in the app (bg-surface-base, text-fg-primary).
                      In the docs theme, components reference Tier 2 CSS vars directly;
                      there is no Tailwind build step.
 ```
 
-Theme switching is a single attribute on `<html>`: `data-theme="dark"` (default) or `data-theme="light"`. The docs theme stores the preference in `localStorage` under the key `theme`. The app uses `hc-theme` — these are not shared.
+Theme switching is a single attribute on `<html>`: `data-theme="dark"` (default) or `data-theme="light"`. The docs theme stores the preference in `localStorage` under the key `theme`. The app uses `hc-theme`; these are not shared.
 
 ---
 
@@ -44,7 +44,7 @@ Theme switching is a single attribute on `<html>`: `data-theme="dark"` (default)
 
 Two six-step ramps, both carrying a violet undertone (hue 280) so the chrome never reads as dead gray. `void` serves dark surfaces; `cloud` serves light.
 
-Chroma falls as lightness rises — deep surfaces carry more violet, bright surfaces almost none. This is intentional: the dark UI reads rich, the light UI reads clean.
+Chroma falls as lightness rises: deep surfaces carry more violet, bright surfaces almost none. This is intentional: the dark UI reads rich, the light UI reads clean.
 
 | Step | `--color-void-N` (dark) | `--color-cloud-N` (light) |
 |------|-------------------------|---------------------------|
@@ -124,7 +124,7 @@ Base font size is `112.5%` (18px). Mono runs with ligatures off (`font-feature-s
 
 ## Tier 2: Semantic tokens
 
-Tier 2 tokens are the ones components actually use. Each is defined in both theme blocks — that symmetry is what makes a theme swap a single attribute flip rather than a re-skin.
+Tier 2 tokens are the ones components actually use. Each is defined in both theme blocks; that symmetry is what makes a theme swap a single attribute flip rather than a re-skin.
 
 ### Surfaces (both themes)
 
@@ -141,7 +141,7 @@ Surfaces map the neutral ramps to elevation intent. In dark mode each step is br
 
 ### Text (both themes)
 
-Never pure white or pure black — always a violet-tinted near value.
+Never pure white or pure black; always a violet-tinted near value.
 
 | Token | Dark | Light |
 |-------|------|-------|
@@ -255,21 +255,21 @@ Surfaces (both themes), text (both themes), accent (both themes), glass bg/borde
 
 ### Known drift areas
 
-**Radii.** The canonical values are `2/4/6/8px`. An earlier docs theme used `6/10/14/20px`. The `_variables.scss` now reflects the canonical values — if you see softer corners on any component, the component is applying its own radius rather than reading the token.
+**Radii.** The canonical values are `2/4/6/8px`. An earlier docs theme used `6/10/14/20px`. The `_variables.scss` now reflects the canonical values; if you see softer corners on any component, the component is applying its own radius rather than reading the token.
 
-**Border opacities.** Dark mode: white at 10/16/22%. Light mode: black at 10/16/24%. Earlier versions had 6/10/16 (dark) and 6/10/18 (light) — both too faint. The canonical CSS is the source of truth.
+**Border opacities.** Dark mode: white at 10/16/22%. Light mode: black at 10/16/24%. Earlier versions had 6/10/16 (dark) and 6/10/18 (light), both too faint. The canonical CSS is the source of truth.
 
 **Light-mode status tokens.** The light block must define all four status tokens with darkened values for contrast on bright surfaces. If only the dark values are defined, light-mode callouts inherit values that fail contrast requirements.
 
-**Inline hardcoded `oklch()` in component SCSS.** Any `oklch()` value in `docs/sass/*.scss` that is not behind a `var()` does not swap with the theme. These should be routed through the appropriate Tier 2 token. The most common leak is cyan `oklch(0.88 0.18 175)` appearing in component rules — see [`@/theme/accent-discipline.md`](@/theme/accent-discipline.md) for the full audit checklist.
+**Inline hardcoded `oklch()` in component SCSS.** Any `oklch()` value in `docs/sass/*.scss` that is not behind a `var()` does not swap with the theme. These should be routed through the appropriate Tier 2 token. The most common leak is cyan `oklch(0.88 0.18 175)` appearing in component rules; see [`@/theme/accent-discipline.md`](@/theme/accent-discipline.md) for the full audit checklist.
 
-**Storage key separation.** The app uses `hc-theme` in `localStorage`; the docs site uses `theme`. Do not claim they share state — they do not.
+**Storage key separation.** The app uses `hc-theme` in `localStorage`; the docs site uses `theme`. Do not claim they share state; they do not.
 
 ---
 
 ## Using tokens in the docs theme
 
-Reference Tier 2 tokens via `var()` in SCSS partials. Never inline a raw `oklch()` value in a component rule — it will not swap with the theme and will create a parity regression.
+Reference Tier 2 tokens via `var()` in SCSS partials. Never inline a raw `oklch()` value in a component rule; it will not swap with the theme and will create a parity regression.
 
 ```scss
 // Correct
@@ -279,7 +279,7 @@ Reference Tier 2 tokens via `var()` in SCSS partials. Never inline a raw `oklch(
   color: var(--text-primary);
 }
 
-// Wrong — does not swap with theme, hardcodes dark values
+// Wrong: does not swap with theme, hardcodes dark values
 .my-component {
   background: oklch(0.130 0.018 280);
   border: 1px solid oklch(1 0 0 / 0.10);
@@ -307,7 +307,7 @@ Every new component must be tested in both themes before merge. See the contribu
 
 ## Related
 
-- [`@/theme/accent-discipline.md`](@/theme/accent-discipline.md) — the purple-only chrome rule, de-cyan audit, and semantic vs chrome decision table
-- [`@/theme/contributing.md`](@/theme/contributing.md) — how to add a styled component without drifting from canonical
-- [`@/theme/_index.md`](@/theme/_index.md) — overview of the docs Luminary port
+- [`@/theme/accent-discipline.md`](@/theme/accent-discipline.md): the purple-only chrome rule, de-cyan audit, and semantic vs chrome decision table
+- [`@/theme/contributing.md`](@/theme/contributing.md): how to add a styled component without drifting from canonical
+- [`@/theme/_index.md`](@/theme/_index.md): overview of the docs Luminary port
 - Canonical source: `docs/DESIGN-SYSTEM.md` in the repository root (the design intent guide; when it conflicts with the CSS, fix the guide)

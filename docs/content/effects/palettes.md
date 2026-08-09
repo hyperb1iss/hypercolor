@@ -20,7 +20,7 @@ console.log(paletteNames());
 // ['SilkCircuit', 'Cyberpunk', 'Vaporwave', 'Synthwave', ...]
 ```
 
-Inspect a single entry — stops, mood, accent, background — with `getPalette()`:
+Inspect a single entry (stops, mood, accent, background) with `getPalette()`:
 
 ```typescript
 import { getPalette } from "hypercolor";
@@ -89,7 +89,7 @@ palette: combo("Palette", ["SilkCircuit", "Aurora", "Fire"]);
 The key name `palette` is **not** magic. Naming a control `palette` does nothing on its own. Only `paletteControl()` flips the flag. If your color sampling silently returns plain strings or your shader index never moves, this is almost always the cause: you reached for `combo()` or a raw array when you meant `paletteControl()`.
 {% end %}
 
-`paletteControl(label, values, opts?)` accepts the same options as `combo()` — `default`, `tooltip`, `group`, `uniform` — so you keep grouping and a non-first default without losing the behavior.
+`paletteControl(label, values, opts?)` accepts the same options as `combo()` (`default`, `tooltip`, `group`, `uniform`), so you keep grouping and a non-first default without losing the behavior.
 
 ## Palettes in canvas effects
 
@@ -114,7 +114,7 @@ export default canvas(
 
 `pal(t)` returns `rgb(...)`; `pal(t, alpha)` returns `rgba(...)` with the given alpha when alpha is below 1. The runtime caches one `PaletteFn` per selected palette name, so switching the dropdown swaps functions without rebuilding the LUT it has already seen.
 
-When you need a function bound to a fixed palette outside the control flow — a hardcoded background ramp, a secondary accent — build one with `createPaletteFn()`:
+When you need a function bound to a fixed palette outside the control flow (a hardcoded background ramp, a secondary accent), build one with `createPaletteFn()`:
 
 ```typescript
 import { createPaletteFn } from "hypercolor";
@@ -200,14 +200,14 @@ graph LR
 
 Interpolating in Oklab instead of raw sRGB is what keeps mid-tones clean. A straight RGB lerp between two saturated hues dips through a muddy gray midpoint and wobbles in perceived brightness; Oklab keeps lightness and chroma even across the transition. That matters more on LEDs than on a screen, where a washed-out midpoint reads as a dead spot in the animation.
 
-The cost is a few milliseconds on first use to convert stops and fill 256 entries. After that the LUT is cached forever and every sample is a clamp plus an array index — effectively free. For the deeper LED color reasoning behind these choices, see [Color science for RGB LEDs](@/effects/color-science.md).
+The cost is a few milliseconds on first use to convert stops and fill 256 entries. After that the LUT is cached forever and every sample is a clamp plus an array index, effectively free. For the deeper LED color reasoning behind these choices, see [Color science for RGB LEDs](@/effects/color-science.md).
 
 ## Designing your own palettes
 
 Custom palettes live in `sdk/shared/palettes.json` (monorepo workspaces only for now; standalone-workspace custom palettes aren't wired up yet). A few rules earn their keep on real hardware:
 
 - **Traverse saturated colors.** A ramp that passes through a low-saturation gray midpoint looks muddy on LEDs even with Oklab smoothing. Keep chroma up across the whole stop sequence.
-- **Avoid the yellow-orange washout band.** Hues roughly in the 30–90° arc tend to read as bright white on LEDs. For warmth, route through red and orange like `Ember` or `Lava` rather than landing on pure yellow.
+- **Avoid the yellow-orange washout band.** Hues roughly in the 30-90° arc tend to read as bright white on LEDs. For warmth, route through red and orange like `Ember` or `Lava` rather than landing on pure yellow.
 - **Keep a dark `background`.** Every entry declares one, and the built-ins are all near-black. Effects that paint a small bright region over a dark surround out-punch effects that flood the whole canvas at medium saturation.
 - **Pick four to six stops.** Fewer can look abrupt; more tends to introduce wobble in the interpolated ramp.
 
@@ -234,4 +234,4 @@ Everything lives inside the chosen palette, so the effect inherits its mood auto
 
 ## Where palettes fit
 
-Palettes are one piece of the control surface. For the full control vocabulary — shorthand inference, every factory, groups, the `speed` magic, and presets — see the [controls reference](@/effects/controls.md). For authoring canvas and shader effects end to end, see [TypeScript effects](@/effects/typescript-effects.md) and [GLSL effects](@/effects/glsl-effects.md).
+Palettes are one piece of the control surface. For the full control vocabulary (shorthand inference, every factory, groups, the `speed` magic, and presets), see the [controls reference](@/effects/controls.md). For authoring canvas and shader effects end to end, see [TypeScript effects](@/effects/typescript-effects.md) and [GLSL effects](@/effects/glsl-effects.md).

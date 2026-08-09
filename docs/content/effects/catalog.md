@@ -1,6 +1,6 @@
 +++
 title = "Effect catalog"
-description = "Browse the Hypercolor effect library from the CLI, REST API, web UI, or an MCP agent — counts, categories, filters, and a visual gallery."
+description = "Browse the Hypercolor effect library from the CLI, REST API, web UI, or an MCP agent: counts, categories, filters, and a visual gallery."
 weight = 190
 +++
 
@@ -8,10 +8,10 @@ The catalog is whatever the daemon currently has loaded. Browse it live with `hy
 
 ![The Hypercolor effects browser](/img/ui/effects.webp)
 
-Two effect families ship out of the box. Eleven native effects are compiled into the daemon (`crates/hypercolor-core/src/effect/builtin/`), and roughly forty-seven SDK effects build from `sdk/src/effects/` into self-contained HTML. Those numbers move as the library grows, so the catalog is the source of truth, not a count pinned in a doc. Query the daemon to see what you actually have.
+Two effect families ship out of the box. Eleven native effects are compiled into the daemon (`crates/hypercolor-core/src/effect/builtin/`), and forty-six SDK effects build from `sdk/src/effects/` into self-contained HTML, alongside seven display faces from `sdk/src/faces/`. Those numbers move as the library grows, so the catalog is the source of truth, not a count pinned in a doc. Query the daemon to see what you actually have.
 
 {% callout(type="info") %}
-Effect counts drift as the library grows and as you install your own work. Never hardcode a total — ask the daemon. `hypercolor effects list -o json` returns the full set with a `pagination` block, and the web UI shows the live count beside the search box.
+Effect counts drift as the library grows and as you install your own work. Never hardcode a total; ask the daemon. `hypercolor effects list -o json` returns the full set with a `pagination` block, and the web UI shows the live count beside the search box.
 {% end %}
 
 ## Browse from the CLI
@@ -74,7 +74,7 @@ Each entry in `items` is an effect summary with this shape:
 }
 ```
 
-The `runnable` field matters when you build tooling on top of the catalog. An effect can be registered but not runnable on the current build — GLSL shader effects authored for the future native lane report `runnable: false` until that path ships, and the daemon refuses to apply them. Filter on `runnable` before offering an effect to a user. The `source` field tells you the rendering path: `html` (SDK and raw HTML effects rendered through Servo), `native` (a compiled-in Rust renderer), or `shader` (the future GPU lane, not runnable today).
+The `runnable` field matters when you build tooling on top of the catalog. An effect can be registered but not runnable on the current build: GLSL shader effects authored for the future native lane report `runnable: false` until that path ships, and the daemon refuses to apply them. Filter on `runnable` before offering an effect to a user. The `source` field tells you the rendering path: `html` (SDK and raw HTML effects rendered through Servo), `native` (a compiled-in Rust renderer), or `shader` (the future GPU lane, not runnable today).
 
 `GET /api/v1/effects/{id}` returns full detail for a single effect, including its control definitions and any presets. Reach for it when you want to render a controls panel or validate a parameter before applying.
 
@@ -84,15 +84,15 @@ Effects carry a category for discovery and filtering. The canonical taxonomy liv
 
 | Category | What lives here |
 |---|---|
-| `ambient` | Slow, set-and-forget — aurora, breathing, gradient |
-| `audio` | Music-reactive — spectrum, beat pulse, waveform |
-| `generative` | Algorithmic and mathematical — voronoi, fractals, cellular automata |
-| `particle` | Physics simulations — fire, meteors, bubbles |
-| `scenic` | Environmental compositions — cyberpunk city, underwater |
-| `interactive` | Input-responsive — keystroke ripple, heatmap |
-| `fun` | Playful and seasonal — corner hunt, snowfall, dragonfire |
-| `source` | Live feeds and sampled surfaces — web pages, cameras, screen capture |
-| `utility` | Functional — solid color, off, system monitor |
+| `ambient` | Slow, set-and-forget: aurora, breathing, gradient |
+| `audio` | Music-reactive: spectrum, beat pulse, waveform |
+| `generative` | Algorithmic and mathematical: voronoi, fractals, cellular automata |
+| `particle` | Physics simulations: fire, meteors, bubbles |
+| `scenic` | Environmental compositions: cyberpunk city, underwater |
+| `interactive` | Input-responsive: keystroke ripple, heatmap |
+| `fun` | Playful and seasonal: corner hunt, snowfall, dragonfire |
+| `source` | Live feeds and sampled surfaces: web pages, cameras, screen capture |
+| `utility` | Functional: solid color, off, system monitor |
 | `display` | Full-fidelity HTML display faces for LCD surfaces |
 
 {% callout(type="warning") %}
@@ -114,7 +114,7 @@ An agent driving Hypercolor reads the catalog with the read-only `list_effects` 
 }
 ```
 
-The companion `set_effect` tool takes a `query` that accepts an exact name, a partial match, or a natural-language description ("something with northern lights", "calm blue waves") and returns the matched effect with a confidence score. The canonical agent loop is read state, discover options with `list_effects`, then apply with `set_effect`. The MCP server is off by default — enable it in the daemon's `[mcp]` config before an agent can reach the catalog.
+The companion `set_effect` tool takes a `query` that accepts an exact name, a partial match, or a natural-language description ("something with northern lights", "calm blue waves") and returns the matched effect with a confidence score. The canonical agent loop is read state, discover options with `list_effects`, then apply with `set_effect`. The MCP server is off by default; enable it in the daemon's `[mcp]` config before an agent can reach the catalog.
 
 ## Visual gallery
 
@@ -138,7 +138,7 @@ The web UI renders each effect as a live, animated tile, which is the best way t
 
 ## Where effects come from
 
-```mermaid
+{% mermaid() %}
 graph LR
   N[Native Rust<br/>builtin/] --> R[Effect registry]
   S[SDK effects<br/>sdk/src/effects] --> R
@@ -147,7 +147,7 @@ graph LR
   R --> REST[GET /api/v1/effects]
   R --> UI[Web UI browser]
   R --> MCP[list_effects tool]
-```
+{% end %}
 
 The eleven native effects are part of the daemon binary. The SDK effects build from TypeScript and GLSL sources into HTML artifacts. Effects you author land in the daemon's library directory and join the same registry after a rescan. Every browsing surface reads that one registry, so the catalog stays consistent no matter how you query it.
 

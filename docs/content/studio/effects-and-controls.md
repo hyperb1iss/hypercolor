@@ -15,8 +15,8 @@ This page covers picking an effect for a zone, the live control panel, media pla
 
 Effects live inside layers, and layers live inside zones. To add one, open the zone's composition panel (click the now-playing chip on the Stage) and use **Add layer**. The picker opens with two tabs:
 
-- **Effect** — the runnable effect catalog, filtered to what fits the surface you selected.
-- **Media** — uploaded images and video from your Media library.
+- **Effect**: the runnable effect catalog, filtered to what fits the surface you selected.
+- **Media**: uploaded images and video from your Media library.
 
 Search filters as you type. Click an effect to add it as a layer in the selected zone.
 
@@ -30,9 +30,9 @@ The catalog spans the native built-in effects compiled into the daemon plus the 
 
 The zone you have selected in Studio is also the app-wide *apply target*. That means a quick-apply from the dashboard, the sidebar player, or the command palette lands in the zone you are composing, not on some global default. The target is one of:
 
-- **Primary** — the default zone, used when nothing else is selected.
-- A named **zone** — the LED zone currently focused in Studio.
-- **All zones** — applies the effect to every LED zone in the active scene at once.
+- **Default zone**: used when nothing else is selected (`ApplyTarget::Primary` in the Rust enum).
+- A named **zone**: the LED zone currently focused in Studio.
+- **All zones**: applies the effect to every LED zone in the active scene at once.
 
 Selecting a screen or the Unassigned entry is not a valid apply target, so the target falls back to Primary. For the whole picture of how zones and scenes compose, read [Zones](@/studio/zones.md) and [Scenes](@/studio/scenes.md).
 
@@ -64,9 +64,9 @@ This is the same shared control-patch session that powers display-face controls 
 
 A media layer (image or video from your library) carries playback settings instead of effect parameters. Three controls appear under the layer:
 
-- **Speed** — a `0.1×` to `4×` multiplier on playback rate, in `0.05` steps.
-- **Loop mode** — **Loop** (repeat from the start), **Ping-pong** (play forward then backward), or **Play once** (stop at the end).
-- **Auto-play** — whether the media starts playing as soon as the layer becomes active.
+- **Speed**: a `0.1×` to `4×` multiplier on playback rate, in `0.05` steps.
+- **Loop mode**: **Loop** (repeat from the start), **Ping-pong** (play forward then backward), or **Play once** (stop at the end).
+- **Auto-play**: whether the media starts playing as soon as the layer becomes active.
 
 Unlike effect controls, media playback edits rewrite the layer through the standard layer update rather than the debounced control patch. Each change is a discrete, deliberate setting, so there is no slider-drag stream to coalesce.
 
@@ -84,8 +84,8 @@ The section only appears for effects that actually consume screen input, so a no
 
 ## Where to go next
 
-- [Layers](@/studio/layers.md) — stack effects and media, blend modes, opacity, reorder, per-layer health.
-- [Zones](@/studio/zones.md) — partition your hardware into the canvas regions effects target.
-- [Now playing & transport](@/studio/now-playing-transport.md) — the per-zone now-playing rows and pause/resume.
-- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md) — build a second zone and apply different effects to each.
-- [Effect controls reference](@/effects/controls.md) — how effect authors define the control schema this panel renders.
+- [Layers](@/studio/layers.md): stack effects and media, blend modes, opacity, reorder, per-layer health.
+- [Zones](@/studio/zones.md): partition your hardware into the canvas regions effects target.
+- [Now playing & transport](@/studio/now-playing-transport.md): the per-zone now-playing rows and pause/resume.
+- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a second zone and apply different effects to each.
+- [Effect controls reference](@/effects/controls.md): how effect authors define the control schema this panel renders.

@@ -4,8 +4,6 @@ description = "The Protocol contract, zerocopy structs, CommandBuffer, encode_fr
 weight = 30
 +++
 
-# Adding a HAL driver
-
 This page walks through adding a USB HID device driver to `hypercolor-hal`, from protocol
 research through a finished, tested implementation. The guide uses the Razer driver as its
 reference implementation; the exact files live in

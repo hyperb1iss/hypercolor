@@ -8,7 +8,7 @@ template = "page.html"
 The authoring CLI ships inside `hypercolor` and runs from a scaffolded effect workspace. It compiles your TypeScript and GLSL into self-contained HTML artifacts, validates them, and installs them so the daemon can pick them up. This page is the exhaustive reference for every command, flag, exit code, and environment variable.
 
 {% callout(type="warning") %}
-This is the **authoring** CLI — `hypercolor` resolved from your effect workspace, used to build and ship effects. It is a different binary from the **system** CLI (`hypercolor`, installed alongside the daemon) that talks to the running daemon to list devices, apply effects, and manage scenes. The system CLI lives in [its own reference](@/api/cli.md). When this page says `bunx hypercolor build`, it means the workspace tool, never the daemon client.
+This is the **authoring** CLI: `hypercolor` resolved from your effect workspace, used to build and ship effects. It is a different binary from the **system** CLI (`hypercolor`, installed alongside the daemon) that talks to the running daemon to list devices, apply effects, and manage scenes. The system CLI lives in [its own reference](@/api/cli.md). When this page says `bunx hypercolor build`, it means the workspace tool, never the daemon client.
 {% end %}
 
 ## Invocation
@@ -26,7 +26,7 @@ bunx hypercolor build
 bun run packages/core/src/cli.ts build
 ```
 
-The bin name is `hypercolor` and resolves through the workspace's `hypercolor` dependency. The companion scaffolder is a separate package, `create-hypercolor`, invoked as `create-hypercolor-effect` — covered in its own section below.
+The bin name is `hypercolor` and resolves through the workspace's `hypercolor` dependency. The companion scaffolder is a separate package, `create-hypercolor`, invoked as `create-hypercolor-effect` and covered in its own section below.
 
 Run with no command, `--help`, or `help` to print usage:
 
@@ -49,9 +49,9 @@ Commands:
 
 {% mermaid() %}
 graph TD
-    ADD["add — scaffold an effect"] --> BUILD["build — compile to HTML"]
-    BUILD --> VALIDATE["validate — check artifacts"]
-    VALIDATE --> INSTALL["install — ship to the daemon or user dir"]
+    ADD["add: scaffold an effect"] --> BUILD["build: compile to HTML"]
+    BUILD --> VALIDATE["validate: check artifacts"]
+    VALIDATE --> INSTALL["install: ship to the daemon or user dir"]
 {% end %}
 
 The everyday loop is `add` to create an effect, `build` to compile it, `validate` to confirm the artifact is well-formed, then `install` to deliver it. The deprecated `dev` command is documented at the end so you know why it no longer works.
@@ -68,7 +68,7 @@ bunx hypercolor build --all
 bunx hypercolor build effects/my-effect/main.ts
 ```
 
-With no positional path and no `--all`, the CLI builds all discovered entrypoints anyway — an empty positional list implies `--all`.
+With no positional path and no `--all`, the CLI builds all discovered entrypoints anyway: an empty positional list implies `--all`.
 
 ### Flags
 
@@ -76,10 +76,11 @@ With no positional path and no `--all`, the CLI builds all discovered entrypoint
 |---|---|---|---|
 | `--all` | — | implied when no path given | Discover and build every entrypoint under each entry root. |
 | `--out` | `<dir>` | `dist` | Output directory for HTML artifacts, resolved against the cwd. |
-| `--entry-root` | `<dir>` | `effects` | Root to scan for `<id>/main.ts`. Repeatable — pass once per root. |
+| `--entry-root` | `<dir>` | `effects` | Root to scan for `<id>/main.ts`. Repeatable; pass once per root. |
 | `--workspace-root` | `<dir>` | `.` | Root that `--all` discovery walks from. |
 | `--sdk-alias-path` | `<file>` | (none) | Alias the `hypercolor` import to a source file. Used in-repo to point at `packages/core/src/index.ts`. |
 | `--minify` | — | off | Minify the bundled JS. |
+| `--prune` | — | off | Delete artifacts in `--out` with no matching entrypoint. Requires `--all`; the build errors otherwise. |
 | `--watch` | — | off | Rebuild on `.ts` / `.glsl` changes. `Ctrl-C` (SIGINT) stops the watchers. |
 
 `--entry-root` is repeatable, which is how the in-repo `build:effects` script builds effects and faces in one pass:
@@ -90,7 +91,8 @@ bun run hypercolor build --all \
   --entry-root src/effects \
   --entry-root src/faces \
   --out ../effects/hypercolor \
-  --sdk-alias-path packages/core/src/index.ts
+  --sdk-alias-path packages/core/src/index.ts \
+  --prune
 ```
 
 ### Output
@@ -103,12 +105,12 @@ On success each artifact prints a line: a `✓` for canvas and shader effects, a
 ```
 
 {% callout(type="danger") %}
-**The build enforces correctness — these fail the build, they do not warn.** If your source reads audio (`audio(`, `ctx.audio`, `getAudioData(`, or `engine.audio`) but the effect didn't set `audio: true` in its options, the build throws an audio-validation error. Every shader control except `asset` must have a matching `uniform i<Key>` in the GLSL, or the build reports missing control uniforms. And a module that never calls `canvas()`, `effect()`, or `face()` fails metadata extraction with "no effect definitions were registered." Treat a clean build as a real gate, not a formality.
+**The build enforces correctness: these fail the build, they do not warn.** If your source reads audio (`audio(`, `ctx.audio`, `getAudioData(`, or `engine.audio`) but the effect didn't set `audio: true` in its options, the build throws an audio-validation error. Every shader control except `asset` must have a matching `uniform i<Key>` in the GLSL, or the build reports missing control uniforms. And a module that never calls `canvas()`, `effect()`, or `face()` fails metadata extraction with "no effect definitions were registered." Treat a clean build as a real gate, not a formality.
 {% end %}
 
 ## `validate`
 
-Check one or more built HTML artifacts for the required render surface, title, and script. Validation runs automatically before every `install`, but you can run it standalone — for example, in CI against `dist/*.html`.
+Check one or more built HTML artifacts for the required render surface, title, and script. Validation runs automatically before every `install`, but you can run it standalone, for example in CI against `dist/*.html`.
 
 ```bash
 bunx hypercolor validate dist/*.html
@@ -189,7 +191,7 @@ hypercolor effects rescan
 The `--daemon` path POSTs each validated artifact as a multipart form (field `file`) to `/api/v1/effects/install` on the daemon base URL:
 
 {% api_endpoint(method="POST", path="/api/v1/effects/install") %}
-Upload a built HTML effect to the running daemon. Multipart form, field `file`, content type `text/html`. Returns the standard `{ data, meta }` envelope where `data` carries `{ name, path, controls, presets }` — the installed effect name, its on-disk path, and the count of controls and presets the daemon extracted.
+Upload a built HTML effect to the running daemon. Multipart form, field `file`, content type `text/html`. Returns the standard `{ data, meta }` envelope where `data` carries `{ name, path, controls, presets }`: the installed effect name, its on-disk path, and the count of controls and presets the daemon extracted.
 {% end %}
 
 On a successful daemon install the CLI prints the installed name and control count:
@@ -284,10 +286,10 @@ Options:
 ```
 
 {% callout(type="info") %}
-New workspaces depend on the published `hypercolor` package by default. To author against a local engine checkout, pass `--sdk-spec file:../hypercolor/sdk/packages/core` or set the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Bun's `link:` is not a drop-in for a relative path here — use `file:`.
+New workspaces depend on the published `hypercolor` package by default. To author against a local engine checkout, pass `--sdk-spec file:../hypercolor/sdk/packages/core` or set the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Bun's `link:` is not a drop-in for a relative path here; use `file:`.
 {% end %}
 
-The scaffolder runs interactively when the workspace name or template is missing, otherwise it builds the workspace directly. It initializes git and runs `bun install` by default; `--no-git` and `--no-install` opt out. When finished it prints the next command — `bun run build` for code templates, `bun run validate` for the raw `html` template.
+The scaffolder runs interactively when the workspace name or template is missing, otherwise it builds the workspace directly. It initializes git and runs `bun install` by default; `--no-git` and `--no-install` opt out. When finished it prints the next command: `bun run build` for code templates, `bun run validate` for the raw `html` template.
 
 ## Scaffolded package scripts
 
@@ -303,4 +305,4 @@ A fresh workspace defines the everyday commands as package scripts, so the typic
 
 ## Where to go next
 
-The [dev workflow](@/effects/dev-workflow.md) page walks the full build, validate, ship loop with screenshots and the live-preview story. The [setup](@/effects/setup.md) page covers installing Bun and wiring the `file:` SDK spec from scratch. For the runtime API the CLI compiles against, see the SDK API reference page in this section. And for the daemon-facing client this CLI is deliberately *not*, see the [system CLI reference](@/api/cli.md).
+The [dev workflow](@/effects/dev-workflow.md) page walks the full build, validate, ship loop with screenshots and the live-preview story. The [setup](@/effects/setup.md) page covers installing Bun and scaffolding a workspace from scratch, including the `file:` spec for local engine checkouts. For the runtime API the CLI compiles against, see the SDK API reference page in this section. And for the daemon-facing client this CLI is deliberately *not*, see the [system CLI reference](@/api/cli.md).

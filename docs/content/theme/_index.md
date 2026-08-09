@@ -5,14 +5,12 @@ weight      = 100
 sort_by     = "weight"
 +++
 
-# 💜 The docs run Luminary
-
 ![Hypercolor wordmark](/img/brand/lockup-horizontal-480.png)
 
 Luminary is Hypercolor's visual language: a dark scrim built around light, where
 restrained chrome lets the RGB effects take the stage. The web UI
 (`crates/hypercolor-ui/`) is its primary home, but the docs site draws from the
-same system — the same token philosophy, the same typefaces, the same accent
+same system: the same token philosophy, the same typefaces, the same accent
 discipline.
 
 This section is the public-facing slice of that story. The full canonical
@@ -35,8 +33,8 @@ In practice that means:
 
 - The same **typeface stack**: Satoshi (sans and display) and JetBrains Mono
   (code), loaded via Bunny Fonts (`fonts.bunny.net`), the same origin the app
-  uses. `--font-display` resolves to Satoshi; the Bunny request also pulls Sora
-  but it has no mapped token and docs do not use it.
+  uses. `--font-display` resolves to Satoshi. The app's request also pulls Sora;
+  the docs request does not, since Sora has no mapped docs token.
 - The same **OKLCH color vocabulary**: `--accent` is `oklch(0.65 0.30 320)`
   (electric purple); surfaces and text ride a low-chroma hue-280 neutral ramp
   while borders are translucent white (`oklch(1 0 0 / α)`); focus rings use cyan
@@ -47,7 +45,7 @@ In practice that means:
   `theme-toggle.js` script restores any stored preference and persists changes.
 - The same **ambient tinting** concept: `--ambient-hue` has no live canvas to
   sample in a static site, so it holds a static `320` (purple) fallback.
-  Scrollbars, edge glows, and border accents all honor it — if a future hero
+  Scrollbars, edge glows, and border accents all honor it; if a future hero
   shader writes the property, the whole surface reacts automatically.
 - The same **elevation-through-luminance** rule: higher surfaces are brighter,
   not deeper. Box-shadow is reserved for glows (energy) and the single
@@ -93,18 +91,20 @@ carried over?
 ## Font loading
 
 Fonts load from Bunny Fonts, the same privacy-respecting CDN the app uses. The
-`<head>` of `docs/templates/base.html` must carry these two `<link>` tags:
+`<head>` of `docs/templates/base.html` carries these two `<link>` tags:
 
 ```html
-<link rel="preconnect" href="https://fonts.bunny.net" />
-<link href="https://fonts.bunny.net/css?family=satoshi:400,500,600,700|jetbrains-mono:400,500,600,400i|sora:400,500,600" rel="stylesheet" />
+<link rel="preconnect" href="https://fonts.bunny.net">
+<link href="https://fonts.bunny.net/css?family=satoshi:400,500,600,700|jetbrains-mono:400,500,600,400i" rel="stylesheet">
 ```
 
-This is the exact URL from `crates/hypercolor-ui/index.html`, and it is the
-origin the `_variables.scss` font stack (`--font-display`, `--font-sans`)
-already assumes. Do not substitute Google Fonts or Inter. Keeping the request in
-sync with the app prevents typeface drift that makes the docs feel off-brand
-even when the tokens are correct.
+The app's request in `crates/hypercolor-ui/index.html` additionally pulls
+`sora:400,500,600`; that difference is deliberate, since Sora has no mapped
+token in the docs Sass. The Bunny origin is what the `_variables.scss` font
+stack (`--font-display`, `--font-sans`) already assumes. Do not substitute
+Google Fonts or Inter. Keeping the same origin and families as the app prevents
+typeface drift that makes the docs feel off-brand even when the tokens are
+correct.
 
 ---
 
@@ -130,7 +130,7 @@ Everything above is a summary. When in doubt, the source of truth is
   named-accent system (§4)
 - Typography scale and weight discipline (§5)
 - Surfaces and the elevation-through-luminance model (§6)
-- Glass / Prism layer rules — floating elements only (§7)
+- Glass / Prism layer rules, floating elements only (§7)
 - Motion system and animation budget (§8)
 - Ambient reactivity and the `--ambient-hue` contract (§9)
 - The logo and brand-stage treatment (§11)

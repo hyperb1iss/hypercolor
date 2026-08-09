@@ -1,6 +1,6 @@
 +++
 title = "Creating effects"
-description = "Scaffold a Hypercolor effect workspace, write your first effect, build, validate, and ship it to the daemon — no hardware required."
+description = "Scaffold a Hypercolor effect workspace, write your first effect, build, validate, and ship it to the daemon, no hardware required."
 weight = 20
 template = "page.html"
 +++
@@ -37,7 +37,7 @@ The TypeScript and GLSL lanes both ship through the SDK, so a Rust compiler is n
 required to author them. That is the path below.
 
 {% callout(type="info") %}
-The SDK is an early release (0.1.x) published to npm as
+The SDK is published to npm as
 [`hypercolor`](https://www.npmjs.com/package/hypercolor). Workspaces pull it from the
 registry by default; to author against a local engine checkout instead, pass
 `--sdk-spec file:../hypercolor/sdk/packages/core` or set the
@@ -62,7 +62,7 @@ The scaffolder accepts four templates and a few flags. Run
 | `--template <type>` | Starter template: `canvas`, `shader`, `face`, or `html` |
 | `--first <name>` | Name of the first effect (default `my-effect`) |
 | `--audio` | Include audio-reactive starter boilerplate |
-| `--sdk-spec <spec>` | Required while the SDK is pre-release. Point at a local checkout, or set `HYPERCOLOR_SDK_PACKAGE_SPEC` |
+| `--sdk-spec <spec>` | Override the `hypercolor` dependency spec, e.g. a `file:` path to a local engine checkout; `HYPERCOLOR_SDK_PACKAGE_SPEC` sets the same override |
 | `--no-git` / `--no-install` | Skip git init / `bun install` |
 
 Omit the name or template and the scaffolder drops into interactive prompts instead.
@@ -220,7 +220,7 @@ Build every effect in the workspace into self-contained HTML:
 bun run build
 ```
 
-Each effect compiles to a single file in `dist/` — the JavaScript bundle, any shader
+Each effect compiles to a single file in `dist/`: the JavaScript bundle, any shader
 source, palette tables, and metadata are all inlined. Display-face font controls
 can load selected Google Fonts at runtime unless capture mode disables remote
 fonts. The build also extracts `<meta>` tags the daemon reads for controls,
@@ -229,15 +229,15 @@ presets, and audio reactivity.
 {% callout(type="warning") %}
 If your draw function reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or
 `engine.audio`) you **must** set `audio: true` in the options object. The build fails
-hard otherwise with an audio-reactivity validation error — this flag is not cosmetic.
+hard otherwise with an audio-reactivity validation error; this flag is not cosmetic.
 The `--audio` scaffold flag wires it up for you. See
 [audio reactivity](@/effects/audio.md).
 {% end %}
 
 ## Validate
 
-Validation checks each HTML artifact for the three hard requirements — a render surface,
-a `<title>`, and a `<script>` — plus control sanity:
+Validation checks each HTML artifact for the three hard requirements (a render surface,
+a `<title>`, and a `<script>`) plus control sanity:
 
 ```bash
 bun run validate
@@ -331,7 +331,7 @@ you were watching drives the LEDs.
 
 Once your effect is installed, an AI agent can drive it over MCP. The shipped
 `list_effects` and `set_effect` tools discover and apply effects by name, and
-`get_status` reads current state first. MCP is **off by default** — enable it before
+`get_status` reads current state first. MCP is **off by default**; enable it before
 configuring a client. The Agents section covers MCP setup, the 16 tools, 5 resources,
 and 3 prompts in full.
 
@@ -360,16 +360,16 @@ new artifacts join `dist/`.
 
 ## Where to go next
 
-- [TypeScript canvas effects](@/effects/typescript-effects.md) — the canonical `canvas()`
-  authoring reference: lifecycle, stateful effects, palettes, composite modes.
-- [Controls](@/effects/controls.md) — every control factory, shorthand inference, groups,
+- [TypeScript canvas effects](@/effects/typescript-effects.md): the canonical `canvas()`
+  authoring reference covering lifecycle, stateful effects, palettes, and composite modes.
+- [Controls](@/effects/controls.md): every control factory, shorthand inference, groups,
   presets, and the `speed` magic name.
-- [Audio reactivity](@/effects/audio.md) — the full per-frame audio surface.
-- [GLSL shader effects](@/effects/glsl-effects.md) — WebGL2-via-Servo fragment shaders
+- [Audio reactivity](@/effects/audio.md): the full per-frame audio surface.
+- [GLSL shader effects](@/effects/glsl-effects.md): WebGL2-via-Servo fragment shaders
   and the control-to-uniform mapping.
-- Native Rust effects — the compiled-in `EffectRenderer` path lives in
+- Native Rust effects: the compiled-in `EffectRenderer` path lives in
   `crates/hypercolor-core/src/effect/builtin/`, registered via that crate's `mod.rs`.
-- [Color science](@/effects/color-science.md) — make colors that survive the trip to
+- [Color science](@/effects/color-science.md): make colors that survive the trip to
   real LEDs.
-- [Dev workflow](@/effects/dev-workflow.md) — the tight iterate-and-ship loop, watch
+- [Dev workflow](@/effects/dev-workflow.md): the tight iterate-and-ship loop, watch
   mode, and both install paths in depth.

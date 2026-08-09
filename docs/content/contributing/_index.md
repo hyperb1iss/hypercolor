@@ -10,10 +10,10 @@ Hypercolor is open source under Apache-2.0, and contributions are welcome across
 
 ## In this section
 
-- [Debugging](@/contributing/debugging.md) — diagnosing render pipeline, USB, and daemon issues
-- [Adding an effect](@/contributing/adding-an-effect.md) — TypeScript SDK and native Rust paths
-- [Adding a HAL driver](@/contributing/adding-a-driver.md) — USB/HID/SMBus protocol implementation
-- [Adding a network driver](@/contributing/adding-a-network-driver.md) — Hue, WLED, Govee, Nanoleaf and the driver-api boundary
+- [Debugging](@/contributing/debugging.md): diagnosing render pipeline, USB, and daemon issues
+- [Adding an effect](@/contributing/adding-an-effect.md): TypeScript SDK and native Rust paths
+- [Adding a HAL driver](@/contributing/adding-a-driver.md): USB/HID/SMBus protocol implementation
+- [Adding a network driver](@/contributing/adding-a-network-driver.md): Hue, WLED, Govee, Nanoleaf and the driver-api boundary
 
 ---
 
@@ -59,7 +59,7 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 | Command | What it does |
 |---|---|
 | `just build` | Debug build, all workspace crates |
-| `just build-preview` | Preview profile — runtime-tuned, no debug assertions |
+| `just build-preview` | Preview profile: runtime-tuned, no debug assertions |
 | `just release` | Full release bundle with binaries, assets, docs, and agent skills |
 | `just check` | Type-check without building |
 | `just test` | All workspace tests |
@@ -115,13 +115,13 @@ Every public type and function needs test coverage. When adding a feature, add a
 
 ### Comments
 
-Write a comment only when the why is non-obvious: a hidden constraint, a subtle invariant, or a workaround that would surprise a reader. Do not explain what the code does — well-named identifiers do that. Do not reference the current task or caller, and do not add comments that will rot as the code evolves. Those notes belong in the commit message, not the source.
+Write a comment only when the why is non-obvious: a hidden constraint, a subtle invariant, or a workaround that would surprise a reader. Do not explain what the code does; well-named identifiers do that. Do not reference the current task or caller, and do not add comments that will rot as the code evolves. Those notes belong in the commit message, not the source.
 
 ---
 
 ## Commit conventions
 
-Use [Conventional Commits](https://www.conventionalcommits.org/). Every commit gets a body — a bare subject line is not enough.
+Use [Conventional Commits](https://www.conventionalcommits.org/). Every commit gets a body; a bare subject line is not enough.
 
 ```
 feat(hal): add Corsair iCUE protocol driver
@@ -180,11 +180,11 @@ Before implementing any non-trivial module, check `docs/specs/` for a relevant n
 
 A good spec follows this structure:
 
-**1. Motivation** — what problem this solves and why now. One or two paragraphs. Reviewers need to agree on the problem before they can evaluate the solution.
+**1. Motivation**: what problem this solves and why now. One or two paragraphs. Reviewers need to agree on the problem before they can evaluate the solution.
 
-**2. Scope** — what is explicitly in and explicitly out. An out-of-scope list is as important as the in-scope list; it prevents scope creep during review and implementation.
+**2. Scope**: what is explicitly in and explicitly out. An out-of-scope list is as important as the in-scope list; it prevents scope creep during review and implementation.
 
-**3. Design** — types, traits, API surface, data model. This is the bulk of the document. Prefer actual Rust type sketches over prose descriptions of types.
+**3. Design**: types, traits, API surface, data model. This is the bulk of the document. Prefer actual Rust type sketches over prose descriptions of types.
 
 ```rust
 // Example: sketch the public surface, not the implementation
@@ -194,7 +194,7 @@ pub trait Protocol: Send + Sync {
 }
 ```
 
-**4. Wire format or protocol** (for driver specs) — byte-by-byte layout with field names, sizes, and byte order. Ambiguity here causes bugs that are hard to catch in testing because they only surface with real hardware.
+**4. Wire format or protocol** (for driver specs): byte-by-byte layout with field names, sizes, and byte order. Ambiguity here causes bugs that are hard to catch in testing because they only surface with real hardware.
 
 ```
 Offset  Size  Field
@@ -204,9 +204,9 @@ Offset  Size  Field
 3       3*N   rgb_data   (R G B per LED, row-major)
 ```
 
-**5. Implementation plan** — ordered steps, crate owners, test strategy. Break the work into pieces that each compile and pass tests independently. A plan that has to land all at once is a plan that blocks main.
+**5. Implementation plan**: ordered steps, crate owners, test strategy. Break the work into pieces that each compile and pass tests independently. A plan that has to land all at once is a plan that blocks main.
 
-**6. Open questions** — unresolved choices that need a decision before or during implementation. Capturing these in the spec surfaces them early, before they become blockers mid-implementation.
+**6. Open questions**: unresolved choices that need a decision before or during implementation. Capturing these in the spec surfaces them early, before they become blockers mid-implementation.
 
 ### Where specs live
 
@@ -245,7 +245,7 @@ Driver modules are organized by silicon or OEM family, not by brand. Rebranded S
 ## Pull request process
 
 1. Branch from `main`.
-2. Make focused changes — one logical change per PR.
+2. Make focused changes: one logical change per PR.
 3. Run the appropriate gate (`just verify` at minimum) and confirm it passes.
 4. Open a PR with a description that explains what changed and why. Link any relevant spec.
 5. Respond to review feedback. Do not squash until a maintainer asks.

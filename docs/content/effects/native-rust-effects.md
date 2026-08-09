@@ -21,17 +21,17 @@ Every built-in renderer lives in its own module under `crates/hypercolor-core/sr
 crates/hypercolor-core/src/effect/builtin/
   mod.rs            # registration: metadata table + renderer factory
   common.rs         # shared control/preset constructors, stable-id hashing
-  solid_color.rs    # Ambient   — solid, split, and checker diagnostics
-  gradient.rs       # Ambient   — Oklch gradient blending
-  rainbow.rs        # Ambient   — cycling hue sweep
-  breathing.rs      # Ambient   — sinusoidal brightness pulse
-  audio_pulse.rs    # Audio     — RMS + beat-reactive modulation
-  color_wave.rs     # Ambient   — traveling wavefront bands
-  color_zones.rs    # Ambient   — multi-zone color grid
-  screen_cast.rs    # Utility   — live screen crop
-  media_player.rs   # Source    — user media asset playback
-  calibration.rs    # Utility   — high-contrast layout patterns
-  web_viewport.rs   # (servo)   — embedded web page surface
+  solid_color.rs    # Ambient   - solid, split, and checker diagnostics
+  gradient.rs       # Ambient   - Oklch gradient blending
+  rainbow.rs        # Ambient   - cycling hue sweep
+  breathing.rs      # Ambient   - sinusoidal brightness pulse
+  audio_pulse.rs    # Audio     - RMS + beat-reactive modulation
+  color_wave.rs     # Ambient   - traveling wavefront bands
+  color_zones.rs    # Ambient   - multi-zone color grid
+  screen_cast.rs    # Utility   - live screen crop
+  media_player.rs   # Source    - user media asset playback
+  calibration.rs    # Utility   - high-contrast layout patterns
+  web_viewport.rs   # (servo)   - embedded web page surface
 ```
 
 Each module owns its renderer struct, its `EffectRenderer` impl, its `controls()` / `presets()` helpers, and a `metadata()` constructor that builds the registry entry.
@@ -126,7 +126,7 @@ fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas)
 Core methods: `Canvas::new`, `fill`, `set_pixel`, `get_pixel` (out-of-bounds reads return `Rgba::BLACK`), `pixels()`, `clear()`, `width()` / `height()`, and `sample` / `sample_nearest` / `sample_bilinear` for normalized `[0,1]` lookups.
 
 {% callout(type="warning") %}
-Color controls arrive as `ControlValue::Color([f32; 4])` in **linear** RGBA (0.0–1.0), not sRGB. The UI picker is sRGB; the API converts to linear before it reaches your renderer. Do your math in linear space with `RgbaF32`, then call `to_srgba()` to land sRGB u8 for the canvas. Blending or scaling in sRGB produces muddy, perceptually wrong color. There is no `scale_rgb` helper; multiply the `RgbaF32` fields directly.
+Color controls arrive as `ControlValue::Color([f32; 4])` in **linear** RGBA (0.0-1.0), not sRGB. The UI picker is sRGB; the API converts to linear before it reaches your renderer. Do your math in linear space with `RgbaF32`, then call `to_srgba()` to land sRGB u8 for the canvas. Blending or scaling in sRGB produces muddy, perceptually wrong color. There is no `scale_rgb` helper; multiply the `RgbaF32` fields directly.
 {% end %}
 
 ### Color types
@@ -148,7 +148,7 @@ Native effects see the Rust `AudioData` struct in **snake_case**. This differs f
 
 | Field | Type | Meaning |
 |---|---|---|
-| `rms_level` | `f32` | overall loudness, 0–1 |
+| `rms_level` | `f32` | overall loudness, 0-1 |
 | `peak_level` | `f32` | short-window peak |
 | `beat_detected` | `bool` | beat on this frame |
 | `beat_pulse` | `f32` | decaying envelope after a beat |

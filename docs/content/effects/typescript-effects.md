@@ -93,7 +93,7 @@ canvas("Fireflies", { count: num("Count", [10, 500], 120) }, () => {
 });
 ```
 
-The SDK detects which one you wrote from the function's `.length`. If that heuristic ever fights you — for example a factory that happens to declare a parameter — use the explicit form, which bypasses arity detection entirely:
+The SDK detects which one you wrote from the function's `.length`. If that heuristic ever fights you (for example a factory that happens to declare a parameter), use the explicit form, which bypasses arity detection entirely:
 
 ```typescript
 canvas.stateful("Fireflies", { count: num("Count", [10, 500], 120) }, () => {
@@ -104,7 +104,7 @@ canvas.stateful("Fireflies", { count: num("Count", [10, 500], 120) }, () => {
 });
 ```
 
-Use stateful when you need particles, history buffers, trail accumulators, color caches, or any data that has to live longer than one frame. Both shipped examples below — Fiberflies and Lava Lamp — are stateful: they keep particle arrays and a marching-squares grid alive across the whole run and only rebuild on resize.
+Use stateful when you need particles, history buffers, trail accumulators, color caches, or any data that has to live longer than one frame. Both shipped examples below, Fiberflies and Lava Lamp, are stateful: they keep particle arrays and a marching-squares grid alive across the whole run and only rebuild on resize.
 
 ## Lifecycle
 
@@ -355,10 +355,10 @@ Fiberflies bakes this in with an `ledSafeHue` helper that bends muddy yellow-gre
 
 ## Where to go next
 
-- [Controls](@/effects/controls.md) — every control factory, shorthand inference, magic names, and presets.
-- [Audio](@/effects/audio.md) — the full `AudioData` surface and reactive idioms.
-- [Palettes](@/effects/palettes.md) — the named palette registry and Oklab sampling.
-- [Dev workflow](@/effects/dev-workflow.md) — build, validate, and ship into the running daemon.
-- [GLSL effects](@/effects/glsl-effects.md) — the shader authoring path via `effect()`.
+- [Controls](@/effects/controls.md): every control factory, shorthand inference, magic names, and presets.
+- [Audio](@/effects/audio.md): the full `AudioData` surface and reactive idioms.
+- [Palettes](@/effects/palettes.md): the named palette registry and Oklab sampling.
+- [Dev workflow](@/effects/dev-workflow.md): build, validate, and ship into the running daemon.
+- [GLSL effects](@/effects/glsl-effects.md): the shader authoring path via `effect()`.
 
 The shipped library spans dozens of SDK canvas and shader effects under `sdk/src/effects/` alongside the compiled-in native renderers in `crates/hypercolor-core/src/effect/builtin/`. Browse those directories to see the full set, then scaffold your own with [Creating effects](@/effects/creating-effects.md).

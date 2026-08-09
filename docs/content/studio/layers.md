@@ -93,10 +93,10 @@ Expand the **Transform & Color** disclosure on a layer card to reshape and recol
 
 The remaining sliders fine-tune the layer:
 
-- **Brightness** — 0 to 4x, default 1.0. Below 1 dims, above 1 boosts.
-- **Saturation** — 0 to 4x, default 1.0. 0 is grayscale, above 1 is more vivid.
-- **Tint** — 0 to 1. How strongly a color tint is applied to the layer.
-- **Scale X / Scale Y** — 0.1 to 4x each, default 1.0. Stretch or shrink the source along one axis.
+- **Brightness**: 0 to 4x, default 1.0. Below 1 dims, above 1 boosts.
+- **Saturation**: 0 to 4x, default 1.0. 0 is grayscale, above 1 is more vivid.
+- **Tint**: 0 to 1. How strongly a color tint is applied to the layer.
+- **Scale X / Scale Y**: 0.1 to 4x each, default 1.0. Stretch or shrink the source along one axis.
 
 Every adjustment saves the moment you release the slider, guarded so a write never clobbers a change made elsewhere (see [optimistic concurrency](#how-edits-are-saved) below).
 
@@ -126,10 +126,10 @@ If a layer is **Missing** or **Failed**, the Stage also raises a surface-level d
 
 By default a new layer lands on the one zone you are editing. In a **multi-zone** scene, the picker grows an **Add to** row so you can drop the same layer onto several zones in one action:
 
-- **This surface** — the selected zone only. The default.
-- **All zones** — every LED zone in the scene.
-- **All screens** — every display-face zone.
-- **Whole scene** — every zone, lights and screens alike.
+- **This surface**: the selected zone only. The default.
+- **All zones**: every LED zone in the scene.
+- **All screens**: every display-face zone.
+- **Whole scene**: every zone, lights and screens alike.
 
 The scope selector only appears when there is genuinely more than one place to send a layer. In a single-zone scene it stays hidden, and a scope that would target nothing (for example **All screens** in a scene with no screens) is dropped from the list.
 
@@ -147,7 +147,7 @@ This is the same optimistic-concurrency model the rest of Studio uses. For the d
 
 ## Where to go next
 
-- [Effects and controls](@/studio/effects-and-controls.md) — the live effect-control panel that lives inside an effect layer.
-- [Zones](@/studio/zones.md) — creating and managing the zones each stack belongs to.
-- [Layouts](@/studio/layouts.md) — the spatial canvas that maps a zone's composite onto real devices.
-- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md) — building a second zone and composing across both.
+- [Effects and controls](@/studio/effects-and-controls.md): the live effect-control panel that lives inside an effect layer.
+- [Zones](@/studio/zones.md): creating and managing the zones each stack belongs to.
+- [Layouts](@/studio/layouts.md): the spatial canvas that maps a zone's composite onto real devices.
+- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): building a second zone and composing across both.

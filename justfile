@@ -739,7 +739,7 @@ sdk-install:
 sdk-build:
     cd sdk && bun run build
 
-# Start SDK dev server with HMR
+# Watch-rebuild the SDK packages on change
 sdk-dev:
     cd sdk && bun run dev
 

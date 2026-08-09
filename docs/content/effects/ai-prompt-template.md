@@ -94,7 +94,7 @@ The fastest way to get house-style output is to hand the model a working effect 
 
 ```text
 Match the structure and quality bar of this existing effect. Use it as a
-reference for control grouping, palette usage, and idle behavior — do not
+reference for control grouping, palette usage, and idle behavior; do not
 copy its visuals.
 
 <paste the contents of sdk/src/effects/lava-lamp/main.ts>
@@ -193,4 +193,4 @@ Flag any washout risk, hardcoded dimensions, missing idle behavior, or
 binary-beat-to-brightness mapping.
 ```
 
-For deeper edits — fixing a flagged washout, restructuring controls, porting a shader — hand the same file to the model with the reviewer's notes and iterate. The build and validate gates stay your ground truth at every step; if the artifact stops compiling, the review does not matter yet.
+For deeper edits (fixing a flagged washout, restructuring controls, porting a shader), hand the same file to the model with the reviewer's notes and iterate. The build and validate gates stay your ground truth at every step; if the artifact stops compiling, the review does not matter yet.

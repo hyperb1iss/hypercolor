@@ -4,10 +4,8 @@ description = "How to implement a Hypercolor network driver: the driver-api boun
 weight = 40
 +++
 
-# Adding a network driver
-
 Network drivers live in their own crates behind the stable `hypercolor-driver-api` boundary.
-They depend on `hypercolor-driver-api` and `hypercolor-types` — never on `hypercolor-core`
+They depend on `hypercolor-driver-api` and `hypercolor-types`, never on `hypercolor-core`
 directly. The `hypercolor-network` crate holds only the registry and capability-dispatch
 shell; protocol logic stays in each driver crate. This page walks through the full lifecycle
 of adding a new one, using WLED and Govee as concrete reference implementations.
@@ -27,13 +25,13 @@ hypercolor-types ──▶ hypercolor-driver-api ──▶ your-driver-crate
 
 Never reach into `hypercolor-core` from a driver crate. Core depends on `driver-api`, not
 the reverse. The `hypercolor-network` crate is only the `DriverModuleRegistry` orchestration
-layer — it does not own any protocol logic.
+layer; it does not own any protocol logic.
 
 ### Key types at a glance
 
 | Type | Module | Role |
 |---|---|---|
-| `DriverModule` | `driver_api::module` | Capability root — the entry point the host sees |
+| `DriverModule` | `driver_api::module` | Capability root: the entry point the host sees |
 | `DriverDescriptor` | `driver_api::descriptor` | Static ID, display name, transport kind, schema version |
 | `DeviceBackend` | `driver_api::backend` | Hot-path trait: `discover`, `connect`, `disconnect`, `write_colors` |
 | `DiscoveryCapability` | `driver_api::driver_discovery` | Async scan returning `DiscoveryResult` |
@@ -68,7 +66,7 @@ Set `supports_discovery` to `true` if you implement `DiscoveryCapability`. Set
 ## Implementing DriverModule
 
 `DriverModule` is the capability root. Implement it on a struct that carries any
-compile-time configuration the module needs — for example, whether mDNS browsing is enabled.
+compile-time configuration the module needs, for example whether mDNS browsing is enabled.
 
 ```rust
 use hypercolor_driver_api::{
@@ -163,7 +161,7 @@ impl DeviceBackend for AcmeBackend {
 
 `DeviceLifecyclePolicy::default()` gives a 5-second connect timeout with inline execution
 and retry on timeout. Override `lifecycle_policy` only when your connect call blocks for
-several seconds and you need `ConnectExecution::Background` — for example, a DTLS handshake
+several seconds and you need `ConnectExecution::Background`, for example a DTLS handshake
 like Hue's Entertainment API.
 
 ---
@@ -273,7 +271,7 @@ impl PairingCapability for GoveeDriverModule {
             .ok_or_else(|| anyhow::anyhow!("API key is required."))?;
         self.cloud_client(api_key.clone())?
             .list_v1_devices()
-            .await?;                          // validation call — fails fast on bad key
+            .await?;                          // validation call, fails fast on bad key
         host.credentials()
             .set_json(DESCRIPTOR.id, "account", serde_json::json!({ "api_key": api_key }))
             .await?;
@@ -342,7 +340,7 @@ protocol override so individual controllers can run E1.31 while the rest use DDP
 E1.31 is the sACN (Streaming ACN) protocol used in professional lighting. It spreads pixels
 across DMX universes: one universe carries 512 channels, mapping to 170 RGB pixels or 127
 RGBW pixels. Use E1.31 only when integrating with an existing sACN workflow. For most
-setups, DDP is preferred — it is simpler and carries a full strip in fewer packets.
+setups, DDP is preferred; it is simpler and carries a full strip in fewer packets.
 
 ### Govee LAN UDP
 
@@ -407,7 +405,7 @@ restarts. The `snapshot` method serializes whatever you need into a
 `DriverHost::discovery_state().load_cached_json(...)` on the next boot.
 
 WLED serializes `probe_ips` and `probe_targets`. Govee serializes `probe_devices`. Keep the
-cached data compact — it is loaded synchronously at discovery startup.
+cached data compact; it is loaded synchronously at discovery startup.
 
 ```rust
 #[async_trait::async_trait]
@@ -463,7 +461,7 @@ matches `DRIVER_API_SCHEMA_VERSION`. A mismatch returns
 
 ## Tests
 
-Tests live in `crates/hypercolor-driver-<name>/tests/` — not inline `#[cfg(test)]` blocks.
+Tests live in `crates/hypercolor-driver-<name>/tests/`, not inline `#[cfg(test)]` blocks.
 Name each file after the capability being tested: `discovery_tests.rs`, `pairing_tests.rs`,
 and so on.
 

@@ -49,7 +49,7 @@ The sidebar shows up to **three** zone rows. Any zones beyond that fold into a *
 
 ### Pause and resume are per-zone, and they say so
 
-This is the important guarantee. In a multi-zone scene, pausing a zone never silently stops only the primary zone while the others keep rendering. Each row's toggle acts on its own zone, and the title text spells it out: hovering reads **Pause Living Room** or **Resume Desk**, naming the exact zone.
+This is the important guarantee. In a multi-zone scene, pausing a zone never silently stops only the primary zone while the others keep rendering. Each row's toggle acts on its own zone, and the title text spells it out: hovering reads **Pause Keyboard** or **Resume Desk**, naming the exact zone.
 
 The center transport Pause / Resume button follows the same rule. In a multi-zone scene it acts on the **focused zone** (the primary zone when nothing else is focused) and labels itself accordingly, so it never fires blind.
 
@@ -92,7 +92,7 @@ The transport surfaces are a thin, honest read-and-steer layer over the shared a
 
 ## Related pages
 
-- [Studio overview](@/studio/overview.md) — the Scene, Zone, Layers, and Layout model.
-- [Zones](@/studio/zones.md) — create, color, enable, and partition your rig.
-- [Effects and controls](@/studio/effects-and-controls.md) — applying effects to a zone and tuning them live.
-- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md) — build a second zone end to end.
+- [Studio overview](@/studio/overview.md): the Scene, Zone, Layers, and Layout model.
+- [Zones](@/studio/zones.md): create, color, enable, and partition your rig.
+- [Effects and controls](@/studio/effects-and-controls.md): applying effects to a zone and tuning them live.
+- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a second zone end to end.

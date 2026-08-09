@@ -13,16 +13,17 @@ root, so a single import line reaches all of it:
 import { canvas, effect, face, num, paletteControl, audio, lerp } from 'hypercolor'
 ```
 
-The package is `hypercolor` version `0.1.0`. It is pre-release and **not yet
-published to npm** — scaffolded workspaces resolve it through a local `file:` spec
-pointing at this checkout. See [Setup](@/effects/setup.md) for how that wires up.
+The package is `hypercolor`, published to npm (currently the 0.3 line).
+Scaffolded workspaces pull it from the registry by default; pass
+`--sdk-spec file:...` to the scaffolder to resolve against a local checkout
+instead. See [Setup](@/effects/setup.md) for how that wires up.
 
 {% callout(type="info") %}
 The narrative guides cover the common surface in depth:
 [TypeScript canvas effects](@/effects/typescript-effects.md),
 [Controls](@/effects/controls.md), [Palettes](@/effects/palettes.md),
 [Audio](@/effects/audio.md), [GLSL effects](@/effects/glsl-effects.md), and
-[Display faces](@/effects/display-faces.md). This page is the flat index — reach
+[Display faces](@/effects/display-faces.md). This page is the flat index: reach
 for it when you want every signature in one place, including the math, layout,
 motion, and gauge helper families the guides do not enumerate.
 {% end %}
@@ -31,7 +32,7 @@ motion, and gauge helper families the guides do not enumerate.
 
 The three entry points. Each one **registers** the effect as a side effect of the
 call and returns `void`. You `export default` the call, but the runtime value of
-that default export is `undefined` — registration happens through a global the
+that default export is `undefined`; registration happens through a global the
 build harness reads.
 
 ### canvas
@@ -68,7 +69,7 @@ type DrawFn = (
 type FactoryFn = () => DrawFn
 ```
 
-`time` is in **seconds**. The canvas never auto-clears — your draw function owns
+`time` is in **seconds**. The canvas never auto-clears: your draw function owns
 clearing (opaque `fillRect` for clean frames, semi-transparent for trails). Read
 `ctx.canvas.width` / `ctx.canvas.height` every frame; the daemon renders at
 640×480 by default but the size is user-configurable.
@@ -77,7 +78,7 @@ clearing (opaque `fillRect` for clean frames, semi-transparent for trails). Read
 interface CanvasFnOptions {
     description?: string
     author?: string
-    audio?: boolean      // required when you read audio — enforced at build time
+    audio?: boolean      // required when you read audio (enforced at build time)
     screen?: boolean     // opt into screen-zone sampling
     category?: string
     builtinId?: string
@@ -104,8 +105,8 @@ function effect(
 ```
 
 GLSL fragment-shader effects. These run as **WebGL2 inside Servo**, not as a native
-wgpu lane — the SDK bundles the GLSL into an HTML/WebGL artifact. There is no
-runnable GPU shader path in the engine today; treat wgpu as future work. See
+wgpu lane; the SDK bundles the GLSL into an HTML/WebGL artifact. There is no
+runnable native wgpu shader path in the engine today; treat that as future work. See
 [GLSL effects](@/effects/glsl-effects.md) for the uniform contract.
 
 Each control maps to a uniform named `i` + PascalCase of the key (`trailLength` →
@@ -129,7 +130,7 @@ interface EffectFnOptions {
 
 interface ShaderContext {
     readonly controls: Record<string, unknown>
-    readonly audio: AudioData | null   // getter — pulls fresh data each access
+    readonly audio: AudioData | null   // getter, pulls fresh data each access
     readonly gl: WebGL2RenderingContext
     readonly program: WebGLProgram
     readonly width: number
@@ -170,7 +171,7 @@ type PresetDef = { name: string; description?: string; controls: Record<string, 
 ## Control factories
 
 Every factory returns a `ControlSpec`. You can pass shorthand instead and the SDK
-infers the type — see [Controls](@/effects/controls.md) for the inference rules.
+infers the type; see [Controls](@/effects/controls.md) for the inference rules.
 
 ```typescript
 num(label, range: readonly [number, number], defaultValue: number, opts?: NumOptions): ControlSpec<'number'>
@@ -236,7 +237,7 @@ Exported control-definition types (the resolved shapes the runtime consumes):
 import { audio } from 'hypercolor'
 // `audio` is getAudioData re-exported. Both names work.
 
-function getAudioData(): AudioData          // pull model — call inside draw, every frame
+function getAudioData(): AudioData          // pull model: call inside draw, every frame
 function getScreenZoneData(): ScreenZoneData // 28×20 = 560-point screen grid
 
 const FFT_SIZE = 200       // frequency / frequencyRaw / frequencyWeighted length
@@ -244,12 +245,12 @@ const MEL_BANDS = 24       // melBands / melBandsNormalized length
 const PITCH_CLASSES = 12   // chromagram length (C..B)
 ```
 
-`AudioData` is a wide per-frame struct. Key fields (all `0–1` unless noted):
+`AudioData` is a wide per-frame struct. Key fields (all `0-1` unless noted):
 `level`, `levelRaw` (dB), `bass`, `mid`, `treble`, `beat`, `beatPulse`
-(decaying — prefer this over raw `beat`), `beatPhase`, `beatConfidence`, `tempo`
+(decaying, prefer this over raw `beat`), `beatPhase`, `beatConfidence`, `tempo`
 (BPM), `frequency` (200, `Float32Array`), `frequencyRaw` (200, `Int8Array`),
 `frequencyWeighted` (200), `melBands` / `melBandsNormalized` (24), `chromagram`
-(12), `dominantPitch` (0–11), `harmonicHue` (0–360), `chordMood` (−1 minor → +1
+(12), `dominantPitch` (0-11), `harmonicHue` (0-360), `chordMood` (−1 minor → +1
 major), `brightness` (spectral centroid), `spectralFlux`, `onset`, `onsetPulse`,
 `bassEnv` / `midEnv` / `trebleEnv`, `swell`, `momentum`. See
 [Audio](@/effects/audio.md) for the full table and idioms.
@@ -257,7 +258,7 @@ major), `brightness` (spectral centroid), `spectralFlux`, `onset`, `onsetPulse`,
 {% callout(type="info") %}
 The TypeScript field names here (camelCase, `tempo`, `frequency`) differ from the
 **Rust** `AudioData` used by native effects (snake_case, `bpm`, `spectrum`).
-Shaders also see only a subset — no `chromagram`, `melBands`, or `dominantPitch`
+Shaders also see only a subset: no `chromagram`, `melBands`, or `dominantPitch`
 uniforms. See [Native Rust effects](@/effects/native-rust-effects.md) for the
 Rust-side names.
 {% end %}
@@ -284,6 +285,84 @@ smoothValue(currentValue: number, previousValue: number, smoothing?: number): nu
 hslToRgb(h: number, s: number, l: number): [number, number, number]
 ```
 
+## Input
+
+Interactive keyboard and mouse input. Capture and per-frame aggregation happen in
+the Rust daemon; the runtime injects state plus ordered, capture-timestamped
+events into `engine.keyboard` / `engine.mouse` when the effect declares
+`input: true` in its options. Without the declaration no input is routed. The
+browser preview can inject input on its own, so an effect can look interactive
+in the preview without the host ever granting it input; the lifecycle fields
+below tell you what is actually routed.
+
+```typescript
+function getInputData(): InputData   // pull model: call inside draw, every frame
+```
+
+`getInputData()` returns a typed per-frame snapshot read from the injected
+globals, with silent idle fallbacks when running outside the daemon (all-false
+availability, empty keyboard, idle mouse). The snapshot carries:
+
+- `keyboard: KeyboardInputState`: `keys` (currently held, including alias forms
+  like `"A"` and `"KeyA"`), `recent` (newly pressed since last frame), and
+  `events` (ordered `KeyInputEvent`s).
+- `mouse: MouseInputState`: `x`/`y` in platform pixels, `nx`/`ny` normalized to
+  `[0, 1]`, `down`, `buttons`, `wheel` (accumulated notches this frame),
+  `velocity`, `mode`, and ordered `events` (`MouseInputEvent`s).
+- Lifecycle fields from `InputAvailability`: `declared`, `routed`, `healthy`,
+  `fresh`, and `degraded`.
+- `dropped`: count of input events dropped this frame due to overflow.
+
+{% callout(type="warning") %}
+`InputData.available` is **deprecated**. It now means exactly
+`routed && healthy`, and the alias will be removed in SDK 0.4.0. Read the
+explicit lifecycle fields (`declared`, `routed`, `healthy`, `fresh`,
+`degraded`) instead.
+{% end %}
+
+Events carry a monotonic capture timestamp (`atMs`), a strictly increasing
+`seq`, the producing `source` device, an optional backend-neutral
+`physicalCode`, and a `repeatCount` collapsing equivalent ordered events.
+`KeyInputEvent` adds `key` and `state` (`KeyEventState`:
+`'pressed' | 'released' | 'repeated'`); `MouseInputEvent` covers both button
+events (`button`, `state`) and wheel events (`delta` in notches). `MouseMode`
+is `'none' | 'absolute' | 'virtual'`.
+
+`EngineKeyboard` and `EngineMouse` describe the injected globals themselves,
+including the helper methods the runtime pre-installs: `isKeyDown(key)`,
+`wasKeyPressed(key)`, `consumePressedKeys()` on the keyboard, and
+`isDown(button?)` on the mouse.
+
+### Input helpers
+
+Timestamp-driven building blocks computed from the event stream, so results are
+independent of frame rate.
+
+```typescript
+class PressEnvelope   // per-key attack/decay envelope tracker
+pressEnvelope(options?: PressEnvelopeOptions): PressEnvelope
+// feed(events, nowMs?) each frame; value(key) and total() return [0, 1] envelopes.
+// Defaults: attackMs 20, decayMs 350. A re-press replaces the live envelope.
+
+class TypingRate      // sliding-window key-press rate tracker
+typingRate(options?: TypingRateOptions): TypingRate
+// feed(events, nowMs?) each frame; rate() returns presses per second.
+// Default windowMs is 2000.
+
+wasdVector(keys: Record<string, boolean>): { x: number; y: number }
+// Movement vector from WASD and arrow keys, each axis in [-1, 1],
+// canvas convention (positive y is down).
+
+keyToGridPosition(key: string): { x: number; y: number } | null
+// Approximate QWERTY grid position normalized to [0, 1]; null for unknown keys.
+// A layout projection, not physical-device truth: real key-to-LED mapping
+// needs the device's own topology.
+```
+
+Exported input types: `InputData`, `EngineKeyboard`, `EngineMouse`,
+`KeyboardInputState`, `MouseInputState`, `MouseMode`, `KeyInputEvent`,
+`MouseInputEvent`, `KeyEventState`, `PressEnvelopeOptions`, `TypingRateOptions`.
+
 ## Palettes
 
 ```typescript
@@ -294,7 +373,7 @@ samplePalette(name: string, t: number): [number, number, number]
 samplePaletteCSS(name: string, t: number, alpha?: number): string
 
 type PaletteFn = (t: number) => string
-type PaletteEntry  // { stops, background, ... } — the registry shape
+type PaletteEntry  // { stops, background, ... }, the registry shape
 ```
 
 Palette interpolation is **Oklab** (256-entry LUT, cached per name). An unknown
@@ -477,7 +556,7 @@ debug(...args: unknown[]): void
 printStartupBanner(): void
 type HSLColor; type RGBColor; type UpdateFunction
 
-// Initialization (called for you by canvas/effect/face — rarely needed directly)
+// Initialization (called for you by canvas/effect/face; rarely needed directly)
 initializeEffect(initFunction: () => void, options?: InitOptions): void
 type InitializationMode = 'immediate' | 'deferred' | 'metadata-only'
 interface InitOptions { mode?: InitializationMode; instance?: unknown }
@@ -491,7 +570,8 @@ in normal authoring.
 
 - Build and ship the artifact: [Dev workflow](@/effects/dev-workflow.md).
 - The authoring CLI flags (`build` / `validate` / `install` / `add`) are covered in
-  the dev-workflow and setup pages; it is distinct from the system `hypercolor` CLI
-  documented under [the API section](@/api/cli.md).
-- Drive a running daemon from an agent over the CLI or MCP — see the Agents & MCP
-  section once it lands, or the MCP server notes under the API section.
+  the [SDK CLI reference](@/effects/sdk-cli-reference.md); it is distinct from the
+  system `hypercolor` CLI documented under [the API section](@/api/cli.md).
+- Drive a running daemon from an agent over the CLI or MCP: see
+  [Agents & MCP](@/agents/_index.md), or the MCP server notes under the API
+  section.

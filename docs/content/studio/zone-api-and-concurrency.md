@@ -40,12 +40,16 @@ List user-created scenes. The ephemeral Default scene is omitted from the list.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/scenes") %}
-Create a scene. The new scene is seeded server-side with a Primary Default zone
+Create a scene. The new scene is seeded with a default zone (`ZoneRole::Primary`)
 holding the current device selection.
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/active") %}
 Get the active scene, including the Default scene when it is active.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/scenes/{id}") %}
+Get a single scene by id or name.
 {% end %}
 
 {% api_endpoint(method="PUT", path="/api/v1/scenes/{id}") %}
@@ -215,7 +219,7 @@ zone and scene routes and `parse_if_match_layers_version` for layer routes. A
 non-integer that is not `*` is a `400 Bad Request`.
 
 ```http
-PATCH /api/v1/scenes/living-room/zones/4f1c.../  HTTP/1.1
+PATCH /api/v1/scenes/desk-rig/zones/4f1c.../  HTTP/1.1
 If-Match: "7"
 Content-Type: application/json
 
@@ -234,7 +238,7 @@ carrying the authoritative current value, plus an `ETag` of that value:
 Layer routes use the same shape with `"error": "layers_version mismatch"`.
 
 {% callout(type="warning") %}
-`If-Match` is optional on the wire — a request with no `If-Match` header skips
+`If-Match` is optional on the wire: a request with no `If-Match` header skips
 the precondition entirely and applies unconditionally. Studio always sends one
 for structural edits. Send `*` only when you deliberately want a last-writer-wins
 overwrite.
@@ -343,7 +347,7 @@ id, and the full in-progress `SpatialLayout`:
 ```json
 {
   "type": "zone_layout_preview",
-  "scene_id": "living-room",
+  "scene_id": "desk-rig",
   "zone_id": "4f1c0e2a-...",
   "layout": { "canvas_width": 640, "canvas_height": 480, "zones": [ ... ] }
 }
@@ -361,7 +365,7 @@ override with a companion message:
 ```json
 {
   "type": "zone_layout_preview_clear",
-  "scene_id": "living-room",
+  "scene_id": "desk-rig",
   "zone_id": "4f1c0e2a-..."
 }
 ```
@@ -373,9 +377,16 @@ save, `update_zone_layout` clears the preview for that zone explicitly.
 ### The binary preview frame
 
 The rendered preview streams back on the `zone_preview` channel as a
-`ZonePreviewFrame`, tag `0x08`, with a 46-byte header. Subscribe and configure it
-through the standard channel-config mechanism; the daemon caps it at 60 fps. The
-encoded header, little-endian, is:
+`ZonePreviewFrame`. Two frame layouts share the channel, and the encoder selects
+between them per frame: the legacy layout (tag `0x08`, 46-byte header, `u16`
+dimensions) is used while both dimensions fit in a `u16`, and the wide layout
+(`WIDE_ZONE_PREVIEW_FRAME_TAG`, tag `0x0C`, 50-byte header, `u32` dimensions)
+takes over when either dimension exceeds `u16::MAX`
+(`crates/hypercolor-leptos-ext/src/ws/preview.rs`). Decoders dispatch on the
+tag byte. Subscribe and configure the channel through the standard
+channel-config mechanism; the daemon caps it at 60 fps.
+
+The legacy header, little-endian:
 
 ```text
 [0]      u8    tag = 0x08
@@ -387,6 +398,20 @@ encoded header, little-endian, is:
 [43..45] u16   height
 [45]     u8    pixel format  (0 = rgb, 1 = rgba, 2 = jpeg)
 [46..]         payload
+```
+
+The wide header is identical through the id fields, then widens the dimensions:
+
+```text
+[0]      u8    tag = 0x0C
+[1..5]   u32   frame_number
+[5..9]   u32   timestamp_ms
+[9..25]  16B   scene_id   (UUID bytes)
+[25..41] 16B   zone_id    (UUID bytes)
+[41..45] u32   width
+[45..49] u32   height
+[49]     u8    pixel format  (0 = rgb, 1 = rgba, 2 = jpeg)
+[50..]         payload
 ```
 
 Because both the scene id and the zone id travel in the header, a client
@@ -416,8 +441,8 @@ sequenceDiagram
 
 ## Related
 
-- [Studio architecture](@/studio/architecture.md) — the client-side context and
+- [Studio architecture](@/studio/architecture.md): the client-side context and
   provider map that drives these calls.
-- [REST API](@/api/rest.md) — the full daemon REST surface.
-- [WebSocket API](@/api/websocket.md) — channels, subscription, the text
+- [REST API](@/api/rest.md): the full daemon REST surface.
+- [WebSocket API](@/api/websocket.md): channels, subscription, the text
   control protocol, and the binary frame layouts including `zone_preview`.

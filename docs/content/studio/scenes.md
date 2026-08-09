@@ -86,11 +86,11 @@ The apply-target has three forms:
 
 | Target | What it means |
 | --- | --- |
-| Primary | The scene's Default LED zone. This is the fallback whenever no specific zone is selected. |
+| Default zone | The scene's Default LED zone (`ApplyTarget::Primary` in the Rust enum). This is the fallback whenever no specific zone is selected. |
 | A specific zone | Effects land in that one zone. |
 | All zones | Effects fan out to every LED zone in the scene. |
 
-A Screen or the synthetic Unassigned entry is never used as an apply-target. Selecting one leaves the current LED-zone target in place, and a target that points at a zone the active scene no longer has falls back to Primary, so a quick-apply always has a defined destination. Zones, the Default zone, and the Unassigned entry are covered in detail on the [Zones](@/studio/zones.md) page.
+A Screen or the synthetic Unassigned entry is never used as an apply-target. Selecting one leaves the current LED-zone target in place, and a target that points at a zone the active scene no longer has falls back to the Default zone, so a quick-apply always has a defined destination. Zones, the Default zone, and the Unassigned entry are covered in detail on the [Zones](@/studio/zones.md) page.
 
 ## Where scenes live in the bigger picture
 

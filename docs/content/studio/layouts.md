@@ -22,7 +22,7 @@ A scene has one shared canvas. Each zone partitions it and owns a layout that pl
 {% mermaid() %}
 graph TD
     Scene["Scene (one active)"] --> Zone["Zone (a canvas partition)"]
-    Zone --> Layout["Layout — the zone's output placements"]
+    Zone --> Layout["Layout: the zone's output placements"]
     Layout --> O1["Output (device segment)"]
     Layout --> O2["Output (device segment)"]
     Layout --> O3["Output (device segment)"]
@@ -49,7 +49,7 @@ Every box on the canvas is a direct-manipulation handle.
 - **Drag** anywhere on a box to move it. Selected outputs move together.
 - **Resize** by grabbing one of the four corner handles that appear on a selected box. Toggle the aspect-ratio link in the properties panel to keep width and height proportional while you drag.
 - **Rotate** with the rotation slider in the properties panel below the canvas, or type an exact degree value.
-- **Scale** uniformly with the scale slider — a quick way to grow or shrink without touching width and height directly.
+- **Scale** uniformly with the scale slider, a quick way to grow or shrink without touching width and height directly.
 
 Ring and arc shapes always resize as perfect circles regardless of the canvas aspect ratio, so a fan ring never squashes into an ellipse while you drag.
 
@@ -112,7 +112,7 @@ If the output is not on the canvas, the sampler has no position to read for it, 
 
 ## Where to go next
 
-- [Zones](@/studio/zones.md) — how a zone partitions the canvas and why each one owns a layout.
-- [Device grouping](@/studio/device-grouping.md) — adding device outputs to a zone so they appear on its canvas.
-- [Layers](@/studio/layers.md) — stacking the effects, faces, and media that paint the canvas you are mapping onto.
-- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md) — building a second zone and splitting outputs across zones end to end.
+- [Zones](@/studio/zones.md): how a zone partitions the canvas and why each one owns a layout.
+- [Device grouping](@/studio/device-grouping.md): adding device outputs to a zone so they appear on its canvas.
+- [Layers](@/studio/layers.md): stacking the effects, faces, and media that paint the canvas you are mapping onto.
+- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): building a second zone and splitting outputs across zones end to end.

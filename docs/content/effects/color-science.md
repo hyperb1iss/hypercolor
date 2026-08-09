@@ -242,7 +242,7 @@ That blend is not a naive sRGB lerp. The compositor decodes each pixel from sRGB
 Author each layer as a self-contained image. If you want glow where two layers overlap, set the upper layer to **Add** or **Screen** rather than baking the combination into a single effect. The compositor does the linear-light math for you, and the result stays correct as zone opacity changes.
 {% end %}
 
-Native Rust effects receive color controls already converted to linear RGBA (0.0–1.0), not sRGB. The UI picker is sRGB and the daemon converts before delivery, so convert back to sRGB bytes only when you write the final canvas. See the native effect authoring path for the full color-type vocabulary and transfer functions.
+Native Rust effects receive color controls already converted to linear RGBA (0.0-1.0), not sRGB. The UI picker is sRGB and the daemon converts before delivery, so convert back to sRGB bytes only when you write the final canvas. See the native effect authoring path for the full color-type vocabulary and transfer functions.
 
 ## Practical tips
 
@@ -266,9 +266,9 @@ The 80/20 rule: one color dominates, the other accents. The most admired setups 
 
 ## See also
 
-- [Palettes](@/effects/palettes.md) — the built-in palette registry and its Oklab interpolation.
-- [Audio API](@/effects/audio.md) — drive color and brightness from spectrum data.
-- [GLSL shader effects](@/effects/glsl-effects.md) — color math in WebGL2 fragment shaders (rendered via Servo, not wgpu).
-- [TypeScript canvas effects](@/effects/typescript-effects.md) — the `canvas()` authoring surface these techniques target.
+- [Palettes](@/effects/palettes.md): the built-in palette registry and its Oklab interpolation.
+- [Audio API](@/effects/audio.md): drive color and brightness from spectrum data.
+- [GLSL shader effects](@/effects/glsl-effects.md): color math in WebGL2 fragment shaders (rendered via Servo, not wgpu).
+- [TypeScript canvas effects](@/effects/typescript-effects.md): the `canvas()` authoring surface these techniques target.
 
 Building a compiled-in native renderer instead? The native Rust effect path lives in `crates/hypercolor-core/src/effect/builtin/`, registered through that module's `mod.rs`. It ships the real color vocabulary (`Rgba`, `RgbaF32`, `Oklab`, `Oklch`) with working sRGB-to-linear transfer functions, so the linear-light rules on this page apply directly in code.

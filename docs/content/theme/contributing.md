@@ -12,11 +12,11 @@ The docs theme is a Luminary port. Every component you add follows the same rule
 
 Tokens in the docs theme mirror the app's three-tier architecture.
 
-**Tier 1 — primitives.** Raw OKLCH values in `crates/hypercolor-ui/tokens/primitives.css`. Never reference these in component CSS. They are constant across themes.
+**Tier 1, primitives.** Raw OKLCH values in `crates/hypercolor-ui/tokens/primitives.css`. Never reference these in component CSS. They are constant across themes.
 
-**Tier 2 — semantic.** Intent-mapped tokens in `crates/hypercolor-ui/tokens/semantic.css`, mirrored into `docs/sass/_variables.scss`. Components use these. They swap per theme under `[data-theme="dark"]` and `[data-theme="light"]`.
+**Tier 2, semantic.** Intent-mapped tokens in `crates/hypercolor-ui/tokens/semantic.css`, mirrored into `docs/sass/_variables.scss`. Components use these. They swap per theme under `[data-theme="dark"]` and `[data-theme="light"]`.
 
-**Tier 3 — component.** Classes built on Tier 2 in `docs/sass/_components.scss`. In the Leptos app, Tailwind v4 generates utility aliases from `@theme` declarations; in the docs SCSS theme, components call `var(--surface-base)` directly. The discipline is the same either way.
+**Tier 3, component.** Classes built on Tier 2 in `docs/sass/_components.scss`. In the Leptos app, Tailwind v4 generates utility aliases from `@theme` declarations; in the docs SCSS theme, components call `var(--surface-base)` directly. The discipline is the same either way.
 
 Theme switching happens at Tier 2 only. Tier 1 is constant; Tier 3 is theme-agnostic. When you add a component, stay in Tier 2 and Tier 3.
 
@@ -73,11 +73,11 @@ Every other palette color serves a specific semantic purpose:
 
 - **Callouts** use status tokens (`--status-warning`, `--status-error`, `--status-info`) or `--color-cyan` for tips. These encode meaning, not decoration.
 - **API method badges** use per-method colors (GET cyan, POST green, PUT yellow, DELETE red, PATCH purple). That encoding mirrors HTTP semantics.
-- **Focus rings** are cyan in dark mode, purple in light mode. Both come from `--glow-focus` — it is a token, and it swaps. Cyan focus in dark is the one correct, intended use of cyan on chrome.
+- **Focus rings** are cyan in dark mode, purple in light mode. Both come from `--glow-focus`; it is a token, and it swaps. Cyan focus in dark is the one correct, intended use of cyan on chrome.
 
 If you reach for `--color-cyan` on a navigational or structural element, stop. That is a chrome leak.
 
-**Wrong — cyan on chrome:**
+**Wrong (cyan on chrome):**
 
 ```scss
 .nav-link:hover {
@@ -86,7 +86,7 @@ If you reach for `--color-cyan` on a navigational or structural element, stop. T
 }
 ```
 
-**Correct — purple chrome:**
+**Correct (purple chrome):**
 
 ```scss
 .nav-link:hover {
@@ -145,15 +145,15 @@ The `@mixin glass` in `_variables.scss` applies `backdrop-filter: blur(12px) sat
 
 | Element | Treatment |
 |---|---|
-| Search modal | `@include glass-dense` — heavier blur over `--glass-bg-dense` tint |
-| Mobile sidebar drawer | `@include glass` — real blur when it floats over page content |
+| Search modal | `@include glass-dense`: heavier blur over `--glass-bg-dense` tint |
+| Mobile sidebar drawer | `@include glass`: real blur when it floats over page content |
 | Dropdowns, popovers, tooltips | `@include glass` |
 | Desktop sidebar | Solid `--surface-raised`. The sidebar is a primary surface, not floating. |
 | Cards and panels | Solid `--surface-overlay`. Same reason. |
 
 When in doubt, use the solid surface. Most panels that seem to want glass read better and render faster as solid raised surfaces.
 
-Under `prefers-reduced-motion`, the universal kill-switch in `_animations.scss` strips `backdrop-filter` from everything automatically. Glass components get this for free — no per-component opt-out needed.
+Under `prefers-reduced-motion`, the universal kill-switch in `_animations.scss` strips `backdrop-filter` from everything automatically. Glass components get this for free; no per-component opt-out needed.
 
 ---
 
@@ -198,7 +198,7 @@ Motion communicates an entrance, a state change, or feedback. It is never decora
 
 **Duration tokens:** `--duration-fast` (120ms), `--duration-normal` (200ms), `--duration-medium` (300ms), `--duration-slow` (400ms).
 
-**Stagger pattern for multi-item lists** — the "one orchestrated cascade per view":
+**Stagger pattern for multi-item lists**, the "one orchestrated cascade per view":
 
 ```scss
 .my-grid__item {
@@ -241,7 +241,7 @@ Any new continuous or entrance animation must be covered by `prefers-reduced-mot
 }
 ```
 
-The universal selector covers every keyframe automatically. You do not need a per-animation opt-out. If your component sets `backdrop-filter` on a sub-element that the universal rule might miss, add it to this block explicitly — but that should be rare.
+The universal selector covers every keyframe automatically. You do not need a per-animation opt-out. If your component sets `backdrop-filter` on a sub-element that the universal rule might miss, add it to this block explicitly, but that should be rare.
 
 Glass blur is also stripped here (`backdrop-filter: none !important`). Any component using `@include glass` gets that for free.
 
@@ -249,12 +249,12 @@ Glass blur is also stripped here (`backdrop-filter: none !important`). Any compo
 
 ## Adding a new token
 
-If your component needs a value that the current token set does not cover, add it to both theme blocks in `docs/sass/_variables.scss`. Never define a token only in dark or only in light — a missing light value falls through to the dark value and breaks theme parity.
+If your component needs a value that the current token set does not cover, add it to both theme blocks in `docs/sass/_variables.scss`. Never define a token only in dark or only in light; a missing light value falls through to the dark value and breaks theme parity.
 
 1. Add to `:root` (dark mode default) with an OKLCH value appropriate for a near-black surface.
 2. Add to `[data-theme="light"]` with the light-adapted value. For surfaces, higher lightness. For status colors, lower lightness for contrast on bright backgrounds (follow the pattern of `--status-success: oklch(0.55 0.18 155)` in light).
 3. Reference it as `var(--my-new-token)` in the component. Never inline the raw value.
-4. Do not add anything to `tailwind.config.js` — that file is documentation-only in the Leptos app (Tailwind v4 ignores it), and the docs theme does not use Tailwind at all.
+4. Do not add anything to `tailwind.config.js`; that file is documentation-only in the Leptos app (Tailwind v4 ignores it), and the docs theme does not use Tailwind at all.
 
 ---
 
@@ -283,7 +283,7 @@ Then toggle between dark and light via the theme button in the nav. Check:
 - Text contrast holds in light mode. Muted labels legible on near-black can drop too low on near-white.
 - Status colors (callout borders, API badge text) are visible. The `--status-*` tokens darken in light mode by design; inline OKLCH values do not adapt.
 - Glows are subtle, not overwhelming. Light mode glow tokens carry lower opacity; raw `rgba()` values do not adapt.
-- Focus rings are visible on every focusable element. The glow ring is cyan in dark, purple in light — both from `--glow-focus`.
+- Focus rings are visible on every focusable element. The glow ring is cyan in dark, purple in light, both from `--glow-focus`.
 
 Never call a component done in dark mode only.
 

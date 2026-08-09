@@ -1,6 +1,6 @@
 +++
 title = "Effects overview"
-description = "Build effects by reading. The authoring paths — TypeScript canvas, GLSL, native Rust, display faces — and when to pick each."
+description = "Build effects by reading. The authoring paths (TypeScript canvas, GLSL, native Rust, display faces) and when to pick each."
 sort_by = "weight"
 weight = 0
 template = "section.html"
@@ -26,7 +26,7 @@ Design for broad strokes. The maximum detail a strip can resolve is roughly `1 /
 Four paths, one canvas contract. The first two are the SDK's TypeScript surface, the third compiles into the daemon as Rust, and the fourth targets LCD display surfaces. There is a fifth escape hatch below for one-file ports.
 
 {% callout(type="info") %}
-The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor) (early 0.1.x release). Scaffold a workspace with `bun create hypercolor` — [setup](@/effects/setup.md) covers the details, including developing against a local engine checkout.
+The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor). Scaffold a workspace with `bun create hypercolor`; [setup](@/effects/setup.md) covers the details, including developing against a local engine checkout.
 {% end %}
 
 ### TypeScript canvas effects
@@ -42,7 +42,7 @@ A fragment shader runs per canvas pixel. Controls become uniforms automatically 
 These run as WebGL2 inside Servo, shipped as a self-contained HTML artifact. They are not a native GPU path.
 
 {% callout(type="warning") %}
-There is no runnable wgpu or SPIR-V shader lane today. `EffectSource::Shader` bails with a "not runnable yet" error, and requesting GPU effect-renderer acceleration falls back to CPU (`RenderAccelerationMode::Gpu` is rejected outright). Treat a native GPU compute path as future work. Every shader effect you ship runs as WebGL2 in Servo.
+There is no runnable wgpu or SPIR-V shader lane today. `EffectSource::Shader` bails with a "not runnable yet" error, and the effect-renderer lane downgrades `RenderAccelerationMode::Gpu` to CPU (the compositor's GPU lane is separate and does ship). Treat a native GPU shader-effect path as future work. Every shader effect you ship runs as WebGL2 in Servo.
 {% end %}
 
 Read [GLSL effects](@/effects/glsl-effects.md) for the uniform contract and LED-specific shader patterns.
@@ -81,7 +81,7 @@ graph TD
 
 Even the most ambitious effect starts with a workspace and a real build loop.
 
-- [Setup](@/effects/setup.md): install Bun, scaffold a workspace, wire the local `file:` SDK spec, and pick a template (`canvas`, `shader`, `face`, or `html`).
+- [Setup](@/effects/setup.md): install Bun, scaffold a workspace, and pick a template (`canvas`, `shader`, `face`, or `html`).
 - [Creating effects](@/effects/creating-effects.md): scaffold to first effect to build, with the canvas and shader shapes side by side.
 - [Dev workflow](@/effects/dev-workflow.md): the build, validate, install, and verify-in-the-running-daemon loop, plus the authoring CLI versus the system CLI.
 
@@ -103,5 +103,5 @@ Once you've picked a path, pair it with the deeper pages.
 Hypercolor ships a stack of native built-in effects compiled into the daemon (the `builtin/` set: `solid_color`, `gradient`, `rainbow`, `breathing`, `audio_pulse`, `color_wave`, `color_zones`, `screen_cast`, `media_player`, `calibration`, `web_viewport`, and friends) plus a large library of SDK HTML effects. Rather than memorize a count that moves every release, open the [catalog](@/effects/catalog.md) for the gallery, or hit `GET /api/v1/effects` on a running daemon to list exactly what's loaded.
 
 {% api_endpoint(method="GET", path="/api/v1/effects") %}
-List every effect the daemon knows about — native built-ins and installed HTML effects alike — wrapped in the standard `{ data, meta }` envelope. This is the source of truth for what you can apply right now. See the [REST reference](@/api/rest.md) for the full effects domain.
+List every effect the daemon knows about (native built-ins and installed HTML effects alike), wrapped in the standard `{ data, meta }` envelope. This is the source of truth for what you can apply right now. See the [REST reference](@/api/rest.md) for the full effects domain.
 {% end %}

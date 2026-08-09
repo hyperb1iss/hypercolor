@@ -69,7 +69,7 @@ bunx hypercolor build --all --minify
 The full flag set on `build`: `--all` (auto-discover `effects/<id>/main.ts`), `--watch`, `--minify`, `--out <dir>` (default `dist`), `--entry-root <dir>` (repeatable, default `effects`), `--workspace-root <dir>`, and `--sdk-alias-path <path>`.
 
 {% callout(type="tip") %}
-A successful build prints one line per artifact, for example `✓ aurora → dist/aurora.html (38.2 KB)`. Faces print a 💎 instead of a checkmark. If nothing prints, the build found no entrypoints — check that your effect lives at `effects/<id>/main.ts` or that you passed an explicit path.
+A successful build prints one line per artifact, for example `✓ aurora → dist/aurora.html (38.2 KB)`. Faces print a 💎 instead of a checkmark. If nothing prints, the build found no entrypoints; check that your effect lives at `effects/<id>/main.ts` or that you passed an explicit path.
 {% end %}
 
 ## Validating artifacts

@@ -4,11 +4,9 @@ description = "The purple-only chrome rule, how to tell chrome from semantic col
 weight = 20
 +++
 
-# Accent discipline 💜
-
 Electric purple is the only accent color in Luminary UI chrome. Every button, toggle, active-state indicator, slider thumb, sidebar active bar, and focus partner is purple. That single confident accent is what separates a control surface from a toy.
 
-Every other SilkCircuit color — cyan, coral, yellow, green, red, blue — enters the interface through semantic channels only: status signals, category identity, or data encodings. If you reach for cyan to style a link hover or a nav item, stop. That is a category or status signal leaking into chrome.
+Every other SilkCircuit color (cyan, coral, yellow, green, red, blue) enters the interface through semantic channels only: status signals, category identity, or data encodings. If you reach for cyan to style a link hover or a nav item, stop. That is a category or status signal leaking into chrome.
 
 This page explains the rule, shows exactly which contexts are chrome versus semantic, and provides a concrete checklist for auditing drift.
 
@@ -20,8 +18,8 @@ This page explains the rule, shows exactly which contexts are chrome versus sema
 | ----- | --- |
 | `var(--accent)` | Active states, labels, borders |
 | `var(--accent-hover)` | Hover brightening |
-| `var(--accent-muted)` | 12% wash — selected surface tint |
-| `var(--accent-subtle)` | 6% wash — hover surface tint |
+| `var(--accent-muted)` | 12% wash; selected surface tint |
+| `var(--accent-subtle)` | 6% wash; hover surface tint |
 | `var(--glow-accent-50)` | Text-shadow / box-shadow glow at 50% alpha |
 
 Never reach for a raw `oklch()` or hex value in a component rule; always route through a token. Hardcoded color in a component defeats theme switching.
@@ -30,7 +28,7 @@ Never reach for a raw `oklch()` or hex value in a component rule; always route t
 
 | Color | Allowed in chrome? | Correct semantic use |
 | ----- | ------------------ | -------------------- |
-| Purple (`--color-purple`) | Yes — the only chrome color | Buttons, toggles, active bars, focus ring in light mode |
+| Purple (`--color-purple`) | Yes, the only chrome color | Buttons, toggles, active bars, focus ring in light mode |
 | Cyan (`--color-cyan`) | One exception only | Dark-mode focus glow ring (`--glow-focus`) |
 | Coral (`--color-coral`) | No | Inline code text (sanctioned "code is special" semantic); audio and display category badges |
 | Yellow (`--color-yellow`) | No | `--status-warning`; reactive and source category badges |
@@ -39,7 +37,7 @@ Never reach for a raw `oklch()` or hex value in a component rule; always route t
 | Blue (`--color-blue`) | No | `--status-info`; interactive category badges; API method badges |
 | Soft pink (`255, 153, 255`) | No | Productivity category badges |
 
-The one cyan exception is the focus glow ring in dark mode. `DESIGN-SYSTEM.md` §12.4 specifies cyan focus in dark and purple focus in light, so `:focus-visible` reads `--glow-focus`, which resolves to cyan in dark and flips to purple in light. This is the single correct use of cyan on a structural element — everywhere else, cyan is a category or status signal.
+The one cyan exception is the focus glow ring in dark mode. `DESIGN-SYSTEM.md` §12.4 specifies cyan focus in dark and purple focus in light, so `:focus-visible` reads `--glow-focus`, which resolves to cyan in dark and flips to purple in light. This is the single correct use of cyan on a structural element; everywhere else, cyan is a category or status signal.
 
 ## Category color map
 
@@ -58,7 +56,7 @@ Effect categories carry their own color identity. This flows through badges and 
 | `productivity` | Soft pink | `255, 153, 255` |
 | `utility`, unknown | Tertiary gray | `139, 133, 160` |
 
-Category color is **identity**, not chrome. A category badge paints the badge; it does not leak into navigation, headings, or interactive controls. A gaming effect's purple badge is not the same job as the sidebar active indicator's purple — the badge is data, the sidebar bar is chrome.
+Category color is **identity**, not chrome. A category badge paints the badge; it does not leak into navigation, headings, or interactive controls. A gaming effect's purple badge is not the same job as the sidebar active indicator's purple: the badge is data, the sidebar bar is chrome.
 
 When a component needs to glow in a category's color, set `--glow-rgb` to the triplet above and let `.edge-glow-accent` or `.chip-interactive` read it. Never hardcode a raw `rgba(...)` triplet in a component.
 
@@ -77,7 +75,7 @@ Named accent classes set it for static use:
 .accent-red     { --glow-rgb: 255, 99, 99;   }   /* errors */
 ```
 
-For dynamic category color — a card glowing in its effect's category — set `--glow-rgb` inline from the `category_style()` triplet:
+For dynamic category color (a card glowing in its effect's category), set `--glow-rgb` inline from the `category_style()` triplet:
 
 ```rust
 // in a Leptos component
@@ -92,7 +90,7 @@ view! {
 }
 ```
 
-Device cards use `device_accent_colors()` from the same file, which runs an FNV-1a hash over the device ID to produce a deterministic two-color gradient. Same device, same colors, every session — identity without a stored palette.
+Device cards use `device_accent_colors()` from the same file, which runs an FNV-1a hash over the device ID to produce a deterministic two-color gradient. Same device, same colors, every session: identity without a stored palette.
 
 ## De-cyan checklist
 
@@ -103,7 +101,7 @@ Use this when reviewing any new component or auditing existing code for accent d
 - [ ] Nav links: hover is `var(--accent)` foreground with `var(--accent-subtle)` background and `var(--glow-accent-50)` text-shadow. No cyan.
 - [ ] Nav link active indicator: the 2px `::after` bar is `var(--accent)`.
 - [ ] Nav title hover: the `.nav-title__color` half shifts to `var(--accent)`. The `.nav-title__hyper` gradient sweep is the sanctioned brand exception.
-- [ ] Sidebar group titles: `color: var(--accent)`. The `›` caret uses `var(--text-tertiary)` — not cyan.
+- [ ] Sidebar group titles: `color: var(--accent)`. The `›` caret uses `var(--text-tertiary)`, not cyan.
 - [ ] Sidebar link hover: `background: var(--accent-subtle)`. No cyan wash.
 - [ ] Sidebar active link: 3px left border in `var(--accent)`, `var(--accent-subtle)` background, glow via `var(--glow-accent-50)`.
 - [ ] TOC active and hover links: `var(--accent)` / `var(--accent-subtle)`.
@@ -122,14 +120,14 @@ Use this when reviewing any new component or auditing existing code for accent d
 
 - [ ] Focus ring: `--glow-focus` (cyan in dark, purple in light). This is the one correct cyan use on a structural element.
 - [ ] Callouts (`tip`, `warning`, `danger`, `info`): route through `--status-*` tokens, not hardcoded OKLCH values, so they flip correctly in light mode.
-- [ ] API method badges: `GET` cyan, `POST` green, `PUT`/`PATCH` yellow, `DELETE` red. Data encodings, not chrome — keep their colors.
-- [ ] Inline code text: `var(--color-coral)` — sanctioned "code is special" semantic, routed through the palette token so it swaps with the theme.
+- [ ] API method badges: `GET` cyan, `POST` green, `PUT`/`PATCH` yellow, `DELETE` red. Data encodings, not chrome; keep their colors.
+- [ ] Inline code text: `var(--color-coral)`, the sanctioned "code is special" semantic, routed through the palette token so it swaps with the theme.
 - [ ] Category badges: all colors from the category map above. Identity, not chrome.
 - [ ] `--glow-rgb` inline from `category_style()` on effect or device cards: correct. Category color in data context, not in nav or controls.
 
 ### Token hygiene
 
-- [ ] No raw `oklch(0.88 0.18 175 / ...)` in component rules — that is hardcoded cyan that does not theme-swap. Use `var(--color-cyan)` or `--glow-focus` as appropriate.
+- [ ] No raw `oklch(0.88 0.18 175 / ...)` in component rules; that is hardcoded cyan that does not theme-swap. Use `var(--color-cyan)` or `--glow-focus` as appropriate.
 - [ ] No raw `oklch(0.65 0.30 320 / ...)` in component rules. Use `var(--glow-accent-50)`, `var(--glow-accent-70)`, or `var(--glow-accent-80)`.
 - [ ] No hardcoded `rgba(225, 53, 255, ...)` triplets in component CSS. Set `--glow-rgb: 225, 53, 255` and let `.edge-glow-accent` read it.
 - [ ] Every token that appears in the dark theme block must appear in the light block too. A missing light-mode token leaks the dark value onto bright surfaces.
@@ -150,6 +148,6 @@ These are the leak patterns that recur most often.
 
 ## Related pages
 
-- [@/theme/tokens.md](@/theme/tokens.md) — full Tier 1 / Tier 2 token tables and how the three-tier architecture works
-- [@/theme/contributing.md](@/theme/contributing.md) — how to add a styled component without drifting from Luminary
-- [`docs/DESIGN-SYSTEM.md`](https://github.com/hyperb1iss/hypercolor/blob/main/docs/DESIGN-SYSTEM.md) — the canonical reference; when the code and this page disagree, the code wins
+- [@/theme/tokens.md](@/theme/tokens.md): full Tier 1 / Tier 2 token tables and how the three-tier architecture works
+- [@/theme/contributing.md](@/theme/contributing.md): how to add a styled component without drifting from Luminary
+- [`docs/DESIGN-SYSTEM.md`](https://github.com/hyperb1iss/hypercolor/blob/main/docs/DESIGN-SYSTEM.md): the canonical reference; when the code and this page disagree, the code wins

@@ -12,8 +12,8 @@ Every Hypercolor effect lives in a Bun workspace that depends on [`hypercolor`](
 
 The endpoint of this page is a workspace where `bun install` has succeeded and `hypercolor` resolves. If that is true, you can author. The next page, [Creating effects](@/effects/creating-effects.md), writes the first one.
 
-{% callout(type="info", title="Early release") %}
-The SDK is 0.1.x: the API tracks the engine and may change between minor versions. If you are hacking on the engine itself, you can point a workspace at a local checkout instead of npm — see [Developing against a local engine checkout](#developing-against-a-local-engine-checkout).
+{% callout(type="info", title="Versioning") %}
+The SDK API tracks the engine and may change between minor versions (currently the 0.3 line). If you are hacking on the engine itself, you can point a workspace at a local checkout instead of npm; see [Developing against a local engine checkout](#developing-against-a-local-engine-checkout).
 {% end %}
 
 ## Install Bun
@@ -161,7 +161,7 @@ Bun's `link:` spec is not a drop-in relative path the way yarn's is. It requires
 Effects that ship with Hypercolor live under `sdk/src/effects/` in the main repo. Those resolve the SDK through Bun's workspace protocol automatically, so there's nothing to configure. Drive them with the top-level `just` recipes instead of the standalone scaffolder:
 
 ```bash
-just sdk-dev          # authoring dev server with HMR
+just sdk-dev          # watch-rebuild the SDK packages on change
 just effects-build    # build every bundled effect
 just effect-build NAME
 ```
@@ -174,7 +174,7 @@ Workspaces scaffolded before the SDK shipped to npm point at a local checkout. M
 
 ```diff
 - "hypercolor": "file:../hypercolor/sdk/packages/core"
-+ "hypercolor": "^0.1.1"
++ "hypercolor": "^0.3.0"
 ```
 
 ## What next

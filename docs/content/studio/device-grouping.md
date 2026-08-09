@@ -36,7 +36,7 @@ A device with more than one channel expands into a **per-channel breakdown** ben
 - The channel's **LED count**.
 - A per-output **hide toggle**, when that channel has a placed output in the current zone.
 
-The card shows each channel's effective name — your rename if you've set one, otherwise the device's own channel name — never a raw slot id.
+The card shows each channel's effective name (your rename if you've set one, otherwise the device's own channel name), never a raw slot id.
 
 ## Adding a device to a zone
 
@@ -97,7 +97,7 @@ Once a device is grouped into a zone, position it on the zone's canvas in the [l
 
 ## Related pages
 
-- [Zones](@/studio/zones.md) — create, color, and manage the partitions devices live in
-- [Scenes](@/studio/scenes.md) — the whole-rig configs that own your zones
-- [Layouts](@/studio/layouts.md) — arrange a zone's device outputs spatially
-- [Finding devices](@/guide/finding-devices.md) — get hardware discovered before grouping it
+- [Zones](@/studio/zones.md): create, color, and manage the partitions devices live in
+- [Scenes](@/studio/scenes.md): the whole-rig configs that own your zones
+- [Layouts](@/studio/layouts.md): arrange a zone's device outputs spatially
+- [Finding devices](@/guide/finding-devices.md): get hardware discovered before grouping it

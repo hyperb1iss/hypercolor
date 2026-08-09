@@ -20,7 +20,7 @@ shared atmosphere and component kit. Read those for finished,
 gate-passing examples.
 
 {% callout(type="info") %}
-The SDK is published to npm as `hypercolor` (early 0.1.x release). New effect
+The SDK is published to npm as `hypercolor`. New effect
 and face workspaces pull it from the registry by default. See
 [Setup & workspace](@/effects/setup.md) for the install path.
 {% end %}
@@ -76,7 +76,7 @@ viewport measurements when you preview in a normal browser:
 | Field | Meaning |
 |---|---|
 | `shape` | `round`, `square`, `wide`, or `tall` |
-| `class` | `pump-lcd`, `panel`, or `strip` — device-family layout hint |
+| `class` | `pump-lcd`, `panel`, or `strip`: a device-family layout hint |
 | `circular` | physical corner clipping; the SDK masks the container for you with `clip-path: circle(50%)` |
 | `safeArea` | largest unclipped rect; the inscribed square on round panels, the full surface otherwise |
 | `aspect` | width over height |
@@ -133,7 +133,7 @@ that don't opt in pay nothing.
 | Option | Update argument | Payload |
 |---|---|---|
 | (always) | `sensors` | `read` / `normalized` / `formatted(label)` over live system telemetry |
-| `audio: true` | `audio` | mel bands, beat, level — the full analysis frame (see [Audio API](@/effects/audio.md)) |
+| `audio: true` | `audio` | mel bands, beat, level: the full analysis frame (see [Audio API](@/effects/audio.md)) |
 | `media: true` | `data.media` | track, artist, album-art data URL, eased `positionMs()` (MPRIS) |
 | `net: true` | `data.net` | `rxBps` / `txBps` / `iface` at 1 Hz |
 | `lighting: true` | `data.lighting` | scene name, effect names, dominant LED colors |
@@ -152,7 +152,7 @@ fallback, never a blank screen. The daemon may render your face before
 any data source is live, and on hardware with no sensors at all.
 {% end %}
 
-## Motion that works at 15–30 fps
+## Motion that works at 15-30 fps
 
 Faces render through Servo at a capped frame rate. The cap defaults to
 **30**, is set by `display.face_fps_cap` in config, and is clamped to the
@@ -163,10 +163,10 @@ made configurable, never lowered for convenience.
 All SDK motion primitives are time-based, so they stay correct at any
 fps. Drive everything off `time` deltas, never a fixed per-frame step:
 
-- `Smoothed(initial, halflife)` — eased tracking for live values.
-- `Transition` / `transitionOnChange` — glide on step changes (controls,
+- `Smoothed(initial, halflife)`: eased tracking for live values.
+- `Transition` / `transitionOnChange`: glide on step changes (controls,
   presets) with mid-flight retargeting.
-- `Spring` — organic overshoot, stable under fixed substeps.
+- `Spring`: organic overshoot, stable under fixed substeps.
 - The shared atmosphere kit (`sdk/src/faces/shared/atmosphere.ts`):
   nebula fields, rising motes, comet rings and rails, and `entrance()`
   for staggered boot choreography.
@@ -204,15 +204,16 @@ just face-dev system-pulse
 
 This builds the face, installs it into the running daemon, creates two
 virtual simulator displays (480×480 round and 960×160 strip), assigns the
-face to both, opens the Displays page, and rebuilds on every save. Save
-the file and watch both previews update. The simulator path means you can
-author and gate a face with **no physical LCD attached**.
+face to both, opens the web UI, and rebuilds on every save. Displays and
+their simulator previews live on the Devices page. Save the file and
+watch both previews update. The simulator path means you can author and
+gate a face with **no physical LCD attached**.
 
 The quality gate: a face ships when it looks intentional on *both*
 canonical displays, round and strip, with live data and in its idle
 state. Screenshot both, every time.
 
-![The Displays page with live face simulator previews](/img/ui/ui-displays.webp)
+![Live face simulator previews on the Devices page](/img/ui/ui-displays.webp)
 
 ## Controls and presets
 
@@ -279,12 +280,12 @@ view, see [Renderer internals](@/architecture/renderer-internals.md).
 
 ## Related
 
-- [Setup & workspace](@/effects/setup.md) — scaffold a face workspace.
-- [Creating effects](@/effects/creating-effects.md) — the build,
+- [Setup & workspace](@/effects/setup.md): scaffold a face workspace.
+- [Creating effects](@/effects/creating-effects.md): the build,
   validate, ship loop that faces share.
-- [Controls reference](@/effects/controls.md) — the full controls API,
+- [Controls reference](@/effects/controls.md): the full controls API,
   including `sensor` and `font`.
-- [Audio API](@/effects/audio.md) — the per-frame audio surface a
+- [Audio API](@/effects/audio.md): the per-frame audio surface an
   `audio: true` face receives each frame.
-- [Color science for LEDs](@/effects/color-science.md) — gamut and gamma
+- [Color science for LEDs](@/effects/color-science.md): gamut and gamma
   when a face's dominant colors drive the rig.
