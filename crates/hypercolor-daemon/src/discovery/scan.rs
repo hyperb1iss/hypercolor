@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
     DiscoveredDevice, DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction, TransportScanner,
 };
@@ -413,6 +414,17 @@ pub async fn execute_discovery_scan(
     {
         let mut manager = runtime.backend_manager.lock().await;
         manager.enable_unmapped_layout_warnings();
+    }
+
+    let alias_path = ConfigManager::data_dir().join(crate::device_aliases::DEVICE_ALIASES_FILE);
+    if let Err(error) =
+        crate::device_aliases::sync_from_registry(&alias_path, &runtime.device_registry).await
+    {
+        warn!(
+            path = %alias_path.display(),
+            %error,
+            "Failed to persist the device alias overlay after discovery"
+        );
     }
 
     DiscoveryScanResult {

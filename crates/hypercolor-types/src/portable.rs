@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Only claim constructors mint these, so holding one implies the value has
 /// been canonicalized and passed the refusal rules for its source.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PortableDeviceKey(String);
 
