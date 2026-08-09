@@ -168,6 +168,21 @@ pub async fn rebind_device(
         manager.map_device(resolved_layout_device_id.clone(), backend_id, device_id);
     }
 
+    // Inherited settings exist only in the registry until written under
+    // the replacement's own canonical key: the predecessor's persisted
+    // row lives under its old portable key, which nothing derives
+    // anymore, so skipping this write would lose the inherited name and
+    // brightness on the next restart.
+    if let Err(error) =
+        super::persist_device_settings_for(&state, device_id, &rebound.user_settings).await
+    {
+        tracing::warn!(
+            device_id = %device_id,
+            error = %error,
+            "Re-bind applied but the inherited settings were not persisted"
+        );
+    }
+
     state.event_bus.publish(HypercolorEvent::DeviceRebound {
         device_id: device_id.to_string(),
         layout_device_id: resolved_layout_device_id.clone(),

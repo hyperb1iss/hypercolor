@@ -536,6 +536,12 @@ impl DeviceRegistry {
         inner.quarantined_keys.clone()
     }
 
+    /// Whether a key is proven to name more than one physical device.
+    pub async fn is_portable_key_quarantined(&self, key: &PortableDeviceKey) -> bool {
+        let inner = self.inner.read().await;
+        inner.quarantined_keys.contains(key)
+    }
+
     /// Take the collisions proven since the last drain, for persistence.
     pub async fn drain_portable_key_collisions(&self) -> Vec<PortableKeyCollision> {
         let mut inner = self.inner.write().await;

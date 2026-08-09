@@ -366,10 +366,17 @@ pub async fn device_settings_keys(
     registry: &DeviceRegistry,
     device_id: DeviceId,
 ) -> DeviceSettingsKeys {
-    let claim_key = registry
-        .claim_for_id(&device_id)
-        .await
-        .map(|claim| claim.key().to_string());
+    // A quarantined key is proven to name two devices, so it cannot key
+    // either one's settings: sharing the row would let each unit
+    // overwrite the other's configuration. Both fall back to their
+    // fingerprints, and any row already under the quarantined key is
+    // left untouched as ambiguous history.
+    let claim_key = match registry.claim_for_id(&device_id).await {
+        Some(claim) if !registry.is_portable_key_quarantined(claim.key()).await => {
+            Some(claim.key().to_string())
+        }
+        _ => None,
+    };
     let fingerprint = registry
         .fingerprint_for_id(&device_id)
         .await
@@ -584,6 +591,53 @@ mod tests {
         let keys = device_settings_keys(&registry, id).await;
         assert_eq!(keys.canonical, "net:wled:anon");
         assert_eq!(keys.legacy, vec![id.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn quarantined_key_devices_fall_back_to_their_fingerprints() {
+        // Two simultaneously present units claim one key: the registry
+        // quarantines it, and neither unit may key settings by it.
+        let registry = DeviceRegistry::new();
+        let discovered = |name: &str, fingerprint: &str, peer_octet: u8| DiscoveredDevice {
+            fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+            connect_behavior: DiscoveryConnectBehavior::Deferred,
+            info: DeviceInfo {
+                id: DeviceId::new(),
+                name: name.to_owned(),
+                vendor: "test".to_owned(),
+                family: DeviceFamily::new_static("wled", "WLED"),
+                model: None,
+                connection_type: ConnectionType::Network,
+                origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+                zones: Vec::new(),
+                firmware_version: None,
+                capabilities: DeviceCapabilities::default(),
+            },
+            metadata: HashMap::new(),
+            claim: PortableIdentityClaim::mac_address(
+                "2C:F4:32:77:88:99",
+                NetworkAttachment::Peer(IpAddr::V4(Ipv4Addr::new(192, 168, 1, peer_octet))),
+            ),
+        };
+
+        let unit_a = registry
+            .add_discovered(discovered("Unit A", "net:wled:unit-a", 40))
+            .await;
+        registry
+            .set_state(&unit_a, hypercolor_types::device::DeviceState::Connected)
+            .await;
+        let unit_b = registry
+            .add_discovered(discovered("Unit B", "net:wled:unit-b", 41))
+            .await;
+
+        let keys_a = device_settings_keys(&registry, unit_a).await;
+        let keys_b = device_settings_keys(&registry, unit_b).await;
+        assert_eq!(keys_a.canonical, "net:wled:unit-a");
+        assert_eq!(keys_b.canonical, "net:wled:unit-b");
+        assert_ne!(
+            keys_a.canonical, keys_b.canonical,
+            "colliding units must never share a settings row"
+        );
     }
 
     #[test]
