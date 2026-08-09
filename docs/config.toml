@@ -30,7 +30,7 @@ theme = "one-dark-pro"
 [extra]
 github_url = "https://github.com/hyperb1iss/hypercolor"
 license = "Apache-2.0"
-author = "Stefanie Jane"
+author = "Hyperbliss Technologies"
 
 # Top navigation: the 11 doc front doors, in order. Plain url paths (not
 # @/…_index.md colocation lookups) so the build never trips on a section that
