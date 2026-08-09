@@ -88,7 +88,7 @@ use crate::display_preferences::DisplayPreferencesStore;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::layout_auto_exclusions;
-use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
+use crate::library::{InMemoryLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
@@ -631,30 +631,13 @@ impl AppState {
     /// shared by `Arc::clone` — the API operates on the exact same live
     /// instances as the daemon's render pipeline.
     pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
+        // Stores are shared from the daemon, never reopened: every
+        // AppState built from one daemon must see the same in-memory
+        // copy, or a save through one silently clobbers writes made
+        // through another.
         let data_dir = ConfigManager::data_dir();
-        let library_path = data_dir.join("library.json");
-        let library_store: Arc<dyn LibraryStore> =
-            match JsonLibraryStore::open(library_path.clone()) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    warn!(
-                        path = %library_path.display(),
-                        %error,
-                        "Failed to load persisted library store; falling back to in-memory store"
-                    );
-                    Arc::new(InMemoryLibraryStore::new())
-                }
-            };
-        let profiles_path = data_dir.join("profiles.json");
-        let profiles = ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
-            warn!(
-                path = %profiles_path.display(),
-                %error,
-                cause = %error.root_cause(),
-                "Failed to load profiles; starting with empty store"
-            );
-            ProfileStore::new(profiles_path).expect("profile persistence should initialize")
-        });
+        let library_store = Arc::clone(&daemon.library_store);
+        let profiles = Arc::clone(&daemon.profiles);
         let driver_host = Arc::clone(&daemon.driver_host);
         let driver_registry = Arc::clone(&daemon.driver_registry);
 
@@ -690,7 +673,7 @@ impl AppState {
             browser_input: daemon.browser_input.clone(),
             interaction_routing: daemon.interaction_routing.clone(),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
-            profiles: Arc::new(RwLock::new(profiles)),
+            profiles,
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             display_preferences: Arc::clone(&daemon.display_preferences),
