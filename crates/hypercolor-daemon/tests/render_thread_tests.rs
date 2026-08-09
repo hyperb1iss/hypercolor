@@ -4055,6 +4055,55 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
 }
 
 #[tokio::test]
+async fn pipeline_retires_layout_updates_while_the_render_loop_is_paused() {
+    let state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(vec![point_zone(
+            "zone_sample",
+            "mock:sample",
+            0.25,
+            0.5,
+        )])),
+        BackendManager::new(),
+    );
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    // Stopping an effect pauses the loop, and a paused loop draws no frames.
+    // The transaction queue still has to be retired: the caller is blocked on
+    // it holding the layout update lock, so a queue that is only serviced on
+    // rendered frames wedges the daemon.
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.pause();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let applied = tokio::time::timeout(
+        Duration::from_secs(5),
+        apply_layout_update(
+            &state.spatial_engine,
+            &state.scene_manager,
+            &state.scene_transactions,
+            test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
+        ),
+    )
+    .await
+    .expect("a paused render loop must still retire layout transactions");
+    applied.expect("renderer should acknowledge the layout update while paused");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn idle_pipeline_throttles_even_with_watch_receivers() {
     let state = make_render_state(
         idle_effect(),

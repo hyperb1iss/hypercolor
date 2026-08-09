@@ -395,6 +395,20 @@ impl SceneTransactionQueue {
             .collect()
     }
 
+    /// Whether any transaction is waiting to be retired.
+    ///
+    /// Lets an idle render loop skip the servicing path entirely on the ticks
+    /// where there is nothing queued.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        !self
+            .inner
+            .lock()
+            .expect("scene transaction queue should lock")
+            .pending
+            .is_empty()
+    }
+
     #[must_use]
     pub fn consumer(&self) -> SceneTransactionConsumer {
         SceneTransactionConsumer {

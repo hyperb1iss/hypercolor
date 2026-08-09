@@ -20,8 +20,8 @@ use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::PreparedCanvasResize;
 use super::pipeline_runtime::{
-    OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
-    PreparedLayoutActivation,
+    FrameLoopState, OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
+    PreparedLayoutActivation, RenderCaches, SceneSnapshotState,
 };
 use super::scene_snapshot::{
     FrameSceneSnapshot, apply_zone_layout_previews, build_frame_scene_snapshot,
@@ -42,27 +42,19 @@ use crate::scene_transactions::{
     clippy::too_many_lines,
     reason = "frame execution intentionally keeps the full pipeline in one ordered async function"
 )]
-pub(crate) async fn execute_frame(
+/// Retire queued scene transactions and commit any prepared layout.
+///
+/// The queue is the synchronisation boundary between the API and the
+/// renderer, so it has to be serviced on every tick, not only on ticks that
+/// draw. A paused render loop still accepts layout edits, and a caller
+/// blocked on one of these transactions holds the layout update lock while
+/// it waits.
+pub(crate) async fn service_scene_transactions(
     state: &RenderThreadState,
-    runtime: &mut PipelineRuntime,
-    scheduled_start: Instant,
-    skip_decision: SkipDecision,
-) -> FrameExecution {
-    let scene = &mut runtime.scene;
-    let frame_loop = &mut runtime.frame_loop;
-    let render = &mut runtime.render;
-    let frame_start = Instant::now();
-    let frame_tick = frame_loop.clock.advance(frame_start);
-    let delta_secs = frame_tick.delta_secs;
-    let frame_interval = frame_tick.frame_interval;
-    let frame_interval_us = frame_tick.frame_interval_us;
-    let wake_late_us = micros_u32(frame_start.saturating_duration_since(scheduled_start));
-    let reused_inputs = matches!(
-        skip_decision,
-        SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas
-    );
-    let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
-
+    scene: &mut SceneSnapshotState,
+    frame_loop: &mut FrameLoopState,
+    render: &mut RenderCaches,
+) {
     if let Some(prepared) = render.pending_layout_activation.take() {
         match prepared.activation.decision() {
             LayoutActivationDecision::Pending => {
@@ -283,6 +275,30 @@ pub(crate) async fn execute_frame(
             }
         }
     }
+}
+
+pub(crate) async fn execute_frame(
+    state: &RenderThreadState,
+    runtime: &mut PipelineRuntime,
+    scheduled_start: Instant,
+    skip_decision: SkipDecision,
+) -> FrameExecution {
+    let scene = &mut runtime.scene;
+    let frame_loop = &mut runtime.frame_loop;
+    let render = &mut runtime.render;
+    let frame_start = Instant::now();
+    let frame_tick = frame_loop.clock.advance(frame_start);
+    let delta_secs = frame_tick.delta_secs;
+    let frame_interval = frame_tick.frame_interval;
+    let frame_interval_us = frame_tick.frame_interval_us;
+    let wake_late_us = micros_u32(frame_start.saturating_duration_since(scheduled_start));
+    let reused_inputs = matches!(
+        skip_decision,
+        SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas
+    );
+    let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
+
+    service_scene_transactions(state, scene, frame_loop, render).await;
     if render.pending_layout_activation.is_some() {
         let mut render_loop = state.render_loop.write().await;
         return runtime

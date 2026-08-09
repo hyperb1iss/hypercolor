@@ -5,7 +5,7 @@ use tracing::{debug, info};
 use crate::deadline::wait_until_deadline;
 
 use super::RenderThreadState;
-use super::frame_executor::execute_frame;
+use super::frame_executor::{execute_frame, service_scene_transactions};
 use super::frame_policy::SkipDecision;
 use super::pipeline_runtime::PipelineRuntime;
 
@@ -52,6 +52,21 @@ async fn handle_inactive_render_loop(
         let render_loop = state.render_loop.read().await;
         render_loop.state()
     };
+
+    // A paused loop still accepts layout edits, and whoever submitted one is
+    // blocked on it holding the layout update lock. Skipping the queue here
+    // wedges that caller, and then every path that reconciles connectivity
+    // behind the same lock. Idle ticks stay untouched when nothing is queued.
+    if state.scene_transactions.has_pending() || runtime.render.pending_layout_activation.is_some()
+    {
+        service_scene_transactions(
+            state,
+            &mut runtime.scene,
+            &mut runtime.frame_loop,
+            &mut runtime.render,
+        )
+        .await;
+    }
 
     runtime.frame_loop.clear_input_demands();
     clear_inactive_render_groups(state, runtime).await;
