@@ -235,6 +235,53 @@ impl PortableIdentityClaim {
             | Self::NanoleafSerial { raw, .. } => raw,
         }
     }
+
+    /// The per-attachment evidence this observation carries, viewed by
+    /// strength rather than by source.
+    #[must_use]
+    pub fn evidence(&self) -> AttachmentEvidence<'_> {
+        match self {
+            Self::UsbSerial { topology, .. } => AttachmentEvidence::UsbTopology(topology),
+            Self::MacAddress { attachment, .. } => match attachment {
+                NetworkAttachment::Peer(peer) => AttachmentEvidence::NetworkPeer(*peer),
+                NetworkAttachment::CloudInventory => AttachmentEvidence::Unavailable,
+            },
+            Self::HueBridgeId { peer, .. } | Self::NanoleafSerial { peer, .. } => {
+                AttachmentEvidence::NetworkPeer(*peer)
+            }
+        }
+    }
+}
+
+/// Machine-scoped attachment evidence, compared when two simultaneously
+/// present devices claim one key. It never syncs; it exists to answer one
+/// local question, which is whether a key names one device or two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentEvidence<'a> {
+    /// A bus location. Two simultaneously present units cannot share one,
+    /// so differing values prove distinctness.
+    UsbTopology(&'a str),
+    /// A network peer address. Weaker: an address can be reassigned, so it
+    /// distinguishes concurrently reachable peers and nothing more.
+    NetworkPeer(IpAddr),
+    /// No local attachment behind the observation (a vendor's cloud
+    /// inventory). Can never prove a collision.
+    Unavailable,
+}
+
+impl AttachmentEvidence<'_> {
+    /// Whether two simultaneous observations prove two distinct units.
+    ///
+    /// Equal evidence is the same unit seen twice, mismatched kinds prove
+    /// nothing, and [`Self::Unavailable`] proves nothing against anything.
+    #[must_use]
+    pub fn proves_distinct_from(&self, other: &AttachmentEvidence<'_>) -> bool {
+        match (self, other) {
+            (AttachmentEvidence::UsbTopology(a), AttachmentEvidence::UsbTopology(b)) => a != b,
+            (AttachmentEvidence::NetworkPeer(a), AttachmentEvidence::NetworkPeer(b)) => a != b,
+            _ => false,
+        }
+    }
 }
 
 /// Canonicalization the host has reviewed for one `(vendor, product)` pair.
@@ -496,6 +543,57 @@ mod tests {
         assert_eq!(hue.key().as_str(), "hue:001788fffe23a4b5");
         assert_eq!(hue.source(), PortableIdentitySource::HueBridgeId);
         assert_eq!(nanoleaf.key().as_str(), "nanoleaf:s19122a1234");
+    }
+
+    #[test]
+    fn differing_topology_proves_distinct_units_and_peers_distinguish_weakly() {
+        let unit_a = PortableIdentityClaim::usb_serial(
+            0x1532,
+            0x0226,
+            "PM2332H12345678",
+            "usb-1.4.2",
+            &registry(),
+        )
+        .expect("registered vendor");
+        let unit_b = PortableIdentityClaim::usb_serial(
+            0x1532,
+            0x0226,
+            "PM2332H12345678",
+            "usb-2.1",
+            &registry(),
+        )
+        .expect("registered vendor");
+
+        assert!(unit_a.evidence().proves_distinct_from(&unit_b.evidence()));
+        assert!(!unit_a.evidence().proves_distinct_from(&unit_a.evidence()));
+
+        let other_peer = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 41));
+        let wled_a =
+            PortableIdentityClaim::mac_address("2C:F4:32:11:22:33", NetworkAttachment::Peer(PEER))
+                .expect("valid MAC");
+        let wled_b = PortableIdentityClaim::mac_address(
+            "2C:F4:32:11:22:33",
+            NetworkAttachment::Peer(other_peer),
+        )
+        .expect("valid MAC");
+        assert!(wled_a.evidence().proves_distinct_from(&wled_b.evidence()));
+    }
+
+    #[test]
+    fn cloud_inventory_evidence_never_proves_a_collision() {
+        let cloud = PortableIdentityClaim::mac_address(
+            "2C:F4:32:11:22:33",
+            NetworkAttachment::CloudInventory,
+        )
+        .expect("valid MAC");
+        let local =
+            PortableIdentityClaim::mac_address("2C:F4:32:11:22:33", NetworkAttachment::Peer(PEER))
+                .expect("valid MAC");
+
+        assert_eq!(cloud.evidence(), AttachmentEvidence::Unavailable);
+        assert!(!cloud.evidence().proves_distinct_from(&local.evidence()));
+        assert!(!local.evidence().proves_distinct_from(&cloud.evidence()));
+        assert!(!cloud.evidence().proves_distinct_from(&cloud.evidence()));
     }
 
     #[test]
