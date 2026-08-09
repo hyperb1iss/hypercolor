@@ -14807,32 +14807,51 @@ async fn device_bindings_surface_orphans_and_rebind_heals_them() {
     use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 
     let state = Arc::new(isolated_state());
-
-    // A layout references a binding no attached device derives.
-    set_layout_targeting_device(&state, "wled:dead-strip", 60).await;
-
-    // A previous session recorded the dead hardware's identity in the
-    // alias overlay: its key pinned to the fingerprint that derives the
-    // referenced binding.
-    let dead_claim = PortableIdentityClaim::mac_address(
-        "2C:F4:32:00:00:10",
-        NetworkAttachment::Peer("192.168.1.50".parse().expect("valid ip")),
-    )
-    .expect("valid MAC");
     let alias_path = state.data_dir.join(device_aliases::DEVICE_ALIASES_FILE);
-    let mut overlay = device_aliases::DeviceAliasFile::default();
-    overlay.aliases.insert(
-        dead_claim.key().clone(),
-        device_aliases::DeviceAliasRecord {
-            source: dead_claim.source(),
-            raw: dead_claim.raw().to_owned(),
-            fingerprint: "net:wled:dead-strip".to_owned(),
-            layout_device_id: Some("wled:dead-strip".to_owned()),
-            first_seen_epoch_s: 0,
-            last_seen_epoch_s: 0,
-        },
-    );
-    device_aliases::save(&alias_path, &overlay).expect("overlay saves");
+
+    // The dead predecessor is still registered, parked in Reconnecting
+    // after vanishing, carrying the user's customizations.
+    let dead_fingerprint = DeviceFingerprint("net:wled:dead-strip".to_owned());
+    let dead_id = DeviceId::new();
+    let dead_info = DeviceInfo {
+        id: dead_id,
+        name: "Shelf Strip".to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::new_static("wled", "WLED"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+        zones: Vec::new(),
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let dead_binding =
+        DeviceLifecycleManager::canonical_layout_device_id(&dead_info, Some(&dead_fingerprint));
+    state
+        .device_registry
+        .add_discovered(DiscoveredDevice {
+            fingerprint: dead_fingerprint.clone(),
+            connect_behavior: DiscoveryConnectBehavior::Deferred,
+            info: dead_info,
+            metadata: HashMap::new(),
+            claim: PortableIdentityClaim::mac_address(
+                "2C:F4:32:00:00:10",
+                NetworkAttachment::Peer("192.168.1.50".parse().expect("valid ip")),
+            ),
+        })
+        .await;
+    state
+        .device_registry
+        .update_user_settings(&dead_id, Some("Bliss Shelf".to_owned()), None, None)
+        .await
+        .expect("predecessor exists");
+    state
+        .device_registry
+        .set_state(&dead_id, DeviceState::Reconnecting)
+        .await;
+
+    // A layout references the binding the dead device derives.
+    set_layout_targeting_device(&state, &dead_binding, 60).await;
 
     // The replacement hardware attaches under its own key.
     let replacement_id = DeviceId::new();
@@ -14877,7 +14896,8 @@ async fn device_bindings_surface_orphans_and_rebind_heals_them() {
     let json = body_json(response).await;
     assert_eq!(
         json["data"]["unresolved"][0]["layout_device_id"],
-        "wled:dead-strip"
+        dead_binding.as_str(),
+        "a Reconnecting predecessor must not mask the orphaned binding"
     );
     assert_eq!(json["data"]["unresolved"][0]["rebindable"], true);
     let candidates = json["data"]["candidates"]
@@ -14899,7 +14919,7 @@ async fn device_bindings_surface_orphans_and_rebind_heals_them() {
                 .uri("/api/v1/devices/rebind")
                 .header("content-type", "application/json")
                 .body(Body::from(format!(
-                    r#"{{"layout_device_id":"wled:dead-strip","device_id":"{replacement_id}"}}"#
+                    r#"{{"layout_device_id":"{dead_binding}","device_id":"{replacement_id}"}}"#
                 )))
                 .expect("failed to build request"),
         )
@@ -14907,11 +14927,12 @@ async fn device_bindings_surface_orphans_and_rebind_heals_them() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["layout_device_id"], "wled:dead-strip");
+    assert_eq!(json["data"]["layout_device_id"], dead_binding.as_str());
     assert_eq!(json["data"]["portable_key"], "net:2cf432000011");
 
     // The registry now resolves the replacement onto the inherited
-    // identity, and the overlay pins its key there durably.
+    // identity, the predecessor is retired with its settings migrated,
+    // and the overlay pins the replacement's key there durably.
     assert_eq!(
         state
             .device_registry
@@ -14919,6 +14940,13 @@ async fn device_bindings_surface_orphans_and_rebind_heals_them() {
             .await,
         Some(DeviceFingerprint("net:wled:dead-strip".to_owned()))
     );
+    assert!(state.device_registry.get(&dead_id).await.is_none());
+    let inherited = state
+        .device_registry
+        .get(&replacement_id)
+        .await
+        .expect("replacement exists");
+    assert_eq!(inherited.user_settings.name.as_deref(), Some("Bliss Shelf"));
     let overlay = device_aliases::load(&alias_path).expect("overlay loads");
     let pinned = overlay
         .aliases

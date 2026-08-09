@@ -130,6 +130,9 @@ impl NanoleafBackend {
                 })
                 .or_insert_with(|| NanoleafKnownDevice {
                     device_id: device.device_key.clone(),
+                    // The device_key can be a name or address fallback;
+                    // only a live source may grade the id as identity.
+                    device_id_is_identifier: false,
                     ip: device.ip,
                     port: device.api_port,
                     name: device.info.name.clone(),

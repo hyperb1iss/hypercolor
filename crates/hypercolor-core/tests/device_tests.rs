@@ -729,6 +729,52 @@ async fn registry_rebind_inherits_identity_and_settings_from_replaced_device() {
 }
 
 #[tokio::test]
+async fn orchestrator_quarantines_same_fingerprint_units_sharing_a_key() {
+    // Two units with a duplicated MAC derive the same fingerprint, so
+    // aggregation merges them before the registry sees the second unit.
+    // The orchestrator must capture the collision at the merge.
+    let registry = DeviceRegistry::new();
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
+
+    let unit_a = discovered_with_shared_key("Unit A", "net:wled:cloned", 40);
+    let unit_b = discovered_with_shared_key("Unit B", "net:wled:cloned", 41);
+    orchestrator.add_scanner(Box::new(MockScanner::new("wled", vec![unit_a, unit_b])));
+
+    orchestrator.full_scan().await;
+
+    let collisions = registry.drain_portable_key_collisions().await;
+    assert_eq!(collisions.len(), 1, "the merge must not swallow the proof");
+    assert_eq!(
+        collisions[0].existing_fingerprint,
+        DeviceFingerprint("net:wled:cloned".to_owned())
+    );
+    assert!(
+        registry
+            .quarantined_portable_keys()
+            .await
+            .contains(&collisions[0].key)
+    );
+}
+
+#[tokio::test]
+async fn registry_rebind_unknown_device_reports_unknown_not_unclaimed() {
+    use hypercolor_core::device::PortableRebindError;
+
+    let registry = DeviceRegistry::new();
+    let result = registry
+        .rebind_portable_identity(
+            &DeviceId::new(),
+            DeviceFingerprint("net:wled:anything".to_owned()),
+        )
+        .await;
+
+    assert_eq!(
+        result.expect_err("unknown device refuses"),
+        PortableRebindError::UnknownDevice
+    );
+}
+
+#[tokio::test]
 async fn registry_claimless_rescan_preserves_recorded_claim() {
     let registry = DeviceRegistry::new();
 

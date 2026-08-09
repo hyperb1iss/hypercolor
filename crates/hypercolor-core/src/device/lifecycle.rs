@@ -143,6 +143,22 @@ impl DeviceLifecycleManager {
             .map(|managed| managed.layout_device_id.as_str())
     }
 
+    /// Re-point a managed device onto a new layout binding id.
+    ///
+    /// A portable re-bind changes a device's identity while it may be
+    /// live; without this, routing keeps mapping frames to the layout id
+    /// the device carried before the re-bind. Returns the backend id and
+    /// the previous layout id when the device is managed.
+    pub fn rebind_layout_device_id(
+        &mut self,
+        device_id: DeviceId,
+        layout_device_id: impl Into<String>,
+    ) -> Option<(String, String)> {
+        let managed = self.devices.get_mut(&device_id)?;
+        let previous = std::mem::replace(&mut managed.layout_device_id, layout_device_id.into());
+        Some((managed.backend_id.clone(), previous))
+    }
+
     /// Handle a discovered or reappeared device.
     ///
     /// Creates lifecycle tracking for new devices and emits `Connect` when
