@@ -14800,3 +14800,130 @@ async fn read_pairing_http_request(stream: &mut TcpStream) -> std::io::Result<St
 
     Ok(String::from_utf8_lossy(&buf[..total]).into_owned())
 }
+
+#[tokio::test]
+async fn device_bindings_surface_orphans_and_rebind_heals_them() {
+    use hypercolor_daemon::device_aliases;
+    use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
+
+    let state = Arc::new(isolated_state());
+
+    // A layout references a binding no attached device derives.
+    set_layout_targeting_device(&state, "wled:dead-strip", 60).await;
+
+    // A previous session recorded the dead hardware's identity in the
+    // alias overlay: its key pinned to the fingerprint that derives the
+    // referenced binding.
+    let dead_claim = PortableIdentityClaim::mac_address(
+        "2C:F4:32:00:00:10",
+        NetworkAttachment::Peer("192.168.1.50".parse().expect("valid ip")),
+    )
+    .expect("valid MAC");
+    let alias_path = state.data_dir.join(device_aliases::DEVICE_ALIASES_FILE);
+    let mut overlay = device_aliases::DeviceAliasFile::default();
+    overlay.aliases.insert(
+        dead_claim.key().clone(),
+        device_aliases::DeviceAliasRecord {
+            source: dead_claim.source(),
+            raw: dead_claim.raw().to_owned(),
+            fingerprint: "net:wled:dead-strip".to_owned(),
+            layout_device_id: Some("wled:dead-strip".to_owned()),
+            first_seen_epoch_s: 0,
+            last_seen_epoch_s: 0,
+        },
+    );
+    device_aliases::save(&alias_path, &overlay).expect("overlay saves");
+
+    // The replacement hardware attaches under its own key.
+    let replacement_id = DeviceId::new();
+    let replacement_info = DeviceInfo {
+        id: replacement_id,
+        name: "Shelf Strip".to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::new_static("wled", "WLED"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+        zones: Vec::new(),
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    state
+        .device_registry
+        .add_discovered(DiscoveredDevice {
+            fingerprint: DeviceFingerprint("net:wled:new-strip".to_owned()),
+            connect_behavior: DiscoveryConnectBehavior::Deferred,
+            info: replacement_info,
+            metadata: HashMap::new(),
+            claim: PortableIdentityClaim::mac_address(
+                "2C:F4:32:00:00:11",
+                NetworkAttachment::Peer("192.168.1.51".parse().expect("valid ip")),
+            ),
+        })
+        .await;
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/devices/bindings")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["unresolved"][0]["layout_device_id"],
+        "wled:dead-strip"
+    );
+    assert_eq!(json["data"]["unresolved"][0]["rebindable"], true);
+    let candidates = json["data"]["candidates"]
+        .as_array()
+        .expect("candidates array");
+    assert!(
+        candidates.iter().any(|candidate| {
+            candidate["device_id"] == replacement_id.to_string()
+                && candidate["portable_key"] == "net:2cf432000011"
+        }),
+        "the replacement should be offered as a claimed candidate"
+    );
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/devices/rebind")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"layout_device_id":"wled:dead-strip","device_id":"{replacement_id}"}}"#
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["layout_device_id"], "wled:dead-strip");
+    assert_eq!(json["data"]["portable_key"], "net:2cf432000011");
+
+    // The registry now resolves the replacement onto the inherited
+    // identity, and the overlay pins its key there durably.
+    assert_eq!(
+        state
+            .device_registry
+            .fingerprint_for_id(&replacement_id)
+            .await,
+        Some(DeviceFingerprint("net:wled:dead-strip".to_owned()))
+    );
+    let overlay = device_aliases::load(&alias_path).expect("overlay loads");
+    let pinned = overlay
+        .aliases
+        .iter()
+        .find(|(key, _)| key.as_str() == "net:2cf432000011")
+        .map(|(_, record)| record.fingerprint.clone());
+    assert_eq!(pinned.as_deref(), Some("net:wled:dead-strip"));
+}

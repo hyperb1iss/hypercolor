@@ -1192,6 +1192,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(devices::list_device_metrics),
         )
         .route(
+            "/devices/bindings",
+            axum::routing::get(devices::get_device_bindings),
+        )
+        .route(
+            "/devices/rebind",
+            axum::routing::post(devices::rebind_device),
+        )
+        .route(
             "/devices/debug/queues",
             axum::routing::get(devices::debug_output_queues),
         )

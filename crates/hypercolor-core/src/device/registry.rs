@@ -87,6 +87,22 @@ struct RegistryInner {
     collision_log: Vec<PortableKeyCollision>,
 }
 
+/// Why a user-driven portable re-bind was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortableRebindError {
+    /// The device to re-bind is not in the registry.
+    UnknownDevice,
+
+    /// The device carries no portable identity claim, so no pin could
+    /// make the re-bind durable. Claimless hardware re-binds by editing
+    /// the layout instead.
+    Unclaimed,
+
+    /// The fingerprint to inherit belongs to a device that is currently
+    /// renderable, which means it was not replaced.
+    TargetActive,
+}
+
 /// One installation observing two simultaneously present units that claim
 /// the same portable key, with evidence strong enough to distinguish them.
 ///
@@ -524,6 +540,84 @@ impl DeviceRegistry {
     pub async fn drain_portable_key_collisions(&self) -> Vec<PortableKeyCollision> {
         let mut inner = self.inner.write().await;
         std::mem::take(&mut inner.collision_log)
+    }
+
+    /// Re-point a claimed device onto another fingerprint, adopting the
+    /// identity that fingerprint's layouts reference.
+    ///
+    /// This is the user-driven half of attach-time resolution: replaced
+    /// hardware arrives under a fresh key, so no pin can heal the old
+    /// binding automatically, and the user names the device that should
+    /// inherit it. The device's key is re-pinned to the adopted
+    /// fingerprint, so the decision holds across restarts once the
+    /// overlay is persisted.
+    ///
+    /// A non-renderable device already holding the target fingerprint is
+    /// treated as the replaced predecessor: it is removed, and its user
+    /// settings (name, enabled, brightness) migrate to the device
+    /// inheriting its identity.
+    pub async fn rebind_portable_identity(
+        &self,
+        id: &DeviceId,
+        fingerprint: DeviceFingerprint,
+    ) -> Result<TrackedDevice, PortableRebindError> {
+        let mut inner = self.inner.write().await;
+
+        let claim = inner
+            .claims_by_id
+            .get(id)
+            .cloned()
+            .ok_or(PortableRebindError::Unclaimed)?;
+        if !inner.devices.contains_key(id) {
+            return Err(PortableRebindError::UnknownDevice);
+        }
+
+        let mut inherited_settings = None;
+        if let Some(&holder_id) = inner.fingerprints.get(&fingerprint)
+            && holder_id != *id
+        {
+            let holder_is_renderable = inner
+                .devices
+                .get(&holder_id)
+                .is_some_and(|holder| holder.state.is_renderable());
+            if holder_is_renderable {
+                return Err(PortableRebindError::TargetActive);
+            }
+            if let Some(replaced) = inner.devices.remove(&holder_id) {
+                inherited_settings = Some(replaced.user_settings);
+            }
+            inner.id_to_fingerprint.remove(&holder_id);
+            inner.fingerprints.retain(|_, mapped| *mapped != holder_id);
+            inner.metadata_by_id.remove(&holder_id);
+            inner.claims_by_id.remove(&holder_id);
+        }
+
+        if let Some(previous) = inner.id_to_fingerprint.insert(*id, fingerprint.clone()) {
+            inner.fingerprints.remove(&previous);
+        }
+        inner.fingerprints.insert(fingerprint.clone(), *id);
+        inner
+            .portable_key_pins
+            .insert(claim.key().clone(), fingerprint);
+
+        let entry = inner
+            .devices
+            .get_mut(id)
+            .expect("device presence was checked above");
+        if let Some(settings) = inherited_settings {
+            entry.user_settings = settings;
+            apply_user_settings_to_info(&mut entry.info, &entry.user_settings);
+        }
+        bump_device_revision(entry);
+        let snapshot = entry.clone();
+        self.bump_generation();
+
+        info!(
+            device_id = %id,
+            key = %claim.key(),
+            "Device re-bound onto an inherited portable identity"
+        );
+        Ok(snapshot)
     }
 
     /// Snapshot of the fingerprint index (`fingerprint -> device_id`).

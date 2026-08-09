@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use hypercolor_core::device::{DeviceRegistry, PortableKeyCollision};
+use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry, PortableKeyCollision};
 use hypercolor_types::device::DeviceFingerprint;
 use hypercolor_types::portable::{
     PortableDeviceKey, PortableIdentityClaim, PortableIdentitySource,
@@ -69,6 +69,12 @@ pub struct DeviceAliasRecord {
     /// The fingerprint the key is pinned to: the durable local identity
     /// every later observation of this key resolves to.
     pub fingerprint: String,
+
+    /// The layout binding id the pinned fingerprint derives, recorded so
+    /// a re-bind request can match an orphaned layout binding back to
+    /// this key after the hardware itself is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_device_id: Option<String>,
 
     /// Unix seconds when this key was first recorded on this machine.
     pub first_seen_epoch_s: u64,
@@ -179,27 +185,39 @@ pub async fn sync_from_registry(path: &Path, registry: &DeviceRegistry) -> anyho
     let pins = registry.portable_key_pins().await;
     let quarantined = registry.quarantined_portable_keys().await;
     let collisions = registry.drain_portable_key_collisions().await;
-    let claims_by_key: HashMap<PortableDeviceKey, PortableIdentityClaim> = registry
-        .claims_snapshot()
-        .await
-        .into_values()
-        .map(|claim| (claim.key().clone(), claim))
-        .collect();
+    let mut claims_by_key: HashMap<PortableDeviceKey, (PortableIdentityClaim, Option<String>)> =
+        HashMap::new();
+    for (device_id, claim) in registry.claims_snapshot().await {
+        let layout_device_id = if let Some(tracked) = registry.get(&device_id).await {
+            let fingerprint = registry.fingerprint_for_id(&device_id).await;
+            Some(DeviceLifecycleManager::canonical_layout_device_id(
+                &tracked.info,
+                fingerprint.as_ref(),
+            ))
+        } else {
+            None
+        };
+        claims_by_key.insert(claim.key().clone(), (claim, layout_device_id));
+    }
 
     let mut file = load(path)?;
     let now = unix_now_s();
     let mut changed = false;
 
     for (key, pinned_fingerprint) in pins {
-        let live_claim = claims_by_key.get(&key);
+        let live = claims_by_key.get(&key);
         if let Some(record) = file.aliases.get_mut(&key) {
             if record.fingerprint != pinned_fingerprint.0 {
                 record.fingerprint = pinned_fingerprint.0;
                 changed = true;
             }
-            if let Some(claim) = live_claim {
+            if let Some((claim, layout_device_id)) = live {
                 if record.raw != claim.raw() {
                     claim.raw().clone_into(&mut record.raw);
+                    changed = true;
+                }
+                if layout_device_id.is_some() && record.layout_device_id != *layout_device_id {
+                    record.layout_device_id.clone_from(layout_device_id);
                     changed = true;
                 }
                 if record.last_seen_epoch_s != now {
@@ -210,7 +228,7 @@ pub async fn sync_from_registry(path: &Path, registry: &DeviceRegistry) -> anyho
         } else {
             // A pin with no live claim and no record cannot say what the
             // identity was; skip rather than invent one.
-            let Some(claim) = live_claim else {
+            let Some((claim, layout_device_id)) = live else {
                 continue;
             };
             file.aliases.insert(
@@ -219,6 +237,7 @@ pub async fn sync_from_registry(path: &Path, registry: &DeviceRegistry) -> anyho
                     source: claim.source(),
                     raw: claim.raw().to_owned(),
                     fingerprint: pinned_fingerprint.0,
+                    layout_device_id: layout_device_id.clone(),
                     first_seen_epoch_s: now,
                     last_seen_epoch_s: now,
                 },
