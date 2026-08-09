@@ -54,6 +54,25 @@ impl DaemonClient {
         parse_api_response(response).await
     }
 
+    /// Send a GET request to a path mounted outside the `/api/v1` prefix,
+    /// such as the top-level `/health` probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable or returns a non-success
+    /// status code.
+    pub async fn get_unversioned(&self, path: &str) -> Result<serde_json::Value> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self
+            .with_auth(self.http.get(&url))
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to connect to daemon at {url}. Is the daemon running?")
+            })?;
+        parse_api_response(response).await
+    }
+
     /// Send a POST request with a JSON body and parse the response.
     ///
     /// # Errors

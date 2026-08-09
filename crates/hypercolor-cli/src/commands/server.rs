@@ -59,7 +59,7 @@ async fn execute_info(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
 }
 
 async fn execute_health(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/health").await?;
+    let response = client.get_unversioned("/health").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
