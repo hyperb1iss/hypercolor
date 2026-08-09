@@ -14947,6 +14947,17 @@ async fn device_bindings_surface_orphans_and_rebind_heals_them() {
         .await
         .expect("replacement exists");
     assert_eq!(inherited.user_settings.name.as_deref(), Some("Bliss Shelf"));
+
+    // Inherited settings must survive a restart: the row is persisted
+    // under the replacement's own canonical key, since the
+    // predecessor's row lived under a key nothing derives anymore.
+    let persisted_name = state
+        .device_settings
+        .read()
+        .await
+        .device_settings_for_key("net:2cf432000011")
+        .and_then(|settings| settings.name);
+    assert_eq!(persisted_name.as_deref(), Some("Bliss Shelf"));
     let overlay = device_aliases::load(&alias_path).expect("overlay loads");
     let pinned = overlay
         .aliases
