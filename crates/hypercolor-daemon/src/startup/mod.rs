@@ -49,6 +49,7 @@ use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
+use crate::profile_store::ProfileStore;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle, RenderThread};
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
@@ -114,6 +115,15 @@ pub struct DaemonState {
 
     /// Daemon-managed user media asset library.
     pub asset_library: Arc<RwLock<AssetLibrary>>,
+
+    /// Saved effect library storage (favorites, presets, playlists).
+    /// One instance for the whole process: every `AppState` built from
+    /// this daemon shares it, so a write through any surface is visible
+    /// to all of them and none can clobber another's in-memory copy.
+    pub library_store: Arc<dyn crate::library::LibraryStore>,
+
+    /// Persisted lighting profiles, shared for the same reason.
+    pub profiles: Arc<RwLock<ProfileStore>>,
 
     /// Dedicated preview fanout for browser-facing canvas consumers.
     pub preview_runtime: Arc<PreviewRuntime>,

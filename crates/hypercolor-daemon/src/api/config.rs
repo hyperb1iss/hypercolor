@@ -217,6 +217,19 @@ pub async fn set_config_value(
     let input_live_applied = maybe_apply_input_config_change(&state, Some(&key)).await;
     let live_applied = audio_live_applied || render_live_applied || input_live_applied;
 
+    // Published only after the save succeeded: consumers (sync intake,
+    // UI hints) treat this as "the persisted config changed".
+    let old_value = serde_json::to_value(&current)
+        .ok()
+        .and_then(|previous| get_json_path(&previous, &key).cloned());
+    state
+        .event_bus
+        .publish(hypercolor_types::event::HypercolorEvent::ConfigChanged {
+            key: key.clone(),
+            old_value,
+            new_value: effective_value.clone(),
+        });
+
     ApiResponse::ok(serde_json::json!({
         "key": key,
         "value": effective_value,
@@ -356,6 +369,27 @@ pub async fn reset_config_value(
         maybe_apply_input_config_change(&state, normalized_key.as_deref()).await;
     let live_applied =
         audio_live_applied || render_live_applied || capture_live_applied || input_live_applied;
+
+    // One event per reset; a whole-config reset publishes the empty key
+    // so consumers re-read everything rather than diffing per field.
+    let reset_event_key = normalized_key.clone().unwrap_or_default();
+    let new_value = serde_json::to_value(&**manager.get())
+        .ok()
+        .and_then(|root| {
+            if reset_event_key.is_empty() {
+                Some(root)
+            } else {
+                get_json_path(&root, &reset_event_key).cloned()
+            }
+        })
+        .unwrap_or(serde_json::Value::Null);
+    state
+        .event_bus
+        .publish(hypercolor_types::event::HypercolorEvent::ConfigChanged {
+            key: reset_event_key,
+            old_value: None,
+            new_value,
+        });
 
     ApiResponse::ok(serde_json::json!({
         "key": normalized_key,

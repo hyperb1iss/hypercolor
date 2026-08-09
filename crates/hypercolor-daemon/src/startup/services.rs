@@ -543,6 +543,32 @@ impl DaemonState {
         }
         info!("Device backends registered");
 
+        let library_path = ConfigManager::data_dir().join("library.json");
+        let library_store: Arc<dyn crate::library::LibraryStore> =
+            match crate::library::JsonLibraryStore::open(library_path.clone()) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    warn!(
+                        path = %library_path.display(),
+                        %error,
+                        "Failed to load persisted library store; falling back to in-memory store"
+                    );
+                    Arc::new(crate::library::InMemoryLibraryStore::new())
+                }
+            };
+        let profiles_path = ConfigManager::data_dir().join("profiles.json");
+        let profiles =
+            crate::profile_store::ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
+                warn!(
+                    path = %profiles_path.display(),
+                    %error,
+                    cause = %error.root_cause(),
+                    "Failed to load profiles; starting with empty store"
+                );
+                crate::profile_store::ProfileStore::new(profiles_path)
+                    .expect("profile persistence should initialize")
+            });
+
         info!("All subsystems initialized");
 
         Ok(Self {
@@ -556,6 +582,8 @@ impl DaemonState {
             scene_store,
             event_bus,
             asset_library,
+            library_store,
+            profiles: Arc::new(RwLock::new(profiles)),
             preview_runtime,
             zone_layout_previews,
             render_loop,
