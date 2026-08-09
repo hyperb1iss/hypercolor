@@ -136,6 +136,23 @@ pub enum SceneLibraryChangeKind {
     Deleted,
 }
 
+/// Which persisted effect-library collection changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryCollection {
+    Favorites,
+    Presets,
+    Playlists,
+}
+
+/// How an effect-library entry changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryChangeKind {
+    Upserted,
+    Removed,
+}
+
 /// How an asset library record changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -581,6 +598,17 @@ pub enum HypercolorEvent {
         portable_key: String,
     },
 
+    /// A persisted output setting changed.
+    ///
+    /// The local-change hint for observers that mirror persisted
+    /// stores, such as a sync engine's intake: the store was mutated
+    /// and should be re-read. It carries the row key, never content.
+    DeviceSettingsChanged {
+        /// The mutated row's canonical settings key; `None` for
+        /// store-scoped values (global brightness, driver controls).
+        key: Option<String>,
+    },
+
     /// Device discovery scan started.
     DeviceDiscoveryStarted {
         /// Which discovery targets are being scanned.
@@ -835,6 +863,17 @@ pub enum HypercolorEvent {
     /// A profile was deleted.
     ProfileDeleted { profile_id: String },
 
+    /// A collection in the persisted effect library changed.
+    ///
+    /// The local-change hint for observers that mirror persisted
+    /// stores, such as a sync engine's intake. It carries the entry
+    /// id, never content.
+    LibraryStoreChanged {
+        collection: LibraryCollection,
+        entry_id: String,
+        kind: LibraryChangeKind,
+    },
+
     /// A configuration value changed (daemon config, not effect controls).
     ConfigChanged {
         /// Dotted path to the changed key (e.g., `"daemon.fps"`, `"audio.gain"`).
@@ -1017,6 +1056,7 @@ impl HypercolorEvent {
             | Self::DeviceFirmwareInfo { .. }
             | Self::DeviceStateChanged { .. }
             | Self::DeviceRebound { .. }
+            | Self::DeviceSettingsChanged { .. }
             | Self::DeviceDiscoveryStarted { .. }
             | Self::DeviceDiscoveryCompleted { .. } => EventCategory::Device,
 
@@ -1051,6 +1091,7 @@ impl HypercolorEvent {
             | Self::ProfileLoaded { .. }
             | Self::ProfileSaved { .. }
             | Self::ProfileDeleted { .. }
+            | Self::LibraryStoreChanged { .. }
             | Self::ConfigChanged { .. }
             | Self::ShutdownRequested { .. }
             | Self::DaemonStarted { .. }

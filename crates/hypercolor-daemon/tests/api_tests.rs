@@ -14966,3 +14966,85 @@ async fn device_bindings_surface_orphans_and_rebind_heals_them() {
         .map(|(_, record)| record.fingerprint.clone());
     assert_eq!(pinned.as_deref(), Some("net:wled:dead-strip"));
 }
+
+#[tokio::test]
+async fn settings_mutations_publish_local_change_hints() {
+    use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
+
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let add_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/favorites")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"effect":"solid_color"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(add_response.status(), StatusCode::OK);
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/library/favorites/solid_color")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let brightness_response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/settings/brightness")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"brightness":42}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(brightness_response.status(), StatusCode::OK);
+
+    // Every persisted mutation must hint observers that mirror the
+    // stores; this is the sync engine's local-change intake.
+    let mut favorite_upserted = false;
+    let mut favorite_removed = false;
+    let mut settings_changed = false;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !(favorite_upserted && favorite_removed && settings_changed) {
+            match events.recv().await {
+                Ok(timestamped) => match timestamped.event {
+                    HypercolorEvent::LibraryStoreChanged {
+                        collection: LibraryCollection::Favorites,
+                        kind,
+                        ..
+                    } => match kind {
+                        LibraryChangeKind::Upserted => favorite_upserted = true,
+                        LibraryChangeKind::Removed => favorite_removed = true,
+                    },
+                    HypercolorEvent::DeviceSettingsChanged { key: None } => {
+                        settings_changed = true;
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before local-change hints arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for local-change hints");
+}

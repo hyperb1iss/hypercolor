@@ -10,6 +10,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
+use hypercolor_types::event::HypercolorEvent;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use utoipa::ToSchema;
@@ -426,6 +427,9 @@ pub(crate) async fn apply_profile_snapshot(
             ProfileApplyError::Internal(format!("failed to persist global brightness: {error}"))
         })?;
         drop(settings);
+        state
+            .event_bus
+            .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
         set_global_brightness(&state.power_state, normalized);
     }
 

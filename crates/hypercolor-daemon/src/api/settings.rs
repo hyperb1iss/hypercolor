@@ -22,6 +22,7 @@ use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::persist_runtime_session;
 use crate::session::{current_global_brightness, set_global_brightness};
+use hypercolor_types::event::HypercolorEvent;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AudioDeviceInfo {
@@ -78,6 +79,9 @@ pub async fn set_brightness(
             return ApiError::internal(format!("Failed to persist global brightness: {error}"));
         }
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
 
     set_global_brightness(&state.power_state, normalized);
     persist_runtime_session(&state).await;

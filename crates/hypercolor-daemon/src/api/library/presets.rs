@@ -9,7 +9,9 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
-use hypercolor_types::event::{ChangeTrigger, HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::event::{
+    ChangeTrigger, HypercolorEvent, LibraryChangeKind, LibraryCollection, ZoneChangeKind,
+};
 use hypercolor_types::library::{EffectPreset, PresetId};
 use hypercolor_types::scene::ZoneId;
 
@@ -123,6 +125,13 @@ pub async fn create_preset(
     if let Err(error) = state.library_store.insert_preset(preset.clone()).await {
         return store_error_to_response(&error);
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::LibraryStoreChanged {
+            collection: LibraryCollection::Presets,
+            entry_id: preset.id.to_string(),
+            kind: LibraryChangeKind::Upserted,
+        });
 
     ApiResponse::created(preset)
 }
@@ -176,6 +185,13 @@ pub async fn update_preset(
     if let Err(error) = state.library_store.update_preset(preset.clone()).await {
         return store_error_to_response(&error);
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::LibraryStoreChanged {
+            collection: LibraryCollection::Presets,
+            entry_id: preset.id.to_string(),
+            kind: LibraryChangeKind::Upserted,
+        });
 
     ApiResponse::ok(preset)
 }
@@ -193,6 +209,13 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
     if !removed {
         return ApiError::not_found(format!("Preset not found: {id}"));
     }
+    state
+        .event_bus
+        .publish(HypercolorEvent::LibraryStoreChanged {
+            collection: LibraryCollection::Presets,
+            entry_id: preset_id.to_string(),
+            kind: LibraryChangeKind::Removed,
+        });
 
     ApiResponse::ok(serde_json::json!({
         "id": preset_id.to_string(),
