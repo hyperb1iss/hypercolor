@@ -121,7 +121,6 @@ pub(super) fn HeroGauges(
         if fps > 0.0 { Some(fps) } else { None }
     });
     let preview_value = use_ema(move || preview_raw.get(), EMA_ALPHA);
-    let preview_max = Memo::new(move |_| f64::from(preview_target_fps.get()).max(1.0));
     let preview_primary = Memo::new(move |_| format!("{:.1}", preview_value.get()));
     let preview_secondary = Memo::new(move |_| {
         let target = preview_target_fps.get();

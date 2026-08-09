@@ -5,7 +5,6 @@ use std::net::IpAddr;
 use hypercolor_types::config::{HypercolorConfig, NetworkAccessMode, NetworkClientScope};
 use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 use leptos::prelude::*;
-use leptos_icons::Icon;
 
 use crate::components::settings_controls::*;
 use crate::icons::*;
@@ -173,7 +172,6 @@ pub fn CaptureSection(
         }
         options
     });
-
 
     let (picking, set_picking) = signal(false);
     let pick_source = move |_| {
