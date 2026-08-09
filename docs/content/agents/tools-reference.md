@@ -102,7 +102,7 @@ Browse the effect catalog with optional filters. Read-only, idempotent. Returns 
 
 The response carries `effects`, `total`, `has_more`, `limit`, and `offset`. The catalog is large and growing, so always page rather than hardcoding a count; browse [the effects gallery](@/effects/_index.md) for the visual side.
 
-![Effect gallery in the Hypercolor UI](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="Effect gallery in the Hypercolor UI") }}
 
 ### stop_effect
 
@@ -145,7 +145,7 @@ Enumerate known RGB devices with connection status, driver origin, output backen
 
 The response carries a `devices` array plus a `summary` with `total`, `connected`, and `total_leds`.
 
-![Connected devices in the Hypercolor UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Connected devices in the Hypercolor UI") }}
 
 ### set_brightness
 
@@ -179,7 +179,7 @@ Activate a named scene by exact name or fuzzy query. Mutates state, idempotent.
 
 If no scene matches, the call succeeds with `"activated": false` and a message suggesting `list_scenes`, rather than erroring.
 
-![Scenes in the Hypercolor UI](/img/ui/ui-scenes.webp)
+{{ img(path="img/ui/ui-scenes.webp", alt="Scenes in the Hypercolor UI") }}
 
 ### list_scenes
 

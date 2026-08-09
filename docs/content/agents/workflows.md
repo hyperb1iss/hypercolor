@@ -10,7 +10,7 @@ This page turns the tools, resources, and CLI commands from the rest of the Agen
 The MCP server ships this exact instruction to every client: start with `get_status` or the `hypercolor://state` resource, browse with `list_effects` before applying visuals, and prefer structured arguments and resource reads over guessing. The playbooks below are that discipline made concrete.
 {% end %}
 
-![The Hypercolor dashboard an agent reads through hypercolor://state](/img/ui/dashboard.webp)
+{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard an agent reads through hypercolor://state") }}
 
 ## Before you start
 
@@ -66,7 +66,7 @@ Browse the catalog instead of guessing an effect name. Filter `list_effects` to 
 }
 ```
 
-![A calm ambient effect in the gallery](/img/effects/borealis.webp)
+{{ img(path="img/effects/borealis.webp", alt="A calm ambient effect in the gallery") }}
 
 ### 3. Apply it
 
@@ -184,7 +184,7 @@ Or over MCP, with `set_effect`:
 // set_effect with { "query": "Aurora", "controls": { "speed": 7 } }
 ```
 
-![An effect applied and rendering on the canvas](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="An effect applied and rendering on the canvas") }}
 
 {% callout(type="info") %}
 The install-and-apply path is the clearest case where a single agent job spans both CLIs. The SDK authoring CLI gets the effect onto the daemon; the daemon CLI or an MCP tool makes it live. Building [HTML effects](@/effects/_index.md) is its own topic with its own section.

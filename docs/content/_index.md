@@ -14,7 +14,7 @@ all driven by the same engine at adaptive 10-60 fps. Effects aren't hardcoded ro
 They're web pages, rendered by an embedded [Servo](https://servo.org) browser and sampled
 onto your physical LED layout every frame. And it runs on Linux, Windows, and macOS.
 
-![Hypercolor dashboard running the Neon City effect](/img/ui/dashboard.webp)
+{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard running the Neon City effect") }}
 
 ---
 
@@ -67,7 +67,7 @@ loop with zero-copy frame encoding across 5 FPS tiers.
 
 ## The interfaces
 
-![Hypercolor Studio: zones, effects, and layout editor](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Hypercolor Studio: zones, effects, and layout editor") }}
 
 **Web UI**: served directly by the daemon at `http://localhost:9420`. Browse effects,
 tweak live controls, design spatial layouts, manage scenes and zones. Ambient reactivity

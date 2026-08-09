@@ -10,7 +10,7 @@ ASUS Aura motherboard headers, GPU lighting zones, and RGB DRAM all communicate 
 
 On Linux the setup requires two things that USB devices do not: the `i2c-dev` kernel module must be loaded, and the udev rules must be installed. Once those are in place, discovery is automatic. Both prerequisites are Linux-only; the [Windows section](#windows-and-macos) below covers the PawnIO path.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ---
 

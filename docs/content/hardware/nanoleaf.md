@@ -4,7 +4,7 @@ description = "Set up Nanoleaf panels with Hypercolor: mDNS discovery, power-but
 weight = 60
 +++
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 Hypercolor discovers Nanoleaf controllers over mDNS, pairs via the Open API token flow
 (hold the power button 5-7 seconds), and streams per-panel color data over UDP External

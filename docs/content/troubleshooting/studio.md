@@ -6,7 +6,7 @@ weight = 40
 
 Studio writes are guarded by optimistic concurrency: every zone, layer, and layout mutation sends a revision token with the request, and the daemon rejects the write with HTTP 412 if anything changed the scene between when the UI loaded it and when the save arrived. The Studio UI handles this automatically: a toast fires, the scene reloads, and you retry. This page explains when that happens, what triggers it, and how to recover from the cases the UI cannot resolve automatically.
 
-![Studio workspace with zone tree and layout canvas](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Studio workspace with zone tree and layout canvas") }}
 
 ## Save rejected: "Scene changed elsewhere — reloaded, try again"
 

@@ -38,7 +38,7 @@ If you have OpenRGB, Aura Sync, or another RGB manager running, it may be holdin
 
 Open a browser to `http://localhost:9420`, or use the desktop app. The Devices panel lists every device Hypercolor has discovered. Each entry shows the device name, driver, LED count, and connection status.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 If the list is empty, run a scan:
 
@@ -101,7 +101,7 @@ hypercolor effects activate borealis
 
 Effect names are fuzzy-matched. The daemon applies the effect across all connected devices immediately.
 
-![Effects panel showing Borealis running across connected devices](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="Effects panel showing Borealis running across connected devices") }}
 
 You can pass initial controls at activation time:
 

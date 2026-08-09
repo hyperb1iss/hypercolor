@@ -8,7 +8,7 @@ template = "section.html"
 
 Studio is where you compose your whole rig. It is the web UI's creative workspace at `/studio`: pick a scene, partition your hardware into zones, arrange each zone's devices on its own spatial canvas, stack layers of effects and media, and watch every change render live.
 
-![Studio: the zone tree on the left, the live Stage in the center](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Studio: the zone tree on the left, the live Stage in the center") }}
 
 ## The model 🔮
 

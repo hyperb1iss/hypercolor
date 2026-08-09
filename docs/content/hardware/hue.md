@@ -4,9 +4,9 @@ description = "Connect a Hue Bridge to Hypercolor: N-UPnP and mDNS discovery, li
 weight = 50
 +++
 
-![Philips Hue logo](/img/vendors/philipshue.svg)
+{{ img(path="img/vendors/philipshue.svg", alt="Philips Hue logo") }}
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 Hypercolor controls Philips Hue lights through the **Entertainment API**, the same
 low-latency streaming path used by Hue Sync. Once paired, a DTLS session streams

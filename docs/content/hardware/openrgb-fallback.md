@@ -337,7 +337,7 @@ plugin for those devices.
 device-list-updated notification, but an explicit discovery pass is required after a full
 OpenRGB restart.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ---
 

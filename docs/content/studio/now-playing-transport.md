@@ -6,7 +6,7 @@ weight = 100
 
 The now-playing transport is the set of small surfaces that tell you what is rendering and let you steer it without opening Studio. It lives in three places: the **Now Playing panel** at the bottom of the sidebar, the **now-playing chip** in the Studio Stage header, and the **zone chips** in the preview cabinet. In a multi-zone scene, every one of them tells the truth per zone instead of mirroring a single effect everywhere.
 
-![Studio: the zone tree on the left, the live Stage in the center](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Studio: the zone tree on the left, the live Stage in the center") }}
 
 ## The sidebar Now Playing panel
 
@@ -61,7 +61,7 @@ The Stage header carries its own now-playing chip, and it does a different job f
 
 The chip is rendered for every surface, both Lights and Screens, because both carry a layer stack and both need a way to open the composition panel. For how the layer stack itself works, see [Layers](@/studio/layers.md).
 
-![Zones in the Hypercolor Studio workspace](/img/ui/ui-studio-zones.webp)
+{{ img(path="img/ui/ui-studio-zones.webp", alt="Zones in the Hypercolor Studio workspace") }}
 
 ## Preview-cabinet zone chips
 

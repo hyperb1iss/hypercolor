@@ -10,7 +10,7 @@ when you change scenes and tunable independently while they play. You will build
 a second zone, move device outputs into it, give each zone its own effect, hop
 between zones, and decide what happens to any output you leave behind.
 
-![Hypercolor Studio with the zone tree, the live Stage canvas, and the composition panel](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Hypercolor Studio with the zone tree, the live Stage canvas, and the composition panel") }}
 
 This is the end-to-end version of the focused pages. If you want the model
 first, read [Zones](@/studio/zones.md), [Device grouping](@/studio/device-grouping.md),

@@ -9,7 +9,7 @@ Hypercolor's audio pipeline runs FFT, beat detection, spectral analysis, mel-ban
 
 There are two `AudioData` shapes, and they do not share field names. TypeScript canvas and shader effects see the camelCase SDK surface documented on this page. Native Rust effects see a smaller snake_case struct. The split is the most common thing docs get wrong, so it has its own section near the bottom: [Rust vs TypeScript field names](#rust-vs-typescript-field-names).
 
-![Audio-pulse effect reacting to music](/img/effects/audio-pulse.webp)
+{{ img(path="img/effects/audio-pulse.webp", alt="Audio-pulse effect reacting to music") }}
 
 ## Getting audio data
 

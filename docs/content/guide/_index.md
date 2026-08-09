@@ -10,7 +10,7 @@ Hypercolor is an open-source RGB lighting orchestration engine for Linux, Window
 
 Effects are HTML Canvas pages rendered by an embedded Servo browser. Audio FFT, screen capture, and keyboard input feed the render every frame. A spatial sampler maps canvas pixels onto your physical LED positions. The result: one effect paints your whole rig, synchronized, regardless of how many devices or protocols are involved.
 
-![Hypercolor dashboard showing the Neon City effect active across multiple devices](/img/ui/dashboard.webp)
+{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard showing the Neon City effect active across multiple devices") }}
 
 ## ⚡ Where to start
 
@@ -122,19 +122,19 @@ Hypercolor renders effects through an embedded Servo browser (HTML Canvas and We
 
 The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor). Scaffold a workspace with `bun create hypercolor`; see [effects setup](@/effects/setup.md).
 
-![The Hypercolor effects browser](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
 
 ## Interfaces
 
 **Web UI**: served by the daemon at `http://localhost:9420` with no separate process needed. Browse effects, adjust controls live, manage devices, and design spatial layouts from any browser.
 
-![Web UI showing the Studio zone editor](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Web UI showing the Studio zone editor") }}
 
 **Studio**: the zone editor inside the web UI. Divide your canvas into zones, each running an independent effect with its own controls and priority. See the [Studio section](@/studio/_index.md) for the full walkthrough.
 
 **TUI**: a Ratatui terminal dashboard with true-color LED preview, audio visualization, and fullscreen effect rendering.
 
-![TUI dashboard with live preview and device table](/img/tui/tui-dashboard.png)
+{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard with live preview and device table") }}
 
 **CLI**: the `hypercolor` binary talks to the daemon over HTTP. Every action you can take in the UI is available via the CLI. See the [CLI reference](@/api/cli.md).
 

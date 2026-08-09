@@ -221,7 +221,7 @@ A single named sensor reading. Common labels: `cpu_temp`, `gpu_load`,
 
 ## Effects
 
-![Browsing the effect catalog in the web UI](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="Browsing the effect catalog in the web UI") }}
 
 {% api_endpoint(method="GET", path="/api/v1/effects") %}
 List the effect catalog. Returns `data.items` (effect summaries) plus
@@ -392,7 +392,7 @@ Effect screenshots are served statically under
 
 ## Devices
 
-![The devices panel in the web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="The devices panel in the web UI") }}
 
 {% api_endpoint(method="GET", path="/api/v1/devices") %}
 List discovered and connected devices. Returns `data.items` plus
@@ -735,7 +735,7 @@ Invoke a typed control-surface action (Discover, Sync, Reset, and so on).
 Scenes are whole-rig configurations: the effects, zones, and assignments that
 define how your entire setup lights up. Switching scenes swaps the whole rig.
 
-![The scenes panel in the web UI](/img/ui/ui-scenes.webp)
+{{ img(path="img/ui/ui-scenes.webp", alt="The scenes panel in the web UI") }}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes") %}
 List defined scenes.
@@ -788,7 +788,7 @@ Zones are flexible partitions of the scene's canvas. Each zone owns a set of
 device outputs and renders its own effect. Zones live **under** a scene; there
 is no top-level `/zones` collection.
 
-![Building zones in Studio](/img/ui/ui-studio-zones.webp)
+{{ img(path="img/ui/ui-studio-zones.webp", alt="Building zones in Studio") }}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
 List a scene's zones. The response includes `groups_revision` and an `ETag`

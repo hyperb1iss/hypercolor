@@ -12,7 +12,7 @@ The unit that actually moves between zones is an **output**, not a whole device.
 New to the Scene → Zone → Layout model? Read [Zones](@/studio/zones.md) first. Scenes are whole-rig configs; zones are flexible partitions of a scene's canvas. There is no "rooms" concept here.
 {% end %}
 
-![The Studio workspace, with the zone tree on the left listing zones and their devices](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="The Studio workspace, with the zone tree on the left listing zones and their devices") }}
 
 ## The device card
 
@@ -25,7 +25,7 @@ Every physical device under a zone renders as a card in the zone tree. The card 
 
 Clicking the card body selects that device's zone and highlights its outputs on the Stage canvas. Hovering previews those outputs.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ### Channels and outputs
 

@@ -15,7 +15,7 @@ zone lifecycle (create, rename, recolor, enable, make-default, delete), the
 permanent **Default zone**, and the **Unassigned** entry that catches hardware
 no zone has claimed.
 
-![The Studio workspace with the zone tree on the left](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="The Studio workspace with the zone tree on the left") }}
 
 {% callout(type="info") %}
 Zones are partitions of a scene, never "rooms." A scene is a whole-rig config;
@@ -102,7 +102,7 @@ LEDs display.
 disabled zone dims in the tree and stops driving its devices, but it keeps its
 layers, layout, and color so you can bring it back exactly as it was.
 
-![Zones in the Hypercolor Studio workspace](/img/ui/ui-studio-zones.webp)
+{{ img(path="img/ui/ui-studio-zones.webp", alt="Zones in the Hypercolor Studio workspace") }}
 
 ## Make a zone the default
 
@@ -160,7 +160,7 @@ The policy is editable only when the daemon advertises the
 `scene-unassigned-behavior-write` capability. When it does not, the Stage shows
 the current policy in plain words as a read-only value rather than a picker.
 
-![The Hypercolor Studio workspace](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="The Hypercolor Studio workspace") }}
 
 The cleanest fix for unclaimed hardware is usually to assign it. Use the
 zone-assignment panel beneath the canvas to move those outputs into a real zone.

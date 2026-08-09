@@ -8,7 +8,7 @@ template = "section.html"
 
 Something is not working. Find your symptom in the table below and follow the link: each entry goes directly to the relevant fix, not a general overview.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ## Find your symptom
 

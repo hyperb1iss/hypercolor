@@ -6,7 +6,7 @@ weight = 110
 
 Hypercolor discovers USB devices automatically the moment the daemon starts. Network devices (WLED, Philips Hue, Nanoleaf, Govee) are found over the local network, and the ones that require credentials need one additional `devices pair` step. This page covers all three paths plus the udev permission fix that solves the most common "device missing" problem on Linux.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ## Check what Hypercolor already found
 

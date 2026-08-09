@@ -6,7 +6,7 @@ template = "section.html"
 weight = 60
 +++
 
-![Hypercolor device view showing connected hardware](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Hypercolor device view showing connected hardware") }}
 
 Hypercolor talks to RGB hardware through two parallel systems: a **Hardware Abstraction Layer** (HAL) for local devices connected over USB or SMBus/I2C, and a set of **network driver crates** for LAN and cloud-connected devices. Both converge on the same render pipeline, so your effects see one unified canvas and the drivers handle the rest.
 

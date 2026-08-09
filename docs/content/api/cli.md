@@ -220,7 +220,7 @@ hypercolor effects layout set borealis desk-ring  # Pin to a layout
 hypercolor effects layout clear borealis          # Remove the association
 ```
 
-![The effects gallery in the Hypercolor web UI](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="The effects gallery in the Hypercolor web UI") }}
 
 ### brightness
 
@@ -302,7 +302,7 @@ typed, for example `enum:grb`, `bool:true`, or `duration:1500`. Add
 without applying. `action` takes a `<device> <action>` pair with repeatable
 `-i`/`--input` assignments and `--yes` to confirm guarded actions.
 
-![Connected devices in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Connected devices in the Hypercolor web UI") }}
 
 ### controls
 

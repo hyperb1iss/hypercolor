@@ -128,7 +128,7 @@ hypercolor effects list
 
 Your effect appears alongside the built-ins. The repository ships roughly 47 SDK-authored HTML effects plus the compiled-in native renderers, and that set grows, so browse the catalog instead of memorizing a count. You can also open the effects browser in the web UI to see your effect with its controls and presets wired up.
 
-![The Hypercolor effects browser](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
 
 ## The publish flow end to end
 

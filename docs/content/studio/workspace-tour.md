@@ -7,7 +7,7 @@ template = "page.html"
 
 Studio is a two-column workspace. The zone tree lives on the left, the Stage fills the center, and the composition panel slides in over the Stage when you summon it. There is no permanent layer rail and no Preview/Layout toggle. This page walks every surface in order, so you know exactly what each control does before you start composing.
 
-![The Studio workspace: zone tree on the left, live Stage in the center](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="The Studio workspace: zone tree on the left, live Stage in the center") }}
 
 If you want the conceptual model first (what a scene, zone, layer, and layout are), read the [Studio overview](@/studio/overview.md). This page is the literal UI tour.
 

@@ -6,7 +6,7 @@ weight = 40
 
 Network RGB devices (Philips Hue, Nanoleaf, WLED, and Govee) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the four built-in network drivers.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ## How discovery works
 

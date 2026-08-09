@@ -53,7 +53,7 @@ curl -X POST http://localhost:9420/api/v1/devices/discover \
 
 Open `http://localhost:9420`, navigate to **Devices**, and click **Discover**.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ## Network requirements
 

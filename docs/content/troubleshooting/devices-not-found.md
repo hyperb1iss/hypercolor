@@ -5,7 +5,7 @@ weight = 10
 template = "page.html"
 +++
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 You ran `hypercolor devices list` (or checked the web UI) and the device you just
 plugged in is nowhere. Here are the five reasons that happen, in order of how often

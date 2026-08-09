@@ -9,7 +9,7 @@ Layers are how a single zone shows more than one thing at once. Each zone owns a
 
 You edit the stack in the **Layer Stack** panel. It opens from the Stage by clicking the now-playing chip, which slides the composition panel over the canvas. Studio, the Media page, and any future surface all mount the exact same editor, so the controls never drift between places.
 
-![Studio composition workspace with the layer stack panel](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Studio composition workspace with the layer stack panel") }}
 
 This page covers adding layers, the 11 blend modes, opacity, the transform and color adjustments, reordering, the runtime health pill, and the add-to scopes that let one layer land on several zones at once.
 
@@ -37,7 +37,7 @@ Each layer is a card. From top to bottom a card carries:
 
 Click **Add layer** to open the picker. It has two tabs, **Effect** and **Media**, plus an optional **Add to** scope selector.
 
-![Studio effects gallery, the kind of catalog the Effect tab draws from](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="Studio effects gallery, the kind of catalog the Effect tab draws from") }}
 
 ### Effect and face layers
 

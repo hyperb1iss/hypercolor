@@ -6,7 +6,7 @@ weight = 190
 
 The catalog is whatever the daemon currently has loaded. Browse it live with `hypercolor effects list`, `GET /api/v1/effects`, the web UI effects browser, or the MCP `list_effects` tool. Every surface reads the same registry, so the list reflects exactly what is installed right now: built-in effects, SDK effects, and anything you have shipped yourself.
 
-![The Hypercolor effects browser](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
 
 Two effect families ship out of the box. Eleven native effects are compiled into the daemon (`crates/hypercolor-core/src/effect/builtin/`), and forty-six SDK effects build from `sdk/src/effects/` into self-contained HTML, alongside seven display faces from `sdk/src/faces/`. Those numbers move as the library grows, so the catalog is the source of truth, not a count pinned in a doc. Query the daemon to see what you actually have.
 
@@ -120,21 +120,21 @@ The companion `set_effect` tool takes a `query` that accepts an exact name, a pa
 
 The web UI renders each effect as a live, animated tile, which is the best way to actually choose one. The cards below are static captures of a selection of shipped effects; the running UI shows every effect in your library, animated, with search and category filters above the grid.
 
-![Arc Storm](/img/effects/arc-storm.webp) ![Audio Pulse](/img/effects/audio-pulse.webp) ![Borealis](/img/effects/borealis.webp)
+{{ img(path="img/effects/arc-storm.webp", alt="Arc Storm") }} {{ img(path="img/effects/audio-pulse.webp", alt="Audio Pulse") }} {{ img(path="img/effects/borealis.webp", alt="Borealis") }}
 
-![Bubble Garden](/img/effects/bubble-garden.webp) ![Cyber Descent](/img/effects/cyber-descent.webp) ![Cymatics](/img/effects/cymatics.webp)
+{{ img(path="img/effects/bubble-garden.webp", alt="Bubble Garden") }} {{ img(path="img/effects/cyber-descent.webp", alt="Cyber Descent") }} {{ img(path="img/effects/cymatics.webp", alt="Cymatics") }}
 
-![Ember Glow](/img/effects/ember-glow.webp) ![Fiberflies](/img/effects/fiberflies.webp) ![Frequency Cascade](/img/effects/frequency-cascade.webp)
+{{ img(path="img/effects/ember-glow.webp", alt="Ember Glow") }} {{ img(path="img/effects/fiberflies.webp", alt="Fiberflies") }} {{ img(path="img/effects/frequency-cascade.webp", alt="Frequency Cascade") }}
 
-![Frost Crystal](/img/effects/frost-crystal.webp) ![Hyperspace](/img/effects/hyperspace.webp) ![Ink Tide](/img/effects/ink-tide.webp)
+{{ img(path="img/effects/frost-crystal.webp", alt="Frost Crystal") }} {{ img(path="img/effects/hyperspace.webp", alt="Hyperspace") }} {{ img(path="img/effects/ink-tide.webp", alt="Ink Tide") }}
 
-![Iris](/img/effects/iris.webp) ![Lava Lamp](/img/effects/lava-lamp.webp) ![Meteor Storm](/img/effects/meteor-storm.webp)
+{{ img(path="img/effects/iris.webp", alt="Iris") }} {{ img(path="img/effects/lava-lamp.webp", alt="Lava Lamp") }} {{ img(path="img/effects/meteor-storm.webp", alt="Meteor Storm") }}
 
-![Nebula Drift](/img/effects/nebula-drift.webp) ![Neon City](/img/effects/neon-city.webp) ![Plasma Engine](/img/effects/plasma-engine.webp)
+{{ img(path="img/effects/nebula-drift.webp", alt="Nebula Drift") }} {{ img(path="img/effects/neon-city.webp", alt="Neon City") }} {{ img(path="img/effects/plasma-engine.webp", alt="Plasma Engine") }}
 
-![Spectral Fire](/img/effects/spectral-fire.webp) ![Synth Horizon](/img/effects/synth-horizon.webp) ![Voronoi Glass](/img/effects/voronoi-glass.webp)
+{{ img(path="img/effects/spectral-fire.webp", alt="Spectral Fire") }} {{ img(path="img/effects/synth-horizon.webp", alt="Synth Horizon") }} {{ img(path="img/effects/voronoi-glass.webp", alt="Voronoi Glass") }}
 
-![Vortex](/img/effects/vortex.webp) ![Voidweaver](/img/effects/voidweaver.webp) ![Digital Rain](/img/effects/digital-rain.webp)
+{{ img(path="img/effects/vortex.webp", alt="Vortex") }} {{ img(path="img/effects/voidweaver.webp", alt="Voidweaver") }} {{ img(path="img/effects/digital-rain.webp", alt="Digital Rain") }}
 
 ## Where effects come from
 

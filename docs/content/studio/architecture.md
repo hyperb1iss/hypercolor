@@ -228,7 +228,7 @@ pub fn zone_crud_ready(&self) -> bool {
 
 `+ New zone` and the zone rows need all three, because a user who can create a zone but cannot render it or move outputs into it would have an unusable zone. The unassigned-lights policy editor gates separately on `scene-unassigned-behavior-write`.
 
-![The Hypercolor Studio workspace](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="The Hypercolor Studio workspace") }}
 
 ## Where to read next
 

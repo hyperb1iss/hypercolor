@@ -13,7 +13,7 @@ That last point is the one thing to internalize before writing a line of GLSL: *
 GLSL effects render as WebGL2 in Servo, not on a native GPU pipeline. The daemon's renderer factory has no runnable shader path: `EffectSource::Shader` returns `shader effect '...' is not runnable yet`, requesting `gpu` acceleration errors outright, and `auto` falls back to CPU with `gpu effect renderer acceleration is not available yet`. SDK GLSL effects sidestep all of that by shipping as `EffectSource::Html`. The wgpu lane is future work. See [Renderer internals](@/architecture/renderer-internals.md).
 {% end %}
 
-![Effect gallery in the web UI](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="Effect gallery in the web UI") }}
 
 ## The `effect()` signature
 

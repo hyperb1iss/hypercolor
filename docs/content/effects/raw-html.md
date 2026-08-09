@@ -13,7 +13,7 @@ This is the lowest-level authoring path. You give up typed controls, palette sam
 **Catalog, not counts.** Hypercolor ships 11 native built-in effects plus a large library of SDK-authored HTML effects. The catalog grows, so browse the live registry with `hypercolor effects list` or the web UI rather than trusting any fixed number.
 {% end %}
 
-![Hypercolor effects browser](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="Hypercolor effects browser") }}
 
 ## The minimum viable effect
 

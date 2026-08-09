@@ -9,7 +9,7 @@ The Hypercolor desktop app (`hypercolor-app`) is the native shell that wraps the
 
 The app does three things the raw daemon cannot: it supervises the daemon process (auto-restarts on crash), registers the system tray icon, and presents the web UI in a native window. Everything it controls is ultimately talking to the daemon on `:9420`; the shell itself has no rendering logic.
 
-![The Hypercolor dashboard](/img/ui/dashboard.webp)
+{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
 
 ---
 

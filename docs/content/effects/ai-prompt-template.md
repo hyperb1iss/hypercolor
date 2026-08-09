@@ -103,7 +103,7 @@ copy its visuals.
 Stateful canvas effects like `lava-lamp` and `fiberflies` are good seeds: they show the factory pattern (a zero-argument setup function that returns the per-frame draw), real palette sampling, and an idle life that holds up in silence.
 
 <!-- effect gallery tile: lava-lamp -->
-![Lava Lamp, a stateful canvas effect that makes a good prompt seed](/img/effects/lava-lamp.webp)
+{{ img(path="img/effects/lava-lamp.webp", alt="Lava Lamp, a stateful canvas effect that makes a good prompt seed") }}
 
 ## A worked example
 

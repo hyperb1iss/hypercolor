@@ -9,7 +9,7 @@ Write your effect so it looks right at 10 FPS and at 60 FPS, and the engine hand
 
 If you are chasing low FPS as a *user* rather than tuning an effect you are writing, read [Low FPS and stuttering](@/troubleshooting/performance.md) instead. For the full render-loop architecture, see [Render pipeline](@/architecture/render-pipeline.md).
 
-![Effect gallery in the web UI](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="Effect gallery in the web UI") }}
 
 ## The frame budget is a moving target
 

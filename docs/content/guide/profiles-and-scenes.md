@@ -10,7 +10,7 @@ configurations the engine can switch between, with priority and mutation control
 that let you build automated or context-driven lighting behavior. Understanding the
 distinction saves a lot of confusion.
 
-![The scene switcher in the Hypercolor web UI](/img/ui/ui-scenes.webp)
+{{ img(path="img/ui/ui-scenes.webp", alt="The scene switcher in the Hypercolor web UI") }}
 
 ## Profiles
 

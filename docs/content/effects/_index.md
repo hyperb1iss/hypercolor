@@ -10,7 +10,7 @@ Effects are web pages. Your desk is the canvas.
 
 Every Hypercolor effect renders into a single RGBA canvas, and the daemon samples that canvas at each LED's physical position before pushing colors to hardware. The default render surface is 640x480 at up to 60 FPS, retuned live across five adaptive tiers. Both dimensions and the target FPS flow from `daemon.canvas_width`, `daemon.canvas_height`, and the active render tier, so treat them as live values, never constants.
 
-![The Hypercolor effects browser](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
 
 ## Resolution independence is the whole game
 

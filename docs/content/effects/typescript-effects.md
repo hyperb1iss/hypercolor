@@ -34,7 +34,7 @@ export default canvas(
 
 The `canvas()` call registers the effect as a side effect; the default export is a void value at runtime. The SDK reads the declaration, generates the controls UI, hooks up the render loop, and bundles the whole thing into one self-contained HTML artifact when you build. See [Creating effects](@/effects/creating-effects.md) for the scaffold-to-build loop and [Setup](@/effects/setup.md) for installing the SDK.
 
-![Fiberflies, a stateful canvas effect: luminous neon particles drifting through warm darkness](/img/effects/fiberflies.webp)
+{{ img(path="img/effects/fiberflies.webp", alt="Fiberflies, a stateful canvas effect: luminous neon particles drifting through warm darkness") }}
 
 ## The `canvas()` signature
 
@@ -314,7 +314,7 @@ drawGlowyThings(ctx);
 ctx.restore();
 ```
 
-![Lava Lamp, a stateful metaball effect: molten blobs merging in slow convection](/img/effects/lava-lamp.webp)
+{{ img(path="img/effects/lava-lamp.webp", alt="Lava Lamp, a stateful metaball effect: molten blobs merging in slow convection") }}
 
 ## Presets
 

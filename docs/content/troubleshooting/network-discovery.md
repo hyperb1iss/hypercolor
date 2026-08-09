@@ -6,7 +6,7 @@ weight = 30
 
 Network devices (Hue, Nanoleaf, WLED, Govee) rely on mDNS multicast for automatic discovery. Three network configurations reliably break that: **AP/client isolation**, **VLAN segmentation**, and **multicast firewall rules**. This page walks through diagnosing which one you have and how to work around it using per-driver static IP lists.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ## How discovery works
 

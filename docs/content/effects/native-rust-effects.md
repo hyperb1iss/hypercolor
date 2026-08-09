@@ -36,7 +36,7 @@ crates/hypercolor-core/src/effect/builtin/
 
 Each module owns its renderer struct, its `EffectRenderer` impl, its `controls()` / `presets()` helpers, and a `metadata()` constructor that builds the registry entry.
 
-![Built-in effects in the web UI](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="Built-in effects in the web UI") }}
 
 ## The EffectRenderer trait
 
@@ -184,7 +184,7 @@ fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas)
 }
 ```
 
-![Audio pulse](/img/effects/audio-pulse.webp)
+{{ img(path="img/effects/audio-pulse.webp", alt="Audio pulse") }}
 
 ## Handling controls
 
@@ -230,7 +230,7 @@ fn controls() -> Vec<ControlDefinition> {
 
 `common.rs` ships `color_control`, `slider_control`, `toggle_control`, `dropdown_control`, `asset_control`, and `rect_control`. Use them rather than hand-building `ControlDefinition` so every field (group, tooltip, step) stays consistent.
 
-![Live controls in the UI](/img/ui/ui-effect-controls.webp)
+{{ img(path="img/ui/ui-effect-controls.webp", alt="Live controls in the UI") }}
 
 ## Registration
 

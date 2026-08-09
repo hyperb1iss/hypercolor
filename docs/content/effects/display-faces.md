@@ -213,7 +213,7 @@ The quality gate: a face ships when it looks intentional on *both*
 canonical displays, round and strip, with live data and in its idle
 state. Screenshot both, every time.
 
-![Live face simulator previews on the Devices page](/img/ui/ui-displays.webp)
+{{ img(path="img/ui/ui-displays.webp", alt="Live face simulator previews on the Devices page") }}
 
 ## Controls and presets
 

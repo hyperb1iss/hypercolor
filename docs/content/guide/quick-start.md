@@ -34,7 +34,7 @@ hypercolor devices list
 
 You should see a table of connected devices with their name, driver, output route, LED count, status, and firmware. If the list is empty and you have hardware plugged in, check the [udev rules](@/guide/installation.md) and confirm no conflicting software is running.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 {% callout(type="info") %}
 **No hardware? Use a simulated display.** The daemon has a built-in virtual display simulator; no physical LEDs required. Create one via the REST API and it will appear in `devices list` like real hardware:
@@ -68,7 +68,7 @@ hypercolor effects list --category ambient
 
 The web UI at `http://localhost:9420` has a visual effect browser with search, category filters, and canvas preview before you apply anything.
 
-![Web UI dashboard showing the effect browser](/img/ui/dashboard.webp)
+{{ img(path="img/ui/dashboard.webp", alt="Web UI dashboard showing the effect browser") }}
 
 ## 3. Apply an effect
 
@@ -126,7 +126,7 @@ The terminal UI gives you a full interactive control surface in one pane (device
 hypercolor tui
 ```
 
-![TUI dashboard view](/img/tui/tui-dashboard.png)
+{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard view") }}
 
 See [the TUI guide](@/guide/tui.md) for keyboard shortcuts and layout details.
 

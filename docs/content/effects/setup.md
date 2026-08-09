@@ -7,7 +7,7 @@ template = "page.html"
 
 Every Hypercolor effect lives in a Bun workspace that depends on [`hypercolor`](https://www.npmjs.com/package/hypercolor). This page gets that workspace running: install Bun, scaffold a project, and let `bun install` pull the SDK from npm. Once it finishes, you're ready to author.
 
-![The Hypercolor effects browser, the surface your built effects land in](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser, the surface your built effects land in") }}
 <!-- No setup-specific UI shot exists; the effects browser shows what authored effects become once shipped. -->
 
 The endpoint of this page is a workspace where `bun install` has succeeded and `hypercolor` resolves. If that is true, you can author. The next page, [Creating effects](@/effects/creating-effects.md), writes the first one.

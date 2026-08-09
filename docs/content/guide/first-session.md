@@ -114,7 +114,7 @@ hypercolor devices identify <device-name-or-id>
 
 The device pulses for five seconds by default. Pass `--duration 10` for a longer window.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ## 4. Browse the effect library
 
@@ -236,7 +236,7 @@ curl http://localhost:9420/api/v1/effects/active | jq '.data.controls'
 
 The web UI's controls panel lets you adjust these with sliders, which is easier for exploration. The REST PATCH and `effects patch` are the right paths for scripting or keyboard macros.
 
-![Effect control panel in the Hypercolor Studio](/img/ui/ui-effect-controls.webp)
+{{ img(path="img/ui/ui-effect-controls.webp", alt="Effect control panel in the Hypercolor Studio") }}
 
 ## 7. Build a spatial layout
 
@@ -415,13 +415,13 @@ For the conceptual difference between profiles and scenes, and how to configure 
 Studio is the visual authoring surface for scenes. The Studio workspace lets you build multi-zone scenes with per-zone effects, inspect the composition in a live canvas preview, and manage scene groups without writing JSON. See [Studio scenes](@/studio/scenes.md) and [Studio zones](@/studio/zones.md).
 {% end %}
 
-![The scene switcher in the Hypercolor web UI](/img/ui/ui-scenes.webp)
+{{ img(path="img/ui/ui-scenes.webp", alt="The scene switcher in the Hypercolor web UI") }}
 
 ## 11. Tour the web UI
 
 Open `http://localhost:9420` in a browser. The daemon serves the embedded Leptos web UI directly, with no separate server process required.
 
-![Hypercolor dashboard with effects browser, canvas preview, and device status panel](/img/ui/dashboard.webp)
+{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard with effects browser, canvas preview, and device status panel") }}
 
 The UI is organized into panels:
 
@@ -441,7 +441,7 @@ Studio is the advanced authoring workspace inside the web UI. It goes beyond app
 
 Open Studio from the top navigation, or navigate directly to `http://localhost:9420` and click the Studio tab.
 
-![Hypercolor Studio zone canvas with live preview and effect layers](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Hypercolor Studio zone canvas with live preview and effect layers") }}
 
 What Studio adds on top of the basic effects browser:
 

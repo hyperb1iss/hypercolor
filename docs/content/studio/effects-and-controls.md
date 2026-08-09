@@ -9,7 +9,7 @@ To light a zone, add an effect layer to it and tune that effect from the layer's
 
 This page covers picking an effect for a zone, the live control panel, media playback settings, and the extra controls that appear when an effect reacts to your screen.
 
-![Studio with an effect layer selected and its control panel open](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Studio with an effect layer selected and its control panel open") }}
 
 ## Pick an effect for a zone
 
@@ -58,7 +58,7 @@ Each patch carries the zone's current `layers_version` as a precondition. If ano
 
 This is the same shared control-patch session that powers display-face controls and the standalone effect panel, so the behavior is identical everywhere you tune live controls.
 
-![Effect control panel in the Hypercolor Studio](/img/ui/ui-effect-controls.webp)
+{{ img(path="img/ui/ui-effect-controls.webp", alt="Effect control panel in the Hypercolor Studio") }}
 
 ## Media playback controls
 
@@ -80,7 +80,7 @@ These knobs are deliberately global. One screen-capture pipeline feeds every scr
 
 The section only appears for effects that actually consume screen input, so a non-reactive effect never shows capture controls it cannot use. For setting up screen capture as an input source and the ambilight workflow, see [audio setup](@/guide/audio-setup.md) for the parallel reactive-input model and the [Effects](@/effects/_index.md) section for screen-reactive effects to try.
 
-![Screen-reactive capture controls in the Hypercolor Studio](/img/ui/ui-screen-controls.webp)
+{{ img(path="img/ui/ui-screen-controls.webp", alt="Screen-reactive capture controls in the Hypercolor Studio") }}
 
 ## Where to go next
 

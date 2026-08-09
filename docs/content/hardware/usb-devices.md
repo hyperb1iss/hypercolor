@@ -10,7 +10,7 @@ On Linux, USB-connected devices need a one-time permissions step (udev rules) be
 
 This page covers the setup, explains how Hypercolor reaches different device types, and walks through the most common failure modes.
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 ## Install udev rules
 

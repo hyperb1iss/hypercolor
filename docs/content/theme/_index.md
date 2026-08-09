@@ -5,7 +5,7 @@ weight      = 100
 sort_by     = "weight"
 +++
 
-![Hypercolor wordmark](/img/brand/lockup-horizontal-480.png)
+{{ img(path="img/brand/lockup-horizontal-480.png", alt="Hypercolor wordmark") }}
 
 Luminary is Hypercolor's visual language: a dark scrim built around light, where
 restrained chrome lets the RGB effects take the stage. The web UI

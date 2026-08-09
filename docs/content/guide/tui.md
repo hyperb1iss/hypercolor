@@ -6,7 +6,7 @@ weight = 100
 
 Hypercolor ships a full-featured terminal UI built on [Ratatui](https://ratatui.rs). It gives you a live dashboard, a searchable effect browser with per-effect controls and canvas preview, a connected-devices table, and a real-time audio spectrum strip, all without leaving the terminal.
 
-![The TUI dashboard showing Now Playing, canvas preview, device table, and audio strip](/img/tui/tui-dashboard.png)
+{{ img(path="img/tui/tui-dashboard.png", alt="The TUI dashboard showing Now Playing, canvas preview, device table, and audio strip") }}
 
 ## Launching the TUI
 
@@ -69,7 +69,7 @@ These three screens are what currently ships in the TUI; they are the only entri
 
 The dashboard is the landing screen and the fastest way to see current system state at a glance.
 
-![TUI dashboard with panels labeled](/img/tui/tui-dashboard.png)
+{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard with panels labeled") }}
 
 It is divided into four panels, all resizable by dragging the divider lines with the mouse:
 
@@ -85,7 +85,7 @@ It is divided into four panels, all resizable by dragging the divider lines with
 
 The effect browser uses a three-pane layout: effect list on the left, canvas preview top-right, and controls bottom-right. All three panes are resizable.
 
-![TUI effects screen with three panes](/img/tui/tui-effects.png)
+{{ img(path="img/tui/tui-effects.png", alt="TUI effects screen with three panes") }}
 
 ### Effect list pane
 
@@ -134,9 +134,9 @@ Press `r` in the controls pane to reset all controls to their defaults.
 
 Press `z` (or `Z`) from any screen to expand the canvas preview to fill the entire terminal. The audio strip and a minimal status line remain visible.
 
-![Fullscreen bubble-garden effect](/img/tui/tui-fullscreen-bubbles.png)
+{{ img(path="img/tui/tui-fullscreen-bubbles.png", alt="Fullscreen bubble-garden effect") }}
 
-![Fullscreen cymatics effect](/img/tui/tui-fullscreen-cymatics.png)
+{{ img(path="img/tui/tui-fullscreen-cymatics.png", alt="Fullscreen cymatics effect") }}
 
 In fullscreen mode, the preview transport is chosen automatically based on your terminal's capabilities and the render cost. In Kitty the TUI uses a fast direct-protocol path; in other terminals it falls back to the best graphics protocol the terminal advertises, and to Unicode block-character rendering where none is available.
 

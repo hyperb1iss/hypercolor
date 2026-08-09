@@ -17,7 +17,7 @@ other lanes, see [GLSL shader effects](@/effects/glsl-effects.md) and
 [display faces](@/effects/display-faces.md). The native Rust lane is authored as a
 compiled-in `EffectRenderer` and registered in `crates/hypercolor-core/src/effect/builtin/mod.rs`.
 
-![The Hypercolor effects browser](/img/ui/effects.webp)
+{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
 
 ## Pick a path 🎯
 

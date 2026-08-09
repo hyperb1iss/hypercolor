@@ -6,7 +6,7 @@ weight = 10
 
 Studio is where you compose what your lights actually do. Open it from the sidebar and you land in a two-column workspace: a zone tree on the left, a live Stage in the center. Pick a zone, see it render, and build it up from there. Everything you arrange in Studio belongs to one **scene**, the whole-rig configuration that drives every connected device.
 
-![The Studio composition workspace: zone tree on the left, live Stage in the center](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="The Studio composition workspace: zone tree on the left, live Stage in the center") }}
 
 The mental model is four words deep, and it is worth holding onto before you touch anything:
 
@@ -68,7 +68,7 @@ The left column is the **zone tree**: a Zones section for lighting zones, a Scre
 
 The center column is the **Stage**. It drives off whatever zone you have selected: a lighting zone shows the spatial layout with the live effect under it, a Screen shows the live face. The now-playing chip on the Stage opens the **composition panel**, a slide-over that hosts the layer editor over the Stage instead of occupying a permanent rail. There is no separate Preview/Layout toggle and no fixed layer column; the Stage is the always-on editor, and layers slide in when you ask for them.
 
-![The Hypercolor Studio workspace](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="The Hypercolor Studio workspace") }}
 
 Your selected lighting zone is also the app-wide effect apply-target. Apply an effect from the dashboard, sidebar, or command palette while a zone is selected in Studio, and it lands in the zone you are composing. A Screen or the Unassigned entry is not an apply target, so selection there falls back to the Default zone.
 

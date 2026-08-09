@@ -6,7 +6,7 @@ weight = 30
 
 A scene is your whole rig captured as one configuration: every zone, every layer, every layout, every effect and control. Exactly one scene is active at a time, and switching scenes rewrites the entire rig in one move. The Studio scene selector lives in the page header toolbar and is the headline control of the workspace.
 
-![The Studio workspace with the scene selector in the header](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="The Studio workspace with the scene selector in the header") }}
 
 If you want the full mental model first, read the [Studio overview](@/studio/overview.md). This page covers the scene itself: the full create / rename / delete / switch cycle, the ephemeral default scene you start out in, and how the active scene connects to where effects land.
 
@@ -32,7 +32,7 @@ The selector sits at the left of the Studio header and has three parts:
 2. A **New** button for creating a scene.
 3. An **actions menu** (the three-dot overflow) to rename or delete the active scene.
 
-![The scene switcher in the Hypercolor web UI](/img/ui/ui-scenes.webp)
+{{ img(path="img/ui/ui-scenes.webp", alt="The scene switcher in the Hypercolor web UI") }}
 
 The picker always names what is actually rendering, even on a brand-new install where no scene has been saved yet. That fresh state is the ephemeral default scene, described next.
 

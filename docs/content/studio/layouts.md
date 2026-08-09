@@ -13,7 +13,7 @@ This is the single most common "my effect runs but nothing lights up" cause. If 
 In Studio, the layout editor **is** the Stage for a Light. Select a Light zone in the left tree and the canvas fills the center, with the live effect rendering under the device boxes. There is no Preview/Layout toggle. The standalone `/layout` page edits a separate, legacy layouts library and is being retired. Treat the Studio Stage as the canonical place to build a zone's layout.
 {% end %}
 
-![Studio with the spatial layout editor filling the Stage](/img/ui/studio.webp)
+{{ img(path="img/ui/studio.webp", alt="Studio with the spatial layout editor filling the Stage") }}
 
 ## The model in one picture
 

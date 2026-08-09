@@ -4,7 +4,7 @@ description = "Connect WLED controllers via mDNS or static IP. DDP streams pixel
 weight = 70
 +++
 
-![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
+{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
 
 WLED controllers (ESP8266 / ESP32) are discovered automatically over mDNS and need no credentials or pairing step. Hypercolor streams pixel data in real time using DDP by default, a lightweight protocol with no universe management and no per-packet channel-count ceremony. E1.31/sACN is available as an alternative for xLights, Vixen, and other DMX workflows.
 

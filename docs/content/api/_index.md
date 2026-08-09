@@ -12,7 +12,7 @@ the same event bus, so a brightness change made over the CLI shows up instantly
 in the web UI's preview and in any subscribed WebSocket client. There is one
 source of truth and four ways to reach it.
 
-![The Hypercolor dashboard, the same engine the API drives](/img/ui/dashboard.webp)
+{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard, the same engine the API drives") }}
 
 ## Pick your interface
 
