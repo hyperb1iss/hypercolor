@@ -9,6 +9,7 @@
 
 use hypercolor_leptos_ext::events::document as browser_document;
 use leptos::ev;
+use leptos::portal::Portal;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -43,6 +44,10 @@ fn is_same_element(a: &web_sys::Element, b: &web_sys::HtmlElement) -> bool {
 
 /// Behavior-only modal wrapper: backdrop + dialog semantics + keyboard
 /// handling. Children render the visual panel exactly as before adoption.
+///
+/// The dialog mounts through a portal at `document.body`, so an ancestor
+/// stacking context (entrance animations, transforms, filters) can never
+/// layer page chrome above an open modal.
 #[component]
 pub fn Modal(
     /// Fires when the user asks to dismiss (Escape or a backdrop click).
@@ -64,7 +69,7 @@ pub fn Modal(
     /// When false, clicking the backdrop does not dismiss (Escape still can).
     #[prop(default = true)]
     close_on_backdrop: bool,
-    children: Children,
+    children: ChildrenFn,
 ) -> impl IntoView {
     let dialog_ref = NodeRef::<leptos::html::Div>::new();
     let can_dismiss = move || dismissible.get_untracked().unwrap_or(true);
@@ -133,23 +138,25 @@ pub fn Modal(
     });
 
     view! {
-        <div
-            node_ref=dialog_ref
-            class=container_class
-            role="dialog"
-            aria-modal="true"
-            aria-label=move || label.get()
-            tabindex="-1"
-        >
+        <Portal>
             <div
-                class=backdrop_class
-                on:click=move |_| {
-                    if close_on_backdrop && can_dismiss() {
-                        on_close.run(());
+                node_ref=dialog_ref
+                class=container_class.clone()
+                role="dialog"
+                aria-modal="true"
+                aria-label=move || label.get()
+                tabindex="-1"
+            >
+                <div
+                    class=backdrop_class.clone()
+                    on:click=move |_| {
+                        if close_on_backdrop && can_dismiss() {
+                            on_close.run(());
+                        }
                     }
-                }
-            />
-            {children()}
-        </div>
+                />
+                {children()}
+            </div>
+        </Portal>
     }
 }

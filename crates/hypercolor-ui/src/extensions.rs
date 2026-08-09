@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use leptos::prelude::{AnyView, IntoView};
+use leptos::prelude::{AnyView, IntoView, RwSignal};
 use leptos_router::any_nested_route::{AnyNestedRoute, IntoAnyNestedRoute};
 use leptos_router::{MatchNestedRoutes, NestedRoute, PossibleRouteMatch};
 
@@ -139,6 +139,35 @@ pub struct UiSidebarWidget {
     pub view: UiViewBuilder,
 }
 
+/// A startup hook contributed by an embedder.
+///
+/// Runs once inside the app's reactive owner, after every app-wide context
+/// is provided and before the shell renders. A hook can read contexts
+/// (including [`UiChromeFlags`]), spawn tasks, create signals and effects,
+/// and provide additional contexts for the embedder's own views.
+pub type UiSetupHook = Arc<dyn Fn() + Send + Sync>;
+
+/// Reactive visibility flags for OSS-owned chrome that an embedder may
+/// adjust at runtime.
+///
+/// Provided by [`crate::app::app_view`] with everything visible; setup
+/// hooks flip the signals as their own state warrants, and the OSS render
+/// paths read them. With no extensions installed nothing writes the flags,
+/// so OSS chrome is unchanged.
+#[derive(Clone, Copy)]
+pub struct UiChromeFlags {
+    /// Show the sidebar's sponsor link.
+    pub sponsor_link_visible: RwSignal<bool>,
+}
+
+impl Default for UiChromeFlags {
+    fn default() -> Self {
+        Self {
+            sponsor_link_visible: RwSignal::new(true),
+        }
+    }
+}
+
 /// Registry of everything an embedder injects into the app at startup.
 ///
 /// Default is empty, and the OSS entry ([`run`](crate::run)) uses exactly that —
@@ -157,6 +186,9 @@ pub struct UiExtensions {
     pub settings_sections: Vec<UiSettingsSection>,
     /// Extra sidebar footer widgets. Threaded through context.
     pub sidebar_widgets: Vec<UiSidebarWidget>,
+    /// Startup hooks, run in order inside the app's reactive owner after
+    /// contexts are provided and before the shell renders.
+    pub on_setup: Vec<UiSetupHook>,
 }
 
 /// Context wrapper for extension Settings sections (provided by

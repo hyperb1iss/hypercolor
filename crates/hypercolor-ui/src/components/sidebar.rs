@@ -43,6 +43,8 @@ pub fn Sidebar() -> impl IntoView {
     // standalone OSS app).
     let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
     let extension_widgets = use_context::<SidebarExtensionWidgets>().unwrap_or_default();
+    let chrome_flags = use_context::<crate::extensions::UiChromeFlags>();
+    let sponsor_visible = move || chrome_flags.is_none_or(|flags| flags.sponsor_link_visible.get());
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
     // Multi-zone scenes keep the panel alive whenever any zone is
@@ -320,8 +322,11 @@ pub fn Sidebar() -> impl IntoView {
                 }).collect_view()}
             </div>
 
-            // Sponsor link — above Now Playing, accent-styled
+            // Sponsor link — above Now Playing, accent-styled. Hidden when
+            // an embedder's chrome flags say so (a signed-in Hypercolor+
+            // user is already supporting the project).
             <a
+                class:hidden=move || !sponsor_visible()
                 href=SPONSOR_URL
                 target="_blank"
                 rel="noopener"
