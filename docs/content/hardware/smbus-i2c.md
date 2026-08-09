@@ -1,14 +1,14 @@
 +++
 title = "SMBus / I²C"
-description = "ASUS Aura lighting over SMBus on Linux: /dev/i2c-* access, the i2c-dev kernel module, the DRAM remap hub at 0x77, and the permission story."
+description = "ASUS Aura lighting over SMBus on Linux and Windows: /dev/i2c-* access, the i2c-dev kernel module, the DRAM remap hub at 0x77, and the permission story."
 weight = 30
 +++
 
 # SMBus / I²C ⚡
 
-ASUS Aura motherboard headers, GPU lighting zones, and RGB DRAM all communicate over SMBus — a low-speed I²C-compatible serial bus built into the platform chipset. Linux exposes each adapter as a `/dev/i2c-*` character device. Hypercolor opens those nodes directly and speaks the ENE indirect-register protocol that ASUS Aura controllers expect.
+ASUS Aura motherboard headers, GPU lighting zones, and RGB DRAM all communicate over SMBus, a low-speed I²C-compatible serial bus built into the platform chipset. Linux exposes each adapter as a `/dev/i2c-*` character device. Hypercolor opens those nodes directly and speaks the ENE indirect-register protocol that ASUS Aura controllers expect.
 
-The setup requires two things that USB devices do not: the `i2c-dev` kernel module must be loaded, and the udev rules must be installed. Once those are in place, discovery is automatic.
+On Linux the setup requires two things that USB devices do not: the `i2c-dev` kernel module must be loaded, and the udev rules must be installed. Once those are in place, discovery is automatic. Both prerequisites are Linux-only; the [Windows section](#windows-and-macos) below covers the PawnIO path.
 
 ![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
 
@@ -22,7 +22,7 @@ Three classes of ASUS Aura controller are discovered over SMBus:
 |---|---|---|
 | Motherboard | `0x40`, `0x4E`, `0x4F` | Intel and AMD chipset SMBus adapters |
 | GPU (Linux only) | `0x29`, `0x2A`, `0x67` | AMD (`0x1002`) and NVIDIA (`0x10DE`) GPU adapters |
-| DRAM | Address pool via remap hub | Chipset SMBus adapters — see [DRAM section](#dram-lighting-and-the-remap-hub) |
+| DRAM | Address pool via remap hub | Chipset SMBus adapters (see [DRAM section](#dram-lighting-and-the-remap-hub)) |
 
 Bus selection is automatic: Hypercolor resolves the PCI vendor and device ID of each adapter from `/sys/class/i2c-dev` and probes only the address classes that belong on that bus type. Display DDC buses, sensor hubs, and other I²C adapters are skipped.
 
@@ -49,7 +49,7 @@ lsmod | grep i2c_dev
 ls /dev/i2c-*
 ```
 
-A typical Intel or AMD desktop board exposes two to five adapters. If no `/dev/i2c-*` nodes appear after loading the module, the chipset driver may need loading too — for AMD platforms this is `i2c-piix4`, for Intel it is `i2c-i801`.
+A typical Intel or AMD desktop board exposes two to five adapters. If no `/dev/i2c-*` nodes appear after loading the module, the chipset driver may need loading too: for AMD platforms this is `i2c-piix4`, for Intel it is `i2c-i801`.
 
 ### 2. Install the udev rules
 
@@ -65,10 +65,10 @@ Install it with:
 just udev-install
 ```
 
-This copies the rules file to `/etc/udev/rules.d/`, reloads udev, and triggers a re-evaluation for existing nodes. If you have already run `just udev-install` for USB device access, the SMBus rule is already installed — both USB and SMBus rules live in the same file.
+This copies the rules file to `/etc/udev/rules.d/`, reloads udev, and triggers a re-evaluation for existing nodes. If you have already run `just udev-install` for USB device access, the SMBus rule is already installed; both USB and SMBus rules live in the same file.
 
 {% callout(type="info") %}
-I²C bus nodes are on-chip and cannot be replugged, so a udev trigger is sufficient — no reboot required. If permissions are still denied after running `just udev-install`, log out and back in so `systemd-logind` can replay the session ACL.
+I²C bus nodes are on-chip and cannot be replugged, so a udev trigger is sufficient, no reboot required. If permissions are still denied after running `just udev-install`, log out and back in so `systemd-logind` can replay the session ACL.
 {% end %}
 
 ### 3. ACPI resource override (some boards)
@@ -116,7 +116,7 @@ with the firmware string (e.g. `AUMA0-E6K5-0106`) reported as the firmware versi
 
 ## DRAM lighting and the remap hub
 
-RGB DRAM is the most complex part of the SMBus path. Aura DIMM controllers share the I²C bus with system memory SPD EEPROMs at `0x50`–`0x57`, and multiple DIMMs may collide at the same default address. Probing the pool directly risks missing sticks or getting garbage responses.
+RGB DRAM is the most complex part of the SMBus path. Aura DIMM controllers share the I²C bus with system memory SPD EEPROMs at `0x50`-`0x57`, and multiple DIMMs may collide at the same default address. Probing the pool directly risks missing sticks or getting garbage responses.
 
 ASUS solves this with a **remap hub at address `0x77`**. When the hub is present, Hypercolor programs it slot by slot before probing, exposing each DIMM at a distinct address:
 
@@ -125,7 +125,7 @@ ASUS solves this with a **remap hub at address `0x77`**. When the hub is present
 3. For each DIMM slot (up to 8): write the slot index to ENE register `0x80F8` and a free target address to `0x80F9` via the hub. The target address is shifted left by one bit on the wire.
 4. Probe the occupied and remapped addresses for ENE controllers.
 
-If the hub is absent, Hypercolor falls back to probing the known address pool directly (`0x70`–`0x76`, `0x78`–`0x7F`, `0x4F`, `0x66`, `0x67`, `0x39`–`0x3D`) and discovers whatever is already reachable.
+If the hub is absent, Hypercolor falls back to probing the known address pool directly (`0x70`-`0x76`, `0x78`-`0x7F`, `0x4F`, `0x66`, `0x67`, `0x39`-`0x3D`) and discovers whatever is already reachable.
 
 {% callout(type="warning") %}
 DRAM lighting requires the remap hub at `0x77`. If another tool holds the hub or the bus during startup, Hypercolor cannot program the slot mappings and may miss some or all DRAM sticks. Stop Aura Sync and OpenRGB before starting the Hypercolor daemon.
@@ -139,12 +139,12 @@ The ENE indirect-register protocol is the same across motherboard, GPU, and DRAM
 
 | SMBus register | Role |
 |---|---|
-| `0x00` | Address port — write the 16-bit ENE register here, byte-swapped |
-| `0x01` | Write-data port — single byte |
-| `0x03` | Block-write port — up to 3 bytes per transaction |
+| `0x00` | Address port: write the 16-bit ENE register here, byte-swapped |
+| `0x01` | Write-data port: single byte |
+| `0x03` | Block-write port: up to 3 bytes per transaction |
 | `0x81` | Read-data port |
 
-A 1ms delay between operations is required and observed. Color data is delivered in **RBG wire order** (red, blue, green — not RGB) to the firmware's direct-color register base, which varies by firmware variant:
+A 1ms delay between operations is required and observed. Color data is delivered in **RBG wire order** (red, blue, green, not RGB) to the firmware's direct-color register base, which varies by firmware variant:
 
 | Firmware string(s) | Direct-color register | Notes |
 |---|---|---|
@@ -180,9 +180,11 @@ See [@/hardware/conflicting-software.md](@/hardware/conflicting-software.md) for
 
 ---
 
-## Windows
+## Windows and macOS
 
-On Windows, SMBus access uses the **PawnIO kernel driver** and a broker service (`hypercolor-windows-pawnio`) instead of `/dev/i2c-*` nodes. Hypercolor calls `enumerate_smbus_buses()` via PawnIO to list available buses, then runs the same ASUS ENE probe sequence. GPU SMBus probing is not available on Windows. The udev and `i2c-dev` steps on this page are Linux-only; Windows installation details are covered in the Windows setup guide.
+On Windows, SMBus access uses the **PawnIO kernel driver** and a broker service (`hypercolor-windows-pawnio`) instead of `/dev/i2c-*` nodes. Hypercolor calls `enumerate_smbus_buses()` via PawnIO to list available buses, then runs the same ASUS ENE probe sequence. GPU SMBus probing is not available on Windows. The udev and `i2c-dev` steps on this page are Linux-only; the [installation guide](@/guide/installation.md) covers installing the PawnIO helper in its Windows section.
+
+macOS has no SMBus path; the transport stub errors there.
 
 ---
 
@@ -223,7 +225,7 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=i2c-dev
 ```
 
-Then restart the daemon and check that your user is in the `users` group (`groups`). On headless systems without an active logind session, the `uaccess` tag has no effect — use the `GROUP="users"` fallback instead and ensure your user belongs to that group.
+Then restart the daemon and check that your user is in the `users` group (`groups`). On headless systems without an active logind session, the `uaccess` tag has no effect; use the `GROUP="users"` fallback instead and ensure your user belongs to that group.
 
 **DRAM sticks missing or incomplete**
 
@@ -253,7 +255,7 @@ If discovery logs `ASUS Aura SMBus firmware probe rejected candidate` and shows 
 ---
 
 See also:
-- [@/hardware/usb-devices.md](@/hardware/usb-devices.md) — USB/HID device access and udev rules overview
-- [@/hardware/compatibility.md](@/hardware/compatibility.md) — full device support matrix including ASUS motherboard, GPU, and DRAM SKUs
-- [@/hardware/conflicting-software.md](@/hardware/conflicting-software.md) — stopping Aura Sync, OpenRGB, and other tools before using Hypercolor
-- [@/troubleshooting/devices-not-found.md](@/troubleshooting/devices-not-found.md) — systematic diagnosis when a device does not appear after discovery
+- [@/hardware/usb-devices.md](@/hardware/usb-devices.md): USB/HID device access and udev rules overview
+- [@/hardware/compatibility.md](@/hardware/compatibility.md): full device support matrix including ASUS motherboard, GPU, and DRAM SKUs
+- [@/hardware/conflicting-software.md](@/hardware/conflicting-software.md): stopping Aura Sync, OpenRGB, and other tools before using Hypercolor
+- [@/troubleshooting/devices-not-found.md](@/troubleshooting/devices-not-found.md): systematic diagnosis when a device does not appear after discovery

@@ -1,12 +1,12 @@
 +++
 title = "USB devices"
-description = "Connect USB/HID/serial/MIDI devices on Linux: install udev rules, understand hidraw vs hidapi, fix access errors, and handle hotplug."
+description = "Connect USB/HID/serial/MIDI devices on Linux, Windows, and macOS: udev rules for Linux, transport paths, access errors, and hotplug."
 weight = 20
 +++
 
 # USB devices
 
-USB-connected devices need a one-time permissions step on Linux before Hypercolor can talk to them. Without it the daemon finds the hardware but cannot open it, which looks like a silent no-op or a "device not found" error even though the device is physically present.
+On Linux, USB-connected devices need a one-time permissions step (udev rules) before Hypercolor can talk to them. Without it the daemon finds the hardware but cannot open it, which looks like a silent no-op or a "device not found" error even though the device is physically present. Windows needs no per-device permission step, and macOS needs none for HID devices.
 
 This page covers the setup, explains how Hypercolor reaches different device types, and walks through the most common failure modes.
 
@@ -49,7 +49,7 @@ The rules file grants access to the physically logged-in user via `TAG+="uaccess
 
 Two attributes matter for HID rules, and getting them backwards produces a rule that silently does nothing:
 
-- `hidraw` rules use **`ATTRS{idVendor}`** (plural — walks up to the parent USB device node for the vendor/product match).
+- `hidraw` rules use **`ATTRS{idVendor}`** (plural: walks up to the parent USB device node for the vendor/product match).
 - `usb` rules use **`ATTR{idVendor}`** (singular) together with `ENV{DEVTYPE}=="usb_device"` to match the `/dev/bus/usb/` node directly.
 
 The rules file also covers `SUBSYSTEM=="tty"` for serial devices (Dygma Focus-class keyboards, Nollie-class controllers) and `SUBSYSTEM=="i2c-dev"` for ASUS Aura motherboard and DRAM lighting over SMBus. See [SMBus/I2C devices](@/hardware/smbus-i2c.md) for that path.
@@ -63,7 +63,7 @@ The file uses vendor-wide rules for brands where new product IDs should work wit
 | Razer | `1532` | Vendor-wide |
 | Corsair | `1b1c` | Vendor-wide |
 | ASUS Aura | `0b05` | Vendor-wide |
-| Lian Li | `0416` | Vendor-wide |
+| Lian Li | `0416`, `0cf2` | Vendor-wide |
 | Ableton | `2982` | Vendor-wide |
 | Dygma | `35ef` | Vendor-wide |
 | Keychron (QMK) | `3434` | Vendor-wide |
@@ -73,7 +73,6 @@ The file uses vendor-wide rules for brands where new product IDs should work wit
 | PrismRGB | `16d0` | Vendor-wide |
 | PrismRGB / Nollie / GCS | `16d1`, `16d2`, `16d3`, `16d5` | PID-scoped |
 | Nollie Gen 2 | `3061` | Vendor-wide |
-| Lian Li | `0cf2`, `0416` | Vendor-wide |
 
 The mixed PrismRGB / Nollie / GCS VID ranges are scoped where those vendors share
 IDs with unrelated hardware. PrismRGB `16d0`, Nollie Gen 2 `3061`, and Lian Li
@@ -85,21 +84,21 @@ Hypercolor's HAL defines a `TransportType` for every device in `crates/hypercolo
 
 ### UsbHidApi
 
-The most common path for keyboards, mice, and combo input/lighting devices. Hypercolor talks through the OS HID stack via the `hidapi` library, which means the kernel `usbhid` driver stays attached and the device remains fully usable as an input device while lighting commands are sent. The daemon opens a `/dev/hidraw*` node that `hidapi` selects internally.
+The most common path for keyboards, mice, and combo input/lighting devices. Hypercolor talks through the OS HID stack via the `hidapi` library, which means the OS HID driver stays attached and the device remains fully usable as an input device while lighting commands are sent. `hidapi` selects a platform backend internally: on Linux the daemon opens a `/dev/hidraw*` node, while on Windows and macOS the native HID API handles the open.
 
-The `hidraw` rules in `99-hypercolor.rules` cover this path.
+The `hidraw` rules in `99-hypercolor.rules` cover this path on Linux.
 
 ### UsbHidRaw
 
-A lower-level Linux path that also targets `/dev/hidraw*` nodes, but goes through `async-hid` directly rather than through `hidapi`. The kernel `usbhid` driver stays attached here too. This is used for devices that need async feature-report or output-report I/O without the synchronous blocking model of `hidapi`.
+A lower-level Linux-only path that also targets `/dev/hidraw*` nodes, but goes through `async-hid` directly rather than through `hidapi`. The kernel `usbhid` driver stays attached here too. This is used for devices that need async feature-report or output-report I/O without the synchronous blocking model of `hidapi`.
 
 The `hidraw` rules cover this path as well.
 
-**UsbHidApi vs UsbHidRaw:** both paths leave the kernel HID stack intact. The difference is the Rust library used internally. From a permissions and user-setup standpoint they are identical — `just udev-install` handles both.
+**UsbHidApi vs UsbHidRaw:** both paths leave the kernel HID stack intact. The difference is the Rust library used internally. From a permissions and user-setup standpoint they are identical: `just udev-install` handles both.
 
 ### UsbControl
 
-Used by Razer peripherals. This path claims the USB interface directly via `nusb` and sends HID feature reports as USB Class control transfers. On Linux, the `detach_and_claim_interface` call detaches `usbhid` from the interface before claiming it, so the `usb` (not `hidraw`) rules in the file must be in place. The device node is in `/dev/bus/usb/`.
+Used by Razer peripherals. This path claims the USB interface directly via `nusb` and sends HID feature reports as USB Class control transfers. On Linux, the `detach_and_claim_interface` call detaches `usbhid` from the interface before claiming it, so the `usb` (not `hidraw`) rules in the file must be in place, and the device node is in `/dev/bus/usb/`. The detach step is Linux-specific; Windows and macOS claim the interface without it.
 
 ### UsbHid
 
@@ -123,6 +122,12 @@ Used by Focus-class serial devices (Dygma keyboards, some Nollie controllers). T
 
 The baud rate for each device is set by its driver definition (115200 for the Focus-class controllers) and is applied automatically. You do not need to configure it manually.
 
+## Platform notes
+
+Only the `UsbHidRaw` transport (async-hid over `/dev/hidraw*`) is Linux-exclusive. The other transports (bulk, control, hid, hidapi, midi, serial, smbus, vendor) are cross-platform: `hidapi` selects a platform backend internally, and the `nusb`-based transports speak to the OS USB stack directly. SMBus on Windows goes through the optional PawnIO helper; see [SMBus/I2C devices](@/hardware/smbus-i2c.md). macOS has no SMBus path.
+
+The udev rules above are a Linux-only prerequisite. Windows needs no per-device permission step, and macOS needs none for HID devices.
+
 ## Verify access
 
 After installing rules and replugging, confirm the daemon can see and open the device:
@@ -138,7 +143,7 @@ hypercolor devices discover
 RUST_LOG=hypercolor_hal=debug hypercolor-daemon
 ```
 
-If a device appears in `devices list` but shows an error state, check the daemon log for a `TransportError::PermissionDenied` message. That means the udev rule matched the device node but the ACL was not applied — replug the device.
+If a device appears in `devices list` but shows an error state, check the daemon log for a `TransportError::PermissionDenied` message. That means the udev rule matched the device node but the ACL was not applied; replug the device.
 
 If the device does not appear at all, add `RUST_LOG=hypercolor_hal=debug` and look for the `NotFound` detail, which includes all candidate nodes that were considered and why they were filtered out.
 
@@ -167,14 +172,14 @@ Only one discovery scan can run at a time. A concurrent request returns HTTP 409
 This is the most common setup issue across every Linux RGB tool. Work through these steps in order:
 
 1. Confirm the rule file is in place: `ls -l /etc/udev/rules.d/99-hypercolor.rules`
-2. Replug the device — the ACL is assigned at plug-in time, not at rule-reload time
+2. Replug the device: the ACL is assigned at plug-in time, not at rule-reload time
 3. Check that the rule matched: `udevadm test /sys/class/hidraw/hidraw0 2>&1 | grep -E 'TAG|MODE|GROUP'`
 4. Confirm the device VID is in the table above. If it is PID-scoped and your PID is not listed, open an issue with the VID:PID from `lsusb`
-5. If another RGB tool has the device open (openrazer daemon, OpenRGB, Aura Sync), stop it first — Hypercolor cannot claim an interface that another app holds
+5. If another RGB tool has the device open (openrazer daemon, OpenRGB, Aura Sync), stop it first; Hypercolor cannot claim an interface that another app holds
 
 **Permission denied on a hidraw node**
 
-Run `ls -la /dev/hidraw*` and check that the ACL is set. If it shows only `crw-rw----`, logind has not assigned the ACL yet — replug or check that `systemd-logind` is running and that your session is recognized as active (`loginctl session-status`).
+Run `ls -la /dev/hidraw*` and check that the ACL is set. If it shows only `crw-rw----`, logind has not assigned the ACL yet; replug or check that `systemd-logind` is running and that your session is recognized as active (`loginctl session-status`).
 
 **Serial device not accessible**
 
@@ -186,7 +191,7 @@ sudo usermod -aG users $USER
 
 **Another app is holding the device open**
 
-Transports that claim the USB interface (`UsbControl`, `UsbHid`, `UsbVendor`, `UsbBulk`, `UsbMidi`) are exclusive. If another application — iCUE, Razer Synapse, an ALSA sequencer, or another RGB controller — has the interface open, Hypercolor's claim will fail. Stop the conflicting software first. See [conflicting software](@/hardware/conflicting-software.md) for per-vendor details.
+Transports that claim the USB interface (`UsbControl`, `UsbHid`, `UsbVendor`, `UsbBulk`, `UsbMidi`) are exclusive. If another application (iCUE, Razer Synapse, an ALSA sequencer, or another RGB controller) has the interface open, Hypercolor's claim will fail. Stop the conflicting software first. See [conflicting software](@/hardware/conflicting-software.md) for per-vendor details.
 
 **MIDI port already in use (Push 2)**
 
@@ -194,8 +199,8 @@ The `UsbMidi` transport connects to the Push 2 User MIDI port. If Ableton Live o
 
 ## Related pages
 
-- [SMBus/I2C devices](@/hardware/smbus-i2c.md) — ASUS Aura motherboard, GPU, and DRAM lighting
-- [Compatibility matrix](@/hardware/compatibility.md) — supported devices by family and transport
-- [Device quirks](@/hardware/device-quirks.md) — per-device notes and known limitations
-- [Conflicting software](@/hardware/conflicting-software.md) — Synapse, iCUE, OpenRGB, and others
-- [Troubleshooting: devices not found](@/troubleshooting/devices-not-found.md) — deeper diagnosis
+- [SMBus/I2C devices](@/hardware/smbus-i2c.md): ASUS Aura motherboard, GPU, and DRAM lighting
+- [Compatibility matrix](@/hardware/compatibility.md): supported devices by family and transport
+- [Device quirks](@/hardware/device-quirks.md): per-device notes and known limitations
+- [Conflicting software](@/hardware/conflicting-software.md): Synapse, iCUE, OpenRGB, and others
+- [Troubleshooting: devices not found](@/troubleshooting/devices-not-found.md): deeper diagnosis

@@ -7,7 +7,7 @@ weight = 60
 ![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
 
 Hypercolor discovers Nanoleaf controllers over mDNS, pairs via the Open API token flow
-(hold the power button 5–7 seconds), and streams per-panel color data over UDP External
+(hold the power button 5-7 seconds), and streams per-panel color data over UDP External
 Control. Every addressable panel becomes an individually controllable zone that maps into
 the spatial canvas.
 
@@ -50,7 +50,7 @@ before Hypercolor can request an auth token.
 
 **Steps:**
 
-1. Hold the **power button** on your Nanoleaf controller for **5–7 seconds** until the
+1. Hold the **power button** on your Nanoleaf controller for **5-7 seconds** until the
    panels flash, confirming the controller has entered pairing mode.
 2. Within the pairing window, run:
 
@@ -219,7 +219,7 @@ You will need to pair again before Hypercolor can stream to it.
 **Pairing returns `ActionRequired`**
 
 The controller was not in pairing mode when Hypercolor posted `POST /api/v1/new`. Hold
-the power button for the full 5–7 seconds until the panels flash, then retry the pair
+the power button for the full 5-7 seconds until the panels flash, then retry the pair
 command immediately.
 
 **Device connects but panels show wrong colors or no output**

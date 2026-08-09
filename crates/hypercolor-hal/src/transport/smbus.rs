@@ -1,4 +1,4 @@
-//! `SMBus` transport framing and Linux transport support.
+//! `SMBus` transport framing and transport support for Linux and Windows.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,13 +1,13 @@
 +++
 title = "Conflicting software"
-description = "Another RGB tool holding the HID device means Hypercolor gets nothing. How to detect, diagnose, and resolve the conflict."
+description = "Another RGB tool holding a device means Hypercolor gets nothing. Which programs conflict on Linux, Windows, and macOS, and how to detect and resolve it."
 weight = 110
 template = "page.html"
 +++
 
 Your device shows up in `lsusb` but Hypercolor cannot connect to it. The most common
 cause is that another RGB manager got to the device first and is holding it open.
-Hypercolor gets no connection, and no error the user would naturally see — just silence.
+Hypercolor gets no connection, and no error the user would naturally see, just silence.
 
 This page covers which programs conflict, how to confirm a conflict is the culprit, and
 how to resolve it cleanly.
@@ -16,10 +16,10 @@ how to resolve it cleanly.
 
 Hypercolor controls USB devices through two transport paths:
 
-- **USB control / HID / bulk / MIDI transports** — these claim the USB interface
+- **USB control / HID / bulk / MIDI transports**: these claim the USB interface
   directly. The kernel allows only one process to hold a claimed interface at a time.
   A second claimant fails immediately.
-- **HIDRAW / HIDAPI transports** — these talk through `/dev/hidraw*` nodes without an
+- **HIDRAW / HIDAPI transports**: these talk through `/dev/hidraw*` nodes without an
   exclusive interface claim, but still require a successful `open()` on the device file.
   If another process holds an exclusive file descriptor, the open fails with a permission
   error even when the udev rules are correct.
@@ -58,7 +58,7 @@ sudo systemctl stop openrazer-daemon
 sudo systemctl disable openrazer-daemon
 ```
 
-Stopping the daemon is often not enough — the kernel modules may still hold the devices.
+Stopping the daemon is often not enough: the kernel modules may still hold the devices.
 Unload them:
 
 ```bash
@@ -88,6 +88,14 @@ sudo update-initramfs -u
 After unloading, replug the device so the kernel re-applies the udev ACL. Then run
 `hypercolor devices discover`.
 
+### Razer Synapse (Windows)
+
+Razer Synapse holds exclusive HID access to Razer devices on Windows, and Razer is the
+largest family Hypercolor supports (70 devices), so this is the most common Windows
+conflict. Quit Synapse from its tray icon, then check Task Manager for Razer services
+that keep running after the window closes. Once they are stopped, Hypercolor can drive
+the hardware; run `hypercolor devices discover`.
+
 ### OpenRGB
 
 OpenRGB talks to many of the same USB devices Hypercolor supports. If OpenRGB has already
@@ -99,16 +107,26 @@ it as a bridge rather than a parallel controller. The [OpenRGB fallback driver](
 lets Hypercolor route output through a running OpenRGB SDK server on port 6742, with
 explicit ownership partitioning so both tools target different controllers.
 
-### ASUS Aura Sync / Armoury Crate (Wine or Proton)
+### ASUS Aura Sync / Armoury Crate
 
-Aura Sync running under Wine or Proton binds to ASUS HID and SMBus interfaces using the
-same device paths that native Linux applications use. Exit the Wine prefix hosting
-Armoury Crate before launching Hypercolor.
+On Windows, Armoury Crate and Aura Sync claim ASUS HID interfaces and poll the SMBus
+lighting controllers. Stop the ASUS services (Armoury Crate Service, AsusCertService)
+in `services.msc`, or remove the suite with ASUS's official uninstall tool. The SMBus
+path on Windows additionally contends through the PawnIO broker, so vendor SMBus tools
+and Hypercolor must not poll simultaneously.
 
-### Corsair iCUE (Wine or Proton)
+Under Wine or Proton, Aura Sync binds to ASUS HID and SMBus interfaces using the same
+device paths that native Linux applications use. Exit the Wine prefix hosting Armoury
+Crate before launching Hypercolor.
 
-iCUE under Wine claims Corsair HID interfaces. The driver paths are exclusive. Exit iCUE
-or the Proton prefix hosting it, then restart Hypercolor.
+### Corsair iCUE
+
+On Windows, iCUE claims Corsair HID interfaces and keeps background services running
+after the window closes. Exit iCUE from the tray, stop its services, then restart
+Hypercolor.
+
+Under Wine or Proton, iCUE claims the same interfaces through the prefix. Exit iCUE or
+the Proton prefix hosting it, then restart Hypercolor.
 
 ### ckb-next
 
@@ -134,6 +152,11 @@ SignalRGB, Polychromatic, and similar tools running via Wine or natively follow 
 pattern: one owner per USB interface. Whichever application connects first wins; the rest
 see a failure.
 
+### macOS
+
+Vendor RGB suites are rare on macOS. The usual conflict there is another instance of an
+open-source tool holding the HID handle; quit the other tool and rescan.
+
 ## Diagnosing a conflict
 
 ### Step 1: confirm the device is visible to the OS
@@ -143,7 +166,7 @@ lsusb
 ```
 
 If your device does not appear here, the problem is physical (cable, port, power) or a
-missing udev rule — not a software conflict. See [USB devices](@/hardware/usb-devices.md)
+missing udev rule, not a software conflict. See [USB devices](@/hardware/usb-devices.md)
 for udev setup.
 
 ### Step 2: find which process holds the node
@@ -202,6 +225,17 @@ curl -s -X POST http://localhost:9420/api/v1/diagnose | jq
 The `devices` checks report the tracked device-registry count, output-queue health, and
 USB actor display-lane timing.
 
+### Diagnosing on Windows
+
+The same flow works on Windows with different tools:
+
+1. Find vendor processes with Task Manager, or with `Get-Process` in PowerShell:
+   `Get-Process | Where-Object { $_.Name -match "Razer|iCUE|Armoury|Asus" }`
+2. Check `services.msc` for vendor services (Razer, Corsair, ASUS) and stop them.
+3. Open Device Manager to see which driver has claimed the device.
+
+Steps 4 and 5 (daemon logs and `hypercolor diagnose`) are identical on every platform.
+
 ## Resolving a conflict
 
 The resolution is always the same: only one application can own a USB device interface at
@@ -253,7 +287,7 @@ explicit ownership partitioning. See [OpenRGB fallback](@/hardware/openrgb-fallb
 ASUS motherboard, GPU, and DRAM lighting goes over `/dev/i2c-*` (SMBus) rather than USB
 HID. The same exclusive-ownership principle applies: only one process should be issuing
 SMBus transactions to a controller at a time. Two applications writing to the same I2C
-address simultaneously corrupt device state — flickering, wrong colors, or the controller
+address simultaneously corrupt device state: flickering, wrong colors, or the controller
 locking up.
 
 {% callout(type="danger") %}
@@ -297,6 +331,9 @@ systemctl --user daemon-reload
 This runs a best-effort stop before Hypercolor starts and will not fail the service if
 openrazer is not installed.
 
+On Windows, disable the vendor suite's autostart entry on Task Manager's Startup apps
+page so the vendor tool does not reclaim devices at login.
+
 ## Still not connecting?
 
 If you have stopped all competing software and the device still does not appear:
@@ -309,8 +346,8 @@ If you have stopped all competing software and the device still does not appear:
 
 ## Related pages
 
-- [USB devices](@/hardware/usb-devices.md) — udev rules, hidraw vs hidapi, permissions
-- [SMBus and I2C devices](@/hardware/smbus-i2c.md) — ASUS Aura motherboard and DRAM setup
-- [OpenRGB fallback bridge](@/hardware/openrgb-fallback.md) — co-existing with OpenRGB via the SDK bridge
-- [Devices not found](@/troubleshooting/devices-not-found.md) — per-transport diagnosis when discovery returns nothing
-- [Debugging and diagnostics](@/contributing/debugging.md) — RUST_LOG targets and the diagnose endpoint
+- [USB devices](@/hardware/usb-devices.md): udev rules, hidraw vs hidapi, permissions
+- [SMBus and I2C devices](@/hardware/smbus-i2c.md): ASUS Aura motherboard and DRAM setup
+- [OpenRGB fallback bridge](@/hardware/openrgb-fallback.md): co-existing with OpenRGB via the SDK bridge
+- [Devices not found](@/troubleshooting/devices-not-found.md): per-transport diagnosis when discovery returns nothing
+- [Debugging and diagnostics](@/contributing/debugging.md): RUST_LOG targets and the diagnose endpoint

@@ -108,13 +108,14 @@ devices work fully. This is a protocol engineering gap, not a hardware limitatio
 
 ## Understanding device status in the compatibility matrix
 
-The [compatibility matrix](@/hardware/compatibility.md) uses five status values. Here is
+The [compatibility matrix](@/hardware/compatibility.md) uses six status values. Here is
 what each means from a user perspective:
 
 | Status | What it means |
 |---|---|
 | **Supported** | A working driver is compiled in. Plug the device in and it gets discovered and controlled. |
 | **In progress** | Active development: a driver is being written or a protocol spec is being finalized. |
+| **Planned** | Support is on the roadmap but work has not started. No device currently carries this status. |
 | **Researched** | The protocol is documented in the TOML but no driver code exists yet. Community contributions welcome. |
 | **Blocked** | A driver skeleton exists on Hypercolor's side, but the device itself prevents control, typically a firmware limitation outside Hypercolor's reach. |
 | **Known** | The device is in the database but protocol research has not started. |
@@ -126,7 +127,7 @@ but the child-routing feature has not been built yet.
 
 ## Related pages
 
-- [USB devices](@/hardware/usb-devices.md) — udev rules, hidraw access, replug requirements
-- [Compatibility matrix](@/hardware/compatibility.md) — full supported device list
-- [Devices not found](@/troubleshooting/devices-not-found.md) — diagnosis steps when a device does not appear
-- [Conflicting software](@/hardware/conflicting-software.md) — other RGB tools that can claim a device before Hypercolor
+- [USB devices](@/hardware/usb-devices.md): udev rules, hidraw access, replug requirements
+- [Compatibility matrix](@/hardware/compatibility.md): full supported device list
+- [Devices not found](@/troubleshooting/devices-not-found.md): diagnosis steps when a device does not appear
+- [Conflicting software](@/hardware/conflicting-software.md): other RGB tools that can claim a device before Hypercolor

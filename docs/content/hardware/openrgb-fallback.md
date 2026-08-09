@@ -14,7 +14,7 @@ for, without writing any code.
 {% callout(type="warning") %}
 The OpenRGB driver ships compiled in but is **disabled in config by default**. You must
 enable it and choose an ownership mode before any devices appear. OpenRGB is not bundled
-or managed by Hypercolor — you install, configure, and run it separately.
+or managed by Hypercolor; you install, configure, and run it separately.
 {% end %}
 
 ---
@@ -26,7 +26,7 @@ discovery, or when you already have OpenRGB configured and want Hypercolor to dr
 for synchronized effects.
 
 Check the [hardware compatibility matrix](@/hardware/compatibility.md) first. If a
-native Hypercolor driver covers your hardware, use it — native drivers connect directly,
+native Hypercolor driver covers your hardware, use it: native drivers connect directly,
 have lower latency, and carry stable device identities without depending on a second
 process.
 
@@ -36,7 +36,7 @@ process.
 
 1. Install OpenRGB from [openrgb.org](https://openrgb.org) or your distribution's
    package repository.
-2. Complete OpenRGB's own Linux setup — udev rules, i2c-dev module for SMBus hardware,
+2. Complete OpenRGB's own Linux setup: udev rules, i2c-dev module for SMBus hardware,
    and any chipset-specific kernel parameters. Follow the
    [OpenRGB udev rules guide](https://openrgb.org/udev.html)
    for that; it is separate from Hypercolor's udev rules.
@@ -109,7 +109,7 @@ mode = "open_rgb_owned"
 
 Only controllers whose OpenRGB detector class appears in `allowed_detector_classes` are
 eligible. Use this to run Hypercolor's native drivers alongside the bridge without
-conflicts — route only the device types OpenRGB owns into Hypercolor output.
+conflicts: route only the device types OpenRGB owns into Hypercolor output.
 
 ```toml
 [drivers.openrgb]
@@ -123,7 +123,7 @@ allowed_detector_classes = ["virtual"]
 
 `detector_partition_confirmed = true` is required here. It is a deliberate safety gate:
 set it only after you have confirmed that OpenRGB's plugin configuration matches the
-partition — meaning OpenRGB's own i2c-smbus and HID detectors are disabled (or limited)
+partition, meaning OpenRGB's own i2c-smbus and HID detectors are disabled (or limited)
 for the hardware Hypercolor's native drivers own. Forgetting this causes both processes to
 write to the same controllers and corrupt device state.
 
@@ -157,7 +157,7 @@ mode = "open_rgb_owned"
 native_claimed_detector_classes = ["smbus", "hid"]
 ```
 
-Controllers in the claimed classes are discovered but disabled for output — they appear
+Controllers in the claimed classes are discovered but disabled for output: they appear
 in the device list but are not writable through the bridge.
 
 {% callout(type="warning") %}
@@ -178,6 +178,12 @@ reconnect.
 
 If a controller appears in discovery but is immediately disabled, confirm in OpenRGB's
 UI that the controller has a mode with per-LED control enabled.
+
+Mode selection is tunable through two bitmasks matched against OpenRGB mode flags. A
+mode qualifies for realtime output when its flags intersect `mode_per_led_mask`
+(default `32`, the per-LED color bit), its flags avoid every bit in
+`mode_persistent_mask` (default `0`, which rejects nothing), and the mode reports
+per-LED color mode.
 
 ---
 
@@ -227,10 +233,10 @@ Each OpenRGB controller gets a stable fingerprint so Hypercolor can re-identify 
 across OpenRGB restarts and controller reorders. The fingerprint strategy depends on what
 OpenRGB reports, in priority order:
 
-1. Serial number — confidence **high**
-2. Location string (e.g. `hidraw0`) — confidence **high**
-3. Vendor + name + zone count + LED count shape — confidence **medium**
-4. Controller index only — confidence **low** (output disabled for `hid` and `smbus`)
+1. Serial number: confidence **high**
+2. Location string (e.g. `hidraw0`): confidence **high**
+3. Vendor + name + zone count + LED count shape: confidence **medium**
+4. Controller index only: confidence **low** (output disabled for `hid` and `smbus`)
 
 When two controllers produce the same fingerprint, for example identical devices with
 no serial, both are discovered but disabled, and annotated with "collides with another
@@ -286,6 +292,8 @@ startup_rescan = false                   # send rescan request on connect (proto
 auto_connect = true                      # auto-connect output-enabled controllers on discovery
 detector_partition_confirmed = false     # required when using partitioned or native-claimed ownership
 default_target_fps = 30
+mode_per_led_mask = 32                   # mode-flag bits that qualify a mode as per-LED writable (default: the per-LED color bit)
+mode_persistent_mask = 0                 # mode-flag bits that disqualify a mode (default: none)
 teardown_policy = "restore_previous_or_leave"
 
 [drivers.openrgb.controller_fps]
@@ -335,12 +343,12 @@ OpenRGB restart.
 
 ## See also
 
-- [@/hardware/compatibility.md](@/hardware/compatibility.md) — check whether a native
+- [@/hardware/compatibility.md](@/hardware/compatibility.md): check whether a native
   driver already covers your hardware before using the bridge
-- [@/hardware/conflicting-software.md](@/hardware/conflicting-software.md) — running
+- [@/hardware/conflicting-software.md](@/hardware/conflicting-software.md): running
   Hypercolor alongside OpenRGB and avoiding simultaneous writes
-- [@/hardware/usb-devices.md](@/hardware/usb-devices.md) — native USB/HID driver setup
-- [@/hardware/smbus-i2c.md](@/hardware/smbus-i2c.md) — native ASUS Aura motherboard
+- [@/hardware/usb-devices.md](@/hardware/usb-devices.md): native USB/HID driver setup
+- [@/hardware/smbus-i2c.md](@/hardware/smbus-i2c.md): native ASUS Aura motherboard
   and DRAM access over SMBus
-- [@/troubleshooting/devices-not-found.md](@/troubleshooting/devices-not-found.md) —
+- [@/troubleshooting/devices-not-found.md](@/troubleshooting/devices-not-found.md):
   general device discovery troubleshooting

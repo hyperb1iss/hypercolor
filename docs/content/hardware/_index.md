@@ -24,17 +24,17 @@ Transport types live in the `TransportType` enum in `hal/src/registry.rs` and ar
 
 | Transport | Used by |
 |---|---|
-| `UsbHidApi` | Live input devices (keyboards, mice) — keeps the OS HID stack attached without claiming the interface |
-| `UsbHidRaw` | Linux `/dev/hidraw*` nodes — direct feature/output reports without claiming the interface |
+| `UsbHidApi` | Live input devices (keyboards, mice); keeps the OS HID stack attached without claiming the interface |
+| `UsbHidRaw` | Linux `/dev/hidraw*` nodes; direct feature/output reports without claiming the interface |
 | `UsbControl` | HID feature reports over USB control transfers |
 | `UsbHid` | HID interrupt endpoint transport |
 | `UsbBulk` | Bulk-transfer transport with HID feature-report sideband (init/keepalive) |
 | `UsbMidi` | Composite: MIDI control + USB bulk display (Ableton Push 2 pad display) |
-| `UsbSerial` | CDC-ACM serial (Dygma Defy — currently blocked) |
-| `I2cSmBus` | Linux `/dev/i2c-*` — ASUS Aura motherboard, GPU, and DRAM lighting |
+| `UsbSerial` | CDC-ACM serial (Dygma Defy, currently blocked) |
+| `I2cSmBus` | Linux `/dev/i2c-*` (PawnIO on Windows); ASUS Aura motherboard, GPU, and DRAM lighting |
 | `UsbVendor` | Vendor-specific control transfers (Lian Li AL v1.0) |
 
-Getting USB devices working on Linux requires udev rules. Getting SMBus/I2C devices working requires the `i2c-dev` kernel module and correct permissions on `/dev/i2c-*`. These are separate permission paths with separate failure modes. See [USB devices](@/hardware/usb-devices.md) and [SMBus/I2C](@/hardware/smbus-i2c.md) for each.
+Getting USB devices working on Linux requires udev rules. Getting SMBus/I2C devices working on Linux requires the `i2c-dev` kernel module and correct permissions on `/dev/i2c-*`. These are separate permission paths with separate failure modes. See [USB devices](@/hardware/usb-devices.md) and [SMBus/I2C](@/hardware/smbus-i2c.md) for each.
 
 ### Network devices
 
@@ -51,7 +51,7 @@ See [network devices](@/hardware/network-devices.md) for the setup overview, the
 
 ### LCD and display devices
 
-Some hardware carries a small LCD or display panel that Hypercolor can drive alongside its RGB zones. The Corsair AIO LCD modules — Elite Capellix LCD (PIDs `0x0C39`, `0x0C33`) and iCUE LINK LCD (PID `0x0C4E`) — stream 480×480 JPEG frames over USB HID/HIDAPI reports at up to 30 fps. The Ableton Push 2 uses a composite MIDI + bulk transport for its pad-grid lighting and display. These are treated as ordinary device zones in Hypercolor; effect output is composited from the same canvas as everything else.
+Some hardware carries a small LCD or display panel that Hypercolor can drive alongside its RGB zones. The Corsair AIO LCD modules, Elite Capellix LCD (PIDs `0x0C39`, `0x0C33`) and iCUE LINK LCD (PID `0x0C4E`), stream 480×480 JPEG frames over USB HID/HIDAPI reports at up to 30 fps. The Ableton Push 2 uses a composite MIDI + bulk transport for its pad-grid lighting and display. These are treated as ordinary device zones in Hypercolor; effect output is composited from the same canvas as everything else.
 
 ### OpenRGB bridge
 
@@ -97,7 +97,7 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **Razer** | USB HID | Keyboards, mice, mousepads, laptops, headsets | Supported |
 | **Corsair** | USB HID | Peripherals (Bragi + legacy HID), Lighting Node, iCUE LINK hub, LCD modules | Supported |
 | **ASUS** | USB HID + SMBus/I2C | Aura USB peripherals; motherboard/GPU/DRAM Aura over SMBus | Supported |
-| **Lian Li** | USB HID / USB Vendor | Uni Hub (ENE), TL Fan Hub — AL v1.0 uses vendor transport, v1.7+ uses HID | Supported |
+| **Lian Li** | USB HID / USB Vendor | Uni Hub (ENE), TL Fan Hub; AL v1.0 uses vendor transport, v1.7+ uses HID | Supported |
 | **PrismRGB** | USB HID | Custom chunked protocol; Prism 8 is a Nollie 8 v2 rebrand | Supported |
 | **Nollie** | USB HID | ARGB controllers; distinct from PrismRGB despite overlapping SKUs | Supported |
 | **QMK** | USB HID | Raw HID on any QMK keyboard | Supported |
@@ -106,8 +106,10 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **Nanoleaf** | Network / UDP | mDNS discovery, token pairing, UDP External Control | Supported |
 | **WLED** | Network / UDP | DDP and E1.31/sACN; RGB and RGBW; no authentication | Supported |
 | **Govee** | Network / UDP + Cloud | LAN UDP control; optional cloud API fallback | Supported |
-| **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported |
-| **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware — not yet enabled | Blocked |
+| **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported (opt-in) |
+| **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
+
+The OpenRGB bridge is disabled in config by default and is not counted among the 12 native driver families; enable it explicitly per [OpenRGB fallback](@/hardware/openrgb-fallback.md).
 
 {% callout(type="warning") %}
 If another RGB manager (OpenRGB, Aura Sync, openrazer daemon, iCUE via Wine) has a USB device open, Hypercolor cannot claim it. The device will appear in `lsusb` but not in `hypercolor devices list`. Close or disable the conflicting tool first. See [conflicting software](@/hardware/conflicting-software.md).
@@ -126,11 +128,11 @@ Hypercolor discovers devices automatically at startup and whenever a rescan is t
 Trigger a manual scan:
 
 ```bash
-# CLI — filter by target type
+# CLI: filter by target type
 hypercolor devices discover
 hypercolor devices discover --target wled --target hue
 
-# REST — one scan at a time; concurrent requests return 409
+# REST: one scan at a time; concurrent requests return 409
 curl -X POST http://localhost:9420/api/v1/devices/discover \
   -H 'Content-Type: application/json' \
   -d '{"targets": ["wled", "hue"], "timeout_ms": 5000}'
@@ -144,16 +146,16 @@ If a device does not appear after discovery, see [devices not found](@/troublesh
 
 Each transport path has its own setup page because the failure modes are different:
 
-- [USB devices](@/hardware/usb-devices.md) — udev rules, hidraw vs hidapi, replug, hotplug
-- [SMBus/I2C](@/hardware/smbus-i2c.md) — ASUS Aura motherboard, GPU, DRAM lighting; `i2c-dev` module; `/dev/i2c-*` permissions
-- [Network devices](@/hardware/network-devices.md) — mDNS discovery, known-IP config, pairing overview
-- [Philips Hue](@/hardware/hue.md) — link-button pairing, DTLS streaming
-- [Nanoleaf](@/hardware/nanoleaf.md) — power-button pairing, panel layout
-- [WLED](@/hardware/wled.md) — DDP vs E1.31, RGB vs RGBW
-- [Govee](@/hardware/govee.md) — LAN control setup, Razer-streaming SKUs, cloud API key
-- [OpenRGB fallback](@/hardware/openrgb-fallback.md) — bridge config, ownership modes
-- [Device quirks](@/hardware/device-quirks.md) — rebrands, firmware splits, known edge cases
-- [Conflicting software](@/hardware/conflicting-software.md) — openrazer, OpenRGB, Aura Sync, iCUE
+- [USB devices](@/hardware/usb-devices.md): udev rules, hidraw vs hidapi, replug, hotplug
+- [SMBus/I2C](@/hardware/smbus-i2c.md): ASUS Aura motherboard, GPU, DRAM lighting; `i2c-dev` module; `/dev/i2c-*` permissions
+- [Network devices](@/hardware/network-devices.md): mDNS discovery, known-IP config, pairing overview
+- [Philips Hue](@/hardware/hue.md): link-button pairing, DTLS streaming
+- [Nanoleaf](@/hardware/nanoleaf.md): power-button pairing, panel layout
+- [WLED](@/hardware/wled.md): DDP vs E1.31, RGB vs RGBW
+- [Govee](@/hardware/govee.md): LAN control setup, Razer-streaming SKUs, cloud API key
+- [OpenRGB fallback](@/hardware/openrgb-fallback.md): bridge config, ownership modes
+- [Device quirks](@/hardware/device-quirks.md): rebrands, firmware splits, known edge cases
+- [Conflicting software](@/hardware/conflicting-software.md): openrazer, OpenRGB, Aura Sync, iCUE
 
 ---
 

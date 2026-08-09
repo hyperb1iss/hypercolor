@@ -14,7 +14,7 @@ LAN control must be enabled **per device** in the Govee Home app before Hypercol
 
 - Govee devices firmware-updated and connected to the same network as the machine running Hypercolor.
 - The Govee Home mobile app (Android or iOS) installed and the target devices already configured in it.
-- Hypercolor daemon running — see [first launch](@/guide/first-launch.md) if you have not started it yet.
+- Hypercolor daemon running: see [first launch](@/guide/first-launch.md) if you have not started it yet.
 
 ## Step 1: Enable LAN control in the Govee Home app
 
@@ -90,15 +90,15 @@ A small number of Govee models support Razer's LED streaming protocol in additio
 | LAN UDP (standard) | 10 fps | Per-device segment count |
 | Razer streaming | 25 fps | 255 LEDs |
 
-When a device supports Razer streaming, Hypercolor enables it automatically. Razer streaming frames are binary packets, base64-encoded and sent over the standard Govee LAN command channel — no separate socket or configuration is required.
+When a device supports Razer streaming, Hypercolor enables it automatically. Razer streaming frames are binary packets, base64-encoded and sent over the standard Govee LAN command channel. No separate socket or configuration is required.
 
-You can verify the detected capability in the device's **Diagnostics** panel in the web UI — look for the **Razer Streaming** field.
+You can verify the detected capability in the device's **Diagnostics** panel in the web UI: look for the **Razer Streaming** field.
 
 Currently confirmed Razer-streaming SKUs in the capability database: **H619A** (RGBIC Pro Strip, 20 LEDs) and **H70B1** (20 LEDs). Other models may be added as the SKU database grows.
 
 ## Optional: cloud API key
 
-The Govee Developer API key is optional. When configured, Hypercolor queries the Govee Developer API v1 during discovery to enrich device inventory — adding cloud device IDs, supported command lists, and model metadata. This is useful for devices that appear via cloud only (no LAN control) or to supplement capability data for unlisted SKUs.
+The Govee Developer API key is optional. When configured, Hypercolor queries the Govee Developer API v1 during discovery to enrich device inventory, adding cloud device IDs, supported command lists, and model metadata. This is useful for devices that appear via cloud only (no LAN control) or to supplement capability data for unlisted SKUs.
 
 **LAN control works without a cloud key.** If all your Govee devices have LAN control enabled and are on the same network, you do not need this.
 
@@ -135,8 +135,8 @@ Available in **Drivers → Govee** in the web UI or via driver controls in the C
 |---------|-------------|-------------|
 | Known IPs | Static IP addresses to probe in addition to multicast scan | Discovery rescan |
 | Power Off On Disconnect | Send power-off command when Hypercolor disconnects | Backend rebind |
-| LAN State FPS | Polling rate for standard LAN devices (1–60 fps) | Backend rebind |
-| Razer FPS | Frame rate target for Razer-streaming devices (1–60 fps) | Backend rebind |
+| LAN State FPS | Polling rate for standard LAN devices (1-60 fps) | Backend rebind |
+| Razer FPS | Frame rate target for Razer-streaming devices (1-60 fps) | Backend rebind |
 
 Changing **Known IPs** triggers a discovery rescan automatically. The FPS and power settings take effect on the next backend rebind (discovery or restart).
 
@@ -144,14 +144,14 @@ Changing **Known IPs** triggers a discovery rescan automatically. The FPS and po
 
 Select a Govee device in the web UI and open its details panel to see:
 
-- **IP Address** — current LAN address.
-- **SKU** — model number used for capability lookups.
-- **MAC** — stable hardware identifier used for fingerprinting.
-- **Firmware** — version string from the scan response.
-- **LED Count** — derived from the SKU profile.
-- **Max FPS** — 10 for standard LAN devices, 25 for Razer-streaming devices.
-- **Razer Streaming** — whether the SKU supports the higher-bandwidth protocol.
-- **Cloud Device ID / Cloud Controllable / Cloud Retrievable** — populated only if a cloud API key is configured.
+- **IP Address**: current LAN address.
+- **SKU**: model number used for capability lookups.
+- **MAC**: stable hardware identifier used for fingerprinting.
+- **Firmware**: version string from the scan response.
+- **LED Count**: derived from the SKU profile.
+- **Max FPS**: 10 for standard LAN devices, 25 for Razer-streaming devices.
+- **Razer Streaming**: whether the SKU supports the higher-bandwidth protocol.
+- **Cloud Device ID / Cloud Controllable / Cloud Retrievable**: populated only if a cloud API key is configured.
 
 ## Verifying the connection
 
@@ -188,4 +188,4 @@ go through Govee's Developer API v1 when LAN control is unavailable. If your
 internet connection is unavailable, devices with LAN control enabled continue to
 work.
 
-For broader network device context — how mDNS and multicast work across drivers, VLAN configurations, and multi-vendor coordination — see [Network devices](@/hardware/network-devices.md).
+For broader network device context (how mDNS and multicast work across drivers, VLAN configurations, and multi-vendor coordination), see [Network devices](@/hardware/network-devices.md).

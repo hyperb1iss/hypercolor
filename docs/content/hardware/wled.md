@@ -6,7 +6,7 @@ weight = 70
 
 ![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
 
-WLED controllers (ESP8266 / ESP32) are discovered automatically over mDNS and need no credentials or pairing step. Hypercolor streams pixel data in real time using DDP by default — a lightweight protocol with no universe management and no per-packet channel-count ceremony. E1.31/sACN is available as an alternative for xLights, Vixen, and other DMX workflows.
+WLED controllers (ESP8266 / ESP32) are discovered automatically over mDNS and need no credentials or pairing step. Hypercolor streams pixel data in real time using DDP by default, a lightweight protocol with no universe management and no per-packet channel-count ceremony. E1.31/sACN is available as an alternative for xLights, Vixen, and other DMX workflows.
 
 Both RGB and RGBW strip configurations are detected automatically from the device's `/json/info` response.
 
@@ -42,7 +42,7 @@ Only one scan can run at a time. A concurrent request returns HTTP 409.
 
 ### Known IPs (mDNS fallback)
 
-If mDNS is blocked — VLANs, `systemd-resolved` stub conflicts, Docker bridge networks — add the controller's IP directly in the driver settings. Hypercolor probes it over HTTP regardless of mDNS availability.
+If mDNS is blocked (VLANs, `systemd-resolved` stub conflicts, Docker bridge networks), add the controller's IP directly in the driver settings. Hypercolor probes it over HTTP regardless of mDNS availability.
 
 In the web UI open **Settings → Discovery → WLED** and add entries to the **Known IPs** list. The change triggers a discovery rescan automatically.
 
@@ -54,7 +54,7 @@ Hypercolor fingerprints each WLED device on its MAC address extracted from `/jso
 
 ### DDP (default)
 
-DDP (Distributed Display Protocol) is the preferred transport. It uses a simple 10-byte header followed by raw pixel data — no universe management, no ACN boilerplate, no channel-count ceiling beyond the 1440-byte payload cap.
+DDP (Distributed Display Protocol) is the preferred transport. It uses a simple 10-byte header followed by raw pixel data: no universe management, no ACN boilerplate, no channel-count ceiling beyond the 1440-byte payload cap.
 
 | Property | Value |
 |---|---|
@@ -62,7 +62,7 @@ DDP (Distributed Display Protocol) is the preferred transport. It uses a simple 
 | Payload cap | 1440 bytes (480 RGB pixels or 360 RGBW pixels) |
 | RGB data type | `0x0B` (`DDP_TYPE_RGB24`) |
 | RGBW data type | `0x1B` (`DDP_TYPE_RGBW32`) |
-| Sequence range | 1–15 (wrapping) |
+| Sequence range | 1-15 (wrapping) |
 | Frame latch | Push flag on the final packet of each frame |
 
 Large pixel counts are fragmented automatically into 1440-byte chunks. Each chunk in a frame shares the same sequence number; only the last chunk carries the push flag that tells WLED to latch the frame.
@@ -92,7 +92,7 @@ To change the default protocol, open **Settings → Discovery → WLED** and set
 
 ## RGBW strips
 
-WLED reports RGBW capability in its `/json/info` response. Hypercolor reads this flag during discovery and sets the device color format automatically — no manual configuration is needed. The RGBW flag appears as a read-only field in the device diagnostics panel.
+WLED reports RGBW capability in its `/json/info` response. Hypercolor reads this flag during discovery and sets the device color format automatically. No manual configuration is needed. The RGBW flag appears as a read-only field in the device diagnostics panel.
 
 For E1.31 with RGBW strips, Hypercolor applies direct RGBW encoding (four bytes per pixel: R, G, B, W). For DDP with RGBW strips, it sends RGB24 and defers the white-channel split to WLED's firmware logic.
 
@@ -132,7 +132,7 @@ WLED has a built-in realtime timeout. If Hypercolor pauses sending (for example,
 
 ## Related pages
 
-- [Network devices overview](@/hardware/network-devices.md) — how mDNS discovery, known-IP fallback, and manual pairing work across all network drivers.
-- [Finding devices](@/guide/finding-devices.md) — running discovery from the CLI and TUI.
-- [Troubleshooting: network discovery](@/troubleshooting/network-discovery.md) — mDNS, VLAN isolation, and firewall diagnosis.
-- [Device compatibility](@/hardware/compatibility.md) — the full supported-device matrix.
+- [Network devices overview](@/hardware/network-devices.md): how mDNS discovery, known-IP fallback, and manual pairing work across all network drivers.
+- [Finding devices](@/guide/finding-devices.md): running discovery from the CLI and TUI.
+- [Troubleshooting: network discovery](@/troubleshooting/network-discovery.md): mDNS, VLAN isolation, and firewall diagnosis.
+- [Device compatibility](@/hardware/compatibility.md): the full supported-device matrix.

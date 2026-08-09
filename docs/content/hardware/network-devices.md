@@ -21,7 +21,7 @@ Hypercolor uses three complementary methods to find network devices. All three r
 | WLED | `_wled._tcp.local.` | Enriched via HTTP `/json/info` after advertisement |
 | Govee | none (UDP multicast) | Govee uses a proprietary UDP scan on `239.255.255.250:4001`; mDNS is not involved |
 
-mDNS only works when devices and the Hypercolor host share a broadcast domain. VLANs, AP isolation, and some router firmware block it — see [mDNS troubleshooting](#mdns-troubleshooting) below.
+mDNS only works when devices and the Hypercolor host share a broadcast domain. VLANs, AP isolation, and some router firmware block it. See [mDNS troubleshooting](#mdns-troubleshooting) below.
 
 **Known-IP probing** is the escape hatch when mDNS is blocked. You can supply a static list of IP addresses for each driver in the Hypercolor config file. The daemon probes those addresses directly on startup and during every scan, bypassing mDNS entirely. See each vendor's setup page for the exact config keys.
 
@@ -58,10 +58,10 @@ Only one discovery scan can run at a time. A second `POST /api/v1/devices/discov
 
 Network devices are fingerprinted on stable hardware identity rather than their current IP address:
 
-- WLED — MAC address (`net:<mac>`)
-- Govee — MAC address (`net:govee:<mac>`)
-- Hue — Bridge ID
-- Nanoleaf — device serial key
+- WLED: MAC address (`net:<mac>`)
+- Govee: MAC address (`net:govee:<mac>`)
+- Hue: Bridge ID
+- Nanoleaf: device serial key
 
 A DHCP address change does not lose pairing or rename the device in Hypercolor's registry. Only a factory reset or key regeneration on the device side requires re-pairing.
 
@@ -69,14 +69,14 @@ A DHCP address change does not lose pairing or rename the device in Hypercolor's
 
 ## Pairing and credentials
 
-Some network drivers require an explicit pairing step before Hypercolor can send lighting data. The daemon stores credentials encrypted and loads them automatically on startup — you pair once per device.
+Some network drivers require an explicit pairing step before Hypercolor can send lighting data. The daemon stores credentials encrypted and loads them automatically on startup: you pair once per device.
 
 | Driver | Pairing required | What pairing obtains |
 |--------|-----------------|----------------------|
 | WLED | No | WLED has no authentication. Discovery is the only step. |
-| Hue | Yes — link button on Bridge | `username` (used as the DTLS PSK identity) and `clientkey` (the PSK hex string). Both are required to open the Entertainment API streaming connection on UDP port 2100. |
-| Nanoleaf | Yes — hold power button 5–7 s | Posts to `/api/v1/new` and receives `auth_token`, stored and used for REST calls and to enable UDP External Control on port 60222. |
-| Govee | Optional — Developer API key | LAN UDP control works without a key. The API key enables cloud fallback for devices that don't support the LAN protocol. |
+| Hue | Yes: link button on Bridge | `username` (used as the DTLS PSK identity) and `clientkey` (the PSK hex string). Both are required to open the Entertainment API streaming connection on UDP port 2100. |
+| Nanoleaf | Yes: hold power button 5-7 s | Posts to `/api/v1/new` and receives `auth_token`, stored and used for REST calls and to enable UDP External Control on port 60222. |
+| Govee | Optional: Developer API key | LAN UDP control works without a key. The API key enables cloud fallback for devices that don't support the LAN protocol. |
 
 To pair a device that was discovered but is not yet streaming:
 
@@ -124,10 +124,10 @@ See also: [network discovery troubleshooting](@/troubleshooting/network-discover
 
 Each network driver has its own pairing flow, streaming protocol, supported device SKUs, and common failure modes. Start with the vendor page for your hardware.
 
-- [Philips Hue](@/hardware/hue.md) — mDNS and N-UPnP discovery, link-button pairing (30-second window), Entertainment API DTLS streaming on UDP port 2100.
-- [Nanoleaf](@/hardware/nanoleaf.md) — mDNS discovery, power-button token pairing (hold 5–7 s), UDP External Control on port 60222.
-- [WLED](@/hardware/wled.md) — mDNS discovery, no authentication required, DDP streaming on port 4048 by default, or E1.31/sACN for multi-controller setups.
-- [Govee](@/hardware/govee.md) — proprietary UDP multicast discovery, LAN control must be enabled per-device in the Govee Home app, optional Developer API key for cloud fallback.
+- [Philips Hue](@/hardware/hue.md): mDNS and N-UPnP discovery, link-button pairing (30-second window), Entertainment API DTLS streaming on UDP port 2100.
+- [Nanoleaf](@/hardware/nanoleaf.md): mDNS discovery, power-button token pairing (hold 5-7 s), UDP External Control on port 60222.
+- [WLED](@/hardware/wled.md): mDNS discovery, no authentication required, DDP streaming on port 4048 by default, or E1.31/sACN for multi-controller setups.
+- [Govee](@/hardware/govee.md): proprietary UDP multicast discovery, LAN control must be enabled per-device in the Govee Home app, optional Developer API key for cloud fallback.
 
 For devices that don't have a native Hypercolor driver, the [OpenRGB fallback](@/hardware/openrgb-fallback.md) bridge can control them through a user-managed OpenRGB server on TCP port 6742.
 

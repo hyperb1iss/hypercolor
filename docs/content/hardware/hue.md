@@ -8,7 +8,7 @@ weight = 50
 
 ![Device discovery in the Hypercolor web UI](/img/ui/ui-devices.webp)
 
-Hypercolor controls Philips Hue lights through the **Entertainment API** — the same
+Hypercolor controls Philips Hue lights through the **Entertainment API**, the same
 low-latency streaming path used by Hue Sync. Once paired, a DTLS session streams
 color data directly to the bridge at up to 25 fps. The connection is local-only:
 no cloud account is required once the bridge is on your LAN.
@@ -28,11 +28,11 @@ before continuing.
 
 Hypercolor finds bridges in two passes, run automatically on every scan:
 
-1. **mDNS** (`_hue._tcp.local.`) — the scanner listens for bridge announcements on
+1. **mDNS** (`_hue._tcp.local.`): the scanner listens for bridge announcements on
    the LAN. This is the preferred path and works without internet access. The
    scanner waits up to 2 seconds for responses.
 
-2. **N-UPnP fallback** (`https://discovery.meethue.com`) — used only when mDNS
+2. **N-UPnP fallback** (`https://discovery.meethue.com`): used only when mDNS
    returns nothing. The Signify cloud endpoint maps your bridge's serial to its
    current IP. This requires outbound HTTPS access.
 
@@ -88,7 +88,7 @@ by bridge serial:
 | `client_key` | `clientkey` from the pairing response | PSK secret; the actual key material for the DTLS handshake |
 
 Both are required. If either is missing the streaming session will not open.
-Credentials survive bridge IP changes — discovery re-probes the stored bridge ID
+Credentials survive bridge IP changes: discovery re-probes the stored bridge ID
 and updates the address automatically.
 
 ## DTLS streaming
@@ -101,7 +101,7 @@ a UDP DTLS session:
 - **Protocol**: `TLS_PSK_WITH_AES_128_GCM_SHA256` (mandated by the Entertainment API)
 - **PSK identity**: the `api_key` (your application username)
 - **PSK secret**: the `client_key` (hex-decoded)
-- **Packet format**: `HueStream` v2 — a 52-byte header followed by 7 bytes per channel
+- **Packet format**: `HueStream` v2, a 52-byte header followed by 7 bytes per channel
   (channel ID + CIE xy chromaticity + brightness, each component quantized to u16)
 
 Colors are converted from sRGB to CIE 1931 xy + brightness before transmission.
@@ -147,7 +147,7 @@ canvas.
 ## Performance
 
 The Entertainment API supports up to 25 fps. Hypercolor's device capabilities record
-`max_fps = 25` for Hue — the render loop respects this when adapting frame cadence
+`max_fps = 25` for Hue. The render loop respects this when adapting frame cadence
 across your rig.
 
 ## Troubleshooting
@@ -156,7 +156,7 @@ across your rig.
 
 Check that your machine and bridge are on the same subnet and that mDNS (port 5353
 UDP multicast) is not blocked. Try the N-UPnP path by visiting
-`https://discovery.meethue.com` in a browser — if it returns no results your bridge's
+`https://discovery.meethue.com` in a browser. If it returns no results your bridge's
 internet registration may have expired. Use `known_ips` in config as the reliable
 fallback.
 
@@ -170,22 +170,22 @@ This is not a hard failure.
 
 Verify an entertainment area is active in the Hue app and that the correct
 `preferred_entertainment_config` is set. Check `hypercolor devices list` to confirm
-the bridge connected with `AutoConnect` behavior — if it shows `Deferred`, credentials
+the bridge connected with `AutoConnect` behavior. If it shows `Deferred`, credentials
 may be missing and a re-pair is needed.
 
 ### Wrong colors
 
-Hue lights use CIE xy color — sRGB colors are converted through a gamut-specific
+Hue lights use CIE xy color: sRGB colors are converted through a gamut-specific
 matrix. Gamut A covers older bulbs, B mid-generation, C modern entertainment-capable
 lights. If a light shows wrong hues, its gamut type may be absent from the CLIP v2
 metadata; Hypercolor falls back to Gamut C in that case.
 
 ## Related pages
 
-- [Network devices overview](@/hardware/network-devices.md) — discovery architecture
+- [Network devices overview](@/hardware/network-devices.md): discovery architecture
   shared across Hue, Nanoleaf, WLED, and Govee
-- [Finding devices](@/guide/finding-devices.md) — general device discovery workflow
-- [Layouts](@/studio/layouts.md) — positioning Hue zones on the spatial canvas
-- [Compatibility matrix](@/hardware/compatibility.md) — supported Hue Bridge entry;
+- [Finding devices](@/guide/finding-devices.md): general device discovery workflow
+- [Layouts](@/studio/layouts.md): positioning Hue zones on the spatial canvas
+- [Compatibility matrix](@/hardware/compatibility.md): supported Hue Bridge entry;
   attached lights are discovered through the bridge and its Entertainment areas
 - [Network discovery troubleshooting](@/troubleshooting/network-discovery.md)
