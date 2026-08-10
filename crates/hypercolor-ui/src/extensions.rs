@@ -144,13 +144,15 @@ pub struct UiSettingsSection {
 
 /// An extension-contributed sidebar widget.
 ///
-/// Rendered in the sidebar footer between the scene chip and the collapse
-/// bar, only while the sidebar is expanded (the 56px rail has no room).
+/// Rendered inline in the sidebar bottom bar, sharing the row with the
+/// collapse toggle, only while the sidebar is expanded (the 56px rail has
+/// no room). The bar provides the border and padding; the widget should
+/// fill the remaining row width (`flex-1 min-w-0`).
 #[derive(Clone)]
 pub struct UiSidebarWidget {
     /// Stable identifier for the widget.
     pub id: &'static str,
-    /// Widget body; the sidebar provides only position, not chrome.
+    /// Widget body, rendered inside the bottom bar's flex row.
     pub view: UiViewBuilder,
 }
 
