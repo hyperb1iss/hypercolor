@@ -78,6 +78,10 @@ pub struct UiNavItem {
     /// sidebar order. Items that set this to `false` are reachable only by
     /// click, leaving the core shortcut numbering undisturbed.
     pub shortcut: bool,
+    /// Render only in the mobile bottom bar, not the desktop sidebar. For
+    /// destinations whose desktop entry point is other chrome (a sidebar
+    /// widget, a menu) that the mobile shell does not render.
+    pub mobile_only: bool,
 }
 
 impl UiNavItem {
@@ -91,6 +95,7 @@ impl UiNavItem {
             icon,
             divider_before: false,
             shortcut: true,
+            mobile_only: false,
         }
     }
 
@@ -104,6 +109,16 @@ impl UiNavItem {
     /// Make this item click-only — it claims no keyboard shortcut slot.
     #[must_use]
     pub fn without_shortcut(mut self) -> Self {
+        self.shortcut = false;
+        self
+    }
+
+    /// Render this item only in the mobile bottom bar. Implies no
+    /// shortcut slot: the desktop shell that owns shortcuts never shows
+    /// the entry.
+    #[must_use]
+    pub fn mobile_only(mut self) -> Self {
+        self.mobile_only = true;
         self.shortcut = false;
         self
     }
