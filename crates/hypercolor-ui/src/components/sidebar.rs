@@ -262,7 +262,7 @@ pub fn Sidebar() -> impl IntoView {
 
             // Nav items (§5.1).
             <div class="flex-1 py-3 space-y-0.5 px-2">
-                {move || nav_model(&extension_nav.0).into_iter().map(|item| {
+                {move || nav_model(&extension_nav.0).into_iter().filter(|item| !item.mobile_only).map(|item| {
                     let is_active = {
                         let path = item.path;
                         Memo::new(move |_| {

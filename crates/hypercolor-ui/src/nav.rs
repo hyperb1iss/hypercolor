@@ -27,6 +27,8 @@ pub struct NavEntry {
     pub divider_before: bool,
     /// Whether the entry participates in `Ctrl/Cmd+<digit>` numbering.
     pub shortcut: bool,
+    /// Render only in the mobile bottom bar, not the desktop sidebar.
+    pub mobile_only: bool,
 }
 
 impl NavEntry {
@@ -37,6 +39,7 @@ impl NavEntry {
             icon,
             divider_before: false,
             shortcut: true,
+            mobile_only: false,
         }
     }
 
@@ -47,6 +50,7 @@ impl NavEntry {
             icon: item.icon,
             divider_before: item.divider_before,
             shortcut: item.shortcut,
+            mobile_only: item.mobile_only,
         }
     }
 }
@@ -106,6 +110,16 @@ mod tests {
     use super::{nav_model, nav_shortcut_path};
     use crate::extensions::UiNavItem;
     use crate::icons::LuKeyRound;
+
+    #[test]
+    fn mobile_only_items_carry_the_flag_and_no_shortcut() {
+        let extra = [UiNavItem::new("/account", "Account", LuKeyRound).mobile_only()];
+        let entries = nav_model(&extra);
+        let account = entries.last().unwrap();
+        assert!(account.mobile_only);
+        assert!(!account.shortcut);
+        assert!(nav_shortcut_path(&extra, "7").is_none());
+    }
 
     #[test]
     fn core_nav_is_unchanged_with_no_extensions() {

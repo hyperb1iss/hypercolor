@@ -64,8 +64,7 @@ use leptos::prelude::mount_to_body;
 // `nav` for the contract.
 pub use extensions::{
     UiChromeFlags, UiExtensions, UiNavItem, UiSettingsSection, UiSetupHook, UiSidebarWidget,
-    UiViewBuilder, parent_route,
-    ui_route,
+    UiViewBuilder, parent_route, ui_route,
 };
 pub use nav::{NavEntry, NavExtensionItems, nav_model, nav_shortcut_path};
 
