@@ -1512,6 +1512,25 @@ jobs:
       - name: Assemble distribution
         run: |
           set -euo pipefail
+          # Exhausting memory takes the runner down rather than failing a
+          # command, so nothing after this step survives to report it. Sample
+          # while the build still has a process to sample from, and keep the
+          # high-water mark where a truncated log still ends on it.
+          if command -v free >/dev/null 2>&1; then
+            (
+              peak=0
+              while :; do
+                used="$(free -m | awk '/^Mem:/ {print $3}')"
+                [ "${used}" -gt "${peak}" ] && peak="${used}"
+                printf '[mem] used=%sMi peak=%sMi avail=%sMi\n' \
+                  "${used}" "${peak}" \
+                  "$(free -m | awk '/^Mem:/ {print $7}')"
+                sleep 30
+              done
+            ) &
+            sampler=$!
+            trap 'kill "${sampler}" 2>/dev/null || true' EXIT
+          fi
           ./scripts/dist.sh --ci --skip-docs \
             --web-assets web-assets \
             --target ${{ matrix.target }} \
@@ -1520,9 +1539,9 @@ jobs:
           # script; trust the artifact, not the exit status.
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
-      # A release build that dies mid-link reports nothing but the signal, so
-      # capture what the runner had left the moment it went down. Without this
-      # an exhausted disk and a reclaimed runner look identical after the fact.
+      # Kept for the failure modes that leave the runner alive. Memory
+      # exhaustion is not one of them: it takes the whole VM down and every
+      # remaining step with it, which is why the build step samples inline.
       - name: Report runner capacity after failure
         if: failure()
         shell: bash
