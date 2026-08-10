@@ -28,7 +28,14 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  # Tag runs publish, and a release is only ever cut from a commit main has
+  # already proven green, so neither may be superseded. Cancelling main means
+  # the next merge silently discards an hour of Windows and Servo work and
+  # leaves the commit a release would ship with no verdict at all. Branch and
+  # pull request runs stay cancellable, which is where the savings actually are.
+  cancel-in-progress: >-
+    ${{ !startsWith(github.ref, 'refs/tags/') &&
+    github.ref != 'refs/heads/main' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -497,12 +504,6 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows
-      # MSVC link time is dominated by PDB emission, and this job links dozens
-      # of test binaries per run. A correctness gate gets nothing from debug
-      # info beyond line numbers in backtraces, so trade those for the link
-      # time. Only the top-level dev profile is affected; Cargo.toml's
-      # per-package overrides still apply.
-      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v6
 
@@ -1452,9 +1453,38 @@ jobs:
           - target: macos-arm64
             os: macos-latest
             rust-target: aarch64-apple-darwin
+    # This lane is cold on every run: it only fires on tag refs, and the cache
+    # action saves on main alone, so no release-* key is ever written. A cold
+    # release build of the Servo stack runs well over half an hour on the
+    # slowest target, and without a ceiling a wedged runner burns GitHub's
+    # six-hour default before the release reports anything at all.
+    timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Report runner capacity
+        shell: bash
+        run: |
+          echo "cores: $(getconf _NPROCESSORS_ONLN)"
+          if command -v free >/dev/null 2>&1; then free -h; fi
+          df -h .
+
+      # Fat LTO over the Servo stack peaks past the 15Gi these runners carry,
+      # and an unresponsive VM gets torn down by the host rather than the
+      # kernel killing one process, so the build dies with no error to read.
+      # Disk is the resource sitting spare here, better than 100G of it, so
+      # spend it: a link that pages is slow, a link that is killed never
+      # finishes. Nothing about the produced binary changes.
+      - name: Provision swap for the release link
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 32G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -1498,6 +1528,27 @@ jobs:
       - name: Assemble distribution
         run: |
           set -euo pipefail
+          # Exhausting memory takes the runner down rather than failing a
+          # command, so nothing after this step survives to report it. Sample
+          # while the build still has a process to sample from, and keep the
+          # high-water mark where a truncated log still ends on it.
+          if command -v free >/dev/null 2>&1; then
+            (
+              peak=0
+              swap_peak=0
+              while :; do
+                read -r used avail <<<"$(free -m | awk '/^Mem:/ {print $3, $7}')"
+                swap="$(free -m | awk '/^Swap:/ {print $3}')"
+                [ "${used}" -gt "${peak}" ] && peak="${used}"
+                [ "${swap}" -gt "${swap_peak}" ] && swap_peak="${swap}"
+                printf '[mem] used=%sMi peak=%sMi avail=%sMi swap=%sMi swap_peak=%sMi\n' \
+                  "${used}" "${peak}" "${avail}" "${swap}" "${swap_peak}"
+                sleep 30
+              done
+            ) &
+            sampler=$!
+            trap 'kill "${sampler}" 2>/dev/null || true' EXIT
+          fi
           ./scripts/dist.sh --ci --skip-docs \
             --web-assets web-assets \
             --target ${{ matrix.target }} \
@@ -1505,6 +1556,17 @@ jobs:
           # macOS bash 3.2 exits 0 after a fatal set -u abort inside the
           # script; trust the artifact, not the exit status.
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
+
+      # Kept for the failure modes that leave the runner alive. Memory
+      # exhaustion is not one of them: it takes the whole VM down and every
+      # remaining step with it, which is why the build step samples inline.
+      - name: Report runner capacity after failure
+        if: failure()
+        shell: bash
+        run: |
+          if command -v free >/dev/null 2>&1; then free -h; fi
+          df -h .
+          du -sh .cache/hypercolor/target 2>/dev/null || true
 
       - name: Generate release checksum
         run: |
