@@ -1470,6 +1470,22 @@ jobs:
           if command -v free >/dev/null 2>&1; then free -h; fi
           df -h .
 
+      # Fat LTO over the Servo stack peaks past the 15Gi these runners carry,
+      # and an unresponsive VM gets torn down by the host rather than the
+      # kernel killing one process, so the build dies with no error to read.
+      # Disk is the resource sitting spare here, better than 100G of it, so
+      # spend it: a link that pages is slow, a link that is killed never
+      # finishes. Nothing about the produced binary changes.
+      - name: Provision swap for the release link
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 32G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -1519,12 +1535,14 @@ jobs:
           if command -v free >/dev/null 2>&1; then
             (
               peak=0
+              swap_peak=0
               while :; do
-                used="$(free -m | awk '/^Mem:/ {print $3}')"
+                read -r used avail <<<"$(free -m | awk '/^Mem:/ {print $3, $7}')"
+                swap="$(free -m | awk '/^Swap:/ {print $3}')"
                 [ "${used}" -gt "${peak}" ] && peak="${used}"
-                printf '[mem] used=%sMi peak=%sMi avail=%sMi\n' \
-                  "${used}" "${peak}" \
-                  "$(free -m | awk '/^Mem:/ {print $7}')"
+                [ "${swap}" -gt "${swap_peak}" ] && swap_peak="${swap}"
+                printf '[mem] used=%sMi peak=%sMi avail=%sMi swap=%sMi swap_peak=%sMi\n' \
+                  "${used}" "${peak}" "${avail}" "${swap}" "${swap_peak}"
                 sleep 30
               done
             ) &
