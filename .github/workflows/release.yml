@@ -145,6 +145,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo update --workspace
+          # hypercolor-ui is excluded from the workspace, so the sweep above
+          # never reaches its lockfile even though set-version.ts stamps its
+          # manifest. Left alone it ships a release carrying the previous
+          # version for every path dependency.
+          cargo update --manifest-path crates/hypercolor-ui/Cargo.toml --workspace
           (cd sdk && bun install)
           (cd python && uv lock)
 
