@@ -491,12 +491,18 @@ jobs:
     needs: [changes, generated-effects]
     if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
-    # Sized for a cold run. The steps below sweep five mutually invalidating
-    # feature sets, so almost all of the wall time is rustc, not tests, and a
-    # cache miss puts the whole sweep well past an hour.
+    # Sized for a cold run. The steps below sweep five feature sets, so
+    # almost all of the wall time is rustc, not tests, and a cache miss puts
+    # the whole sweep well past an hour.
     timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows
+      # MSVC link time is dominated by PDB emission, and this job links dozens
+      # of test binaries per run. A correctness gate gets nothing from debug
+      # info beyond line numbers in backtraces, so trade those for the link
+      # time. Only the top-level dev profile is affected; Cargo.toml's
+      # per-package overrides still apply.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v6
 
