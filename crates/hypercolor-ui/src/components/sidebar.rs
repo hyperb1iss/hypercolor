@@ -225,13 +225,11 @@ pub fn Sidebar() -> impl IntoView {
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
-            // Logo — canonical mark, static. The glow layer behind it drifts
-            // through brand hues; the mark itself doesn't move.
-            <div
-                class="w-full border-b border-edge-subtle transition-[height] duration-300"
-                class:h-14=move || collapsed.get()
-                class:h-32=move || !collapsed.get()
-            >
+            // Logo — canonical mark, static, one compact 56px band in both
+            // states. The vertical hero lockup was the sidebar's single
+            // largest space spend; the horizontal lockup carries the same
+            // brand in a third of the height.
+            <div class="w-full h-14 border-b border-edge-subtle">
                 // Collapsed: static 32px trinity.
                 <div
                     class="items-center justify-center h-full logo-container"
@@ -245,16 +243,16 @@ pub fn Sidebar() -> impl IntoView {
                     />
                 </div>
 
-                // Expanded: full vertical lockup with chill aura behind.
+                // Expanded: horizontal lockup, quiet aura behind.
                 <div
-                    class="flex-col items-center justify-center h-full px-3 overflow-hidden logo-container"
+                    class="items-center justify-start h-full px-4 overflow-hidden logo-container"
                     style:display=move || if collapsed.get() { "none" } else { "flex" }
                 >
                     <div class="logo-bg logo-bg-mark" />
                     <img
-                        src="/assets/brand/lockup-vertical-color.png"
+                        src="/assets/brand/lockup-horizontal-color.png"
                         alt="Hypercolor"
-                        class="h-24 w-auto select-none object-contain logo-mark-image"
+                        class="h-8 w-auto select-none object-contain logo-mark-image"
                         draggable="false"
                     />
                 </div>
