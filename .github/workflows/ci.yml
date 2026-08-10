@@ -1446,9 +1446,22 @@ jobs:
           - target: macos-arm64
             os: macos-latest
             rust-target: aarch64-apple-darwin
+    # This lane is cold on every run: it only fires on tag refs, and the cache
+    # action saves on main alone, so no release-* key is ever written. A cold
+    # release build of the Servo stack runs well over half an hour on the
+    # slowest target, and without a ceiling a wedged runner burns GitHub's
+    # six-hour default before the release reports anything at all.
+    timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Report runner capacity
+        shell: bash
+        run: |
+          echo "cores: $(getconf _NPROCESSORS_ONLN)"
+          if command -v free >/dev/null 2>&1; then free -h; fi
+          df -h .
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -1499,6 +1512,17 @@ jobs:
           # macOS bash 3.2 exits 0 after a fatal set -u abort inside the
           # script; trust the artifact, not the exit status.
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
+
+      # A release build that dies mid-link reports nothing but the signal, so
+      # capture what the runner had left the moment it went down. Without this
+      # an exhausted disk and a reclaimed runner look identical after the fact.
+      - name: Report runner capacity after failure
+        if: failure()
+        shell: bash
+        run: |
+          if command -v free >/dev/null 2>&1; then free -h; fi
+          df -h .
+          du -sh .cache/hypercolor/target 2>/dev/null || true
 
       - name: Generate release checksum
         run: |
