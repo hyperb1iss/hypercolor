@@ -14,9 +14,6 @@ use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
-use crate::components::scene_switcher::{
-    SceneSwitcherMenu, active_scene_label, active_scene_locked,
-};
 use crate::components::zone_now_playing::{SidebarZoneRows, set_zone_enabled};
 use crate::config_state::ConfigContext;
 use crate::extensions::SidebarExtensionWidgets;
@@ -43,6 +40,9 @@ pub fn Sidebar() -> impl IntoView {
     // standalone OSS app).
     let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
     let extension_widgets = use_context::<SidebarExtensionWidgets>().unwrap_or_default();
+    // Footer widgets share the bottom bar with the collapse control, so the
+    // toggle shrinks to a square when a widget is holding the row.
+    let has_footer_widgets = !extension_widgets.0.is_empty();
     let chrome_flags = use_context::<crate::extensions::UiChromeFlags>();
     let sponsor_visible = move || chrome_flags.is_none_or(|flags| flags.sponsor_link_visible.get());
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
@@ -362,7 +362,7 @@ pub fn Sidebar() -> impl IntoView {
 
                 Some(view! {
                     <div
-                        class="shrink-0 border-t border-edge-subtle py-3 space-y-3 animate-enter-fade"
+                        class="shrink-0 border-t border-edge-subtle py-2 space-y-2 animate-enter-fade"
                         style:--np-primary=move || primary_rgb.get()
                         style:--np-secondary=move || secondary_rgb.get()
                         style:--np-tertiary=move || tertiary_rgb.get()
@@ -374,13 +374,37 @@ pub fn Sidebar() -> impl IntoView {
                                           rgba(var(--np-secondary), 0.03) 60%, \
                                           transparent 100%)"
                     >
-                        // Now Playing label
-                        <div
-                            class="px-4 text-[9px] font-mono uppercase tracking-[0.15em]"
-                            style:color="rgba(var(--np-primary), 0.85)"
-                        >
-                            {move || if fx.is_playing.get() { "Now Playing" } else { "Paused" }}
-                        </div>
+                        // Header — the effect itself titles the widget: alive
+                        // dot, name, category, audio toggle in one row. A
+                        // multi-zone scene has no singular effect, so the
+                        // header yields and the zone rows carry the names.
+                        {move || (!zones_ctx.multi_zone.get()).then(|| view! {
+                            <div class="px-3 flex items-center gap-2 min-w-0">
+                                <div
+                                    class=move || if fx.is_playing.get() {
+                                        "w-2 h-2 rounded-full dot-alive shrink-0"
+                                    } else {
+                                        "w-2 h-2 rounded-full shrink-0 opacity-50"
+                                    }
+                                    style:background="rgb(var(--np-primary))"
+                                    style:box-shadow=move || if fx.is_playing.get() {
+                                        "0 0 8px rgba(var(--np-primary), 0.7)".to_string()
+                                    } else {
+                                        String::new()
+                                    }
+                                />
+                                <div class="flex-1 min-w-0 truncate text-[11px] font-medium text-fg-primary leading-tight">
+                                    {move || fx.active_effect_name.get().unwrap_or_default()}
+                                </div>
+                                <div
+                                    class="shrink-0 text-[10px] capitalize"
+                                    style:color="rgba(var(--np-secondary), 0.85)"
+                                >
+                                    {move || fx.active_effect_category.get()}
+                                </div>
+                                <SidebarAudioToggle />
+                            </div>
+                        })}
 
                         // Live canvas thumbnail — only on pages without their own preview
                         {move || {
@@ -402,60 +426,14 @@ pub fn Sidebar() -> impl IntoView {
                             })
                         }}
 
-                        // Effect name + category + audio toggle. Multi-zone
-                        // scenes swap the singular metadata for one honest
-                        // row per zone (capped, overflow links to Studio).
-                        {move || if zones_ctx.multi_zone.get() {
-                            view! { <SidebarZoneRows /> }.into_any()
-                        } else {
-                            view! {
-                                <div class="px-4 flex items-center gap-2.5 min-w-0">
-                                    <div
-                                        class=move || if fx.is_playing.get() {
-                                            "w-2 h-2 rounded-full dot-alive shrink-0"
-                                        } else {
-                                            "w-2 h-2 rounded-full shrink-0 opacity-50"
-                                        }
-                                        style:background="rgb(var(--np-primary))"
-                                        style:box-shadow=move || if fx.is_playing.get() {
-                                            "0 0 8px rgba(var(--np-primary), 0.7)".to_string()
-                                        } else {
-                                            String::new()
-                                        }
-                                    />
-                                    <div class="min-w-0 flex-1">
-                                        <div class="text-[11px] font-medium text-fg-primary truncate leading-tight">
-                                            {move || fx.active_effect_name.get().unwrap_or_default()}
-                                        </div>
-                                        <div
-                                            class="text-[10px] capitalize mt-0.5"
-                                            style:color="rgba(var(--np-secondary), 0.85)"
-                                        >
-                                            {move || fx.active_effect_category.get()}
-                                        </div>
-                                    </div>
-                                    <SidebarAudioToggle />
-                                </div>
-                            }.into_any()
-                        }}
-
-                        // Palette strip — shows extracted colors as a smooth gradient
-                        <div class="px-4">
-                            <div
-                                class="h-[3px] rounded-full"
-                                style:background="linear-gradient(90deg, \
-                                                  rgb(var(--np-primary)) 0%, \
-                                                  rgb(var(--np-secondary)) 50%, \
-                                                  rgb(var(--np-tertiary)) 100%)"
-                                style:opacity="0.7"
-                                style:box-shadow="0 0 8px rgba(var(--np-primary), 0.3)"
-                            />
-                        </div>
+                        // Multi-zone scenes get one honest row per zone
+                        // (capped, overflow links to Studio).
+                        {move || zones_ctx.multi_zone.get().then(|| view! { <SidebarZoneRows /> })}
 
                         // Player controls
-                        <div class="px-4 flex items-center justify-between">
+                        <div class="px-3 flex items-center justify-between">
                             <button
-                                class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
+                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Previous effect"
                                 aria-label="Previous effect"
                                 on:click=move |_| navigate_effect(-1)
@@ -479,9 +457,9 @@ pub fn Sidebar() -> impl IntoView {
                                     format!("Resume {zone_name}")
                                 };
                                 let icon_class = if enabled {
-                                    "p-2 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
+                                    "p-1.5 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
                                 } else {
-                                    "p-2 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
+                                    "p-1.5 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
                                 };
                                 view! {
                                     <button
@@ -504,7 +482,7 @@ pub fn Sidebar() -> impl IntoView {
                             } else if fx.is_playing.get() {
                                 view! {
                                     <button
-                                        class="p-2 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
+                                        class="p-1.5 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
                                         title="Pause effect"
                                         aria-label="Pause effect"
                                         on:click=move |_| fx.stop_effect()
@@ -515,7 +493,7 @@ pub fn Sidebar() -> impl IntoView {
                             } else {
                                 view! {
                                     <button
-                                        class="p-2 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
+                                        class="p-1.5 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
                                         title="Resume effect"
                                         aria-label="Resume effect"
                                         on:click=move |_| fx.resume_effect()
@@ -525,7 +503,7 @@ pub fn Sidebar() -> impl IntoView {
                                 }.into_any()
                             }}
                             <button
-                                class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
+                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Next effect"
                                 aria-label="Next effect"
                                 on:click=move |_| navigate_effect(1)
@@ -533,7 +511,7 @@ pub fn Sidebar() -> impl IntoView {
                                 <Icon icon=LuSkipForward width="16px" height="16px" />
                             </button>
                             <button
-                                class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
+                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Random effect"
                                 aria-label="Random effect"
                                 on:click=move |_| random_effect()
@@ -568,32 +546,28 @@ pub fn Sidebar() -> impl IntoView {
                 })
             }}
 
-            // Scene chip — names the active scene and opens the switcher.
-            // Rendered only when there is somewhere to switch to, and only
-            // expanded (a 56px rail has no room for a scene name).
-            {move || (!collapsed.get()).then(|| view! { <SidebarSceneChip /> })}
-
-            // Extension footer widgets — expanded-only, same as the scene
-            // chip; the widget brings its own chrome, the sidebar only
-            // provides the slot.
-            {
-                let extension_widgets = extension_widgets.clone();
-                move || {
-                    (!collapsed.get() && !extension_widgets.0.is_empty()).then(|| {
-                        extension_widgets
-                            .0
-                            .iter()
-                            .map(|widget| (widget.view)())
-                            .collect_view()
-                    })
+            // Bottom bar — extension footer widgets (expanded only; the
+            // 56px rail has no room) inline with the collapse toggle, so
+            // account chrome and the toggle share one row instead of
+            // spending a sidebar line each.
+            <div class="shrink-0 border-t border-edge-subtle px-2 py-2 flex items-center gap-1">
+                {
+                    let extension_widgets = extension_widgets.clone();
+                    move || {
+                        (!collapsed.get() && has_footer_widgets).then(|| {
+                            extension_widgets
+                                .0
+                                .iter()
+                                .map(|widget| (widget.view)())
+                                .collect_view()
+                        })
+                    }
                 }
-            }
-
-            // Bottom bar — collapse toggle only
-            <div class="shrink-0 border-t border-edge-subtle px-2 py-2">
                 <button
-                    class="flex items-center justify-center w-full h-8 rounded-lg text-fg-tertiary hover:text-fg-secondary
-                           hover:bg-surface-hover/30 btn-press"
+                    class="flex items-center justify-center h-8 rounded-lg text-fg-tertiary hover:text-fg-secondary
+                           hover:bg-surface-hover/30 btn-press shrink-0"
+                    class:w-8=move || !collapsed.get() && has_footer_widgets
+                    class:w-full=move || collapsed.get() || !has_footer_widgets
                     on:click=move |_| set_collapsed.update(|v| *v = !*v)
                     title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
                     aria-label=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
@@ -615,77 +589,9 @@ pub fn Sidebar() -> impl IntoView {
 // handler share one source of truth and extension-contributed items land in
 // both consistently.
 
-// ── Sidebar Scene Chip ─────────────────────────────────────────────────────
-
-/// Compact scene indicator above the sidebar footer: active scene name
-/// (or "Default"), a lock glyph for snapshot-locked scenes, and a
-/// popover scene switcher on click. Rendered only when the user has
-/// more than one scene to switch between. No optimistic flip — the
-/// label changes when the shared scene resource confirms the switch.
-#[component]
-fn SidebarSceneChip() -> impl IntoView {
-    let scenes_ctx = expect_context::<crate::zones::ScenesContext>();
-    let (open, set_open) = signal(false);
-
-    let show = Memo::new(move |_| scenes_ctx.has_multiple());
-    let label = Memo::new(move |_| {
-        scenes_ctx
-            .active
-            .with(|active| active_scene_label(active.as_ref()))
-    });
-    let locked = Memo::new(move |_| {
-        scenes_ctx
-            .active
-            .with(|active| active_scene_locked(active.as_ref()))
-    });
-
-    view! {
-        <Show when=move || show.get()>
-            <div class="shrink-0 border-t border-edge-subtle px-2 pt-2 relative sidebar-scene-chip">
-                <button
-                    type="button"
-                    class="flex w-full items-center gap-2 rounded-lg border border-edge-subtle/60 \
-                           bg-surface-overlay/40 px-2.5 py-1.5 text-left transition-colors \
-                           hover:border-accent-muted hover:bg-surface-overlay/70 \
-                           focus-visible:outline-none focus-visible:ring-1 \
-                           focus-visible:ring-accent/50 btn-press"
-                    title="Switch scene"
-                    aria-haspopup="menu"
-                    aria-expanded=move || open.get().to_string()
-                    on:click=move |_| set_open.update(|value| *value = !*value)
-                >
-                    <span class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary shrink-0">
-                        "Scene"
-                    </span>
-                    <span class="flex-1 min-w-0 truncate text-[11px] font-medium text-fg-primary">
-                        {move || label.get()}
-                    </span>
-                    {move || locked.get().then(|| view! {
-                        <span
-                            class="flex shrink-0 text-electric-yellow/70"
-                            title="Snapshot-locked scene"
-                        >
-                            <Icon icon=LuLock width="11px" height="11px" />
-                        </span>
-                    })}
-                    <span class="flex shrink-0 text-fg-tertiary">
-                        <Icon icon=LuChevronUp width="12px" height="12px" />
-                    </span>
-                </button>
-                <SceneSwitcherMenu
-                    anchor_class="sidebar-scene-chip"
-                    is_open=open
-                    set_open=set_open
-                    placement="left-2 right-2 bottom-full mb-1"
-                />
-            </div>
-        </Show>
-    }
-}
-
 // ── Sidebar Audio Toggle ───────────────────────────────────────────────────
 
-/// Tiny icon button in the Now Playing metadata row.
+/// Tiny icon button in the Now Playing header row.
 ///
 /// - Audio on: waveform icon, glows coral (purple pulse on beat). Click to disable.
 /// - Audio off + audio-reactive effect: muted icon, dim. Click to enable.

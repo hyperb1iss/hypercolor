@@ -1,5 +1,5 @@
-//! Shared scene switcher — one popover used by the sidebar scene chip,
-//! the dashboard status pill, and the Studio scene selector.
+//! Shared scene switcher — one popover used by the dashboard status
+//! pill and the Studio scene selector.
 //!
 //! The popover lists a "Default" row (mapped to scene deactivation)
 //! followed by every saved scene. Activation routes through
