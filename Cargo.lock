@@ -5356,6 +5356,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-macos-input"
+version = "0.3.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "hypercolor-network"
 version = "0.3.2"
 dependencies = [
