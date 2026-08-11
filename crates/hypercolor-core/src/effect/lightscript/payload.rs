@@ -161,6 +161,16 @@ impl LightScriptInteractionPayload {
                 ny: sanitize_norm(interaction.mouse.norm_y),
                 mode: pointer_mode_name(interaction.mouse.mode),
                 wheel: interaction.batch.wheel_hi_res,
+                scroll: LightScriptScrollPayload {
+                    line120_x: crate::input::q16_16_to_f64(
+                        interaction.batch.scroll.line120_x_q16_16,
+                    ),
+                    line120_y: crate::input::q16_16_to_f64(
+                        interaction.batch.scroll.line120_y_q16_16,
+                    ),
+                    pixel_x: crate::input::q16_16_to_f64(interaction.batch.scroll.pixel_x_q16_16),
+                    pixel_y: crate::input::q16_16_to_f64(interaction.batch.scroll.pixel_y_q16_16),
+                },
                 velocity: if motion_per_sec.is_finite() {
                     motion_per_sec
                 } else {
@@ -195,11 +205,21 @@ pub(super) struct LightScriptMousePayload {
     pub(super) mode: &'static str,
     #[serde(skip_serializing_if = "is_zero_i32")]
     pub(super) wheel: i32,
+    pub(super) scroll: LightScriptScrollPayload,
     pub(super) velocity: f32,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptScrollPayload {
+    pub(super) line120_x: f64,
+    pub(super) line120_y: f64,
+    pub(super) pixel_x: f64,
+    pub(super) pixel_y: f64,
+}
+
 /// One ordered input edge for the frame, flattened for JS ergonomics.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct LightScriptInputEventPayload {
     pub(super) kind: &'static str,
@@ -212,6 +232,16 @@ pub(super) struct LightScriptInputEventPayload {
     pub(super) state: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) delta: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) delta_x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) delta_y: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) unit: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) phase: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) momentum_phase: Option<&'static str>,
     pub(super) at_ms: u64,
     pub(super) seq: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -223,62 +253,84 @@ impl LightScriptInputEventPayload {
     fn from_timed(timed: &hypercolor_types::event::TimedInputEvent) -> Option<Self> {
         use hypercolor_types::event::InputEvent;
 
-        let (kind, source, key, button, state, delta) = match &timed.event {
-            InputEvent::Key {
-                source_id,
-                key,
-                state,
-            } => (
-                "key",
-                source_id.clone(),
-                Some(key.clone()),
-                None,
-                Some(button_state_name(*state)),
-                None,
-            ),
-            InputEvent::MouseButton {
-                source_id,
-                button,
-                state,
-            } => (
-                "button",
-                source_id.clone(),
-                None,
-                Some(button.clone()),
-                Some(button_state_name(*state)),
-                None,
-            ),
-            InputEvent::MouseWheel {
-                source_id,
-                delta_hi_res,
-            } => (
-                "wheel",
-                source_id.clone(),
-                None,
-                None,
-                None,
-                Some(*delta_hi_res),
-            ),
+        let mut payload = Self {
+            kind: "",
+            source: timed.event.source_id().to_owned(),
+            key: None,
+            button: None,
+            state: None,
+            delta: None,
+            delta_x: None,
+            delta_y: None,
+            unit: None,
+            phase: None,
+            momentum_phase: None,
+            at_ms: timed.at_ms,
+            seq: timed.seq,
+            physical_code: timed.physical_code.clone(),
+            repeat_count: timed.repeat_count,
+        };
+
+        match &timed.event {
+            InputEvent::Key { key, state, .. } => {
+                payload.kind = "key";
+                payload.key = Some(key.clone());
+                payload.state = Some(button_state_name(*state));
+            }
+            InputEvent::MouseButton { button, state, .. } => {
+                payload.kind = "button";
+                payload.button = Some(button.clone());
+                payload.state = Some(button_state_name(*state));
+            }
+            InputEvent::MouseWheel { delta_hi_res, .. } => {
+                payload.kind = "wheel";
+                payload.delta = Some(*delta_hi_res);
+            }
+            InputEvent::PointerScroll {
+                delta_x_q16_16,
+                delta_y_q16_16,
+                unit,
+                phase,
+                momentum_phase,
+                ..
+            } => {
+                payload.kind = "scroll";
+                payload.delta_x = Some(crate::input::q16_16_to_f64(*delta_x_q16_16));
+                payload.delta_y = Some(crate::input::q16_16_to_f64(*delta_y_q16_16));
+                payload.unit = Some(pointer_scroll_unit_name(*unit));
+                payload.phase = Some(pointer_scroll_phase_name(*phase));
+                payload.momentum_phase = Some(pointer_scroll_phase_name(*momentum_phase));
+            }
             // MIDI edges stay on the event bus; they are not part of the
             // effect-facing interaction contract yet.
             InputEvent::MidiNote { .. }
             | InputEvent::MidiControlChange { .. }
             | InputEvent::MidiPitchBend { .. }
             | InputEvent::MidiRealtime { .. } => return None,
-        };
+        }
 
-        Some(Self {
-            kind,
-            source,
-            key,
-            button,
-            state,
-            delta,
-            at_ms: timed.at_ms,
-            seq: timed.seq,
-            physical_code: timed.physical_code.clone(),
-            repeat_count: timed.repeat_count,
-        })
+        Some(payload)
+    }
+}
+
+fn pointer_scroll_unit_name(unit: hypercolor_types::event::PointerScrollUnit) -> &'static str {
+    match unit {
+        hypercolor_types::event::PointerScrollUnit::Line120 => "line120",
+        hypercolor_types::event::PointerScrollUnit::Pixels => "pixels",
+    }
+}
+
+fn pointer_scroll_phase_name(phase: hypercolor_types::event::PointerScrollPhase) -> &'static str {
+    use hypercolor_types::event::PointerScrollPhase;
+
+    match phase {
+        PointerScrollPhase::None => "none",
+        PointerScrollPhase::MayBegin => "may_begin",
+        PointerScrollPhase::Began => "began",
+        PointerScrollPhase::Changed => "changed",
+        PointerScrollPhase::Stationary => "stationary",
+        PointerScrollPhase::Ended => "ended",
+        PointerScrollPhase::Cancelled => "cancelled",
     }
 }
 
@@ -720,6 +772,7 @@ mod tests {
                     ny: 0.75,
                     mode: "virtual",
                     wheel: 120,
+                    scroll: LightScriptScrollPayload::default(),
                     velocity: 0.5,
                 },
                 events: Vec::new(),
@@ -845,8 +898,10 @@ mod tests {
 #[cfg(test)]
 mod interaction_payload_v2_tests {
     use super::*;
-    use crate::input::{InteractionData, MotionAggregate, PointerMode};
-    use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+    use crate::input::{InteractionData, MotionAggregate, PointerMode, ScrollAggregate};
+    use hypercolor_types::event::{
+        InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+    };
 
     #[test]
     fn interaction_payload_carries_events_wheel_and_velocity() {
@@ -855,6 +910,12 @@ mod interaction_payload_v2_tests {
         interaction.mouse.norm_y = 2.0; // clamped
         interaction.mouse.mode = PointerMode::Virtual;
         interaction.batch.wheel_hi_res = -240;
+        interaction.batch.scroll = ScrollAggregate {
+            line120_x_q16_16: 32_768,
+            line120_y_q16_16: -131_072,
+            pixel_x_q16_16: 98_304,
+            pixel_y_q16_16: -16_384,
+        };
         interaction.batch.motion = MotionAggregate {
             dx: 0.1,
             dy: 0.0,
@@ -874,12 +935,26 @@ mod interaction_payload_v2_tests {
                 repeat_count: 3,
             },
             TimedInputEvent {
+                event: InputEvent::PointerScroll {
+                    source_id: "ptr".into(),
+                    delta_x_q16_16: 32_768,
+                    delta_y_q16_16: -16_384,
+                    unit: PointerScrollUnit::Pixels,
+                    phase: PointerScrollPhase::Changed,
+                    momentum_phase: PointerScrollPhase::Began,
+                },
+                at_ms: 104,
+                seq: 10,
+                physical_code: Some("macos:scroll".into()),
+                repeat_count: 1,
+            },
+            TimedInputEvent {
                 event: InputEvent::MouseWheel {
                     source_id: "ptr".into(),
                     delta_hi_res: -240,
                 },
                 at_ms: 105,
-                seq: 10,
+                seq: 11,
                 physical_code: None,
                 repeat_count: 1,
             },
@@ -889,7 +964,7 @@ mod interaction_payload_v2_tests {
                     message: hypercolor_types::event::MidiRealtimeMessage::Clock,
                 },
                 at_ms: 106,
-                seq: 11,
+                seq: 12,
                 physical_code: Some("midi:realtime:clock".into()),
                 repeat_count: 1,
             },
@@ -902,11 +977,15 @@ mod interaction_payload_v2_tests {
         assert_eq!(value["mouse"]["ny"], serde_json::json!(1.0));
         assert_eq!(value["mouse"]["mode"], serde_json::json!("virtual"));
         assert_eq!(value["mouse"]["wheel"], serde_json::json!(-240));
+        assert_eq!(value["mouse"]["scroll"]["line120X"], 0.5);
+        assert_eq!(value["mouse"]["scroll"]["line120Y"], -2.0);
+        assert_eq!(value["mouse"]["scroll"]["pixelX"], 1.5);
+        assert_eq!(value["mouse"]["scroll"]["pixelY"], -0.25);
         assert!(value["mouse"]["velocity"].as_f64().expect("velocity") > 8.9);
         assert_eq!(value["dropped"], serde_json::json!(2));
 
         let events = value["events"].as_array().expect("events array");
-        assert_eq!(events.len(), 2, "MIDI edges stay off the effect contract");
+        assert_eq!(events.len(), 3, "MIDI edges stay off the effect contract");
         assert_eq!(events[0]["kind"], serde_json::json!("key"));
         assert_eq!(events[0]["physicalCode"], serde_json::json!("evdev:key:30"));
         assert_eq!(events[0]["repeatCount"], serde_json::json!(3));
@@ -914,8 +993,14 @@ mod interaction_payload_v2_tests {
         assert_eq!(events[0]["state"], serde_json::json!("pressed"));
         assert_eq!(events[0]["atMs"], serde_json::json!(100));
         assert_eq!(events[0]["seq"], serde_json::json!(9));
-        assert_eq!(events[1]["kind"], serde_json::json!("wheel"));
-        assert_eq!(events[1]["delta"], serde_json::json!(-240));
+        assert_eq!(events[1]["kind"], serde_json::json!("scroll"));
+        assert_eq!(events[1]["deltaX"], 0.5);
+        assert_eq!(events[1]["deltaY"], -0.25);
+        assert_eq!(events[1]["unit"], "pixels");
+        assert_eq!(events[1]["phase"], "changed");
+        assert_eq!(events[1]["momentumPhase"], "began");
+        assert_eq!(events[2]["kind"], serde_json::json!("wheel"));
+        assert_eq!(events[2]["delta"], serde_json::json!(-240));
     }
 
     #[test]

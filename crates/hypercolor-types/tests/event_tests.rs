@@ -8,8 +8,8 @@ use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
     EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
     FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
-    SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
-    ZoneRef,
+    PointerScrollPhase, PointerScrollUnit, SceneChangeReason, Severity, TimedInputEvent,
+    TransitionRef, ZoneChangeKind, ZoneColors, ZoneRef,
 };
 use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
@@ -1248,6 +1248,35 @@ fn mouse_input_events_round_trip_through_json() {
     let restored: InputEvent = serde_json::from_str(&json).expect("deserialize wheel");
     assert_eq!(restored, wheel);
     assert_eq!(restored.source_id(), "host:/dev/input/event4");
+}
+
+#[test]
+fn pointer_scroll_round_trips_exact_q16_16_metadata() {
+    let scroll = InputEvent::PointerScroll {
+        source_id: "host:trackpad".into(),
+        delta_x_q16_16: -32_768,
+        delta_y_q16_16: 98_304,
+        unit: PointerScrollUnit::Pixels,
+        phase: PointerScrollPhase::Changed,
+        momentum_phase: PointerScrollPhase::Began,
+    };
+
+    let json = serde_json::to_value(&scroll).expect("serialize pointer scroll");
+    assert_eq!(json["kind"], "pointer_scroll");
+    assert_eq!(json["delta_x_q16_16"], -32_768);
+    assert_eq!(json["delta_y_q16_16"], 98_304);
+    assert_eq!(json["unit"], "pixels");
+    assert_eq!(json["phase"], "changed");
+    assert_eq!(json["momentum_phase"], "began");
+
+    let restored: InputEvent = serde_json::from_value(json).expect("deserialize pointer scroll");
+    assert_eq!(restored, scroll);
+    assert_eq!(restored.source_id(), "host:trackpad");
+}
+
+#[test]
+fn pointer_scroll_phase_defaults_to_none() {
+    assert_eq!(PointerScrollPhase::default(), PointerScrollPhase::None);
 }
 
 #[test]

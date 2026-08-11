@@ -212,6 +212,30 @@ pub enum InputButtonState {
     Repeated,
 }
 
+/// Coordinate unit carried by a two-axis pointer scroll event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerScrollUnit {
+    /// Integral units are 1/120 of one physical wheel notch.
+    Line120,
+    /// Integral units are display-space pixels.
+    Pixels,
+}
+
+/// Lifecycle phase for a pointer scroll gesture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerScrollPhase {
+    #[default]
+    None,
+    MayBegin,
+    Began,
+    Changed,
+    Stationary,
+    Ended,
+    Cancelled,
+}
+
 /// MIDI transport-control messages that matter to rhythmic lighting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -244,6 +268,16 @@ pub enum InputEvent {
     MouseWheel {
         source_id: String,
         delta_hi_res: i32,
+    },
+
+    /// Two-axis pointer scroll with exact signed Q16.16 deltas.
+    PointerScroll {
+        source_id: String,
+        delta_x_q16_16: i64,
+        delta_y_q16_16: i64,
+        unit: PointerScrollUnit,
+        phase: PointerScrollPhase,
+        momentum_phase: PointerScrollPhase,
     },
 
     /// A MIDI note changed state.
@@ -285,6 +319,7 @@ impl InputEvent {
             Self::Key { source_id, .. }
             | Self::MouseButton { source_id, .. }
             | Self::MouseWheel { source_id, .. }
+            | Self::PointerScroll { source_id, .. }
             | Self::MidiNote { source_id, .. }
             | Self::MidiControlChange { source_id, .. }
             | Self::MidiPitchBend { source_id, .. }

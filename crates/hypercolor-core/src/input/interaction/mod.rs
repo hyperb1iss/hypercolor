@@ -531,6 +531,7 @@ fn project_recent_keys(target: &mut Vec<String>, events: &[TimedInputEvent]) {
         InputEvent::Key { .. }
         | InputEvent::MouseButton { .. }
         | InputEvent::MouseWheel { .. }
+        | InputEvent::PointerScroll { .. }
         | InputEvent::MidiNote { .. }
         | InputEvent::MidiControlChange { .. }
         | InputEvent::MidiPitchBend { .. }

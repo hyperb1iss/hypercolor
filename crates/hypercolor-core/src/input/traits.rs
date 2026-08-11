@@ -9,7 +9,7 @@ use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter}
 use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
-use crate::types::event::{TimedInputEvent, ZoneColors};
+use crate::types::event::{PointerScrollUnit, TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -114,6 +114,7 @@ impl InteractionData {
             .batch
             .wheel_hi_res
             .saturating_add(other.batch.wheel_hi_res);
+        self.batch.scroll.absorb(other.batch.scroll);
         self.batch.motion.dx += other.batch.motion.dx;
         self.batch.motion.dy += other.batch.motion.dy;
         self.batch.motion.distance += other.batch.motion.distance;
@@ -157,6 +158,7 @@ impl InteractionData {
             .batch
             .wheel_hi_res
             .saturating_add(other.batch.wheel_hi_res);
+        self.batch.scroll.absorb(other.batch.scroll);
         self.batch.motion.dx += other.batch.motion.dx;
         self.batch.motion.dy += other.batch.motion.dy;
         self.batch.motion.distance += other.batch.motion.distance;
@@ -289,6 +291,8 @@ pub struct InteractionBatch {
     pub events: Vec<TimedInputEvent>,
     /// Accumulated wheel travel since last frame, in 1/120-notch units.
     pub wheel_hi_res: i32,
+    /// Exact two-axis scroll totals since the previous frame.
+    pub scroll: ScrollAggregate,
     /// Aggregate pointer motion since last frame.
     pub motion: MotionAggregate,
     /// Wall-clock span the motion aggregate covers, in seconds.
@@ -310,6 +314,7 @@ impl InteractionBatch {
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
             && self.wheel_hi_res == 0
+            && self.scroll == ScrollAggregate::default()
             && self.motion == MotionAggregate::default()
             && self.dropped_events == 0
     }
@@ -336,10 +341,45 @@ impl InteractionBatch {
         }
 
         self.wheel_hi_res = self.wheel_hi_res.saturating_add(prior.wheel_hi_res);
+        self.scroll.absorb(prior.scroll);
         self.motion.dx += prior.motion.dx;
         self.motion.dy += prior.motion.dy;
         self.motion.distance += prior.motion.distance;
         self.dropped_events = self.dropped_events.saturating_add(prior.dropped_events);
+    }
+}
+
+/// Exact two-axis scroll accumulated independently by coordinate unit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScrollAggregate {
+    pub line120_x_q16_16: i64,
+    pub line120_y_q16_16: i64,
+    pub pixel_x_q16_16: i64,
+    pub pixel_y_q16_16: i64,
+}
+
+impl ScrollAggregate {
+    /// Add one exact scroll delta with saturating overflow behavior.
+    pub fn accumulate(
+        &mut self,
+        unit: PointerScrollUnit,
+        delta_x_q16_16: i64,
+        delta_y_q16_16: i64,
+    ) {
+        let (x, y) = match unit {
+            PointerScrollUnit::Line120 => (&mut self.line120_x_q16_16, &mut self.line120_y_q16_16),
+            PointerScrollUnit::Pixels => (&mut self.pixel_x_q16_16, &mut self.pixel_y_q16_16),
+        };
+        *x = x.saturating_add(delta_x_q16_16);
+        *y = y.saturating_add(delta_y_q16_16);
+    }
+
+    /// Fold another aggregate into this one with saturating arithmetic.
+    pub fn absorb(&mut self, other: Self) {
+        self.line120_x_q16_16 = self.line120_x_q16_16.saturating_add(other.line120_x_q16_16);
+        self.line120_y_q16_16 = self.line120_y_q16_16.saturating_add(other.line120_y_q16_16);
+        self.pixel_x_q16_16 = self.pixel_x_q16_16.saturating_add(other.pixel_x_q16_16);
+        self.pixel_y_q16_16 = self.pixel_y_q16_16.saturating_add(other.pixel_y_q16_16);
     }
 }
 

@@ -16,6 +16,7 @@ pub mod media;
 pub mod net;
 pub mod routing;
 pub mod screen;
+mod scroll;
 pub mod sensor;
 mod status;
 mod traits;
@@ -39,6 +40,7 @@ pub use interaction::InteractionInput;
 pub use media::MediaSource;
 pub use net::NetSource;
 pub use screen::{ScreenCaptureDemand, ScreenPublicationDemandSnapshot};
+pub use scroll::{LegacyWheelProjector, Q16_16_SCALE, q16_16_to_f64};
 pub use sensor::SensorPoller;
 pub use status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
@@ -51,7 +53,7 @@ pub use status::{
 pub use traits::{
     InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
     InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,
-    ScreenZoneColors,
+    ScreenZoneColors, ScrollAggregate,
 };
 pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
