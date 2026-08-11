@@ -199,20 +199,35 @@ impl ConfigManager {
         expected: &Arc<HypercolorConfig>,
         mutate: impl FnOnce(&mut HypercolorConfig),
     ) -> Result<bool> {
+        self.modify_and_save_if_current_snapshot(expected, mutate)
+            .map(|installed| installed.is_some())
+    }
+
+    /// Persist and publish a mutation only while `expected` is current, returning
+    /// the exact immutable snapshot installed by the successful mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or the atomic file replacement fails.
+    pub fn modify_and_save_if_current_snapshot(
+        &self,
+        expected: &Arc<HypercolorConfig>,
+        mutate: impl FnOnce(&mut HypercolorConfig),
+    ) -> Result<Option<Arc<HypercolorConfig>>> {
         let mut writer = self
             .write_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current = self.config.load_full();
         if !Arc::ptr_eq(expected, &current) {
-            return Ok(false);
+            return Ok(None);
         }
         let mut candidate = (*current).clone();
         mutate(&mut candidate);
-        let candidate = normalize_config(candidate);
+        let candidate = Arc::new(normalize_config(candidate));
         self.persist(&candidate)?;
-        self.publish_config(&mut writer, &current, Arc::new(candidate));
-        Ok(true)
+        self.publish_config(&mut writer, &current, Arc::clone(&candidate));
+        Ok(Some(candidate))
     }
 
     /// Reserve a non-serialized persistence epoch for a prepared capture source.
