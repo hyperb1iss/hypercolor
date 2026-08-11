@@ -29,7 +29,7 @@
 
   {% block head_extra %}{% endblock head_extra %}
 </head>
-<body data-search-index="{{ get_url(path='search_index.en.js') }}">
+<body data-search-index="{{ get_url(path='search_index.en.js') }}" data-search-lib="{{ get_url(path='elasticlunr.min.js') }}">
   <a href="#main-content" class="skip-link">Skip to main content</a>
 
   {% include "partials/nav.html" %}
