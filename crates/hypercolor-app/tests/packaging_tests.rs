@@ -23,6 +23,7 @@ const DIAGNOSE_WINDOWS_PS1: &str = include_str!("../../../scripts/diagnose-windo
 const FETCH_PAWNIO_ASSETS_PS1: &str = include_str!("../../../scripts/fetch-pawnio-assets.ps1");
 const INSTALL_BUNDLED_PAWNIO_PS1: &str =
     include_str!("../../../scripts/install-bundled-pawnio.ps1");
+const INSTALL_RELEASE_SH: &str = include_str!("../../../scripts/install-release.sh");
 const INSTALL_PAWNIO_MODULES_PS1: &str =
     include_str!("../../../scripts/install-pawnio-modules.ps1");
 const INSTALL_WINDOWS_SERVICE_PS1: &str =
@@ -98,6 +99,22 @@ fn curl_installer_compares_macos_versions_by_numeric_component() {
             "unexpected support result for macOS {version}"
         );
     }
+}
+
+#[test]
+fn macos_distribution_covers_arm64_and_amd64() {
+    for expected in ["macos-arm64", "macos-amd64"] {
+        assert!(CI_WORKFLOW.contains(&format!("target: {expected}")));
+        assert!(GET_INSTALLER.contains(expected));
+        assert!(INSTALL_RELEASE_SH.contains(expected));
+        assert!(HOMEBREW_FORMULA.contains(expected));
+    }
+
+    assert!(CI_WORKFLOW.contains("os: macos-26"));
+    assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
+    assert!(CI_WORKFLOW.contains("SHA256_MACOS_AMD64"));
+    assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_AMD64"));
+    assert!(HOMEBREW_FORMULA.contains("keep_alive successful_exit: false"));
 }
 
 #[test]

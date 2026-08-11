@@ -155,11 +155,7 @@ detect_platform() {
 
   # Validate supported combinations
   case "${platform}" in
-    linux-amd64|linux-arm64|macos-arm64) ;;
-    macos-amd64)
-      warn "macOS x86_64 binaries not pre-built. Consider building from source."
-      die "See: https://github.com/${REPO}#building-from-source"
-      ;;
+    linux-amd64|linux-arm64|macos-amd64|macos-arm64) ;;
     *) die "Unsupported platform: ${platform}" ;;
   esac
 

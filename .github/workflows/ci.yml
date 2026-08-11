@@ -1129,7 +1129,7 @@ jobs:
               target/release/bundle/nsis/*.exe
               crates/hypercolor-app/target/release/bundle/nsis/*.exe
           - target: macos-arm64
-            os: macos-latest
+            os: macos-26
             rust-target: aarch64-apple-darwin
             bundles: dmg,app
             artifact-kind: dmg-app
@@ -1140,7 +1140,7 @@ jobs:
               crates/hypercolor-app/target/release/bundle/dmg/*.dmg
               crates/hypercolor-app/target/release/bundle/macos/*.app
           - target: macos-x64
-            os: macos-15-intel
+            os: macos-26-intel
             rust-target: x86_64-apple-darwin
             bundles: dmg,app
             artifact-kind: dmg-app
@@ -1472,8 +1472,11 @@ jobs:
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
           - target: macos-arm64
-            os: macos-latest
+            os: macos-26
             rust-target: aarch64-apple-darwin
+          - target: macos-amd64
+            os: macos-26-intel
+            rust-target: x86_64-apple-darwin
     # This lane is cold on every run: it only fires on tag refs, and the cache
     # action saves on main alone, so no release-* key is ever written. A cold
     # release build of the Servo stack runs well over half an hour on the
@@ -1812,7 +1815,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          for platform in linux-amd64 linux-arm64 macos-arm64; do
+          for platform in linux-amd64 linux-arm64 macos-amd64 macos-arm64; do
             tarball="hypercolor-${VERSION}-${platform}.tar.gz"
             url="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${tarball}"
             echo "Downloading ${tarball}..."
@@ -1841,6 +1844,7 @@ jobs:
         run: |
           sed \
             -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \
+            -e "s/SHA256_MACOS_AMD64/${{ steps.checksums.outputs.sha256_macos_amd64 }}/g" \
             -e "s/SHA256_MACOS_ARM64/${{ steps.checksums.outputs.sha256_macos_arm64 }}/g" \
             -e "s/SHA256_LINUX_AMD64/${{ steps.checksums.outputs.sha256_linux_amd64 }}/g" \
             -e "s/SHA256_LINUX_ARM64/${{ steps.checksums.outputs.sha256_linux_arm64 }}/g" \

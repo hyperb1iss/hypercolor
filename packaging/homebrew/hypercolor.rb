@@ -30,6 +30,9 @@ class Hypercolor < Formula
     if Hardware::CPU.arm?
       url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-arm64.tar.gz"
       sha256 "SHA256_MACOS_ARM64"
+    elsif Hardware::CPU.intel?
+      url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-amd64.tar.gz"
+      sha256 "SHA256_MACOS_AMD64"
     end
   end
 
@@ -83,7 +86,7 @@ class Hypercolor < Formula
 
   service do
     run [opt_bin/"hypercolor-daemon", "--ui-dir", share/"hypercolor/ui"]
-    keep_alive true
+    keep_alive successful_exit: false
     log_path var/"log/hypercolor/hypercolor.log"
     error_log_path var/"log/hypercolor/hypercolor.log"
     environment_variables HYPERCOLOR_LOG: "info"

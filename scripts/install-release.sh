@@ -154,6 +154,7 @@ detect_platform() {
     case "${OS}-${ARCH}" in
         Linux-x86_64)   ARTIFACT_SUFFIX="linux-amd64" ;;
         Linux-aarch64)  ARTIFACT_SUFFIX="linux-arm64" ;;
+        Darwin-x86_64)  ARTIFACT_SUFFIX="macos-amd64" ;;
         Darwin-aarch64) ARTIFACT_SUFFIX="macos-arm64" ;;
         *)              fatal "Unsupported platform: ${OS} ${ARCH}" ;;
     esac
