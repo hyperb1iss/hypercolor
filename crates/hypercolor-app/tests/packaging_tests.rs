@@ -32,6 +32,7 @@ const INSTALL_WINDOWS_SMBUS_SERVICE_PS1: &str =
     include_str!("../../../scripts/install-windows-smbus-service.ps1");
 const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const VERIFY_DEB_SH: &str = include_str!("../../../scripts/verify-deb-package.sh");
+const VERIFY_RELEASE_SH: &str = include_str!("../../../scripts/verify-release-artifact.sh");
 const VERIFY_MACOS_DEPLOYMENT_TARGET_SH: &str =
     include_str!("../../../scripts/verify-macos-deployment-target.sh");
 const SIGN_MACOS_ARTIFACTS_SH: &str = include_str!("../../../scripts/sign-macos-artifacts.sh");
@@ -178,6 +179,7 @@ fn macos_signing_actor_rejects_ad_hoc_and_unlisted_objects() {
     assert!(SIGN_MACOS_ARTIFACTS_SH.contains("anchor apple generic"));
     assert!(SIGN_MACOS_ARTIFACTS_SH.contains("notarytool submit"));
     assert!(SIGN_MACOS_ARTIFACTS_SH.contains("stapler validate"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("tauri build --bundles app --no-sign"));
 }
 
 #[test]
@@ -218,11 +220,39 @@ fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
 }
 
 #[test]
-fn ci_normalizes_macos_dmg_artifacts_for_cask_urls() {
-    assert!(CI_WORKFLOW.contains("Normalize macOS DMG artifact name"));
+fn ci_builds_normalized_macos_dmg_artifacts_for_cask_urls() {
+    assert!(CI_WORKFLOW.contains("Build signed and notarized macOS artifacts"));
     assert!(CI_WORKFLOW.contains("cask_arch: arm64"));
     assert!(CI_WORKFLOW.contains("cask_arch: x86_64"));
-    assert!(CI_WORKFLOW.contains("Hypercolor-$version-$arch.dmg"));
+    assert!(
+        CI_WORKFLOW.contains(
+            "Hypercolor-${{ steps.version.outputs.version }}-${{ matrix.cask_arch }}.dmg"
+        )
+    );
+    assert!(CI_WORKFLOW.contains("*.notarization.json"));
+    assert!(CI_WORKFLOW.contains("-name '*.notarization.json'"));
+}
+
+#[test]
+fn macos_release_lanes_use_the_manifest_signing_actor() {
+    assert!(!CI_WORKFLOW.contains(r#"APPLE_SIGNING_IDENTITY: "-""#));
+    assert!(CI_WORKFLOW.contains("./scripts/sign-macos-artifacts.sh app"));
+    assert!(CI_WORKFLOW.contains("Assemble signed macOS distribution"));
+    assert!(BUILD_MAC_INSTALLER_SH.contains(r#"--bundles app"#));
+    assert!(!BUILD_MAC_INSTALLER_SH.contains("dmg,app"));
+    assert!(BUILD_MAC_INSTALLER_SH.contains(r#""${SIGNING_ACTOR}" app"#));
+    assert!(DIST_SH.contains(r#""${MACOS_SIGNING_ACTOR}" standalone"#));
+}
+
+#[test]
+fn macos_release_verifier_checks_signatures_and_notarization_provenance() {
+    assert!(VERIFY_RELEASE_SH.contains("verify-app"));
+    assert!(VERIFY_RELEASE_SH.contains("verify-standalone"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("verify_scope"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("verify_inventory"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("app_notarization.status"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("dmg_notarization.status"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("notarization.status"));
 }
 
 #[test]

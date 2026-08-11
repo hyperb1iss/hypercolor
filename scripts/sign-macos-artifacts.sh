@@ -7,8 +7,6 @@ APP_ENTITLEMENTS="crates/hypercolor-app/entitlements.plist"
 DAEMON_ENTITLEMENTS="packaging/macos/daemon.entitlements.plist"
 SIGNING_TMP=""
 SIGNING_KEYCHAIN=""
-KEYCHAIN_LIST_CHANGED=0
-ORIGINAL_KEYCHAINS=()
 
 die() {
   printf 'macOS signing failed: %s\n' "$*" >&2
@@ -23,6 +21,10 @@ Commands:
   validate-manifest
   app --target <triple> --version <version> --arch <arm64|x86_64> [--ci]
   standalone --directory <distribution> --target <triple>
+  verify-app --app <bundle> --dmg <image> --provenance <json>
+    --target <triple> --team-id <team>
+  verify-standalone --directory <distribution> --target <triple>
+    --team-id <team>
 
 The app command pre-signs the staged daemon sidecar, builds only the Tauri
 app bundle, reapplies every manifest signature, notarizes and staples the app,
@@ -37,9 +39,6 @@ EOF
 }
 
 cleanup() {
-  if [[ "${KEYCHAIN_LIST_CHANGED}" -eq 1 ]]; then
-    security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" >/dev/null
-  fi
   if [[ -n "${SIGNING_KEYCHAIN}" && -f "${SIGNING_KEYCHAIN}" ]]; then
     security delete-keychain "${SIGNING_KEYCHAIN}" >/dev/null 2>&1 || true
   fi
@@ -162,16 +161,6 @@ prepare_signing_identity() {
     -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
   security set-key-partition-list -S apple-tool:,apple: -s \
     -k "${keychain_password}" "${SIGNING_KEYCHAIN}" >/dev/null
-
-  local keychain
-  while IFS= read -r keychain; do
-    keychain="${keychain#*\"}"
-    keychain="${keychain%\"*}"
-    [[ -n "${keychain}" ]] && ORIGINAL_KEYCHAINS+=("${keychain}")
-  done < <(security list-keychains -d user)
-  security list-keychains -d user -s "${SIGNING_KEYCHAIN}" \
-    "${ORIGINAL_KEYCHAINS[@]}" >/dev/null
-  KEYCHAIN_LIST_CHANGED=1
 
   security find-identity -v -p codesigning "${SIGNING_KEYCHAIN}" \
     | grep -F "${APPLE_SIGNING_IDENTITY}" >/dev/null \
@@ -411,6 +400,81 @@ sign_dmg() {
     || die "secure timestamp is missing for ${dmg}"
 }
 
+verify_dmg() {
+  local dmg="$1"
+  codesign --verify --strict --verbose=2 "${dmg}"
+  local metadata
+  metadata="$(signature_metadata "${dmg}")"
+  grep -F "TeamIdentifier=${APPLE_TEAM_ID}" <<< "${metadata}" >/dev/null \
+    || die "team identifier mismatch for ${dmg}"
+  grep -F 'Timestamp=' <<< "${metadata}" >/dev/null \
+    || die "secure timestamp is missing for ${dmg}"
+}
+
+verify_inventory() {
+  local scope_root="$1"
+  local scope="$2"
+  local target="$3"
+  local provenance="$4"
+  ensure_signing_tmp
+  local actual="${SIGNING_TMP}/${scope}-actual-inventory.json"
+  local actual_sorted expected_sorted
+  write_object_inventory "${scope_root}" "${scope}" "${target}" "${actual}"
+  actual_sorted="$(jq -S 'sort_by(.path)' "${actual}")"
+  expected_sorted="$(jq -S '.objects | sort_by(.path)' "${provenance}")"
+  [[ "${actual_sorted}" == "${expected_sorted}" ]] \
+    || die "signed object inventory does not match provenance"
+}
+
+verify_provenance_identity() {
+  local provenance="$1"
+  local target="$2"
+  [[ -s "${provenance}" ]] || die "notarization provenance is missing: ${provenance}"
+  jq -e \
+    --arg team_id "${APPLE_TEAM_ID}" \
+    --arg target "${target}" \
+    '.team_id == $team_id and .target == $target' \
+    "${provenance}" >/dev/null \
+    || die "notarization provenance identity mismatch"
+}
+
+verify_app_artifacts() {
+  local app="$1"
+  local dmg="$2"
+  local provenance="$3"
+  local target="$4"
+  [[ -d "${app}" ]] || die "app bundle is missing: ${app}"
+  [[ -s "${dmg}" ]] || die "DMG is missing: ${dmg}"
+  for command in codesign file find jq plutil sed xcrun; do
+    require "${command}"
+  done
+  verify_scope "${app}" app "${target}"
+  verify_dmg "${dmg}"
+  xcrun stapler validate "${app}"
+  xcrun stapler validate "${dmg}"
+  verify_provenance_identity "${provenance}" "${target}"
+  jq -e \
+    '.app_notarization.status == "Accepted" and .dmg_notarization.status == "Accepted"' \
+    "${provenance}" >/dev/null \
+    || die "app or DMG notarization was not accepted"
+  verify_inventory "${app}" app "${target}" "${provenance}"
+}
+
+verify_standalone_artifacts() {
+  local directory="$1"
+  local target="$2"
+  local provenance="${directory}/share/hypercolor/macos-notarization.json"
+  [[ -d "${directory}" ]] || die "standalone distribution is missing: ${directory}"
+  for command in codesign file find jq plutil sed; do
+    require "${command}"
+  done
+  verify_scope "${directory}" standalone "${target}"
+  verify_provenance_identity "${provenance}" "${target}"
+  jq -e '.notarization.status == "Accepted"' "${provenance}" >/dev/null \
+    || die "standalone notarization was not accepted"
+  verify_inventory "${directory}" standalone "${target}" "${provenance}"
+}
+
 build_app_artifacts() {
   local target="$1"
   local version="$2"
@@ -429,7 +493,7 @@ build_app_artifacts() {
   codesign_object "${staged_sidecar}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
   verify_signature "${staged_sidecar}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
 
-  local tauri_args=(tauri build --bundles app --config tauri.bundle.conf.json --target "${target}")
+  local tauri_args=(tauri build --bundles app --no-sign --config tauri.bundle.conf.json --target "${target}")
   [[ "${ci}" -eq 1 ]] && tauri_args+=(--ci)
   (
     cd "${ROOT_DIR}/crates/hypercolor-app"
@@ -571,6 +635,48 @@ case "${command_name}" in
       || die "standalone target must be an Apple Darwin triple"
     [[ -n "${directory}" ]] || die "standalone directory is required"
     sign_standalone_artifacts "${directory}" "${target}"
+    ;;
+  verify-app)
+    app=""
+    dmg=""
+    provenance=""
+    target=""
+    team_id=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        --app) app="$2"; shift 2 ;;
+        --dmg) dmg="$2"; shift 2 ;;
+        --provenance) provenance="$2"; shift 2 ;;
+        --target) target="$2"; shift 2 ;;
+        --team-id) team_id="$2"; shift 2 ;;
+        *) die "unknown verify-app option: $1" ;;
+      esac
+    done
+    [[ "${target}" == *-apple-darwin ]] \
+      || die "verification target must be an Apple Darwin triple"
+    [[ -n "${team_id}" ]] || die "verification team ID is required"
+    APPLE_TEAM_ID="${team_id}"
+    verify_app_artifacts "${app}" "${dmg}" "${provenance}" "${target}"
+    printf 'verified signed app artifacts\n'
+    ;;
+  verify-standalone)
+    directory=""
+    target=""
+    team_id=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        --directory) directory="$2"; shift 2 ;;
+        --target) target="$2"; shift 2 ;;
+        --team-id) team_id="$2"; shift 2 ;;
+        *) die "unknown verify-standalone option: $1" ;;
+      esac
+    done
+    [[ "${target}" == *-apple-darwin ]] \
+      || die "verification target must be an Apple Darwin triple"
+    [[ -n "${team_id}" ]] || die "verification team ID is required"
+    APPLE_TEAM_ID="${team_id}"
+    verify_standalone_artifacts "${directory}" "${target}"
+    printf 'verified signed standalone artifacts\n'
     ;;
   -h|--help|help)
     usage

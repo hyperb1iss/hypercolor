@@ -29,6 +29,7 @@ BUILD_ROOT=""
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
+MACOS_SIGNING_ACTOR="${ROOT_DIR}/scripts/sign-macos-artifacts.sh"
 
 info()  { printf '\033[38;2;128;255;234m→\033[0m %s\n' "$*"; }
 ok()    { printf '\033[38;2;80;250;123m✅\033[0m %s\n' "$*"; }
@@ -342,6 +343,10 @@ fi
 if [[ "${IS_MACOS}" -eq 1 ]]; then
   cp packaging/launchd/tech.hyperbliss.hypercolor.plist \
     "${DIST_DIR}/share/hypercolor/launchd/"
+  info "Signing and notarizing standalone macOS artifacts"
+  "${MACOS_SIGNING_ACTOR}" standalone \
+    --directory "${DIST_DIR}" \
+    --target "${RUST_TARGET}"
 fi
 
 cp LICENSE NOTICE README.md "${DIST_DIR}/"
