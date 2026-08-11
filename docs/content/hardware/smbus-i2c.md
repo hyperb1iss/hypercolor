@@ -4,8 +4,6 @@ description = "ASUS Aura lighting over SMBus on Linux and Windows: /dev/i2c-* ac
 weight = 30
 +++
 
-# SMBus / I²C ⚡
-
 ASUS Aura motherboard headers, GPU lighting zones, and RGB DRAM all communicate over SMBus, a low-speed I²C-compatible serial bus built into the platform chipset. Linux exposes each adapter as a `/dev/i2c-*` character device. Hypercolor opens those nodes directly and speaks the ENE indirect-register protocol that ASUS Aura controllers expect.
 
 On Linux the setup requires two things that USB devices do not: the `i2c-dev` kernel module must be loaded, and the udev rules must be installed. Once those are in place, discovery is automatic. Both prerequisites are Linux-only; the [Windows section](#windows-and-macos) below covers the PawnIO path.

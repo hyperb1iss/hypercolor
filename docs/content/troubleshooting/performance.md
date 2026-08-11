@@ -4,8 +4,6 @@ description = "Diagnose Servo overhead, USB-bus saturation, and render budget pr
 weight = 60
 +++
 
-# Low FPS / stuttering ⚡
-
 Hypercolor's render loop targets your configured `daemon.target_fps` ceiling using an adaptive five-tier controller (Minimal 10 → Low 20 → Medium 30 → High 45 → Full 60) that shifts between tiers based on measured frame budget. Healthy means holding the tier that matches your configured target. The default target is **30 FPS**, so on a stock config the loop sits at **Medium** when everything is fine; that is the ceiling, not a downshift. Full (60) only comes into play if you raise `daemon.target_fps`. The first sign of a performance problem is the tier sitting *below your configured target*, not a hard crash.
 
 This page walks you through reading the `diagnose` output, identifying which part of the pipeline is the bottleneck, and fixing the root cause.

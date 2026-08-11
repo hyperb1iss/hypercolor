@@ -4,8 +4,6 @@ description = "Make your lights react to music: pick the right monitor or loopba
 weight = 120
 +++
 
-# Audio setup ⚡
-
 Hypercolor can make every LED in your rig react to music in real time: spectrum bars, beat flashes, harmonic color shifts. Getting there takes one configuration decision that trips almost everyone: you need a **monitor source** (a loopback of what your system is playing), not a microphone.
 
 This page covers:

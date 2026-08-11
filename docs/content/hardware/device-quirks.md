@@ -4,8 +4,6 @@ description = "Known rebrands, firmware-split behavior, and devices that appear 
 weight = 100
 +++
 
-# Device quirks & rebrands
-
 The compatibility matrix tells you which devices are supported. This page covers the cases
 where the matrix entry alone is not enough: hardware that was sold under multiple names,
 devices whose firmware version determines which protocol is used, and devices that enumerate

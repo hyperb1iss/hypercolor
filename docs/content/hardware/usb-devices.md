@@ -4,8 +4,6 @@ description = "Connect USB/HID/serial/MIDI devices on Linux, Windows, and macOS:
 weight = 20
 +++
 
-# USB devices
-
 On Linux, USB-connected devices need a one-time permissions step (udev rules) before Hypercolor can talk to them. Without it the daemon finds the hardware but cannot open it, which looks like a silent no-op or a "device not found" error even though the device is physically present. Windows needs no per-device permission step, and macOS needs none for HID devices.
 
 This page covers the setup, explains how Hypercolor reaches different device types, and walks through the most common failure modes.
