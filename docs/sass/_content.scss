@@ -67,6 +67,54 @@
     color: var(--text-primary);
   }
 
+  // ── Heading anchors — margin '#', revealed on hover ────────
+  // Zola's default anchor template emits a bare 🔗 into the heading text.
+  // templates/anchor-link.html replaces it; this lifts it out of the text flow
+  // so it stops colliding with the H2 ◆ prefix and authored emoji.
+
+  h1, h2, h3, h4, h5, h6 {
+    position: relative;
+  }
+
+  .zola-anchor {
+    position: absolute;
+    right: 100%;
+    padding-right: 8px;
+    font-weight: 400;
+    color: var(--text-tertiary);
+    opacity: 0;
+    // H1 paints its text with a clipped gradient; the anchor must opt out of
+    // both that and the .doc link underline-grow.
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    transition:
+      opacity var(--duration-medium) var(--ease-smooth),
+      color var(--duration-medium) var(--ease-smooth);
+
+    &:hover {
+      color: var(--accent);
+      text-shadow: 0 0 12px var(--glow-accent-50);
+    }
+
+    &:focus-visible {
+      opacity: 1;
+    }
+  }
+
+  h1:hover, h2:hover, h3:hover,
+  h4:hover, h5:hover, h6:hover {
+    > .zola-anchor {
+      opacity: 1;
+    }
+  }
+
+  // No hover on touch, and the narrow gutter has no room for the marker.
+  @media (max-width: $bp-mobile - 1px) {
+    .zola-anchor {
+      display: none;
+    }
+  }
+
   // ── Links — purple resting, purple underline-grow on hover ──
 
   a {
