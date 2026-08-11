@@ -1136,7 +1136,12 @@ jobs:
               crates/hypercolor-app/target/release/bundle/macos/*.app
     runs-on: ${{ matrix.os }}
     env:
-      CARGO_TARGET_DIR: target
+      # Absolute on purpose. Cargo resolves a relative CARGO_TARGET_DIR
+      # against the current directory, and the Tauri bundle step runs from
+      # crates/hypercolor-app, so a bare "target" sent that build to its own
+      # cold directory and recompiled the whole dependency tree the sidecar
+      # build had just finished compiling.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v6
 
