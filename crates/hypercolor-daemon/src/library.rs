@@ -345,7 +345,13 @@ impl JsonLibraryStore {
     ///
     /// Returns an error if an existing snapshot cannot be read or parsed.
     pub fn open(path: PathBuf) -> Result<Self, JsonLibraryStoreOpenError> {
-        let data = if path.exists() {
+        let snapshot_exists =
+            path.try_exists()
+                .map_err(|source| JsonLibraryStoreOpenError::Read {
+                    path: path.clone(),
+                    source,
+                })?;
+        let data = if snapshot_exists {
             let raw = std::fs::read_to_string(&path).map_err(|source| {
                 JsonLibraryStoreOpenError::Read {
                     path: path.clone(),
@@ -1631,5 +1637,26 @@ mod tests {
 
         let error = JsonLibraryStore::open(path).expect_err("expected parse error");
         assert!(matches!(error, JsonLibraryStoreOpenError::Parse { .. }));
+    }
+
+    #[test]
+    fn json_store_open_accepts_a_truly_missing_snapshot() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("library.json");
+
+        JsonLibraryStore::open(path).expect("missing snapshot should start empty");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_store_open_rejects_snapshot_metadata_errors() {
+        use std::os::unix::fs::symlink;
+
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("library.json");
+        symlink("library.json", &path).expect("self-referential symlink");
+
+        let error = JsonLibraryStore::open(path).expect_err("metadata error must fail closed");
+        assert!(matches!(error, JsonLibraryStoreOpenError::Read { .. }));
     }
 }

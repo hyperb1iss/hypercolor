@@ -47,6 +47,7 @@ hypercolor-windows-input = { path = "../hypercolor-windows-input" }
 hypercolor-windows-capture = { path = "../hypercolor-windows-capture" }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
+hypercolor-platform-fs = { workspace = true }
 hypercolor-linux-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-windows-gpu-interop = { workspace = true, optional = true }
