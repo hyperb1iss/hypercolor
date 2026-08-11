@@ -34,6 +34,10 @@ const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const VERIFY_DEB_SH: &str = include_str!("../../../scripts/verify-deb-package.sh");
 const VERIFY_MACOS_DEPLOYMENT_TARGET_SH: &str =
     include_str!("../../../scripts/verify-macos-deployment-target.sh");
+const SIGN_MACOS_ARTIFACTS_SH: &str = include_str!("../../../scripts/sign-macos-artifacts.sh");
+const MACOS_SIGNING_MANIFEST: &str = include_str!("../../../packaging/macos/signing-manifest.tsv");
+const MACOS_DAEMON_ENTITLEMENTS: &str =
+    include_str!("../../../packaging/macos/daemon.entitlements.plist");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
@@ -149,6 +153,54 @@ fn ci_audits_pr_and_release_macho_deployment_targets() {
             .count(),
         3
     );
+}
+
+#[test]
+fn macos_signing_manifest_assigns_every_stable_identity() {
+    for identifier in [
+        "tech.hyperbliss.hypercolor",
+        "tech.hyperbliss.hypercolor.sidecar",
+        "tech.hyperbliss.hypercolor.daemon",
+        "tech.hyperbliss.hypercolor.cli",
+        "tech.hyperbliss.hypercolor.app-host",
+        "tech.hyperbliss.hypercolor.tray",
+    ] {
+        assert!(MACOS_SIGNING_MANIFEST.contains(identifier));
+    }
+    assert!(MACOS_SIGNING_MANIFEST.contains("hypercolor-daemon-{target}"));
+}
+
+#[test]
+fn macos_signing_actor_rejects_ad_hoc_and_unlisted_objects() {
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("ad-hoc signing identities are forbidden"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("matched ${matches} signing manifest entries"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("codesign --verify --strict"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("anchor apple generic"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("notarytool submit"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("stapler validate"));
+}
+
+#[test]
+fn macos_daemon_entitlements_preserve_the_six_key_profile() {
+    let keys = [
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.device.audio-input",
+        "com.apple.security.device.usb",
+        "com.apple.security.network.client",
+        "com.apple.security.network.server",
+    ];
+    assert_eq!(
+        MACOS_DAEMON_ENTITLEMENTS.matches("<key>").count(),
+        keys.len()
+    );
+    assert_eq!(
+        MACOS_DAEMON_ENTITLEMENTS.matches("<true/>").count(),
+        keys.len()
+    );
+    for key in keys {
+        assert!(MACOS_DAEMON_ENTITLEMENTS.contains(key));
+    }
 }
 
 #[test]
