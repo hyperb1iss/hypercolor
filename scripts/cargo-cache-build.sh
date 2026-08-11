@@ -149,8 +149,7 @@ else
   echo "[cargo-cache] incremental mode: CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
 fi
 
-if { [ "$HOST_TRIPLE" = "x86_64-unknown-linux-gnu" ] \
-  || [ "$HOST_TRIPLE" = "aarch64-unknown-linux-gnu" ]; } \
+if [ "$HOST_TRIPLE" = "x86_64-unknown-linux-gnu" ] \
   && command -v clang >/dev/null 2>&1 \
   && command -v ld.lld >/dev/null 2>&1; then
   if [ ! -x "$TOOLCHAIN_DIR/clang-lld" ]; then
@@ -161,15 +160,13 @@ EOF
     chmod +x "$TOOLCHAIN_DIR/clang-lld"
   fi
 
-  # bfd holds the entire link in memory and runs single-threaded, which on
-  # a Servo-sized binary is both the slowest and the hungriest phase of the
-  # build; lld matters most on the memory-tight arm64 release runners.
+  # lld itself is not this gate's doing: .cargo/config.toml passes
+  # -fuse-ld=lld for both Linux targets, so the default cc driver already
+  # links with it. All this changes is the driver, gcc to clang, which is
+  # why it stays scoped to the host it was measured on.
   case "$HOST_TRIPLE" in
     x86_64-unknown-linux-gnu)
       export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-$TOOLCHAIN_DIR/clang-lld}"
-      ;;
-    aarch64-unknown-linux-gnu)
-      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER:-$TOOLCHAIN_DIR/clang-lld}"
       ;;
   esac
   echo "[cargo-cache] using clang + lld for faster link steps"
