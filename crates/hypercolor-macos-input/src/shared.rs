@@ -201,6 +201,17 @@ pub struct MacosInputBatch<'a> {
     pub virtual_desktop: MacosVirtualDesktop,
 }
 
+/// Monotonic native diagnostics for one session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MacosInputDiagnostics {
+    pub dropped_events: u64,
+    pub tap_disable_count: u64,
+    pub unsupported_system_events: u64,
+    pub invalid_scroll_phases: u64,
+    pub last_point_delta_x: i64,
+    pub last_point_delta_y: i64,
+}
+
 /// Event masks actually requested for one session.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct EffectiveEventMasks {
@@ -213,6 +224,7 @@ pub struct EffectiveEventMasks {
 pub enum MacosWorkerState {
     Running,
     Degraded(String),
+    PermissionRevoked,
     Failed(String),
 }
 
@@ -227,6 +239,10 @@ pub enum MacosInputError {
     PermissionDenied,
     #[error("invalid virtual desktop bounds")]
     InvalidVirtualDesktop,
+    #[error("Core Graphics display enumeration failed with error {0}")]
+    DisplayTopology(i32),
+    #[error("Core Graphics reported no active displays")]
+    NoActiveDisplays,
     #[error("failed to spawn the macOS input worker: {0}")]
     WorkerSpawn(String),
     #[error("timed out waiting for the macOS input worker to become ready")]

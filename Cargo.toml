@@ -96,6 +96,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Data structures
+crossbeam-queue = "0.3.12"
 uuid = { version = "1.11", features = ["v4", "v5", "v7", "serde"] }
 ulid = { version = "1.2.1", features = ["serde"] }
 sha2 = "0.10"
@@ -222,6 +223,7 @@ wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulka
 wgpu-hal = { version = "29.0.1", default-features = false, features = ["vulkan"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false }
 objc2-core-graphics = { version = "0.3.2", default-features = false }
+objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-core-media = { version = "0.3.2", default-features = false }
 objc2-core-video = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }

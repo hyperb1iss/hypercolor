@@ -4,7 +4,7 @@ use hypercolor_macos_input::{
     MacosInputBatch, MacosInputConfig, MacosInputError, MacosInputEvent, MacosInputGapReason,
     MacosModifierFlags, MacosPointerButton, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
     NX_SUBTYPE_AUX_CONTROL_BUTTONS, decode_button_event, decode_media_key, decode_momentum_phase,
-    decode_scroll_phase, event_masks,
+    decode_scroll_phase, event_masks, input_monitoring_granted, request_input_monitoring,
 };
 
 #[test]
@@ -188,4 +188,47 @@ fn batch_carries_the_complete_plain_rust_vocabulary() {
     assert_eq!(batch.at_ms, 55);
     assert_eq!(batch.events, events);
     assert_eq!(batch.virtual_desktop, desktop);
+}
+
+#[test]
+fn permission_preflight_is_a_read_only_boolean_probe() {
+    let granted = input_monitoring_granted();
+    assert!(matches!(granted, true | false));
+
+    #[cfg(target_os = "macos")]
+    let _request: fn() -> bool = request_input_monitoring;
+    #[cfg(not(target_os = "macos"))]
+    assert!(!request_input_monitoring());
+}
+
+#[test]
+fn empty_session_is_rejected_before_platform_access() {
+    let error = hypercolor_macos_input::MacosInputSession::start(
+        MacosInputConfig {
+            keyboard: false,
+            pointer: false,
+            epoch: 1,
+            clock: Arc::new(|| 0),
+        },
+        |_| {},
+    )
+    .err()
+    .expect("empty capture must fail");
+
+    #[cfg(target_os = "macos")]
+    assert_eq!(error, MacosInputError::NothingToCapture);
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(error, MacosInputError::UnsupportedPlatform);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn current_virtual_desktop_reports_positive_finite_geometry() {
+    let desktop = hypercolor_macos_input::current_virtual_desktop()
+        .expect("the test host has an active display");
+
+    assert!(desktop.origin_x.is_finite());
+    assert!(desktop.origin_y.is_finite());
+    assert!(desktop.width.is_finite() && desktop.width > 0.0);
+    assert!(desktop.height.is_finite() && desktop.height > 0.0);
 }

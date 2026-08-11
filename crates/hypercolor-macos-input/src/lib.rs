@@ -5,6 +5,7 @@
 //! remains portable and deterministic in `hypercolor-core`.
 
 mod decode;
+mod queue;
 mod shared;
 
 pub use decode::{
@@ -12,7 +13,21 @@ pub use decode::{
     decode_scroll_phase, event_masks,
 };
 pub use shared::{
-    EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputError, MacosInputEvent,
-    MacosInputGapReason, MacosInputResult, MacosMediaKey, MacosModifierFlags, MacosPointerButton,
-    MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop, MacosWorkerState,
+    EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
+    MacosInputEvent, MacosInputGapReason, MacosInputResult, MacosMediaKey, MacosModifierFlags,
+    MacosPointerButton, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop, MacosWorkerState,
+};
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::{
+    MacosInputSession, current_virtual_desktop, input_monitoring_granted, request_input_monitoring,
+};
+
+#[cfg(not(target_os = "macos"))]
+mod stubs;
+#[cfg(not(target_os = "macos"))]
+pub use stubs::{
+    MacosInputSession, current_virtual_desktop, input_monitoring_granted, request_input_monitoring,
 };
