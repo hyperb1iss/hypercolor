@@ -5,6 +5,91 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-08-11
+
+A cross-platform input and capture release. Host keyboard and mouse capture lands behind an explicit consent gate on Linux (evdev) and Windows (Raw Input), Windows gains a Desktop Duplication screen-capture crate, and the screen pipeline is rebuilt around exact publication plans with transactional capacity admission. The web UI collapses to Studio-only navigation with a mobile-responsive shell, and daemon persistence becomes transactional and durable on Windows.
+
+### Added
+
+- Add the **interactive input pipeline** (spec 71): typed input data model, host `[input]` consent gate, WebSocket privacy rules, evdev host capture, and shipped udev uaccess rules (`0a6cbf1a`, `210563bb`, `29704a3e`)
+- Add `hypercolor-windows-input`, a Raw Input interop crate, plus a Windows host input source and one shared key inventory wired into the daemon with honest degradation reporting (`ab88979f`, `e7f4524e`, `410ee5a7`)
+- Add `hypercolor-windows-capture`, a Desktop Duplication capture crate with D3D11 GPU reduction, descriptor-keyed readback, and wgpu surface bridging (`43c4d38a`, `3522852e`, `f5b7710a`)
+- Add monitor enumeration over the API at `GET /api/v1/capture/monitors`, with capture settings reduced to on, monitor, and a disclosure (`b3e900d3`, `eebc6a6d`)
+- Add SDK input support: `sdk/packages/core/src/input` module, an input-reactive effect capability, and the `Keystrike` interactive showcase effect (`b159f32f`, `613a9a1d`)
+- Add browser-preview input injection: a focused preview canvas drives interactive effects over the `input_inject` WebSocket message with no host capture permission, though the handler still requires a **control-tier WebSocket authorization** (`245e987a`, `32fad660`)
+- Add inline cover artwork for 40 bundled effects, embedded at build time at 960px and served by the daemon (`b4bbd657`, `16e6671b`, `25e40b83`, `e0bae710`)
+- Add **portable device identity**: typed identity claims on every discovery carrier, portable key pins persisted in `device-aliases.json`, and orphaned layout bindings re-bound over `GET /api/v1/devices/bindings` and `POST /api/v1/devices/rebind` (`3dd54801`, `c89f41c4`, `a446fb50`)
+- Add a durable driver inventory store persisted independently of runtime state (`9f88ab01`, `e0385736`)
+- Add `hypercolor-platform-fs` for atomic, durable state-file replacement on Windows (`1033f4a1`, `946df5f6`)
+- Add `screen_capture_capacity` to the `SystemStatus` payload on `GET /api/v1/status`, reporting physical reservations, publication budgets, analysis extent, and worker capacity; `admission_enforced` is `false` where no capacity plan is installed (`732c6de7`, `fc502bf4`)
+- Add a mobile-responsive web UI (spec 75): bottom-nav shell, mobile-first headers and effect/media views, compact phone dashboards, and mobile-only nav destinations (`a4939c07`, `048eed1b`, `eb94ef19`, `334bde9b`)
+- Add input health surfaces to the UI: access banner, source-health and routing panels, and a dedicated input settings section (`bb8d89c5`, `02ceec5c`)
+- Add wide and chunked preview wire frames with a byte-bounded latest queue and connection-scoped interactive preview lanes (`6497af66`, `118af090`, `aa6c2703`, `648eb04a`)
+
+### Changed
+
+- Promote **Studio** to the only navigation entry and drop the legacy page flag (`d753a927`)
+- Rebuild screen capture around exact publication plans, ticket-scoped ledgers, and typed demand, with CPU and GPU reducers that handle arbitrary source resolutions (`78b5ff3a`, `104390d9`, `e3d603a7`)
+- Remove arbitrary canvas, preview, and capture cadence ceilings across layout, renderer, simulator, and config (`9ac3e8f9`, `1f8084a9`, `56b208bb`)
+- Make daemon persistence transactional: layouts, scenes, profiles, display preferences, and runtime state now reserve, commit, and roll back instead of best-effort writing (`1d4e2860`, `81007d9a`, `4f6735a7`)
+- Normalize the device-settings key space to **schema v2**, with quarantine and rebind inheritance honored (`3198c353`, `c7e37cbf`)
+- Rename `windows_admission_enforced` to `admission_enforced` and return the capacity block on all platforms instead of gating it to Windows (`732c6de7`)
+- Add scalable GPU area and summed-area-table sampling, pooled CPU screen uploads, and incremental CPU layer transforms in the renderer (`c3b555db`, `987522d2`, `b4982b4b`, `fb8ea562`)
+- Upgrade the Servo embedder stack to 0.4.0 (`ba596b55`)
+- Default the Windows renderer GPU to DX12 and use the native Windows HID backend (`d4596591`, `a29252ba`)
+- Promote saved presets into the effect catalog (`24d92038`)
+- Rework settings to read as a product rather than a config editor, consolidate dashboard telemetry into one Performance strip, and compact the sidebar chrome (`f3b6e90d`, `ff4fb732`, `5b9724e0`, `0390a43d`)
+- Rewrite the guides, API references, and hardware pages against the current tree, and refresh all UI and TUI screenshots (`c06e1232`, `4be3cf82`, `e447e712`)
+- Split the release build so Servo LTO stays out of the rest of the workspace, and share sccache across worktrees (`d56fb9ba`, `5610261e`)
+
+### Fixed
+
+- Budget the Hue connect deadline for the whole bridge handshake instead of a single request (`956eddf5`, `f7de8678`)
+- Pace Push2 MIDI writes and bound palette sysex to stop a firmware wedge (`364b6633`)
+- Fall back to cpal when PulseAudio cannot answer, and make audio reconfiguration real-time safe (`0c52e158`, `d09a9f3f`)
+- Send ENE delays in-batch over SMBus and stop forcing PawnIO SMBus polls onto the kernel sleep timer (`6c8fe8bd`, `b6b433e2`)
+- Register the SMBus broker during Windows install and re-probe the Windows CPU temperature reader (`d89177dd`, `bac7d609`)
+- Connect devices placed only through a scene zone, and resync connectivity on scene activation off the hot path (`2607914a`, `20a63869`)
+- Stop letterbox detection from eating the whole frame and keep the screen downscale at the source aspect ratio (`93bf8a0f`, `05c1251e`)
+- Stop raising frame-encode threads to render priority (`8923ecdc`)
+- Summarize WebSocket slow-consumer drops instead of logging each one, and stop exact-plan retry warnings from flooding the log (`87e37ca7`, `12907ee2`)
+- Preserve unknown top-level config sections across saves (`b0114f01`)
+- Replace state files atomically and durably on Windows, honoring filesystem identity and rejecting superseded snapshots (`1033f4a1`, `dd6aa1af`, `86f4234b`)
+- Route bundled presets to the zone instead of a dead endpoint and resolve card artwork by effect id rather than a guessed slug (`5d2de3f5`, `932a17f5`)
+- Prune default faces, preferences, and learned discovery targets when a device is deleted (`1674dc13`, `18a2576f`)
+- Stop presenting the Apache license as an installer EULA and ad-hoc sign the macOS app bundle instead of building unsigned (`31e14a5d`, `a186e364`)
+- Move input uaccess rules before `systemd` seat-late so device permissions apply (`ceb18a8e`)
+- Stream Nanoleaf external control to an injectable UDP port (`660f0653`)
+
+### Security
+
+- Gate host input capture behind explicit user consent, with capture health and remediation surfaced so a denied device is visible rather than silently missing (`0a6cbf1a`, `1dd7507c`)
+- Bound Windows Raw Input payload reads to the record rather than the buffer, and bound the record walk to the union arm actually read (`40175f83`, `ba5e963f`)
+- Close Raw Input lifecycle races and stop delivering every batch to core twice (`5040d66b`, `cef4cd05`)
+- Never capture screen content for screen-mirroring effects when generating cover artwork (`003a5794`)
+- Route conduct and security reports through GitHub's private reporting flow (`6c047eb2`)
+
+### Removed
+
+- Remove the legacy Displays, Assets, and Layout pages along with their feature flag; Studio is the only workspace (`d753a927`)
+- Remove the simulator UI journey E2E suite and `crates/hypercolor-app/src/resources.rs` with its tests (`d7fc98a9`, `d753a927`)
+- Remove the legacy SDK canvas resolution warning (`3eebfcd9`)
+
+### Breaking Changes
+
+- **`SystemStatus.screen_capture_capacity.windows_admission_enforced` is now `admission_enforced`.** Update any client reading the old key; the field is present on every platform and reports `false` when no capacity plan is installed.
+- **Device settings keys are normalized to schema v2.** Existing entries are migrated on load, but external tooling that wrote raw `device-settings.json` keys must be updated to the v2 key space.
+- **Legacy UI routes are gone.** Bookmarks or automation pointing at the Displays, Assets, or Layout pages should target Studio instead.
+- **Preview WebSocket transport is negotiated (v2).** Clients that decode preview frames must handle wide and chunked frames; regenerate the Python and TypeScript clients from the checked-in protocol before upgrading.
+
+### Metrics
+
+- Total Commits: 527
+- Files Changed: 819
+- Insertions: +188,678
+- Deletions: -15,247
+<!-- -------------------------------------------------------------- -->
+
 ## [Unreleased]
 
 ### Changed
