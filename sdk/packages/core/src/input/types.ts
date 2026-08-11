@@ -77,6 +77,7 @@ export interface MouseScrollInputEvent extends MouseInputEventBase {
  */
 export interface MouseWheelInputEvent extends MouseInputEventBase {
     kind: 'wheel'
+    /** Integral vertical wheel delta in 1/120-notch units. */
     delta: number
 }
 
@@ -119,7 +120,7 @@ export interface MouseInputState {
     mode: MouseMode
     /** True when pointer coordinates are meaningful (`mode !== 'none'`). */
     available: boolean
-    /** Accumulated wheel notches this frame (hi-res deltas divided by 120). */
+    /** Accumulated integral vertical wheel delta in 1/120-notch units. */
     wheel: number
     /** Exact two-axis scroll accumulated independently by coordinate unit. */
     scroll: MouseScrollState
