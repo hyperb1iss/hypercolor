@@ -27,6 +27,17 @@
   <!-- Styles -->
   <link rel="stylesheet" href="{{ get_url(path='silkcircuit.css') }}">
 
+  <!-- Syntax tokens. Both themes define the same unscoped .z-* classes, so the
+       active one is swapped by href rather than layered; theme-toggle.js owns
+       the swap and the default here matches the <html data-theme> default. -->
+  <link
+    id="syntax-theme"
+    rel="stylesheet"
+    href="{{ get_url(path='giallo-dark.css') }}"
+    data-dark="{{ get_url(path='giallo-dark.css') }}"
+    data-light="{{ get_url(path='giallo-light.css') }}"
+  >
+
   {% block head_extra %}{% endblock head_extra %}
 </head>
 <body data-search-index="{{ get_url(path='search_index.en.js') }}" data-search-lib="{{ get_url(path='elasticlunr.min.js') }}">

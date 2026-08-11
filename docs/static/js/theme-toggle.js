@@ -15,8 +15,18 @@
     return DARK;
   };
 
+  // Giallo emits one stylesheet per theme, both declaring the same unscoped
+  // .z-* classes, so the active sheet is swapped instead of layered.
+  const applySyntaxTheme = (theme) => {
+    const link = document.getElementById('syntax-theme');
+    if (!link) return;
+    const next = theme === LIGHT ? link.dataset.light : link.dataset.dark;
+    if (next && link.getAttribute('href') !== next) link.setAttribute('href', next);
+  };
+
   const apply = (theme) => {
     document.documentElement.setAttribute('data-theme', theme);
+    applySyntaxTheme(theme);
     localStorage.setItem(STORAGE_KEY, theme);
     window.dispatchEvent(new CustomEvent('themechange', { detail: { theme } }));
   };

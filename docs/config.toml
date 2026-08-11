@@ -25,7 +25,9 @@ bottom_footnotes = true
 
 [markdown.highlighting]
 enabled = true
-theme = "one-dark-pro"
+style = "class"
+light_theme = "github-light"
+dark_theme = "one-dark-pro"
 
 [extra]
 github_url = "https://github.com/hyperb1iss/hypercolor"
