@@ -117,6 +117,24 @@ fn capture_defaults_match_spec() {
 }
 
 #[test]
+fn capture_platform_matches_build_target() {
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        CapturePlatform::current(),
+        CapturePlatform::WindowsDesktopDuplication
+    );
+    #[cfg(target_os = "linux")]
+    assert_eq!(CapturePlatform::current(), CapturePlatform::LinuxPipeWire);
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        CapturePlatform::current(),
+        CapturePlatform::MacosScreenCaptureKit
+    );
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    assert_eq!(CapturePlatform::current(), CapturePlatform::Unsupported);
+}
+
+#[test]
 fn capture_config_tolerates_legacy_monitor_key() {
     let parsed: CaptureConfig =
         toml::from_str("enabled = true\nmonitor = 2\n").expect("legacy capture config parses");
@@ -130,6 +148,7 @@ fn capture_config_accepts_any_nonzero_backend_rate() {
     for platform in [
         CapturePlatform::WindowsDesktopDuplication,
         CapturePlatform::LinuxPipeWire,
+        CapturePlatform::MacosScreenCaptureKit,
     ] {
         config.source = "auto".to_owned();
         config.capture_fps = 1;
@@ -244,6 +263,60 @@ fn capture_config_validates_source_by_backend() {
     config.source = "auto\0hidden".to_owned();
     assert!(matches!(
         config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        Err(CaptureConfigValidationError::Source { .. })
+    ));
+}
+
+#[test]
+fn macos_capture_source_accepts_only_persistable_picker_grammar() {
+    let platform = CapturePlatform::MacosScreenCaptureKit;
+    let mut config = CaptureConfig {
+        enabled: true,
+        ..CaptureConfig::default()
+    };
+
+    for source in [
+        "auto",
+        "primary_display",
+        "session_scoped",
+        "display:7607E722-6D21-4812-8926-D93DBF8FDC58",
+        "display:7607e722-6d21-4812-8926-d93dbf8fdc58",
+    ] {
+        config.source = source.to_owned();
+        config
+            .validate_for_platform(platform)
+            .unwrap_or_else(|error| panic!("{source} should validate: {error}"));
+    }
+
+    for source in [
+        "display:1",
+        "display:not-a-uuid",
+        "display:{7607E722-6D21-4812-8926-D93DBF8FDC58}",
+        "window:42",
+        "application:com.example.editor",
+        "primary-display",
+        "AUTO",
+    ] {
+        config.source = source.to_owned();
+        assert!(
+            matches!(
+                config.validate_for_platform(platform),
+                Err(CaptureConfigValidationError::Source { .. })
+            ),
+            "{source} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn macos_capture_source_is_validated_while_capture_is_disabled() {
+    let config = CaptureConfig {
+        enabled: false,
+        source: "monitor:legacy-windows-id".to_owned(),
+        ..CaptureConfig::default()
+    };
+    assert!(matches!(
+        config.validate_for_platform(CapturePlatform::MacosScreenCaptureKit),
         Err(CaptureConfigValidationError::Source { .. })
     ));
 }

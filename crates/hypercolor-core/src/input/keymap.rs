@@ -1,21 +1,21 @@
-//! The canonical key inventory both host backends are built from.
+//! The canonical key inventory all host backends are built from.
 //!
 //! Names in this codebase are **physical-position** names, `KeyboardEvent.code`
 //! semantics: `a` is the key where `A` sits on QWERTY, whatever the active
 //! layout prints on it. That is what makes `wasdVector()` and every positional
 //! effect mean the same thing on a French AZERTY keyboard as on a US one.
 //!
-//! Two platforms have to agree on those names, and the way they drift is for
+//! Three platforms have to agree on those names, and the way they drift is for
 //! someone to add a key to one table and forget the other. So there is exactly
-//! one physical table, [`CANONICAL_KEYS`], and both mappers are derived from it — the
-//! Linux one keyed by evdev code, the Windows one by set-1 scan code plus
-//! prefix. The parity test asserts totality in both directions over this
-//! inventory rather than sampling tuples, so a one-sided addition fails the
-//! build instead of silently diverging.
+//! one physical table, [`CANONICAL_KEYS`], and every mapper is derived from it.
+//! Linux keys use evdev codes, Windows keys use set-1 scan codes plus prefixes,
+//! and macOS keys use virtual keycodes. The parity test asserts totality over
+//! this inventory rather than sampling tuples, so a one-sided addition fails
+//! the build instead of silently diverging.
 //!
 //! Consumer-control keys do not have stable set-1 positions. They live in the
-//! separate [`MEDIA_KEYS`] inventory, keyed by evdev code and Windows virtual
-//! key, so both platforms still expose exactly the same logical names.
+//! separate [`MEDIA_KEYS`] inventory, keyed by evdev code, Windows virtual key,
+//! and optional macOS `NX_KEYTYPE`, so every platform exposes the same names.
 //!
 //! The two key spaces line up almost entirely by construction: evdev's
 //! keycodes 1..=83 were derived from the AT set-1 scan codes, so those rows
@@ -25,7 +25,7 @@
 use hypercolor_windows_input::RawKeyPrefix;
 use hypercolor_windows_input::decode::{KEYBOARD_OVERRUN_MAKE_CODE, unknown_key_name};
 
-/// One physical key, in both platforms' identifier spaces.
+/// One physical key in every host platform's identifier space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyRow {
     /// Linux evdev keycode.
@@ -34,7 +34,9 @@ pub struct KeyRow {
     pub make_code: u16,
     /// Windows scan-code prefix.
     pub prefix: RawKeyPrefix,
-    /// The canonical name both platforms report.
+    /// macOS virtual keycode.
+    pub macos_virtual_keycode: u16,
+    /// The canonical name every platform reports.
     pub name: &'static str,
 }
 
@@ -43,13 +45,123 @@ const fn row(evdev_code: u16, make_code: u16, prefix: RawKeyPrefix, name: &'stat
         evdev_code,
         make_code,
         prefix,
+        macos_virtual_keycode: macos_virtual_keycode(evdev_code),
         name,
+    }
+}
+
+const fn macos_virtual_keycode(evdev_code: u16) -> u16 {
+    match evdev_code {
+        1 => 0x35,
+        2 => 0x12,
+        3 => 0x13,
+        4 => 0x14,
+        5 => 0x15,
+        6 => 0x17,
+        7 => 0x16,
+        8 => 0x1A,
+        9 => 0x1C,
+        10 => 0x19,
+        11 => 0x1D,
+        12 => 0x1B,
+        13 => 0x18,
+        14 => 0x33,
+        15 => 0x30,
+        16 => 0x0C,
+        17 => 0x0D,
+        18 => 0x0E,
+        19 => 0x0F,
+        20 => 0x11,
+        21 => 0x10,
+        22 => 0x20,
+        23 => 0x22,
+        24 => 0x1F,
+        25 => 0x23,
+        26 => 0x21,
+        27 => 0x1E,
+        28 => 0x24,
+        29 => 0x3B,
+        30 => 0x00,
+        31 => 0x01,
+        32 => 0x02,
+        33 => 0x03,
+        34 => 0x05,
+        35 => 0x04,
+        36 => 0x26,
+        37 => 0x28,
+        38 => 0x25,
+        39 => 0x29,
+        40 => 0x27,
+        41 => 0x32,
+        42 => 0x38,
+        43 => 0x2A,
+        44 => 0x06,
+        45 => 0x07,
+        46 => 0x08,
+        47 => 0x09,
+        48 => 0x0B,
+        49 => 0x2D,
+        50 => 0x2E,
+        51 => 0x2B,
+        52 => 0x2F,
+        53 => 0x2C,
+        54 => 0x3C,
+        55 => 0x43,
+        56 => 0x3A,
+        57 => 0x31,
+        58 => 0x39,
+        59 => 0x7A,
+        60 => 0x78,
+        61 => 0x63,
+        62 => 0x76,
+        63 => 0x60,
+        64 => 0x61,
+        65 => 0x62,
+        66 => 0x64,
+        67 => 0x65,
+        68 => 0x6D,
+        69 => 0x47,
+        70 => 0x6B,
+        71 => 0x59,
+        72 => 0x5B,
+        73 => 0x5C,
+        74 => 0x4E,
+        75 => 0x56,
+        76 => 0x57,
+        77 => 0x58,
+        78 => 0x45,
+        79 => 0x53,
+        80 => 0x54,
+        81 => 0x55,
+        82 => 0x52,
+        83 => 0x41,
+        87 => 0x67,
+        88 => 0x6F,
+        96 => 0x4C,
+        97 => 0x3E,
+        98 => 0x4B,
+        99 => 0x69,
+        100 => 0x3D,
+        102 => 0x73,
+        103 => 0x7E,
+        104 => 0x74,
+        105 => 0x7B,
+        106 => 0x7C,
+        107 => 0x77,
+        108 => 0x7D,
+        109 => 0x79,
+        110 => 0x72,
+        111 => 0x75,
+        125 => 0x37,
+        126 => 0x36,
+        127 => 0x6E,
+        _ => panic!("canonical key lacks an explicit macOS mapping"),
     }
 }
 
 use RawKeyPrefix::{E0, None as NoPrefix};
 
-/// Every physical-position key both host backends name identically.
+/// Every physical-position key all host backends name identically.
 ///
 /// Printable keys use the character they produce on a US layout — a
 /// deliberate simplification of the W3C `code` vocabulary that this codebase
@@ -164,14 +276,16 @@ pub const CANONICAL_KEYS: &[KeyRow] = &[
     row(127, 0x5D, E0, "ContextMenu"),
 ];
 
-/// One media key in Linux evdev and Windows virtual-key spaces.
+/// One media key in each host platform's consumer-control space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaKeyRow {
     /// Linux evdev keycode.
     pub evdev_code: u16,
     /// Windows virtual-key code.
     pub windows_vkey: u16,
-    /// The canonical logical name both platforms report.
+    /// macOS `NX_KEYTYPE`, or `None` when AppKit cannot report this key.
+    pub macos_nx_key_type: Option<u16>,
+    /// The canonical logical name every supporting platform reports.
     pub name: &'static str,
 }
 
@@ -179,11 +293,25 @@ const fn media_row(evdev_code: u16, windows_vkey: u16, name: &'static str) -> Me
     MediaKeyRow {
         evdev_code,
         windows_vkey,
+        macos_nx_key_type: macos_nx_key_type(evdev_code),
         name,
     }
 }
 
-/// Media and volume keys supported identically by both host backends.
+const fn macos_nx_key_type(evdev_code: u16) -> Option<u16> {
+    match evdev_code {
+        113 => Some(7),
+        114 => Some(1),
+        115 => Some(0),
+        163 => Some(17),
+        164 => Some(16),
+        165 => Some(18),
+        166 | 226 => None,
+        _ => panic!("media key lacks an explicit macOS mapping"),
+    }
+}
+
+/// Media and volume keys supported by one or more host backends.
 pub const MEDIA_KEYS: &[MediaKeyRow] = &[
     media_row(113, 0xAD, "AudioVolumeMute"),
     media_row(114, 0xAE, "AudioVolumeDown"),
@@ -216,6 +344,24 @@ pub fn scancode_name(make_code: u16, prefix: RawKeyPrefix) -> Option<&'static st
     CANONICAL_KEYS
         .iter()
         .find(|row| row.make_code == make_code && row.prefix == prefix)
+        .map(|row| row.name)
+}
+
+/// Canonical name for a macOS virtual keycode.
+#[must_use]
+pub fn macos_key_name(virtual_keycode: u16) -> Option<&'static str> {
+    CANONICAL_KEYS
+        .iter()
+        .find(|row| row.macos_virtual_keycode == virtual_keycode)
+        .map(|row| row.name)
+}
+
+/// Canonical name for a macOS `NX_KEYTYPE` consumer-control value.
+#[must_use]
+pub fn macos_media_key_name(nx_key_type: u16) -> Option<&'static str> {
+    MEDIA_KEYS
+        .iter()
+        .find(|row| row.macos_nx_key_type == Some(nx_key_type))
         .map(|row| row.name)
 }
 

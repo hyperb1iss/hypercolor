@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use crate::session::SessionConfig;
 
@@ -754,6 +755,8 @@ pub enum CapturePlatform {
     WindowsDesktopDuplication,
     /// XDG desktop portal plus PipeWire.
     LinuxPipeWire,
+    /// ScreenCaptureKit with the system content picker.
+    MacosScreenCaptureKit,
     /// No native screen-capture implementation is available.
     Unsupported,
 }
@@ -770,7 +773,11 @@ impl CapturePlatform {
         {
             Self::LinuxPipeWire
         }
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        {
+            Self::MacosScreenCaptureKit
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         {
             Self::Unsupported
         }
@@ -906,6 +913,7 @@ fn validate_capture_source(
     let platform_name = match platform {
         CapturePlatform::WindowsDesktopDuplication => "Windows Desktop Duplication",
         CapturePlatform::LinuxPipeWire => "Linux PipeWire",
+        CapturePlatform::MacosScreenCaptureKit => "macOS ScreenCaptureKit",
         CapturePlatform::Unsupported => "this platform",
     };
     if source.is_empty() {
@@ -935,7 +943,24 @@ fn validate_capture_source(
             reason: "portal-managed capture requires source = \"auto\"",
         });
     }
+    if matches!(platform, CapturePlatform::MacosScreenCaptureKit)
+        && !is_valid_macos_capture_source(source)
+    {
+        return Err(CaptureConfigValidationError::Source {
+            platform: platform_name,
+            reason: "expected auto, primary_display, session_scoped, or display:<canonical UUID>",
+        });
+    }
     Ok(())
+}
+
+fn is_valid_macos_capture_source(source: &str) -> bool {
+    matches!(source, "auto" | "primary_display" | "session_scoped")
+        || source.strip_prefix("display:").is_some_and(|value| {
+            value.len() == 36
+                && Uuid::parse_str(value)
+                    .is_ok_and(|uuid| uuid.hyphenated().to_string().eq_ignore_ascii_case(value))
+        })
 }
 
 impl Default for CaptureConfig {

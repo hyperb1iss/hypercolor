@@ -220,8 +220,13 @@ fast_image_resize = "6.0.0"
 wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }
 wgpu-hal = { version = "29.0.1", default-features = false, features = ["vulkan"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false }
+objc2-core-graphics = { version = "0.3.2", default-features = false }
+objc2-core-media = { version = "0.3.2", default-features = false }
+objc2-core-video = { version = "0.3.2", default-features = false }
+objc2-foundation = { version = "0.3.2", default-features = false }
 objc2-io-surface = { version = "0.3.2", default-features = false }
 objc2-metal = { version = "0.3.2", default-features = false }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false }
 objc2 = { version = "0.6.4", default-features = false }
 pollster = "0.4.0"
 

@@ -2,11 +2,12 @@
 //!
 //! The interesting assertion here is totality, not spot checks. Two hand-kept
 //! tables drift by someone adding a key to one and forgetting the other, and a
-//! curated sample of tuples cannot catch that — so these walk the whole shared
-//! inventory in both directions.
+//! curated sample of tuples cannot catch that, so these walk the whole shared
+//! inventory in every identifier space.
 
 use hypercolor_core::input::keymap::{
-    CANONICAL_KEYS, KeyNameResult, MEDIA_KEYS, evdev_key_name, scancode_key_name, scancode_name,
+    CANONICAL_KEYS, KeyNameResult, MEDIA_KEYS, evdev_key_name, macos_key_name,
+    macos_media_key_name, scancode_key_name, scancode_name,
 };
 use hypercolor_windows_input::RawKeyPrefix;
 
@@ -28,6 +29,13 @@ fn every_inventory_row_resolves_from_both_key_spaces() {
             row.prefix,
             row.name
         );
+        assert_eq!(
+            macos_key_name(row.macos_virtual_keycode),
+            Some(row.name),
+            "macOS virtual keycode {:#04X} does not resolve to {}",
+            row.macos_virtual_keycode,
+            row.name
+        );
     }
 }
 
@@ -44,6 +52,9 @@ fn every_media_key_resolves_to_the_same_name_on_both_platforms() {
             KeyNameResult::Media(row.name),
             "media identity wins even when firmware supplies an overlapping scan code"
         );
+        if let Some(nx_key_type) = row.macos_nx_key_type {
+            assert_eq!(macos_media_key_name(nx_key_type), Some(row.name));
+        }
     }
 }
 
@@ -60,11 +71,20 @@ fn media_key_identifier_spaces_have_no_duplicates() {
     let before = virtual_keys.len();
     virtual_keys.dedup();
     assert_eq!(before, virtual_keys.len());
+
+    let mut nx_key_types: Vec<u16> = MEDIA_KEYS
+        .iter()
+        .filter_map(|row| row.macos_nx_key_type)
+        .collect();
+    nx_key_types.sort_unstable();
+    let before = nx_key_types.len();
+    nx_key_types.dedup();
+    assert_eq!(before, nx_key_types.len());
 }
 
 #[test]
-fn the_two_key_spaces_have_no_duplicate_entries() {
-    // A duplicate would make one of the two lookups shadow the other, so the
+fn the_key_spaces_have_no_duplicate_entries() {
+    // A duplicate would make one of the lookups shadow the other, so the
     // tables would silently disagree for exactly one key.
     let mut evdev_codes: Vec<u16> = CANONICAL_KEYS.iter().map(|row| row.evdev_code).collect();
     evdev_codes.sort_unstable();
@@ -87,6 +107,19 @@ fn the_two_key_spaces_have_no_duplicate_entries() {
         before,
         scancodes.len(),
         "duplicate (make_code, prefix) in inventory"
+    );
+
+    let mut macos_keycodes: Vec<u16> = CANONICAL_KEYS
+        .iter()
+        .map(|row| row.macos_virtual_keycode)
+        .collect();
+    macos_keycodes.sort_unstable();
+    let before = macos_keycodes.len();
+    macos_keycodes.dedup();
+    assert_eq!(
+        before,
+        macos_keycodes.len(),
+        "duplicate macOS virtual keycode in inventory"
     );
 }
 
@@ -143,7 +176,21 @@ fn left_and_right_modifiers_are_distinct_positions() {
             (right_row.make_code, right_row.prefix)
         );
         assert_ne!(left_row.evdev_code, right_row.evdev_code);
+        assert_ne!(
+            left_row.macos_virtual_keycode,
+            right_row.macos_virtual_keycode
+        );
     }
+}
+
+#[test]
+fn macos_media_inventory_marks_unsupported_keys_explicitly() {
+    let unsupported: Vec<&str> = MEDIA_KEYS
+        .iter()
+        .filter(|row| row.macos_nx_key_type.is_none())
+        .map(|row| row.name)
+        .collect();
+    assert_eq!(unsupported, ["MediaStop", "MediaSelect"]);
 }
 
 #[test]
