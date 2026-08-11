@@ -32,6 +32,8 @@ const INSTALL_WINDOWS_SMBUS_SERVICE_PS1: &str =
     include_str!("../../../scripts/install-windows-smbus-service.ps1");
 const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const VERIFY_DEB_SH: &str = include_str!("../../../scripts/verify-deb-package.sh");
+const VERIFY_MACOS_DEPLOYMENT_TARGET_SH: &str =
+    include_str!("../../../scripts/verify-macos-deployment-target.sh");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
@@ -115,6 +117,38 @@ fn macos_distribution_covers_arm64_and_amd64() {
     assert!(CI_WORKFLOW.contains("SHA256_MACOS_AMD64"));
     assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_AMD64"));
     assert!(HOMEBREW_FORMULA.contains("keep_alive successful_exit: false"));
+}
+
+#[test]
+fn macos_release_verifier_pins_every_macho_to_15_2() {
+    assert!(VERIFY_MACOS_DEPLOYMENT_TARGET_SH.contains("xcrun vtool -show-build"));
+    assert!(VERIFY_MACOS_DEPLOYMENT_TARGET_SH.contains("LC_BUILD_VERSION minos"));
+    assert!(VERIFY_MACOS_DEPLOYMENT_TARGET_SH.contains("expected 15.2"));
+    assert!(VERIFY_MACOS_DEPLOYMENT_TARGET_SH.contains("no Mach-O files found"));
+}
+
+#[test]
+fn ci_qualifies_both_macos_architectures_with_xcode_26() {
+    assert!(CI_WORKFLOW.contains("rust-check-macos:"));
+    assert!(CI_WORKFLOW.contains("os: macos-26"));
+    assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
+    assert!(CI_WORKFLOW.contains("XCODE_VERSION: \"26.5\""));
+    assert!(CI_WORKFLOW.contains("xcodebuild -version"));
+    assert!(CI_WORKFLOW.contains("xcrun --show-sdk-version"));
+    assert!(CI_WORKFLOW.contains("test \"${sdk_version%%.*}\" = \"26\""));
+}
+
+#[test]
+fn ci_audits_pr_and_release_macho_deployment_targets() {
+    assert!(CI_WORKFLOW.contains("cargo check --workspace --locked"));
+    assert!(CI_WORKFLOW.contains("cargo nextest run --locked -p hypercolor-macos-gpu-interop"));
+    assert!(CI_WORKFLOW.contains("cargo build --locked -p hypercolor-cli --bin hypercolor"));
+    assert_eq!(
+        CI_WORKFLOW
+            .matches("./scripts/verify-macos-deployment-target.sh")
+            .count(),
+        3
+    );
 }
 
 #[test]

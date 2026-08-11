@@ -40,6 +40,8 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   RUST_TOOLCHAIN: "1.95.0"
+  XCODE_VERSION: "26.5"
+  MACOSX_DEPLOYMENT_TARGET: "15.2"
   APT_STEP_TIMEOUT: 35m
   APT_HTTP_TIMEOUT: "20"
   APT_RETRIES: "5"
@@ -234,6 +236,79 @@ jobs:
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
+
+  rust-check-macos:
+    name: Rust macOS / ${{ matrix.label }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Apple Silicon
+            os: macos-26
+            expected-arch: arm64
+          - label: Intel
+            os: macos-26-intel
+            expected-arch: x86_64
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-macos
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Qualify macOS runner and SDK
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          sdk_version="$(xcrun --show-sdk-version)"
+          printf 'macOS SDK: %s\n' "${sdk_version}"
+          test "$(uname -m)" = "${{ matrix.expected-arch }}"
+          test "${sdk_version%%.*}" = "26"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: rust-check-macos-${{ matrix.expected-arch }}
+          workspaces: . -> .cache/hypercolor/target/rust-check-macos
+          cache-on-failure: "false"
+
+      - name: Install nextest
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: cargo-nextest
+
+      - name: Check macOS workspace
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo check --workspace --locked
+
+      - name: Clippy macOS interop
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-macos-gpu-interop --all-targets
+          -- -D warnings
+
+      - name: Run macOS interop fixtures
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked -p hypercolor-macos-gpu-interop
+
+      - name: Build deployment target fixture
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo build --locked -p hypercolor-cli --bin hypercolor
+
+      - name: Verify deployment target
+        run: >-
+          ./scripts/verify-macos-deployment-target.sh
+          "${CARGO_TARGET_DIR}/debug/hypercolor"
 
   # ── Generated Effects Artifact ────────────────────────────────
   generated-effects:
@@ -1114,7 +1189,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -1160,6 +1235,17 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v6
+
+      - name: Qualify macOS runner and SDK
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          sdk_version="$(xcrun --show-sdk-version)"
+          printf 'macOS SDK: %s\n' "${sdk_version}"
+          test "${sdk_version%%.*}" = "26"
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -1340,6 +1426,23 @@ jobs:
             Move-Item -LiteralPath $dmgFiles[0].FullName -Destination $targetPath -Force
           }
 
+      - name: Verify macOS bundle deployment targets
+        if: matrix.cask_arch != ''
+        shell: bash
+        run: |
+          app_bundles=()
+          while IFS= read -r -d '' app_bundle; do
+            app_bundles+=("${app_bundle}")
+          done < <(
+            find target/release/bundle crates/hypercolor-app/target/release/bundle \
+              -type d -name '*.app' -print0 2>/dev/null
+          )
+          if [[ "${#app_bundles[@]}" -ne 1 ]]; then
+            printf 'expected exactly one app bundle, found %s\n' "${#app_bundles[@]}" >&2
+            exit 1
+          fi
+          ./scripts/verify-macos-deployment-target.sh "${app_bundles[0]}"
+
       - name: Upload native app bundle
         uses: actions/upload-artifact@v7
         with:
@@ -1460,7 +1563,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -1486,6 +1589,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Qualify macOS runner and SDK
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          sdk_version="$(xcrun --show-sdk-version)"
+          printf 'macOS SDK: %s\n' "${sdk_version}"
+          test "${sdk_version%%.*}" = "26"
 
       - name: Report runner capacity
         shell: bash
@@ -1623,6 +1736,12 @@ jobs:
           ./scripts/verify-release-artifact.sh \
             "dist/${dist_name}.tar.gz" \
             "dist/${dist_name}.tar.gz.sha256"
+
+      - name: Verify macOS deployment targets
+        if: runner.os == 'macOS'
+        run: |
+          dist_name="${{ steps.version.outputs.dist_name }}"
+          ./scripts/verify-macos-deployment-target.sh "dist/${dist_name}"
 
       - name: Build Debian package
         if: runner.os == 'Linux'
