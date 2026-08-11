@@ -15,7 +15,8 @@ pub use decode::{
 pub use shared::{
     EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
     MacosInputEvent, MacosInputGapReason, MacosInputResult, MacosMediaKey, MacosModifierFlags,
-    MacosPointerButton, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop, MacosWorkerState,
+    MacosPointerButton, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
+    MacosWorkerDegradation, MacosWorkerState,
 };
 
 #[cfg(target_os = "macos")]

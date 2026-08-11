@@ -1,7 +1,7 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ pub(crate) struct Diagnostics {
     invalid_scroll_phases: AtomicU64,
     last_point_delta_x: AtomicI64,
     last_point_delta_y: AtomicI64,
-    repeated_tap_disable: AtomicBool,
+    repeated_tap_disable: AtomicU8,
 }
 
 impl Diagnostics {
@@ -38,10 +38,15 @@ impl Diagnostics {
         self.dropped_events.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_tap_disable(&self, repeated: bool) {
+    pub(crate) fn record_tap_disable(&self, repeated: bool, reason: MacosInputGapReason) {
         self.tap_disable_count.fetch_add(1, Ordering::Relaxed);
         if repeated {
-            self.repeated_tap_disable.store(true, Ordering::Release);
+            let encoded = match reason {
+                MacosInputGapReason::TapDisabledTimeout => 1,
+                MacosInputGapReason::TapDisabledUserInput => 2,
+                _ => 0,
+            };
+            self.repeated_tap_disable.store(encoded, Ordering::Release);
         }
     }
 
@@ -59,8 +64,12 @@ impl Diagnostics {
         self.last_point_delta_y.store(y, Ordering::Relaxed);
     }
 
-    pub(crate) fn take_repeated_tap_disable(&self) -> bool {
-        self.repeated_tap_disable.swap(false, Ordering::AcqRel)
+    pub(crate) fn take_repeated_tap_disable(&self) -> Option<MacosInputGapReason> {
+        match self.repeated_tap_disable.swap(0, Ordering::AcqRel) {
+            1 => Some(MacosInputGapReason::TapDisabledTimeout),
+            2 => Some(MacosInputGapReason::TapDisabledUserInput),
+            _ => None,
+        }
     }
 }
 
@@ -219,5 +228,17 @@ mod tests {
         );
         assert!(queue.is_closed());
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn repeated_tap_disable_retains_the_native_reason() {
+        let diagnostics = Diagnostics::default();
+        diagnostics.record_tap_disable(true, MacosInputGapReason::TapDisabledUserInput);
+
+        assert_eq!(
+            diagnostics.take_repeated_tap_disable(),
+            Some(MacosInputGapReason::TapDisabledUserInput)
+        );
+        assert_eq!(diagnostics.take_repeated_tap_disable(), None);
     }
 }

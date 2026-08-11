@@ -173,7 +173,7 @@ impl InteractionData {
 /// Health snapshot for one interaction source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractionDiagnostics {
-    /// Backend identifier: `"evdev"`, `"device_query"`, or `"browser"`.
+    /// Backend identifier such as `"evdev"`, `"cg_event_tap"`, or `"browser"`.
     pub backend: &'static str,
     /// Whether this source captures from host hardware (vs injected input).
     pub host_capture: bool,
@@ -201,6 +201,10 @@ pub enum InteractionDegradation {
     /// scheduled task running without an interactive desktop. Raw Input
     /// registers happily in that state and simply never delivers a message.
     NoInteractiveSession,
+    /// The signed process lacks macOS Input Monitoring permission.
+    InputMonitoringPermissionDenied,
+    /// macOS revoked Input Monitoring during an active source session.
+    InputMonitoringPermissionRevoked,
     /// Device nodes present but unreadable — Linux udev rules missing.
     AccessDenied,
     /// The backend could not initialize, or its worker died.
@@ -213,6 +217,8 @@ impl InteractionDegradation {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NoInteractiveSession => "no_interactive_session",
+            Self::InputMonitoringPermissionDenied => "macos_input_permission_denied",
+            Self::InputMonitoringPermissionRevoked => "macos_input_permission_revoked",
             Self::AccessDenied => "access_denied",
             Self::Unavailable(_) => "unavailable",
         }

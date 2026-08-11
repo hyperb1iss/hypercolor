@@ -19,8 +19,8 @@ use crate::queue::{DEFAULT_QUEUE_CAPACITY, EventQueue};
 use crate::{
     EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
     MacosInputEvent, MacosInputGapReason, MacosInputResult, MacosModifierFlags, MacosScrollPhase,
-    MacosScrollUnit, MacosVirtualDesktop, MacosWorkerState, decode_button_event, decode_media_key,
-    decode_momentum_phase, decode_scroll_phase, event_masks,
+    MacosScrollUnit, MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState,
+    decode_button_event, decode_media_key, decode_momentum_phase, decode_scroll_phase, event_masks,
 };
 
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -434,7 +434,10 @@ fn handle_tap_disable(context: &TapContext, reason: MacosInputGapReason) {
     let previous = context.last_disable_ms.swap(elapsed_ms, Ordering::AcqRel);
     let health_window_ms = u64::try_from(TAP_DISABLE_HEALTH_WINDOW.as_millis()).unwrap_or(u64::MAX);
     let repeated = previous != 0 && elapsed_ms.saturating_sub(previous) < health_window_ms;
-    context.queue.diagnostics().record_tap_disable(repeated);
+    context
+        .queue
+        .diagnostics()
+        .record_tap_disable(repeated, reason);
     context.queue.enqueue(MacosInputEvent::StateGap { reason });
     if repeated {
         return;
@@ -599,10 +602,10 @@ fn drain_batches(
     loop {
         queue.wait(HEALTH_INTERVAL);
         let now = Instant::now();
-        if queue.diagnostics().take_repeated_tap_disable() {
+        if let Some(reason) = queue.diagnostics().take_repeated_tap_disable() {
             set_worker_state(
                 state,
-                MacosWorkerState::Degraded("event tap disabled repeatedly".to_owned()),
+                MacosWorkerState::Degraded(MacosWorkerDegradation::TapDisabled(reason)),
             );
         }
         if config.keyboard && !input_monitoring_granted() {
@@ -622,7 +625,9 @@ fn drain_batches(
                 Ok(_) => {}
                 Err(error) => set_worker_state(
                     state,
-                    MacosWorkerState::Degraded(format!("display topology refresh failed: {error}")),
+                    MacosWorkerState::Degraded(MacosWorkerDegradation::DisplayTopology(
+                        error.to_string(),
+                    )),
                 ),
             }
             next_topology_check = now + TOPOLOGY_INTERVAL;

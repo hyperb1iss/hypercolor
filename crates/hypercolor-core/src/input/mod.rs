@@ -12,6 +12,7 @@ mod graph;
 #[cfg(target_os = "macos")]
 pub mod interaction;
 pub mod keymap;
+pub mod macos;
 pub mod media;
 pub mod net;
 pub mod routing;
@@ -37,6 +38,9 @@ pub use graph::{
 };
 #[cfg(target_os = "macos")]
 pub use interaction::InteractionInput;
+pub use macos::{MacosHostInput, MacosInputFoldDiagnostics};
+#[cfg(feature = "macos-native-fixtures")]
+pub use macos::{MacosHostInputFixture, MacosInputFixtureBackend};
 pub use media::MediaSource;
 pub use net::NetSource;
 pub use screen::{ScreenCaptureDemand, ScreenPublicationDemandSnapshot};

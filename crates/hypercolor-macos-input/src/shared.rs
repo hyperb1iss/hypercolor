@@ -219,11 +219,35 @@ pub struct EffectiveEventMasks {
     pub pointer: u64,
 }
 
+/// A recoverable event-tap worker failure with stable native meaning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacosWorkerDegradation {
+    TapDisabled(MacosInputGapReason),
+    DisplayTopology(String),
+}
+
+impl std::fmt::Display for MacosWorkerDegradation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TapDisabled(MacosInputGapReason::TapDisabledTimeout) => {
+                f.write_str("event tap was repeatedly disabled by timeout")
+            }
+            Self::TapDisabled(MacosInputGapReason::TapDisabledUserInput) => {
+                f.write_str("event tap was repeatedly disabled by user input")
+            }
+            Self::TapDisabled(reason) => write!(f, "event tap was repeatedly disabled: {reason:?}"),
+            Self::DisplayTopology(reason) => {
+                write!(f, "display topology refresh failed: {reason}")
+            }
+        }
+    }
+}
+
 /// Liveness of the event-tap worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacosWorkerState {
     Running,
-    Degraded(String),
+    Degraded(MacosWorkerDegradation),
     PermissionRevoked,
     Failed(String),
 }
