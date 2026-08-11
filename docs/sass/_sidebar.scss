@@ -39,13 +39,9 @@
   }
 }
 
-// ── Section Dividers ─────────────────────────────────────────
-
-.sidebar-group + .sidebar-group {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
-}
+// Dividers live in the mobile block: only the drawer stacks two groups, and a
+// display:none sibling still satisfies the adjacent-sibling selector, so an
+// unscoped rule draws a rule above the lone desktop group.
 
 // ── Sidebar Links ────────────────────────────────────────────
 
@@ -107,6 +103,12 @@
     &--open {
       transform: translateX(0);
     }
+  }
+
+  .sidebar-group + .sidebar-group {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-subtle);
   }
 
   .sidebar-group--sections {

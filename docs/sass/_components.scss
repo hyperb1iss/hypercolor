@@ -435,7 +435,25 @@ a.feature-card {
   gap: 16px;
 }
 
+// The card is an <a> holding an <h3> and a <p>, both of which land inside
+// .doc and would otherwise inherit the content heading's 32px top margin and
+// the content link's accent colour. Two classes to outrank `.doc h3`.
+.doc .section-page-card__title {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.doc .section-page-card__desc {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 .section-page-card {
+  display: block;
   background: var(--surface-raised);
   border: 1px solid var(--border-default);
   border-radius: $radius-lg;

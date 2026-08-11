@@ -3,6 +3,87 @@
 // Headings, links, code, tables, blockquotes, lists, images
 // ═══════════════════════════════════════════════════════════════
 
+// ── Page header — title plus the front-matter lead ───────────
+// Every page carries a description; without its own type treatment the lead
+// paragraph is indistinguishable from the body copy that follows it.
+
+.doc__header {
+  margin-bottom: 32px;
+}
+
+.doc__description {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+
+// ── Prev / next pagination ───────────────────────────────────
+// Sits outside <article class="doc">, so it inherits none of the content
+// column's width, padding or link colour and has to restate them.
+
+.doc__pagination {
+  display: flex;
+  gap: 16px;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 8px 24px 48px;
+}
+
+.doc__pagination-link {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  background: var(--surface-raised);
+  text-decoration: none;
+  transition:
+    border-color var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    border-color: var(--accent-muted);
+    background: var(--surface-hover);
+    box-shadow: 0 0 16px var(--ambient-glow);
+  }
+
+  &--next {
+    align-items: flex-end;
+    text-align: right;
+  }
+}
+
+.doc__pagination-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.doc__pagination-title {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+@media (max-width: $bp-mobile - 1px) {
+  .doc__pagination {
+    flex-direction: column;
+    padding: 8px 20px 40px;
+  }
+
+  .doc__pagination-link--next {
+    align-items: flex-start;
+    text-align: left;
+  }
+}
+
 .doc {
   max-width: 800px;
   margin: 0 auto;
@@ -61,10 +142,24 @@
     }
   }
 
-  h4, h5, h6 {
-    margin-top: 24px;
+  // ── H4 — the deepest level in use, needs to outrank body bold ──
+
+  h4 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-top: 28px;
     margin-bottom: 8px;
     color: var(--text-primary);
+  }
+
+  h5, h6 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 24px;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
   }
 
   // ── Heading anchors — margin '#', revealed on hover ────────
@@ -259,6 +354,18 @@
   ul, ol {
     padding-left: 24px;
     margin: 12px 0;
+  }
+
+  // GFM task items ship their own marker, so the list bullet is a second one.
+  li:has(> input[type="checkbox"]) {
+    list-style: none;
+    margin-left: -20px;
+  }
+
+  input[type="checkbox"] {
+    accent-color: var(--accent);
+    margin-right: 8px;
+    vertical-align: baseline;
   }
 
   li + li {
