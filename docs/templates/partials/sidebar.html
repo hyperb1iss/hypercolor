@@ -1,4 +1,17 @@
-<aside class="site-sidebar" id="site-sidebar" aria-label="Section navigation">
+<aside class="site-sidebar{% if section_data is not defined %} site-sidebar--nav-only{% endif %}" id="site-sidebar" aria-label="Section navigation">
+  {# The top nav collapses below 768px, so the drawer is the only place mobile
+     users can reach the other sections from. Hidden above that breakpoint. #}
+  <div class="sidebar-group sidebar-group--sections">
+    <div class="sidebar-group__title">Documentation</div>
+    {% set cp = current_path | default(value="") %}
+    {% for item in config.extra.menu %}
+      {% set is_active = (item.prefix == "$home" and cp == "/") or (item.prefix != "$home" and cp is starting_with(item.prefix)) %}
+      <a class="sidebar-link{% if is_active %} sidebar-link--active{% endif %}" href="{{ config.base_url | safe }}{{ item.url }}"{% if is_active %} aria-current="page"{% endif %}>
+        {{ item.name }}
+      </a>
+    {% endfor %}
+  </div>
+
   {% if section_data is defined %}
     <div class="sidebar-group">
       <div class="sidebar-group__title">{{ section_data.title }}</div>
@@ -10,20 +23,6 @@
         </a>
       {% endfor %}
 
-      {% if section_data.subsections is defined %}
-        {% for subsection_path in section_data.subsections %}
-          {% set subsection = get_section(path=subsection_path) %}
-          <div class="sidebar-group sidebar-group--nested">
-            <div class="sidebar-group__title">{{ subsection.title }}</div>
-            {% for page in subsection.pages %}
-              {% set is_active = current_path is defined and page.path == current_path %}
-              <a class="sidebar-link{% if is_active %} sidebar-link--active{% endif %}" href="{{ page.permalink }}"{% if is_active %} aria-current="page"{% endif %}>
-                {{ page.title }}
-              </a>
-            {% endfor %}
-          </div>
-        {% endfor %}
-      {% endif %}
     </div>
   {% endif %}
 </aside>

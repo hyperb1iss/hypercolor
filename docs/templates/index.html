@@ -3,6 +3,11 @@
 {% block title %}{{ config.title }}: {{ config.description }}{% endblock title %}
 
 {% block content %}
+{# The drawer is the only mobile navigation surface, and it is fixed-position
+   there, so the home page carries it without a layout column. #}
+{% set current_path = "/" %}
+{% include "partials/sidebar.html" %}
+
 <main id="main-content">
   <section class="hero hero--home">
     <!-- Brand stage: the gradient paints immediately; the nebula shader

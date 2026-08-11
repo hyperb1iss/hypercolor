@@ -12,10 +12,13 @@
 <div class="site-layout">
   {% set current_path = page.path %}
   {% set current_section = page.ancestors | last %}
-  {% if current_section %}
+  {# Top-level pages (download) ancestor straight to the root section, whose
+     subsections are every section on the site. Treat that as no section so the
+     drawer falls back to the top-level list instead of 91 links. #}
+  {% if current_section and current_section != "_index.md" %}
     {% set section_data = get_section(path=current_section) %}
-    {% include "partials/sidebar.html" %}
   {% endif %}
+  {% include "partials/sidebar.html" %}
 
   <main class="site-main" id="main-content">
     <article class="doc">
