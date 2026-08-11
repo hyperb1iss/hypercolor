@@ -77,13 +77,30 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  // Eleven destinations plus the action cluster do not fit a 1280px viewport at
+  // full padding. min-width lets the row give way instead of shoving
+  // .nav-actions past the edge and clipping the GitHub link.
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 .nav-link {
   color: var(--text-primary);
   font-weight: 500;
   font-size: 0.875rem;
+  white-space: nowrap;
   padding: 6px 12px;
+
+  // Tighten before the row has to scroll: this is the width band where the
+  // full menu is one item away from fitting.
+  @media (max-width: $bp-desktop + 120px) {
+    padding: 6px 7px;
+  }
   border-radius: $radius-sm;
   position: relative;
   transition:

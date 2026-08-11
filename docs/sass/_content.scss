@@ -135,9 +135,16 @@
 
   // ── Tables — accent headers, subtle row hover ─────────────
 
+  // Markdown gives no wrapper to scroll, so the table is its own scroll
+  // container: display:block is what makes overflow apply to a table element.
+  // Without this the wide hardware matrices push past the column and land on
+  // top of the TOC.
   table {
-    border-collapse: collapse;
+    display: block;
     width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
     margin: 16px 0;
   }
 
