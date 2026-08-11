@@ -93,11 +93,11 @@ pub enum RawInputEvent {
         button: RawButton,
         pressed: bool,
     },
-    /// Vertical wheel travel in 1/120-notch units, matching evdev's
-    /// `REL_WHEEL_HI_RES`. Horizontal wheel is dropped rather than folded in.
-    Wheel {
+    /// Two-axis wheel travel in signed Q16.16 `Line120` units.
+    Scroll {
         device: Arc<RawDeviceDescriptor>,
-        delta_hi_res: i32,
+        delta_x_q16_16: i64,
+        delta_y_q16_16: i64,
     },
     /// Relative counts from a normal mouse.
     MotionRelative {
@@ -145,7 +145,7 @@ impl RawInputEvent {
         match self {
             Self::Key { device, .. }
             | Self::Button { device, .. }
-            | Self::Wheel { device, .. }
+            | Self::Scroll { device, .. }
             | Self::MotionRelative { device, .. }
             | Self::MotionAbsolute { device, .. }
             | Self::DeviceArrived { device }

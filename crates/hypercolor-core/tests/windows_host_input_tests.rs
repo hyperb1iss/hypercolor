@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
-use hypercolor_core::input::{PointerMode, WindowsHostInput};
-use hypercolor_core::types::event::{InputButtonState, InputEvent};
+use hypercolor_core::input::{PointerMode, Q16_16_SCALE, WindowsHostInput};
+use hypercolor_core::types::event::{InputButtonState, InputEvent, PointerScrollUnit};
 use hypercolor_windows_input::{
     RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputEvent,
     RawKeyPrefix,
@@ -244,17 +244,27 @@ fn a_click_in_one_batch_leaves_nothing_held() {
 }
 
 #[test]
-fn wheel_travel_reaches_the_event_bus_unscaled() {
+fn vertical_scroll_emits_exact_event_then_legacy_shadow() {
     let mut input = WindowsHostInput::new(true, true);
     let (_, events) = fold(
         &mut input,
-        &[RawInputEvent::Wheel {
+        &[RawInputEvent::Scroll {
             device: device(MOUSE, RawDeviceKind::Mouse),
-            delta_hi_res: -120,
+            delta_x_q16_16: 0,
+            delta_y_q16_16: -120 * Q16_16_SCALE,
         }],
     );
     assert!(matches!(
         &events[0].event,
+        InputEvent::PointerScroll {
+            delta_x_q16_16: 0,
+            delta_y_q16_16,
+            unit: PointerScrollUnit::Line120,
+            ..
+        } if *delta_y_q16_16 == -120 * Q16_16_SCALE
+    ));
+    assert!(matches!(
+        &events[1].event,
         InputEvent::MouseWheel {
             delta_hi_res: -120,
             ..
@@ -262,7 +272,11 @@ fn wheel_travel_reaches_the_event_bus_unscaled() {
     ));
     assert_eq!(
         events[0].physical_code.as_deref(),
-        Some("windows:wheel:vertical")
+        Some("windows:RI_MOUSE_WHEEL")
+    );
+    assert_eq!(
+        events[1].physical_code.as_deref(),
+        Some("windows:legacy-wheel-shadow")
     );
 }
 
@@ -640,9 +654,10 @@ fn a_batch_at_the_live_epoch_is_applied() {
 fn the_event_queue_drops_oldest_and_counts_what_it_dropped() {
     let mut input = WindowsHostInput::new(true, true);
     let events = (0..600)
-        .map(|delta_hi_res| RawInputEvent::Wheel {
+        .map(|delta| RawInputEvent::Scroll {
             device: device(MOUSE, RawDeviceKind::Mouse),
-            delta_hi_res,
+            delta_x_q16_16: i64::from(delta) * Q16_16_SCALE,
+            delta_y_q16_16: 0,
         })
         .collect::<Vec<_>>();
     let (data, drained) = fold(&mut input, &events);
@@ -653,7 +668,8 @@ fn the_event_queue_drops_oldest_and_counts_what_it_dropped() {
         let expected = i32::try_from(index).expect("index fits") + 344;
         matches!(
             &timed.event,
-            InputEvent::MouseWheel { delta_hi_res, .. } if *delta_hi_res == expected
+            InputEvent::PointerScroll { delta_x_q16_16, delta_y_q16_16: 0, .. }
+                if *delta_x_q16_16 == i64::from(expected) * Q16_16_SCALE
         )
     }));
 }
