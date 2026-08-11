@@ -175,9 +175,10 @@ else
   # and app each fat-LTO-merge the full Servo bitcode only for the link to
   # dead-strip it again (their shipped binaries are 10-18MB; the daemon,
   # which actually uses Servo, is 144MB). Splitting keeps Servo's LTO cost
-  # to the daemon and caps peak link memory at one Servo-sized merge
-  # instead of four racing, which is what a 4-core 15Gi arm64 runner can
-  # actually survive.
+  # to the daemon: one Servo-sized merge at peak instead of four racing.
+  # The daemon's merge alone still overruns a 15Gi arm64 runner into swap,
+  # so this trims the peak rather than eliminating it; CI provisions swap
+  # for the remainder.
   ./scripts/cargo-cache-build.sh cargo build --release --locked \
     -p hypercolor-daemon --bin hypercolor-daemon \
     ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
