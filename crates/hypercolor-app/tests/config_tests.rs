@@ -174,6 +174,18 @@ fn tauri_config_declares_macos_hardened_runtime_metadata() {
 }
 
 #[test]
+fn tauri_config_requires_macos_15_2() {
+    let config = tauri_config();
+    let minimum_system_version = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("macOS"))
+        .and_then(|macos| macos.get("minimumSystemVersion"))
+        .and_then(serde_json::Value::as_str);
+
+    assert_eq!(minimum_system_version, Some("15.2"));
+}
+
+#[test]
 fn macos_bundle_plists_declare_required_permissions() {
     let root = manifest_dir();
     let entitlements = fs::read_to_string(root.join("entitlements.plist"))

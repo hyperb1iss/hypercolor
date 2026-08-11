@@ -16,7 +16,15 @@ cask "hypercolor-app" do
   desc "Open-source RGB lighting orchestration"
   homepage "https://github.com/hyperb1iss/hypercolor"
 
+  depends_on macos: ">= :sequoia"
+
   app "Hypercolor.app"
+
+  preflight do
+    if MacOS.version < Version.new("15.2")
+      raise ::Cask::CaskError, "Hypercolor requires macOS 15.2 or newer."
+    end
+  end
 
   zap trash: [
     "~/Library/Application Support/hypercolor",

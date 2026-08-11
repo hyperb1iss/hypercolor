@@ -41,7 +41,7 @@
       "timestampUrl": "http://timestamp.digicert.com"
     },
     "macOS": {
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "15.2",
       "hardenedRuntime": true,
       "entitlements": "entitlements.plist",
       "infoPlist": "Info.plist",

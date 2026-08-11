@@ -1,3 +1,9 @@
+#[cfg(unix)]
+use std::process::Command;
+
+const CARGO_CONFIG: &str = include_str!("../../../.cargo/config.toml");
+const GET_INSTALLER: &str = include_str!("../../../scripts/get-hypercolor.sh");
+const HOMEBREW_FORMULA: &str = include_str!("../../../packaging/homebrew/hypercolor.rb");
 const HOMEBREW_CASK: &str = include_str!("../../../packaging/homebrew/hypercolor-app.rb");
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const JUSTFILE: &str = include_str!("../../../justfile");
@@ -48,6 +54,51 @@ const REQUIRED_PAWNIO_MODULES: &[&str] = &[
     "IntelMSR.bin",
     "AMDFamily17.bin",
 ];
+
+#[test]
+fn macos_distribution_surfaces_require_15_2() {
+    assert!(
+        CARGO_CONFIG.contains(r#"MACOSX_DEPLOYMENT_TARGET = { value = "15.2", force = true }"#)
+    );
+    assert!(HOMEBREW_FORMULA.contains(r#"depends_on macos: ">= :sequoia""#));
+    assert!(HOMEBREW_FORMULA.contains("MacOS.version >= Version.new(\"15.2\")"));
+    assert!(HOMEBREW_CASK.contains(r#"depends_on macos: ">= :sequoia""#));
+    assert!(HOMEBREW_CASK.contains("MacOS.version < Version.new(\"15.2\")"));
+    assert!(GET_INSTALLER.contains("require_supported_macos"));
+}
+
+#[cfg(unix)]
+#[test]
+fn curl_installer_compares_macos_versions_by_numeric_component() {
+    let (_, function_tail) = GET_INSTALLER
+        .split_once("macos_version_supported() {")
+        .expect("installer should define macos_version_supported");
+    let (function_body, _) = function_tail
+        .split_once("# ── Argument Parsing")
+        .expect("version helper should precede argument parsing");
+    let script =
+        format!("macos_version_supported() {{{function_body}\nmacos_version_supported \"$1\"");
+
+    for (version, supported) in [
+        ("14.9", false),
+        ("15.0", false),
+        ("15.1", false),
+        ("15.2", true),
+        ("15.10", true),
+        ("26.0", true),
+        ("26.10", true),
+    ] {
+        let status = Command::new("bash")
+            .args(["-c", &script, "--", version])
+            .status()
+            .expect("bash should execute the installer version helper");
+        assert_eq!(
+            status.success(),
+            supported,
+            "unexpected support result for macOS {version}"
+        );
+    }
+}
 
 #[test]
 fn homebrew_cask_template_targets_normalized_macos_dmg_names() {

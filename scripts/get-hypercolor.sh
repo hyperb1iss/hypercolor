@@ -69,6 +69,44 @@ verify_checksum() {
   ok "Verified SHA256 checksum"
 }
 
+macos_version_supported() {
+  local version="$1"
+  local major minor patch remainder
+  local major_number minor_number
+
+  [[ "${version}" =~ ^[0-9]+[.][0-9]+([.][0-9]+)?$ ]] || return 2
+  IFS=. read -r major minor patch remainder <<< "${version}"
+  patch="${patch:-0}"
+
+  [[ -n "${major}" && -n "${minor}" && -z "${remainder}" ]] || return 2
+  [[ "${major}" =~ ^[0-9]+$ && "${minor}" =~ ^[0-9]+$ && "${patch}" =~ ^[0-9]+$ ]] \
+    || return 2
+
+  major_number=$((10#${major}))
+  minor_number=$((10#${minor}))
+
+  (( major_number > 15 || (major_number == 15 && minor_number >= 2) ))
+}
+
+require_supported_macos() {
+  local version status
+
+  command -v sw_vers &>/dev/null || die "sw_vers is required on macOS"
+  version="$(sw_vers -productVersion)"
+
+  if macos_version_supported "${version}"; then
+    return
+  else
+    status=$?
+  fi
+
+  if [[ "${status}" -eq 2 ]]; then
+    die "Could not parse macOS version: ${version}"
+  fi
+
+  die "Hypercolor requires macOS 15.2 or newer; found ${version}"
+}
+
 # ── Argument Parsing ─────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -100,7 +138,10 @@ detect_platform() {
 
   case "${os}" in
     Linux)  os="linux" ;;
-    Darwin) os="macos" ;;
+    Darwin)
+      require_supported_macos
+      os="macos"
+      ;;
     *)      die "Unsupported OS: ${os}. Hypercolor supports Linux and macOS." ;;
   esac
 
