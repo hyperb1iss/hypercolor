@@ -169,8 +169,20 @@ else
   info "Building release binaries"
   # The ${arr[@]+...} guard keeps macOS bash 3.2 from treating an empty
   # array expansion as an unbound-variable error under set -u.
+  #
+  # Two invocations on purpose. Built together, feature unification turns
+  # on hypercolor-core's servo feature for every binary, so the CLI, tray,
+  # and app each fat-LTO-merge the full Servo bitcode only for the link to
+  # dead-strip it again (their shipped binaries are 10-18MB; the daemon,
+  # which actually uses Servo, is 144MB). Splitting keeps Servo's LTO cost
+  # to the daemon: one Servo-sized merge at peak instead of four racing.
+  # The daemon's merge alone still overruns a 15Gi arm64 runner into swap,
+  # so this trims the peak rather than eliminating it; CI provisions swap
+  # for the remainder.
   ./scripts/cargo-cache-build.sh cargo build --release --locked \
     -p hypercolor-daemon --bin hypercolor-daemon \
+    ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ./scripts/cargo-cache-build.sh cargo build --release --locked \
     -p hypercolor-cli --bin hypercolor \
     -p hypercolor-tray --bin hypercolor-tray \
     -p hypercolor-app --bin hypercolor-app \

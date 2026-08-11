@@ -47,7 +47,7 @@ env:
   LINUX_DEPS: >-
     libudev-dev libdbus-1-dev libasound2-dev libpulse0
     libpipewire-0.3-dev
-    ccache cmake jq nasm pkg-config lld
+    ccache clang cmake jq nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
     libxdo-dev
     libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
@@ -55,7 +55,7 @@ env:
   LINUX_RUST_DEPS: >-
     libudev-dev libdbus-1-dev libasound2-dev libpulse0
     libpipewire-0.3-dev
-    ccache cmake jq nasm pkg-config lld
+    ccache clang cmake jq nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
     libxdo-dev libfontconfig1-dev libegl1 libssl-dev
   # Servo and native app checks run separately so their feature/system deps do
@@ -1479,11 +1479,21 @@ jobs:
       - name: Provision swap for the release link
         if: runner.os == 'Linux'
         run: |
-          set -euo pipefail
-          sudo fallocate -l 32G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # Deliberately not set -e. Swap is a cushion, not a correctness
+          # requirement, so a runner image that refuses one must still get
+          # its build attempted rather than failing here.
+          set -uo pipefail
+          # A separate path from the image's own /swapfile, which is already
+          # swapped on: allocating over a live swapfile fails with ETXTBSY,
+          # and this way the image's 3Gi is added to rather than replaced.
+          swapfile=/hypercolor-swap
+          if ! sudo fallocate -l 32G "${swapfile}" 2>/dev/null; then
+            sudo dd if=/dev/zero of="${swapfile}" bs=1M count=32768 status=none
+          fi
+          sudo chmod 600 "${swapfile}"
+          sudo mkswap "${swapfile}" >/dev/null
+          sudo swapon "${swapfile}" \
+            || echo "warning: swap unavailable, link may exhaust memory"
           free -h
 
       - name: Install system dependencies (Linux)
