@@ -29,6 +29,7 @@ describe('input data contract', () => {
         expect(input.mouse.y).toBe(0)
         expect(input.mouse.nx).toBe(0)
         expect(input.mouse.ny).toBe(0)
+        expect(input.mouse.scroll).toEqual({ line120X: 0, line120Y: 0, pixelX: 0, pixelY: 0 })
         expect(input.mouse.wheel).toBe(0)
         expect(input.mouse.velocity).toBe(0)
     })
@@ -66,11 +67,24 @@ describe('input data contract', () => {
                 events: [
                     { atMs: 1005, button: 'left', kind: 'button', seq: 3, source: 'mouse0', state: 'pressed' },
                     { atMs: 1006, button: 'left', kind: 'button', seq: 4, source: 'mouse0', state: 'repeated' },
-                    { atMs: 1007, delta: 1.5, kind: 'wheel', seq: 5, source: 'mouse0' },
+                    {
+                        atMs: 1007,
+                        deltaX: 0.5,
+                        deltaY: -0.25,
+                        kind: 'scroll',
+                        momentumPhase: 'began',
+                        phase: 'changed',
+                        physicalCode: 'macos:scroll',
+                        seq: 5,
+                        source: 'mouse0',
+                        unit: 'pixels',
+                    },
+                    { atMs: 1008, delta: 1.5, kind: 'wheel', seq: 6, source: 'mouse0' },
                 ],
                 mode: 'virtual',
                 nx: 0.25,
                 ny: 0.75,
+                scroll: { line120X: 0.5, line120Y: -2, pixelX: 1.5, pixelY: -0.25 },
                 velocity: 0.4,
                 wheel: 1.5,
                 x: 320,
@@ -119,6 +133,7 @@ describe('input data contract', () => {
         expect(input.mouse.x).toBe(320)
         expect(input.mouse.y).toBe(240)
         expect(input.mouse.wheel).toBe(1.5)
+        expect(input.mouse.scroll).toEqual({ line120X: 0.5, line120Y: -2, pixelX: 1.5, pixelY: -0.25 })
         expect(input.mouse.velocity).toBe(0.4)
         expect(input.mouse.events).toEqual([
             {
@@ -139,7 +154,20 @@ describe('input data contract', () => {
                 source: 'mouse0',
                 state: 'repeated',
             },
-            { atMs: 1007, delta: 1.5, kind: 'wheel', repeatCount: 1, seq: 5, source: 'mouse0' },
+            {
+                atMs: 1007,
+                deltaX: 0.5,
+                deltaY: -0.25,
+                kind: 'scroll',
+                momentumPhase: 'began',
+                phase: 'changed',
+                physicalCode: 'macos:scroll',
+                repeatCount: 1,
+                seq: 5,
+                source: 'mouse0',
+                unit: 'pixels',
+            },
+            { atMs: 1008, delta: 1.5, kind: 'wheel', repeatCount: 1, seq: 6, source: 'mouse0' },
         ])
     })
 
@@ -232,5 +260,6 @@ describe('input data contract', () => {
         expect(input.mouse.mode).toBe('none')
         expect(input.mouse.nx).toBe(0)
         expect(input.mouse.x).toBe(12)
+        expect(input.mouse.scroll).toEqual({ line120X: 0, line120Y: 0, pixelX: 0, pixelY: 0 })
     })
 })

@@ -12,6 +12,9 @@ import {
     KeyboardInputState,
     KeyInputEvent,
     MouseInputEvent,
+    MouseScrollPhase,
+    MouseScrollState,
+    MouseScrollUnit,
     MouseInputState,
     MouseMode,
 } from './types'
@@ -85,6 +88,7 @@ function readMouse(raw: any): MouseInputState {
         mode,
         nx: clamp01(finiteNumber(raw.nx, 0)),
         ny: clamp01(finiteNumber(raw.ny, 0)),
+        scroll: readMouseScroll(raw.scroll),
         velocity: finiteNumber(raw.velocity, 0),
         wheel: finiteNumber(raw.wheel, 0),
         x: Math.trunc(finiteNumber(raw.x, 0)),
@@ -101,6 +105,7 @@ function createIdleMouse(): MouseInputState {
         mode: 'none',
         nx: 0,
         ny: 0,
+        scroll: createIdleScroll(),
         velocity: 0,
         wheel: 0,
         x: 0,
@@ -158,9 +163,56 @@ function readMouseEvents(raw: unknown): MouseInputEvent[] {
             }
             if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
             events.push(event)
+        } else if (entry.kind === 'scroll') {
+            const event: MouseInputEvent = {
+                atMs: finiteNumber(entry.atMs, 0),
+                deltaX: finiteNumber(entry.deltaX, 0),
+                deltaY: finiteNumber(entry.deltaY, 0),
+                kind: 'scroll',
+                momentumPhase: readMouseScrollPhase(entry.momentumPhase),
+                phase: readMouseScrollPhase(entry.phase),
+                repeatCount: positiveInteger(entry.repeatCount, 1),
+                seq: finiteNumber(entry.seq, 0),
+                source: typeof entry.source === 'string' ? entry.source : '',
+                unit: readMouseScrollUnit(entry.unit),
+            }
+            if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
+            events.push(event)
         }
     }
     return events
+}
+
+function readMouseScroll(raw: any): MouseScrollState {
+    if (typeof raw !== 'object' || raw === null) return createIdleScroll()
+    return {
+        line120X: finiteNumber(raw.line120X, 0),
+        line120Y: finiteNumber(raw.line120Y, 0),
+        pixelX: finiteNumber(raw.pixelX, 0),
+        pixelY: finiteNumber(raw.pixelY, 0),
+    }
+}
+
+function createIdleScroll(): MouseScrollState {
+    return { line120X: 0, line120Y: 0, pixelX: 0, pixelY: 0 }
+}
+
+function readMouseScrollUnit(raw: unknown): MouseScrollUnit {
+    return raw === 'pixels' ? raw : 'line120'
+}
+
+function readMouseScrollPhase(raw: unknown): MouseScrollPhase {
+    switch (raw) {
+        case 'may_begin':
+        case 'began':
+        case 'changed':
+        case 'stationary':
+        case 'ended':
+        case 'cancelled':
+            return raw
+        default:
+            return 'none'
+    }
 }
 
 function readMouseMode(raw: unknown): MouseMode {

@@ -3,6 +3,10 @@
       const number = Number(value);
       return Number.isFinite(number) ? number : fallback;
     };
+    const scrollPhase = function(value) {
+      if (value === 'may_begin' || value === 'began' || value === 'changed' || value === 'stationary' || value === 'ended' || value === 'cancelled') { return value; }
+      return 'none';
+    };
     const trueObject = function(values) {
       const object = {};
       if (!Array.isArray(values)) { return object; }
@@ -171,6 +175,13 @@
       engine.mouse.mode = typeof mouse.mode === 'string' ? mouse.mode : 'none';
       engine.mouse.available = engine.mouse.mode !== 'none';
       engine.mouse.wheel = finiteNumber(mouse.wheel, 0) / 120;
+      const scroll = typeof mouse.scroll === 'object' && mouse.scroll !== null ? mouse.scroll : {};
+      engine.mouse.scroll = {
+        line120X: finiteNumber(scroll.line120X, 0),
+        line120Y: finiteNumber(scroll.line120Y, 0),
+        pixelX: finiteNumber(scroll.pixelX, 0),
+        pixelY: finiteNumber(scroll.pixelY, 0),
+      };
       engine.mouse.velocity = finiteNumber(mouse.velocity, 0);
       const events = Array.isArray(interaction.events) ? interaction.events : [];
       const keyEvents = [];
@@ -195,6 +206,13 @@
           mouseEvents.push(entry);
         } else if (entry.kind === 'wheel') {
           entry.delta = finiteNumber(event.delta, 0) / 120;
+          mouseEvents.push(entry);
+        } else if (entry.kind === 'scroll') {
+          entry.deltaX = finiteNumber(event.deltaX, 0);
+          entry.deltaY = finiteNumber(event.deltaY, 0);
+          entry.unit = event.unit === 'pixels' ? 'pixels' : 'line120';
+          entry.phase = scrollPhase(event.phase);
+          entry.momentumPhase = scrollPhase(event.momentumPhase);
           mouseEvents.push(entry);
         }
       }
