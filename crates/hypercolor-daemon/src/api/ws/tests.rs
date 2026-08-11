@@ -64,10 +64,11 @@ use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, CanvasFormat, ChannelConfig, ChannelConfigPatch,
     ChannelSet, ClientMessage, FrameFormat, FrameZoneSelection, FramesConfig, InputButtonStateWire,
     InteractivePreviewConfig, InteractivePreviewTarget, MAX_INPUT_INJECT_EVENTS,
-    MAX_INPUT_NAME_BYTES, MAX_INPUT_WHEEL_DELTA, MAX_PREVIEW_PUBLICATION_BYTES, ServerMessage,
-    SubscriptionState, WsChannel, deserialize_finite_coordinate, event_message_parts,
-    parse_channels, should_relay_event, to_snake_case, unique_sorted_channel_names,
-    validate_interactive_preview_id, validate_interactive_preview_shape, ws_capabilities,
+    MAX_INPUT_NAME_BYTES, MAX_INPUT_SCROLL_Q16_16, MAX_INPUT_WHEEL_DELTA,
+    MAX_PREVIEW_PUBLICATION_BYTES, ServerMessage, SubscriptionState, WsChannel,
+    deserialize_finite_coordinate, event_message_parts, parse_channels, should_relay_event,
+    to_snake_case, unique_sorted_channel_names, validate_interactive_preview_id,
+    validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
     PreviewCursorQueue, PreviewOutboundError, PreviewOutboundItem, PreviewOutboundLimits,
@@ -2944,7 +2945,7 @@ fn default_subscription_excludes_input_events() {
 #[test]
 fn input_inject_message_parses_all_edge_kinds() {
     use hypercolor_core::input::BrowserInputEdge;
-    use hypercolor_types::event::InputButtonState;
+    use hypercolor_types::event::{InputButtonState, PointerScrollPhase, PointerScrollUnit};
 
     let raw = r#"{
         "type": "input_inject",
@@ -2953,7 +2954,21 @@ fn input_inject_message_parses_all_edge_kinds() {
             {"kind": "key", "key": "a", "state": "pressed"},
             {"kind": "button", "button": "left", "state": "released"},
             {"kind": "move", "nx": 0.5, "ny": 0.25},
-            {"kind": "wheel", "delta_hi_res": -240}
+            {"kind": "wheel", "delta_hi_res": -240},
+            {
+                "kind": "scroll",
+                "delta_x_q16_16": 98304,
+                "delta_y_q16_16": -131072,
+                "unit": "pixels",
+                "phase": "changed",
+                "momentum_phase": "began"
+            },
+            {
+                "kind": "scroll",
+                "delta_x_q16_16": 0,
+                "delta_y_q16_16": 65536,
+                "unit": "line120"
+            }
         ]
     }"#;
 
@@ -2963,7 +2978,7 @@ fn input_inject_message_parses_all_edge_kinds() {
         panic!("expected InputInject");
     };
     assert_eq!(preview_id, "main");
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 6);
 
     let edges: Vec<BrowserInputEdge> = events
         .into_iter()
@@ -2991,6 +3006,26 @@ fn input_inject_message_parses_all_edge_kinds() {
         }
     );
     assert_eq!(edges[3], BrowserInputEdge::Wheel { delta_hi_res: -240 });
+    assert_eq!(
+        edges[4],
+        BrowserInputEdge::Scroll {
+            delta_x_q16_16: 98_304,
+            delta_y_q16_16: -131_072,
+            unit: PointerScrollUnit::Pixels,
+            phase: PointerScrollPhase::Changed,
+            momentum_phase: PointerScrollPhase::Began,
+        }
+    );
+    assert_eq!(
+        edges[5],
+        BrowserInputEdge::Scroll {
+            delta_x_q16_16: 0,
+            delta_y_q16_16: 65_536,
+            unit: PointerScrollUnit::Line120,
+            phase: PointerScrollPhase::None,
+            momentum_phase: PointerScrollPhase::None,
+        }
+    );
 }
 
 #[test]
@@ -3104,6 +3139,62 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
             "amplified wheel delta must be rejected"
         );
     }
+
+    for delta in [
+        MAX_INPUT_SCROLL_Q16_16.saturating_add(1),
+        MAX_INPUT_SCROLL_Q16_16.saturating_neg().saturating_sub(1),
+        i64::MIN,
+    ] {
+        for axis in ["delta_x_q16_16", "delta_y_q16_16"] {
+            let mut edge = serde_json::json!({
+                "kind": "scroll",
+                "delta_x_q16_16": 0,
+                "delta_y_q16_16": 0,
+                "unit": "line120"
+            });
+            edge[axis] = serde_json::json!(delta);
+            let payload = serde_json::json!({
+                "type": "input_inject",
+                "preview_id": "main",
+                "events": [edge]
+            });
+            assert!(
+                serde_json::from_value::<ClientMessage>(payload).is_err(),
+                "amplified {axis} scroll delta must be rejected"
+            );
+        }
+    }
+
+    for delta in [MAX_INPUT_SCROLL_Q16_16, -MAX_INPUT_SCROLL_Q16_16] {
+        let payload = serde_json::json!({
+            "type": "input_inject",
+            "preview_id": "main",
+            "events": [{
+                "kind": "scroll",
+                "delta_x_q16_16": delta,
+                "delta_y_q16_16": delta,
+                "unit": "pixels"
+            }]
+        });
+        assert!(
+            serde_json::from_value::<ClientMessage>(payload).is_ok(),
+            "inclusive scroll bound must be accepted"
+        );
+    }
+
+    let missing_unit = serde_json::json!({
+        "type": "input_inject",
+        "preview_id": "main",
+        "events": [{
+            "kind": "scroll",
+            "delta_x_q16_16": 0,
+            "delta_y_q16_16": 0
+        }]
+    });
+    assert!(
+        serde_json::from_value::<ClientMessage>(missing_unit).is_err(),
+        "scroll unit must be required"
+    );
 }
 
 #[test]

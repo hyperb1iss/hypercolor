@@ -1,4 +1,4 @@
-//! Canvas preview — presents authoritative daemon frames in the browser via WebGL.
+//! Canvas preview presents authoritative daemon frames in the browser via WebGL.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -22,7 +22,9 @@ use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::icons::LuMousePointerClick;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
-use crate::ws::input::{InputEdgeButton, InputEdgeState, InputInjectEdge};
+use crate::ws::input::{
+    InputEdgeButton, InputEdgeScrollPhase, InputEdgeScrollUnit, InputEdgeState, InputInjectEdge,
+};
 use crate::ws::{CanvasFrame, InteractivePreviewLifecycle, InteractivePreviewRequest};
 
 use super::preview_runtime::{PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError};
@@ -105,24 +107,38 @@ pub fn canonical_injection_key(code: &str) -> Option<String> {
     Some(name.to_owned())
 }
 
-/// Convert a `WheelEvent` delta into the daemon's hi-res wheel units
-/// (120 per notch). Pixel deltas assume the common ~100px notch; line and
-/// page modes scale through conventional pixel equivalents. Sign flips so
-/// scrolling up (negative `deltaY`) is a positive notch, matching evdev's
-/// `REL_WHEEL_HI_RES`.
-pub fn wheel_delta_hi_res(delta_y: f64, delta_mode: u32) -> i32 {
-    const LINE_HEIGHT_PX: f64 = 40.0;
+/// Convert a DOM wheel sample into exact two-axis scroll motion.
+pub fn wheel_scroll_edge(delta_x: f64, delta_y: f64, delta_mode: u32) -> Option<InputInjectEdge> {
+    if !delta_x.is_finite() || !delta_y.is_finite() || (delta_x == 0.0 && delta_y == 0.0) {
+        return None;
+    }
+
+    const LINE120_PER_DOM_LINE: f64 = 48.0;
     const PAGE_HEIGHT_PX: f64 = 400.0;
-    const NOTCH_PX: f64 = 100.0;
-    let pixels = match delta_mode {
-        1 => delta_y * LINE_HEIGHT_PX,
-        2 => delta_y * PAGE_HEIGHT_PX,
-        _ => delta_y,
+    let (unit, scale) = match delta_mode {
+        1 => (InputEdgeScrollUnit::Line120, LINE120_PER_DOM_LINE),
+        2 => (InputEdgeScrollUnit::Pixels, PAGE_HEIGHT_PX),
+        _ => (InputEdgeScrollUnit::Pixels, 1.0),
     };
-    let hi_res = (-pixels * 120.0 / NOTCH_PX).round();
-    #[allow(clippy::cast_possible_truncation)]
+    Some(InputInjectEdge::Scroll {
+        delta_x_q16_16: f64_to_q16_16(-delta_x * scale),
+        delta_y_q16_16: f64_to_q16_16(-delta_y * scale),
+        unit,
+        phase: InputEdgeScrollPhase::None,
+        momentum_phase: InputEdgeScrollPhase::None,
+    })
+}
+
+fn f64_to_q16_16(value: f64) -> i64 {
+    let scaled = (value * 65_536.0).round();
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "DOM wheel doubles must be bounded before fixed-point conversion"
+    )]
     {
-        hi_res.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+        scaled.clamp(i64::MIN as f64, i64::MAX as f64) as i64
     }
 }
 
@@ -1021,9 +1037,10 @@ pub fn CanvasPreview(
                         }
                         ev.prevent_default();
                         ev.stop_propagation();
-                        let delta = wheel_delta_hi_res(ev.delta_y(), ev.delta_mode());
-                        if delta != 0 {
-                            queue_edge(InputInjectEdge::Wheel { delta_hi_res: delta });
+                        if let Some(edge) =
+                            wheel_scroll_edge(ev.delta_x(), ev.delta_y(), ev.delta_mode())
+                        {
+                            queue_edge(edge);
                         }
                     }
                 }

@@ -2251,7 +2251,8 @@ mod tests {
     };
     use hypercolor_core::input::{
         InputData, InputGraphSnapshot, InputManager, InputSource, InputSourceSlot, InteractionData,
-        MotionAggregate, SourceIssue, SourceKind, SourceStatusWriter,
+        MotionAggregate, Q16_16_SCALE, ScrollAggregate, SourceIssue, SourceKind,
+        SourceStatusWriter,
     };
     use hypercolor_core::spatial::{
         SpatialEngine, SpatialSamplingCapacity, SpatialSamplingWorkspaceUsage,
@@ -2850,6 +2851,10 @@ mod tests {
         assert!((inputs.interaction.batch.motion.dy - 0.4).abs() < 0.000_1);
         assert_eq!(inputs.interaction.batch.wheel_hi_res, 80);
         assert_eq!(
+            inputs.interaction.batch.scroll.line120_y_q16_16,
+            80 * Q16_16_SCALE
+        );
+        assert_eq!(
             inputs
                 .interaction
                 .batch
@@ -2859,10 +2864,32 @@ mod tests {
                 .count(),
             2
         );
+        assert_eq!(
+            inputs
+                .interaction
+                .batch
+                .events
+                .iter()
+                .filter(|event| matches!(event.event, InputEvent::PointerScroll { .. }))
+                .count(),
+            2
+        );
+        assert!(
+            inputs
+                .interaction
+                .batch
+                .events
+                .chunks_exact(2)
+                .all(
+                    |pair| matches!(pair[0].event, InputEvent::PointerScroll { .. })
+                        && matches!(pair[1].event, InputEvent::MouseWheel { .. })
+                )
+        );
 
         resolve_authoritative(&mut routes, &graph, &event_bus, &mut inputs);
         assert_eq!(inputs.interaction.batch.motion, MotionAggregate::default());
         assert_eq!(inputs.interaction.batch.wheel_hi_res, 0);
+        assert_eq!(inputs.interaction.batch.scroll, ScrollAggregate::default());
         assert!(inputs.interaction.batch.events.is_empty());
     }
 

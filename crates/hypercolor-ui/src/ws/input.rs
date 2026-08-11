@@ -1,7 +1,7 @@
-//! Browser-preview input injection — upstream `input_inject` client messages.
+//! Browser-preview input injection: upstream `input_inject` client messages.
 //!
-//! Wire-shaped mirror of the daemon's `BrowserInputEdgeWire` (spec 71 W4):
-//! the daemon stamps a per-connection `source_id`, folds edges into the
+//! Wire-shaped mirror of the daemon's `BrowserInputEdgeWire`: the daemon
+//! stamps a per-connection `source_id`, folds edges into the
 //! interaction state, and synthesizes releases on socket close. Injection is
 //! control-tier authorized server-side; read-only sockets receive a
 //! `forbidden` protocol error and no state changes.
@@ -28,6 +28,35 @@ pub enum InputInjectEdge {
     Wheel {
         delta_hi_res: i32,
     },
+    Scroll {
+        delta_x_q16_16: i64,
+        delta_y_q16_16: i64,
+        unit: InputEdgeScrollUnit,
+        phase: InputEdgeScrollPhase,
+        momentum_phase: InputEdgeScrollPhase,
+    },
+}
+
+/// Coordinate unit for an exact two-axis scroll edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputEdgeScrollUnit {
+    Line120,
+    Pixels,
+}
+
+/// Lifecycle phase for an exact scroll edge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputEdgeScrollPhase {
+    #[default]
+    None,
+    MayBegin,
+    Began,
+    Changed,
+    Stationary,
+    Ended,
+    Cancelled,
 }
 
 /// Press state for key and button edges.
