@@ -871,6 +871,26 @@ pub trait InputSource: Send {
         Ok(())
     }
 
+    /// Update screen processing without replacing the native capture session.
+    ///
+    /// Sources without a split processing contract retain the full
+    /// reconfiguration behavior.
+    fn reconfigure_screen_processing(
+        &mut self,
+        config: &crate::input::screen::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        self.reconfigure_screen_capture(config)
+    }
+
+    /// Mirror the active macOS daemon topology into source status.
+    fn set_macos_daemon_ownership(
+        &mut self,
+        _owner: crate::input::MacosCapabilityOwner,
+        _conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Discard any persisted source selection and prompt the user to pick again.
     ///
     /// # Errors

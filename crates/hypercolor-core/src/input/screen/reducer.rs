@@ -11,11 +11,12 @@ use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use thiserror::Error;
 
-use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
-
 use super::sampling::{
     CpuAxisInterpolation, CpuSamplingError, CpuSamplingRow, CpuSamplingTransform, CpuSamplingView,
     CpuStorageAxis, CpuStorageSpan, PreparedCpuSamplingPlan,
+};
+use super::tone_map::{
+    LED_TONE_MAP_ALGORITHM_REVISION, PreparedLedToneMap, PreparedLedToneMapError,
 };
 
 use super::{
@@ -30,8 +31,6 @@ use super::{
 };
 
 const CHANNELS_PER_PIXEL: u64 = 4;
-const CPU_REDUCTION_ALGORITHM_REVISION: NonZeroU32 = NonZeroU32::MIN;
-
 /// Platform work required before an exact request can enter the CPU reducer.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum CpuFallbackNeed {
@@ -274,6 +273,13 @@ impl PreparedCpuReductionBatch {
         self.reductions
             .get(index)
             .map(|reduction| &reduction.descriptor)
+    }
+
+    pub(super) fn prepared_tone_map(&self, index: usize) -> Option<PreparedLedToneMap> {
+        match self.reductions.get(index)?.color {
+            ReductionColor::Managed(prepared) => Some(prepared),
+            ReductionColor::Encoded => None,
+        }
     }
 
     /// Exact caller-owned output bytes required at one output index.
@@ -1023,7 +1029,13 @@ impl CpuReductionExecutor {
     /// Exact color operations and algorithm revision implemented by this executor.
     #[must_use]
     pub const fn capabilities(&self) -> ScreenColorTransformCapabilities {
-        ScreenColorTransformCapabilities::new(true, false, false, CPU_REDUCTION_ALGORITHM_REVISION)
+        Self::supported_color_capabilities()
+    }
+
+    /// Exact color operations supported by every CPU reduction executor.
+    #[must_use]
+    pub const fn supported_color_capabilities() -> ScreenColorTransformCapabilities {
+        ScreenColorTransformCapabilities::new(true, true, true, LED_TONE_MAP_ALGORITHM_REVISION)
     }
 
     /// Quote exact prepared-batch backing before allocating descriptor storage.
@@ -1213,6 +1225,7 @@ impl CpuReductionExecutor {
                             reduce_prepared_in_pool(
                                 &view,
                                 reduction,
+                                reduction.color,
                                 self.inner.worker_count,
                                 self.inner.tile_rows,
                                 &mut plane.scratch,
@@ -1226,6 +1239,7 @@ impl CpuReductionExecutor {
                         reduce_prepared_in_pool(
                             &view,
                             reduction,
+                            reduction.color,
                             self.inner.worker_count,
                             self.inner.tile_rows,
                             job.output_mut(batch_index)?,
@@ -1267,10 +1281,17 @@ impl CpuReductionExecutor {
         workspace: &mut PreparedCpuMaterializationWorkspace,
         workspace_indices: &[usize],
         surface_batch_indices: &[Option<usize>],
+        tone_map_overrides: &[Option<PreparedLedToneMap>],
         publications: &mut [PreparedScreenPublication],
     ) -> Result<CpuReductionBatchReport, CpuReductionError> {
         if !Arc::ptr_eq(&batch.reductions, &workspace.reductions) {
             return Err(CpuReductionError::WorkspaceBatchMismatch);
+        }
+        if tone_map_overrides.len() != batch.reductions.len() {
+            return Err(CpuReductionError::ToneMapOverrideCountMismatch {
+                expected: batch.reductions.len(),
+                actual: tone_map_overrides.len(),
+            });
         }
         validate_workspace_schedule(workspace, workspace_indices)?;
         validate_aligned_surface_schedule(batch, surface_batch_indices, publications)?;
@@ -1297,6 +1318,9 @@ impl CpuReductionExecutor {
                 });
             }
             let reduction = &batch.reductions[plane.batch_index];
+            reduction
+                .color
+                .with_tone_map_override(tone_map_overrides[plane.batch_index])?;
             preflight_reduction(
                 reduction,
                 &plane.scratch,
@@ -1315,6 +1339,9 @@ impl CpuReductionExecutor {
                 continue;
             };
             let reduction = &batch.reductions[batch_index];
+            reduction
+                .color
+                .with_tone_map_override(tone_map_overrides[batch_index])?;
             let output = publication.output_mut(batch_index)?;
             preflight_reduction(
                 reduction,
@@ -1340,9 +1367,13 @@ impl CpuReductionExecutor {
                         })
                         .try_for_each(|(_, plane)| {
                             let reduction = &batch.reductions[plane.batch_index];
+                            let color = reduction
+                                .color
+                                .with_tone_map_override(tone_map_overrides[plane.batch_index])?;
                             reduce_prepared_in_pool(
                                 &view,
                                 reduction,
+                                color,
                                 self.inner.worker_count,
                                 self.inner.tile_rows,
                                 &mut plane.scratch,
@@ -1358,9 +1389,13 @@ impl CpuReductionExecutor {
                                 return Ok(());
                             };
                             let reduction = &batch.reductions[batch_index];
+                            let color = reduction
+                                .color
+                                .with_tone_map_override(tone_map_overrides[batch_index])?;
                             reduce_prepared_in_pool(
                                 &view,
                                 reduction,
+                                color,
                                 self.inner.worker_count,
                                 self.inner.tile_rows,
                                 publication.output_mut(batch_index)?,
@@ -1465,6 +1500,7 @@ impl CpuReductionExecutor {
                 reduce_prepared_in_pool(
                     &view,
                     reduction,
+                    reduction.color,
                     self.inner.worker_count,
                     self.inner.tile_rows,
                     &mut plane.scratch,
@@ -1551,6 +1587,7 @@ impl CpuReductionExecutor {
                     reduce_prepared_in_pool(
                         &view,
                         reduction,
+                        reduction.color,
                         self.inner.worker_count,
                         self.inner.tile_rows,
                         destination.output_mut(index)?,
@@ -1605,9 +1642,9 @@ fn prepare_physical_reduction(
     descriptor: &ScreenPhysicalReductionDescriptor,
     sampling_transform: CpuSamplingTransform,
 ) -> Result<PreparedCpuReduction, CpuReductionError> {
-    if descriptor.algorithm_revision() != CPU_REDUCTION_ALGORITHM_REVISION {
+    if descriptor.algorithm_revision() != LED_TONE_MAP_ALGORITHM_REVISION {
         return Err(CpuReductionError::AlgorithmRevisionMismatch {
-            expected: CPU_REDUCTION_ALGORITHM_REVISION,
+            expected: LED_TONE_MAP_ALGORITHM_REVISION,
             actual: descriptor.algorithm_revision(),
         });
     }
@@ -1696,6 +1733,7 @@ fn reduce_request_in_pool(
 fn reduce_prepared_in_pool(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
+    color: ReductionColor,
     worker_count: NonZeroUsize,
     tile_rows: NonZeroU32,
     output: &mut [u8],
@@ -1705,7 +1743,14 @@ fn reduce_prepared_in_pool(
         .par_chunks_mut(tile_plan.bytes_per_tile)
         .enumerate()
         .try_for_each(|(tile_index, tile)| {
-            reduce_prepared_tile(view, reduction, tile_index, tile_plan.pixels_per_tile, tile)
+            reduce_prepared_tile(
+                view,
+                reduction,
+                color,
+                tile_index,
+                tile_plan.pixels_per_tile,
+                tile,
+            )
         })
 }
 
@@ -1769,6 +1814,7 @@ fn prepare_reduction_tiles(
 fn reduce_prepared_tile(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
+    color: ReductionColor,
     tile_index: usize,
     tile_pixels: usize,
     mut tile: &mut [u8],
@@ -1791,7 +1837,7 @@ fn reduce_prepared_tile(
             .checked_mul(4)
             .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
         let (row, remainder) = tile.split_at_mut(run_bytes);
-        reduce_prepared_row(view, reduction, target_y, first_target_x, row)?;
+        reduce_prepared_row(view, reduction, color, target_y, first_target_x, row)?;
         first_pixel = first_pixel
             .checked_add(run_pixels)
             .ok_or(CpuReductionError::GeometryOverflow { resource: "tile" })?;
@@ -1803,19 +1849,20 @@ fn reduce_prepared_tile(
 fn reduce_prepared_row(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
+    color: ReductionColor,
     target_y: u32,
     first_target_x: usize,
     row: &mut [u8],
 ) -> Result<(), CpuReductionError> {
     match reduction.descriptor.reduction_filter() {
         ScreenReductionFilter::Nearest => {
-            reduce_prepared_nearest_row(view, reduction, target_y, first_target_x, row)
+            reduce_prepared_nearest_row(view, reduction, color, target_y, first_target_x, row)
         }
         ScreenReductionFilter::Bilinear => {
-            reduce_prepared_bilinear_row(view, reduction, target_y, first_target_x, row)
+            reduce_prepared_bilinear_row(view, reduction, color, target_y, first_target_x, row)
         }
         ScreenReductionFilter::Area => {
-            reduce_prepared_area_row(view, reduction, target_y, first_target_x, row)
+            reduce_prepared_area_row(view, reduction, color, target_y, first_target_x, row)
         }
     }
 }
@@ -1823,6 +1870,7 @@ fn reduce_prepared_row(
 fn reduce_prepared_nearest_row(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
+    color: ReductionColor,
     target_y: u32,
     first_target_x: usize,
     row: &mut [u8],
@@ -1832,12 +1880,15 @@ fn reduce_prepared_nearest_row(
         CpuStorageAxis::X => {
             let source_row = view.storage_row(fixed)?;
             write_prepared_row(reduction, first_target_x, row, |target_x| {
-                Ok(source_row.read_rgba(reduction.sampling.logical_x_nearest(target_x))?)
+                let sample =
+                    source_row.read_rgba(reduction.sampling.logical_x_nearest(target_x))?;
+                Ok(color.encode(color.decode(sample)))
             })
         }
         CpuStorageAxis::Y => write_prepared_row(reduction, first_target_x, row, |target_x| {
             let source_row = view.storage_row(reduction.sampling.logical_x_nearest(target_x))?;
-            Ok(source_row.read_rgba(fixed)?)
+            let sample = source_row.read_rgba(fixed)?;
+            Ok(color.encode(color.decode(sample)))
         }),
     }
 }
@@ -1845,6 +1896,7 @@ fn reduce_prepared_nearest_row(
 fn reduce_prepared_bilinear_row(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
+    color: ReductionColor,
     target_y: u32,
     first_target_x: usize,
     row: &mut [u8],
@@ -1856,14 +1908,14 @@ fn reduce_prepared_bilinear_row(
             let bottom = view.storage_row(fixed.upper())?;
             write_prepared_row(reduction, first_target_x, row, |target_x| {
                 let x = reduction.sampling.logical_x_bilinear(target_x);
-                sample_prepared_bilinear(top, bottom, x, fixed, reduction.color)
+                sample_prepared_bilinear(top, bottom, x, fixed, color)
             })
         }
         CpuStorageAxis::Y => write_prepared_row(reduction, first_target_x, row, |target_x| {
             let y = reduction.sampling.logical_x_bilinear(target_x);
             let top = view.storage_row(y.lower())?;
             let bottom = view.storage_row(y.upper())?;
-            sample_prepared_bilinear(top, bottom, fixed, y, reduction.color)
+            sample_prepared_bilinear(top, bottom, fixed, y, color)
         }),
     }
 }
@@ -1895,6 +1947,7 @@ fn sample_prepared_bilinear(
 fn reduce_prepared_area_row(
     view: &CpuSamplingView<'_>,
     reduction: &PreparedCpuReduction,
+    color: ReductionColor,
     target_y: u32,
     first_target_x: usize,
     row: &mut [u8],
@@ -1906,7 +1959,7 @@ fn reduce_prepared_area_row(
                 view,
                 reduction.sampling.logical_x_area(target_x),
                 fixed,
-                reduction.color,
+                color,
             )
         }),
         CpuStorageAxis::Y => write_prepared_row(reduction, first_target_x, row, |target_x| {
@@ -1914,7 +1967,7 @@ fn reduce_prepared_area_row(
                 view,
                 fixed,
                 reduction.sampling.logical_x_area(target_x),
-                reduction.color,
+                color,
             )
         }),
     }
@@ -1991,6 +2044,18 @@ pub enum CpuReductionError {
     /// The resolved SDR transfer function has no 8-bit CPU codec.
     #[error("unsupported CPU reduction transfer function: {0:?}")]
     UnsupportedTransferFunction(CaptureTransferFunction),
+    /// The resolved managed pipeline omitted its exact target calibration.
+    #[error("managed CPU color processing requires target LED calibration")]
+    MissingLedToneMapCalibration,
+    /// A frame supplied another number of prepared curve overrides than routes.
+    #[error("CPU tone-map override count mismatch: expected {expected}, got {actual}")]
+    ToneMapOverrideCountMismatch { expected: usize, actual: usize },
+    /// An encoded-preservation route cannot consume a managed curve override.
+    #[error("encoded-sample preservation cannot consume a tone-map override")]
+    UnexpectedToneMapOverride,
+    /// Shared color constants could not be prepared from the resolved contract.
+    #[error(transparent)]
+    ToneMapPreparation(#[from] PreparedLedToneMapError),
     /// The resolved linear-light contract is internally inconsistent.
     #[error("resolved linear-light SDR pipeline has inconsistent source and output metadata")]
     InconsistentLinearLightPipeline,
@@ -2117,11 +2182,21 @@ impl From<CpuSamplingError> for CpuReductionError {
 #[derive(Clone, Copy, Debug)]
 enum ReductionColor {
     Encoded,
-    Srgb,
-    Linear,
+    Managed(PreparedLedToneMap),
 }
 
 impl ReductionColor {
+    fn with_tone_map_override(
+        self,
+        tone_map_override: Option<PreparedLedToneMap>,
+    ) -> Result<Self, CpuReductionError> {
+        match (self, tone_map_override) {
+            (Self::Managed(_), Some(prepared)) => Ok(Self::Managed(prepared)),
+            (color, None) => Ok(color),
+            (Self::Encoded, Some(_)) => Err(CpuReductionError::UnexpectedToneMapOverride),
+        }
+    }
+
     fn resolve(request: CpuReductionRequest<'_>) -> Result<Self, CpuReductionError> {
         let preserves_encoded_samples = request.layout.source_extent()
             == request.layout.target_extent()
@@ -2134,14 +2209,17 @@ impl ReductionColor {
         color_pipeline: ResolvedScreenColorPipeline,
         preserves_encoded_samples: bool,
     ) -> Result<Self, CpuReductionError> {
-        match color_pipeline.transform() {
+        let transform = color_pipeline.transform();
+        match transform {
             ResolvedScreenColorTransform::PreserveEncodedSamples => {
                 if !preserves_encoded_samples {
                     return Err(CpuReductionError::InexactEncodedSamplePreservation);
                 }
                 Ok(Self::Encoded)
             }
-            ResolvedScreenColorTransform::LinearLightSdr => {
+            ResolvedScreenColorTransform::LinearLightSdr
+            | ResolvedScreenColorTransform::LinearRelativeColorimetric { .. }
+            | ResolvedScreenColorTransform::ToneMap(_) => {
                 let Some(source) = color_pipeline.effective_source() else {
                     return Err(CpuReductionError::InconsistentLinearLightPipeline);
                 };
@@ -2149,22 +2227,37 @@ impl ReductionColor {
                     .output()
                     .try_known()
                     .map_err(|_| CpuReductionError::InconsistentLinearLightPipeline)?;
-                if source.dynamic_range() != CaptureDynamicRange::Standard
-                    || output.dynamic_range() != CaptureDynamicRange::Standard
-                    || source.color_space() != output.color_space()
-                    || source.transfer_function() != output.transfer_function()
-                {
+                let calibration = color_pipeline
+                    .calibration()
+                    .ok_or(CpuReductionError::MissingLedToneMapCalibration)?;
+                let consistent = match transform {
+                    ResolvedScreenColorTransform::LinearLightSdr => {
+                        source.dynamic_range() == CaptureDynamicRange::Standard
+                            && output.dynamic_range() == CaptureDynamicRange::Standard
+                            && source.color_space() == output.color_space()
+                            && source.transfer_function() == output.transfer_function()
+                    }
+                    ResolvedScreenColorTransform::LinearRelativeColorimetric { .. } => {
+                        source.dynamic_range() == CaptureDynamicRange::Standard
+                            && output.dynamic_range() == CaptureDynamicRange::Standard
+                    }
+                    ResolvedScreenColorTransform::ToneMap(tone_map) => {
+                        source.dynamic_range() == CaptureDynamicRange::High
+                            && output.dynamic_range() == CaptureDynamicRange::Standard
+                            && source.luminance() == Some(tone_map.source_luminance())
+                            && output.luminance() == Some(tone_map.target_luminance())
+                            && tone_map.calibration() == calibration
+                    }
+                    ResolvedScreenColorTransform::PreserveEncodedSamples => false,
+                };
+                if !consistent {
                     return Err(CpuReductionError::InconsistentLinearLightPipeline);
                 }
-                match source.transfer_function() {
-                    CaptureTransferFunction::Srgb => Ok(Self::Srgb),
-                    CaptureTransferFunction::Linear => Ok(Self::Linear),
-                    transfer => Err(CpuReductionError::UnsupportedTransferFunction(transfer)),
-                }
-            }
-            transform @ (ResolvedScreenColorTransform::LinearRelativeColorimetric { .. }
-            | ResolvedScreenColorTransform::ToneMap(_)) => {
-                Err(CpuReductionError::UnsupportedColorTransform(transform))
+                Ok(Self::Managed(PreparedLedToneMap::prepare(
+                    source,
+                    output,
+                    calibration,
+                )?))
             }
         }
     }
@@ -2187,30 +2280,14 @@ impl ReductionColor {
                 f64::from(sample[2]) / 255.0,
                 f64::from(sample[3]) / 255.0,
             ],
-            Self::Srgb => [
-                f64::from(srgb_u8_to_linear(sample[0])),
-                f64::from(srgb_u8_to_linear(sample[1])),
-                f64::from(srgb_u8_to_linear(sample[2])),
-                f64::from(sample[3]) / 255.0,
-            ],
-            Self::Linear => [
-                f64::from(sample[0]) / 255.0,
-                f64::from(sample[1]) / 255.0,
-                f64::from(sample[2]) / 255.0,
-                f64::from(sample[3]) / 255.0,
-            ],
+            Self::Managed(prepared) => prepared.decode_and_map(sample),
         }
     }
 
     fn encode(self, sample: [f64; 4]) -> [u8; 4] {
         match self {
-            Self::Srgb => [
-                linear_to_srgb_u8(sample[0] as f32),
-                linear_to_srgb_u8(sample[1] as f32),
-                linear_to_srgb_u8(sample[2] as f32),
-                encode_linear_byte(sample[3]),
-            ],
-            Self::Encoded | Self::Linear => [
+            Self::Managed(prepared) => prepared.encode(sample),
+            Self::Encoded => [
                 encode_linear_byte(sample[0]),
                 encode_linear_byte(sample[1]),
                 encode_linear_byte(sample[2]),
@@ -2338,7 +2415,9 @@ fn reduce_row(
         let target_x = u32::try_from(target_x)
             .map_err(|_| CpuReductionError::GeometryOverflow { resource: "target" })?;
         let sample = match request.filter {
-            ScreenReductionFilter::Nearest => sample_nearest(request, target_x, target_y)?,
+            ScreenReductionFilter::Nearest => {
+                color.encode(color.decode(sample_nearest(request, target_x, target_y)?))
+            }
             ScreenReductionFilter::Bilinear => sample_bilinear(request, color, target_x, target_y)?,
             ScreenReductionFilter::Area => sample_area(request, color, target_x, target_y)?,
         };

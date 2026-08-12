@@ -10,12 +10,13 @@ use super::reducer::branch_requires_materialization;
 use super::{
     CaptureCadence, CaptureCadenceError, CaptureFrame, CapturePacer, CaptureTransferFunction,
     CpuReductionError, CpuReductionExecutor, CpuSurfaceMaterializationError,
-    CpuZoneMaterializationError, PixelExtent, PreparedCpuMaterializationWorkspace,
-    PreparedCpuReductionBatch, PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer,
-    PreparedScreenPublication, RawCaptureSurface, ResolvedScreenPublicationDescriptor,
-    ScreenBranchPublisher, ScreenCapturePlan, ScreenCommittedState, ScreenContentBarsPolicy,
-    ScreenGridPolicy, ScreenLetterboxFill, ScreenPayloadKind, ScreenPhysicalReductionDescriptor,
-    ScreenPlanGeneration, ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    CpuZoneMaterializationError, LedToneMapCurveTransition, PixelExtent,
+    PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch, PreparedCpuSurfaceMaterializer,
+    PreparedCpuZoneMaterializer, PreparedLedToneMap, PreparedScreenPublication, RawCaptureSurface,
+    ResolvedScreenPublicationDescriptor, ScreenBranchPublisher, ScreenCapturePlan,
+    ScreenCommittedState, ScreenContentBarsPolicy, ScreenGridPolicy, ScreenLetterboxFill,
+    ScreenPayloadKind, ScreenPhysicalReductionDescriptor, ScreenPlanGeneration,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
     ScreenPublicationKind, ScreenPublicationMetadata, ScreenSmoothingPolicy, ScreenWorkerBinding,
     ScreenWorkerBindingState,
 };
@@ -150,6 +151,8 @@ pub struct PreparedCpuPublicationFanoutCandidate {
     reservations: Vec<CpuPendingPublication>,
     publications: Vec<PreparedScreenPublication>,
     direct_batch_indices: Vec<Option<usize>>,
+    tone_map_overrides: Vec<Option<PreparedLedToneMap>>,
+    suppress_scene_cut_bypass: Vec<bool>,
     allocation_byte_len: u64,
 }
 
@@ -282,6 +285,9 @@ impl PreparedCpuPublicationFanoutCandidate {
                 batch_index,
                 workspace_index,
                 branches: branches.into_boxed_slice(),
+                tone_map_transition: batch
+                    .prepared_tone_map(batch_index)
+                    .map(LedToneMapCurveTransition::new),
             });
         }
         if workspace_cursor != workspace.len() {
@@ -304,6 +310,16 @@ impl PreparedCpuPublicationFanoutCandidate {
         direct_batch_indices
             .try_reserve_exact(branch_count)
             .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
+        let mut tone_map_overrides = Vec::new();
+        tone_map_overrides
+            .try_reserve_exact(batch.len())
+            .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
+        tone_map_overrides.resize(batch.len(), None);
+        let mut suppress_scene_cut_bypass = Vec::new();
+        suppress_scene_cut_bypass
+            .try_reserve_exact(batch.len())
+            .map_err(|_| CpuPublicationFanoutError::AllocationFailed)?;
+        suppress_scene_cut_bypass.resize(batch.len(), false);
         Ok(Self {
             batch: batch.clone(),
             physical: physical.into_boxed_slice(),
@@ -313,6 +329,8 @@ impl PreparedCpuPublicationFanoutCandidate {
             reservations,
             publications,
             direct_batch_indices,
+            tone_map_overrides,
+            suppress_scene_cut_bypass,
             allocation_byte_len,
         })
     }
@@ -384,6 +402,9 @@ impl PreparedCpuPublicationFanoutCandidate {
             reservations: self.reservations,
             publications: self.publications,
             direct_batch_indices: self.direct_batch_indices,
+            tone_map_overrides: self.tone_map_overrides,
+            suppress_scene_cut_bypass: self.suppress_scene_cut_bypass,
+            tone_map_epoch: Instant::now(),
             allocation_byte_len: self.allocation_byte_len,
         })
     }
@@ -395,6 +416,7 @@ pub struct PreparedCpuPhysicalFanout {
     batch_index: usize,
     workspace_index: Option<usize>,
     branches: Box<[PreparedCpuLogicalFanout]>,
+    tone_map_transition: Option<LedToneMapCurveTransition>,
 }
 
 impl PreparedCpuPhysicalFanout {
@@ -439,6 +461,9 @@ pub struct PreparedCpuPublicationFanout {
     reservations: Vec<CpuPendingPublication>,
     publications: Vec<PreparedScreenPublication>,
     direct_batch_indices: Vec<Option<usize>>,
+    tone_map_overrides: Vec<Option<PreparedLedToneMap>>,
+    suppress_scene_cut_bypass: Vec<bool>,
+    tone_map_epoch: Instant,
     allocation_byte_len: u64,
 }
 
@@ -531,6 +556,59 @@ impl PreparedCpuPublicationFanout {
         self.physical
             .get(physical_index)
             .and_then(|route| self.batch.descriptor(route.batch_index))
+    }
+
+    pub(crate) fn inherit_tone_map_transition_from(
+        &mut self,
+        previous: &mut Self,
+        captured_at: Instant,
+    ) {
+        for current_index in 0..self.physical.len() {
+            let Some(target) = self
+                .batch
+                .prepared_tone_map(self.physical[current_index].batch_index)
+            else {
+                continue;
+            };
+            let current_descriptor = self
+                .physical_descriptor(current_index)
+                .expect("prepared physical route retains its batch descriptor");
+            let Some(previous_index) = (0..previous.physical.len()).find(|&index| {
+                let previous_descriptor = previous
+                    .physical_descriptor(index)
+                    .expect("prepared physical route retains its batch descriptor");
+                previous.physical[index].tone_map_transition.is_some()
+                    && same_tone_map_route(current_descriptor, previous_descriptor)
+                    && tone_map_dynamic_range_changed(current_descriptor, previous_descriptor)
+            }) else {
+                continue;
+            };
+            let Some(previous_transition) = previous.physical[previous_index]
+                .tone_map_transition
+                .as_mut()
+            else {
+                continue;
+            };
+            let previous_timestamp = captured_at.saturating_duration_since(previous.tone_map_epoch);
+            let previous_sample = previous_transition.sample(previous_timestamp);
+            let mut transition = LedToneMapCurveTransition::new(previous_sample.prepared());
+            transition.transition_to(target, std::time::Duration::ZERO);
+            self.physical[current_index].tone_map_transition = Some(transition);
+        }
+        self.tone_map_epoch = captured_at;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_tone_map_transition_count(&self) -> usize {
+        self.physical
+            .iter()
+            .filter(|physical| {
+                physical
+                    .tone_map_transition
+                    .as_ref()
+                    .is_some_and(LedToneMapCurveTransition::is_active)
+            })
+            .count()
     }
 
     /// Number of exact logical branches cached across all physical routes.
@@ -649,14 +727,9 @@ impl PreparedCpuPublicationFanout {
             }
             .into());
         }
-        let executor = self
-            .executor
-            .as_ref()
-            .ok_or(CpuPublicationFanoutError::ExecutionNotAttached)?;
-        let workspace = self
-            .workspace
-            .as_mut()
-            .ok_or(CpuPublicationFanoutError::ExecutionNotAttached)?;
+        if self.executor.is_none() || self.workspace.is_none() {
+            return Err(CpuPublicationFanoutError::ExecutionNotAttached);
+        }
         let mut report = CpuPublicationFanoutReport::default();
         let plan_generation = self.batch.plan_generation();
         self.reservations.clear();
@@ -727,17 +800,32 @@ impl PreparedCpuPublicationFanout {
                 continue;
             };
             if self.workspace_schedule.last() != Some(&workspace_index)
-                && workspace.completed_source_sequence(workspace_index) != Some(sequence)
+                && self
+                    .workspace
+                    .as_ref()
+                    .expect("attached fanout retains its workspace")
+                    .completed_source_sequence(workspace_index)
+                    != Some(sequence)
             {
                 self.workspace_schedule.push(workspace_index);
             }
         }
+        self.sample_tone_map_transitions(frame.metadata().captured_at);
+        let executor = self
+            .executor
+            .as_ref()
+            .expect("attached fanout retains its executor");
+        let workspace = self
+            .workspace
+            .as_mut()
+            .expect("attached fanout retains its workspace");
         if let Err(error) = executor.execute_aligned_publications(
             &self.batch,
             frame,
             workspace,
             &self.workspace_schedule,
             &self.direct_batch_indices,
+            &self.tone_map_overrides,
             &mut self.publications,
         ) {
             clear_pending_publications(
@@ -782,6 +870,7 @@ impl PreparedCpuPublicationFanout {
                 pixels,
                 frame,
                 plan_generation,
+                self.suppress_scene_cut_bypass[physical_index],
                 &mut publications[reservation_index],
             );
             if let Err(error) = result {
@@ -935,6 +1024,7 @@ impl PreparedCpuPublicationFanout {
             }
         }
 
+        self.sample_tone_map_transitions(captured_at);
         for reservation_index in 0..self.reservations.len() {
             let branch_index = self.reservations[reservation_index].branch_index;
             let branch = &mut self.physical[physical_index].branches[branch_index];
@@ -944,6 +1034,7 @@ impl PreparedCpuPublicationFanout {
                 pixels,
                 captured_at,
                 plan_generation,
+                self.suppress_scene_cut_bypass[physical_index],
                 &mut self.publications[reservation_index],
             ) {
                 discard_all_stages(&mut self.physical, &self.reservations, plan_generation);
@@ -1002,6 +1093,79 @@ impl PreparedCpuPublicationFanout {
             .flat_map(|(_, physical)| physical.branches.iter())
             .any(|branch| branch.pending_due)
     }
+
+    fn sample_tone_map_transitions(&mut self, captured_at: Instant) {
+        self.tone_map_overrides.fill(None);
+        self.suppress_scene_cut_bypass.fill(false);
+        let frame_timestamp = captured_at.saturating_duration_since(self.tone_map_epoch);
+        let mut previous_physical_index = None;
+        for pending in &self.reservations {
+            if previous_physical_index == Some(pending.physical_index) {
+                continue;
+            }
+            previous_physical_index = Some(pending.physical_index);
+            let physical = &mut self.physical[pending.physical_index];
+            let Some(transition) = physical.tone_map_transition.as_mut() else {
+                continue;
+            };
+            let sample = transition.sample(frame_timestamp);
+            self.tone_map_overrides[physical.batch_index] = Some(sample.prepared());
+            self.suppress_scene_cut_bypass[pending.physical_index] =
+                sample.suppress_scene_cut_bypass();
+        }
+    }
+}
+
+fn same_tone_map_route(
+    current: &ScreenPhysicalReductionDescriptor,
+    previous: &ScreenPhysicalReductionDescriptor,
+) -> bool {
+    let current_source = current.source();
+    let previous_source = previous.source();
+    let current_output = current.color_pipeline().output();
+    let previous_output = previous.color_pipeline().output();
+    current.source_epoch() == previous.source_epoch()
+        && current_source.geometry() == previous_source.geometry()
+        && current_source.logical_extent() == previous_source.logical_extent()
+        && current_source.reflection() == previous_source.reflection()
+        && current_source.pixel_format() == previous_source.pixel_format()
+        && current_source.cursor_capabilities() == previous_source.cursor_capabilities()
+        && current_source.resources() == previous_source.resources()
+        && current.executor() == previous.executor()
+        && current.source_region() == previous.source_region()
+        && current.reduction_extent() == previous.reduction_extent()
+        && current.cursor() == previous.cursor()
+        && current.reduction_filter() == previous.reduction_filter()
+        && current.algorithm_revision() == previous.algorithm_revision()
+        && current.target_pixel_format() == previous.target_pixel_format()
+        && current_output.color_space() == previous_output.color_space()
+        && current_output.transfer_function() == previous_output.transfer_function()
+        && current_output.dynamic_range() == previous_output.dynamic_range()
+}
+
+fn tone_map_dynamic_range_changed(
+    current: &ScreenPhysicalReductionDescriptor,
+    previous: &ScreenPhysicalReductionDescriptor,
+) -> bool {
+    let Some(current_source) = current.color_pipeline().effective_source() else {
+        return false;
+    };
+    let Some(previous_source) = previous.color_pipeline().effective_source() else {
+        return false;
+    };
+    matches!(
+        (
+            current_source.dynamic_range(),
+            previous_source.dynamic_range()
+        ),
+        (
+            super::CaptureDynamicRange::Standard,
+            super::CaptureDynamicRange::High
+        ) | (
+            super::CaptureDynamicRange::High,
+            super::CaptureDynamicRange::Standard
+        )
+    )
 }
 
 fn discard_all_stages(
@@ -1034,6 +1198,7 @@ fn stage_workspace_publication(
     physical_pixels: &[u8],
     frame: &CaptureFrame<RawCaptureSurface>,
     plan_generation: ScreenPlanGeneration,
+    suppress_scene_cut_bypass: bool,
     publication: &mut PreparedScreenPublication,
 ) -> Result<(), CpuPublicationFanoutError> {
     match branch.kind {
@@ -1059,6 +1224,7 @@ fn stage_workspace_publication(
                     physical_descriptor,
                     physical_pixels,
                     frame.metadata().captured_at,
+                    suppress_scene_cut_bypass,
                     publication,
                 )?;
         }
@@ -1072,6 +1238,7 @@ fn stage_workspace_publication(
                     physical_descriptor,
                     physical_pixels,
                     frame.metadata().captured_at,
+                    suppress_scene_cut_bypass,
                     publication,
                 )?;
             let columns = std::num::NonZeroU32::new(staged.columns())
@@ -1090,6 +1257,7 @@ fn stage_prereduced_publication(
     physical_pixels: &[u8],
     captured_at: Instant,
     plan_generation: ScreenPlanGeneration,
+    suppress_scene_cut_bypass: bool,
     publication: &mut PreparedScreenPublication,
 ) -> Result<(), CpuPublicationFanoutError> {
     match branch.kind {
@@ -1115,6 +1283,7 @@ fn stage_prereduced_publication(
                     physical_descriptor,
                     physical_pixels,
                     captured_at,
+                    suppress_scene_cut_bypass,
                     publication,
                 )?;
         }
@@ -1128,6 +1297,7 @@ fn stage_prereduced_publication(
                     physical_descriptor,
                     physical_pixels,
                     captured_at,
+                    suppress_scene_cut_bypass,
                     publication,
                 )?;
             let columns = std::num::NonZeroU32::new(staged.columns())
@@ -1333,6 +1503,16 @@ fn candidate_allocation_quote(
         })
         .and_then(|bytes| {
             checked_bytes::<Option<usize>>(branch_count)
+                .ok()
+                .and_then(|scratch| bytes.checked_add(scratch))
+        })
+        .and_then(|bytes| {
+            checked_bytes::<Option<PreparedLedToneMap>>(batch.len())
+                .ok()
+                .and_then(|scratch| bytes.checked_add(scratch))
+        })
+        .and_then(|bytes| {
+            checked_bytes::<bool>(batch.len())
                 .ok()
                 .and_then(|scratch| bytes.checked_add(scratch))
         })

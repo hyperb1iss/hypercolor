@@ -7,16 +7,17 @@ use hypercolor_core::input::screen::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
     CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat,
     CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
-    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PixelRect, RegisteredScreenBranchDemand,
-    ResolvedScreenColorTransform, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenCaptureBackend,
-    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenCursorCapabilities,
-    ScreenExtentRequest, ScreenHdrPolicy, ScreenProcessingProfile, ScreenProcessingProfileConfig,
-    ScreenPublicationError, ScreenPublicationExecutorRequest, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi, ScreenSceneCutPolicy,
-    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry,
-    ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy, ScreenUpscalePolicy,
-    SourceScale,
+    KnownCaptureColorimetry, LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration,
+    LedToneMapCalibrationError, PhysicalOrigin, PixelExtent, PixelRect,
+    RegisteredScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenCaptureBackend, ScreenColorTransformCapabilities, ScreenColorTuning,
+    ScreenCursorCapabilities, ScreenExtentRequest, ScreenHdrPolicy, ScreenProcessingProfile,
+    ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
+    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
+    ScreenUpscalePolicy, SourceScale,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -30,6 +31,109 @@ fn scalar(value: f32) -> CapturePositiveScalar {
 fn luminance(reference_white: f32, peak: f32) -> CaptureLuminanceContext {
     CaptureLuminanceContext::new(scalar(reference_white), scalar(peak))
         .expect("test luminance is ordered")
+}
+
+#[test]
+fn led_target_calibration_rejects_invalid_values_without_clamping() {
+    let error = |values: [f32; 5]| {
+        LedToneMapCalibration::try_new(values[0], values[1], values[2], values[3], values[4])
+    };
+    for values in [
+        [0.0, 0.329, 203.0, 406.0, 0.0],
+        [-0.0, 0.329, 203.0, 406.0, 0.0],
+        [0.3127, 0.0, 203.0, 406.0, 0.0],
+        [0.3127, -0.0, 203.0, 406.0, 0.0],
+        [0.7, 0.3, 203.0, 406.0, 0.0],
+        [0.8, 0.3, 203.0, 406.0, 0.0],
+    ] {
+        assert_eq!(
+            error(values),
+            Err(LedToneMapCalibrationError::WhitePointOutsideChromaticityTriangle)
+        );
+    }
+    for values in [
+        [f32::NAN, 0.329, 203.0, 406.0, 0.0],
+        [0.3127, f32::INFINITY, 203.0, 406.0, 0.0],
+        [0.3127, 0.329, f32::NEG_INFINITY, 406.0, 0.0],
+        [0.3127, 0.329, 203.0, f32::NAN, 0.0],
+        [0.3127, 0.329, 203.0, 406.0, f32::INFINITY],
+    ] {
+        assert_eq!(
+            error(values),
+            Err(LedToneMapCalibrationError::NonFiniteScalar)
+        );
+    }
+    assert_eq!(
+        error([0.3127, 0.329, 0.99, 406.0, 0.0]),
+        Err(LedToneMapCalibrationError::ReferenceWhiteOutOfRange)
+    );
+    assert_eq!(
+        error([0.3127, 0.329, -0.0, 406.0, 0.0]),
+        Err(LedToneMapCalibrationError::ReferenceWhiteOutOfRange)
+    );
+    assert_eq!(
+        error([0.3127, 0.329, 5_000.1, 10_000.0, 0.0]),
+        Err(LedToneMapCalibrationError::ReferenceWhiteOutOfRange)
+    );
+    assert_eq!(
+        error([0.3127, 0.329, 1.0, 0.99, 0.0]),
+        Err(LedToneMapCalibrationError::PeakOutOfRange)
+    );
+    assert_eq!(
+        error([0.3127, 0.329, 1.0, -0.0, 0.0]),
+        Err(LedToneMapCalibrationError::PeakOutOfRange)
+    );
+    assert_eq!(
+        error([0.3127, 0.329, 203.0, 10_000.1, 0.0]),
+        Err(LedToneMapCalibrationError::PeakOutOfRange)
+    );
+    for values in [
+        [0.3127, 0.329, 203.0, 203.0, 0.0],
+        [0.3127, 0.329, 204.0, 203.0, 0.0],
+        [0.3127, 0.329, 1.0, 1.0, 0.0],
+    ] {
+        assert_eq!(
+            error(values),
+            Err(LedToneMapCalibrationError::PeakNotAboveReferenceWhite)
+        );
+    }
+    assert_eq!(
+        error([0.3127, 0.329, 203.0, 406.0, -8.01]),
+        Err(LedToneMapCalibrationError::ExposureOutOfRange)
+    );
+    assert_eq!(
+        error([0.3127, 0.329, 203.0, 406.0, 8.01]),
+        Err(LedToneMapCalibrationError::ExposureOutOfRange)
+    );
+    for values in [
+        [0.3127, 0.329, 1.0, 10_000.0, -8.0],
+        [0.3127, 0.329, 5_000.0, 10_000.0, 8.0],
+    ] {
+        assert!(error(values).is_ok());
+    }
+    assert_eq!(
+        error([0.3127, 0.329, 203.0, 406.0, -0.0]),
+        error([0.3127, 0.329, 203.0, 406.0, 0.0])
+    );
+}
+
+#[test]
+fn replacing_led_calibration_refreshes_an_existing_hdr_policy() {
+    let calibration = LedToneMapCalibration::try_new(0.3457, 0.3585, 160.0, 480.0, 1.0)
+        .expect("measured target calibration is valid");
+    let profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+        hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::new(
+            ScreenToneMapOperator::Bt2390Eetf,
+            luminance(100.0, 100.0),
+        )),
+        ..ScreenProcessingProfileConfig::default()
+    })
+    .with_led_tone_map(calibration);
+    let ScreenHdrPolicy::ToneMap(policy) = profile.hdr() else {
+        panic!("HDR tone-map policy must remain enabled");
+    };
+    assert_eq!(policy.target_luminance(), calibration.target_luminance());
+    assert_eq!(policy.operator(), ScreenToneMapOperator::Bt2390Eetf);
 }
 
 fn known_sdr(
@@ -129,13 +233,21 @@ fn request(
     extent: ScreenExtentRequest,
     config: ScreenProcessingProfileConfig,
 ) -> ScreenPublicationRequest {
+    request_with_profile(kind, extent, ScreenProcessingProfile::new(config))
+}
+
+fn request_with_profile(
+    kind: ScreenPublicationKind,
+    extent: ScreenExtentRequest,
+    profile: ScreenProcessingProfile,
+) -> ScreenPublicationRequest {
     ScreenPublicationRequest::new(
         ScreenSourceSelector::Configured,
         kind,
         ScreenPublicationExecutorRequest::Cpu,
         extent,
         ScreenAspectPolicy::Contain,
-        Arc::new(ScreenProcessingProfile::new(config)),
+        Arc::new(profile),
     )
 }
 
@@ -144,6 +256,17 @@ fn native_surface(config: ScreenProcessingProfileConfig) -> ScreenPublicationReq
         ScreenPublicationKind::Surface,
         ScreenExtentRequest::Native,
         config,
+    )
+}
+
+fn calibrated_native_surface(
+    config: ScreenProcessingProfileConfig,
+    calibration: LedToneMapCalibration,
+) -> ScreenPublicationRequest {
+    request_with_profile(
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenProcessingProfile::new(config).with_led_tone_map(calibration),
     )
 }
 
@@ -545,7 +668,8 @@ fn encoded_byte_identity_rejects_noncanonical_source_storage() {
 #[test]
 fn hdr_tone_mapping_remains_unresolved_without_reducer_capabilities() {
     let source_luminance = luminance(203.0, 1_000.0);
-    let target_luminance = luminance(100.0, 100.0);
+    let calibration = LedToneMapCalibration::DEFAULT;
+    let target_luminance = calibration.target_luminance();
     let known_hdr = known_hdr(CaptureTransferFunction::Pq, source_luminance);
     let hdr_source = source(CaptureColorimetry::from_known(known_hdr));
 
@@ -556,9 +680,9 @@ fn hdr_tone_mapping_remains_unresolved_without_reducer_capabilities() {
 
     assert_eq!(
         native_surface(ScreenProcessingProfileConfig {
-            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::new(
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
                 ScreenToneMapOperator::Bt2390Eetf,
-                target_luminance,
+                calibration,
             )),
             ..ScreenProcessingProfileConfig::default()
         })
@@ -567,9 +691,9 @@ fn hdr_tone_mapping_remains_unresolved_without_reducer_capabilities() {
     );
 
     let descriptor = native_surface(ScreenProcessingProfileConfig {
-        hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::new(
+        hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
             ScreenToneMapOperator::Bt2390Eetf,
-            target_luminance,
+            calibration,
         )),
         ..ScreenProcessingProfileConfig::default()
     })
@@ -605,6 +729,77 @@ fn hdr_tone_mapping_remains_unresolved_without_reducer_capabilities() {
         })
         .resolve(&source(missing_luminance)),
         Err(ScreenPublicationError::UnsupportedColorTransform)
+    );
+}
+
+#[test]
+fn extended_linear_hdr_resolves_the_reference_white_bt2390_contract() {
+    let source_luminance = luminance(203.0, 1_000.0);
+    let calibration = LedToneMapCalibration::DEFAULT;
+    let source_color = known_hdr(CaptureTransferFunction::Linear, source_luminance);
+    let descriptor = native_surface(ScreenProcessingProfileConfig {
+        hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+            ScreenToneMapOperator::Bt2390Eetf,
+            calibration,
+        )),
+        ..ScreenProcessingProfileConfig::default()
+    })
+    .resolve_with_color_capabilities(
+        &source(CaptureColorimetry::from_known(source_color)),
+        ScreenColorTransformCapabilities::new(false, false, true, LED_TONE_MAP_ALGORITHM_REVISION),
+    )
+    .expect("extended-linear HDR resolves through the shared BT.2390 contract");
+    let ResolvedScreenColorTransform::ToneMap(resolved) =
+        descriptor.physical().color_pipeline().transform()
+    else {
+        panic!("extended-linear HDR resolves a tone-map transform");
+    };
+    assert_eq!(resolved.source_luminance(), source_luminance);
+    assert_eq!(resolved.calibration(), calibration);
+}
+
+#[test]
+fn hdr_tone_mapping_requires_positive_source_headroom() {
+    let calibration = LedToneMapCalibration::DEFAULT;
+    let request = native_surface(ScreenProcessingProfileConfig {
+        hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+            ScreenToneMapOperator::Bt2390Eetf,
+            calibration,
+        )),
+        ..ScreenProcessingProfileConfig::default()
+    });
+    let capabilities =
+        ScreenColorTransformCapabilities::new(false, false, true, LED_TONE_MAP_ALGORITHM_REVISION);
+
+    for transfer in [CaptureTransferFunction::Pq, CaptureTransferFunction::Linear] {
+        let unity = known_hdr(transfer, luminance(203.0, 203.0));
+        assert_eq!(
+            request.resolve_with_color_capabilities(
+                &source(CaptureColorimetry::from_known(unity)),
+                capabilities,
+            ),
+            Err(ScreenPublicationError::UnsupportedHdrConversion)
+        );
+
+        let positive = known_hdr(transfer, luminance(203.0, 203.0001));
+        assert!(
+            request
+                .resolve_with_color_capabilities(
+                    &source(CaptureColorimetry::from_known(positive)),
+                    capabilities,
+                )
+                .is_ok()
+        );
+    }
+
+    let sdr = known_sdr(CaptureColorSpace::Srgb, CaptureTransferFunction::Srgb)
+        .with_luminance(luminance(203.0, 203.0));
+    assert!(
+        native_surface(ScreenProcessingProfileConfig::exact_encoded_identity(
+            CapturePixelFormat::Rgba8,
+        ))
+        .resolve(&source(CaptureColorimetry::from_known(sdr)))
+        .is_ok()
     );
 }
 
@@ -695,6 +890,78 @@ fn color_policy_and_resolved_parameters_participate_in_identity_and_ordering() {
     assert_ne!(
         srgb_descriptor.physical().cmp(bright_descriptor.physical()),
         std::cmp::Ordering::Equal
+    );
+}
+
+#[test]
+fn led_calibration_and_revision_are_stable_physical_cache_identity() {
+    let d65 = LedToneMapCalibration::DEFAULT;
+    let capabilities =
+        ScreenColorTransformCapabilities::new(true, true, true, LED_TONE_MAP_ALGORITHM_REVISION);
+    let resolve = |calibration| {
+        calibrated_native_surface(
+            ScreenProcessingProfileConfig {
+                algorithm_revision: LED_TONE_MAP_ALGORITHM_REVISION,
+                ..ScreenProcessingProfileConfig::default()
+            },
+            calibration,
+        )
+        .resolve_with_color_capabilities(&source(CaptureColorimetry::SRGB), capabilities)
+        .expect("managed SDR profile resolves")
+    };
+
+    let first = resolve(d65);
+    let repeated = resolve(d65);
+    assert_eq!(first.physical(), repeated.physical());
+    for calibration in [
+        LedToneMapCalibration::try_new(0.3128, 0.329, 203.0, 406.0, 0.0),
+        LedToneMapCalibration::try_new(0.3127, 0.3291, 203.0, 406.0, 0.0),
+        LedToneMapCalibration::try_new(0.3127, 0.329, 202.0, 406.0, 0.0),
+        LedToneMapCalibration::try_new(0.3127, 0.329, 203.0, 407.0, 0.0),
+        LedToneMapCalibration::try_new(0.3127, 0.329, 203.0, 406.0, 1.0),
+    ] {
+        let calibration = calibration.expect("alternate calibration is valid");
+        assert_ne!(first.physical(), resolve(calibration).physical());
+    }
+    assert_eq!(first.physical().color_pipeline().calibration(), Some(d65));
+    assert_eq!(
+        first.physical().algorithm_revision(),
+        LED_TONE_MAP_ALGORITHM_REVISION
+    );
+}
+
+#[test]
+fn resolved_hdr_tone_map_carries_the_validated_target_calibration() {
+    let calibration = LedToneMapCalibration::try_new(0.3457, 0.3585, 160.0, 480.0, -1.0)
+        .expect("measured target calibration is valid");
+    let hdr = known_hdr(CaptureTransferFunction::Pq, luminance(203.0, 1_000.0));
+    let descriptor = calibrated_native_surface(
+        ScreenProcessingProfileConfig {
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                calibration,
+            )),
+            algorithm_revision: LED_TONE_MAP_ALGORITHM_REVISION,
+            ..ScreenProcessingProfileConfig::default()
+        },
+        calibration,
+    )
+    .resolve_with_color_capabilities(
+        &source(CaptureColorimetry::from_known(hdr)),
+        ScreenColorTransformCapabilities::new(true, true, true, LED_TONE_MAP_ALGORITHM_REVISION),
+    )
+    .expect("PQ HDR pipeline resolves");
+
+    let ResolvedScreenColorTransform::ToneMap(tone_map) =
+        descriptor.physical().color_pipeline().transform()
+    else {
+        panic!("resolved transform must be HDR tone mapping");
+    };
+    assert_eq!(tone_map.calibration(), calibration);
+    assert_eq!(tone_map.target_luminance(), calibration.target_luminance());
+    assert_eq!(
+        descriptor.physical().color_pipeline().calibration(),
+        Some(calibration)
     );
 }
 

@@ -102,6 +102,7 @@ pub struct MacosHostInput {
     status_session: SourceSessionSlot,
     keyboard_tcc: MacosAuthorizationState,
     owner: MacosCapabilityOwner,
+    owner_conflict: Option<Arc<crate::input::MacosDaemonOwnerConflict>>,
     authorization_result: Arc<AtomicU8>,
     #[cfg(feature = "macos-native-fixtures")]
     fixture: Option<Arc<FixtureState>>,
@@ -260,6 +261,7 @@ impl MacosHostInput {
             status_session: SourceSessionSlot::new(),
             keyboard_tcc,
             owner: MacosCapabilityOwner::Standalone,
+            owner_conflict: None,
             authorization_result: Arc::new(AtomicU8::new(AUTHORIZATION_NONE)),
             #[cfg(feature = "macos-native-fixtures")]
             fixture: None,
@@ -319,6 +321,16 @@ impl MacosHostInput {
 
     pub fn set_capability_owner(&mut self, owner: MacosCapabilityOwner) -> anyhow::Result<()> {
         self.owner = owner;
+        self.refresh_platform_status()
+    }
+
+    fn set_daemon_ownership(
+        &mut self,
+        owner: MacosCapabilityOwner,
+        conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+    ) -> anyhow::Result<()> {
+        self.owner = owner;
+        self.owner_conflict = conflict.map(Arc::new);
         self.refresh_platform_status()
     }
 
@@ -484,7 +496,7 @@ impl MacosHostInput {
                     keyboard_tcc: self.keyboard_tcc,
                     keyboard_owner: self.owner,
                     pointer_owner: self.owner,
-                    owner_conflict: None,
+                    owner_conflict: self.owner_conflict.clone(),
                 },
             )))?;
         Ok(())
@@ -724,6 +736,14 @@ impl MacosHostInput {
 impl InputSource for MacosHostInput {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn set_macos_daemon_ownership(
+        &mut self,
+        owner: MacosCapabilityOwner,
+        conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+    ) -> anyhow::Result<()> {
+        self.set_daemon_ownership(owner, conflict)
     }
 
     fn start(&mut self) -> anyhow::Result<()> {

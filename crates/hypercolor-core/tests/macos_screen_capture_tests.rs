@@ -10,8 +10,8 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     InputData, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
-    MacosProtectedSourceState as CoreProtectedSourceState, MacosSelectionState,
-    SourcePlatformStatus,
+    MacosDaemonOwnerConflict, MacosProtectedSourceState as CoreProtectedSourceState,
+    MacosSelectionState, SourcePlatformStatus,
 };
 use hypercolor_macos_capture::{
     MacosAttachment, MacosCaptureColorimetry, MacosCaptureError, MacosCaptureFrame,
@@ -130,7 +130,14 @@ fn fixture_capture_activates_only_for_live_demand() {
         MacosProtectedSourceState::ReadyIdle
     );
     source
-        .set_capability_owner(MacosCapabilityOwner::AppSidecar)
+        .set_macos_daemon_ownership(
+            MacosCapabilityOwner::AppSidecar,
+            Some(MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::AppSidecar,
+                contender: MacosCapabilityOwner::HomebrewService,
+                observed_at_ms: 42,
+            }),
+        )
         .expect("fixture owner status updates");
     source
         .source_status_reporter()
@@ -146,6 +153,14 @@ fn fixture_capture_activates_only_for_live_demand() {
     assert_eq!(platform.state, CoreProtectedSourceState::ReadyIdle);
     assert_eq!(platform.tcc, MacosAuthorizationState::Authorized);
     assert_eq!(platform.owner, MacosCapabilityOwner::AppSidecar);
+    assert_eq!(
+        platform.owner_conflict.as_deref(),
+        Some(&MacosDaemonOwnerConflict {
+            active: MacosCapabilityOwner::AppSidecar,
+            contender: MacosCapabilityOwner::HomebrewService,
+            observed_at_ms: 42,
+        })
+    );
     assert_eq!(platform.selection, MacosSelectionState::None);
     assert!(!fixture.is_active());
     source.start().expect("fixture source starts idle");

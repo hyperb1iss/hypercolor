@@ -3,23 +3,37 @@
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch, CaptureGeometry,
-    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
-    CpuCaptureStorage, CpuReductionError, CpuReductionExecutor, CpuReductionLayout,
-    CpuReductionRequest, KnownCaptureColorimetry, PhysicalOrigin, PixelExtent,
-    ResolvedScreenColorPipeline, ResolvedScreenColorTransform, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenColorTransformCapabilities, ScreenExtentRequest,
+    CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureDynamicRange,
+    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CaptureLuminanceContext,
+    CapturePixelFormat, CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureStorage,
+    CaptureTransferFunction, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError,
+    CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
+    KnownCaptureColorimetry, LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration,
+    PhysicalOrigin, PixelExtent, RawCaptureSurface, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenColorPipeline, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
+    ScreenExtentRequest, ScreenHdrPolicy, ScreenInputGraphGeneration, ScreenPlanBuilder,
     ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest,
     ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry, SourceScale,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry, ScreenToneMapOperator,
+    ScreenToneMapPolicy, SourceScale,
 };
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is non-empty")
+}
+
+fn luminance(reference: f32, peak: f32) -> CaptureLuminanceContext {
+    CaptureLuminanceContext::new(
+        CapturePositiveScalar::try_new(reference).expect("reference is valid"),
+        CapturePositiveScalar::try_new(peak).expect("peak is valid"),
+    )
+    .expect("luminance is ordered")
 }
 
 fn linear_srgb_pipeline() -> ResolvedScreenColorPipeline {
@@ -42,6 +56,32 @@ fn managed_pipeline(
     )
 }
 
+fn calibrated_pipeline(
+    source_color: KnownCaptureColorimetry,
+    target_color: KnownCaptureColorimetry,
+    calibration: LedToneMapCalibration,
+    hdr: bool,
+) -> ResolvedScreenColorPipeline {
+    let config = ScreenProcessingProfileConfig {
+        target_colorimetry: ScreenTargetColorimetry::ConvertTo(target_color),
+        hdr: if hdr {
+            ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                calibration,
+            ))
+        } else {
+            ScreenHdrPolicy::Reject
+        },
+        ..ScreenProcessingProfileConfig::default()
+    };
+    resolve_pipeline_with_profile(
+        source_color,
+        CapturePixelFormat::Rgba8,
+        ScreenProcessingProfile::new(config).with_led_tone_map(calibration),
+        ScreenColorTransformCapabilities::new(true, true, true, LED_TONE_MAP_ALGORITHM_REVISION),
+    )
+}
+
 fn preserve_encoded_pipeline(pixel_format: CapturePixelFormat) -> ResolvedScreenColorPipeline {
     resolve_pipeline(
         KnownCaptureColorimetry::SRGB,
@@ -59,7 +99,48 @@ fn resolve_pipeline(
     linear_light_sdr: bool,
     relative_color_conversion: bool,
 ) -> ResolvedScreenColorPipeline {
+    let profile = ScreenProcessingProfile::new(profile_config);
+    let capabilities = if linear_light_sdr || relative_color_conversion {
+        ScreenColorTransformCapabilities::new(
+            linear_light_sdr,
+            relative_color_conversion,
+            false,
+            profile.algorithm_revision(),
+        )
+    } else {
+        ScreenColorTransformCapabilities::NONE
+    };
+    resolve_pipeline_with_profile(source_color, source_pixel_format, profile, capabilities)
+}
+
+fn resolve_pipeline_with_profile(
+    source_color: KnownCaptureColorimetry,
+    source_pixel_format: CapturePixelFormat,
+    profile: ScreenProcessingProfile,
+    capabilities: ScreenColorTransformCapabilities,
+) -> ResolvedScreenColorPipeline {
     let source_extent = extent(2, 2);
+    let source = resolved_source(source_color, source_pixel_format, source_extent);
+    let profile = Arc::new(profile);
+    ScreenPublicationRequest::new(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenPublicationExecutorRequest::Cpu,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        Arc::clone(&profile),
+    )
+    .resolve_with_color_capabilities(&source, capabilities)
+    .expect("CPU reducer declares the exact color operation")
+    .physical()
+    .color_pipeline()
+}
+
+fn resolved_source(
+    source_color: KnownCaptureColorimetry,
+    source_pixel_format: CapturePixelFormat,
+    source_extent: PixelExtent,
+) -> ResolvedScreenSource {
     let source_id =
         CaptureSourceId::new("synthetic:cpu-reducer").expect("test source identity is non-empty");
     let geometry = CaptureGeometry::new(
@@ -71,7 +152,7 @@ fn resolve_pipeline(
         SourceScale::ONE,
     )
     .expect("test geometry is valid");
-    let source = ResolvedScreenSource::new(
+    ResolvedScreenSource::new(
         ScreenSourceSelector::Configured,
         CaptureEpoch {
             source_id,
@@ -91,32 +172,7 @@ fn resolve_pipeline(
                 1,
             ),
         ),
-    );
-    let profile = Arc::new(ScreenProcessingProfile::new(profile_config));
-    ScreenPublicationRequest::new(
-        ScreenSourceSelector::Configured,
-        ScreenPublicationKind::Surface,
-        ScreenPublicationExecutorRequest::Cpu,
-        ScreenExtentRequest::Native,
-        ScreenAspectPolicy::Contain,
-        Arc::clone(&profile),
     )
-    .resolve_with_color_capabilities(
-        &source,
-        if linear_light_sdr || relative_color_conversion {
-            ScreenColorTransformCapabilities::new(
-                linear_light_sdr,
-                relative_color_conversion,
-                false,
-                profile.algorithm_revision(),
-            )
-        } else {
-            ScreenColorTransformCapabilities::NONE
-        },
-    )
-    .expect("CPU reducer declares the exact color operation")
-    .physical()
-    .color_pipeline()
 }
 
 fn executor(worker_count: usize, tile_rows: u32) -> CpuReductionExecutor {
@@ -125,6 +181,196 @@ fn executor(worker_count: usize, tile_rows: u32) -> CpuReductionExecutor {
         NonZeroU32::new(tile_rows).expect("test tile height is non-zero"),
     )
     .expect("test worker pool builds")
+}
+
+#[test]
+fn cpu_capabilities_publish_the_shared_color_algorithm_contract() {
+    let capabilities = executor(1, 1).capabilities();
+    assert!(capabilities.supports_linear_light_sdr_processing());
+    assert!(capabilities.supports_linear_relative_color_conversion());
+    assert!(capabilities.supports_pq_bt2390_tone_mapping());
+    assert!(capabilities.supports_reference_white_bt2390_tone_mapping());
+    assert_eq!(
+        capabilities.algorithm_revision(),
+        Some(LED_TONE_MAP_ALGORITHM_REVISION)
+    );
+}
+
+#[test]
+fn managed_nearest_applies_exposure_wide_gamut_and_hdr_eetf() {
+    let source_extent = extent(1, 1);
+    let layout = CpuReductionLayout::new(source_extent, source_extent)
+        .expect("test reduction geometry is addressable");
+    let executor = executor(1, 1);
+    let run = |pixel, pipeline| {
+        let source = storage(pixel, source_extent, CapturePixelFormat::Rgba8);
+        let mut output = vec![0; layout.target_byte_len_usize()];
+        executor
+            .reduce(
+                CpuReductionRequest::new(
+                    &source,
+                    layout,
+                    CapturePixelFormat::Rgba8,
+                    ScreenReductionFilter::Nearest,
+                    pipeline,
+                ),
+                &mut output,
+            )
+            .expect("managed nearest reduction succeeds");
+        output
+    };
+
+    let negative_exposure = LedToneMapCalibration::try_new(0.3127, 0.329, 203.0, 406.0, -1.0)
+        .expect("negative exposure is valid");
+    assert_eq!(
+        run(
+            vec![255, 255, 255, 255],
+            calibrated_pipeline(
+                KnownCaptureColorimetry::SRGB,
+                KnownCaptureColorimetry::SRGB,
+                negative_exposure,
+                false,
+            ),
+        ),
+        vec![188, 188, 188, 255]
+    );
+
+    let p3 = KnownCaptureColorimetry::try_new(
+        CaptureColorSpace::DisplayP3,
+        CaptureTransferFunction::Linear,
+        CaptureDynamicRange::Standard,
+        None,
+    )
+    .expect("P3 source is valid");
+    assert_eq!(
+        run(
+            vec![255, 0, 255, 255],
+            calibrated_pipeline(
+                p3,
+                KnownCaptureColorimetry::SRGB,
+                LedToneMapCalibration::DEFAULT,
+                false,
+            ),
+        ),
+        vec![255, 59, 242, 255]
+    );
+
+    let hdr = KnownCaptureColorimetry::try_new(
+        CaptureColorSpace::Rec2020,
+        CaptureTransferFunction::Pq,
+        CaptureDynamicRange::High,
+        Some(luminance(203.0, 1_000.0)),
+    )
+    .expect("PQ source is valid");
+    assert_eq!(
+        run(
+            vec![159, 159, 159, 255],
+            calibrated_pipeline(
+                hdr,
+                KnownCaptureColorimetry::SRGB,
+                LedToneMapCalibration::DEFAULT,
+                true,
+            ),
+        ),
+        vec![223, 223, 223, 255]
+    );
+
+    let linear_hdr = KnownCaptureColorimetry::try_new(
+        CaptureColorSpace::Rec2020,
+        CaptureTransferFunction::Linear,
+        CaptureDynamicRange::High,
+        Some(luminance(203.0, 1_000.0)),
+    )
+    .expect("extended-linear HDR source is valid");
+    assert_eq!(
+        run(
+            vec![255, 255, 255, 255],
+            calibrated_pipeline(
+                linear_hdr,
+                KnownCaptureColorimetry::SRGB,
+                LedToneMapCalibration::DEFAULT,
+                true,
+            ),
+        ),
+        vec![188, 188, 188, 255]
+    );
+}
+
+#[test]
+fn prepared_managed_nearest_applies_color_before_publication() {
+    let source_extent = extent(1, 1);
+    let source = resolved_source(
+        KnownCaptureColorimetry::SRGB,
+        CapturePixelFormat::Rgba8,
+        source_extent,
+    );
+    let calibration = LedToneMapCalibration::try_new(0.3127, 0.329, 203.0, 406.0, -1.0)
+        .expect("negative exposure is valid");
+    let profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+        reduction_filter: ScreenReductionFilter::Nearest,
+        ..ScreenProcessingProfileConfig::default()
+    })
+    .with_led_tone_map(calibration);
+    let demand: ResolvedScreenBranchDemand = RegisteredScreenBranchDemand::new(
+        ScreenPublicationRequest::new(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::Cpu,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            Arc::new(profile),
+        ),
+        NonZeroU32::MIN,
+    )
+    .resolve_with_color_capabilities(&source, executor(1, 1).capabilities())
+    .expect("managed nearest demand resolves");
+    let mut builder = ScreenPlanBuilder::new();
+    let preparing = builder
+        .prepare(
+            [demand],
+            None,
+            InputPublicationDemandRevision::new(1),
+            ScreenInputGraphGeneration::new(1),
+            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+        )
+        .expect("managed nearest plan is admitted");
+    let executor = executor(1, 1);
+    let batch = executor
+        .prepare_batch(&source, preparing.candidate_plan())
+        .expect("managed nearest batch prepares");
+    let captured_at = Instant::now();
+    let frame = CaptureFrame::<RawCaptureSurface>::new(
+        CaptureFrameMetadata {
+            source_id: source.epoch().source_id.clone(),
+            topology_generation: source.epoch().topology_generation,
+            session_generation: source.epoch().session_generation,
+            sequence: 1,
+            captured_at,
+            fresh_until: captured_at + Duration::from_secs(1),
+            geometry: source.config().geometry(),
+            colorimetry: source.config().colorimetry(),
+            cursor: CaptureCursor::default(),
+        },
+        CaptureStorage::Cpu(storage(
+            vec![255, 255, 255, 255],
+            source_extent,
+            CapturePixelFormat::Rgba8,
+        )),
+        CaptureDamage::default(),
+    )
+    .expect("managed nearest frame is valid");
+    let descriptor = batch.descriptor(0).expect("prepared descriptor exists");
+    let mut output = vec![
+        0;
+        batch
+            .output_byte_len(0)
+            .expect("prepared output size exists")
+    ];
+    let mut jobs = [CpuReductionBatchJob::new(descriptor, &mut output)];
+    executor
+        .execute_batch(&batch, &frame, &mut jobs)
+        .expect("prepared managed nearest executes");
+    assert_eq!(output, vec![188, 188, 188, 255]);
 }
 
 fn storage(
@@ -588,7 +834,7 @@ fn linear_light_sdr_uses_the_resolved_transfer_function() {
 }
 
 #[test]
-fn relative_color_conversion_is_a_typed_unsupported_operation() {
+fn relative_color_conversion_compresses_wide_gamut_per_source_sample() {
     let display_p3 = KnownCaptureColorimetry::try_new(
         CaptureColorSpace::DisplayP3,
         CaptureTransferFunction::Srgb,
@@ -598,14 +844,14 @@ fn relative_color_conversion_is_a_typed_unsupported_operation() {
     .expect("Display P3 SDR contract is complete");
     let source_extent = extent(1, 1);
     let source = storage(
-        vec![10, 20, 30, 255],
+        vec![255, 0, 255, 255],
         source_extent,
         CapturePixelFormat::Rgba8,
     );
     let layout = CpuReductionLayout::new(source_extent, source_extent)
         .expect("test reduction geometry is addressable");
     let mut output = vec![0; layout.target_byte_len_usize()];
-    let error = executor(1, 1)
+    executor(1, 1)
         .reduce(
             CpuReductionRequest::new(
                 &source,
@@ -616,13 +862,10 @@ fn relative_color_conversion_is_a_typed_unsupported_operation() {
             ),
             &mut output,
         )
-        .expect_err("relative gamut conversion is not implemented by this CPU lane");
-    assert!(matches!(
-        error,
-        CpuReductionError::UnsupportedColorTransform(
-            ResolvedScreenColorTransform::LinearRelativeColorimetric { .. }
-        )
-    ));
+        .expect("relative gamut conversion is executable by the CPU lane");
+    assert_eq!(output[3], 255);
+    assert!(output[0] > output[1]);
+    assert!(output[2] > output[1]);
 }
 
 fn scalar_reference(

@@ -333,8 +333,9 @@ fn state_gap_synthesizes_releases_and_stale_epoch_is_inert() {
 #[cfg(feature = "macos-native-fixtures")]
 mod fixtures {
     use hypercolor_core::input::{
-        InputData, InputSource, MacosAuthorizationState, MacosCapabilityOwner, MacosHostInput,
-        MacosInputFixtureBackend, MacosProtectedSourceState, SourcePlatformStatus, SourceState,
+        InputData, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
+        MacosDaemonOwnerConflict, MacosHostInput, MacosInputFixtureBackend,
+        MacosProtectedSourceState, SourcePlatformStatus, SourceState,
     };
     use hypercolor_macos_input::{MacosInputEvent, event_masks};
 
@@ -489,7 +490,14 @@ mod fixtures {
             .expect("macOS host source exposes status");
 
         source
-            .set_capability_owner(MacosCapabilityOwner::AppSidecar)
+            .set_macos_daemon_ownership(
+                MacosCapabilityOwner::AppSidecar,
+                Some(MacosDaemonOwnerConflict {
+                    active: MacosCapabilityOwner::AppSidecar,
+                    contender: MacosCapabilityOwner::HomebrewService,
+                    observed_at_ms: 42,
+                }),
+            )
             .expect("owner update should publish");
 
         let snapshot = status.snapshot();
@@ -498,6 +506,14 @@ mod fixtures {
         };
         assert_eq!(platform.keyboard_owner, MacosCapabilityOwner::AppSidecar);
         assert_eq!(platform.pointer_owner, MacosCapabilityOwner::AppSidecar);
+        assert_eq!(
+            platform.owner_conflict.as_deref(),
+            Some(&MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::AppSidecar,
+                contender: MacosCapabilityOwner::HomebrewService,
+                observed_at_ms: 42,
+            })
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 use super::plan::ScreenNativeResourceBindingKey;
+use super::tone_map::{LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration};
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
     CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CaptureRotation,
@@ -1353,7 +1354,7 @@ impl Default for ScreenTargetColorimetry {
 pub struct ScreenColorTransformCapabilities {
     linear_light_sdr_processing: bool,
     linear_relative_color_conversion: bool,
-    pq_bt2390_tone_mapping: bool,
+    reference_white_bt2390_tone_mapping: bool,
     algorithm_revision: Option<NonZeroU32>,
 }
 
@@ -1362,7 +1363,7 @@ impl ScreenColorTransformCapabilities {
     pub const NONE: Self = Self {
         linear_light_sdr_processing: false,
         linear_relative_color_conversion: false,
-        pq_bt2390_tone_mapping: false,
+        reference_white_bt2390_tone_mapping: false,
         algorithm_revision: None,
     };
 
@@ -1371,13 +1372,13 @@ impl ScreenColorTransformCapabilities {
     pub const fn new(
         linear_light_sdr_processing: bool,
         linear_relative_color_conversion: bool,
-        pq_bt2390_tone_mapping: bool,
+        reference_white_bt2390_tone_mapping: bool,
         algorithm_revision: NonZeroU32,
     ) -> Self {
         Self {
             linear_light_sdr_processing,
             linear_relative_color_conversion,
-            pq_bt2390_tone_mapping,
+            reference_white_bt2390_tone_mapping,
             algorithm_revision: Some(algorithm_revision),
         }
     }
@@ -1397,7 +1398,13 @@ impl ScreenColorTransformCapabilities {
     /// Whether PQ HDR can be mapped to SDR with BT.2390 end to end.
     #[must_use]
     pub const fn supports_pq_bt2390_tone_mapping(self) -> bool {
-        self.pq_bt2390_tone_mapping
+        self.reference_white_bt2390_tone_mapping
+    }
+
+    /// Whether reference-white BT.2390 mapping accepts supported HDR encodings.
+    #[must_use]
+    pub const fn supports_reference_white_bt2390_tone_mapping(self) -> bool {
+        self.reference_white_bt2390_tone_mapping
     }
 
     /// Whether this reducer's end-to-end conversion promises cover one gamut policy.
@@ -1405,7 +1412,7 @@ impl ScreenColorTransformCapabilities {
     pub const fn supports_gamut_policy(self, policy: ScreenGamutMapPolicy) -> bool {
         match policy {
             ScreenGamutMapPolicy::RelativeColorimetricClip => {
-                self.linear_relative_color_conversion || self.pq_bt2390_tone_mapping
+                self.linear_relative_color_conversion || self.reference_white_bt2390_tone_mapping
             }
         }
     }
@@ -1477,7 +1484,7 @@ pub enum ScreenUnknownColorPolicy {
 /// Gamut behavior for known-primary conversions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ScreenGamutMapPolicy {
-    /// Apply the relative-colorimetric matrix and clip target-linear channels.
+    /// Apply the relative-colorimetric matrix and compress target-linear chroma.
     #[default]
     RelativeColorimetricClip,
 }
@@ -1507,6 +1514,15 @@ impl ScreenToneMapPolicy {
             operator,
             target_luminance,
         }
+    }
+
+    /// Construct a tone-map request from the validated target calibration.
+    #[must_use]
+    pub fn from_calibration(
+        operator: ScreenToneMapOperator,
+        calibration: LedToneMapCalibration,
+    ) -> Self {
+        Self::new(operator, calibration.target_luminance())
     }
 
     /// Exact tone-map operator.
@@ -1539,6 +1555,7 @@ pub struct ResolvedScreenToneMap {
     source_luminance: CaptureLuminanceContext,
     target_luminance: CaptureLuminanceContext,
     gamut: ScreenGamutMapPolicy,
+    calibration: LedToneMapCalibration,
 }
 
 impl ResolvedScreenToneMap {
@@ -1565,6 +1582,12 @@ impl ResolvedScreenToneMap {
     pub const fn gamut(self) -> ScreenGamutMapPolicy {
         self.gamut
     }
+
+    /// Validated target white point, luminance coordinates, and exposure.
+    #[must_use]
+    pub const fn calibration(self) -> LedToneMapCalibration {
+        self.calibration
+    }
 }
 
 /// Byte-changing color operation selected before backend preparation.
@@ -1586,6 +1609,7 @@ pub struct ResolvedScreenColorPipeline {
     effective_source: Option<KnownCaptureColorimetry>,
     output: CaptureColorimetry,
     transform: ResolvedScreenColorTransform,
+    calibration: Option<LedToneMapCalibration>,
 }
 
 impl ResolvedScreenColorPipeline {
@@ -1606,6 +1630,12 @@ impl ResolvedScreenColorPipeline {
     pub const fn transform(self) -> ResolvedScreenColorTransform {
         self.transform
     }
+
+    /// Calibration applied by byte-changing managed color processing.
+    #[must_use]
+    pub const fn calibration(self) -> Option<LedToneMapCalibration> {
+        self.calibration
+    }
 }
 
 /// Complete immutable byte-changing processing configuration.
@@ -1623,6 +1653,7 @@ pub struct ScreenProcessingProfile {
     unknown_color: ScreenUnknownColorPolicy,
     hdr: ScreenHdrPolicy,
     gamut: ScreenGamutMapPolicy,
+    led_tone_map: LedToneMapCalibration,
     algorithm_revision: NonZeroU32,
 }
 
@@ -1697,7 +1728,7 @@ impl Default for ScreenProcessingProfileConfig {
             unknown_color: ScreenUnknownColorPolicy::default(),
             hdr: ScreenHdrPolicy::default(),
             gamut: ScreenGamutMapPolicy::default(),
-            algorithm_revision: NonZeroU32::MIN,
+            algorithm_revision: LED_TONE_MAP_ALGORITHM_REVISION,
         }
     }
 }
@@ -1719,8 +1750,22 @@ impl ScreenProcessingProfile {
             unknown_color: config.unknown_color,
             hdr: config.hdr,
             gamut: config.gamut,
+            led_tone_map: LedToneMapCalibration::DEFAULT,
             algorithm_revision: config.algorithm_revision,
         }
+    }
+
+    /// Replace the validated target LED calibration and user exposure.
+    #[must_use]
+    pub fn with_led_tone_map(mut self, led_tone_map: LedToneMapCalibration) -> Self {
+        self.led_tone_map = led_tone_map;
+        if let ScreenHdrPolicy::ToneMap(policy) = self.hdr {
+            self.hdr = ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                policy.operator(),
+                led_tone_map,
+            ));
+        }
+        self
     }
 
     /// Content-bar detection policy.
@@ -1795,6 +1840,12 @@ impl ScreenProcessingProfile {
         self.gamut
     }
 
+    /// Target LED calibration and authoritative user exposure.
+    #[must_use]
+    pub const fn led_tone_map(&self) -> LedToneMapCalibration {
+        self.led_tone_map
+    }
+
     /// Complete processing algorithm revision.
     #[must_use]
     pub const fn algorithm_revision(&self) -> NonZeroU32 {
@@ -1826,6 +1877,7 @@ impl Ord for ScreenProcessingProfile {
             .then_with(|| self.unknown_color.cmp(&other.unknown_color))
             .then_with(|| self.hdr.cmp(&other.hdr))
             .then_with(|| self.gamut.cmp(&other.gamut))
+            .then_with(|| self.led_tone_map.cmp(&other.led_tone_map))
             .then_with(|| self.algorithm_revision.cmp(&other.algorithm_revision))
     }
 }
@@ -2733,6 +2785,7 @@ fn resolve_color_pipeline(
                     effective_source: None,
                     output: source,
                     transform: ResolvedScreenColorTransform::PreserveEncodedSamples,
+                    calibration: None,
                 });
             }
             ScreenUnknownColorPolicy::Assume(assumption) => {
@@ -2804,6 +2857,7 @@ fn resolve_known_color_pipeline(
             effective_source: Some(source),
             output: CaptureColorimetry::from_known(target),
             transform: ResolvedScreenColorTransform::PreserveEncodedSamples,
+            calibration: None,
         });
     }
     if capabilities.algorithm_revision() != Some(profile.algorithm_revision) {
@@ -2830,6 +2884,7 @@ fn resolve_known_color_pipeline(
                 gamut: profile.gamut,
             }
         },
+        calibration: Some(profile.led_tone_map),
     })
 }
 
@@ -2843,34 +2898,44 @@ fn resolve_hdr_color_pipeline(
         ScreenHdrPolicy::Reject => Err(ScreenPublicationError::HdrRejected),
         ScreenHdrPolicy::ToneMap(policy)
             if source.dynamic_range() == CaptureDynamicRange::High
-                && source.transfer_function() == CaptureTransferFunction::Pq
+                && matches!(
+                    source.transfer_function(),
+                    CaptureTransferFunction::Pq | CaptureTransferFunction::Linear
+                )
                 && target.dynamic_range() == CaptureDynamicRange::Standard =>
         {
             if capabilities.algorithm_revision() != Some(profile.algorithm_revision)
-                || !capabilities.supports_pq_bt2390_tone_mapping()
+                || !capabilities.supports_reference_white_bt2390_tone_mapping()
                 || !capabilities.supports_gamut_policy(profile.gamut)
             {
                 return Err(ScreenPublicationError::UnsupportedColorTransform);
             }
-            if target
-                .luminance()
-                .is_some_and(|luminance| luminance != policy.target_luminance)
+            let target_luminance = profile.led_tone_map.target_luminance();
+            if policy.target_luminance != target_luminance
+                || target
+                    .luminance()
+                    .is_some_and(|luminance| luminance != target_luminance)
             {
                 return Err(ScreenPublicationError::ToneMapTargetLuminanceConflict);
             }
             let source_luminance = source
                 .luminance()
                 .ok_or(ScreenPublicationError::MissingSourceLuminance)?;
-            let output = target.with_luminance(policy.target_luminance);
+            if source_luminance.peak_nits() <= source_luminance.reference_white_nits() {
+                return Err(ScreenPublicationError::UnsupportedHdrConversion);
+            }
+            let output = target.with_luminance(target_luminance);
             Ok(ResolvedScreenColorPipeline {
                 effective_source: Some(source),
                 output: CaptureColorimetry::from_known(output),
                 transform: ResolvedScreenColorTransform::ToneMap(ResolvedScreenToneMap {
                     operator: policy.operator,
                     source_luminance,
-                    target_luminance: policy.target_luminance,
+                    target_luminance,
                     gamut: profile.gamut,
+                    calibration: profile.led_tone_map,
                 }),
+                calibration: Some(profile.led_tone_map),
             })
         }
         ScreenHdrPolicy::ToneMap(_) => Err(ScreenPublicationError::UnsupportedHdrConversion),

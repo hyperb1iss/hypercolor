@@ -451,6 +451,7 @@ fn surface_letterbox_fill_modes_preserve_content_and_alpha() {
                 &fixture.physical,
                 &physical,
                 now,
+                false,
                 &mut publication,
             )
             .expect("Surface fill stages");
@@ -543,6 +544,7 @@ fn surface_fill_is_exact_after_tuning_for_rgba_and_bgra() {
                     &fixture.physical,
                     &physical,
                     now,
+                    false,
                     &mut publication,
                 )
                 .expect("processed Surface stages");
@@ -607,6 +609,7 @@ fn stateful_surface_and_zones_smooth_before_non_neutral_tuning() {
                 &surface.physical,
                 &encoded_pixel([0, 0, 0, 255], pixel_format),
                 started,
+                false,
                 &mut surface_baseline,
             )
             .expect("Surface baseline stages");
@@ -621,6 +624,7 @@ fn stateful_surface_and_zones_smooth_before_non_neutral_tuning() {
                 &surface.physical,
                 &encoded_pixel([incoming[0], incoming[1], incoming[2], 255], pixel_format),
                 started + elapsed,
+                false,
                 &mut surface_next,
             )
             .expect("Surface response stages");
@@ -642,6 +646,7 @@ fn stateful_surface_and_zones_smooth_before_non_neutral_tuning() {
                 &zones.physical,
                 &encoded_pixel([0, 0, 0, 255], pixel_format),
                 started,
+                false,
                 &mut zone_baseline,
             )
             .expect("Zones baseline stages");
@@ -656,6 +661,7 @@ fn stateful_surface_and_zones_smooth_before_non_neutral_tuning() {
                 &zones.physical,
                 &encoded_pixel([incoming[0], incoming[1], incoming[2], 255], pixel_format),
                 started + elapsed,
+                false,
                 &mut zone_next,
             )
             .expect("Zones response stages");
@@ -700,6 +706,7 @@ fn detected_bars_reflow_without_stretching_content_aspect() {
             &fixture.physical,
             &physical,
             now,
+            false,
             &mut publication,
         )
         .expect("detected content stages");
@@ -757,6 +764,7 @@ fn surface_materializer_rejects_substituted_physical_storage_transactionally() {
             &fixture.physical,
             &[0; 4],
             now,
+            false,
             &mut publication,
         ),
         Err(CpuSurfaceMaterializationError::PhysicalByteLengthMismatch {
@@ -800,6 +808,7 @@ fn rejected_moving_bars_preserve_committed_surface_history() {
             &fixture.physical,
             &horizontal,
             start,
+            false,
             &mut first,
         )
         .expect("first bar state stages");
@@ -821,6 +830,7 @@ fn rejected_moving_bars_preserve_committed_surface_history() {
             &fixture.physical,
             &vertical,
             start + Duration::from_millis(16),
+            false,
             &mut rejected,
         )
         .expect("moving bars stage");
@@ -839,6 +849,7 @@ fn rejected_moving_bars_preserve_committed_surface_history() {
             &fixture.physical,
             &restored,
             start + Duration::from_millis(32),
+            false,
             &mut third,
         )
         .expect("restored bars stage from committed history");
@@ -892,6 +903,7 @@ fn dynamic_crop_compacts_the_effective_grid_and_reuses_exact_scratch() {
             &fixture.physical,
             &pixels,
             now,
+            false,
             &mut publication,
         )
         .expect("dynamic grid stages");
@@ -967,6 +979,7 @@ fn rejected_publication_preserves_committed_smoothing_history() {
             &fixture.physical,
             &[0, 0, 0, 255],
             started,
+            false,
             &mut initial,
         )
         .expect("initial frame stages");
@@ -983,6 +996,7 @@ fn rejected_publication_preserves_committed_smoothing_history() {
             &fixture.physical,
             &[255, 255, 255, 255],
             next_at,
+            false,
             &mut rejected,
         )
         .expect("candidate frame stages");
@@ -1001,6 +1015,7 @@ fn rejected_publication_preserves_committed_smoothing_history() {
             &fixture.physical,
             &[255, 255, 255, 255],
             next_at,
+            false,
             &mut retry,
         )
         .expect("retry frame stages");
@@ -1054,6 +1069,7 @@ fn content_region_change_resets_smoothing_even_when_shape_is_unchanged() {
             &fixture.physical,
             &top_bar,
             started,
+            false,
             &mut first,
         )
         .expect("top-bar frame stages");
@@ -1084,6 +1100,7 @@ fn content_region_change_resets_smoothing_even_when_shape_is_unchanged() {
             &fixture.physical,
             &bottom_bar,
             started + Duration::from_millis(16),
+            false,
             &mut second,
         )
         .expect("bottom-bar frame stages");
@@ -1123,6 +1140,7 @@ fn plan_generation_fences_state_and_reset_is_deterministic() {
             &fixture.physical,
             &[255, 0, 0, 255],
             now,
+            false,
             &mut publication,
         ),
         Err(CpuZoneMaterializationError::PlanGenerationMismatch { .. })
@@ -1135,6 +1153,7 @@ fn plan_generation_fences_state_and_reset_is_deterministic() {
             &fixture.physical,
             &[0, 0, 0, 255],
             now,
+            false,
             &mut baseline,
         )
         .expect("baseline stages");
@@ -1150,6 +1169,7 @@ fn plan_generation_fences_state_and_reset_is_deterministic() {
             &fixture.physical,
             &[255, 255, 255, 255],
             later,
+            false,
             &mut smoothed,
         )
         .expect("pre-reset frame stages");
@@ -1173,6 +1193,7 @@ fn plan_generation_fences_state_and_reset_is_deterministic() {
             &fixture.physical,
             &[255, 255, 255, 255],
             later,
+            false,
             &mut reset,
         )
         .expect("post-reset frame stages");
@@ -1245,6 +1266,7 @@ fn stateful_materialization_supports_rgba_bgra_srgb_and_linear() {
                 &fixture.physical,
                 &pixels,
                 now,
+                false,
                 &mut publication,
             )
             .expect("stateful transfer stages");
@@ -1301,6 +1323,7 @@ fn distinct_descriptors_keep_independent_temporal_history() {
             &rgba.physical,
             &[0, 0, 0, 255],
             started,
+            false,
             &mut rgba_initial,
         )
         .expect("RGBA baseline stages");
@@ -1315,6 +1338,7 @@ fn distinct_descriptors_keep_independent_temporal_history() {
             &bgra.physical,
             &[255, 255, 255, 255],
             started,
+            false,
             &mut bgra_initial,
         )
         .expect("BGRA baseline stages");
@@ -1331,6 +1355,7 @@ fn distinct_descriptors_keep_independent_temporal_history() {
             &rgba.physical,
             &[128, 128, 128, 255],
             later,
+            false,
             &mut rgba_next,
         )
         .expect("RGBA next frame stages");
@@ -1344,6 +1369,7 @@ fn distinct_descriptors_keep_independent_temporal_history() {
             &bgra.physical,
             &[128, 128, 128, 255],
             later,
+            false,
             &mut bgra_next,
         )
         .expect("BGRA next frame stages");
@@ -1479,6 +1505,95 @@ fn prepared_smoothing_can_suppress_scene_cut_bypass() {
         .expect("suppressed scene cut stages");
 
     assert!(colors[0][0] < 255);
+}
+
+#[test]
+fn materializers_forward_transition_suppression_to_both_smoothing_seams() {
+    let profile = ScreenProcessingProfileConfig {
+        smoothing: ScreenSmoothingPolicy::Exponential {
+            time_constant: Duration::from_mins(1),
+            scene_cut: ScreenSceneCutPolicy::MeanAbsoluteDelta {
+                threshold: scalar(0.01),
+            },
+        },
+        ..point_profile()
+    };
+    let started = Instant::now();
+    let later = started + Duration::from_millis(16);
+
+    let surface = SurfaceFixture::new(1, 1, 1, 1, ScreenAspectPolicy::Cover, profile.clone());
+    let mut surface_materializer =
+        PreparedCpuSurfaceMaterializer::prepare_stateful(&surface.descriptor, surface.generation)
+            .expect("stateful Surface prepares");
+    let mut surface_baseline = surface.publication(1, started);
+    surface_materializer
+        .stage(
+            surface.generation,
+            &surface.physical,
+            &[0, 0, 0, 255],
+            started,
+            false,
+            &mut surface_baseline,
+        )
+        .expect("Surface baseline stages");
+    surface_materializer
+        .commit_staged(surface.generation)
+        .expect("Surface baseline commits");
+    drop(surface_baseline);
+    let mut surface_transition = surface.publication(2, later);
+    surface_materializer
+        .stage(
+            surface.generation,
+            &surface.physical,
+            &[255, 255, 255, 255],
+            later,
+            true,
+            &mut surface_transition,
+        )
+        .expect("Surface transition stages");
+    assert!(
+        surface_transition
+            .surface_pixels_mut()
+            .expect("Surface output remains writable")[0]
+            < 255
+    );
+
+    let zones = ZoneFixture::new(1, 1, 1, 1, profile, CaptureColorimetry::SRGB);
+    let mut zone_materializer =
+        PreparedCpuZoneMaterializer::prepare_stateful(&zones.descriptor, zones.generation)
+            .expect("stateful Zones prepare");
+    let mut zone_baseline = zones.publication(1, started);
+    zone_materializer
+        .stage(
+            zones.generation,
+            &zones.physical,
+            &[0, 0, 0, 255],
+            started,
+            false,
+            &mut zone_baseline,
+        )
+        .expect("Zones baseline stages");
+    zone_materializer
+        .commit_staged(zones.generation)
+        .expect("Zones baseline commits");
+    drop(zone_baseline);
+    let mut zone_transition = zones.publication(2, later);
+    zone_materializer
+        .stage(
+            zones.generation,
+            &zones.physical,
+            &[255, 255, 255, 255],
+            later,
+            true,
+            &mut zone_transition,
+        )
+        .expect("Zones transition stages");
+    assert!(
+        zone_transition
+            .zone_colors_mut()
+            .expect("Zones output remains writable")[0][0]
+            < 255
+    );
 }
 
 #[test]

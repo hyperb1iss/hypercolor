@@ -35,6 +35,7 @@ mod retained;
 mod sampling;
 pub mod sector;
 pub mod smooth;
+mod tone_map;
 pub mod tune;
 #[cfg(target_os = "linux")]
 pub mod wayland;
@@ -146,6 +147,12 @@ pub use sampling::{
 };
 pub use sector::{LetterboxBars, SectorGrid, proportional_sector_bounds};
 pub use smooth::TemporalSmoother;
+pub use tone_map::{
+    LED_TONE_MAP_ALGORITHM_REVISION, LED_TONE_MAP_MAX_EXPOSURE_EV, LED_TONE_MAP_MIN_EXPOSURE_EV,
+    LED_TONE_MAP_TRANSITION_DURATION, LedToneMapCalibration, LedToneMapCalibrationError,
+    LedToneMapConstants, LedToneMapCurveTransition, LedToneMapTransitionSample, PreparedLedToneMap,
+    PreparedLedToneMapError,
+};
 pub use tune::ColorTuning;
 #[cfg(target_os = "linux")]
 pub use wayland::WaylandScreenCaptureInput;

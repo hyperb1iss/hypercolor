@@ -1886,6 +1886,41 @@ impl InputManager {
         result
     }
 
+    /// Apply processing-only screen settings without rebuilding native capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a registered screen source rejects the profile.
+    pub fn reconfigure_screen_processing(
+        &mut self,
+        config: &screen::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        for source in &mut self.sources {
+            if source.is_screen_source() {
+                source.reconfigure_screen_processing(config)?;
+            }
+        }
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
+    /// Mirror the active macOS daemon topology into every native source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a source can no longer publish status.
+    pub fn set_macos_daemon_ownership(
+        &mut self,
+        owner: MacosCapabilityOwner,
+        conflict: Option<MacosDaemonOwnerConflict>,
+    ) -> anyhow::Result<()> {
+        for source in &mut self.sources {
+            source.set_macos_daemon_ownership(owner, conflict.clone())?;
+        }
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
     /// Resolve the explicit Input Monitoring request without retaining the
     /// input-manager lock while native authorization UI runs.
     #[must_use]

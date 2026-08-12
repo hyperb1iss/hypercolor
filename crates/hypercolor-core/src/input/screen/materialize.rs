@@ -510,6 +510,7 @@ impl PreparedCpuSurfaceMaterializer {
         physical_descriptor: &ScreenPhysicalReductionDescriptor,
         physical_pixels: &[u8],
         captured_at: Instant,
+        suppress_scene_cut_bypass: bool,
         publication: &mut PreparedScreenPublication,
     ) -> Result<(), CpuSurfaceMaterializationError> {
         self.validate_generation(plan_generation)?;
@@ -601,7 +602,7 @@ impl PreparedCpuSurfaceMaterializer {
                 elapsed,
                 self.committed_bars
                     .is_some_and(|committed| committed != bars),
-                false,
+                suppress_scene_cut_bypass,
             )?;
             for (pixel, color) in output
                 .chunks_exact_mut(BYTES_PER_PIXEL)
@@ -1003,6 +1004,7 @@ impl PreparedCpuZoneMaterializer {
         physical_descriptor: &ScreenPhysicalReductionDescriptor,
         physical_pixels: &[u8],
         captured_at: Instant,
+        suppress_scene_cut_bypass: bool,
         publication: &mut PreparedScreenPublication,
     ) -> Result<StagedCpuZonePublication, CpuZoneMaterializationError> {
         self.validate_generation(plan_generation)?;
@@ -1055,7 +1057,7 @@ impl PreparedCpuZoneMaterializer {
                 self.transfer,
                 elapsed,
                 reset_history,
-                false,
+                suppress_scene_cut_bypass,
             )?;
         self.apply_tuning(&mut output[..color_count]);
         output[color_count..].fill([0, 0, 0]);

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use hypercolor_macos_capture::{
-    MacosCaptureColorimetry, MacosCaptureContentStyle, MacosCaptureFrame, MacosCapturePixelFormat,
+    MacosCaptureContentStyle, MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat,
     MacosCaptureSelection, MacosColorPrimaries, MacosDisplayClock, MacosFrameEvent,
     MacosFrameMailbox, MacosFrameStatus, MacosProtectedSourceState as NativeProtectedSourceState,
     MacosTransferFunction,
@@ -22,9 +22,10 @@ use super::{
     AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureCadence,
     CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureCursorContent,
     CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
-    CapturePixelFormat, CapturePlanePool, CaptureRotation, CaptureSourceId, CaptureStorage,
-    CaptureTransferFunction, CpuCaptureStorage, CpuExactReductionWorkPlan, CpuReductionExecutor,
-    PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
+    CaptureLuminanceContext, CapturePixelFormat, CapturePlanePool, CapturePositiveScalar,
+    CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
+    CpuExactReductionWorkPlan, CpuReductionExecutor, LedToneMapCalibration, PixelExtent, PixelRect,
+    PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
     PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
     ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity,
@@ -35,9 +36,9 @@ use super::{
     ScreenGpuSurfacePayload, ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
     ScreenPreparedWorkerToken, ScreenPublicationColorimetry, ScreenPublicationExecutor,
     ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenRequiredResourceMinimum,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -380,7 +381,7 @@ impl MacosPublicationSource {
                 SourceScale::ONE,
             )?,
             logical_extent: content_rect.extent(),
-            colorimetry: capture_colorimetry(frame.color)?,
+            colorimetry: capture_colorimetry(frame)?,
             pixel_format: frame.pixel_format,
             resource_generation,
             allocation_bytes: frame.surface.allocation_bytes,
@@ -403,16 +404,21 @@ impl MacosPublicationSource {
         }
     }
 
-    fn cpu_source(&self, selector: ScreenSourceSelector) -> ResolvedScreenSource {
-        ResolvedScreenSource::new(
+    fn cpu_source(&self, selector: ScreenSourceSelector) -> anyhow::Result<ResolvedScreenSource> {
+        if self.pixel_format != MacosCapturePixelFormat::Bgra8 {
+            return Err(anyhow!(
+                "macOS CPU publication requires a byte-addressable BGRA source"
+            ));
+        }
+        Ok(ResolvedScreenSource::new(
             selector,
             self.epoch.clone(),
             ResolvedScreenSourceConfig::new_with_cursor_capabilities(
                 self.geometry,
                 self.logical_extent,
                 ScreenSourceReflection::None,
-                CapturePixelFormat::Rgba8,
-                CaptureColorimetry::SRGB,
+                CapturePixelFormat::Bgra8,
+                self.colorimetry,
                 self.cursor_capabilities(),
                 ScreenBackendResourceIdentity::new(
                     ScreenCaptureBackend::MacosScreenCaptureKit,
@@ -421,7 +427,7 @@ impl MacosPublicationSource {
                     self.resource_generation,
                 ),
             ),
-        )
+        ))
     }
 
     fn gpu_source(
@@ -484,17 +490,21 @@ struct MacosExactPublicationShared {
 }
 
 impl MacosExactPublicationShared {
+    fn advance_resolution_revision(&self) {
+        self.resolution_revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                revision.checked_add(1)
+            })
+            .expect("macOS screen publication resolution revision exhausted");
+    }
+
     fn replace_source(&self, next: Option<MacosPublicationSource>) {
         let mut source = lock(&self.source);
         if *source == next {
             return;
         }
         *source = next;
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("macOS screen publication resolution revision exhausted");
+        self.advance_resolution_revision();
     }
 
     fn source(&self) -> Option<MacosPublicationSource> {
@@ -636,6 +646,7 @@ pub struct MacosScreenCaptureInput {
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
     owner: MacosCapabilityOwner,
+    owner_conflict: Option<Arc<crate::input::MacosDaemonOwnerConflict>>,
 }
 
 impl MacosScreenCaptureInput {
@@ -699,6 +710,7 @@ impl MacosScreenCaptureInput {
             ),
             status_session: SourceSessionSlot::new(),
             owner: MacosCapabilityOwner::Standalone,
+            owner_conflict: None,
         };
         source
             .refresh_platform_status()
@@ -738,7 +750,7 @@ impl MacosScreenCaptureInput {
                     owner: self.owner,
                     selection: map_selection(self.control.selection()),
                     tahoe_selection: None,
-                    owner_conflict: None,
+                    owner_conflict: self.owner_conflict.clone(),
                 },
             )))?;
         Ok(())
@@ -877,6 +889,16 @@ impl MacosScreenCaptureInput {
 impl InputSource for MacosScreenCaptureInput {
     fn name(&self) -> &'static str {
         "macos_screen_capture"
+    }
+
+    fn set_macos_daemon_ownership(
+        &mut self,
+        owner: MacosCapabilityOwner,
+        conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+    ) -> anyhow::Result<()> {
+        self.owner = owner;
+        self.owner_conflict = conflict.map(Arc::new);
+        self.refresh_platform_status()
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
@@ -1053,7 +1075,31 @@ impl InputSource for MacosScreenCaptureInput {
         let Some(source) = self.exact.source() else {
             return Ok(None);
         };
-        resolve_macos_publication_branch(&source, demand)
+        let calibration = LedToneMapCalibration::try_new(
+            self.config.target_led_white_x,
+            self.config.target_led_white_y,
+            self.config.target_led_reference_white_nits,
+            self.config.target_led_peak_nits,
+            self.config.exposure_ev,
+        )?;
+        let request = demand.request();
+        let processing_profile = request
+            .processing_profile()
+            .as_ref()
+            .clone()
+            .with_led_tone_map(calibration);
+        let calibrated = RegisteredScreenBranchDemand::new(
+            ScreenPublicationRequest::new(
+                request.selector().clone(),
+                request.kind(),
+                request.executor().clone(),
+                request.extent(),
+                request.aspect(),
+                Arc::new(processing_profile),
+            ),
+            demand.requested_hz(),
+        );
+        resolve_macos_publication_branch(&source, &calibrated)
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
@@ -1147,6 +1193,33 @@ impl InputSource for MacosScreenCaptureInput {
         Ok(())
     }
 
+    fn reconfigure_screen_processing(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
+        let next = LedToneMapCalibration::try_new(
+            config.target_led_white_x,
+            config.target_led_white_y,
+            config.target_led_reference_white_nits,
+            config.target_led_peak_nits,
+            config.exposure_ev,
+        )?;
+        let current = LedToneMapCalibration::try_new(
+            self.config.target_led_white_x,
+            self.config.target_led_white_y,
+            self.config.target_led_reference_white_nits,
+            self.config.target_led_peak_nits,
+            self.config.exposure_ev,
+        )?;
+        if current == next {
+            return Ok(());
+        }
+        self.config.target_led_white_x = config.target_led_white_x;
+        self.config.target_led_white_y = config.target_led_white_y;
+        self.config.target_led_reference_white_nits = config.target_led_reference_white_nits;
+        self.config.target_led_peak_nits = config.target_led_peak_nits;
+        self.config.exposure_ev = config.exposure_ev;
+        self.exact.advance_resolution_revision();
+        Ok(())
+    }
+
     fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
         self.present_picker()
     }
@@ -1174,13 +1247,13 @@ fn resolve_macos_publication_branch(
         return Ok(None);
     }
     let selector = selector.clone();
-    let capabilities = ScreenColorTransformCapabilities::new(true, false, false, NonZeroU32::MIN);
+    let capabilities = CpuReductionExecutor::supported_color_capabilities();
     if matches!(
         demand.request().executor(),
         ScreenPublicationExecutorRequest::Cpu
     ) {
         return Ok(Some(demand.resolve_with_color_capabilities(
-            &source.cpu_source(selector),
+            &source.cpu_source(selector)?,
             capabilities,
         )?));
     }
@@ -1193,7 +1266,10 @@ fn resolve_macos_publication_branch(
             source.gpu_source(selector.clone(), target.physical_gpu_device().clone())
         && let Ok(resolved) = demand.resolve_with_executor_capabilities(
             &native_source,
-            ScreenExecutorColorCapabilities::new(capabilities, capabilities),
+            ScreenExecutorColorCapabilities::new(
+                capabilities,
+                ScreenColorTransformCapabilities::NONE,
+            ),
         )
         && matches!(
             resolved.descriptor().executor(),
@@ -1206,7 +1282,7 @@ fn resolve_macos_publication_branch(
     }
 
     Ok(Some(demand.resolve_with_color_capabilities(
-        &source.cpu_source(selector),
+        &source.cpu_source(selector)?,
         capabilities,
     )?))
 }
@@ -1297,7 +1373,6 @@ fn prepare_macos_exact_runtime(
     let source = source
         .filter(|source| &source.epoch.source_id == ticket.source_id())
         .ok_or_else(|| anyhow!("macOS exact publication source changed before preparation"))?;
-    let cpu_source = source.cpu_source(ScreenSourceSelector::Exact(source.epoch.source_id.clone()));
     let executor = exact.cpu_executor()?;
     let compute_plan =
         CpuExactReductionWorkPlan::try_for_source(&candidate, ticket.source_id(), |_| true)?;
@@ -1350,6 +1425,8 @@ fn prepare_macos_exact_runtime(
     {
         (None, 0, 0)
     } else {
+        let cpu_source =
+            source.cpu_source(ScreenSourceSelector::Exact(source.epoch.source_id.clone()))?;
         let batch_quote = executor.batch_allocation_quote(&cpu_source, &candidate)?;
         preflight_macos_scope_bytes(&mut ledger, &mut processing_minimum_remaining, batch_quote)?;
         let batch = executor.prepare_batch(&cpu_source, &candidate)?;
@@ -1539,19 +1616,55 @@ fn bind_current_macos_exact_runtime<'a>(
     runtimes: &'a mut [MacosExactRuntime],
     source: &MacosPublicationSource,
     hub: &ScreenPublicationHub,
+    captured_at: Instant,
 ) -> anyhow::Result<Option<&'a mut MacosExactRuntime>> {
     let authority = hub.committed_state();
     let Some(current_binding) = authority.runtime_binding(&source.epoch.source_id) else {
         return Ok(None);
     };
-    let runtime = runtimes
+    let Some(current_index) = runtimes
         .iter_mut()
-        .find(|runtime| runtime.source == *source && runtime.binding.is_same(current_binding));
-    let Some(runtime) = runtime else {
+        .position(|runtime| runtime.source == *source && runtime.binding.is_same(current_binding))
+    else {
         return Ok(None);
     };
-    runtime.bind_if_current(hub)?;
-    Ok(runtime.is_bound().then_some(runtime))
+    let should_inherit = runtimes[current_index].fanout.is_none()
+        && runtimes[current_index].fanout_candidate.is_some();
+    runtimes[current_index].bind_if_current(hub)?;
+    if should_inherit
+        && let Some(previous_index) =
+            runtimes
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, runtime)| {
+                    (index != current_index
+                        && runtime.binding.source_id() == current_binding.source_id()
+                        && runtime.fanout.is_some())
+                    .then_some(index)
+                })
+    {
+        let (current, previous) = if current_index < previous_index {
+            let (before_previous, previous_and_after) = runtimes.split_at_mut(previous_index);
+            (
+                &mut before_previous[current_index],
+                &mut previous_and_after[0],
+            )
+        } else {
+            let (before_current, current_and_after) = runtimes.split_at_mut(current_index);
+            (
+                &mut current_and_after[0],
+                &mut before_current[previous_index],
+            )
+        };
+        if let (Some(current), Some(previous)) = (current.fanout.as_mut(), previous.fanout.as_mut())
+        {
+            current.inherit_tone_map_transition_from(previous, captured_at);
+        }
+    }
+    Ok(runtimes[current_index]
+        .is_bound()
+        .then_some(&mut runtimes[current_index]))
 }
 
 fn handle_exact_commands(
@@ -1715,7 +1828,7 @@ fn publish_frame(
         .ok_or_else(|| anyhow!("macOS capture plane length overflow"))?;
     let mut plane = prepared.plane_pool.try_acquire(byte_len)?;
     plane.resize(byte_len, 0);
-    frame.convert_bgra8_sdr_to_rgba8(&mut plane, row_stride)?;
+    frame.copy_bgra8_to(&mut plane, row_stride)?;
     let cursor = CaptureCursor {
         visible: frame.cursor_composed,
         position: None,
@@ -1756,12 +1869,12 @@ fn publish_frame(
             captured_at,
             fresh_until,
             geometry: source.geometry,
-            colorimetry: CaptureColorimetry::SRGB,
+            colorimetry: source.colorimetry,
             cursor,
         },
         CaptureStorage::Cpu(CpuCaptureStorage::from_owner(
             plane.freeze(),
-            CapturePixelFormat::Rgba8,
+            CapturePixelFormat::Bgra8,
             i64::try_from(row_stride)?,
             0,
         )),
@@ -1806,7 +1919,8 @@ fn publish_macos_native_exact(
     let Some(hub) = exact.hub() else {
         return Ok(MacosExactDelivery::default());
     };
-    let Some(runtime) = bind_current_macos_exact_runtime(runtimes, source, &hub)? else {
+    let Some(runtime) = bind_current_macos_exact_runtime(runtimes, source, &hub, captured_at)?
+    else {
         return Ok(MacosExactDelivery::default());
     };
     let delivery = MacosExactDelivery {
@@ -1882,7 +1996,9 @@ fn publish_macos_cpu_exact(
     let Some(hub) = exact.hub() else {
         return Ok(());
     };
-    let Some(runtime) = bind_current_macos_exact_runtime(runtimes, source, &hub)? else {
+    let Some(runtime) =
+        bind_current_macos_exact_runtime(runtimes, source, &hub, frame.metadata().captured_at)?
+    else {
         return Ok(());
     };
     if let Some(fanout) = runtime.fanout.as_mut() {
@@ -2011,32 +2127,69 @@ fn capture_source_id(selection: MacosCaptureSelection) -> anyhow::Result<Capture
     Ok(CaptureSourceId::new(source)?)
 }
 
-fn capture_colorimetry(color: MacosCaptureColorimetry) -> anyhow::Result<CaptureColorimetry> {
+fn capture_colorimetry(frame: &MacosCaptureFrame) -> anyhow::Result<CaptureColorimetry> {
+    let color = frame.color;
     let color_space = match color.primaries {
         MacosColorPrimaries::Srgb => CaptureColorSpace::Srgb,
         MacosColorPrimaries::DisplayP3 => CaptureColorSpace::DisplayP3,
         MacosColorPrimaries::Rec2020 => CaptureColorSpace::Rec2020,
     };
-    let (transfer_function, dynamic_range) = match color.transfer {
-        MacosTransferFunction::Srgb => {
-            (CaptureTransferFunction::Srgb, CaptureDynamicRange::Standard)
+    let transfer_function = match color.transfer {
+        MacosTransferFunction::Srgb => CaptureTransferFunction::Srgb,
+        MacosTransferFunction::Linear => CaptureTransferFunction::Linear,
+        MacosTransferFunction::Pq => CaptureTransferFunction::Pq,
+        MacosTransferFunction::Hlg => CaptureTransferFunction::Hlg,
+        MacosTransferFunction::Rec709 | MacosTransferFunction::Rec2020 => {
+            CaptureTransferFunction::Unknown
         }
-        MacosTransferFunction::Linear => (
-            CaptureTransferFunction::Linear,
-            CaptureDynamicRange::Standard,
-        ),
-        MacosTransferFunction::Pq => (CaptureTransferFunction::Pq, CaptureDynamicRange::High),
-        MacosTransferFunction::Hlg => (CaptureTransferFunction::Hlg, CaptureDynamicRange::High),
-        MacosTransferFunction::Rec709 | MacosTransferFunction::Rec2020 => (
-            CaptureTransferFunction::Unknown,
-            CaptureDynamicRange::Standard,
-        ),
+    };
+    let delivered = frame.delivered_metadata();
+    let dynamic_range = if matches!(
+        color.transfer,
+        MacosTransferFunction::Pq | MacosTransferFunction::Hlg
+    ) || delivered
+        .is_some_and(|metadata| metadata.dynamic_range == MacosCaptureDynamicRange::Hdr)
+        || matches!(
+            frame.pixel_format,
+            MacosCapturePixelFormat::Argb2101010 | MacosCapturePixelFormat::Rgba16Float
+        ) {
+        CaptureDynamicRange::High
+    } else {
+        CaptureDynamicRange::Standard
+    };
+    let luminance = if dynamic_range == CaptureDynamicRange::High {
+        let delivered = delivered
+            .ok_or_else(|| anyhow!("macOS HDR capture is missing delivered luminance metadata"))?;
+        if delivered.pixel_format != frame.pixel_format
+            || delivered.color != frame.color
+            || delivered.dynamic_range != MacosCaptureDynamicRange::Hdr
+        {
+            return Err(anyhow!(
+                "macOS HDR delivered metadata contradicts the capture frame"
+            ));
+        }
+        let reference_white = delivered
+            .source_reference_white_nits
+            .ok_or_else(|| anyhow!("macOS HDR capture is missing source reference white"))?;
+        let headroom = delivered
+            .content_headroom
+            .ok_or_else(|| anyhow!("macOS HDR capture is missing content headroom"))?;
+        if headroom <= 1.0 {
+            return Err(anyhow!(
+                "macOS HDR content headroom must be strictly greater than one"
+            ));
+        }
+        let reference_white = CapturePositiveScalar::try_new(reference_white)?;
+        let peak = CapturePositiveScalar::try_new(reference_white.value() * headroom)?;
+        Some(CaptureLuminanceContext::new(reference_white, peak)?)
+    } else {
+        None
     };
     Ok(CaptureColorimetry::new(
         color_space,
         transfer_function,
         Some(dynamic_range),
-        None,
+        luminance,
     )?)
 }
 
@@ -2107,6 +2260,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 struct FixtureControl {
     mailbox: MacosFrameMailbox,
     active: AtomicBool,
+    active_transitions: AtomicU64,
     status: Mutex<NativeProtectedSourceState>,
     selection: Mutex<MacosCaptureSelection>,
     captured_at: Mutex<Option<Instant>>,
@@ -2118,6 +2272,7 @@ impl Default for FixtureControl {
         Self {
             mailbox: MacosFrameMailbox::default(),
             active: AtomicBool::new(false),
+            active_transitions: AtomicU64::new(0),
             status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
             selection: Mutex::new(MacosCaptureSelection::None),
             captured_at: Mutex::new(None),
@@ -2132,6 +2287,7 @@ impl MacosCaptureControl for FixtureControl {
     }
 
     fn set_active(&self, active: bool) {
+        self.active_transitions.fetch_add(1, Ordering::AcqRel);
         self.active.store(active, Ordering::Release);
         *lock(&self.status) = if active {
             NativeProtectedSourceState::Starting
@@ -2223,19 +2379,23 @@ impl MacosScreenCaptureFixture {
 mod tests {
     use super::*;
     use crate::input::screen::{
-        InputPublicationDemandRevision, ScreenAdmissionCapacity, ScreenAspectPolicy,
-        ScreenExtentRequest, ScreenInputGraphGeneration, ScreenNativeExecutionTarget,
-        ScreenNativeExecutionTargetId, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
-        ScreenPlanBuilder, ScreenProcessingProfile, ScreenProcessingProfileConfig,
-        ScreenPublicationKind, ScreenPublicationRequest,
+        CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
+        ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenExtentRequest, ScreenHdrPolicy,
+        ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+        ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPlanBuilder,
+        ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+        ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter,
+        ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenToneMapOperator, ScreenToneMapPolicy,
     };
     use hypercolor_macos_capture::{
-        MacosAttachment, MacosCaptureSurface, MacosColorRange, MacosFrameDecoder, MacosPixelExtent,
-        MacosPointRect, MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame,
+        MacosAttachment, MacosCaptureColorimetry, MacosCaptureSurface, MacosColorRange,
+        MacosDeliveredFrameMetadata, MacosFrameDecoder, MacosPixelExtent, MacosPointRect,
+        MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame,
         MacosRawFrameAttachments,
     };
 
     const BGRA8: u32 = 0x4247_5241;
+    const RGBA16_FLOAT: u32 = 0x5247_6841;
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -2365,31 +2525,51 @@ mod tests {
     }
 
     fn frame() -> Arc<MacosCaptureFrame> {
+        frame_with_color(
+            MacosCaptureColorimetry {
+                primaries: MacosColorPrimaries::Srgb,
+                transfer: MacosTransferFunction::Srgb,
+                matrix: None,
+                range: MacosColorRange::Full,
+                chroma_location: None,
+            },
+            BGRA8,
+            &[0, 0, 255, 255],
+            None,
+        )
+    }
+
+    fn frame_with_color(
+        color: MacosCaptureColorimetry,
+        pixel_format_fourcc: u32,
+        encoded_pixel: &[u8],
+        delivered: Option<MacosDeliveredFrameMetadata>,
+    ) -> Arc<MacosCaptureFrame> {
         let extent = MacosPixelExtent::new(4, 2).expect("fixture extent is valid");
-        let surface = MacosCaptureSurface::new_cpu_fixture(
+        let byte_len = u64::try_from(encoded_pixel.len() * 8).expect("fixture length fits");
+        let mut surface = MacosCaptureSurface::new_cpu_fixture(
             7,
-            32,
+            byte_len,
             1,
-            vec![Arc::<[u8]>::from([0_u8, 0, 255, 255].repeat(8))],
+            vec![Arc::<[u8]>::from(encoded_pixel.repeat(8))],
         )
         .expect("fixture surface is valid");
+        if let Some(delivered) = delivered {
+            surface = surface
+                .with_delivery_metadata(delivered)
+                .expect("fixture delivery metadata is valid");
+        }
         let sample = MacosRawCaptureSample {
             frame: Some(MacosRawCompleteFrame {
                 storage_extent: extent,
                 planes: vec![MacosRawCapturePlane {
                     index: 0,
                     extent,
-                    bytes_per_row: 16,
-                    length_bytes: 32,
+                    bytes_per_row: encoded_pixel.len() * 4,
+                    length_bytes: byte_len,
                 }],
-                pixel_format_fourcc: BGRA8,
-                color: MacosCaptureColorimetry {
-                    primaries: MacosColorPrimaries::Srgb,
-                    transfer: MacosTransferFunction::Srgb,
-                    matrix: None,
-                    range: MacosColorRange::Full,
-                    chroma_location: None,
-                },
+                pixel_format_fourcc,
+                color,
                 cursor_composed: false,
                 surface,
             }),
@@ -2422,6 +2602,1001 @@ mod tests {
             frame,
         )
         .expect("fixture source resolves")
+    }
+
+    fn cpu_demand(profile: ScreenProcessingProfile) -> RegisteredScreenBranchDemand {
+        cpu_demand_for_kind(profile, ScreenPublicationKind::Surface)
+    }
+
+    fn cpu_demand_for_kind(
+        profile: ScreenProcessingProfile,
+        kind: ScreenPublicationKind,
+    ) -> RegisteredScreenBranchDemand {
+        RegisteredScreenBranchDemand::new(
+            ScreenPublicationRequest::new(
+                ScreenSourceSelector::Configured,
+                kind,
+                ScreenPublicationExecutorRequest::Cpu,
+                ScreenExtentRequest::Native,
+                ScreenAspectPolicy::Cover,
+                Arc::new(profile),
+            ),
+            NonZeroU32::new(60).expect("nonzero cadence"),
+        )
+    }
+
+    fn execute_resolved_cpu(
+        source: &MacosPublicationSource,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        encoded_bgra: [u8; 4],
+    ) -> Vec<u8> {
+        let source_extent = source.logical_extent;
+        let source_bytes = Arc::<[u8]>::from(
+            encoded_bgra.repeat(
+                usize::try_from(source_extent.width() * source_extent.height())
+                    .expect("fixture pixel count fits"),
+            ),
+        );
+        let storage = CpuCaptureStorage::new(
+            source_bytes,
+            CapturePixelFormat::Bgra8,
+            i64::from(source_extent.width()) * 4,
+            0,
+        );
+        let layout =
+            CpuReductionLayout::new(source_extent, descriptor.physical().reduction_extent())
+                .expect("fixture reduction layout is valid");
+        let mut output = vec![0; layout.target_byte_len_usize()];
+        CpuReductionExecutor::new(NonZeroUsize::MIN, NonZeroU32::MIN)
+            .expect("fixture executor prepares")
+            .reduce(
+                CpuReductionRequest::new(
+                    &storage,
+                    layout,
+                    descriptor.physical().target_pixel_format(),
+                    descriptor.physical().reduction_filter(),
+                    descriptor.physical().color_pipeline(),
+                ),
+                &mut output,
+            )
+            .expect("resolved macOS CPU color pipeline executes");
+        output
+    }
+
+    fn commit_cpu_runtime(
+        builder: &mut ScreenPlanBuilder,
+        exact: &MacosExactPublicationShared,
+        source: &MacosPublicationSource,
+        resolved: ResolvedScreenBranchDemand,
+        runtimes: &mut Vec<MacosExactRuntime>,
+    ) -> ResolvedScreenPublicationDescriptor {
+        commit_cpu_runtimes(builder, exact, source, [resolved], runtimes)
+            .pop()
+            .expect("single-demand fixture commits one descriptor")
+    }
+
+    fn commit_cpu_runtimes(
+        builder: &mut ScreenPlanBuilder,
+        exact: &MacosExactPublicationShared,
+        source: &MacosPublicationSource,
+        resolved: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
+        runtimes: &mut Vec<MacosExactRuntime>,
+    ) -> Vec<ResolvedScreenPublicationDescriptor> {
+        let resolved = resolved.into_iter().collect::<Vec<_>>();
+        let descriptors = resolved
+            .iter()
+            .map(|demand| demand.descriptor().clone())
+            .collect();
+        let revision = builder
+            .current()
+            .demand_revision()
+            .next()
+            .expect("fixture demand revision advances");
+        let graph = ScreenInputGraphGeneration::new(1);
+        let mut preparing = builder
+            .prepare(
+                resolved,
+                None,
+                revision,
+                graph,
+                ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
+            )
+            .expect("macOS CPU candidate plan prepares");
+        let ticket = preparing
+            .worker_ticket(&source.epoch.source_id)
+            .expect("macOS source owns the candidate worker");
+        let (token, runtime) = prepare_macos_exact_runtime(ticket, Some(source), exact)
+            .expect("macOS CPU runtime prepares");
+        let (runtime, owned_source) = runtime.expect("CPU plan owns a runtime");
+        exact.register_owned_source(owned_source);
+        runtimes.push(runtime);
+        preparing
+            .acknowledge(token)
+            .expect("macOS CPU worker token matches candidate");
+        let armed = preparing
+            .arm(builder.current().generation(), revision, graph)
+            .unwrap_or_else(|failure| panic!("macOS CPU plan arms: {}", failure.error()));
+        let committed = builder
+            .commit(armed, revision, graph)
+            .unwrap_or_else(|failure| panic!("macOS CPU plan commits: {}", failure.error()));
+        let (_, retirement) = committed.into_parts();
+        drop(retirement);
+        descriptors
+    }
+
+    fn cpu_capture_frame(
+        source: &MacosPublicationSource,
+        sequence: u64,
+        captured_at: Instant,
+        encoded_bgra: [u8; 4],
+    ) -> CaptureFrame<RawCaptureSurface> {
+        let byte_len = usize::try_from(
+            u64::from(source.geometry.storage_extent().width())
+                * u64::from(source.geometry.storage_extent().height())
+                * 4,
+        )
+        .expect("fixture CPU bytes fit");
+        CaptureFrame::new(
+            CaptureFrameMetadata {
+                source_id: source.epoch.source_id.clone(),
+                topology_generation: source.epoch.topology_generation,
+                session_generation: source.epoch.session_generation,
+                sequence,
+                captured_at,
+                fresh_until: captured_at + Duration::from_secs(1),
+                geometry: source.geometry,
+                colorimetry: source.colorimetry,
+                cursor: CaptureCursor {
+                    visible: false,
+                    position: None,
+                    hotspot: None,
+                    shape_extent: None,
+                    shape_generation: None,
+                    content: CaptureCursorContent::Hidden,
+                },
+            },
+            CaptureStorage::Cpu(CpuCaptureStorage::new(
+                Arc::from(encoded_bgra.repeat(byte_len / 4)),
+                CapturePixelFormat::Bgra8,
+                i64::from(source.geometry.storage_extent().width()) * 4,
+                0,
+            )),
+            CaptureDamage::new(Vec::new(), Vec::new()),
+        )
+        .expect("fixture CPU frame is valid")
+    }
+
+    fn publish_cpu_bytes(
+        exact: &MacosExactPublicationShared,
+        runtimes: &mut [MacosExactRuntime],
+        source: &MacosPublicationSource,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        frame: &CaptureFrame<RawCaptureSurface>,
+    ) -> Vec<u8> {
+        publish_cpu_frame(exact, runtimes, source, frame);
+        published_surface_bytes(exact, descriptor)
+    }
+
+    fn publish_cpu_frame(
+        exact: &MacosExactPublicationShared,
+        runtimes: &mut [MacosExactRuntime],
+        source: &MacosPublicationSource,
+        frame: &CaptureFrame<RawCaptureSurface>,
+    ) {
+        let hub = exact.hub().expect("fixture hub remains installed");
+        let runtime =
+            bind_current_macos_exact_runtime(runtimes, source, &hub, frame.metadata().captured_at)
+                .expect("current macOS runtime binds")
+                .expect("committed runtime is current");
+        let report = runtime
+            .fanout
+            .as_mut()
+            .expect("CPU runtime owns a fanout")
+            .publish_due(
+                &hub,
+                Some(frame),
+                frame.metadata().captured_at,
+                ScreenPublicationHealth::Healthy,
+            )
+            .expect("CPU fanout publishes");
+        assert!(
+            report.published() > 0,
+            "CPU fixture had no due branch: {report:?}"
+        );
+    }
+
+    fn active_tone_map_transition_count(
+        exact: &MacosExactPublicationShared,
+        runtimes: &mut [MacosExactRuntime],
+        source: &MacosPublicationSource,
+        captured_at: Instant,
+    ) -> usize {
+        let hub = exact.hub().expect("fixture hub remains installed");
+        bind_current_macos_exact_runtime(runtimes, source, &hub, captured_at)
+            .expect("current macOS runtime binds")
+            .expect("committed runtime is current")
+            .fanout
+            .as_ref()
+            .expect("CPU runtime owns a fanout")
+            .active_tone_map_transition_count()
+    }
+
+    fn published_surface_bytes(
+        exact: &MacosExactPublicationShared,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> Vec<u8> {
+        let hub = exact.hub().expect("fixture hub remains installed");
+        let lease = hub
+            .lease(descriptor)
+            .expect("committed Surface branch has a lease");
+        let publication = lease.read().expect("Surface branch has published bytes");
+        let ScreenBranchPayload::Surface(surface) = publication.payload() else {
+            panic!("fixture branch publishes Surface bytes");
+        };
+        surface.pixels().to_vec()
+    }
+
+    fn published_zone_colors(
+        exact: &MacosExactPublicationShared,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> Vec<[u8; 3]> {
+        let hub = exact.hub().expect("fixture hub remains installed");
+        let lease = hub
+            .lease(descriptor)
+            .expect("committed Zones branch has a lease");
+        let publication = lease.read().expect("Zones branch has published colors");
+        let ScreenBranchPayload::Zones(zones) = publication.payload() else {
+            panic!("fixture branch publishes zone colors");
+        };
+        zones.colors().to_vec()
+    }
+
+    fn transition_profile(hdr: bool) -> ScreenProcessingProfile {
+        transition_profile_with_smoothing(hdr, ScreenSmoothingPolicy::Disabled)
+    }
+
+    fn transition_profile_with_smoothing(
+        hdr: bool,
+        smoothing: ScreenSmoothingPolicy,
+    ) -> ScreenProcessingProfile {
+        let calibration = LedToneMapCalibration::DEFAULT;
+        transition_profile_with_calibration(hdr, smoothing, calibration)
+    }
+
+    fn transition_profile_with_calibration(
+        hdr: bool,
+        smoothing: ScreenSmoothingPolicy,
+        calibration: LedToneMapCalibration,
+    ) -> ScreenProcessingProfile {
+        ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            reduction_filter: ScreenReductionFilter::Nearest,
+            smoothing,
+            hdr: if hdr {
+                ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                    ScreenToneMapOperator::Bt2390Eetf,
+                    calibration,
+                ))
+            } else {
+                ScreenHdrPolicy::Reject
+            },
+            ..ScreenProcessingProfileConfig::default()
+        })
+        .with_led_tone_map(calibration)
+    }
+
+    fn hdr_transition_source(sdr_source: &MacosPublicationSource) -> MacosPublicationSource {
+        let hdr_color = CaptureColorimetry::new(
+            CaptureColorSpace::Srgb,
+            CaptureTransferFunction::Pq,
+            Some(CaptureDynamicRange::High),
+            Some(
+                CaptureLuminanceContext::new(
+                    CapturePositiveScalar::try_new(203.0).expect("reference white is valid"),
+                    CapturePositiveScalar::try_new(1_000.0).expect("peak is valid"),
+                )
+                .expect("HDR luminance is ordered"),
+            ),
+        )
+        .expect("HDR fixture colorimetry is valid");
+        MacosPublicationSource {
+            colorimetry: hdr_color,
+            ..sdr_source.clone()
+        }
+    }
+
+    #[test]
+    fn delivered_hdr_luminance_is_required_and_mapped_exactly() {
+        assert_eq!(
+            capture_colorimetry(&frame()).expect("SDR remains valid without delivery luminance"),
+            CaptureColorimetry::SRGB
+        );
+        let hdr_color = MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::Rec2020,
+            transfer: MacosTransferFunction::Pq,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        };
+        let headroom = 1_000.0 / 203.0;
+        let delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            hdr_color,
+            Some(203.0),
+            Some(headroom),
+        )
+        .expect("complete HDR metadata is valid");
+        let hdr = frame_with_color(hdr_color, RGBA16_FLOAT, &[0; 8], Some(delivered));
+        let colorimetry = capture_colorimetry(&hdr).expect("complete HDR colorimetry maps");
+        let luminance = colorimetry.luminance().expect("HDR luminance is retained");
+        assert_eq!(luminance.reference_white_nits().value(), 203.0);
+        assert_eq!(luminance.peak_nits().value(), 203.0 * headroom);
+
+        let linear_hdr_color = MacosCaptureColorimetry {
+            transfer: MacosTransferFunction::Linear,
+            ..hdr_color
+        };
+        let linear_delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            linear_hdr_color,
+            Some(203.0),
+            Some(headroom),
+        )
+        .expect("extended-linear HDR metadata is valid");
+        let linear_hdr = frame_with_color(
+            linear_hdr_color,
+            RGBA16_FLOAT,
+            &[0; 8],
+            Some(linear_delivered),
+        );
+        let linear_colorimetry =
+            capture_colorimetry(&linear_hdr).expect("extended-linear HDR colorimetry maps");
+        assert_eq!(
+            linear_colorimetry.transfer_function(),
+            CaptureTransferFunction::Linear
+        );
+        assert_eq!(
+            linear_colorimetry.dynamic_range(),
+            Some(CaptureDynamicRange::High)
+        );
+        assert_eq!(linear_colorimetry.luminance(), colorimetry.luminance());
+        let missing_linear = frame_with_color(linear_hdr_color, RGBA16_FLOAT, &[0; 8], None);
+        assert!(capture_colorimetry(&missing_linear).is_err());
+
+        let missing = frame_with_color(hdr_color, RGBA16_FLOAT, &[0; 8], None);
+        assert!(capture_colorimetry(&missing).is_err());
+
+        let no_reference_white = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            hdr_color,
+            None,
+            Some(headroom),
+        )
+        .expect("capture layer admits optional reference white");
+        let no_reference_white =
+            frame_with_color(hdr_color, RGBA16_FLOAT, &[0; 8], Some(no_reference_white));
+        assert!(capture_colorimetry(&no_reference_white).is_err());
+
+        let no_headroom = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            hdr_color,
+            Some(203.0),
+            None,
+        )
+        .expect("capture layer admits optional headroom");
+        let no_headroom = frame_with_color(hdr_color, RGBA16_FLOAT, &[0; 8], Some(no_headroom));
+        assert!(capture_colorimetry(&no_headroom).is_err());
+
+        let no_peak_headroom = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            hdr_color,
+            Some(203.0),
+            Some(1.0),
+        )
+        .expect("capture layer admits unity headroom");
+        let no_peak_headroom =
+            frame_with_color(hdr_color, RGBA16_FLOAT, &[0; 8], Some(no_peak_headroom));
+        assert!(capture_colorimetry(&no_peak_headroom).is_err());
+
+        let contradictory_color = MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::DisplayP3,
+            ..hdr_color
+        };
+        let contradictory = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            contradictory_color,
+            Some(203.0),
+            Some(headroom),
+        )
+        .expect("alternate HDR metadata is valid in isolation");
+        let contradictory = frame_with_color(hdr_color, RGBA16_FLOAT, &[0; 8], Some(contradictory));
+        assert!(capture_colorimetry(&contradictory).is_err());
+    }
+
+    #[test]
+    fn macos_cpu_resolves_p3_and_rejects_non_byte_addressable_hdr() {
+        let p3_color = MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::DisplayP3,
+            transfer: MacosTransferFunction::Linear,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        };
+        let p3_frame = frame_with_color(p3_color, BGRA8, &[255, 0, 255, 255], None);
+        let p3_source = source(&p3_frame);
+        let p3_profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            reduction_filter: ScreenReductionFilter::Nearest,
+            ..ScreenProcessingProfileConfig::default()
+        });
+        let p3 = resolve_macos_publication_branch(&p3_source, &cpu_demand(p3_profile))
+            .expect("P3 macOS demand resolves")
+            .expect("configured source owns P3 demand");
+        assert!(matches!(
+            p3.descriptor().physical().color_pipeline().transform(),
+            ResolvedScreenColorTransform::LinearRelativeColorimetric { .. }
+        ));
+        assert_eq!(
+            &execute_resolved_cpu(&p3_source, p3.descriptor(), [255, 0, 255, 255])[..4],
+            [255, 59, 242, 255]
+        );
+
+        let hdr_color = MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::Rec2020,
+            transfer: MacosTransferFunction::Pq,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        };
+        let delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            hdr_color,
+            Some(203.0),
+            Some(1_000.0 / 203.0),
+        )
+        .expect("HDR delivery metadata is valid");
+        let hdr_frame = frame_with_color(hdr_color, RGBA16_FLOAT, &[0; 8], Some(delivered));
+        let hdr_source = source(&hdr_frame);
+        let calibration = LedToneMapCalibration::DEFAULT;
+        let hdr_profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            reduction_filter: ScreenReductionFilter::Nearest,
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                calibration,
+            )),
+            ..ScreenProcessingProfileConfig::default()
+        })
+        .with_led_tone_map(calibration);
+        assert!(resolve_macos_publication_branch(&hdr_source, &cpu_demand(hdr_profile)).is_err());
+    }
+
+    #[test]
+    fn macos_publication_transition_is_deterministic_at_zero_midpoint_and_completion() {
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        let mut runtimes = Vec::new();
+        let base_frame = frame();
+        let sdr_source = source(&base_frame);
+        exact.replace_source(Some(sdr_source.clone()));
+        let sdr =
+            resolve_macos_publication_branch(&sdr_source, &cpu_demand(transition_profile(false)))
+                .expect("SDR transition branch resolves")
+                .expect("configured source owns SDR transition branch");
+        let sdr_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &sdr_source, sdr, &mut runtimes);
+        let started = Instant::now() + Duration::from_millis(20);
+        let sdr_frame = cpu_capture_frame(&sdr_source, 1, started, [148, 148, 148, 255]);
+        let sdr_bytes = publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &sdr_source,
+            &sdr_descriptor,
+            &sdr_frame,
+        );
+        assert_eq!(&sdr_bytes[..4], [148, 148, 148, 255]);
+
+        let hdr_source = hdr_transition_source(&sdr_source);
+        exact.replace_source(Some(hdr_source.clone()));
+        let hdr =
+            resolve_macos_publication_branch(&hdr_source, &cpu_demand(transition_profile(true)))
+                .expect("HDR transition branch resolves")
+                .expect("configured source owns HDR transition branch");
+        let hdr_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &hdr_source, hdr, &mut runtimes);
+        let at_zero = cpu_capture_frame(&hdr_source, 2, started, [148, 148, 148, 255]);
+        let zero_bytes = publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &hdr_source,
+            &hdr_descriptor,
+            &at_zero,
+        );
+        let at_midpoint = cpu_capture_frame(
+            &hdr_source,
+            3,
+            started + Duration::from_millis(125),
+            [148, 148, 148, 255],
+        );
+        let midpoint_bytes = publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &hdr_source,
+            &hdr_descriptor,
+            &at_midpoint,
+        );
+        let at_complete = cpu_capture_frame(
+            &hdr_source,
+            4,
+            started + Duration::from_millis(250),
+            [148, 148, 148, 255],
+        );
+        let complete_bytes = publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &hdr_source,
+            &hdr_descriptor,
+            &at_complete,
+        );
+        assert_eq!(&zero_bytes[..4], [255, 255, 255, 255]);
+        assert_eq!(&midpoint_bytes[..4], [223, 223, 223, 255]);
+        assert_eq!(&complete_bytes[..4], [187, 187, 187, 255]);
+    }
+
+    #[test]
+    fn macos_transition_inheritance_skips_matching_routes_without_curve_state() {
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        let mut runtimes = Vec::new();
+        let base_frame = frame();
+        let sdr_source = source(&base_frame);
+        exact.replace_source(Some(sdr_source.clone()));
+        let identity_profile = ScreenProcessingProfile::new(
+            ScreenProcessingProfileConfig::exact_encoded_identity(CapturePixelFormat::Bgra8),
+        );
+        let calibration = LedToneMapCalibration::DEFAULT;
+        let managed_profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            reduction_filter: ScreenReductionFilter::Nearest,
+            target_pixel_format: CapturePixelFormat::Bgra8,
+            ..ScreenProcessingProfileConfig::default()
+        })
+        .with_led_tone_map(calibration);
+        let identity = resolve_macos_publication_branch(&sdr_source, &cpu_demand(identity_profile))
+            .expect("encoded-identity branch resolves")
+            .expect("configured source owns encoded-identity branch");
+        let managed = resolve_macos_publication_branch(&sdr_source, &cpu_demand(managed_profile))
+            .expect("managed SDR branch resolves")
+            .expect("configured source owns managed SDR branch");
+        let sdr_descriptors = commit_cpu_runtimes(
+            &mut builder,
+            &exact,
+            &sdr_source,
+            [identity, managed],
+            &mut runtimes,
+        );
+        let started = Instant::now() + Duration::from_millis(20);
+        let sdr_frame = cpu_capture_frame(&sdr_source, 1, started, [148, 148, 148, 255]);
+        publish_cpu_frame(&exact, &mut runtimes, &sdr_source, &sdr_frame);
+        assert_eq!(sdr_descriptors.len(), 2);
+
+        let hdr_source = hdr_transition_source(&sdr_source);
+        exact.replace_source(Some(hdr_source.clone()));
+        let hdr_profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            reduction_filter: ScreenReductionFilter::Nearest,
+            target_pixel_format: CapturePixelFormat::Bgra8,
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                calibration,
+            )),
+            ..ScreenProcessingProfileConfig::default()
+        })
+        .with_led_tone_map(calibration);
+        let hdr = resolve_macos_publication_branch(&hdr_source, &cpu_demand(hdr_profile))
+            .expect("managed HDR branch resolves")
+            .expect("configured source owns managed HDR branch");
+        let hdr_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &hdr_source, hdr, &mut runtimes);
+        let transition_start = cpu_capture_frame(&hdr_source, 2, started, [148, 148, 148, 255]);
+        assert_eq!(
+            &publish_cpu_bytes(
+                &exact,
+                &mut runtimes,
+                &hdr_source,
+                &hdr_descriptor,
+                &transition_start,
+            )[..4],
+            [255, 255, 255, 255]
+        );
+    }
+
+    #[test]
+    fn macos_publication_transition_restarts_from_its_midpoint_curve() {
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        let mut runtimes = Vec::new();
+        let base_frame = frame();
+        let sdr_source = source(&base_frame);
+        exact.replace_source(Some(sdr_source.clone()));
+        let sdr =
+            resolve_macos_publication_branch(&sdr_source, &cpu_demand(transition_profile(false)))
+                .expect("SDR transition branch resolves")
+                .expect("configured source owns SDR transition branch");
+        let sdr_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &sdr_source, sdr, &mut runtimes);
+        let started = Instant::now() + Duration::from_millis(20);
+        let sdr_frame = cpu_capture_frame(&sdr_source, 1, started, [148, 148, 148, 255]);
+        assert_eq!(
+            &publish_cpu_bytes(
+                &exact,
+                &mut runtimes,
+                &sdr_source,
+                &sdr_descriptor,
+                &sdr_frame,
+            )[..4],
+            [148, 148, 148, 255]
+        );
+
+        let hdr_source = hdr_transition_source(&sdr_source);
+        exact.replace_source(Some(hdr_source.clone()));
+        let hdr =
+            resolve_macos_publication_branch(&hdr_source, &cpu_demand(transition_profile(true)))
+                .expect("HDR transition branch resolves")
+                .expect("configured source owns HDR transition branch");
+        let hdr_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &hdr_source, hdr, &mut runtimes);
+        let at_zero = cpu_capture_frame(&hdr_source, 2, started, [148, 148, 148, 255]);
+        assert_eq!(
+            &publish_cpu_bytes(
+                &exact,
+                &mut runtimes,
+                &hdr_source,
+                &hdr_descriptor,
+                &at_zero,
+            )[..4],
+            [255, 255, 255, 255]
+        );
+        let at_midpoint = cpu_capture_frame(
+            &hdr_source,
+            3,
+            started + Duration::from_millis(125),
+            [148, 148, 148, 255],
+        );
+        assert_eq!(
+            &publish_cpu_bytes(
+                &exact,
+                &mut runtimes,
+                &hdr_source,
+                &hdr_descriptor,
+                &at_midpoint,
+            )[..4],
+            [223, 223, 223, 255]
+        );
+
+        exact.replace_source(Some(sdr_source.clone()));
+        let restarted_sdr =
+            resolve_macos_publication_branch(&sdr_source, &cpu_demand(transition_profile(false)))
+                .expect("restarted SDR branch resolves")
+                .expect("configured source owns restarted SDR branch");
+        let restarted_descriptor = commit_cpu_runtime(
+            &mut builder,
+            &exact,
+            &sdr_source,
+            restarted_sdr,
+            &mut runtimes,
+        );
+        let restart_boundary = cpu_capture_frame(
+            &sdr_source,
+            5,
+            started + Duration::from_millis(125),
+            [255, 255, 255, 255],
+        );
+        let restart_bytes = publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &sdr_source,
+            &restarted_descriptor,
+            &restart_boundary,
+        );
+        let restart_midpoint = cpu_capture_frame(
+            &sdr_source,
+            6,
+            started + Duration::from_millis(250),
+            [255, 255, 255, 255],
+        );
+        let restart_midpoint_bytes = publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &sdr_source,
+            &restarted_descriptor,
+            &restart_midpoint,
+        );
+        let restart_complete = cpu_capture_frame(
+            &sdr_source,
+            7,
+            started + Duration::from_millis(375),
+            [255, 255, 255, 255],
+        );
+        let restart_complete_bytes = publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &sdr_source,
+            &restarted_descriptor,
+            &restart_complete,
+        );
+        assert_eq!(&restart_bytes[..4], [224, 224, 224, 255]);
+        assert_eq!(&restart_midpoint_bytes[..4], [238, 238, 238, 255]);
+        assert_eq!(&restart_complete_bytes[..4], [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn sdr_exposure_reconfiguration_swaps_atomically_without_transition() {
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        let mut runtimes = Vec::new();
+        let source = source(&frame());
+        exact.replace_source(Some(source.clone()));
+        let initial =
+            resolve_macos_publication_branch(&source, &cpu_demand(transition_profile(false)))
+                .expect("initial SDR branch resolves")
+                .expect("configured source owns the initial SDR branch");
+        let initial_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &source, initial, &mut runtimes);
+        let started = Instant::now() + Duration::from_millis(20);
+        let initial_frame = cpu_capture_frame(&source, 1, started, [96, 96, 96, 255]);
+        publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &source,
+            &initial_descriptor,
+            &initial_frame,
+        );
+
+        let default = LedToneMapCalibration::DEFAULT;
+        let calibration = LedToneMapCalibration::try_new(
+            default.target_white_x(),
+            default.target_white_y(),
+            default.target_reference_white_nits(),
+            default.target_peak_nits(),
+            1.0,
+        )
+        .expect("updated SDR exposure is valid");
+        let next = resolve_macos_publication_branch(
+            &source,
+            &cpu_demand(transition_profile_with_calibration(
+                false,
+                ScreenSmoothingPolicy::Disabled,
+                calibration,
+            )),
+        )
+        .expect("updated SDR branch resolves")
+        .expect("configured source owns the updated SDR branch");
+        let next_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &source, next, &mut runtimes);
+        let boundary = started + Duration::from_millis(20);
+        assert_eq!(
+            active_tone_map_transition_count(&exact, &mut runtimes, &source, boundary),
+            0
+        );
+        let encoded = [96, 96, 96, 255];
+        let expected = execute_resolved_cpu(&source, &next_descriptor, encoded);
+        let at_zero = cpu_capture_frame(&source, 2, boundary, encoded);
+        assert_eq!(
+            publish_cpu_bytes(&exact, &mut runtimes, &source, &next_descriptor, &at_zero,),
+            expected
+        );
+        let at_midpoint =
+            cpu_capture_frame(&source, 3, boundary + Duration::from_millis(125), encoded);
+        assert_eq!(
+            publish_cpu_bytes(
+                &exact,
+                &mut runtimes,
+                &source,
+                &next_descriptor,
+                &at_midpoint,
+            ),
+            expected
+        );
+        assert_eq!(
+            active_tone_map_transition_count(
+                &exact,
+                &mut runtimes,
+                &source,
+                boundary + Duration::from_millis(125),
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn hdr_calibration_reconfiguration_swaps_atomically_without_transition() {
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        let mut runtimes = Vec::new();
+        let source = hdr_transition_source(&source(&frame()));
+        exact.replace_source(Some(source.clone()));
+        let initial =
+            resolve_macos_publication_branch(&source, &cpu_demand(transition_profile(true)))
+                .expect("initial HDR branch resolves")
+                .expect("configured source owns the initial HDR branch");
+        let initial_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &source, initial, &mut runtimes);
+        let started = Instant::now() + Duration::from_millis(20);
+        let initial_frame = cpu_capture_frame(&source, 1, started, [148, 148, 148, 255]);
+        publish_cpu_bytes(
+            &exact,
+            &mut runtimes,
+            &source,
+            &initial_descriptor,
+            &initial_frame,
+        );
+
+        let default = LedToneMapCalibration::DEFAULT;
+        let calibration = LedToneMapCalibration::try_new(
+            default.target_white_x(),
+            default.target_white_y(),
+            160.0,
+            640.0,
+            default.exposure_ev(),
+        )
+        .expect("updated HDR calibration is valid");
+        let next = resolve_macos_publication_branch(
+            &source,
+            &cpu_demand(transition_profile_with_calibration(
+                true,
+                ScreenSmoothingPolicy::Disabled,
+                calibration,
+            )),
+        )
+        .expect("updated HDR branch resolves")
+        .expect("configured source owns the updated HDR branch");
+        let next_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &source, next, &mut runtimes);
+        let boundary = started + Duration::from_millis(20);
+        assert_eq!(
+            active_tone_map_transition_count(&exact, &mut runtimes, &source, boundary),
+            0
+        );
+        let encoded = [148, 148, 148, 255];
+        let expected = execute_resolved_cpu(&source, &next_descriptor, encoded);
+        let at_zero = cpu_capture_frame(&source, 2, boundary, encoded);
+        assert_eq!(
+            publish_cpu_bytes(&exact, &mut runtimes, &source, &next_descriptor, &at_zero,),
+            expected
+        );
+        let at_midpoint =
+            cpu_capture_frame(&source, 3, boundary + Duration::from_millis(125), encoded);
+        assert_eq!(
+            publish_cpu_bytes(
+                &exact,
+                &mut runtimes,
+                &source,
+                &next_descriptor,
+                &at_midpoint,
+            ),
+            expected
+        );
+        assert_eq!(
+            active_tone_map_transition_count(
+                &exact,
+                &mut runtimes,
+                &source,
+                boundary + Duration::from_millis(125),
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn macos_publication_samples_once_and_suppresses_both_scene_cut_paths() {
+        let smoothing = ScreenSmoothingPolicy::Exponential {
+            time_constant: Duration::from_mins(1),
+            scene_cut: ScreenSceneCutPolicy::MeanAbsoluteDelta {
+                threshold: ScreenProfileScalar::try_new(0.01)
+                    .expect("scene-cut threshold is valid"),
+            },
+        };
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        let mut runtimes = Vec::new();
+        let base_frame = frame();
+        let sdr_source = source(&base_frame);
+        exact.replace_source(Some(sdr_source.clone()));
+        let sdr_profile = transition_profile_with_smoothing(false, smoothing);
+        let sdr_surface = resolve_macos_publication_branch(
+            &sdr_source,
+            &cpu_demand_for_kind(sdr_profile.clone(), ScreenPublicationKind::Surface),
+        )
+        .expect("SDR Surface branch resolves")
+        .expect("configured source owns SDR Surface branch");
+        let sdr_zones = resolve_macos_publication_branch(
+            &sdr_source,
+            &cpu_demand_for_kind(
+                sdr_profile,
+                ScreenPublicationKind::Zones {
+                    columns: NonZeroU32::MIN,
+                    rows: NonZeroU32::MIN,
+                },
+            ),
+        )
+        .expect("SDR Zones branch resolves")
+        .expect("configured source owns SDR Zones branch");
+        let sdr_descriptors = commit_cpu_runtimes(
+            &mut builder,
+            &exact,
+            &sdr_source,
+            [sdr_surface, sdr_zones],
+            &mut runtimes,
+        );
+        assert_eq!(sdr_descriptors.len(), 2);
+        assert_eq!(sdr_descriptors[0].physical(), sdr_descriptors[1].physical());
+        let started = Instant::now() + Duration::from_millis(20);
+        let sdr_frame = cpu_capture_frame(&sdr_source, 1, started, [255, 255, 255, 255]);
+        publish_cpu_frame(&exact, &mut runtimes, &sdr_source, &sdr_frame);
+        assert_eq!(
+            &published_surface_bytes(&exact, &sdr_descriptors[0])[..4],
+            [255, 255, 255, 255]
+        );
+        assert_eq!(
+            published_zone_colors(&exact, &sdr_descriptors[1])[0],
+            [255, 255, 255]
+        );
+
+        let hdr_source = hdr_transition_source(&sdr_source);
+        exact.replace_source(Some(hdr_source.clone()));
+        let hdr_profile = transition_profile_with_smoothing(true, smoothing);
+        let hdr_surface = resolve_macos_publication_branch(
+            &hdr_source,
+            &cpu_demand_for_kind(hdr_profile.clone(), ScreenPublicationKind::Surface),
+        )
+        .expect("HDR Surface branch resolves")
+        .expect("configured source owns HDR Surface branch");
+        let hdr_zones = resolve_macos_publication_branch(
+            &hdr_source,
+            &cpu_demand_for_kind(
+                hdr_profile,
+                ScreenPublicationKind::Zones {
+                    columns: NonZeroU32::MIN,
+                    rows: NonZeroU32::MIN,
+                },
+            ),
+        )
+        .expect("HDR Zones branch resolves")
+        .expect("configured source owns HDR Zones branch");
+        let hdr_descriptors = commit_cpu_runtimes(
+            &mut builder,
+            &exact,
+            &hdr_source,
+            [hdr_surface, hdr_zones],
+            &mut runtimes,
+        );
+        assert_eq!(hdr_descriptors.len(), 2);
+        assert_eq!(hdr_descriptors[0].physical(), hdr_descriptors[1].physical());
+        let transition_start = cpu_capture_frame(&hdr_source, 2, started, [148, 148, 148, 255]);
+        publish_cpu_frame(&exact, &mut runtimes, &hdr_source, &transition_start);
+        assert_eq!(
+            &published_surface_bytes(&exact, &hdr_descriptors[0])[..4],
+            [255, 255, 255, 255]
+        );
+        assert_eq!(
+            published_zone_colors(&exact, &hdr_descriptors[1])[0],
+            [255, 255, 255]
+        );
+
+        let midpoint = cpu_capture_frame(
+            &hdr_source,
+            3,
+            started + Duration::from_millis(125),
+            [148, 148, 148, 255],
+        );
+        publish_cpu_frame(&exact, &mut runtimes, &hdr_source, &midpoint);
+        let surface = published_surface_bytes(&exact, &hdr_descriptors[0]);
+        let zones = published_zone_colors(&exact, &hdr_descriptors[1]);
+        assert!(surface[0] > 250);
+        assert!(zones[0][0] > 250);
+        assert_eq!(&surface[..3], zones[0]);
     }
 
     fn target() -> ScreenNativeExecutionTarget {
@@ -2558,5 +3733,84 @@ mod tests {
             resolved.descriptor().executor(),
             ScreenPublicationExecutor::Cpu
         ));
+    }
+
+    #[test]
+    fn processing_reconfiguration_preserves_the_native_capture_runtime() {
+        let admission =
+            ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+        let (mut input, fixture) =
+            MacosScreenCaptureFixture::source(CaptureConfig::default(), admission);
+        let native_source = source(&frame());
+        input.exact.replace_source(Some(native_source));
+        fixture.control.set_active(true);
+        let active_transitions = fixture.control.active_transitions.load(Ordering::Acquire);
+        let worker_generation = input.worker_generation;
+        let revision = input.screen_publication_resolution_revision();
+        let mut config = input.config.clone();
+        config.target_led_white_x = 0.3000;
+        config.target_led_white_y = 0.3200;
+        config.target_led_reference_white_nits = 180.0;
+        config.target_led_peak_nits = 500.0;
+        config.exposure_ev = 1.25;
+
+        input
+            .reconfigure_screen_processing(&config)
+            .expect("valid calibration updates without rebuilding capture");
+
+        assert_eq!(input.worker_generation, worker_generation);
+        assert!(fixture.is_active());
+        assert_eq!(
+            fixture.control.active_transitions.load(Ordering::Acquire),
+            active_transitions
+        );
+        assert_eq!(input.screen_publication_resolution_revision(), revision + 1);
+        let resolved = input
+            .resolve_screen_publication_branch(&RegisteredScreenBranchDemand::new(
+                ScreenPublicationRequest::new(
+                    ScreenSourceSelector::Configured,
+                    ScreenPublicationKind::Surface,
+                    ScreenPublicationExecutorRequest::Cpu,
+                    ScreenExtentRequest::bounded(
+                        NonZeroU32::new(2),
+                        NonZeroU32::new(1),
+                        super::super::ScreenUpscalePolicy::Never,
+                    ),
+                    ScreenAspectPolicy::Contain,
+                    Arc::new(ScreenProcessingProfile::default()),
+                ),
+                NonZeroU32::new(60).expect("nonzero cadence"),
+            ))
+            .expect("calibrated branch resolves")
+            .expect("configured macOS source owns the demand");
+        assert_eq!(
+            resolved
+                .descriptor()
+                .physical()
+                .color_pipeline()
+                .calibration(),
+            Some(
+                LedToneMapCalibration::try_new(0.3000, 0.3200, 180.0, 500.0, 1.25)
+                    .expect("fixture calibration is valid")
+            )
+        );
+    }
+
+    #[test]
+    fn invalid_processing_reconfiguration_preserves_the_active_profile() {
+        let admission =
+            ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+        let (mut input, fixture) =
+            MacosScreenCaptureFixture::source(CaptureConfig::default(), admission);
+        fixture.control.set_active(true);
+        let revision = input.screen_publication_resolution_revision();
+        let previous = input.config.clone();
+        let mut invalid = previous.clone();
+        invalid.exposure_ev = f32::INFINITY;
+
+        assert!(input.reconfigure_screen_processing(&invalid).is_err());
+        assert_eq!(input.config, previous);
+        assert_eq!(input.screen_publication_resolution_revision(), revision);
+        assert!(fixture.is_active());
     }
 }
