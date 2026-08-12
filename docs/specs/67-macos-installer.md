@@ -4,7 +4,8 @@
 > hardware-key infrastructure required to ship a Developer ID notarized DMG, and
 > the exact patches to apply once the Apple credentials are provisioned.
 
-**Status:** Active — local + CI scaffolding wired, signing/notarization deferred until creds exist
+**Status:** Implemented. Release CI uses the manifest-driven Developer ID
+signing and notarization actor; local unsigned builds remain available.
 **Scope:** `scripts/build-mac-installer.sh`, `scripts/generate-mac-icons.sh`,
 `crates/hypercolor-app/icons/`, `crates/hypercolor-app/tauri.conf.json`,
 `.github/workflows/ci.yml` (mac branches of `build-native-app`)
@@ -28,7 +29,7 @@ Local and CI builds both produce per-arch DMG + `.app` artifacts via Tauri 2's b
 | `Info.plist` with microphone and screen-capture purpose strings; no Apple Events string | `crates/hypercolor-app/Info.plist` | Live |
 | Exact six-key daemon hardened-runtime entitlement profile | `packaging/macos/daemon.entitlements.plist` | Live |
 | Sidecar staging (daemon + CLI under `target/bundle-stage/binaries/`) | `scripts/stage-app-bundle-assets.sh` | Live |
-| Per-arch CI build matrix (`macos-arm64`, `macos-x64`) | `.github/workflows/ci.yml` § `build-native-app` | Live, currently `--no-sign` |
+| Per-arch CI build matrix (`macos-arm64`, `macos-x64`) | `.github/workflows/ci.yml` § `build-native-app` | Live; release artifacts are signed and notarized by `scripts/sign-macos-artifacts.sh` |
 | DMG artifact name normalization to `Hypercolor-<ver>-<arch>.dmg` | `.github/workflows/ci.yml` § Normalize macOS DMG | Live |
 | Homebrew Cask template with per-arch SHA placeholders | `packaging/homebrew/hypercolor-app.rb` | Live |
 | Cask publish step (commits to `hyperb1iss/homebrew-tap`) | `.github/workflows/ci.yml` § `update-homebrew` | Live |
