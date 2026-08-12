@@ -3,8 +3,8 @@
 use bytes::Bytes;
 use hypercolor_tui::state::{
     CanvasFrame, CanvasPreviewState, ConnectionStatus, ControlDefinition, ControlValue,
-    DaemonState, DeviceSummary, EffectSummary, Notification, NotificationLevel, PreviewSource,
-    SimulatedDisplaySummary, SpectrumSnapshot,
+    DaemonState, DeviceSummary, EffectSummary, Notification, NotificationLevel, PresetTemplate,
+    PreviewSource, SimulatedDisplaySummary, SpectrumSnapshot,
 };
 
 // ── ControlValue conversion tests ────────────────────────────────
@@ -118,6 +118,28 @@ fn effect_summary_deserialize_with_defaults() {
     assert!(effect.tags.is_empty());
     assert!(effect.controls.is_empty());
     assert!(!effect.audio_reactive);
+}
+
+#[test]
+fn preset_template_deserialize_derives_id_for_legacy_snapshots() {
+    let preset: PresetTemplate =
+        serde_json::from_str(r#"{"name":"Soft Glow","description":null,"controls":{}}"#)
+            .expect("deserialize legacy preset template");
+
+    assert_eq!(
+        preset.id,
+        hypercolor_types::library::PresetId::stable("Soft Glow").to_string()
+    );
+}
+
+#[test]
+fn preset_template_deserialize_preserves_canonical_id() {
+    let preset: PresetTemplate = serde_json::from_str(
+        r#"{"id":"canonical-id","name":"Soft Glow","description":null,"controls":{}}"#,
+    )
+    .expect("deserialize canonical preset template");
+
+    assert_eq!(preset.id, "canonical-id");
 }
 
 #[test]

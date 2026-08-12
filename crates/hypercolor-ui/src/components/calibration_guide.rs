@@ -220,7 +220,7 @@ pub fn CalibrationGuide(
                             };
                             let target_zone = zones_ctx.focused_zone_id_untracked();
                             let preset_id = template.id;
-                            let preset_name = template.name.clone();
+                            let preset_name = template.name;
                             leptos::task::spawn_local(async move {
                                 match api::apply_effect_preset(
                                     &active_effect_id,

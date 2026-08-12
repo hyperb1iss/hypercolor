@@ -24,6 +24,10 @@ function attr(attrs: Map<string, string>, name: string): string | undefined {
     return attrs.get(name.toLowerCase())
 }
 
+export function normalizePresetKey(value: string): string {
+    return value.trim().split(/[\s\u001c-\u001f]+/u).filter(Boolean).join(' ')
+}
+
 function extractTitle(html: string): string | undefined {
     const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
     return match?.[1]?.trim() || undefined
@@ -63,10 +67,12 @@ function parsePreset(attrs: Map<string, string>): HtmlPresetMetadata | undefined
     if (!name) return undefined
 
     const rawControls = attr(attrs, 'preset-controls')
+    const id = attr(attrs, 'preset-id')
+    const normalizedId = id ? normalizePresetKey(id) || undefined : undefined
     if (!rawControls) {
         return {
             controls: {},
-            id: attr(attrs, 'preset-id'),
+            id: normalizedId,
             name,
             parseError: 'Missing preset-controls attribute',
         }
@@ -81,14 +87,14 @@ function parsePreset(attrs: Map<string, string>): HtmlPresetMetadata | undefined
         return {
             controls,
             description: attr(attrs, 'preset-description'),
-            id: attr(attrs, 'preset-id'),
+            id: normalizedId,
             name,
         }
     } catch (error) {
         return {
             controls: {},
             description: attr(attrs, 'preset-description'),
-            id: attr(attrs, 'preset-id'),
+            id: normalizedId,
             name,
             parseError: error instanceof Error ? error.message : String(error),
         }

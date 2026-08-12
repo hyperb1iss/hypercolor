@@ -26,6 +26,17 @@ fn authored_preset_id_is_stable_and_keyed() {
 }
 
 #[test]
+fn authored_preset_id_normalizes_cross_runtime_whitespace() {
+    let canonical = PresetId::stable("deep ocean");
+
+    assert_eq!(canonical, PresetId::stable("  deep\tocean\n"));
+    assert_eq!(canonical, PresetId::stable("deep\u{1c}ocean"));
+    assert_eq!(canonical, PresetId::stable("deep\u{1f}ocean"));
+    assert_eq!(canonical, PresetId::stable("deep\u{feff}ocean"));
+    assert_eq!(PresetId::normalize_key("\u{feff}\u{1c}"), "");
+}
+
+#[test]
 fn playlist_id_round_trips_from_string() {
     let id = PlaylistId::new();
     let parsed = PlaylistId::from_str(&id.to_string()).expect("playlist id should parse");

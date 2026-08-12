@@ -164,12 +164,17 @@ pub fn PresetToolbar(
 
     // Refresh helper
     let refresh_presets = move || {
-        let Some(effect_id) = effect_id.get_untracked() else {
+        let Some(request_effect_id) = effect_id.get_untracked() else {
             set_presets.set(Vec::new());
             return;
         };
+        let request_generation = fetch_generation.get_value().saturating_add(1);
+        fetch_generation.set_value(request_generation);
         leptos::task::spawn_local(async move {
-            if let Ok(next_presets) = api::fetch_effect_presets(&effect_id).await {
+            if let Ok(next_presets) = api::fetch_effect_presets(&request_effect_id).await
+                && fetch_generation.get_value() == request_generation
+                && effect_id.get_untracked().as_deref() == Some(request_effect_id.as_str())
+            {
                 set_presets.set(next_presets);
             }
         });
@@ -264,8 +269,14 @@ pub fn PresetToolbar(
                 controls: serde_json::Value::Object(controls_json),
                 tags: None,
             };
-            if let Ok(created) = api::create_preset(&req).await {
-                match api::apply_effect_preset(&eid, &created.id, target_zone.as_deref()).await {
+            match api::create_preset(&req).await {
+                Ok(created) => match api::apply_effect_preset(
+                    &eid,
+                    &created.id,
+                    target_zone.as_deref(),
+                )
+                .await
+                {
                     Ok(()) => {
                         set_selected_id.set(Some(created.id));
                         toasts::toast_success("Preset created");
@@ -275,7 +286,11 @@ pub fn PresetToolbar(
                         toasts::toast_error(&format!(
                             "Preset created but could not be selected: {error}"
                         ));
+                        refresh();
                     }
+                },
+                Err(error) => {
+                    toasts::toast_error(&format!("Failed to create preset: {error}"));
                 }
             }
         });

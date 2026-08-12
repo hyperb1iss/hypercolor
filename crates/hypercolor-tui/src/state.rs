@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::screen::ScreenId;
 
@@ -177,13 +178,42 @@ pub struct ControlDefinition {
 }
 
 /// An effect-defined preset snapshot.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PresetTemplate {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
     #[serde(default)]
     pub controls: std::collections::HashMap<String, ControlValue>,
+}
+
+#[derive(Deserialize)]
+struct PresetTemplateWire {
+    id: Option<String>,
+    name: String,
+    description: Option<String>,
+    #[serde(default)]
+    controls: HashMap<String, ControlValue>,
+}
+
+impl<'de> Deserialize<'de> for PresetTemplate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = PresetTemplateWire::deserialize(deserializer)?;
+        let id = wire
+            .id
+            .filter(|id| !PresetId::normalize_key(id).is_empty())
+            .unwrap_or_else(|| PresetId::stable(&wire.name).to_string());
+
+        Ok(Self {
+            id,
+            name: wire.name,
+            description: wire.description,
+            controls: wire.controls,
+        })
+    }
 }
 
 /// A control parameter value.

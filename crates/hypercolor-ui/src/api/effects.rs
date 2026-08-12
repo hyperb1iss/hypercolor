@@ -8,6 +8,7 @@ use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use web_sys::{File, FormData};
 
 use super::client;
+use crate::control_surface_api::path_segment;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -91,7 +92,7 @@ pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, Strin
 
 /// Fetch detailed metadata for one effect.
 pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, String> {
-    client::fetch_json(&format!("/api/v1/effects/{id}"))
+    client::fetch_json(&format!("/api/v1/effects/{}", path_segment(id)))
         .await
         .map_err(Into::into)
 }
@@ -99,7 +100,7 @@ pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, Strin
 /// Fetch the bundled and saved preset stack for one effect.
 pub async fn fetch_effect_presets(id: &str) -> Result<Vec<EffectPresetSummary>, String> {
     let response: EffectPresetListResponse =
-        client::fetch_json(&format!("/api/v1/effects/{id}/presets")).await?;
+        client::fetch_json(&format!("/api/v1/effects/{}/presets", path_segment(id))).await?;
     Ok(response.items)
 }
 
@@ -109,7 +110,11 @@ pub async fn apply_effect_preset(
     preset_id: &str,
     render_group: Option<&str>,
 ) -> Result<(), String> {
-    let path = format!("/api/v1/effects/{effect_id}/presets/{preset_id}/apply");
+    let path = format!(
+        "/api/v1/effects/{}/presets/{}/apply",
+        path_segment(effect_id),
+        path_segment(preset_id)
+    );
     match render_group {
         Some(render_group) => {
             client::post_json_discard(
@@ -128,7 +133,7 @@ pub async fn apply_effect_preset(
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass
 /// `Some(body)` to deliver preferences atomically.
 pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<(), String> {
-    let path = format!("/api/v1/effects/{id}/apply");
+    let path = format!("/api/v1/effects/{}/apply", path_segment(id));
     match body {
         Some(body) => client::post_json_discard(&path, body)
             .await
@@ -202,7 +207,7 @@ pub async fn update_effect_controls(
 ) -> Result<UpdateControlsOutcome, String> {
     use gloo_net::http::Method;
 
-    let url = format!("/api/v1/effects/{effect_id}/controls");
+    let url = format!("/api/v1/effects/{}/controls", path_segment(effect_id));
     let body = serde_json::json!({ "controls": controls });
     let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
         Method::PATCH,

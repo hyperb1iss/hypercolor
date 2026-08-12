@@ -151,6 +151,10 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
     // reflect only the primary zone).
     assert_eq!(effects[0].controls[0].default_value.as_f32(), Some(0.25));
     assert_eq!(effects[0].presets.len(), 1);
+    assert_eq!(
+        effects[0].presets[0].id,
+        hypercolor_types::library::PresetId::stable("Soft").to_string()
+    );
 }
 
 #[tokio::test]

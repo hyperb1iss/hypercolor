@@ -76,6 +76,28 @@ describe('tooling validate', () => {
         expect(result.errors.some((entry) => entry.code === 'DUPLICATE_PRESET_ID')).toBeTrue()
     })
 
+    test('normalizes preset ids identically across runtime whitespace sets', () => {
+        const html = VALID_EFFECT.replace(
+            '</head>',
+            `
+    <meta preset="Breeze" preset-id="\u001ccalm\uFEFF" preset-controls='{"speed":"3"}' />
+  </head>`,
+        )
+
+        const result = validateHtmlArtifact(html, '/tmp/unicode-whitespace.html')
+
+        expect(result.valid).toBeFalse()
+        expect(result.errors.some((entry) => entry.code === 'DUPLICATE_PRESET_ID')).toBeTrue()
+    })
+
+    test('falls back to the preset name when the authored id normalizes empty', () => {
+        const parsed = parseHtmlArtifact(
+            VALID_EFFECT.replace('preset-id="calm"', 'preset-id="\uFEFF\u001c"'),
+        )
+
+        expect(parsed.presets[0]?.id).toBeUndefined()
+    })
+
     test('warns for missing version and unknown preset controls', () => {
         const html = VALID_EFFECT.replace('<meta name="hypercolor-version" content="1" />\n', '').replace(
             `{"speed":"2","palette":"Aurora"}`,

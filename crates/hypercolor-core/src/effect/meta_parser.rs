@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 
 use hypercolor_types::effect::{EffectCategory, PreviewSource};
+use hypercolor_types::library::PresetId;
 
 /// Upper bound on an inline cover data URI.
 ///
@@ -472,7 +473,9 @@ fn parse_preset_metadata(attrs: &HashMap<String, String>) -> Option<HtmlPresetMe
         .unwrap_or_default();
 
     Some(HtmlPresetMetadata {
-        id: attr_value(attrs, "preset-id").map(normalize_whitespace),
+        id: attr_value(attrs, "preset-id")
+            .map(PresetId::normalize_key)
+            .filter(|id| !id.is_empty()),
         name: normalize_whitespace(name),
         description,
         controls,
@@ -922,21 +925,6 @@ mod tests {
         assert_eq!(parsed.category, EffectCategory::Audio);
         assert!(parsed.tags.contains(&"html".to_owned()));
         assert!(parsed.tags.contains(&"audio-reactive".to_owned()));
-    }
-
-    #[test]
-    fn parses_authored_preset_id() {
-        let html = r#"
-<head>
-  <title>Aurora</title>
-  <meta preset="Deep Ocean" preset-id="deep-ocean" preset-controls='{"speed":2}' />
-</head>
-"#;
-
-        let parsed = parse_html_effect_metadata(html);
-
-        assert_eq!(parsed.presets.len(), 1);
-        assert_eq!(parsed.presets[0].id.as_deref(), Some("deep-ocean"));
     }
 
     #[test]

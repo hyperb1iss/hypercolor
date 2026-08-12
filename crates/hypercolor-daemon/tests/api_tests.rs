@@ -6526,16 +6526,18 @@ async fn effect_preset_stack_lists_and_applies_both_origins() {
             .expect("failed to execute request");
         assert_eq!(response.status(), StatusCode::OK);
 
-        let manager = state.scene_manager.read().await;
-        let primary = manager
-            .active_scene()
-            .and_then(Scene::primary_group)
-            .expect("primary group should exist after preset apply");
-        assert_eq!(primary.preset_id.map(|id| id.to_string()), Some(preset_id));
-        assert!(matches!(
-            primary.controls.get("speed"),
-            Some(ControlValue::Float(value)) if (*value - expected_speed).abs() < 0.01
-        ));
+        {
+            let manager = state.scene_manager.read().await;
+            let primary = manager
+                .active_scene()
+                .and_then(Scene::primary_group)
+                .expect("primary group should exist after preset apply");
+            assert_eq!(primary.preset_id.map(|id| id.to_string()), Some(preset_id));
+            assert!(matches!(
+                primary.controls.get("speed"),
+                Some(ControlValue::Float(value)) if (*value - expected_speed).abs() < 0.01
+            ));
+        }
     }
 
     let active_response = app

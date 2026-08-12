@@ -158,10 +158,13 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
                 "pagination": {"offset": 0, "limit": 1, "total": 1, "has_more": False},
             }
         else:
-            assert request.url.raw_path == (
-                b"/api/v1/effects/aurora%2Fmain/presets/saved-bright/apply"
-            )
-            assert json.loads(request.content) == {"render_group": "zone-left"}
+            expected_prefix = b"/api/v1/effects/aurora%2Fmain/presets/"
+            assert request.url.raw_path.startswith(expected_prefix)
+            if request.url.raw_path.endswith(b"/saved-bright/apply"):
+                assert json.loads(request.content) == {"render_group": "zone-left"}
+            else:
+                assert request.url.raw_path.endswith(b"/bundled-calm/apply")
+                assert request.content == b""
             data = {
                 "effect": {"id": "aurora/main", "name": "Aurora"},
                 "applied_controls": {},
@@ -189,8 +192,11 @@ def test_sync_client_delegates_effect_preset_stack() -> None:
             "saved-bright",
             render_group="zone-left",
         )
+        ungrouped_result = client.apply_effect_preset("aurora/main", "bundled-calm")
     finally:
         client.close()
 
     assert presets[0].origin is EffectPresetOrigin.SAVED
+    assert presets[0].editable is True
     assert result.effect.id == "aurora/main"
+    assert ungrouped_result.effect.id == "aurora/main"

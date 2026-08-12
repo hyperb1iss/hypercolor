@@ -154,6 +154,23 @@ fn html_loader_rejects_duplicate_authored_preset_ids() {
 }
 
 #[test]
+fn html_metadata_normalizes_authored_preset_ids() {
+    let parsed = parse_html_effect_metadata(
+        r#"
+<head>
+  <title>Aurora</title>
+  <meta preset="Deep Ocean" preset-id=" deep   ocean " preset-controls='{"speed":2}' />
+  <meta preset="Fallback" preset-id="﻿" preset-controls='{}' />
+</head>
+"#,
+    );
+
+    assert_eq!(parsed.presets.len(), 2);
+    assert_eq!(parsed.presets[0].id.as_deref(), Some("deep ocean"));
+    assert_eq!(parsed.presets[1].id, None);
+}
+
+#[test]
 fn register_html_effects_reports_unreadable_files() {
     let temp = TempDir::new().expect("failed to create tempdir");
     let root = temp.path().join("effects");
