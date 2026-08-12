@@ -3,6 +3,8 @@
 Status: PROPOSED (cross-model reviewed: Codex gpt-5.6-sol adversarial pass, 2 blockers
 + 13 majors folded in)
 Depends on: none. Related: spec 69 (faces share the payload/adapter machinery).
+Spec 76 is the macOS authority for native host input, TCC ownership, and the
+final `device_query` retirement.
 
 ## Problem
 

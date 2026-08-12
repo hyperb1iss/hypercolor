@@ -5,6 +5,9 @@
 **Status:** Draft
 **Design doc:** [08-screen-capture.md](../design/08-screen-capture.md)
 **Performance doc:** [13-performance.md](../design/13-performance.md)
+**macOS authority:** [Spec 76](76-macos-screen-capture-and-host-input.md)
+supersedes this draft for macOS capture, permission, publication, and release
+requirements.
 
 ---
 

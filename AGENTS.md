@@ -49,7 +49,9 @@ crates/
   hypercolor-core/                 # Engine: render loop, device backends, Servo effect renderer, event bus, spatial sampler, input pipeline, scene/session management
   hypercolor-hal/                  # Hardware abstraction: USB/HID/SMBus protocol encoding and transport for the local driver families
   hypercolor-linux-gpu-interop/    # Linux GL/Vulkan texture import boundary for Servo frames
+  hypercolor-macos-capture/        # macOS ScreenCaptureKit acquisition and retained frame ownership
   hypercolor-macos-gpu-interop/    # macOS IOSurface/Metal texture import boundary
+  hypercolor-macos-input/          # macOS CGEventTap keyboard and pointer capture
   hypercolor-windows-gpu-interop/  # Windows D3D11/Vulkan texture import boundary
   hypercolor-windows-pawnio/       # Windows SMBus access via the PawnIO kernel driver, with a broker service; stubbed on other platforms
   hypercolor-windows-capture/      # Windows DXGI Desktop Duplication screen capture
@@ -91,7 +93,9 @@ graph TD
     T --> CORE[hypercolor-core]
     HAL --> CORE
     LGI[hypercolor-linux-gpu-interop] --> CORE
+    MC[hypercolor-macos-capture] --> CORE
     MGI[hypercolor-macos-gpu-interop] --> CORE
+    MI[hypercolor-macos-input] --> CORE
     WGI[hypercolor-windows-gpu-interop] --> CORE
     WPI[hypercolor-windows-pawnio] --> CORE
     WC[hypercolor-windows-capture] --> CORE & WGI
@@ -246,7 +250,7 @@ without the runtime cliffs of unoptimized Servo.
 
 - **Edition 2024**, Rust 1.94+
 - **Tests:** integration and public-API coverage lives in `tests/` directories, named `{feature}_tests.rs`. Small private-internals unit tests may use `#[cfg(test)]` modules; avoid large inline test bodies.
-- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `macos-gpu-interop`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
+- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
 - **Clippy pedantic** at deny level; see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden**: use `?`, `.ok()`, `expect("reason")`, or handle errors properly
 - **`thiserror`** for library errors, **`anyhow`** for application errors

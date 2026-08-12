@@ -6,7 +6,8 @@
 **Crates:** `hypercolor-windows-input` (new), `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
 **Related:** Spec 71 (interactive input pipeline) — this is W6's Windows half.
 Spec 58 sets the Windows interop-crate precedent; `hypercolor-windows-capture`
-sets the shape.
+sets the shape. [Spec 76](76-macos-screen-capture-and-host-input.md) is the macOS
+authority for native host input and the final `device_query` retirement.
 
 ## Problem
 
