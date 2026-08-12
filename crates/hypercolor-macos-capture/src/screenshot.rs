@@ -224,21 +224,40 @@ impl MacosScreenshotReferenceImage {
 
     #[cfg(test)]
     pub(crate) fn new_fixture(dynamic_range: MacosCaptureDynamicRange, marker: u8) -> Self {
-        let extent = MacosPixelExtent::new(1, 1).expect("fixture extent is valid");
-        let mut pixel = [marker, marker, marker, u8::MAX];
+        Self::new_rgba_fixture(dynamic_range, 1, 1, vec![marker, marker, marker, u8::MAX])
+    }
+
+    #[cfg(test)]
+    fn new_rgba_fixture(
+        dynamic_range: MacosCaptureDynamicRange,
+        width: u32,
+        height: u32,
+        mut rgba8: Vec<u8>,
+    ) -> Self {
+        let extent = MacosPixelExtent::new(width, height).expect("fixture extent is valid");
+        let bytes_per_row = usize::try_from(width)
+            .expect("fixture width fits usize")
+            .checked_mul(4)
+            .expect("fixture row size is bounded");
+        assert_eq!(
+            rgba8.len(),
+            bytes_per_row
+                .checked_mul(usize::try_from(height).expect("fixture height fits usize"))
+                .expect("fixture allocation is bounded")
+        );
         // SAFETY: Core Graphics exports a process-lifetime immutable CFString.
         let srgb = unsafe { kCGColorSpaceSRGB };
         let color_space =
             CGColorSpace::with_name(Some(srgb)).expect("fixture color space is available");
-        // SAFETY: pixel is a fixed four-byte RGBA buffer retained until the
+        // SAFETY: rgba8 is a fixed RGBA buffer retained until the
         // context creates its immutable CGImage copy.
         let context = unsafe {
             CGBitmapContextCreate(
-                pixel.as_mut_ptr().cast(),
-                1,
-                1,
+                rgba8.as_mut_ptr().cast(),
+                usize::try_from(width).expect("fixture width fits usize"),
+                usize::try_from(height).expect("fixture height fits usize"),
                 8,
-                4,
+                bytes_per_row,
                 Some(&color_space),
                 CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
             )
@@ -254,7 +273,7 @@ impl MacosScreenshotReferenceImage {
                 dynamic_range,
                 bits_per_component: 8,
                 bits_per_pixel: 32,
-                bytes_per_row: 4,
+                bytes_per_row: u64::try_from(bytes_per_row).expect("fixture row size fits u64"),
                 content_headroom: (dynamic_range == MacosCaptureDynamicRange::Hdr).then_some(4.0),
                 content_average_light_level: Some(0.25),
             },
@@ -632,6 +651,41 @@ mod tests {
         assert_eq!(output.extent, MacosPixelExtent::new(1, 1).expect("extent"));
         assert_eq!(output.bytes_per_row, 4);
         assert_eq!(output.rgba8.len(), 4);
+    }
+
+    #[test]
+    fn reference_output_preserves_top_left_row_order() {
+        let image = MacosScreenshotReferenceImage::new_rgba_fixture(
+            MacosCaptureDynamicRange::Sdr,
+            1,
+            2,
+            vec![0x20, 0x20, 0x20, u8::MAX, 0xe0, 0xe0, 0xe0, u8::MAX],
+        );
+        let preferred_key = CFString::from_static_str("preferred");
+        let standard_range = CFString::from_static_str("standard");
+        let constrained_range = CFString::from_static_str("constrained");
+        let high_range = CFString::from_static_str("high");
+        let average_light_key = CFString::from_static_str("average-light");
+        let symbols = TahoeReferenceOutputSymbols {
+            set_tone_mapping: record_reference_tone_mapping,
+            preferred_key: NonNull::from(&*preferred_key),
+            standard_range: NonNull::from(&*standard_range),
+            constrained_range: NonNull::from(&*constrained_range),
+            high_range: NonNull::from(&*high_range),
+            average_light_key: NonNull::from(&*average_light_key),
+        };
+
+        let output = image
+            .copy_reference_rgba8_with_symbols(
+                MacosScreenshotPreferredDynamicRange::Standard,
+                symbols,
+            )
+            .expect("reference output should render");
+
+        assert_eq!(
+            output.rgba8,
+            vec![0x20, 0x20, 0x20, u8::MAX, 0xe0, 0xe0, 0xe0, u8::MAX]
+        );
     }
 
     #[test]
