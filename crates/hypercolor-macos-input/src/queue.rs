@@ -3,13 +3,79 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_queue::ArrayQueue;
 
 use crate::{MacosInputDiagnostics, MacosInputEvent, MacosInputGapReason};
 
 pub(crate) const DEFAULT_QUEUE_CAPACITY: usize = 2048;
+const LATENCY_BUCKET_WIDTH_NS: u64 = 100_000;
+const LATENCY_BUCKET_COUNT: usize = 4096;
+
+struct QueuedInputEvent {
+    event: MacosInputEvent,
+    callback_entry: Instant,
+}
+
+struct AtomicLatencyHistogram {
+    buckets: Box<[AtomicU64]>,
+    sample_count: AtomicU64,
+    total_ns: AtomicU64,
+    max_ns: AtomicU64,
+}
+
+impl Default for AtomicLatencyHistogram {
+    fn default() -> Self {
+        Self {
+            buckets: (0..=LATENCY_BUCKET_COUNT)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+            sample_count: AtomicU64::new(0),
+            total_ns: AtomicU64::new(0),
+            max_ns: AtomicU64::new(0),
+        }
+    }
+}
+
+impl AtomicLatencyHistogram {
+    fn record(&self, elapsed: Duration) {
+        let elapsed_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let bucket = usize::try_from(elapsed_ns / LATENCY_BUCKET_WIDTH_NS)
+            .unwrap_or(usize::MAX)
+            .min(LATENCY_BUCKET_COUNT);
+        self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
+        self.sample_count.fetch_add(1, Ordering::Relaxed);
+        let _ = self
+            .total_ns
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+                Some(total.saturating_add(elapsed_ns))
+            });
+        self.max_ns.fetch_max(elapsed_ns, Ordering::Relaxed);
+    }
+
+    fn percentile_upper_bound_ns(&self, percentile: u64) -> u64 {
+        let sample_count = self.sample_count.load(Ordering::Relaxed);
+        if sample_count == 0 {
+            return 0;
+        }
+        let rank = sample_count.saturating_mul(percentile).saturating_add(99) / 100;
+        let mut observed = 0_u64;
+        for (index, count) in self.buckets.iter().enumerate() {
+            observed = observed.saturating_add(count.load(Ordering::Relaxed));
+            if observed >= rank {
+                if index == LATENCY_BUCKET_COUNT {
+                    return self.max_ns.load(Ordering::Relaxed);
+                }
+                return u64::try_from(index.saturating_add(1))
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(LATENCY_BUCKET_WIDTH_NS)
+                    .min(self.max_ns.load(Ordering::Relaxed));
+            }
+        }
+        self.max_ns.load(Ordering::Relaxed)
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Diagnostics {
@@ -25,6 +91,7 @@ pub(crate) struct Diagnostics {
     invalid_scroll_phases: AtomicU64,
     last_point_delta_x: AtomicI64,
     last_point_delta_y: AtomicI64,
+    callback_to_publication: AtomicLatencyHistogram,
     repeated_tap_disable: AtomicU8,
 }
 
@@ -45,6 +112,24 @@ impl Diagnostics {
             invalid_scroll_phases: self.invalid_scroll_phases.load(Ordering::Relaxed),
             last_point_delta_x: self.last_point_delta_x.load(Ordering::Relaxed),
             last_point_delta_y: self.last_point_delta_y.load(Ordering::Relaxed),
+            callback_to_publication_sample_count: self
+                .callback_to_publication
+                .sample_count
+                .load(Ordering::Relaxed),
+            callback_to_publication_total_ns: self
+                .callback_to_publication
+                .total_ns
+                .load(Ordering::Relaxed),
+            callback_to_publication_max_ns: self
+                .callback_to_publication
+                .max_ns
+                .load(Ordering::Relaxed),
+            callback_to_publication_p95_ns: self
+                .callback_to_publication
+                .percentile_upper_bound_ns(95),
+            callback_to_publication_p99_ns: self
+                .callback_to_publication
+                .percentile_upper_bound_ns(99),
         }
     }
 
@@ -52,9 +137,14 @@ impl Diagnostics {
         self.events_received.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn record_published(&self, count: usize) {
+    pub(crate) fn record_published(&self, count: usize, callback_entries: &[Instant]) {
         self.events_published
             .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+        let published_at = Instant::now();
+        for callback_entry in callback_entries {
+            self.callback_to_publication
+                .record(published_at.saturating_duration_since(*callback_entry));
+        }
     }
 
     pub(crate) fn record_drop(&self) {
@@ -114,7 +204,7 @@ impl Diagnostics {
 }
 
 pub(crate) struct EventQueue {
-    events: ArrayQueue<MacosInputEvent>,
+    events: ArrayQueue<QueuedInputEvent>,
     overflowed: AtomicBool,
     closed: AtomicBool,
     wake_tx: mpsc::SyncSender<()>,
@@ -137,7 +227,12 @@ impl EventQueue {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn enqueue(&self, event: MacosInputEvent) {
+        self.enqueue_at(event, Instant::now());
+    }
+
+    pub(crate) fn enqueue_at(&self, event: MacosInputEvent, callback_entry: Instant) {
         self.diagnostics.record_received();
         if matches!(event, MacosInputEvent::StateGap { .. }) {
             self.diagnostics.record_gap();
@@ -146,7 +241,14 @@ impl EventQueue {
             self.diagnostics.record_drop();
             return;
         }
-        if self.events.push(event).is_err() {
+        if self
+            .events
+            .push(QueuedInputEvent {
+                event,
+                callback_entry,
+            })
+            .is_err()
+        {
             self.diagnostics.record_drop();
             self.overflowed.store(true, Ordering::Release);
         }
@@ -182,10 +284,14 @@ impl EventQueue {
             .recv_timeout(timeout);
     }
 
-    pub(crate) fn drain_into(&self, output: &mut Vec<MacosInputEvent>) {
-        let initial_len = output.len();
-        while let Some(event) = self.events.pop() {
-            output.push(event);
+    pub(crate) fn drain_into(
+        &self,
+        output: &mut Vec<MacosInputEvent>,
+        callback_entries: &mut Vec<Instant>,
+    ) {
+        while let Some(queued) = self.events.pop() {
+            output.push(queued.event);
+            callback_entries.push(queued.callback_entry);
         }
         if self.overflowed.swap(false, Ordering::AcqRel) {
             self.diagnostics.record_gap();
@@ -200,8 +306,6 @@ impl EventQueue {
                 .drain(..)
                 .map(|reason| MacosInputEvent::StateGap { reason }),
         );
-        self.diagnostics
-            .record_published(output.len().saturating_sub(initial_len));
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -248,8 +352,12 @@ mod tests {
         queue.enqueue(button(true));
         queue.enqueue(button(false));
         let mut drained = Vec::new();
+        let mut callback_entries = Vec::new();
 
-        queue.drain_into(&mut drained);
+        queue.drain_into(&mut drained, &mut callback_entries);
+        queue
+            .diagnostics()
+            .record_published(drained.len(), &callback_entries);
 
         assert_eq!(drained.len(), 3);
         assert_eq!(drained[0], button(true));
@@ -276,8 +384,9 @@ mod tests {
         queue.request_gap(MacosInputGapReason::SourceStopped);
         queue.close();
         let mut drained = Vec::new();
+        let mut callback_entries = Vec::new();
 
-        queue.drain_into(&mut drained);
+        queue.drain_into(&mut drained, &mut callback_entries);
 
         assert_eq!(drained[0], button(true));
         assert_eq!(
@@ -309,5 +418,37 @@ mod tests {
         assert_eq!(snapshot.tap_disabled_timeout, 1);
         assert_eq!(snapshot.tap_disabled_user_input, 1);
         assert_eq!(snapshot.tap_reenabled, 1);
+    }
+
+    #[test]
+    fn callback_latency_records_only_after_canonical_publication() {
+        let queue = EventQueue::new(2);
+        queue.enqueue(button(true));
+        let mut drained = Vec::new();
+        let mut callback_entries = Vec::new();
+        queue.drain_into(&mut drained, &mut callback_entries);
+
+        let before = queue.diagnostics_snapshot();
+        assert_eq!(before.events_published, 0);
+        assert_eq!(before.callback_to_publication_sample_count, 0);
+
+        queue
+            .diagnostics()
+            .record_published(drained.len(), &callback_entries);
+        let after = queue.diagnostics_snapshot();
+        assert_eq!(after.events_published, 1);
+        assert_eq!(after.callback_to_publication_sample_count, 1);
+        assert!(after.callback_to_publication_p95_ns > 0);
+        assert!(after.callback_to_publication_p99_ns > 0);
+    }
+
+    #[test]
+    fn callback_latency_percentiles_never_exceed_the_observed_maximum() {
+        let histogram = AtomicLatencyHistogram::default();
+        histogram.record(Duration::from_nanos(1));
+
+        assert_eq!(histogram.percentile_upper_bound_ns(95), 1);
+        assert_eq!(histogram.percentile_upper_bound_ns(99), 1);
+        assert_eq!(histogram.max_ns.load(Ordering::Relaxed), 1);
     }
 }

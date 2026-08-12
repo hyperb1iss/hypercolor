@@ -28,6 +28,7 @@ objc2-core-graphics = { workspace = true, features = [
   "CGError",
   "CGEvent",
   "CGEventTypes",
+  "libc",
 ] }
 mach2 = { workspace = true }
 

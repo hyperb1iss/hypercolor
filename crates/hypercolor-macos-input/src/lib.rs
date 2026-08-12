@@ -16,9 +16,9 @@ pub use decode::{
 pub use process::current_process_audit_token_identity;
 pub use shared::{
     EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
-    MacosInputEvent, MacosInputGapReason, MacosInputResult, MacosMediaKey, MacosModifierFlags,
-    MacosPointerButton, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
-    MacosWorkerDegradation, MacosWorkerState,
+    MacosInputEvent, MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult,
+    MacosMediaKey, MacosModifierFlags, MacosPointerButton, MacosScrollPhase, MacosScrollUnit,
+    MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState,
 };
 
 #[cfg(target_os = "macos")]

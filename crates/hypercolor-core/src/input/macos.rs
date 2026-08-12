@@ -7,9 +7,9 @@ use std::time::Instant;
 
 use hypercolor_macos_input::{
     MacosInputBatch, MacosInputConfig, MacosInputError, MacosInputEvent, MacosInputGapReason,
-    MacosInputSession, MacosModifierFlags, MacosPointerButton, MacosScrollPhase, MacosScrollUnit,
-    MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState, input_monitoring_granted,
-    request_input_monitoring,
+    MacosInputPublicationOutcome, MacosInputSession, MacosModifierFlags, MacosPointerButton,
+    MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop, MacosWorkerDegradation,
+    MacosWorkerState, input_monitoring_granted, request_input_monitoring,
 };
 use tracing::{info, warn};
 
@@ -702,7 +702,11 @@ impl MacosHostInput {
             clock: Arc::new(crate::input::input_mono_ms),
         };
         match MacosInputSession::start(config, move |batch| {
-            publish_macos_batch(&shared, batch, event_limit);
+            if publish_macos_batch(&shared, batch, event_limit) {
+                MacosInputPublicationOutcome::Published
+            } else {
+                MacosInputPublicationOutcome::Rejected
+            }
         }) {
             Ok(session) => {
                 info!(

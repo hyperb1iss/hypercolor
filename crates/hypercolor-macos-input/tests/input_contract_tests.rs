@@ -210,7 +210,7 @@ fn empty_session_is_rejected_before_platform_access() {
             epoch: 1,
             clock: Arc::new(|| 0),
         },
-        |_| {},
+        |_| hypercolor_macos_input::MacosInputPublicationOutcome::Published,
     )
     .err()
     .expect("empty capture must fail");

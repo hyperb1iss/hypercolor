@@ -115,12 +115,14 @@ fn run() -> Result<(), String> {
                 epoch: 1,
                 clock,
             },
-            move |batch| {
-                if matches!(
-                    sender.try_send(owned_batch(batch)),
-                    Err(mpsc::TrySendError::Full(_))
-                ) {
+            move |batch| match sender.try_send(owned_batch(batch)) {
+                Ok(()) => hypercolor_macos_input::MacosInputPublicationOutcome::Published,
+                Err(mpsc::TrySendError::Full(_)) => {
                     callback_delivery_drops.fetch_add(1, Ordering::Relaxed);
+                    hypercolor_macos_input::MacosInputPublicationOutcome::Rejected
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    hypercolor_macos_input::MacosInputPublicationOutcome::Rejected
                 }
             },
         )
@@ -157,7 +159,7 @@ fn run() -> Result<(), String> {
         session.stop();
         let diagnostics = session.diagnostics();
         println!(
-            "summary events={} state={:?} capture_dropped={} diagnostic_delivery_dropped={} tap_disables={} unsupported_system={} invalid_scroll_phase={}",
+            "summary events={} state={:?} capture_dropped={} diagnostic_delivery_dropped={} tap_disables={} unsupported_system={} invalid_scroll_phase={} callback_to_publication_samples={} callback_to_publication_p95_ns={} callback_to_publication_p99_ns={} callback_to_publication_max_ns={}",
             seen.min(args.events),
             session.worker_state(),
             diagnostics.dropped_events,
@@ -165,6 +167,10 @@ fn run() -> Result<(), String> {
             diagnostics.tap_disable_count,
             diagnostics.unsupported_system_events,
             diagnostics.invalid_scroll_phases,
+            diagnostics.callback_to_publication_sample_count,
+            diagnostics.callback_to_publication_p95_ns,
+            diagnostics.callback_to_publication_p99_ns,
+            diagnostics.callback_to_publication_max_ns,
         );
         Ok(())
     }

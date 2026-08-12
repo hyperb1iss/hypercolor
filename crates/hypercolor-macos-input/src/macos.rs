@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -10,17 +11,18 @@ use objc2_core_foundation::{
     CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, kCFRunLoopCommonModes,
 };
 use objc2_core_graphics::{
-    CGDisplayBounds, CGError, CGEvent, CGEventField, CGEventTapLocation, CGEventTapOptions,
-    CGEventTapPlacement, CGEventType, CGGetActiveDisplayList, CGPreflightListenEventAccess,
-    CGRequestListenEventAccess,
+    CGDisplayBounds, CGError, CGEvent, CGEventField, CGEventTapInformation, CGEventTapLocation,
+    CGEventTapOptions, CGEventTapPlacement, CGEventType, CGGetActiveDisplayList, CGGetEventTapList,
+    CGPreflightListenEventAccess, CGRequestListenEventAccess,
 };
 
 use crate::queue::{DEFAULT_QUEUE_CAPACITY, EventQueue};
 use crate::{
     EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
-    MacosInputEvent, MacosInputGapReason, MacosInputResult, MacosModifierFlags, MacosScrollPhase,
-    MacosScrollUnit, MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState,
-    decode_button_event, decode_media_key, decode_momentum_phase, decode_scroll_phase, event_masks,
+    MacosInputEvent, MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult,
+    MacosModifierFlags, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
+    MacosWorkerDegradation, MacosWorkerState, decode_button_event, decode_media_key,
+    decode_momentum_phase, decode_scroll_phase, event_masks,
 };
 
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -129,7 +131,7 @@ impl MacosInputSession {
     /// Start the requested event taps and block until their run loop is ready.
     pub fn start(
         config: MacosInputConfig,
-        sink: impl FnMut(MacosInputBatch<'_>) + Send + 'static,
+        sink: impl FnMut(MacosInputBatch<'_>) -> MacosInputPublicationOutcome + Send + 'static,
     ) -> MacosInputResult<Self> {
         if !config.keyboard && !config.pointer {
             return Err(MacosInputError::NothingToCapture);
@@ -204,6 +206,44 @@ impl MacosInputSession {
         self.masks
     }
 
+    /// Return the event masks Core Graphics reports for this process's
+    /// installed listen-only session taps.
+    pub fn installed_masks(&self) -> MacosInputResult<EffectiveEventMasks> {
+        let mut count = 0;
+        // SAFETY: the count-only form accepts a null list and writes one u32.
+        let result = unsafe { CGGetEventTapList(0, std::ptr::null_mut(), &mut count) };
+        if result != CGError::Success {
+            return Err(MacosInputError::TapInspection(result.0));
+        }
+        let capacity = usize::try_from(count).map_err(|_| MacosInputError::TapInspection(-1))?;
+        let mut taps = vec![MaybeUninit::<CGEventTapInformation>::uninit(); capacity];
+        let mut written = count;
+        // SAFETY: `taps` has room for `count` records and Core Graphics writes
+        // at most that many initialized records, reported through `written`.
+        let result = unsafe {
+            CGGetEventTapList(
+                count,
+                taps.as_mut_ptr().cast::<CGEventTapInformation>(),
+                &mut written,
+            )
+        };
+        if result != CGError::Success || written > count {
+            return Err(MacosInputError::TapInspection(result.0));
+        }
+        let pid =
+            i32::try_from(std::process::id()).map_err(|_| MacosInputError::TapInspection(-1))?;
+        let taps = taps
+            .into_iter()
+            .take(usize::try_from(written).unwrap_or(capacity))
+            .map(|tap| {
+                // SAFETY: Core Graphics initialized the first `written`
+                // records on the successful call above.
+                unsafe { tap.assume_init() }
+            })
+            .collect::<Vec<_>>();
+        Ok(installed_masks_for_process(self.masks, pid, &taps))
+    }
+
     #[must_use]
     pub fn worker_state(&self) -> MacosWorkerState {
         self.state
@@ -233,6 +273,26 @@ impl MacosInputSession {
         if let Some(worker) = self.sink_worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+fn installed_masks_for_process(
+    requested: EffectiveEventMasks,
+    pid: i32,
+    taps: &[CGEventTapInformation],
+) -> EffectiveEventMasks {
+    let installed = taps
+        .iter()
+        .filter(|tap| {
+            tap.tappingProcess == pid
+                && tap.tapPoint == CGEventTapLocation::SessionEventTap
+                && tap.options == CGEventTapOptions::ListenOnly
+                && tap.enabled
+        })
+        .fold(0, |mask, tap| mask | tap.eventsOfInterest);
+    EffectiveEventMasks {
+        keyboard: installed & requested.keyboard,
+        pointer: installed & requested.pointer,
     }
 }
 
@@ -394,6 +454,10 @@ fn create_tap(
     let mode = unsafe { kCFRunLoopCommonModes };
     run_loop.add_source(Some(&source), mode);
     CGEvent::tap_enable(&tap, true);
+    if !CGEvent::tap_is_enabled(&tap) {
+        run_loop.remove_source(Some(&source), mode);
+        return Err(MacosInputError::TapCreation(kind.label()));
+    }
     Ok(TapBundle {
         source,
         tap,
@@ -407,6 +471,7 @@ unsafe extern "C-unwind" fn event_tap_callback(
     event: NonNull<CGEvent>,
     user_info: *mut c_void,
 ) -> *mut CGEvent {
+    let callback_entry = Instant::now();
     // SAFETY: Core Graphics supplies both pointers for the lifetime of this
     // callback. `create_tap` keeps the boxed context alive through teardown.
     let context = unsafe { &*(user_info.cast::<TapContext>()) };
@@ -414,16 +479,24 @@ unsafe extern "C-unwind" fn event_tap_callback(
     let event_ref = unsafe { event.as_ref() };
 
     if event_type == CGEventType::TapDisabledByTimeout {
-        handle_tap_disable(context, MacosInputGapReason::TapDisabledTimeout);
+        handle_tap_disable(
+            context,
+            MacosInputGapReason::TapDisabledTimeout,
+            callback_entry,
+        );
     } else if event_type == CGEventType::TapDisabledByUserInput {
-        handle_tap_disable(context, MacosInputGapReason::TapDisabledUserInput);
+        handle_tap_disable(
+            context,
+            MacosInputGapReason::TapDisabledUserInput,
+            callback_entry,
+        );
     } else if let Some(decoded) = decode_native_event(event_type, event_ref, context) {
-        context.queue.enqueue(decoded);
+        context.queue.enqueue_at(decoded, callback_entry);
     }
     event.as_ptr()
 }
 
-fn handle_tap_disable(context: &TapContext, reason: MacosInputGapReason) {
+fn handle_tap_disable(context: &TapContext, reason: MacosInputGapReason, callback_entry: Instant) {
     static DISABLE_CLOCK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let elapsed_ms = DISABLE_CLOCK
         .get_or_init(Instant::now)
@@ -438,7 +511,9 @@ fn handle_tap_disable(context: &TapContext, reason: MacosInputGapReason) {
         .queue
         .diagnostics()
         .record_tap_disable(repeated, reason);
-    context.queue.enqueue(MacosInputEvent::StateGap { reason });
+    context
+        .queue
+        .enqueue_at(MacosInputEvent::StateGap { reason }, callback_entry);
     if repeated {
         return;
     }
@@ -593,12 +668,13 @@ fn decode_phase(
 fn drain_batches(
     config: MacosInputConfig,
     mut desktop: MacosVirtualDesktop,
-    mut sink: impl FnMut(MacosInputBatch<'_>),
+    mut sink: impl FnMut(MacosInputBatch<'_>) -> MacosInputPublicationOutcome,
     queue: &EventQueue,
     state: &Mutex<MacosWorkerState>,
     control: &RunLoopControl,
 ) {
     let mut events = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY + 2);
+    let mut callback_entries = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY);
     let mut next_topology_check = Instant::now() + TOPOLOGY_INTERVAL;
     loop {
         queue.wait(HEALTH_INTERVAL);
@@ -635,15 +711,21 @@ fn drain_batches(
         }
 
         events.clear();
+        callback_entries.clear();
         let at_ms = (config.clock)();
-        queue.drain_into(&mut events);
+        queue.drain_into(&mut events, &mut callback_entries);
         if !events.is_empty() {
-            sink(MacosInputBatch {
+            let outcome = sink(MacosInputBatch {
                 epoch: config.epoch,
                 at_ms,
                 events: &events,
                 virtual_desktop: desktop,
             });
+            if outcome == MacosInputPublicationOutcome::Published {
+                queue
+                    .diagnostics()
+                    .record_published(events.len(), &callback_entries);
+            }
         }
         if queue.is_closed() && queue.is_empty() {
             break;
@@ -662,4 +744,46 @@ fn set_worker_state(state: &Mutex<MacosWorkerState>, value: MacosWorkerState) {
     *state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tap(pid: i32, mask: u64, enabled: bool) -> CGEventTapInformation {
+        CGEventTapInformation {
+            eventTapID: 1,
+            tapPoint: CGEventTapLocation::SessionEventTap,
+            options: CGEventTapOptions::ListenOnly,
+            eventsOfInterest: mask,
+            tappingProcess: pid,
+            processBeingTapped: 0,
+            enabled,
+            minUsecLatency: 0.0,
+            avgUsecLatency: 0.0,
+            maxUsecLatency: 0.0,
+        }
+    }
+
+    #[test]
+    fn installed_masks_use_only_enabled_current_process_session_taps() {
+        let requested = EffectiveEventMasks {
+            keyboard: 0b0011,
+            pointer: 0b1100,
+        };
+        let taps = [
+            tap(42, 0b0001, true),
+            tap(42, 0b0100, true),
+            tap(42, 0b0010, false),
+            tap(7, 0b1000, true),
+        ];
+
+        assert_eq!(
+            installed_masks_for_process(requested, 42, &taps),
+            EffectiveEventMasks {
+                keyboard: 0b0001,
+                pointer: 0b0100,
+            }
+        );
+    }
 }

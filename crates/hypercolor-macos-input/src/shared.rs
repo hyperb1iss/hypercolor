@@ -201,6 +201,13 @@ pub struct MacosInputBatch<'a> {
     pub virtual_desktop: MacosVirtualDesktop,
 }
 
+/// Whether a native input batch reached the canonical core publication state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosInputPublicationOutcome {
+    Published,
+    Rejected,
+}
+
 /// Monotonic native diagnostics for one session.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MacosInputDiagnostics {
@@ -218,6 +225,11 @@ pub struct MacosInputDiagnostics {
     pub invalid_scroll_phases: u64,
     pub last_point_delta_x: i64,
     pub last_point_delta_y: i64,
+    pub callback_to_publication_sample_count: u64,
+    pub callback_to_publication_total_ns: u64,
+    pub callback_to_publication_max_ns: u64,
+    pub callback_to_publication_p95_ns: u64,
+    pub callback_to_publication_p99_ns: u64,
 }
 
 /// Event masks actually requested for one session.
@@ -283,6 +295,8 @@ pub enum MacosInputError {
     TapCreation(&'static str),
     #[error("failed to create the {0} event-tap run-loop source")]
     RunLoopSource(&'static str),
+    #[error("failed to inspect the installed event taps: Core Graphics error {0}")]
+    TapInspection(i32),
     #[error("failed to read the current process audit token: Mach error {0}")]
     AuditToken(i32),
 }
