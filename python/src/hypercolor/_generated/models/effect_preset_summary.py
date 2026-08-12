@@ -6,42 +6,53 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.effect_preset_origin import EffectPresetOrigin
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.preset_template_controls import PresetTemplateControls
+    from ..models.effect_preset_summary_controls import EffectPresetSummaryControls
 
 
-T = TypeVar("T", bound="PresetTemplate")
+T = TypeVar("T", bound="EffectPresetSummary")
 
 
 @_attrs_define
-class PresetTemplate:
-    """An effect-defined preset — a named snapshot of control values bundled
-    with the effect itself. Unlike user-created [`super::library::EffectPreset`]s,
-    these are authored by the effect developer and are read-only at runtime.
+class EffectPresetSummary:
+    """One bundled or saved preset projected through an effect-scoped API.
 
-        Attributes:
-            id (str): Stable identifier authored by the effect or derived from its name.
-            name (str): Human-readable preset name (e.g. "Sunset Glow", "Deep Ocean").
-            controls (PresetTemplateControls | Unset): Control values that define this preset. Keys are control IDs.
-            description (None | str | Unset): Optional short description.
+    Attributes:
+        controls (EffectPresetSummaryControls):
+        editable (bool):
+        effect_id (str):
+        id (str):
+        name (str):
+        origin (EffectPresetOrigin): Origin of a preset in an effect's unified preset stack.
+        description (None | str | Unset):
+        tags (list[str] | Unset):
     """
 
+    controls: EffectPresetSummaryControls
+    editable: bool
+    effect_id: str
     id: str
     name: str
-    controls: PresetTemplateControls | Unset = UNSET
+    origin: EffectPresetOrigin
     description: None | str | Unset = UNSET
+    tags: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        controls = self.controls.to_dict()
+
+        editable = self.editable
+
+        effect_id = self.effect_id
+
         id = self.id
 
         name = self.name
 
-        controls: dict[str, Any] | Unset = UNSET
-        if not isinstance(self.controls, Unset):
-            controls = self.controls.to_dict()
+        origin = self.origin.value
 
         description: None | str | Unset
         if isinstance(self.description, Unset):
@@ -49,36 +60,45 @@ class PresetTemplate:
         else:
             description = self.description
 
+        tags: list[str] | Unset = UNSET
+        if not isinstance(self.tags, Unset):
+            tags = self.tags
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "controls": controls,
+                "editable": editable,
+                "effect_id": effect_id,
                 "id": id,
                 "name": name,
+                "origin": origin,
             }
         )
-        if controls is not UNSET:
-            field_dict["controls"] = controls
         if description is not UNSET:
             field_dict["description"] = description
+        if tags is not UNSET:
+            field_dict["tags"] = tags
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.preset_template_controls import PresetTemplateControls
+        from ..models.effect_preset_summary_controls import EffectPresetSummaryControls
 
         d = dict(src_dict)
+        controls = EffectPresetSummaryControls.from_dict(d.pop("controls"))
+
+        editable = d.pop("editable")
+
+        effect_id = d.pop("effect_id")
+
         id = d.pop("id")
 
         name = d.pop("name")
 
-        _controls = d.pop("controls", UNSET)
-        controls: PresetTemplateControls | Unset
-        if isinstance(_controls, Unset):
-            controls = UNSET
-        else:
-            controls = PresetTemplateControls.from_dict(_controls)
+        origin = EffectPresetOrigin(d.pop("origin"))
 
         def _parse_description(data: object) -> None | str | Unset:
             if data is None:
@@ -89,15 +109,21 @@ class PresetTemplate:
 
         description = _parse_description(d.pop("description", UNSET))
 
-        preset_template = cls(
+        tags = cast(list[str], d.pop("tags", UNSET))
+
+        effect_preset_summary = cls(
+            controls=controls,
+            editable=editable,
+            effect_id=effect_id,
             id=id,
             name=name,
-            controls=controls,
+            origin=origin,
             description=description,
+            tags=tags,
         )
 
-        preset_template.additional_properties = d
-        return preset_template
+        effect_preset_summary.additional_properties = d
+        return effect_preset_summary
 
     @property
     def additional_keys(self) -> list[str]:
