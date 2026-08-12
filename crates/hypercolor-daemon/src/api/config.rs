@@ -710,6 +710,16 @@ async fn apply_capture_config_transaction(
             "config manager unavailable"
         )));
     };
+    #[cfg(target_os = "macos")]
+    if capture_diff_is_processing_only(&expected_config.capture, &capture) {
+        return apply_macos_capture_processing_transaction(
+            state,
+            manager,
+            expected_config,
+            capture,
+        )
+        .await;
+    }
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     let (plan, capacity_plan, capacity_preparation, admission_coordinator) = {
         let input_manager = state.input_manager.lock().await;
@@ -900,6 +910,59 @@ async fn apply_capture_config_transaction(
         enabled = capture.enabled,
         "Applied live screen capture config"
     );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn capture_diff_is_processing_only(previous: &CaptureConfig, next: &CaptureConfig) -> bool {
+    let mut normalized = previous.clone();
+    normalized.target_led_white_x = next.target_led_white_x;
+    normalized.target_led_white_y = next.target_led_white_y;
+    normalized.target_led_reference_white_nits = next.target_led_reference_white_nits;
+    normalized.target_led_peak_nits = next.target_led_peak_nits;
+    normalized.exposure_ev = next.exposure_ev;
+    normalized == *next
+}
+
+#[cfg(target_os = "macos")]
+async fn apply_macos_capture_processing_transaction(
+    state: &Arc<AppState>,
+    manager: &Arc<hypercolor_core::config::ConfigManager>,
+    expected_config: &Arc<HypercolorConfig>,
+    capture: CaptureConfig,
+) -> Result<(), CaptureConfigTransactionError> {
+    let next = crate::startup::services::screen_capture_config_from(&capture)
+        .map_err(CaptureConfigTransactionError::Prepare)?;
+    let previous = crate::startup::services::screen_capture_config_from(&expected_config.capture)
+        .map_err(CaptureConfigTransactionError::Prepare)?;
+    let mut input_manager = state.input_manager.lock().await;
+    if !manager.is_current(expected_config) {
+        return Err(CaptureConfigTransactionError::Conflict);
+    }
+    input_manager
+        .reconfigure_screen_processing(&next)
+        .map_err(CaptureConfigTransactionError::Prepare)?;
+    let persisted = manager.modify_and_save_if_current(expected_config, |config| {
+        config.capture.clone_from(&capture);
+    });
+    match persisted {
+        Ok(true) => {}
+        Ok(false) => {
+            input_manager
+                .reconfigure_screen_processing(&previous)
+                .map_err(CaptureConfigTransactionError::Prepare)?;
+            return Err(CaptureConfigTransactionError::Conflict);
+        }
+        Err(error) => {
+            input_manager
+                .reconfigure_screen_processing(&previous)
+                .map_err(CaptureConfigTransactionError::Prepare)?;
+            return Err(CaptureConfigTransactionError::Persist(error));
+        }
+    }
+    manager.mark_capture_runtime_applied(&capture);
+    drop(input_manager);
+    info!("Applied live macOS screen processing config without reopening capture");
     Ok(())
 }
 
@@ -1246,6 +1309,8 @@ mod tests {
     };
     use hypercolor_types::config::InteractionRoutePolicy;
 
+    #[cfg(target_os = "macos")]
+    use super::capture_diff_is_processing_only;
     use super::{
         CAPTURE_CALIBRATION_RESET_KEY, CaptureConfigTransactionError, ResetConfigRequest,
         SetConfigRequest, apply_capture_config_transaction, canvas_dimensions_differ,
@@ -1510,6 +1575,44 @@ mod tests {
             hypercolor_types::config::CaptureConfig::default().target_led_peak_nits
         );
         assert!((reset.capture.exposure_ev - 2.5).abs() < f32::EPSILON);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_processing_only_diff_accepts_exactly_the_five_tone_fields() {
+        let original = hypercolor_types::config::CaptureConfig::default();
+        let mut calibration = original.clone();
+        calibration.target_led_white_x = 0.3000;
+        calibration.target_led_white_y = 0.3200;
+        calibration.target_led_reference_white_nits = 180.0;
+        calibration.target_led_peak_nits = 500.0;
+        calibration.exposure_ev = 1.25;
+        assert!(capture_diff_is_processing_only(&original, &calibration));
+
+        for divergent in [
+            {
+                let mut config = calibration.clone();
+                config.enabled = !original.enabled;
+                config
+            },
+            {
+                let mut config = calibration.clone();
+                config.source = "display:other".to_owned();
+                config
+            },
+            {
+                let mut config = calibration.clone();
+                config.capture_fps = original.capture_fps + 1;
+                config
+            },
+            {
+                let mut config = calibration.clone();
+                config.smoothing = 0.75;
+                config
+            },
+        ] {
+            assert!(!capture_diff_is_processing_only(&original, &divergent));
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

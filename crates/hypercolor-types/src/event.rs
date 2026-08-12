@@ -414,12 +414,49 @@ pub enum MacosDaemonOwnerEvent {
     Standalone,
 }
 
+/// Process exit code for a non-launchd macOS daemon ownership contender.
+pub const MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE: i32 = 73;
+
 /// Losing macOS daemon topology observed beside the active owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MacosDaemonOwnerConflictEvent {
     pub active: MacosDaemonOwnerEvent,
     pub contender: MacosDaemonOwnerEvent,
     pub observed_at_ms: u64,
+}
+
+/// Durable phase of a macOS daemon-owner handover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosDaemonHandoverPhaseEvent {
+    Prepared,
+    AutostartsConfigured,
+    StopRequested,
+    OutgoingOwnerStopped,
+    AwaitingGuardRelease,
+    GuardReleased,
+    StartRequested,
+    RequestedOwnerStarted,
+    CommitPending,
+    Committed,
+    RollbackPending,
+    RollbackAutostartsRestored,
+    RollbackStopRequested,
+    RollbackOwnerStopped,
+    RollbackAwaitingGuardRelease,
+    RollbackGuardReleased,
+    RollbackStartRequested,
+    PriorOwnerStarted,
+    RollbackCommitPending,
+    RolledBack,
+}
+
+/// Path-free recovery status for a daemon that cannot complete the journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacosDaemonOwnerRecoveryRequiredEvent {
+    pub requested_owner: MacosDaemonOwnerEvent,
+    pub prior_owner: MacosDaemonOwnerEvent,
+    pub phase: MacosDaemonHandoverPhaseEvent,
 }
 
 /// Per-stage frame timing in microseconds.
@@ -962,6 +999,7 @@ pub enum HypercolorEvent {
         active_owner: MacosDaemonOwnerEvent,
         owner_epoch: u64,
         conflict: Option<MacosDaemonOwnerConflictEvent>,
+        recovery_required: Option<MacosDaemonOwnerRecoveryRequiredEvent>,
     },
 
     /// Global brightness changed.

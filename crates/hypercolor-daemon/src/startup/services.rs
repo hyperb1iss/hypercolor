@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use tokio::sync::{Mutex, RwLock, watch};
@@ -88,6 +88,18 @@ fn open_persisted_library_store(
 }
 
 impl DaemonState {
+    pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
+        Self::initialize_with_macos_owner(config, config_path, None)
+    }
+
+    pub fn initialize_with_macos_owner(
+        config: &HypercolorConfig,
+        config_path: PathBuf,
+        macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
+    ) -> Result<Self> {
+        Self::initialize_inner(config, config_path, macos_owner_snapshot)
+    }
+
     /// Initialize all subsystems from a loaded configuration.
     ///
     /// This wires together the bus, registry, engines, and render loop
@@ -102,8 +114,14 @@ impl DaemonState {
         clippy::too_many_lines,
         reason = "initialization is inherently sequential; splitting would scatter related setup across helpers"
     )]
-    pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
+    fn initialize_inner(
+        config: &HypercolorConfig,
+        config_path: PathBuf,
+        macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
+    ) -> Result<Self> {
         info!("Initializing daemon subsystems");
+        #[cfg(not(target_os = "macos"))]
+        let _ = macos_owner_snapshot;
         config
             .capture
             .validate()
@@ -167,6 +185,18 @@ impl DaemonState {
 
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
+        let macos_daemon_ownership = Arc::new(ArcSwapOption::empty());
+        #[cfg(target_os = "macos")]
+        let mut pending_macos_owner_watch = macos_owner_snapshot
+            .map(|snapshot| {
+                super::macos_owner_watch::PendingMacosOwnerWatch::start(
+                    ConfigManager::data_dir(),
+                    Arc::clone(&macos_daemon_ownership),
+                    Arc::clone(&event_bus),
+                    snapshot,
+                )
+            })
+            .transpose()?;
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         info!("Event bus created");
@@ -295,7 +325,29 @@ impl DaemonState {
         info!("Device lifecycle manager created");
 
         // ── Input Manager ───────────────────────────────────────────────
+        #[cfg(target_os = "macos")]
+        let macos_owner_snapshot = match (pending_macos_owner_watch.as_mut(), macos_owner_snapshot)
+        {
+            (Some(watch), Some(snapshot)) => Some(
+                watch
+                    .reconcile_snapshot(snapshot)
+                    .context("failed to reconcile macOS daemon ownership before source startup")?,
+            ),
+            (None, snapshot) => snapshot,
+            (Some(_), None) => None,
+        };
         let (built_input_manager, browser_input) = build_input_manager(config, &config_manager)?;
+        #[cfg(target_os = "macos")]
+        let mut built_input_manager = built_input_manager;
+        #[cfg(target_os = "macos")]
+        if let Some(snapshot) = macos_owner_snapshot {
+            super::macos_owner_watch::publish_owner_snapshot(
+                &macos_daemon_ownership,
+                &mut built_input_manager,
+                &event_bus,
+                snapshot,
+            )?;
+        }
         let interaction_routing = InteractionRoutingControl::new(
             browser_input.registry(),
             1,
@@ -305,6 +357,10 @@ impl DaemonState {
         let input_status = built_input_manager.source_status_registry();
         let screen_capacity_status = built_input_manager.screen_capacity_status_handle();
         let input_manager = Arc::new(Mutex::new(built_input_manager));
+        #[cfg(target_os = "macos")]
+        let macos_owner_watch = pending_macos_owner_watch
+            .map(|watch| watch.attach(Arc::clone(&input_manager)))
+            .transpose()?;
         info!(
             audio_enabled = config.audio.enabled,
             capture_enabled = config.capture.enabled,
@@ -584,6 +640,9 @@ impl DaemonState {
             scene_manager,
             scene_store,
             event_bus,
+            macos_daemon_ownership,
+            #[cfg(target_os = "macos")]
+            _macos_owner_watch: macos_owner_watch,
             asset_library,
             library_store,
             profiles: Arc::new(RwLock::new(profiles)),

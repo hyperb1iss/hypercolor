@@ -85,7 +85,7 @@ class Hypercolor < Formula
   end
 
   service do
-    run [opt_bin/"hypercolor-daemon", "--ui-dir", share/"hypercolor/ui"]
+    run [opt_bin/"hypercolor-daemon", "--macos-owner", "homebrew", "--ui-dir", share/"hypercolor/ui"]
     keep_alive successful_exit: false
     log_path var/"log/hypercolor/hypercolor.log"
     error_log_path var/"log/hypercolor/hypercolor.log"

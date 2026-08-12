@@ -37,8 +37,11 @@ const VERIFY_MACOS_DEPLOYMENT_TARGET_SH: &str =
     include_str!("../../../scripts/verify-macos-deployment-target.sh");
 const SIGN_MACOS_ARTIFACTS_SH: &str = include_str!("../../../scripts/sign-macos-artifacts.sh");
 const MACOS_SIGNING_MANIFEST: &str = include_str!("../../../packaging/macos/signing-manifest.tsv");
+const TAURI_CONFIG: &str = include_str!("../tauri.conf.json");
 const MACOS_DAEMON_ENTITLEMENTS: &str =
     include_str!("../../../packaging/macos/daemon.entitlements.plist");
+const MACOS_LAUNCHD_PLIST: &str =
+    include_str!("../../../packaging/launchd/tech.hyperbliss.hypercolor.plist");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
@@ -122,6 +125,32 @@ fn macos_distribution_covers_arm64_and_amd64() {
     assert!(CI_WORKFLOW.contains("SHA256_MACOS_AMD64"));
     assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_AMD64"));
     assert!(HOMEBREW_FORMULA.contains("keep_alive successful_exit: false"));
+    assert!(HOMEBREW_FORMULA.contains(r#""--macos-owner", "homebrew""#));
+}
+
+#[test]
+fn macos_launchers_identify_their_daemon_topology() {
+    assert!(MACOS_LAUNCHD_PLIST.contains("<string>--macos-owner</string>"));
+    assert!(MACOS_LAUNCHD_PLIST.contains("<string>direct-launchd</string>"));
+    assert!(HOMEBREW_FORMULA.contains(r#""--macos-owner", "homebrew""#));
+}
+
+#[test]
+fn app_sidecar_identity_matches_tauri_and_signing_artifacts() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("Tauri config should parse");
+    assert_eq!(
+        config["productName"],
+        hypercolor_macos_owner::MACOS_APP_PRODUCT_NAME
+    );
+    assert_eq!(
+        hypercolor_macos_owner::MACOS_APP_LAUNCH_AGENT_PLIST_FILE_NAME,
+        format!("{}.plist", hypercolor_macos_owner::MACOS_APP_PRODUCT_NAME)
+    );
+    assert!(MACOS_SIGNING_MANIFEST.lines().any(|line| {
+        line.split('\t').nth(1)
+            == Some(hypercolor_macos_owner::MACOS_APP_BUNDLE_EXECUTABLE_RELATIVE_PATH)
+    }));
 }
 
 #[test]

@@ -15,6 +15,15 @@ fn maybe_open_devtools<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     let _ = window;
 }
 
+fn autostart_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    let builder = tauri_plugin_autostart::Builder::new()
+        .app_name(hypercolor_macos_owner::MACOS_APP_PRODUCT_NAME)
+        .arg("--minimized");
+    #[cfg(target_os = "macos")]
+    let builder = builder.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
+    builder.build()
+}
+
 fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     hypercolor_app::linux_webkit::reexec_with_webkit_env_if_needed()?;
@@ -39,6 +48,10 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::first_run::is_first_run_pending,
             hypercolor_app::first_run::mark_first_run_complete,
             hypercolor_app::first_run::reset_first_run,
+            hypercolor_app::ownership::choose_daemon_owner,
+            hypercolor_app::ownership::execute_macos_daemon_owner_offline_remedy,
+            hypercolor_app::ownership::macos_daemon_owner_offline_status,
+            hypercolor_app::ownership::restart_macos_capture_owner,
             hypercolor_app::support::detect_pawnio_support,
             hypercolor_app::support::detect_windows_daemon_service,
             hypercolor_app::support::launch_pawnio_helper,
@@ -54,10 +67,7 @@ fn main() -> anyhow::Result<()> {
                 tracing::warn!(%error, "failed to show main window from forwarded invocation");
             }
         }))
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec!["--minimized"]),
-        ))
+        .plugin(autostart_plugin())
         .setup(move |app| {
             let url: url::Url = daemon_url
                 .parse()

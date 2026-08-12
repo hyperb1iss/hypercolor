@@ -21,6 +21,7 @@ tui = ["dep:hypercolor-tui"]
 
 [dependencies]
 hypercolor-core = { workspace = true }
+hypercolor-macos-owner = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

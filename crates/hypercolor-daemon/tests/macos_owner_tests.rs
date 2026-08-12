@@ -2,6 +2,8 @@ use std::fs::{self, OpenOptions};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
+#[cfg(target_os = "macos")]
+use hypercolor_daemon::macos_owner::try_acquire_macos_daemon_guard;
 use hypercolor_daemon::macos_owner::{
     MACOS_HANDOVER_JOURNAL_SCHEMA_VERSION, MACOS_OWNER_RECORD_SCHEMA_VERSION,
     MAX_MACOS_HANDOVER_OPERATIONS, MAX_MACOS_OWNER_ARTIFACT_BYTES, MacosAutostartStates,
@@ -59,26 +61,32 @@ fn owner_publication_advances_monotonic_epochs() {
     let store = MacosOwnerStore::new(directory.path());
 
     let first = store
-        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101), None)
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101))
         .expect("first owner should publish");
+    store
+        .set_external_owner_mode(Some(MacosExternalOwnerMode::DirectLaunchd))
+        .expect("external owner mode should publish");
     let second = store
-        .publish_owner(
-            MacosDaemonOwner::DirectLaunchd,
-            identity("launchd", 102),
-            Some(MacosExternalOwnerMode::DirectLaunchd),
-        )
+        .publish_owner(MacosDaemonOwner::DirectLaunchd, identity("launchd", 102))
         .expect("second owner should publish");
+    store
+        .set_external_owner_mode(Some(MacosExternalOwnerMode::Homebrew))
+        .expect("external owner mode should update");
     let third = store
-        .publish_owner(
-            MacosDaemonOwner::Homebrew,
-            identity("homebrew", 103),
-            Some(MacosExternalOwnerMode::Homebrew),
-        )
+        .publish_owner(MacosDaemonOwner::Homebrew, identity("homebrew", 103))
         .expect("third owner should publish");
 
     assert_eq!(
         [first.owner_epoch, second.owner_epoch, third.owner_epoch],
         [1, 2, 3]
+    );
+    assert_eq!(
+        second.selected_external_owner,
+        Some(MacosExternalOwnerMode::DirectLaunchd)
+    );
+    assert_eq!(
+        third.selected_external_owner,
+        Some(MacosExternalOwnerMode::Homebrew)
     );
     assert_eq!(third.schema_version, MACOS_OWNER_RECORD_SCHEMA_VERSION);
     assert_eq!(
@@ -91,11 +99,130 @@ fn owner_publication_advances_monotonic_epochs() {
 }
 
 #[test]
+fn owner_publication_cannot_overwrite_a_concurrent_external_mode_update() {
+    let directory = tempfile::tempdir().expect("temporary directory should be available");
+    let store = Arc::new(MacosOwnerStore::new(directory.path()));
+    store
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101))
+        .expect("initial owner should publish");
+    let barrier = Arc::new(Barrier::new(3));
+
+    let publisher = {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store
+                .publish_owner(MacosDaemonOwner::Homebrew, identity("homebrew", 103))
+                .expect("concurrent owner should publish");
+        })
+    };
+    let selector = {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store
+                .set_external_owner_mode(Some(MacosExternalOwnerMode::Homebrew))
+                .expect("concurrent external mode should publish");
+        })
+    };
+
+    barrier.wait();
+    publisher.join().expect("publisher should join");
+    selector.join().expect("selector should join");
+    assert_eq!(
+        store
+            .load_owner_record()
+            .expect("owner record should load")
+            .expect("owner record should exist")
+            .selected_external_owner,
+        Some(MacosExternalOwnerMode::Homebrew)
+    );
+}
+
+#[test]
+fn owner_publication_rebases_a_prepublication_contender() {
+    let directory = tempfile::tempdir().expect("temporary directory should be available");
+    let store = MacosOwnerStore::new(directory.path());
+    store
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("old-sidecar", 101))
+        .expect("prior owner should publish");
+    store
+        .record_conflict(
+            MacosDaemonOwner::Homebrew,
+            identity("homebrew-contender", 201),
+            100,
+        )
+        .expect("prepublication contender should publish");
+
+    let owner = store
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("new-sidecar", 102))
+        .expect("new owner should publish");
+    let conflict = owner
+        .conflict
+        .expect("contender should survive publication");
+
+    assert_eq!(conflict.active_owner, MacosDaemonOwner::AppSidecar);
+    assert_eq!(conflict.active_epoch, owner.owner_epoch);
+    assert_eq!(conflict.contender_owner, MacosDaemonOwner::Homebrew);
+}
+
+#[test]
+fn owner_publication_preserves_a_distinct_same_topology_contender() {
+    let directory = tempfile::tempdir().expect("temporary directory should be available");
+    let store = MacosOwnerStore::new(directory.path());
+    store
+        .publish_owner(MacosDaemonOwner::Homebrew, identity("old-homebrew", 101))
+        .expect("prior owner should publish");
+    store
+        .record_conflict(
+            MacosDaemonOwner::AppSidecar,
+            identity("losing-sidecar", 201),
+            100,
+        )
+        .expect("prepublication contender should publish");
+
+    let owner = store
+        .publish_owner(
+            MacosDaemonOwner::AppSidecar,
+            identity("winning-sidecar", 202),
+        )
+        .expect("new owner should publish");
+    let conflict = owner
+        .conflict
+        .expect("distinct same-topology contender should survive publication");
+
+    assert_eq!(conflict.active_owner, MacosDaemonOwner::AppSidecar);
+    assert_eq!(conflict.active_epoch, owner.owner_epoch);
+    assert_eq!(conflict.contender_owner, MacosDaemonOwner::AppSidecar);
+    assert_eq!(conflict.contender_identity.pid, 201);
+}
+
+#[test]
+fn owner_publication_clears_the_contender_that_became_active() {
+    let directory = tempfile::tempdir().expect("temporary directory should be available");
+    let store = MacosOwnerStore::new(directory.path());
+    store
+        .publish_owner(MacosDaemonOwner::Standalone, identity("standalone", 101))
+        .expect("prior owner should publish");
+    store
+        .record_conflict(MacosDaemonOwner::AppSidecar, identity("sidecar", 201), 100)
+        .expect("prepublication contender should publish");
+
+    let owner = store
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 202))
+        .expect("contender should become the active owner");
+
+    assert!(owner.conflict.is_none());
+}
+
+#[test]
 fn identical_conflicts_coalesce_with_the_original_observation() {
     let directory = tempfile::tempdir().expect("temporary directory should be available");
     let store = MacosOwnerStore::new(directory.path());
     store
-        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101), None)
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101))
         .expect("owner should publish");
 
     let first = store
@@ -219,7 +346,7 @@ fn record_and_journal_writers_interleave_without_lost_updates() {
     let directory = tempfile::tempdir().expect("temporary directory should be available");
     let store = Arc::new(MacosOwnerStore::new(directory.path()));
     store
-        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101), None)
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101))
         .expect("initial owner should publish");
     let id = transaction_id("concurrent-handover");
     store
@@ -235,7 +362,7 @@ fn record_and_journal_writers_interleave_without_lost_updates() {
             barrier.wait();
             for _ in 0..WRITES_PER_THREAD {
                 store
-                    .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101), None)
+                    .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101))
                     .expect("concurrent owner publication should succeed");
             }
         }));
@@ -337,14 +464,14 @@ fn malformed_and_unknown_artifacts_reject_without_replacement() {
     let directory = tempfile::tempdir().expect("temporary directory should be available");
     let store = MacosOwnerStore::new(directory.path());
     store
-        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101), None)
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101))
         .expect("owner should publish");
     let valid_owner = fs::read(store.owner_record_path()).expect("owner bytes should exist");
 
     let malformed = b"{ malformed owner record\n";
     fs::write(store.owner_record_path(), malformed).expect("fixture corruption should write");
     assert!(matches!(
-        store.publish_owner(MacosDaemonOwner::Homebrew, identity("homebrew", 103), None),
+        store.publish_owner(MacosDaemonOwner::Homebrew, identity("homebrew", 103)),
         Err(MacosOwnerStoreError::Decode {
             artifact: "owner record",
             ..
@@ -452,6 +579,82 @@ fn malformed_and_unknown_artifacts_reject_without_replacement() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn proven_guard_winner_repairs_invalid_diagnostic_owner_records() {
+    let directory = tempfile::tempdir().expect("temporary directory should be available");
+    let store = MacosOwnerStore::new(directory.path());
+    let guard_name = directory
+        .path()
+        .join("daemon-instance.lock")
+        .to_string_lossy()
+        .into_owned();
+    let guard = try_acquire_macos_daemon_guard(&guard_name)
+        .expect("guard inspection should succeed")
+        .expect("fixture winner should acquire the guard");
+
+    for invalid in [
+        b"{ malformed owner record".to_vec(),
+        serde_json::to_vec(&json!({
+            "schema_version": 99,
+            "owner_epoch": 1,
+            "active_owner": "app_sidecar",
+            "active_identity": {
+                "audit_token_identity": "audit-old",
+                "executable_path": "/Applications/old/hypercolor-daemon",
+                "designated_requirement_hash": "requirement-old",
+                "pid": 100
+            },
+            "conflict": null,
+            "selected_external_owner": null
+        }))
+        .expect("future-version fixture should serialize"),
+        serde_json::to_vec(&json!({
+            "schema_version": MACOS_OWNER_RECORD_SCHEMA_VERSION,
+            "owner_epoch": 0,
+            "active_owner": "app_sidecar",
+            "active_identity": {
+                "audit_token_identity": "audit-old",
+                "executable_path": "/Applications/old/hypercolor-daemon",
+                "designated_requirement_hash": "requirement-old",
+                "pid": 100
+            },
+            "conflict": null,
+            "selected_external_owner": null
+        }))
+        .expect("semantically-invalid fixture should serialize"),
+    ] {
+        fs::write(store.owner_record_path(), &invalid).expect("invalid fixture should write");
+        assert!(
+            store
+                .publish_owner(MacosDaemonOwner::Homebrew, identity("ordinary", 200))
+                .is_err(),
+            "ordinary publication must remain fail-closed"
+        );
+        assert_eq!(
+            fs::read(store.owner_record_path()).expect("invalid bytes should remain"),
+            invalid
+        );
+
+        let repaired = store
+            .publish_guard_winner(
+                &guard,
+                MacosDaemonOwner::Homebrew,
+                identity("guard-winner", 201),
+            )
+            .expect("guard winner should atomically replace invalid diagnostics");
+        assert_eq!(repaired.owner_epoch, 1);
+        assert_eq!(repaired.active_owner, MacosDaemonOwner::Homebrew);
+        assert_eq!(
+            store
+                .load_owner_record()
+                .expect("repaired owner should load")
+                .expect("repaired owner should exist"),
+            repaired
+        );
+    }
+}
+
 #[test]
 fn oversized_artifacts_and_operation_lists_reject_without_mutation() {
     let directory = tempfile::tempdir().expect("temporary directory should be available");
@@ -460,7 +663,7 @@ fn oversized_artifacts_and_operation_lists_reject_without_mutation() {
     fs::write(store.owner_record_path(), &oversized).expect("oversized fixture should write");
 
     assert!(matches!(
-        store.publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101), None),
+        store.publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101)),
         Err(MacosOwnerStoreError::ArtifactTooLarge {
             artifact: "owner record",
             ..
@@ -492,7 +695,7 @@ fn failed_mutation_releases_the_stable_coordination_lock() {
     let directory = tempfile::tempdir().expect("temporary directory should be available");
     let store = MacosOwnerStore::new(directory.path());
     store
-        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101), None)
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101))
         .expect("owner should publish");
     fs::write(store.owner_record_path(), b"not json").expect("fixture corruption should write");
 
@@ -519,11 +722,7 @@ fn diagnostic_owner_path_is_bounded_while_the_journal_stays_path_free() {
     let directory = tempfile::tempdir().expect("temporary directory should be available");
     let store = MacosOwnerStore::new(directory.path());
     let owner = store
-        .publish_owner(
-            MacosDaemonOwner::DirectLaunchd,
-            identity("launchd", 102),
-            Some(MacosExternalOwnerMode::DirectLaunchd),
-        )
+        .publish_owner(MacosDaemonOwner::DirectLaunchd, identity("launchd", 102))
         .expect("owner should publish");
     let journal = store
         .begin_handover(journal("path-free-shape"))
@@ -545,7 +744,7 @@ fn durable_owner_artifacts_are_user_read_write_only() {
     let directory = tempfile::tempdir().expect("temporary directory should be available");
     let store = MacosOwnerStore::new(directory.path());
     store
-        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101), None)
+        .publish_owner(MacosDaemonOwner::AppSidecar, identity("sidecar", 101))
         .expect("owner should publish");
     store
         .begin_handover(journal("mode-check"))

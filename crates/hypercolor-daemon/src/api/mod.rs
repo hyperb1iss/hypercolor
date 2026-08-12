@@ -43,7 +43,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, Method, header};
@@ -135,6 +135,9 @@ pub struct AppState {
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Latest durable macOS daemon ownership state.
+    pub macos_daemon_ownership: Arc<ArcSwapOption<crate::macos_owner::MacosOwnerSnapshot>>,
 
     /// Daemon-managed user media asset library.
     pub asset_library: Arc<RwLock<AssetLibrary>>,
@@ -570,6 +573,7 @@ impl AppState {
             scene_manager,
             scene_store,
             event_bus,
+            macos_daemon_ownership: Arc::new(ArcSwapOption::empty()),
             asset_library: Arc::new(RwLock::new(asset_library)),
             preview_runtime,
             zone_layout_previews,
@@ -654,6 +658,7 @@ impl AppState {
             scene_manager: Arc::clone(&daemon.scene_manager),
             scene_store: Arc::clone(&daemon.scene_store),
             event_bus: Arc::clone(&daemon.event_bus),
+            macos_daemon_ownership: Arc::clone(&daemon.macos_daemon_ownership),
             asset_library: Arc::clone(&daemon.asset_library),
             preview_runtime: Arc::clone(&daemon.preview_runtime),
             zone_layout_previews: Arc::clone(&daemon.zone_layout_previews),

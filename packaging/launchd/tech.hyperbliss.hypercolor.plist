@@ -9,6 +9,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>@BIN_DIR@/hypercolor-daemon</string>
+        <string>--macos-owner</string>
+        <string>direct-launchd</string>
         <string>--ui-dir</string>
         <string>@UI_DIR@</string>
     </array>

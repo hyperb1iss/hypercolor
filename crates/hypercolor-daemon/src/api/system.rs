@@ -27,6 +27,7 @@ use utoipa::ToSchema;
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::settings;
+use crate::macos_owner::{MacosDaemonOwner, MacosHandoverPhase, MacosOwnerSnapshot};
 use crate::performance::LatestFrameMetrics;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewRuntime};
 use crate::session::current_global_brightness;
@@ -66,6 +67,8 @@ pub struct SystemStatus {
     pub capture_available: bool,
     pub screen_capture_capacity: ScreenCaptureCapacityStatus,
     pub input: InputStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macos_daemon_ownership: Option<MacosDaemonOwnershipApiStatus>,
     pub compositor_acceleration: RenderAccelerationStatus,
     pub render_loop: RenderLoopStatus,
     pub latest_frame: Option<LatestFrameStatus>,
@@ -218,6 +221,48 @@ pub struct MacosDaemonOwnerConflictApiStatus {
     pub active: MacosCapabilityOwnerApi,
     pub contender: MacosCapabilityOwnerApi,
     pub observed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosDaemonHandoverPhaseApi {
+    Prepared,
+    AutostartsConfigured,
+    StopRequested,
+    OutgoingOwnerStopped,
+    AwaitingGuardRelease,
+    GuardReleased,
+    StartRequested,
+    RequestedOwnerStarted,
+    CommitPending,
+    Committed,
+    RollbackPending,
+    RollbackAutostartsRestored,
+    RollbackStopRequested,
+    RollbackOwnerStopped,
+    RollbackAwaitingGuardRelease,
+    RollbackGuardReleased,
+    RollbackStartRequested,
+    PriorOwnerStarted,
+    RollbackCommitPending,
+    RolledBack,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosDaemonOwnerRecoveryRequiredApiStatus {
+    pub requested_owner: MacosCapabilityOwnerApi,
+    pub prior_owner: MacosCapabilityOwnerApi,
+    pub phase: MacosDaemonHandoverPhaseApi,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosDaemonOwnershipApiStatus {
+    pub active_owner: MacosCapabilityOwnerApi,
+    pub owner_epoch: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<MacosDaemonOwnerConflictApiStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_required: Option<MacosDaemonOwnerRecoveryRequiredApiStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -786,6 +831,83 @@ fn macos_daemon_owner_conflict(
     }
 }
 
+const fn macos_daemon_owner(owner: MacosDaemonOwner) -> MacosCapabilityOwnerApi {
+    match owner {
+        MacosDaemonOwner::AppSidecar => MacosCapabilityOwnerApi::AppSidecar,
+        MacosDaemonOwner::DirectLaunchd => MacosCapabilityOwnerApi::LaunchdService,
+        MacosDaemonOwner::Homebrew => MacosCapabilityOwnerApi::HomebrewService,
+        MacosDaemonOwner::Standalone => MacosCapabilityOwnerApi::Standalone,
+    }
+}
+
+fn macos_daemon_ownership(snapshot: &MacosOwnerSnapshot) -> MacosDaemonOwnershipApiStatus {
+    MacosDaemonOwnershipApiStatus {
+        active_owner: macos_daemon_owner(snapshot.active_owner),
+        owner_epoch: snapshot.owner_epoch,
+        conflict: snapshot
+            .conflict
+            .map(|conflict| MacosDaemonOwnerConflictApiStatus {
+                active: macos_daemon_owner(conflict.active_owner),
+                contender: macos_daemon_owner(conflict.contender_owner),
+                observed_at_ms: conflict.observed_at_ms,
+            }),
+        recovery_required: snapshot.recovery_required.map(|recovery| {
+            MacosDaemonOwnerRecoveryRequiredApiStatus {
+                requested_owner: macos_daemon_owner(recovery.requested_owner),
+                prior_owner: macos_daemon_owner(recovery.prior_owner),
+                phase: macos_daemon_handover_phase(recovery.phase),
+            }
+        }),
+    }
+}
+
+const fn macos_daemon_handover_phase(phase: MacosHandoverPhase) -> MacosDaemonHandoverPhaseApi {
+    match phase {
+        MacosHandoverPhase::Prepared => MacosDaemonHandoverPhaseApi::Prepared,
+        MacosHandoverPhase::AutostartsConfigured => {
+            MacosDaemonHandoverPhaseApi::AutostartsConfigured
+        }
+        MacosHandoverPhase::StopRequested => MacosDaemonHandoverPhaseApi::StopRequested,
+        MacosHandoverPhase::OutgoingOwnerStopped => {
+            MacosDaemonHandoverPhaseApi::OutgoingOwnerStopped
+        }
+        MacosHandoverPhase::AwaitingGuardRelease => {
+            MacosDaemonHandoverPhaseApi::AwaitingGuardRelease
+        }
+        MacosHandoverPhase::GuardReleased => MacosDaemonHandoverPhaseApi::GuardReleased,
+        MacosHandoverPhase::StartRequested => MacosDaemonHandoverPhaseApi::StartRequested,
+        MacosHandoverPhase::RequestedOwnerStarted => {
+            MacosDaemonHandoverPhaseApi::RequestedOwnerStarted
+        }
+        MacosHandoverPhase::CommitPending => MacosDaemonHandoverPhaseApi::CommitPending,
+        MacosHandoverPhase::Committed => MacosDaemonHandoverPhaseApi::Committed,
+        MacosHandoverPhase::RollbackPending => MacosDaemonHandoverPhaseApi::RollbackPending,
+        MacosHandoverPhase::RollbackAutostartsRestored => {
+            MacosDaemonHandoverPhaseApi::RollbackAutostartsRestored
+        }
+        MacosHandoverPhase::RollbackStopRequested => {
+            MacosDaemonHandoverPhaseApi::RollbackStopRequested
+        }
+        MacosHandoverPhase::RollbackOwnerStopped => {
+            MacosDaemonHandoverPhaseApi::RollbackOwnerStopped
+        }
+        MacosHandoverPhase::RollbackAwaitingGuardRelease => {
+            MacosDaemonHandoverPhaseApi::RollbackAwaitingGuardRelease
+        }
+        MacosHandoverPhase::RollbackGuardReleased => {
+            MacosDaemonHandoverPhaseApi::RollbackGuardReleased
+        }
+        MacosHandoverPhase::RollbackStartRequested => {
+            MacosDaemonHandoverPhaseApi::RollbackStartRequested
+        }
+        MacosHandoverPhase::PriorOwnerStarted => MacosDaemonHandoverPhaseApi::PriorOwnerStarted,
+        MacosHandoverPhase::RollbackCommitPending => {
+            MacosDaemonHandoverPhaseApi::RollbackCommitPending
+        }
+        MacosHandoverPhase::RolledBack => MacosDaemonHandoverPhaseApi::RolledBack,
+    }
+}
+
 fn macos_selection_state(selection: &MacosSelectionState) -> MacosSelectionStateApi {
     match selection {
         MacosSelectionState::None => MacosSelectionStateApi::None,
@@ -1097,6 +1219,11 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let config_path = config_path(&state).display().to_string();
     let data_dir = ConfigManager::data_dir().display().to_string();
     let cache_dir = ConfigManager::cache_dir().display().to_string();
+    let macos_daemon_ownership = state
+        .macos_daemon_ownership
+        .load_full()
+        .as_deref()
+        .map(macos_daemon_ownership);
 
     ApiResponse::ok(SystemStatus {
         running,
@@ -1117,6 +1244,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         capture_available: settings::capture_input_available(),
         screen_capture_capacity,
         input: input_status,
+        macos_daemon_ownership,
         compositor_acceleration: render_acceleration_status(&state.render_acceleration),
         render_loop: render_loop_status,
         latest_frame,
@@ -1782,10 +1910,14 @@ fn round_2(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        get_sensor, get_sensors, get_status, input_source_status, macos_selection_state,
-        us_to_ms_f64,
+        get_sensor, get_sensors, get_status, input_source_status, macos_daemon_ownership,
+        macos_selection_state, us_to_ms_f64,
     };
     use crate::api::AppState;
+    use crate::macos_owner::{
+        MacosDaemonOwner, MacosHandoverPhase, MacosOwnerConflict, MacosOwnerRecoveryRequired,
+        MacosOwnerSnapshot,
+    };
     use crate::performance::{
         CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
         OutputFrameSourceKind,
@@ -1862,6 +1994,44 @@ mod tests {
                     "active": "launchd_service",
                     "contender": "homebrew_service",
                     "observed_at_ms": 1_725_000_000_123_u64
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn system_status_serializes_authoritative_macos_daemon_ownership() {
+        let value = serde_json::to_value(macos_daemon_ownership(&MacosOwnerSnapshot {
+            active_owner: MacosDaemonOwner::DirectLaunchd,
+            owner_epoch: 42,
+            conflict: Some(MacosOwnerConflict {
+                active_owner: MacosDaemonOwner::DirectLaunchd,
+                active_epoch: 42,
+                contender_owner: MacosDaemonOwner::Homebrew,
+                observed_at_ms: 1_725_000_000_789,
+            }),
+            recovery_required: Some(MacosOwnerRecoveryRequired {
+                requested_owner: MacosDaemonOwner::AppSidecar,
+                prior_owner: MacosDaemonOwner::Homebrew,
+                phase: MacosHandoverPhase::RollbackStopRequested,
+            }),
+        }))
+        .expect("macOS daemon ownership should serialize");
+
+        assert_eq!(
+            value,
+            json!({
+                "active_owner": "launchd_service",
+                "owner_epoch": 42,
+                "conflict": {
+                    "active": "launchd_service",
+                    "contender": "homebrew_service",
+                    "observed_at_ms": 1_725_000_000_789_u64
+                },
+                "recovery_required": {
+                    "requested_owner": "app_sidecar",
+                    "prior_owner": "homebrew_service",
+                    "phase": "rollback_stop_requested"
                 }
             })
         );
@@ -1982,6 +2152,10 @@ mod tests {
             .expect("OpenAPI should contain component schemas");
 
         assert!(schemas.contains_key("InputSourcePlatformStatus"));
+        assert!(schemas.contains_key("MacosDaemonOwnershipApiStatus"));
+        assert!(schemas.contains_key("MacosDaemonOwnerConflictApiStatus"));
+        assert!(schemas.contains_key("MacosDaemonOwnerRecoveryRequiredApiStatus"));
+        assert!(schemas.contains_key("MacosDaemonHandoverPhaseApi"));
         assert!(schemas.contains_key("MacosSelectionStateApi"));
         assert!(schemas.contains_key("MacosTahoeSelectionCapabilitiesApiStatus"));
         let platform_schema = &schemas["InputSourcePlatformStatus"];

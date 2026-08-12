@@ -8,7 +8,8 @@ use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
     EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
     FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
-    MacosDaemonOwnerConflictEvent, MacosDaemonOwnerEvent, PointerScrollPhase, PointerScrollUnit,
+    MacosDaemonHandoverPhaseEvent, MacosDaemonOwnerConflictEvent, MacosDaemonOwnerEvent,
+    MacosDaemonOwnerRecoveryRequiredEvent, PointerScrollPhase, PointerScrollUnit,
     SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
     ZoneRef,
 };
@@ -311,6 +312,7 @@ fn system_events_have_system_category() {
             active_owner: MacosDaemonOwnerEvent::AppSidecar,
             owner_epoch: 7,
             conflict: None,
+            recovery_required: None,
         },
         HypercolorEvent::BrightnessChanged {
             old: 100,
@@ -345,6 +347,11 @@ fn macos_daemon_ownership_event_round_trips_bounded_payload() {
             contender: MacosDaemonOwnerEvent::HomebrewService,
             observed_at_ms: 1_777,
         }),
+        recovery_required: Some(MacosDaemonOwnerRecoveryRequiredEvent {
+            requested_owner: MacosDaemonOwnerEvent::AppSidecar,
+            prior_owner: MacosDaemonOwnerEvent::LaunchdService,
+            phase: MacosDaemonHandoverPhaseEvent::RollbackStartRequested,
+        }),
     };
 
     let json = serde_json::to_value(&event).expect("serialize ownership event");
@@ -352,6 +359,10 @@ fn macos_daemon_ownership_event_round_trips_bounded_payload() {
     assert_eq!(json["data"]["active_owner"], "launchd_service");
     assert_eq!(json["data"]["owner_epoch"], 42);
     assert_eq!(json["data"]["conflict"]["contender"], "homebrew_service");
+    assert_eq!(
+        json["data"]["recovery_required"]["phase"],
+        "rollback_start_requested"
+    );
     assert_eq!(
         serde_json::from_value::<HypercolorEvent>(json)
             .expect("deserialize ownership event")

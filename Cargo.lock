@@ -4928,6 +4928,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures-util",
  "hypercolor-core",
+ "hypercolor-macos-owner",
  "hypercolor-types",
  "image",
  "open",
@@ -4961,6 +4962,7 @@ dependencies = [
  "dirs 6.0.0",
  "hypercolor-core",
  "hypercolor-daemon",
+ "hypercolor-macos-owner",
  "hypercolor-tui",
  "opaline",
  "open",
@@ -5073,6 +5075,8 @@ dependencies = [
  "hypercolor-leptos-ext",
  "hypercolor-macos-capture",
  "hypercolor-macos-gpu-interop",
+ "hypercolor-macos-input",
+ "hypercolor-macos-owner",
  "hypercolor-network",
  "hypercolor-platform-fs",
  "hypercolor-types",
@@ -5082,6 +5086,7 @@ dependencies = [
  "if-addrs",
  "image",
  "mdns-sd",
+ "notify",
  "objc2-core-foundation",
  "owo-colors",
  "pollster",
@@ -5090,6 +5095,7 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "single-instance",
  "socket2 0.6.3",
  "spin_sleep",
@@ -5374,6 +5380,20 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hypercolor-macos-owner"
+version = "0.3.1"
+dependencies = [
+ "hypercolor-platform-fs",
+ "nix 0.29.0",
+ "notify",
+ "serde",
+ "serde_json",
+ "single-instance",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

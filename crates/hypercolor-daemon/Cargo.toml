@@ -51,6 +51,7 @@ servo = ["hypercolor-core/servo"]
 hypercolor-types = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-platform-fs = { workspace = true }
+hypercolor-macos-owner = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false, optional = true }
 hypercolor-network = { workspace = true }
@@ -60,6 +61,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
+sha2 = { workspace = true }
 single-instance = "0.3.3"
 socket2 = "0.6.3"
 tokio = { workspace = true }
@@ -84,6 +86,7 @@ fast_image_resize = { workspace = true }
 tokio-util = { workspace = true }
 if-addrs = { workspace = true }
 mdns-sd = { workspace = true }
+notify = { workspace = true }
 owo-colors = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
@@ -99,6 +102,7 @@ sysinfo = { workspace = true }
 dispatch2 = "0.3.1"
 hypercolor-macos-capture = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
+hypercolor-macos-input = { workspace = true }
 objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }
 sysinfo = { workspace = true }
 

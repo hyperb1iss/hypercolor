@@ -64,6 +64,8 @@ mod discovery_worker;
 pub(crate) mod input_status_events;
 mod lifecycle;
 pub mod logging;
+#[cfg(target_os = "macos")]
+mod macos_owner_watch;
 pub(crate) mod services;
 mod signals;
 
@@ -112,6 +114,13 @@ pub struct DaemonState {
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Latest durable macOS daemon ownership state.
+    pub macos_daemon_ownership:
+        Arc<arc_swap::ArcSwapOption<crate::macos_owner::MacosOwnerSnapshot>>,
+
+    #[cfg(target_os = "macos")]
+    _macos_owner_watch: Option<macos_owner_watch::MacosOwnerWatch>,
 
     /// Daemon-managed user media asset library.
     pub asset_library: Arc<RwLock<AssetLibrary>>,

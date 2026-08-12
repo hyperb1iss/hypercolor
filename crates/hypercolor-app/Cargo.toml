@@ -26,6 +26,7 @@ unwrap_used = "deny"
 [dependencies]
 hypercolor-core = { workspace = true }
 hypercolor-types = { workspace = true }
+hypercolor-macos-owner = { workspace = true }
 tauri = { version = "2", features = ["devtools", "tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"

@@ -3,10 +3,10 @@ use std::path::Path;
 use hypercolor_app::supervisor::{
     DEFAULT_DAEMON_BIND, SYSTEMD_USER_SERVICE, SupervisorState, SystemdUserServicePlan,
     SystemdUserServiceProbe, bind_from_daemon_url, build_daemon_command, daemon_executable_name,
-    daemon_path_candidates, health_url, macos_app_resource_dir, restart_backoff,
-    sibling_daemon_path, sibling_ui_dir, startup_retry_delay, systemctl_is_active_output,
-    systemctl_is_enabled_output, systemd_user_service_plan, target_triple_candidates,
-    tauri_sidecar_daemon_name, ui_dir_candidates,
+    daemon_path_candidates, health_url, is_terminal_daemon_exit_code, macos_app_resource_dir,
+    restart_backoff, sibling_daemon_path, sibling_ui_dir, startup_retry_delay,
+    systemctl_is_active_output, systemctl_is_enabled_output, systemd_user_service_plan,
+    target_triple_candidates, tauri_sidecar_daemon_name, ui_dir_candidates,
 };
 use std::time::Duration;
 use url::Url;
@@ -32,6 +32,18 @@ fn restart_backoff_grows_then_saturates() {
     assert_eq!(restart_backoff(4), Duration::from_secs(10));
     assert_eq!(restart_backoff(5), Duration::from_secs(30));
     assert_eq!(restart_backoff(100), Duration::from_secs(30));
+}
+
+#[test]
+fn macos_owner_conflict_is_the_only_terminal_daemon_exit_code() {
+    assert_eq!(
+        is_terminal_daemon_exit_code(Some(
+            hypercolor_types::event::MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE
+        )),
+        cfg!(target_os = "macos")
+    );
+    assert!(!is_terminal_daemon_exit_code(None));
+    assert!(!is_terminal_daemon_exit_code(Some(1)));
 }
 
 #[test]
@@ -147,7 +159,7 @@ fn ui_dir_candidates_include_resource_dir_layouts() {
 
 #[test]
 fn candidates_include_macos_app_resources_from_contents_macos_exe() {
-    let app_path = Path::new("/Applications/Hypercolor.app/Contents/MacOS/hypercolor-app");
+    let app_path = Path::new("/Applications/Hypercolor.app/Contents/MacOS/Hypercolor");
     let resource_dir = macos_app_resource_dir(app_path).expect("resource dir should resolve");
 
     assert!(normalized(&resource_dir).ends_with("Hypercolor.app/Contents/Resources"));
@@ -172,14 +184,21 @@ fn build_daemon_command_includes_bind_ui_dir_and_effects_dir() {
     assert_eq!(command.program, Path::new("hypercolor-daemon"));
     assert_eq!(
         command.args,
-        vec![
+        [
             "--bind",
             DEFAULT_DAEMON_BIND,
+            #[cfg(target_os = "macos")]
+            "--macos-owner",
+            #[cfg(target_os = "macos")]
+            "app-sidecar",
             "--ui-dir",
             "ui",
             "--effects-dir",
             "effects"
         ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
     );
 }
 
@@ -192,7 +211,18 @@ fn build_daemon_command_allows_missing_asset_dirs() {
         None,
     );
 
-    assert_eq!(command.args, vec!["--bind", DEFAULT_DAEMON_BIND]);
+    let expected = [
+        "--bind",
+        DEFAULT_DAEMON_BIND,
+        #[cfg(target_os = "macos")]
+        "--macos-owner",
+        #[cfg(target_os = "macos")]
+        "app-sidecar",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert_eq!(command.args, expected);
 }
 
 #[test]

@@ -18,6 +18,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::api::{self, AppState};
+use crate::macos_owner::{MacosDaemonOwner, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
 use crate::startup::{DaemonState, load_config};
 
@@ -48,6 +49,10 @@ pub struct DaemonRunOptions {
     pub ui_dir: Option<PathBuf>,
     /// Bundled effects directory, overriding the install layout.
     pub effects_dir: Option<PathBuf>,
+    /// Explicit macOS daemon topology supplied by the local launcher.
+    pub macos_owner: Option<MacosDaemonOwner>,
+    /// Durable ownership snapshot published before input source construction.
+    pub macos_owner_snapshot: Option<MacosOwnerSnapshot>,
 }
 
 pub trait DaemonExtensionInstaller: Send + Sync {
@@ -169,7 +174,11 @@ pub async fn run_with_extensions(
         .local_addr()
         .context("failed to read API listener address")?;
 
-    let mut daemon_state = DaemonState::initialize(&config, config_path)?;
+    let mut daemon_state = DaemonState::initialize_with_macos_owner(
+        &config,
+        config_path,
+        options.macos_owner_snapshot,
+    )?;
     for installer in extension_installers {
         installer.install(&mut daemon_state)?;
     }

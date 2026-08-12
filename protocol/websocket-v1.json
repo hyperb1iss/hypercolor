@@ -219,7 +219,8 @@
         "owner_epoch"
       ],
       "optional_fields": {
-        "conflict": null
+        "conflict": null,
+        "recovery_required": null
       },
       "description": "Authoritative macOS daemon topology snapshot. The event reports ownership state only and cannot request an owner change."
     }

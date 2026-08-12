@@ -244,6 +244,10 @@ from .health_checks import HealthChecks
 from .health_response import HealthResponse
 from .identify_request import IdentifyRequest
 from .input_source_issue_status import InputSourceIssueStatus
+from .input_source_platform_status_type_0 import InputSourcePlatformStatusType0
+from .input_source_platform_status_type_0_type import InputSourcePlatformStatusType0Type
+from .input_source_platform_status_type_1 import InputSourcePlatformStatusType1
+from .input_source_platform_status_type_1_type import InputSourcePlatformStatusType1Type
 from .input_source_status import InputSourceStatus
 from .input_status import InputStatus
 from .invoke_control_action_request import InvokeControlActionRequest
@@ -266,6 +270,24 @@ from .led_topology_type_5 import LedTopologyType5
 from .led_topology_type_5_type import LedTopologyType5Type
 from .led_topology_type_6 import LedTopologyType6
 from .led_topology_type_6_type import LedTopologyType6Type
+from .macos_authorization_state_api import MacosAuthorizationStateApi
+from .macos_capability_owner_api import MacosCapabilityOwnerApi
+from .macos_daemon_handover_phase_api import MacosDaemonHandoverPhaseApi
+from .macos_daemon_owner_conflict_api_status import MacosDaemonOwnerConflictApiStatus
+from .macos_daemon_owner_recovery_required_api_status import (
+    MacosDaemonOwnerRecoveryRequiredApiStatus,
+)
+from .macos_daemon_ownership_api_status import MacosDaemonOwnershipApiStatus
+from .macos_protected_source_state_api import MacosProtectedSourceStateApi
+from .macos_selection_state_api_type_0 import MacosSelectionStateApiType0
+from .macos_selection_state_api_type_0_type import MacosSelectionStateApiType0Type
+from .macos_selection_state_api_type_1 import MacosSelectionStateApiType1
+from .macos_selection_state_api_type_1_type import MacosSelectionStateApiType1Type
+from .macos_selection_state_api_type_2 import MacosSelectionStateApiType2
+from .macos_selection_state_api_type_2_type import MacosSelectionStateApiType2Type
+from .macos_tahoe_selection_capabilities_api_status import (
+    MacosTahoeSelectionCapabilitiesApiStatus,
+)
 from .meta import Meta
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
@@ -553,6 +575,10 @@ __all__ = (
     "HealthResponse",
     "IdentifyRequest",
     "InputSourceIssueStatus",
+    "InputSourcePlatformStatusType0",
+    "InputSourcePlatformStatusType0Type",
+    "InputSourcePlatformStatusType1",
+    "InputSourcePlatformStatusType1Type",
     "InputSourceStatus",
     "InputStatus",
     "InvokeControlActionRequest",
@@ -575,6 +601,20 @@ __all__ = (
     "LedTopologyType5Type",
     "LedTopologyType6",
     "LedTopologyType6Type",
+    "MacosAuthorizationStateApi",
+    "MacosCapabilityOwnerApi",
+    "MacosDaemonHandoverPhaseApi",
+    "MacosDaemonOwnerConflictApiStatus",
+    "MacosDaemonOwnerRecoveryRequiredApiStatus",
+    "MacosDaemonOwnershipApiStatus",
+    "MacosProtectedSourceStateApi",
+    "MacosSelectionStateApiType0",
+    "MacosSelectionStateApiType0Type",
+    "MacosSelectionStateApiType1",
+    "MacosSelectionStateApiType1Type",
+    "MacosSelectionStateApiType2",
+    "MacosSelectionStateApiType2Type",
+    "MacosTahoeSelectionCapabilitiesApiStatus",
     "Meta",
     "NormalizedPosition",
     "NormalizedRect",
