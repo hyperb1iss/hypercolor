@@ -31,7 +31,7 @@ impl MacosInputSession {
     }
 
     #[must_use]
-    pub const fn diagnostics(&self) -> MacosInputDiagnostics {
+    pub fn diagnostics(&self) -> MacosInputDiagnostics {
         MacosInputDiagnostics {
             ..MacosInputDiagnostics::default()
         }
