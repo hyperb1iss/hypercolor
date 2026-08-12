@@ -88,6 +88,11 @@ name = "screen_capture_bridge_tests"
 path = "tests/screen_capture_bridge_tests.rs"
 required-features = ["screen-capture"]
 
+[[example]]
+name = "bench_macos_reduction"
+path = "examples/bench_macos_reduction.rs"
+required-features = ["screen-capture"]
+
 [lints.rust]
 unsafe_code = "allow"
 

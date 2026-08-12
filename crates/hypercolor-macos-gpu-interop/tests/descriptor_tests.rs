@@ -1,11 +1,36 @@
 use hypercolor_macos_gpu_interop::{
     ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor,
+    MacosMetal4CapabilityProbe,
 };
 
 #[test]
 fn descriptor_rejects_zero_sized_frames() {
     assert!(MacosIosurfaceImportDescriptor::new(0, 1, ImportedFrameFormat::Bgra8Unorm).is_err());
     assert!(MacosIosurfaceImportDescriptor::new(1, 0, ImportedFrameFormat::Bgra8Unorm).is_err());
+}
+
+#[test]
+fn metal4_probe_requires_every_facility() {
+    let complete = MacosMetal4CapabilityProbe {
+        metal_registry_id: 42,
+        metal4_family: true,
+        command_allocator: true,
+        command_queue: true,
+        command_buffer: true,
+        residency_set: true,
+    };
+    assert!(complete.all_required_facilities());
+    assert_eq!(complete.missing_facilities(), [None; 5]);
+
+    let missing_command_buffer = MacosMetal4CapabilityProbe {
+        command_buffer: false,
+        ..complete
+    };
+    assert!(!missing_command_buffer.all_required_facilities());
+    assert_eq!(
+        missing_command_buffer.missing_facilities(),
+        [None, None, None, Some("command_buffer"), None]
+    );
 }
 
 #[test]

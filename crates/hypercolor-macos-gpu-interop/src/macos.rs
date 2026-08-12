@@ -4,9 +4,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use objc2::{runtime::NSObjectProtocol, sel};
+#[cfg(feature = "screen-capture")]
+use objc2_core_foundation::CFRetained;
 use objc2_core_foundation::{
-    CFDictionary, CFIndex, CFNumber, CFRetained, CFString, kCFAllocatorDefault,
-    kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
+    CFDictionary, CFIndex, CFNumber, CFString, kCFAllocatorDefault, kCFTypeDictionaryKeyCallBacks,
+    kCFTypeDictionaryValueCallBacks,
 };
 #[cfg(feature = "screen-capture")]
 use objc2_core_video::{
@@ -41,6 +44,87 @@ type CoreVideoMetalTexturePlane = (
 
 /// Result type for macOS GPU interop operations.
 pub type Result<T> = std::result::Result<T, MacosGpuInteropError>;
+
+/// Runtime facilities required by the direct Metal 4 reduction prototype.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MacosMetal4CapabilityProbe {
+    /// Registry identity of the exact Metal device behind the wgpu device.
+    pub metal_registry_id: u64,
+    /// Whether the active device reports the Metal 4 GPU family.
+    pub metal4_family: bool,
+    /// Whether the active device exposes Metal 4 command allocators.
+    pub command_allocator: bool,
+    /// Whether the active device exposes Metal 4 command queues.
+    pub command_queue: bool,
+    /// Whether the active device exposes Metal 4 command buffers.
+    pub command_buffer: bool,
+    /// Whether the active device exposes residency-set creation.
+    pub residency_set: bool,
+}
+
+impl MacosMetal4CapabilityProbe {
+    /// Whether every facility required by the prototype is callable.
+    #[must_use]
+    pub const fn all_required_facilities(self) -> bool {
+        self.metal4_family
+            && self.command_allocator
+            && self.command_queue
+            && self.command_buffer
+            && self.residency_set
+    }
+
+    /// Missing facilities in a stable order, padded with `None`.
+    #[must_use]
+    pub const fn missing_facilities(self) -> [Option<&'static str>; 5] {
+        [
+            if self.metal4_family {
+                None
+            } else {
+                Some("metal4_family")
+            },
+            if self.command_allocator {
+                None
+            } else {
+                Some("command_allocator")
+            },
+            if self.command_queue {
+                None
+            } else {
+                Some("command_queue")
+            },
+            if self.command_buffer {
+                None
+            } else {
+                Some("command_buffer")
+            },
+            if self.residency_set {
+                None
+            } else {
+                Some("residency_set")
+            },
+        ]
+    }
+}
+
+/// Probe Metal 4 facilities on the exact Metal device behind a wgpu device.
+pub fn probe_macos_metal4_capabilities(
+    device: &wgpu::Device,
+) -> Result<MacosMetal4CapabilityProbe> {
+    let (metal_registry_id, _) = metal_device_import_contract(device)?;
+    // SAFETY: the HAL device is borrowed only for immediate capability queries
+    // and never outlives the wgpu device.
+    let hal_device = unsafe { device.as_hal::<wgpu_hal::api::Metal>() }
+        .ok_or(MacosGpuInteropError::MissingWgpuMetalDevice)?;
+    let raw_device = hal_device.raw_device();
+    Ok(MacosMetal4CapabilityProbe {
+        metal_registry_id,
+        metal4_family: raw_device.supportsFamily(MTLGPUFamily::Metal4),
+        command_allocator: raw_device.respondsToSelector(sel!(newCommandAllocator)),
+        command_queue: raw_device.respondsToSelector(sel!(newMTL4CommandQueue)),
+        command_buffer: raw_device.respondsToSelector(sel!(newCommandBuffer)),
+        residency_set: raw_device.respondsToSelector(sel!(newResidencySetWithDescriptor:error:)),
+    })
+}
 
 /// Errors raised while preparing or importing macOS GPU surfaces.
 #[derive(Debug, Error, PartialEq, Eq)]
