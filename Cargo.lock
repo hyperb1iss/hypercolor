@@ -5316,6 +5316,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-macos-capture"
+version = "0.3.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "hypercolor-macos-gpu-interop"
 version = "0.3.2"
 dependencies = [
