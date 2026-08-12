@@ -23,7 +23,7 @@ use crate::geometry::{
     MacosCaptureGeometry, MacosGeometryError, MacosPixelExtent, MacosPixelRect, MacosPointRect,
     MacosScale,
 };
-use crate::{MacosDeliveredFrameMetadata, MacosStreamDeliveryRejection};
+use crate::{MacosCaptureDynamicRange, MacosDeliveredFrameMetadata, MacosStreamDeliveryRejection};
 
 pub const MACOS_STREAM_QUEUE_DEPTH: usize = 8;
 
@@ -1170,6 +1170,33 @@ pub enum MacosCaptureError {
     PixelBufferFixtureCreateFailed(i32),
     #[error("ScreenCaptureKit filter retention failed")]
     RetainNativeFilterFailed,
+    #[error("Tahoe platform capability is missing: {0}")]
+    TahoePlatformDefect(&'static str),
+    #[error("Tahoe screenshot capability is pending the first complete frame")]
+    ScreenshotCapabilityPending,
+    #[error("the selected capture source changed during the screenshot transaction")]
+    ScreenshotSelectionChanged,
+    #[error("Tahoe screenshot output omitted the requested {0:?} image")]
+    MissingScreenshotImage(MacosCaptureDynamicRange),
+    #[error("Tahoe screenshot metadata is outside the supported range: {0}")]
+    ScreenshotMetadataOutOfRange(&'static str),
+    #[error("Tahoe screenshot output has no named color space")]
+    MissingScreenshotColorSpace,
+    #[error("Tahoe screenshot needs {requested_bytes} bytes; the limit is {maximum_bytes}")]
+    ScreenshotReferenceTooLarge {
+        requested_bytes: u64,
+        maximum_bytes: u64,
+    },
+    #[error("Core Graphics could not create the screenshot reference context")]
+    ScreenshotReferenceContextFailed,
+    #[error("Core Graphics could not create screenshot tone-mapping options")]
+    ScreenshotToneMappingOptionsFailed,
+    #[error("Core Foundation could not represent the screenshot output path")]
+    ScreenshotOutputUrlFailed,
+    #[error("ImageIO could not create the screenshot PNG encoder")]
+    ScreenshotEncoderCreateFailed,
+    #[error("ImageIO could not finalize the screenshot PNG")]
+    ScreenshotEncodeFailed,
     #[error("failed to start the macOS capture worker: {0}")]
     CaptureWorkerStartFailed(String),
     #[error("the macOS capture worker panicked")]

@@ -16,7 +16,7 @@ use objc2_core_foundation::{
     CGRect, CGSize,
 };
 use objc2_core_graphics::{
-    CGDirectDisplayID, CGMainDisplayID, CGPreflightScreenCaptureAccess,
+    CGDirectDisplayID, CGImage, CGMainDisplayID, CGPreflightScreenCaptureAccess,
     CGRectMakeWithDictionaryRepresentation, CGRequestScreenCaptureAccess,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime};
@@ -61,7 +61,8 @@ use crate::{
     MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosHostArchitecture, MacosPixelExtent,
     MacosPixelRect, MacosPointRect, MacosProtectedSourceState, MacosRawCapturePlane,
     MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments, MacosRuntimeCapability,
-    MacosScale, MacosStreamDeliveryRejection, MacosStreamDeliveryState,
+    MacosScale, MacosScreenshotReferenceCapability, MacosScreenshotReferenceImage,
+    MacosScreenshotReferenceSet, MacosStreamDeliveryRejection, MacosStreamDeliveryState,
     MacosStreamDeliveryValidator, MacosStreamPreset, MacosStreamRequest, MacosTahoeCapabilities,
     MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilities, MacosTransferFunction,
     MacosValidatedStreamDelivery, MacosYuvMatrix,
@@ -519,6 +520,269 @@ struct NativeFilter(Retained<SCContentFilter>);
 // the process that owns every consuming SCStream. Rust never mutates it.
 unsafe impl Send for NativeFilter {}
 
+#[derive(Clone)]
+enum ScreenshotFilterHandle {
+    Native(NativeFilter),
+    #[cfg(test)]
+    Fixture(u64),
+}
+
+#[derive(Clone)]
+struct ScreenshotTransactionSnapshot {
+    filter: ScreenshotFilterHandle,
+    source_id: Arc<str>,
+    generation: u64,
+    selection_revision: u64,
+    capability: MacosScreenshotReferenceCapability,
+}
+
+type ScreenshotCompletion =
+    Box<dyn FnOnce(Result<MacosScreenshotReferenceSet, MacosCaptureError>) + Send>;
+type ScreenshotImageCompletion =
+    Box<dyn FnOnce(Result<MacosScreenshotReferenceImage, MacosCaptureError>) + Send>;
+
+trait ScreenshotCaptureBackend: Send + Sync {
+    fn capture(
+        &self,
+        filter: ScreenshotFilterHandle,
+        dynamic_range: MacosCaptureDynamicRange,
+        cursor_composed: bool,
+        completion: ScreenshotImageCompletion,
+    ) -> Result<(), MacosCaptureError>;
+}
+
+trait ScreenshotIdentityFence: Send + Sync {
+    fn matches(&self, source_id: &str, generation: u64, selection_revision: u64) -> bool;
+}
+
+struct NativeScreenshotCaptureBackend;
+
+impl ScreenshotCaptureBackend for NativeScreenshotCaptureBackend {
+    fn capture(
+        &self,
+        filter: ScreenshotFilterHandle,
+        dynamic_range: MacosCaptureDynamicRange,
+        cursor_composed: bool,
+        completion: ScreenshotImageCompletion,
+    ) -> Result<(), MacosCaptureError> {
+        #[cfg(not(test))]
+        let ScreenshotFilterHandle::Native(filter) = filter;
+        #[cfg(test)]
+        let filter = match filter {
+            ScreenshotFilterHandle::Native(filter) => filter,
+            ScreenshotFilterHandle::Fixture(_) => {
+                return Err(MacosCaptureError::TahoePlatformDefect(
+                    "native screenshot filter",
+                ));
+            }
+        };
+        let configuration_class = AnyClass::get(c"SCScreenshotConfiguration").ok_or(
+            MacosCaptureError::TahoePlatformDefect("SCScreenshotConfiguration"),
+        )?;
+        let manager_class = AnyClass::get(c"SCScreenshotManager").ok_or(
+            MacosCaptureError::TahoePlatformDefect("SCScreenshotManager"),
+        )?;
+        for (class, selector, capability) in [
+            (
+                configuration_class,
+                sel!(setShowsCursor:),
+                "SCScreenshotConfiguration.setShowsCursor",
+            ),
+            (
+                configuration_class,
+                sel!(setDisplayIntent:),
+                "SCScreenshotConfiguration.setDisplayIntent",
+            ),
+            (
+                configuration_class,
+                sel!(setDynamicRange:),
+                "SCScreenshotConfiguration.setDynamicRange",
+            ),
+        ] {
+            if !class.responds_to(selector) {
+                return Err(MacosCaptureError::TahoePlatformDefect(capability));
+            }
+        }
+        if !manager_class.metaclass().responds_to(sel!(
+            captureScreenshotWithFilter:configuration:completionHandler:
+        )) {
+            return Err(MacosCaptureError::TahoePlatformDefect(
+                "SCScreenshotManager.captureScreenshot",
+            ));
+        }
+        // SAFETY: the runtime probes above establish the Tahoe class and each
+        // selector before the dynamically dispatched configuration calls.
+        let configuration: Retained<AnyObject> = unsafe { msg_send![configuration_class, new] };
+        let range_value = match dynamic_range {
+            MacosCaptureDynamicRange::Sdr => 0_isize,
+            MacosCaptureDynamicRange::Hdr => 1_isize,
+        };
+        // SAFETY: values match the SDK-declared BOOL and NSInteger properties.
+        unsafe {
+            let _: () = msg_send![&*configuration, setShowsCursor: cursor_composed];
+            let _: () = msg_send![&*configuration, setDisplayIntent: 0_isize];
+            let _: () = msg_send![&*configuration, setDynamicRange: range_value];
+        }
+        let completion = Arc::new(Mutex::new(Some(completion)));
+        let completion_slot = Arc::clone(&completion);
+        let retained_filter = filter.clone();
+        let callback = RcBlock::new(move |output: *mut AnyObject, error: *mut NSError| {
+            let Some(completion) = lock(&completion_slot).take() else {
+                return;
+            };
+            // SAFETY: ScreenCaptureKit supplies callback objects for this
+            // invocation. The selected CGImage is retained before return.
+            let result = if let Some(error) = unsafe { error.as_ref() } {
+                Err(native_error("capture Tahoe screenshot", error))
+            } else if let Some(output) = unsafe { output.as_ref() } {
+                // SAFETY: the live Objective-C output supports the NSObject
+                // protocol query for its Tahoe image selector.
+                unsafe {
+                    let selector = match dynamic_range {
+                        MacosCaptureDynamicRange::Sdr => sel!(sdrImage),
+                        MacosCaptureDynamicRange::Hdr => sel!(hdrImage),
+                    };
+                    let responds: bool = msg_send![output, respondsToSelector: selector];
+                    if !responds {
+                        Err(MacosCaptureError::TahoePlatformDefect(
+                            "SCScreenshotOutput image selector",
+                        ))
+                    } else {
+                        let image: Option<Retained<CGImage>> = match dynamic_range {
+                            MacosCaptureDynamicRange::Sdr => msg_send![output, sdrImage],
+                            MacosCaptureDynamicRange::Hdr => msg_send![output, hdrImage],
+                        };
+                        image
+                            .ok_or(MacosCaptureError::MissingScreenshotImage(dynamic_range))
+                            .and_then(|image| {
+                                MacosScreenshotReferenceImage::from_native(image, dynamic_range)
+                            })
+                    }
+                }
+            } else {
+                Err(MacosCaptureError::TahoePlatformDefect("SCScreenshotOutput"))
+            };
+            drop(retained_filter.clone());
+            completion(result);
+        });
+        // SAFETY: the runtime probe establishes this class selector. The API
+        // copies the block and retains the filter and configuration while the
+        // asynchronous capture is pending.
+        unsafe {
+            let _: () = msg_send![
+                manager_class,
+                captureScreenshotWithFilter: &*filter.0,
+                configuration: &*configuration,
+                completionHandler: &*callback
+            ];
+        }
+        Ok(())
+    }
+}
+
+fn execute_screenshot_transaction(
+    snapshot: ScreenshotTransactionSnapshot,
+    fence: Arc<dyn ScreenshotIdentityFence>,
+    backend: Arc<dyn ScreenshotCaptureBackend>,
+    cursor_composed: bool,
+    completion: ScreenshotCompletion,
+) -> Result<(), MacosCaptureError> {
+    if matches!(
+        snapshot.capability,
+        MacosScreenshotReferenceCapability::PendingFirstFrame
+    ) {
+        return Err(MacosCaptureError::ScreenshotCapabilityPending);
+    }
+    let completion = Arc::new(Mutex::new(Some(completion)));
+    let first_filter = snapshot.filter.clone();
+    let second_filter = snapshot.filter.clone();
+    let first_source_id = Arc::clone(&snapshot.source_id);
+    let first_fence = Arc::clone(&fence);
+    let second_backend = Arc::clone(&backend);
+    let capability = snapshot.capability.clone();
+    let generation = snapshot.generation;
+    let selection_revision = snapshot.selection_revision;
+    let first_completion = Arc::clone(&completion);
+    backend.capture(
+        first_filter,
+        MacosCaptureDynamicRange::Sdr,
+        cursor_composed,
+        Box::new(move |sdr| {
+            if !first_fence.matches(&first_source_id, generation, selection_revision) {
+                finish_screenshot(
+                    &first_completion,
+                    Err(MacosCaptureError::ScreenshotSelectionChanged),
+                );
+                return;
+            }
+            let sdr = match sdr {
+                Ok(sdr) => sdr,
+                Err(error) => {
+                    finish_screenshot(&first_completion, Err(error));
+                    return;
+                }
+            };
+            match capability {
+                MacosScreenshotReferenceCapability::PendingFirstFrame => {
+                    finish_screenshot(
+                        &first_completion,
+                        Err(MacosCaptureError::ScreenshotCapabilityPending),
+                    );
+                }
+                MacosScreenshotReferenceCapability::SdrOnly { .. } => {
+                    finish_screenshot(
+                        &first_completion,
+                        Ok(MacosScreenshotReferenceSet::Sdr { image: sdr }),
+                    );
+                }
+                MacosScreenshotReferenceCapability::PairedSdrHdr { .. } => {
+                    let second_source_id = Arc::clone(&first_source_id);
+                    let second_fence = Arc::clone(&first_fence);
+                    let second_completion = Arc::clone(&first_completion);
+                    let start_completion = Arc::clone(&first_completion);
+                    let start = second_backend.capture(
+                        second_filter,
+                        MacosCaptureDynamicRange::Hdr,
+                        cursor_composed,
+                        Box::new(move |hdr| {
+                            if !second_fence.matches(
+                                &second_source_id,
+                                generation,
+                                selection_revision,
+                            ) {
+                                finish_screenshot(
+                                    &second_completion,
+                                    Err(MacosCaptureError::ScreenshotSelectionChanged),
+                                );
+                                return;
+                            }
+                            match hdr {
+                                Ok(hdr) => finish_screenshot(
+                                    &second_completion,
+                                    Ok(MacosScreenshotReferenceSet::Paired { sdr, hdr }),
+                                ),
+                                Err(error) => finish_screenshot(&second_completion, Err(error)),
+                            }
+                        }),
+                    );
+                    if let Err(error) = start {
+                        finish_screenshot(&start_completion, Err(error));
+                    }
+                }
+            }
+        }),
+    )
+}
+
+fn finish_screenshot(
+    completion: &Arc<Mutex<Option<ScreenshotCompletion>>>,
+    result: Result<MacosScreenshotReferenceSet, MacosCaptureError>,
+) {
+    if let Some(completion) = lock(completion).take() {
+        completion(result);
+    }
+}
+
 struct NativeStream {
     stream: Retained<SCStream>,
     filter: NativeFilter,
@@ -671,6 +935,7 @@ struct StreamState {
     current: Option<NativeStream>,
     candidate: Option<NativeStream>,
     selected_filter: Option<NativeFilter>,
+    selection_revision: u64,
 }
 
 struct StreamSlot {
@@ -712,7 +977,14 @@ impl StreamSlot {
             reserve_pool,
         )?;
         let stream = candidate.stream.clone();
-        let replaced = lock(&self.state).candidate.replace(candidate);
+        let replaced = {
+            let mut state = lock(&self.state);
+            state.selection_revision = state
+                .selection_revision
+                .checked_add(1)
+                .ok_or(MacosCaptureError::SequenceExhausted)?;
+            state.candidate.replace(candidate)
+        };
         if let Some(replaced) = replaced {
             self.stop_stream(replaced);
         }
@@ -819,9 +1091,78 @@ impl StreamSlot {
             Retained::retain(ptr::from_ref(filter).cast_mut())
                 .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
         };
-        lock(&self.state).selected_filter = Some(NativeFilter(filter));
+        let mut state = lock(&self.state);
+        state.selection_revision = state
+            .selection_revision
+            .checked_add(1)
+            .ok_or(MacosCaptureError::SequenceExhausted)?;
+        state.selected_filter = Some(NativeFilter(filter));
+        drop(state);
         self.shared.set_unconfirmed_selection(selection);
         Ok(())
+    }
+
+    fn screenshot_capability(
+        &self,
+    ) -> Result<MacosScreenshotReferenceCapability, MacosCaptureError> {
+        let state = lock(&self.state);
+        let Some(current) = state.current.as_ref() else {
+            return Ok(MacosScreenshotReferenceCapability::PendingFirstFrame);
+        };
+        self.capability_for_current(current)
+    }
+
+    fn screenshot_snapshot(&self) -> Result<ScreenshotTransactionSnapshot, MacosCaptureError> {
+        let state = lock(&self.state);
+        let current = state
+            .current
+            .as_ref()
+            .ok_or(MacosCaptureError::ScreenshotCapabilityPending)?;
+        let capability = self.capability_for_current(current)?;
+        Ok(ScreenshotTransactionSnapshot {
+            filter: ScreenshotFilterHandle::Native(current.filter.clone()),
+            source_id: Arc::clone(&current.source_id),
+            generation: current.epoch(),
+            selection_revision: state.selection_revision,
+            capability,
+        })
+    }
+
+    fn capability_for_current(
+        &self,
+        current: &NativeStream,
+    ) -> Result<MacosScreenshotReferenceCapability, MacosCaptureError> {
+        if !self.shared.tahoe.screenshot_api.is_present() {
+            return Err(MacosCaptureError::TahoePlatformDefect(
+                "Tahoe screenshot API",
+            ));
+        }
+        if !self.shared.tahoe.content_tone_mapping_info.is_present() {
+            return Err(MacosCaptureError::TahoePlatformDefect(
+                "Core Graphics Tahoe tone mapping",
+            ));
+        }
+        crate::screenshot::require_tahoe_reference_output_symbols()?;
+        let capability = self
+            .shared
+            .tahoe_selection_for(&current.source_id, current.epoch())
+            .ok_or(MacosCaptureError::ScreenshotCapabilityPending)?;
+        if capability.hdr_capture {
+            if !capability.dual_range_screenshots {
+                return Err(MacosCaptureError::TahoePlatformDefect(
+                    "paired SDR and HDR screenshots",
+                ));
+            }
+            Ok(MacosScreenshotReferenceCapability::PairedSdrHdr {
+                source_id: capability.source_id,
+                generation: capability.capture_session_generation,
+            })
+        } else {
+            Ok(MacosScreenshotReferenceCapability::SdrOnly {
+                source_id: capability.source_id,
+                generation: capability.capture_session_generation,
+            })
+        }
     }
 
     fn selected_filter(&self) -> Option<NativeFilter> {
@@ -838,6 +1179,7 @@ impl StreamSlot {
     fn stop(&self) {
         let (current, candidate) = {
             let mut state = lock(&self.state);
+            state.selection_revision = state.selection_revision.saturating_add(1);
             if state.current.is_none()
                 && state.selected_filter.is_none()
                 && let Some(candidate) = state.candidate.as_ref()
@@ -860,6 +1202,20 @@ impl StreamSlot {
         if let Err(error) = stream.stop() {
             self.shared.publish_recoverable_error(error);
         }
+    }
+}
+
+impl ScreenshotIdentityFence for StreamSlot {
+    fn matches(&self, source_id: &str, generation: u64, selection_revision: u64) -> bool {
+        let state = lock(&self.state);
+        state.selection_revision == selection_revision
+            && state.current.as_ref().is_some_and(|current| {
+                current.epoch() == generation && current.source_id.as_ref() == source_id
+            })
+            && self
+                .shared
+                .tahoe_selection_for(source_id, generation)
+                .is_some()
     }
 }
 
@@ -1292,6 +1648,26 @@ impl MacosScreenCaptureSession {
         self.shared.tahoe_selection_for(&source_id, epoch)
     }
 
+    pub fn screenshot_reference_capability(
+        &self,
+    ) -> Result<MacosScreenshotReferenceCapability, MacosCaptureError> {
+        self.streams.screenshot_capability()
+    }
+
+    pub fn capture_screenshot_reference<F>(&self, completion: F) -> Result<(), MacosCaptureError>
+    where
+        F: FnOnce(Result<MacosScreenshotReferenceSet, MacosCaptureError>) + Send + 'static,
+    {
+        let snapshot = self.streams.screenshot_snapshot()?;
+        execute_screenshot_transaction(
+            snapshot,
+            Arc::clone(&self.streams) as Arc<dyn ScreenshotIdentityFence>,
+            Arc::new(NativeScreenshotCaptureBackend),
+            self.request.cursor_composed,
+            Box::new(completion),
+        )
+    }
+
     pub fn mailbox(&self) -> MacosFrameMailbox {
         self.shared.mailbox.clone()
     }
@@ -1567,9 +1943,9 @@ fn native_capture_capabilities() -> Result<MacosCaptureCapabilities, MacosCaptur
     let screenshot_configuration = AnyClass::get(c"SCScreenshotConfiguration");
     let screenshot_manager = AnyClass::get(c"SCScreenshotManager");
     let probes = MacosTahoeRuntimeProbes {
-        content_tone_mapping_info_symbol: capability(dynamic_symbol_present(
-            c"CGContextGetContentToneMappingInfo",
-        )),
+        content_tone_mapping_info_symbol: capability(
+            crate::screenshot::tahoe_reference_output_symbols_present(),
+        ),
         screenshot_configuration_class: capability(screenshot_configuration.is_some()),
         screenshot_dynamic_range_selector: capability(
             screenshot_configuration.is_some_and(|class| class.responds_to(sel!(setDynamicRange:))),
@@ -1656,18 +2032,6 @@ fn sysctl_i32(name: &CStr, failure: &'static str) -> Result<SysctlI32Value, Maco
     } else {
         Err(MacosCaptureError::CapabilityProbeFailed("sysctl size"))
     }
-}
-
-fn dynamic_symbol_present(symbol: &CStr) -> bool {
-    #[link(name = "System", kind = "dylib")]
-    unsafe extern "C-unwind" {
-        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-    }
-
-    let default_handle = ptr::without_provenance_mut::<c_void>(usize::MAX - 1);
-    // SAFETY: RTLD_DEFAULT is the Darwin sentinel pointer with address -2,
-    // and the supplied symbol name is nul-terminated.
-    !unsafe { dlsym(default_handle, symbol.as_ptr()) }.is_null()
 }
 
 fn stream_configuration(
@@ -2442,7 +2806,9 @@ fn exact_u32(value: f64) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
@@ -2453,11 +2819,109 @@ mod tests {
         MacosStreamDeliveryState, MacosStreamDeliveryValidator, MacosStreamPreset,
         MacosTahoeCapabilities, MacosTahoeRuntimeProbes, MacosTransferFunction,
         MacosValidatedStreamDelivery, PoolBackingLifetime, PoolObservation, SCCaptureDynamicRange,
-        SCStreamConfiguration, SCStreamConfigurationPreset, SessionShared, SysctlI32Value,
+        SCStreamConfiguration, SCStreamConfigurationPreset, ScreenshotCaptureBackend,
+        ScreenshotFilterHandle, ScreenshotIdentityFence, ScreenshotImageCompletion,
+        ScreenshotTransactionSnapshot, SessionShared, SysctlI32Value,
         capture_capabilities_from_probes, capture_dynamic_range, classify_delivery_error,
-        color_range_from_fourcc, conservative_pool_quote, session_selection_source_id,
-        with_admitted_surface,
+        color_range_from_fourcc, conservative_pool_quote, execute_screenshot_transaction,
+        session_selection_source_id, with_admitted_surface,
     };
+    use crate::{
+        MacosScreenshotReferenceCapability, MacosScreenshotReferenceImage,
+        MacosScreenshotReferenceSet,
+    };
+
+    struct FixtureScreenshotCall {
+        filter_id: u64,
+        dynamic_range: MacosCaptureDynamicRange,
+        completion: ScreenshotImageCompletion,
+    }
+
+    #[derive(Default)]
+    struct FixtureScreenshotBackend {
+        calls: Mutex<VecDeque<FixtureScreenshotCall>>,
+    }
+
+    impl FixtureScreenshotBackend {
+        fn calls(&self) -> Vec<(u64, MacosCaptureDynamicRange)> {
+            super::lock(&self.calls)
+                .iter()
+                .map(|call| (call.filter_id, call.dynamic_range))
+                .collect()
+        }
+
+        fn complete_next(&self, result: Result<MacosScreenshotReferenceImage, MacosCaptureError>) {
+            let call = super::lock(&self.calls)
+                .pop_front()
+                .expect("fixture callback should be pending");
+            (call.completion)(result);
+        }
+    }
+
+    impl ScreenshotCaptureBackend for FixtureScreenshotBackend {
+        fn capture(
+            &self,
+            filter: ScreenshotFilterHandle,
+            dynamic_range: MacosCaptureDynamicRange,
+            _cursor_composed: bool,
+            completion: ScreenshotImageCompletion,
+        ) -> Result<(), MacosCaptureError> {
+            let ScreenshotFilterHandle::Fixture(filter_id) = filter else {
+                panic!("fixture backend requires a fixture filter");
+            };
+            super::lock(&self.calls).push_back(FixtureScreenshotCall {
+                filter_id,
+                dynamic_range,
+                completion,
+            });
+            Ok(())
+        }
+    }
+
+    struct FixtureScreenshotFence {
+        identity: Mutex<(Arc<str>, u64, u64)>,
+    }
+
+    impl ScreenshotIdentityFence for FixtureScreenshotFence {
+        fn matches(&self, source_id: &str, generation: u64, revision: u64) -> bool {
+            let identity = super::lock(&self.identity);
+            identity.0.as_ref() == source_id && identity.1 == generation && identity.2 == revision
+        }
+    }
+
+    fn screenshot_fixture(
+        capability: MacosScreenshotReferenceCapability,
+    ) -> (
+        ScreenshotTransactionSnapshot,
+        Arc<FixtureScreenshotFence>,
+        Arc<FixtureScreenshotBackend>,
+    ) {
+        let (source_id, generation) = match &capability {
+            MacosScreenshotReferenceCapability::PendingFirstFrame => (Arc::from("pending"), 0),
+            MacosScreenshotReferenceCapability::SdrOnly {
+                source_id,
+                generation,
+            }
+            | MacosScreenshotReferenceCapability::PairedSdrHdr {
+                source_id,
+                generation,
+            } => (Arc::clone(source_id), *generation),
+        };
+        let selection_revision = 11;
+        (
+            ScreenshotTransactionSnapshot {
+                filter: ScreenshotFilterHandle::Fixture(7),
+                source_id: Arc::clone(&source_id),
+                generation,
+                selection_revision,
+                capability,
+            },
+            Arc::new(FixtureScreenshotFence {
+                identity: Mutex::new((source_id, generation, selection_revision)),
+            }),
+            Arc::new(FixtureScreenshotBackend::default()),
+        )
+    }
 
     const ABSENT_TAHOE_PROBES: MacosTahoeRuntimeProbes = MacosTahoeRuntimeProbes {
         content_tone_mapping_info_symbol: MacosRuntimeCapability::Absent,
@@ -2700,6 +3164,148 @@ mod tests {
 
         shared.clear_tahoe_selection();
         assert_eq!(shared.tahoe_selection_for("display:b", 2), None);
+    }
+
+    #[test]
+    fn pending_screenshot_capability_dispatches_no_native_call() {
+        let (snapshot, fence, backend) =
+            screenshot_fixture(MacosScreenshotReferenceCapability::PendingFirstFrame);
+        let result = execute_screenshot_transaction(
+            snapshot,
+            fence,
+            Arc::clone(&backend) as Arc<dyn ScreenshotCaptureBackend>,
+            false,
+            Box::new(|_| panic!("pending capability must not complete asynchronously")),
+        );
+
+        assert_eq!(result, Err(MacosCaptureError::ScreenshotCapabilityPending));
+        assert!(backend.calls().is_empty());
+    }
+
+    #[test]
+    fn sdr_screenshot_dispatches_one_configuration() {
+        let capability = MacosScreenshotReferenceCapability::SdrOnly {
+            source_id: Arc::from("display:a"),
+            generation: 4,
+        };
+        let (snapshot, fence, backend) = screenshot_fixture(capability);
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        execute_screenshot_transaction(
+            snapshot,
+            fence,
+            Arc::clone(&backend) as Arc<dyn ScreenshotCaptureBackend>,
+            false,
+            Box::new(move |result| result_tx.send(result).expect("receiver remains live")),
+        )
+        .expect("SDR transaction should start");
+        assert_eq!(backend.calls(), vec![(7, MacosCaptureDynamicRange::Sdr)]);
+
+        backend.complete_next(Ok(MacosScreenshotReferenceImage::new_fixture(
+            MacosCaptureDynamicRange::Sdr,
+            1,
+        )));
+        assert!(matches!(
+            result_rx.recv().expect("SDR result should arrive"),
+            Ok(MacosScreenshotReferenceSet::Sdr { .. })
+        ));
+        assert!(backend.calls().is_empty());
+    }
+
+    #[test]
+    fn paired_screenshot_dispatches_exactly_two_ranges_on_one_filter() {
+        let capability = MacosScreenshotReferenceCapability::PairedSdrHdr {
+            source_id: Arc::from("display:a"),
+            generation: 4,
+        };
+        let (snapshot, fence, backend) = screenshot_fixture(capability);
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        execute_screenshot_transaction(
+            snapshot,
+            fence,
+            Arc::clone(&backend) as Arc<dyn ScreenshotCaptureBackend>,
+            false,
+            Box::new(move |result| result_tx.send(result).expect("receiver remains live")),
+        )
+        .expect("paired transaction should start");
+
+        backend.complete_next(Ok(MacosScreenshotReferenceImage::new_fixture(
+            MacosCaptureDynamicRange::Sdr,
+            1,
+        )));
+        assert_eq!(backend.calls(), vec![(7, MacosCaptureDynamicRange::Hdr)]);
+        backend.complete_next(Ok(MacosScreenshotReferenceImage::new_fixture(
+            MacosCaptureDynamicRange::Hdr,
+            2,
+        )));
+        assert!(matches!(
+            result_rx.recv().expect("paired result should arrive"),
+            Ok(MacosScreenshotReferenceSet::Paired { .. })
+        ));
+        assert!(backend.calls().is_empty());
+    }
+
+    #[test]
+    fn paired_screenshot_partial_failure_publishes_no_partial_set() {
+        let capability = MacosScreenshotReferenceCapability::PairedSdrHdr {
+            source_id: Arc::from("display:a"),
+            generation: 4,
+        };
+        let (snapshot, fence, backend) = screenshot_fixture(capability);
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        execute_screenshot_transaction(
+            snapshot,
+            fence,
+            Arc::clone(&backend) as Arc<dyn ScreenshotCaptureBackend>,
+            false,
+            Box::new(move |result| result_tx.send(result).expect("receiver remains live")),
+        )
+        .expect("paired transaction should start");
+        backend.complete_next(Ok(MacosScreenshotReferenceImage::new_fixture(
+            MacosCaptureDynamicRange::Sdr,
+            1,
+        )));
+        backend.complete_next(Err(MacosCaptureError::NativeOperation {
+            operation: "fixture HDR screenshot",
+            code: 9,
+            message: "redacted".to_owned(),
+        }));
+
+        assert!(matches!(
+            result_rx.recv().expect("failure should arrive"),
+            Err(MacosCaptureError::NativeOperation { code: 9, .. })
+        ));
+    }
+
+    #[test]
+    fn repick_between_paired_callbacks_rejects_the_complete_pair() {
+        let capability = MacosScreenshotReferenceCapability::PairedSdrHdr {
+            source_id: Arc::from("display:a"),
+            generation: 4,
+        };
+        let (snapshot, fence, backend) = screenshot_fixture(capability);
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        execute_screenshot_transaction(
+            snapshot,
+            Arc::clone(&fence) as Arc<dyn ScreenshotIdentityFence>,
+            Arc::clone(&backend) as Arc<dyn ScreenshotCaptureBackend>,
+            false,
+            Box::new(move |result| result_tx.send(result).expect("receiver remains live")),
+        )
+        .expect("paired transaction should start");
+        backend.complete_next(Ok(MacosScreenshotReferenceImage::new_fixture(
+            MacosCaptureDynamicRange::Sdr,
+            1,
+        )));
+        super::lock(&fence.identity).2 = 12;
+        backend.complete_next(Ok(MacosScreenshotReferenceImage::new_fixture(
+            MacosCaptureDynamicRange::Hdr,
+            2,
+        )));
+
+        assert!(matches!(
+            result_rx.recv().expect("fence failure should arrive"),
+            Err(MacosCaptureError::ScreenshotSelectionChanged)
+        ));
     }
 
     #[test]

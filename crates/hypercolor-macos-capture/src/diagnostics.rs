@@ -85,6 +85,18 @@ impl MacosFrameDropReason {
             | MacosCaptureError::StreamDeliveryRejected(_)
             | MacosCaptureError::FrameDeliveryDropped(_)
             | MacosCaptureError::CapabilityProbeFailed(_)
+            | MacosCaptureError::TahoePlatformDefect(_)
+            | MacosCaptureError::ScreenshotCapabilityPending
+            | MacosCaptureError::ScreenshotSelectionChanged
+            | MacosCaptureError::MissingScreenshotImage(_)
+            | MacosCaptureError::ScreenshotMetadataOutOfRange(_)
+            | MacosCaptureError::MissingScreenshotColorSpace
+            | MacosCaptureError::ScreenshotReferenceTooLarge { .. }
+            | MacosCaptureError::ScreenshotReferenceContextFailed
+            | MacosCaptureError::ScreenshotToneMappingOptionsFailed
+            | MacosCaptureError::ScreenshotOutputUrlFailed
+            | MacosCaptureError::ScreenshotEncoderCreateFailed
+            | MacosCaptureError::ScreenshotEncodeFailed
             | MacosCaptureError::Geometry(_) => Self::Validation,
             MacosCaptureError::ScreenResourceExhausted { .. } => Self::Resource,
         }

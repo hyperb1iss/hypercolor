@@ -11,12 +11,20 @@ mod geometry;
 mod mailbox;
 #[cfg(target_os = "macos")]
 mod native;
+#[cfg(target_os = "macos")]
+mod screenshot;
 mod session;
 mod stream_contract;
 mod worker;
 
 #[cfg(target_os = "macos")]
 pub use native::MacosScreenCaptureSession;
+#[cfg(target_os = "macos")]
+pub use screenshot::{
+    MAX_MACOS_SCREENSHOT_REFERENCE_BYTES, MacosScreenshotPixelCopy,
+    MacosScreenshotPreferredDynamicRange, MacosScreenshotReferenceCapability,
+    MacosScreenshotReferenceImage, MacosScreenshotReferenceMetadata, MacosScreenshotReferenceSet,
+};
 
 pub use clock::{MacosDisplayClock, MacosDisplayClockError};
 pub use cpu::MacosCpuSourceView;

@@ -32,12 +32,24 @@ objc2-core-foundation = { workspace = true, features = [
   "CFArray",
   "CFCGTypes",
   "CFDictionary",
+  "CFData",
   "CFNumber",
   "CFString",
+  "CFURL",
   "CFUUID",
   "objc2",
 ] }
-objc2-core-graphics = { workspace = true, features = ["std", "CGGeometry", "CGWindow"] }
+objc2-core-graphics = { workspace = true, features = [
+  "std",
+  "CGBitmapContext",
+  "CGColorSpace",
+  "CGContext",
+  "CGDataProvider",
+  "CGGeometry",
+  "CGImage",
+  "CGToneMapping",
+  "CGWindow",
+] }
 objc2-core-media = { workspace = true, features = [
   "std",
   "CMSampleBuffer",
@@ -79,6 +91,7 @@ objc2-screen-capture-kit = { workspace = true, features = [
   "SCContentSharingPicker",
   "SCError",
   "SCShareableContent",
+  "SCScreenshotManager",
   "SCStream",
   "objc2-core-foundation",
   "objc2-core-graphics",
