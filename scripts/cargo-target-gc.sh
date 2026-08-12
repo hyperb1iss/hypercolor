@@ -209,6 +209,24 @@ scan_profiles() {
 
 scan_profiles
 
+if [ "$RECLAIM_NOW" -eq 1 ]; then
+  cutoff=$(( $(date +%s) - RECLAIM_MIN_AGE_SECONDS ))
+else
+  cutoff=$(( $(date +%s) - MIN_AGE_DAYS * 86400 ))
+fi
+
+target_has_recent_profile() {
+  local root="$1"
+  local index activity
+  for index in "${!PROFILE_PATHS[@]}"; do
+    [ "${PROFILE_ROOTS[index]}" = "$root" ] || continue
+    activity="$(profile_activity "${PROFILE_PATHS[index]}" "$root" \
+      "${PROFILE_OWNERS[index]}")"
+    [ "$activity" -le "$cutoff" ] || return 0
+  done
+  return 1
+}
+
 printf '[cargo-gc] %s across %d Cargo profiles, high %s, low %s\n' \
   "$(human_bytes "$TOTAL_BYTES")" "${#PROFILE_PATHS[@]}" \
   "$(human_bytes "$HIGH_WATER")" "$(human_bytes "$LOW_WATER")"
@@ -280,6 +298,11 @@ if [ -n "$CARGO_SWEEP_BIN" ]; then
       continue
     fi
     if [ "$RECLAIM_NOW" -eq 1 ]; then
+      if target_has_recent_profile "$root"; then
+        echo "[cargo-gc] keeping recently active target during reclaim: $root"
+        release_target_locks
+        continue
+      fi
       scan_profiles
       needed=$((TOTAL_BYTES - LOW_WATER))
       if [ "$needed" -le 0 ]; then
@@ -355,11 +378,6 @@ clear_profile_preserving_locks() {
     -delete
 }
 
-if [ "$RECLAIM_NOW" -eq 1 ]; then
-  cutoff=$(( $(date +%s) - RECLAIM_MIN_AGE_SECONDS ))
-else
-  cutoff=$(( $(date +%s) - MIN_AGE_DAYS * 86400 ))
-fi
 remaining="$TOTAL_BYTES"
 removed=0
 while IFS=$'\t' read -r activity size index; do

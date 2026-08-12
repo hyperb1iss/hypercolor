@@ -69,6 +69,26 @@ make_profile "$grace_profile" '5 minutes ago'
 HYPERCOLOR_GC_TARGETS="$grace_target" run_gc --reclaim-now >"$SANDBOX/grace.log"
 test -e "$grace_profile/deps/artifact"
 
+grace_repo="$SANDBOX/grace-repo"
+mkdir -p "$grace_repo"
+git -C "$grace_repo" init -q
+printf 'target/\n' >"$grace_repo/.gitignore"
+printf '[package]\nname = "gc-grace-probe"\nversion = "0.1.0"\n' \
+  >"$grace_repo/Cargo.toml"
+printf 'fn main() {}\n' >"$grace_repo/main.rs"
+git -C "$grace_repo" add .gitignore Cargo.toml main.rs
+git -C "$grace_repo" -c user.name=GC -c user.email=gc@example.invalid commit -qm init
+grace_repo_profile="$grace_repo/target/debug"
+make_profile "$grace_repo_profile" '5 minutes ago'
+HYPERCOLOR_GC_REPOS="$grace_repo" run_gc --reclaim-now \
+  >"$SANDBOX/grace-repo.log"
+grep -Fq "keeping recently active target during reclaim" "$SANDBOX/grace-repo.log"
+if [ -e "$SANDBOX/cargo-sweep.log" ] \
+  && grep -Fq "$grace_repo" "$SANDBOX/cargo-sweep.log"; then
+  exit 1
+fi
+test -e "$grace_repo_profile/deps/artifact"
+
 bounded_target="$SANDBOX/bounded/target"
 small_profile="$bounded_target/a-small"
 large_profile="$bounded_target/b-large"
