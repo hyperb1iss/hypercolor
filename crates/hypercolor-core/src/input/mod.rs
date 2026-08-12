@@ -9,8 +9,6 @@ pub mod browser;
 #[cfg(target_os = "linux")]
 pub mod evdev;
 mod graph;
-#[cfg(target_os = "macos")]
-pub mod interaction;
 pub mod keymap;
 pub mod macos;
 pub mod media;
@@ -36,8 +34,6 @@ pub use graph::{
     INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,
     InputPublicationRead, InputSourceSlot, InteractionSourceOrigin, InteractionTransientTotals,
 };
-#[cfg(target_os = "macos")]
-pub use interaction::InteractionInput;
 pub use macos::{MacosHostInput, MacosInputFoldDiagnostics};
 #[cfg(feature = "macos-native-fixtures")]
 pub use macos::{MacosHostInputFixture, MacosInputFixtureBackend};

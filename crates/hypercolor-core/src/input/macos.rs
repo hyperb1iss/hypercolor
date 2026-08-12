@@ -279,6 +279,11 @@ impl MacosHostInput {
     }
 
     #[must_use]
+    pub const fn capture_kinds(&self) -> (bool, bool) {
+        (self.capture_keyboard, self.capture_pointer)
+    }
+
+    #[must_use]
     pub fn fold_diagnostics(&self) -> MacosInputFoldDiagnostics {
         self.shared
             .lock()

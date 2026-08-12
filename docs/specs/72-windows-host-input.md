@@ -890,16 +890,13 @@ W3 also updates the MCP heuristic at `mcp/tools/system.rs:279`, which
 independently reimplements the `denied > 0 && opened == 0` rule and would
 otherwise keep giving udev advice on Windows after the UI stopped.
 
-## D9. device_query retirement, partially executed
+## D9. device_query retirement, complete
 
-Spec 71 W6 retires device_query once Windows and macOS both have native
-backends. macOS (CGEventTap) is a separate spec, so `InteractionInput` must
-survive this wave. What this spec can do — and does — is narrow the blast
-radius immediately: `device_query` moves from an unconditional dependency
-(`core/Cargo.toml:68`) to `[target.'cfg(target_os = "macos")'.dependencies]`,
-and `interaction/mod.rs` gains a matching `#[cfg]`. Linux and Windows builds
-stop compiling and shipping a keylogging-capable crate they no longer use, and
-the macOS spec deletes the last of it.
+Spec 76 ships the native macOS `CGEventTap` backend and removes the final
+`InteractionInput` consumer. The workspace dependency, macOS-only core
+dependency, polling source, exports, tests, fixture labels, and lock inventory
+entry are gone. Linux uses evdev, Windows uses Raw Input, and macOS uses Core
+Graphics event taps. No supported build compiles or ships `device_query`.
 
 ## Testing
 
@@ -1025,8 +1022,9 @@ keyboard. See the status notes on each wave.
   plus the `merge_from` pointer-precedence rule and its test (source
   registration order in `services.rs:577-585` is left **unchanged**),
   degraded-health types through `InteractionDiagnostics` → `InputStatus` →
-  MCP diagnose (`system.rs:279`) → UI remedy, device_query narrowed to macOS.
-  **Done.** `InputStatus.degraded` is additive and optional, so the vendored
+  MCP diagnose (`system.rs:279`) → UI remedy. The native macOS backend from
+  spec 76 completes the planned `device_query` retirement. **Done.**
+  `InputStatus.degraded` is additive and optional, so the vendored
   Python client regenerated without an API break.
 - **W4** — Hardware acceptance pass, parity check against the Linux daemon,
   docs (permissions/session-model page), cross-model review. **Docs and

@@ -1476,7 +1476,7 @@ fn production_source_constructors_expose_status_handles() {
 
     #[cfg(target_os = "macos")]
     {
-        let mut source = hypercolor_core::input::InteractionInput::new();
+        let mut source = hypercolor_core::input::MacosHostInput::new(true, true);
         assert!(source.source_status_handle().is_some());
         assert!(source.source_status_reporter().is_some());
     }

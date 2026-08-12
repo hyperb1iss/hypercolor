@@ -27,9 +27,8 @@ use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, regis
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::EvdevHostInput;
-#[cfg(not(target_os = "linux"))]
 #[cfg(target_os = "macos")]
-use hypercolor_core::input::InteractionInput;
+use hypercolor_core::input::MacosHostInput;
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::WindowsHostInput;
 use hypercolor_core::input::audio::AudioInput;
@@ -1189,10 +1188,9 @@ pub(crate) fn build_windows_screen_capture_source(
 
 /// Build the platform host-input capture source, when config allows one.
 ///
-/// Linux uses evdev and Windows uses Raw Input, both event-driven and both
-/// reporting physical key positions. macOS is still on the device_query
-/// polling bridge until its CGEventTap backend ships. Returns `None` when
-/// input capture is disabled or no source kind is enabled.
+/// Every supported platform uses an event-driven native backend that reports
+/// physical key positions. Returns `None` when input capture is disabled or
+/// no source kind is enabled.
 pub(crate) fn build_interaction_source(
     input: &hypercolor_types::config::InputConfig,
 ) -> Option<Box<dyn hypercolor_core::input::InputSource>> {
@@ -1221,9 +1219,8 @@ pub(crate) fn build_interaction_source(
 
     #[cfg(target_os = "macos")]
     {
-        (input.keyboard || input.mouse).then(|| {
-            Box::new(InteractionInput::new()) as Box<dyn hypercolor_core::input::InputSource>
-        })
+        build_macos_host_input_source(input)
+            .map(|source| Box::new(source) as Box<dyn hypercolor_core::input::InputSource>)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
@@ -1231,6 +1228,14 @@ pub(crate) fn build_interaction_source(
         let _ = input;
         None
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn build_macos_host_input_source(
+    input: &hypercolor_types::config::InputConfig,
+) -> Option<MacosHostInput> {
+    (input.enabled && (input.keyboard || input.mouse))
+        .then(|| MacosHostInput::new(input.keyboard, input.mouse))
 }
 
 /// Build the Wayland screen capture source with a restore-token sink that
@@ -1370,5 +1375,42 @@ mod library_startup_tests {
             error.downcast_ref::<crate::library::JsonLibraryStoreOpenError>(),
             Some(crate::library::JsonLibraryStoreOpenError::Read { .. })
         ));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_input_tests {
+    use super::build_macos_host_input_source;
+
+    #[test]
+    fn startup_preserves_per_kind_consent() {
+        let disabled = hypercolor_types::config::InputConfig::default();
+        assert!(build_macos_host_input_source(&disabled).is_none());
+
+        let keyboard = hypercolor_types::config::InputConfig {
+            enabled: true,
+            keyboard: true,
+            mouse: false,
+            ..Default::default()
+        };
+        let pointer = hypercolor_types::config::InputConfig {
+            enabled: true,
+            keyboard: false,
+            mouse: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            build_macos_host_input_source(&keyboard)
+                .expect("keyboard source is configured")
+                .capture_kinds(),
+            (true, false)
+        );
+        assert_eq!(
+            build_macos_host_input_source(&pointer)
+                .expect("pointer source is configured")
+                .capture_kinds(),
+            (false, true)
+        );
     }
 }

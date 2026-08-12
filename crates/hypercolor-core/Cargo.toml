@@ -150,6 +150,3 @@ required-features = ["allocation-contract-tests"]
 [[bench]]
 name = "core_pipeline"
 harness = false
-
-[target.'cfg(target_os = "macos")'.dependencies]
-device_query = { workspace = true }
