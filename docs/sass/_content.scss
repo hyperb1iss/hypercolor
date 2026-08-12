@@ -43,9 +43,9 @@
   background: var(--surface-raised);
   text-decoration: none;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth);
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
 
   &:hover {
     border-color: var(--accent-muted);
@@ -184,8 +184,8 @@
     background: none;
     -webkit-text-fill-color: currentColor;
     transition:
-      opacity var(--duration-medium) var(--ease-smooth),
-      color var(--duration-medium) var(--ease-smooth);
+      opacity var(--duration-normal) var(--ease-silk),
+      color var(--duration-normal) var(--ease-silk);
 
     &:hover {
       color: var(--accent);
@@ -221,9 +221,9 @@
     background-position: 0% 100%;
     background-repeat: no-repeat;
     transition:
-      color var(--duration-medium) var(--ease-smooth),
-      background-size var(--duration-medium) var(--ease-smooth),
-      text-shadow var(--duration-medium) var(--ease-smooth);
+      color var(--duration-normal) var(--ease-silk),
+      background-size var(--duration-normal) var(--ease-silk),
+      text-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       color: var(--accent-hover);
@@ -258,8 +258,8 @@
     box-shadow: 0 0 1px var(--border-subtle),
                 inset 0 1px 0 oklch(1 0 0 / 0.03);
     transition:
-      border-color var(--duration-medium) var(--ease-smooth),
-      box-shadow var(--duration-medium) var(--ease-smooth);
+      border-color var(--duration-normal) var(--ease-silk),
+      box-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       border-color: var(--border-default);
@@ -305,7 +305,7 @@
   td {
     border-bottom: 1px solid var(--border-subtle);
     padding: 10px 14px;
-    transition: background var(--duration-medium) var(--ease-smooth);
+    transition: background var(--duration-normal) var(--ease-silk);
   }
 
   tr:hover td {
@@ -322,8 +322,8 @@
     padding: 12px 20px;
     border-radius: 0 $radius-md $radius-md 0;
     transition:
-      border-left-color var(--duration-medium) var(--ease-smooth),
-      box-shadow var(--duration-medium) var(--ease-smooth);
+      border-left-color var(--duration-normal) var(--ease-silk),
+      box-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       border-left-color: var(--accent-hover);
@@ -383,7 +383,7 @@
   img {
     border-radius: $radius-md;
     margin: 16px 0;
-    transition: box-shadow var(--duration-medium) var(--ease-smooth);
+    transition: box-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       box-shadow: 0 0 24px var(--ambient-glow);

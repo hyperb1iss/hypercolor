@@ -24,14 +24,14 @@
   color: var(--accent);
   padding: 8px 0 4px 0;
   display: block;
-  transition: color var(--duration-medium) var(--ease-smooth);
+  transition: color var(--duration-normal) var(--ease-silk);
 
   &::before {
     content: '\203A'; // ›
     margin-right: 6px;
     color: var(--text-tertiary);
     font-weight: 400;
-    transition: margin-right var(--duration-medium) var(--ease-spring);
+    transition: margin-right var(--duration-normal) var(--ease-spring);
   }
 
   &:hover::before {
@@ -53,11 +53,11 @@
   padding: 4px 0 4px 12px;
   border-radius: $radius-sm;
   transition:
-    color var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    padding-left var(--duration-medium) var(--ease-smooth),
-    border-left-color var(--duration-medium) var(--ease-smooth);
+    color var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk),
+    padding-left var(--duration-normal) var(--ease-silk),
+    border-left-color var(--duration-normal) var(--ease-silk);
 
   &:hover {
     color: var(--text-primary);
@@ -79,10 +79,26 @@
 // Mobile Sidebar — slide in from left with overlay
 // ═══════════════════════════════════════════════════════════════
 
-// The section list is the desktop sidebar's whole job, so the mobile-only
-// top-level group stays out of the way until the drawer takes over.
+// The section list is the full-width sidebar's whole job, so the top-level
+// group stays out of the way until the nav needs help.
 .sidebar-group--sections {
   display: none;
+}
+
+// Below 1280px the eleven top-level destinations no longer fit the nav bar
+// between the brand and the actions, so the sidebar carries them: as the drawer
+// under 768px, and as the persistent column above it. Without this the nav row
+// just scrolls and destinations go missing.
+@media (max-width: $bp-desktop - 1px) {
+  .sidebar-group--sections {
+    display: block;
+  }
+
+  .sidebar-group + .sidebar-group {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-subtle);
+  }
 }
 
 @media (max-width: $bp-mobile - 1px) {
@@ -105,15 +121,6 @@
     }
   }
 
-  .sidebar-group + .sidebar-group {
-    margin-top: 16px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border-subtle);
-  }
-
-  .sidebar-group--sections {
-    display: block;
-  }
 }
 
 // Pages outside a section (home, download) carry the drawer purely to give

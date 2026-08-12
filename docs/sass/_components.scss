@@ -189,10 +189,10 @@
   text-decoration: none;
   transition:
     transform var(--duration-fast) var(--ease-spring),
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    filter var(--duration-medium) var(--ease-smooth),
-    border-color var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth);
+    box-shadow var(--duration-normal) var(--ease-silk),
+    filter var(--duration-normal) var(--ease-silk),
+    border-color var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
 
   &--primary {
     background: linear-gradient(135deg, var(--accent), var(--color-coral));
@@ -327,10 +327,10 @@
   opacity: 0;
   animation: fadeInUp 0.4s var(--ease-silk) both;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow 0.4s var(--ease-smooth),
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow 0.4s var(--ease-silk),
     transform var(--duration-fast) var(--ease-spring),
-    background var(--duration-medium) var(--ease-smooth);
+    background var(--duration-normal) var(--ease-silk);
 
   // Staggered entrance — 0.06s delay per card
   @for $i from 1 through 12 {
@@ -370,7 +370,7 @@
     margin-bottom: 16px;
     filter: drop-shadow(0 0 12px var(--glow-accent-50));
     line-height: 1;
-    transition: filter var(--duration-medium) var(--ease-smooth);
+    transition: filter var(--duration-normal) var(--ease-silk);
   }
 
   &__title {
@@ -378,7 +378,7 @@
     font-weight: 600;
     font-size: 1.05rem;
     margin-bottom: 8px;
-    transition: text-shadow var(--duration-medium) var(--ease-smooth);
+    transition: text-shadow var(--duration-normal) var(--ease-silk);
   }
 
   &__desc {
@@ -398,7 +398,7 @@
       color: var(--accent);
       font-weight: 600;
       font-size: 0.85rem;
-      transition: text-shadow var(--duration-medium) var(--ease-smooth);
+      transition: text-shadow var(--duration-normal) var(--ease-silk);
     }
 
     &:hover .feature-card__cta {
@@ -460,9 +460,9 @@ a.feature-card {
   padding: 20px;
   color: var(--text-primary);
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow 0.4s var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth),
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow 0.4s var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk),
     transform var(--duration-fast) var(--ease-spring);
 
   &:hover {
@@ -494,8 +494,8 @@ a.feature-card {
   margin: 16px 0;
   font-size: 0.95rem;
   transition:
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    border-left-color var(--duration-medium) var(--ease-smooth);
+    box-shadow var(--duration-normal) var(--ease-silk),
+    border-left-color var(--duration-normal) var(--ease-silk);
 
   &:hover {
     box-shadow: -2px 0 16px var(--ambient-glow);
@@ -662,8 +662,8 @@ a.feature-card {
   border-radius: $radius-sm;
   cursor: pointer;
   transition:
-    background var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth);
+    background var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk);
 
   &:hover,
   &--active {
@@ -743,10 +743,10 @@ a.feature-card {
   padding: 4px 12px;
   border-left: 3px solid transparent;
   transition:
-    color var(--duration-medium) var(--ease-smooth),
-    border-left-color var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth);
+    color var(--duration-normal) var(--ease-silk),
+    border-left-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
 
   &:hover {
     color: var(--text-primary);
@@ -786,8 +786,8 @@ kbd {
   color: var(--accent);
   line-height: 1.4;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth);
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk);
 
   &:hover {
     border-color: var(--accent);
@@ -807,9 +807,9 @@ kbd {
   padding: 16px 20px;
   margin: 12px 0;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow 0.4s var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth);
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow 0.4s var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
 
   &:hover {
     border-color: var(--ambient-border);
