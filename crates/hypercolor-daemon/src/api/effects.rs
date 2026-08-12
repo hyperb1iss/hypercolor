@@ -2500,6 +2500,15 @@ fn validate_uploaded_html(html: &str) -> Result<ValidatedUploadedHtml, Vec<Strin
         }
     }
 
+    let mut seen_preset_ids = HashSet::new();
+    for preset in &parsed.presets {
+        let key = preset.id.as_deref().unwrap_or(&preset.name);
+        let preset_id = PresetId::stable(key);
+        if !seen_preset_ids.insert(preset_id) {
+            errors.push(format!("Duplicate bundled preset id \"{preset_id}\""));
+        }
+    }
+
     validate_preset_json(&sanitized, &parsed, &mut errors);
 
     if errors.is_empty() {

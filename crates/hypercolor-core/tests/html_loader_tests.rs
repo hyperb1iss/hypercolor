@@ -114,6 +114,46 @@ fn register_html_effects_skips_duplicates_from_overlapping_roots() {
 }
 
 #[test]
+fn html_loader_rejects_duplicate_fallback_preset_ids() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let effect = temp.path().join("duplicate.html");
+    write_html(
+        &effect,
+        r#"
+<head>
+  <title>Duplicate presets</title>
+  <meta preset="Calm" preset-controls='{}' />
+  <meta preset="Calm" preset-controls='{}' />
+</head>
+"#,
+    );
+
+    let error = load_html_effect_file(&effect).expect_err("duplicate ids should be rejected");
+
+    assert!(error.message.contains("duplicate bundled preset id"));
+}
+
+#[test]
+fn html_loader_rejects_duplicate_authored_preset_ids() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let effect = temp.path().join("duplicate.html");
+    write_html(
+        &effect,
+        r#"
+<head>
+  <title>Duplicate presets</title>
+  <meta preset="Calm" preset-id="shared" preset-controls='{}' />
+  <meta preset="Breeze" preset-id="shared" preset-controls='{}' />
+</head>
+"#,
+    );
+
+    let error = load_html_effect_file(&effect).expect_err("duplicate ids should be rejected");
+
+    assert!(error.message.contains("duplicate bundled preset id"));
+}
+
+#[test]
 fn register_html_effects_reports_unreadable_files() {
     let temp = TempDir::new().expect("failed to create tempdir");
     let root = temp.path().join("effects");

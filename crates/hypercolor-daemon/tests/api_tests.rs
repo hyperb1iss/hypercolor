@@ -2694,6 +2694,50 @@ async fn install_effect_upload_rejects_invalid_html() {
 }
 
 #[tokio::test]
+async fn install_effect_upload_rejects_duplicate_preset_ids() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(state);
+    let duplicate_cases = [
+        (
+            "fallback.html",
+            r#"<meta preset="Calm" preset-controls='{}' />
+<meta preset="Calm" preset-controls='{}' />"#,
+        ),
+        (
+            "authored.html",
+            r#"<meta preset="Calm" preset-id="shared" preset-controls='{}' />
+<meta preset="Breeze" preset-id="shared" preset-controls='{}' />"#,
+        ),
+    ];
+
+    for (file_name, presets) in duplicate_cases {
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html>
+  <head><title>Duplicates</title>{presets}</head>
+  <body><canvas id="exCanvas"></canvas><script>1</script></body>
+</html>"#
+        );
+        let response = app
+            .clone()
+            .oneshot(multipart_upload_request(file_name, &html))
+            .await
+            .expect("failed to execute upload request");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        let errors = json["error"]["details"]["errors"]
+            .as_array()
+            .expect("validation errors should be present");
+        assert!(errors.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|message| message.contains("Duplicate bundled preset id"))
+        }));
+    }
+}
+
+#[tokio::test]
 async fn install_effect_upload_rejects_oversized_payloads() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(state);
@@ -6454,6 +6498,14 @@ async fn effect_preset_stack_lists_and_applies_both_origins() {
     assert_eq!(list_json["data"]["items"][1]["id"], saved_id);
     assert_eq!(list_json["data"]["items"][1]["origin"], "saved");
     assert_eq!(list_json["data"]["items"][1]["editable"], true);
+    let items = list_json["data"]["items"]
+        .as_array()
+        .expect("preset stack should contain items");
+    let unique_ids = items
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique_ids.len(), items.len());
 
     for (preset_id, expected_speed) in [
         (bundled_id.to_string(), 2.5_f32),

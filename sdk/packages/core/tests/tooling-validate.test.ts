@@ -48,6 +48,34 @@ describe('tooling validate', () => {
         expect(result.errors.some((entry) => entry.code === 'INVALID_PRESET_JSON')).toBeTrue()
     })
 
+    test('rejects duplicate fallback preset ids', () => {
+        const html = VALID_EFFECT.replace(
+            '</head>',
+            `
+    <meta preset="Calm" preset-controls='{"speed":"3"}' />
+  </head>`,
+        ).replace(' preset-id="calm"', '')
+
+        const result = validateHtmlArtifact(html, '/tmp/duplicate-fallback.html')
+
+        expect(result.valid).toBeFalse()
+        expect(result.errors.some((entry) => entry.code === 'DUPLICATE_PRESET_ID')).toBeTrue()
+    })
+
+    test('rejects duplicate authored preset ids', () => {
+        const html = VALID_EFFECT.replace(
+            '</head>',
+            `
+    <meta preset="Breeze" preset-id="calm" preset-controls='{"speed":"3"}' />
+  </head>`,
+        )
+
+        const result = validateHtmlArtifact(html, '/tmp/duplicate-authored.html')
+
+        expect(result.valid).toBeFalse()
+        expect(result.errors.some((entry) => entry.code === 'DUPLICATE_PRESET_ID')).toBeTrue()
+    })
+
     test('warns for missing version and unknown preset controls', () => {
         const html = VALID_EFFECT.replace('<meta name="hypercolor-version" content="1" />\n', '').replace(
             `{"speed":"2","palette":"Aurora"}`,
