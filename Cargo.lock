@@ -5369,6 +5369,7 @@ name = "hypercolor-macos-input"
 version = "0.3.1"
 dependencies = [
  "crossbeam-queue",
+ "mach2 0.5.0",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",

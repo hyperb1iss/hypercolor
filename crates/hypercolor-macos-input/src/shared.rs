@@ -275,6 +275,8 @@ pub enum MacosInputError {
     TapCreation(&'static str),
     #[error("failed to create the {0} event-tap run-loop source")]
     RunLoopSource(&'static str),
+    #[error("failed to read the current process audit token: Mach error {0}")]
+    AuditToken(i32),
 }
 
 pub type MacosInputResult<T> = Result<T, MacosInputError>;
