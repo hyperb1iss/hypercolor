@@ -21,6 +21,7 @@ pub mod layout_auto_exclusions;
 pub mod layout_store;
 pub mod library;
 pub mod logical_devices;
+pub mod macos_owner;
 pub mod mcp;
 pub mod mdns;
 pub mod network;
