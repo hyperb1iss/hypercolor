@@ -582,6 +582,9 @@ impl ControlDefinition {
 /// these are authored by the effect developer and are read-only at runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct PresetTemplate {
+    /// Stable identifier authored by the effect or derived from its name.
+    #[schema(value_type = String)]
+    pub id: super::library::PresetId,
     /// Human-readable preset name (e.g. "Sunset Glow", "Deep Ocean").
     pub name: String,
     /// Optional short description.

@@ -27,6 +27,7 @@ from .models.effect import (
     ControlUpdateResult,
     Effect,
     EffectCoverImage,
+    EffectPreset,
     EffectSummary,
 )
 from .models.layout import Layout, LayoutSummary
@@ -135,6 +136,9 @@ class SyncHypercolorClient:
     def get_effect(self, effect_id: str) -> Effect:
         return self._run(self._client.get_effect(effect_id))
 
+    def get_effect_presets(self, effect_id: str) -> list[EffectPreset]:
+        return self._run(self._client.get_effect_presets(effect_id))
+
     def get_active_effect(self) -> ActiveEffect | None:
         return self._run(self._client.get_active_effect())
 
@@ -165,6 +169,21 @@ class SyncHypercolorClient:
                 controls=controls,
                 transition=transition,
                 preset_id=preset_id,
+                render_group=render_group,
+            )
+        )
+
+    def apply_effect_preset(
+        self,
+        effect_id: str,
+        preset_id: str,
+        *,
+        render_group: str | None = None,
+    ) -> ApplyEffectResult:
+        return self._run(
+            self._client.apply_effect_preset(
+                effect_id,
+                preset_id,
                 render_group=render_group,
             )
         )

@@ -63,6 +63,7 @@ export interface FaceOptions {
 }
 
 export interface FacePresetDef {
+    id?: string
     name: string
     description?: string
     controls: Record<string, unknown>

@@ -4,10 +4,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use gloo_net::http::Request;
-use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
+use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use web_sys::{File, FormData};
 
 use super::client;
+use crate::control_surface_api::path_segment;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -16,8 +17,9 @@ use super::client;
 // convenience shape derived from the shared wire response.
 use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResponse;
 pub use hypercolor_types::api::effects::{
-    ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet, EffectDetailResponse,
-    EffectListResponse, EffectSummary, InstalledEffectResponse,
+    ApplyEffectPresetRequest, ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet,
+    EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
+    EffectPresetSummary, EffectSummary, InstalledEffectResponse,
 };
 
 /// Active effect response from `GET /api/v1/effects/active`.
@@ -90,21 +92,48 @@ pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, Strin
 
 /// Fetch detailed metadata for one effect.
 pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, String> {
-    client::fetch_json(&format!("/api/v1/effects/{id}"))
+    client::fetch_json(&format!("/api/v1/effects/{}", path_segment(id)))
         .await
         .map_err(Into::into)
 }
 
-/// Fetch the bundled (effect-defined) presets for an effect.
-pub async fn fetch_bundled_presets(id: &str) -> Result<Vec<PresetTemplate>, String> {
-    let detail = fetch_effect_detail(id).await?;
-    Ok(detail.presets)
+/// Fetch the bundled and saved preset stack for one effect.
+pub async fn fetch_effect_presets(id: &str) -> Result<Vec<EffectPresetSummary>, String> {
+    let response: EffectPresetListResponse =
+        client::fetch_json(&format!("/api/v1/effects/{}/presets", path_segment(id))).await?;
+    Ok(response.items)
+}
+
+/// Apply a bundled or saved preset to an effect and optional render group.
+pub async fn apply_effect_preset(
+    effect_id: &str,
+    preset_id: &str,
+    render_group: Option<&str>,
+) -> Result<(), String> {
+    let path = format!(
+        "/api/v1/effects/{}/presets/{}/apply",
+        path_segment(effect_id),
+        path_segment(preset_id)
+    );
+    match render_group {
+        Some(render_group) => {
+            client::post_json_discard(
+                &path,
+                &ApplyEffectPresetRequest {
+                    render_group: Some(render_group.to_owned()),
+                },
+            )
+            .await
+        }
+        None => client::post_empty(&path).await,
+    }
+    .map_err(Into::into)
 }
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass
 /// `Some(body)` to deliver preferences atomically.
 pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<(), String> {
-    let path = format!("/api/v1/effects/{id}/apply");
+    let path = format!("/api/v1/effects/{}/apply", path_segment(id));
     match body {
         Some(body) => client::post_json_discard(&path, body)
             .await
@@ -178,7 +207,7 @@ pub async fn update_effect_controls(
 ) -> Result<UpdateControlsOutcome, String> {
     use gloo_net::http::Method;
 
-    let url = format!("/api/v1/effects/{effect_id}/controls");
+    let url = format!("/api/v1/effects/{}/controls", path_segment(effect_id));
     let body = serde_json::json!({ "controls": controls });
     let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
         Method::PATCH,

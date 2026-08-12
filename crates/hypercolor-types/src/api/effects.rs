@@ -8,6 +8,42 @@ use utoipa::ToSchema;
 use crate::api::common::Pagination;
 use crate::effect::{ControlDefinition, ControlValue, PresetTemplate};
 
+/// Origin of a preset in an effect's unified preset stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectPresetOrigin {
+    Bundled,
+    Saved,
+}
+
+/// One bundled or saved preset projected through an effect-scoped API.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct EffectPresetSummary {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub effect_id: String,
+    pub controls: HashMap<String, ControlValue>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub origin: EffectPresetOrigin,
+    pub editable: bool,
+}
+
+/// Response for `GET /api/v1/effects/{id}/presets`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct EffectPresetListResponse {
+    pub items: Vec<EffectPresetSummary>,
+    pub pagination: Pagination,
+}
+
+/// Optional body for `POST /api/v1/effects/{id}/presets/{preset_id}/apply`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ApplyEffectPresetRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_group: Option<String>,
+}
+
 /// Response for `GET /api/v1/effects`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct EffectListResponse {

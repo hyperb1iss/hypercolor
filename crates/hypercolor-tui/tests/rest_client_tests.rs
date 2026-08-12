@@ -110,6 +110,7 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
                     }),
                 }];
                 let presets = vec![PresetTemplate {
+                    id: hypercolor_types::library::PresetId::stable("Soft"),
                     name: "Soft".to_string(),
                     description: Some("Low energy".to_string()),
                     controls: HashMap::from([("speed".to_string(), ControlValue::Float(0.4))]),
@@ -150,6 +151,10 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
     // reflect only the primary zone).
     assert_eq!(effects[0].controls[0].default_value.as_f32(), Some(0.25));
     assert_eq!(effects[0].presets.len(), 1);
+    assert_eq!(
+        effects[0].presets[0].id,
+        hypercolor_types::library::PresetId::stable("Soft").to_string()
+    );
 }
 
 #[tokio::test]

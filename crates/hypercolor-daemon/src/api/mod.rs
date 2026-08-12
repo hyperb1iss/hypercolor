@@ -1339,6 +1339,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         .route("/effects/{id}", axum::routing::get(effects::get_effect))
         .route(
+            "/effects/{id}/presets",
+            axum::routing::get(effects::list_effect_presets),
+        )
+        .route(
+            "/effects/{id}/presets/{preset_id}/apply",
+            axum::routing::post(effects::apply_effect_preset),
+        )
+        .route(
             "/effects/{id}/layout",
             axum::routing::get(effects::get_effect_layout)
                 .put(effects::set_effect_layout)

@@ -1309,6 +1309,25 @@ fn register_builtin_effects_populates_registry() {
 }
 
 #[test]
+fn registered_builtin_preset_ids_are_unique_within_each_effect() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    for (_, entry) in registry.iter() {
+        let mut ids = std::collections::HashSet::new();
+        assert!(
+            entry
+                .metadata
+                .presets
+                .iter()
+                .all(|preset| ids.insert(preset.id)),
+            "{} has duplicate preset ids",
+            entry.metadata.name
+        );
+    }
+}
+
+#[test]
 fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);

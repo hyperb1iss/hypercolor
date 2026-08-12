@@ -2,13 +2,12 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::effect::{ControlValue, PresetTemplate};
+use hypercolor_types::effect::ControlValue;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::EffectsContext;
-use crate::components::preset_matching::bundled_preset_to_json;
 use crate::icons::*;
 use crate::toasts;
 
@@ -97,14 +96,20 @@ pub fn CalibrationGuide(
     #[prop(into)] accent_rgb: Signal<String>,
 ) -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
+    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
     let bundled_presets = LocalResource::new(move || {
         let id = effect_id.get();
         async move {
             if let Some(id) = id {
-                api::fetch_bundled_presets(&id).await.unwrap_or_default()
+                api::fetch_effect_presets(&id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|preset| preset.origin == api::EffectPresetOrigin::Bundled)
+                    .collect()
             } else {
-                Vec::<PresetTemplate>::new()
+                Vec::<api::EffectPresetSummary>::new()
             }
         }
     });
@@ -209,10 +214,21 @@ pub fn CalibrationGuide(
                                 toasts::toast_error("Calibration preset is unavailable");
                                 return;
                             };
-                            let controls_json = bundled_preset_to_json(&template.controls);
-                            let preset_name = template.name.clone();
+                            let Some(active_effect_id) = effect_id.get_untracked() else {
+                                toasts::toast_error("Calibration effect is unavailable");
+                                return;
+                            };
+                            let target_zone = zones_ctx.focused_zone_id_untracked();
+                            let preset_id = template.id;
+                            let preset_name = template.name;
                             leptos::task::spawn_local(async move {
-                                match api::update_controls(&controls_json).await {
+                                match api::apply_effect_preset(
+                                    &active_effect_id,
+                                    &preset_id,
+                                    target_zone.as_deref(),
+                                )
+                                .await
+                                {
                                     Ok(()) => {
                                         fx.refresh_active_effect();
                                         toasts::toast_success(&format!("Loaded {preset_name}"));

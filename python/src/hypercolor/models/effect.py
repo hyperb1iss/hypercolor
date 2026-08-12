@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any
 
 import msgspec
@@ -27,7 +28,30 @@ class EffectPresetSummary(msgspec.Struct, kw_only=True):
     """A named preset for an effect."""
 
     name: str
+    id: str = ""
+    description: str | None = None
+    controls: dict[str, Any] = msgspec.field(default_factory=dict)
     is_default: bool = False
+
+
+class EffectPresetOrigin(StrEnum):
+    """Source collection for a preset in an effect-scoped stack."""
+
+    BUNDLED = "bundled"
+    SAVED = "saved"
+
+
+class EffectPreset(msgspec.Struct, kw_only=True):
+    """A bundled or saved preset projected for one effect."""
+
+    id: str
+    name: str
+    effect_id: str
+    origin: EffectPresetOrigin
+    editable: bool
+    description: str | None = None
+    controls: dict[str, Any] = msgspec.field(default_factory=dict)
+    tags: list[str] = msgspec.field(default_factory=list)
 
 
 class EffectSummary(msgspec.Struct, kw_only=True):

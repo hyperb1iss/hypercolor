@@ -26,6 +26,7 @@ use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_leptos_ext::ws::TimedInputEventPayload;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::library::PresetId;
 use hypercolor_types::sensor::SystemSnapshot;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -336,6 +337,7 @@ async fn hello_handshake_returns_expected_capability_set() {
 async fn hello_handshake_reports_scene_backed_active_effect() {
     let state = test_app_state();
     let effect = insert_test_effect(&state, "Aurora").await;
+    let preset_id = PresetId::stable("calm");
     let layout = {
         let spatial = state.spatial_engine.read().await;
         spatial.layout().as_ref().clone()
@@ -343,7 +345,12 @@ async fn hello_handshake_reports_scene_backed_active_effect() {
     {
         let mut scene_manager = state.scene_manager.write().await;
         scene_manager
-            .upsert_primary_group(&effect, std::collections::HashMap::new(), None, layout)
+            .upsert_primary_group(
+                &effect,
+                std::collections::HashMap::new(),
+                Some(preset_id),
+                layout,
+            )
             .expect("hello test should install a primary group");
     }
 
@@ -358,6 +365,7 @@ async fn hello_handshake_reports_scene_backed_active_effect() {
 
     assert_eq!(hello["state"]["effect"]["id"], effect.id.to_string());
     assert_eq!(hello["state"]["effect"]["name"], effect.name);
+    assert_eq!(hello["state"]["active_preset_id"], preset_id.to_string());
     assert_eq!(
         hello["state"]["scene"]["id"],
         hypercolor_types::scene::SceneId::DEFAULT.to_string()

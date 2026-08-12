@@ -57,7 +57,7 @@ use super::relays::{
     relay_spectrum, relay_web_viewport_canvas, relay_zone_preview,
 };
 use crate::api::AppState;
-use crate::api::effects::active_effect_metadata;
+use crate::api::effects::active_primary_effect;
 use crate::api::layouts::validate_layout_sampling_radii;
 use crate::api::scenes;
 use crate::api::security::RequestAuthContext;
@@ -1452,10 +1452,18 @@ async fn build_hello_state(state: &AppState) -> HelloState {
             0.0
         };
 
-    let active_effect = active_effect_metadata(state).await.map(|meta| NameRef {
-        id: meta.id.to_string(),
-        name: meta.name.clone(),
-    });
+    let (active_effect, active_preset_id) =
+        active_primary_effect(state)
+            .await
+            .map_or((None, None), |(group, metadata)| {
+                (
+                    Some(NameRef {
+                        id: metadata.id.to_string(),
+                        name: metadata.name,
+                    }),
+                    group.preset_id.map(|preset_id| preset_id.to_string()),
+                )
+            });
     let active_scene = {
         let scene_manager = state.scene_manager.read().await;
         scene_manager.active_scene().map(|scene| SceneRef {
@@ -1482,6 +1490,7 @@ async fn build_hello_state(state: &AppState) -> HelloState {
             actual: (capacity_fps * 10.0).round() / 10.0,
         },
         effect: active_effect,
+        active_preset_id,
         scene: active_scene,
         profile: None,
         layout: None,

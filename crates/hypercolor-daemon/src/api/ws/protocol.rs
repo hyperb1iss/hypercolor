@@ -1157,6 +1157,7 @@ pub(super) struct HelloState {
     pub(super) brightness: u8,
     pub(super) fps: HelloFps,
     pub(super) effect: Option<NameRef>,
+    pub(super) active_preset_id: Option<String>,
     pub(super) scene: Option<SceneRef>,
     pub(super) profile: Option<NameRef>,
     pub(super) layout: Option<NameRef>,

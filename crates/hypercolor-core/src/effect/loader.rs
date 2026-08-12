@@ -183,6 +183,17 @@ pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDis
         .iter()
         .filter_map(|hp| preset_template_from_html(hp, &controls))
         .collect();
+    let mut preset_ids = HashSet::new();
+    if let Some(duplicate_id) = presets
+        .iter()
+        .map(|preset| preset.id)
+        .find(|preset_id| !preset_ids.insert(*preset_id))
+    {
+        return Err(HtmlDiscoveryError {
+            path: file.to_path_buf(),
+            message: format!("duplicate bundled preset id: {duplicate_id}"),
+        });
+    }
     presets.sort_by(|a, b| a.name.cmp(&b.name));
 
     let metadata = EffectMetadata {
@@ -603,6 +614,9 @@ fn preset_template_from_html(
     }
 
     Some(PresetTemplate {
+        id: hypercolor_types::library::PresetId::stable(
+            raw.id.as_deref().unwrap_or(raw.name.as_str()),
+        ),
         name: raw.name.clone(),
         description: raw.description.clone(),
         controls,

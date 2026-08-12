@@ -17,7 +17,12 @@ from hypercolor.exceptions import (
 )
 from hypercolor.models.control import ControlSurface
 from hypercolor.models.driver import Driver
-from hypercolor.models.effect import ActiveEffect, ControlDefinition, Effect
+from hypercolor.models.effect import (
+    ActiveEffect,
+    ControlDefinition,
+    Effect,
+    EffectPresetOrigin,
+)
 
 
 def test_normalize_payload_bridges_dropdown_labels_to_options() -> None:
@@ -509,6 +514,74 @@ async def test_apply_effect_omits_empty_body(client: HypercolorClient) -> None:
     assert route.calls[0].request.content == b""
     assert "content-type" not in route.calls[0].request.headers
     assert result.effect.id == "aurora"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_effect_preset_stack_lists_and_applies_both_origins(
+    client: HypercolorClient,
+) -> None:
+    list_route = respx.get("http://hyperia.test:9420/api/v1/effects/aurora%2Fmain/presets").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [
+                        {
+                            "id": "bundled-calm",
+                            "name": "Calm",
+                            "description": None,
+                            "effect_id": "aurora/main",
+                            "controls": {"speed": {"float": 0.4}},
+                            "tags": [],
+                            "origin": "bundled",
+                            "editable": False,
+                        },
+                        {
+                            "id": "saved-bright",
+                            "name": "Bright",
+                            "description": "Custom",
+                            "effect_id": "aurora/main",
+                            "controls": {"speed": {"float": 0.8}},
+                            "tags": ["custom"],
+                            "origin": "saved",
+                            "editable": True,
+                        },
+                    ],
+                    "pagination": {"offset": 0, "limit": 2, "total": 2, "has_more": False},
+                }
+            ),
+        )
+    )
+    apply_route = respx.post(
+        "http://hyperia.test:9420/api/v1/effects/aurora%2Fmain/presets/bundled-calm/apply"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "effect": {"id": "aurora/main", "name": "Aurora"},
+                    "applied_controls": {"speed": 0.4},
+                    "transition": {"type": "cut", "duration_ms": 0},
+                }
+            ),
+        )
+    )
+
+    presets = await client.get_effect_presets("aurora/main")
+    result = await client.apply_effect_preset(
+        "aurora/main",
+        "bundled-calm",
+        render_group="zone-left",
+    )
+
+    assert list_route.called
+    assert presets[0].origin is EffectPresetOrigin.BUNDLED
+    assert presets[0].editable is False
+    assert presets[1].origin is EffectPresetOrigin.SAVED
+    assert presets[1].editable is True
+    assert json.loads(apply_route.calls[0].request.content) == {"render_group": "zone-left"}
+    assert result.effect.id == "aurora/main"
 
 
 @respx.mock
