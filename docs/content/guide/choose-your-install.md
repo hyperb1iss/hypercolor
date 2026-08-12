@@ -107,6 +107,18 @@ system picker. Screen Recording permission is requested only after an explicit
 capture action. Audio-reactive effects also work; system audio needs a loopback
 device as described in [Audio setup](@/guide/audio-setup.md).
 
+Apple Silicon supports the native HDR screen pipeline. Intel Macs use the SDR
+pipeline; HDR capture is reported as unsupported instead of silently falling
+back. On macOS 26 Tahoe, a compatible selection can provide paired SDR and HDR
+reference diagnostics. Other selections use the single SDR reference path.
+
+The desktop app normally owns the daemon as an app sidecar. Direct launchd,
+Homebrew service, and standalone daemon topologies are also supported, but only
+one can own the per-user daemon guard at a time. Use the Settings session panel
+or `hypercolor service choose-owner` to switch the persistent owner. Hypercolor
+reports an owner conflict or an offline selected service with the exact local
+remedy instead of starting a second daemon.
+
 ### Homebrew {#homebrew}
 
 The tap carries both a cask and a formula, and CI updates both automatically on each tagged release:
@@ -120,6 +132,10 @@ brew install hyperb1iss/tap/hypercolor
 ```
 
 The formula covers macOS arm64 plus Linux amd64 and arm64; the cask is the full desktop app for either Mac architecture.
+
+The formula selects the Homebrew service topology when managed with
+`brew services`. Install the cask when protected macOS permissions or the
+system screen picker require the app UI.
 
 ---
 

@@ -130,6 +130,31 @@ Homebrew users can install the desktop app as a cask
 a formula (`brew install hyperb1iss/tap/hypercolor`, with `brew services`
 support). Both update automatically on every tagged release.
 
+### macOS screen capture support
+
+Screen capture is off until an explicit authorization or source-selection
+action. Hypercolor uses Input Monitoring for keyboard and pointer capture and
+Screen Recording for ScreenCaptureKit. The settings page links directly to the
+matching System Settings privacy pane when manual remediation is needed.
+
+Apple Silicon supports the native HDR screen pipeline. Intel Macs use SDR and
+report HDR as unsupported. On macOS 26 Tahoe, compatible selections can expose
+paired SDR and HDR reference diagnostics. An SDR-only selection uses one SDR
+reference image and is never relabeled as paired HDR.
+
+The CLI exposes the same explicit actions when the active process topology can
+perform them:
+
+```bash
+hypercolor access authorize-input-monitoring
+hypercolor access authorize-screen-recording
+hypercolor access choose-screen-source
+hypercolor status --watch
+```
+
+Picker presentation can require `Hypercolor.app`. A headless installation
+returns a typed app-UI remedy instead of attempting private presentation APIs.
+
 ---
 
 ## The desktop app and autostart
@@ -170,6 +195,46 @@ The unit file lives at `~/.config/systemd/user/hypercolor.service` and uses `%h/
 ## macOS: LaunchAgent
 
 The macOS app install registers a LaunchAgent (`tech.hyperbliss.hypercolor`) in `~/Library/LaunchAgents`. The same `hypercolor service` subcommands work on macOS, wrapping `launchctl`.
+
+### Choose the macOS daemon owner
+
+Hypercolor supports four local daemon topologies:
+
+- **App sidecar:** the desktop app supervises its bundled daemon. This is the
+  default for the DMG and cask.
+- **Direct launchd:** Hypercolor's per-user LaunchAgent supervises the daemon.
+- **Homebrew service:** `brew services` supervises the formula daemon.
+- **Standalone:** a daemon started directly from a terminal. This topology can
+  be observed and stopped, but it is not selected for autostart.
+
+Only one topology can hold the per-user daemon guard. Select a persistent owner
+with one of these local commands:
+
+```bash
+hypercolor service choose-owner app-sidecar
+hypercolor service choose-owner direct-launchd
+hypercolor service choose-owner homebrew
+```
+
+Owner changes are journaled across stop, guard handoff, autostart changes, and
+startup. A failed handoff rolls back to the prior owner. If a standalone daemon
+owns the guard, the command reports its process ID and asks you to stop it
+before repeating the selection.
+
+When a selected external owner is offline, use the remedy named by Settings or
+status output:
+
+```bash
+# Direct launchd owner
+hypercolor service start
+
+# Homebrew owner
+brew services start hypercolor
+```
+
+Open `Hypercolor.app` to restore the app-sidecar owner. An ownership conflict is
+not a daemon crash; the losing managed contender exits without entering a
+restart loop.
 
 ---
 
