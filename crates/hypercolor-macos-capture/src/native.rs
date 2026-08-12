@@ -1,3 +1,4 @@
+use std::ffi::{CStr, c_char, c_void};
 use std::fmt;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -6,10 +7,13 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained, MainThreadBound};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
+use objc2::{
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+};
 use objc2_core_foundation::{
-    CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFUUID, CGPoint, CGRect, CGSize,
+    CFArray, CFDictionary, CFGetTypeID, CFNumber, CFRetained, CFString, CFType, CFUUID, CGPoint,
+    CGRect, CGSize,
 };
 use objc2_core_graphics::{
     CGDirectDisplayID, CGMainDisplayID, CGPreflightScreenCaptureAccess,
@@ -19,40 +23,46 @@ use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::{
     CVBuffer, CVPixelBuffer, CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane,
     CVPixelBufferGetDataSize, CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane,
-    CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth,
-    CVPixelBufferGetWidthOfPlane, kCVImageBufferChromaLocation_Center,
+    CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
+    CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane, kCVImageBufferChromaLocation_Center,
     kCVImageBufferChromaLocation_Left, kCVImageBufferChromaLocation_TopLeft,
     kCVImageBufferChromaLocationTopFieldKey, kCVImageBufferColorPrimaries_ITU_R_709_2,
     kCVImageBufferColorPrimaries_ITU_R_2020, kCVImageBufferColorPrimaries_P3_D65,
-    kCVImageBufferColorPrimariesKey, kCVImageBufferTransferFunction_ITU_R_709_2,
-    kCVImageBufferTransferFunction_ITU_R_2020, kCVImageBufferTransferFunction_ITU_R_2100_HLG,
-    kCVImageBufferTransferFunction_Linear, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
-    kCVImageBufferTransferFunction_sRGB, kCVImageBufferTransferFunctionKey,
-    kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
-    kCVImageBufferYCbCrMatrix_ITU_R_2020, kCVImageBufferYCbCrMatrixKey,
+    kCVImageBufferColorPrimariesKey, kCVImageBufferContentLightLevelInfoKey,
+    kCVImageBufferTransferFunction_ITU_R_709_2, kCVImageBufferTransferFunction_ITU_R_2020,
+    kCVImageBufferTransferFunction_ITU_R_2100_HLG, kCVImageBufferTransferFunction_Linear,
+    kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, kCVImageBufferTransferFunction_sRGB,
+    kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+    kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVImageBufferYCbCrMatrix_ITU_R_2020,
+    kCVImageBufferYCbCrMatrixKey,
 };
 use objc2_foundation::{NSArray, NSError, NSNumber, NSObject, NSObjectProtocol, NSString, NSValue};
-use objc2_io_surface::IOSurfaceRef;
+use objc2_io_surface::{IOSurfaceRef, kIOSurfaceContentHeadroom};
 use objc2_screen_capture_kit::{
-    SCCaptureResolutionType, SCContentFilter, SCContentSharingPicker,
+    SCCaptureDynamicRange, SCCaptureResolutionType, SCContentFilter, SCContentSharingPicker,
     SCContentSharingPickerConfiguration, SCContentSharingPickerMode,
     SCContentSharingPickerObserver, SCShareableContent, SCStream, SCStreamConfiguration,
-    SCStreamDelegate, SCStreamErrorCode, SCStreamErrorDomain, SCStreamFrameInfoBoundingRect,
-    SCStreamFrameInfoContentRect, SCStreamFrameInfoContentScale, SCStreamFrameInfoDirtyRects,
-    SCStreamFrameInfoDisplayTime, SCStreamFrameInfoScaleFactor, SCStreamFrameInfoScreenRect,
-    SCStreamFrameInfoStatus, SCStreamOutput, SCStreamOutputType, SCWindow,
+    SCStreamConfigurationPreset, SCStreamDelegate, SCStreamErrorCode, SCStreamErrorDomain,
+    SCStreamFrameInfoBoundingRect, SCStreamFrameInfoContentRect, SCStreamFrameInfoContentScale,
+    SCStreamFrameInfoDirtyRects, SCStreamFrameInfoDisplayTime, SCStreamFrameInfoScaleFactor,
+    SCStreamFrameInfoScreenRect, SCStreamFrameInfoStatus, SCStreamOutput, SCStreamOutputType,
+    SCWindow,
 };
 
 use crate::diagnostics::CallbackCounters;
 use crate::worker::{LatestSampleInput, LatestSampleWorker, SamplePublishOutcome};
 use crate::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCallbackDiagnostics,
-    MacosCaptureColorimetry, MacosCaptureContentStyle, MacosCaptureError, MacosCapturePixelFormat,
-    MacosCaptureSelection, MacosCaptureSelector, MacosCaptureSurface, MacosChromaLocation,
-    MacosColorPrimaries, MacosColorRange, MacosFrameDecoder, MacosFrameEvent, MacosFrameMailbox,
-    MacosFrameStatus, MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosProtectedSourceState,
-    MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
-    MacosScale, MacosStreamRequest, MacosTransferFunction, MacosYuvMatrix,
+    MacosCaptureCapabilities, MacosCaptureColorimetry, MacosCaptureContentStyle,
+    MacosCaptureDynamicRange, MacosCaptureError, MacosCapturePixelFormat, MacosCaptureSelection,
+    MacosCaptureSelector, MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries,
+    MacosColorRange, MacosConfiguredStream, MacosDeliveredFrameMetadata, MacosFrameDecoder,
+    MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosHostArchitecture, MacosPixelExtent,
+    MacosPixelRect, MacosPointRect, MacosProtectedSourceState, MacosRawCapturePlane,
+    MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments, MacosRuntimeCapability,
+    MacosScale, MacosStreamDeliveryRejection, MacosStreamDeliveryState,
+    MacosStreamDeliveryValidator, MacosStreamPreset, MacosStreamRequest, MacosTahoeRuntimeProbes,
+    MacosTransferFunction, MacosYuvMatrix,
 };
 
 type PoolBackingLifetime = Arc<dyn Send + Sync>;
@@ -302,7 +312,7 @@ fn publish_decoded_result(
     result: Result<MacosFrameEvent, MacosCaptureError>,
     epoch: u64,
     streams: &Weak<StreamSlot>,
-    shared: &SessionShared,
+    shared: &Arc<SessionShared>,
 ) {
     match result {
         Ok(MacosFrameEvent::Frame(frame)) => {
@@ -316,6 +326,9 @@ fn publish_decoded_result(
         }
         Ok(event) if shared.current_epoch() == epoch => shared.publish(event),
         Ok(_) => {}
+        Err(error @ MacosCaptureError::StreamDeliveryRejected(_)) => {
+            handle_fatal_stream_error(streams, epoch, Arc::clone(shared), error);
+        }
         Err(error) => shared.counters.record_drop(&error),
     }
 }
@@ -367,7 +380,7 @@ define_class!(
             };
             let sample = match sample {
                 Err(error @ MacosCaptureError::ScreenResourceExhausted { .. }) => {
-                    handle_pool_admission_error(
+                    handle_fatal_stream_error(
                         &self.ivars().streams,
                         self.ivars().epoch,
                         Arc::clone(&self.ivars().shared),
@@ -479,9 +492,9 @@ impl NativeStream {
         streams: Weak<StreamSlot>,
         reserve_pool: &PoolReservationFactory,
     ) -> Result<Self, MacosCaptureError> {
-        let (configuration, display_filter, extent, pixel_format) =
+        let (configuration, display_filter, extent, configured_stream) =
             stream_configuration(filter, request)?;
-        let quote = conservative_pool_quote(extent, pixel_format)?;
+        let quote = conservative_pool_quote(extent, configured_stream.configured_pixel_format)?;
         let pool = reserve_pool(quote.per_surface_bytes, quote.stream_metadata_bytes)?;
         let selection = selection_from_filter(filter)?;
         // SAFETY: The picker callback supplies a live filter. Retaining it
@@ -491,12 +504,15 @@ impl NativeStream {
                 .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
         };
         let mut decoder = MacosFrameDecoder::new(epoch);
+        let mut delivery_validator = MacosStreamDeliveryValidator::new(configured_stream);
+        delivery_validator.validate_configuration()?;
         let worker_shared = Arc::clone(&shared);
         let worker_streams = streams.clone();
         let worker = LatestSampleWorker::spawn(
             "hypercolor-macos-screen-capture",
-            move |sample: Result<RetainedNativeSample, MacosCaptureError>| {
-                sample.and_then(|sample| decode_sample(&mut decoder, sample))
+            move |sample: Result<RetainedNativeSample, MacosCaptureError>| match sample {
+                Ok(sample) => decode_sample(&mut decoder, &mut delivery_validator, sample),
+                Err(error) => Err(reject_first_delivery(&mut delivery_validator, error)),
             },
             move |result| {
                 publish_decoded_result(result, epoch, &worker_streams, &worker_shared);
@@ -827,7 +843,7 @@ fn handle_stream_error(
     }
 }
 
-fn handle_pool_admission_error(
+fn handle_fatal_stream_error(
     streams: &Weak<StreamSlot>,
     epoch: u64,
     shared: Arc<SessionShared>,
@@ -851,7 +867,7 @@ fn handle_pool_admission_error(
     };
     let stop_shared = Arc::clone(&shared);
     if let Err(spawn_error) = std::thread::Builder::new()
-        .name("hypercolor-macos-screen-resource-stop".to_owned())
+        .name("hypercolor-macos-screen-rejection-stop".to_owned())
         .spawn(move || {
             if let Err(error) = retired.stop() {
                 stop_shared.publish_recoverable_error(error);
@@ -1074,6 +1090,10 @@ pub struct MacosScreenCaptureSession {
 }
 
 impl MacosScreenCaptureSession {
+    pub fn capabilities() -> Result<MacosCaptureCapabilities, MacosCaptureError> {
+        native_capture_capabilities()
+    }
+
     pub fn new(
         request: MacosStreamRequest,
         selector: MacosCaptureSelector,
@@ -1093,6 +1113,7 @@ impl MacosScreenCaptureSession {
         A: Fn(u32, u64) -> Result<Arc<dyn Send + Sync>, MacosCaptureError> + Send + Sync + 'static,
     {
         request.cadence.timescale()?;
+        native_capture_capabilities()?.validate_dynamic_range(request.dynamic_range)?;
         let reserve_pool = Arc::new(move |surface_bytes, metadata_bytes| {
             let observer = reserve_pool(surface_bytes, metadata_bytes)?;
             Ok(Arc::new(observer) as PoolObservation)
@@ -1401,6 +1422,94 @@ impl Drop for MainThreadSession {
     }
 }
 
+fn native_capture_capabilities() -> Result<MacosCaptureCapabilities, MacosCaptureError> {
+    let host_architecture = match sysctl_i32(c"hw.optional.arm64")? {
+        Some(1) => MacosHostArchitecture::AppleSilicon,
+        Some(_) => MacosHostArchitecture::Intel,
+        None => {
+            return Err(MacosCaptureError::CapabilityProbeFailed(
+                "hw.optional.arm64",
+            ));
+        }
+    };
+    let translated_process = sysctl_i32(c"sysctl.proc_translated")?.is_some_and(|value| value == 1);
+    let screenshot_configuration = AnyClass::get(c"SCScreenshotConfiguration");
+    let screenshot_manager = AnyClass::get(c"SCScreenshotManager");
+    let probes = MacosTahoeRuntimeProbes {
+        content_tone_mapping_info_symbol: capability(dynamic_symbol_present(
+            c"CGContextGetContentToneMappingInfo",
+        )),
+        screenshot_configuration_class: capability(screenshot_configuration.is_some()),
+        screenshot_dynamic_range_selector: capability(
+            screenshot_configuration.is_some_and(|class| class.responds_to(sel!(setDynamicRange:))),
+        ),
+        screenshot_capture_selector: capability(screenshot_manager.is_some_and(|class| {
+            class.metaclass().responds_to(sel!(
+                captureScreenshotWithFilter:configuration:completionHandler:
+            ))
+        })),
+    };
+    Ok(MacosCaptureCapabilities::from_runtime(
+        host_architecture,
+        translated_process,
+        probes,
+    ))
+}
+
+const fn capability(present: bool) -> MacosRuntimeCapability {
+    if present {
+        MacosRuntimeCapability::Present
+    } else {
+        MacosRuntimeCapability::Absent
+    }
+}
+
+fn sysctl_i32(name: &CStr) -> Result<Option<i32>, MacosCaptureError> {
+    #[link(name = "System", kind = "dylib")]
+    unsafe extern "C-unwind" {
+        fn sysctlbyname(
+            name: *const c_char,
+            old_value: *mut c_void,
+            old_length: *mut usize,
+            new_value: *mut c_void,
+            new_length: usize,
+        ) -> i32;
+    }
+
+    let mut value = 0_i32;
+    let mut length = std::mem::size_of::<i32>();
+    // SAFETY: Both output pointers reference initialized writable storage, the
+    // name is nul-terminated, and this query performs no mutation.
+    let status = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            ptr::from_mut(&mut value).cast(),
+            &mut length,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if status == 0 && length == std::mem::size_of::<i32>() {
+        Ok(Some(value))
+    } else if status != 0 {
+        Ok(None)
+    } else {
+        Err(MacosCaptureError::CapabilityProbeFailed("sysctl size"))
+    }
+}
+
+fn dynamic_symbol_present(symbol: &CStr) -> bool {
+    #[link(name = "System", kind = "dylib")]
+    unsafe extern "C-unwind" {
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    let default_handle = ptr::without_provenance_mut::<c_void>(usize::MAX - 1);
+    // SAFETY: RTLD_DEFAULT is the Darwin sentinel pointer with address -2,
+    // and the supplied symbol name is nul-terminated.
+    !unsafe { dlsym(default_handle, symbol.as_ptr()) }.is_null()
+}
+
 fn stream_configuration(
     filter: &SCContentFilter,
     request: MacosStreamRequest,
@@ -1409,7 +1518,7 @@ fn stream_configuration(
         Retained<SCStreamConfiguration>,
         bool,
         MacosPixelExtent,
-        MacosCapturePixelFormat,
+        MacosConfiguredStream,
     ),
     MacosCaptureError,
 > {
@@ -1438,10 +1547,18 @@ fn stream_configuration(
     let minimum_frame_interval = unsafe {
         cadence_timescale.map_or_else(|| CMTime::new(0, 1), |timescale| CMTime::new(1, timescale))
     };
-    // SAFETY: Every setter receives validated point or pixel units, and the
-    // configuration is retained by the caller before stream creation.
+    // SAFETY: The deployment floor includes the HDR preset API. Every setter
+    // receives validated point or pixel units, and the caller retains the
+    // configuration through stream creation.
     let configuration = unsafe {
-        let configuration = SCStreamConfiguration::new();
+        let configuration = match request.preset() {
+            MacosStreamPreset::SdrDefault => SCStreamConfiguration::new(),
+            MacosStreamPreset::CaptureHdrStreamCanonicalDisplay => {
+                SCStreamConfiguration::streamConfigurationWithPreset(
+                    SCStreamConfigurationPreset::CaptureHDRStreamCanonicalDisplay,
+                )
+            }
+        };
         configuration.setCapturesAudio(false);
         configuration.setCaptureMicrophone(false);
         configuration.setCaptureResolution(SCCaptureResolutionType::Best);
@@ -1459,15 +1576,47 @@ fn stream_configuration(
         configuration.setShowMouseClicks(false);
         configuration.setStreamName(Some(&NSString::from_str("Hypercolor")));
         configuration.setQueueDepth(MACOS_STREAM_QUEUE_DEPTH as isize);
-        configuration.setPixelFormat(0x4247_5241);
+        if request.dynamic_range == MacosCaptureDynamicRange::Sdr {
+            configuration.setCaptureDynamicRange(SCCaptureDynamicRange::SDR);
+            configuration.setPixelFormat(0x4247_5241);
+        }
         configuration
     };
-    Ok((
-        configuration,
-        display_filter,
-        extent,
-        MacosCapturePixelFormat::Bgra8,
-    ))
+    // SAFETY: The retained configuration exposes scalar values initialized by
+    // its constructor and the setters above.
+    let configured_stream = unsafe {
+        let pixel_format_fourcc = configuration.pixelFormat();
+        MacosConfiguredStream {
+            requested_dynamic_range: request.dynamic_range,
+            requested_preset: request.preset(),
+            configured_dynamic_range: capture_dynamic_range(configuration.captureDynamicRange())?,
+            configured_pixel_format: MacosCapturePixelFormat::from_fourcc(pixel_format_fourcc)?,
+            configured_color_range: color_range_from_fourcc(pixel_format_fourcc),
+        }
+    };
+    configured_stream.validate()?;
+    Ok((configuration, display_filter, extent, configured_stream))
+}
+
+const fn color_range_from_fourcc(fourcc: u32) -> MacosColorRange {
+    match fourcc {
+        0x3432_3076 | 0x7834_3434 => MacosColorRange::Video,
+        _ => MacosColorRange::Full,
+    }
+}
+
+fn capture_dynamic_range(
+    value: SCCaptureDynamicRange,
+) -> Result<MacosCaptureDynamicRange, MacosCaptureError> {
+    match value {
+        SCCaptureDynamicRange::SDR => Ok(MacosCaptureDynamicRange::Sdr),
+        SCCaptureDynamicRange::HDRLocalDisplay | SCCaptureDynamicRange::HDRCanonicalDisplay => {
+            Ok(MacosCaptureDynamicRange::Hdr)
+        }
+        _ => Err(MacosCaptureError::UnsupportedConfiguredDynamicRange(
+            value.0,
+        )),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1569,6 +1718,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn decode_sample(
     decoder: &mut MacosFrameDecoder,
+    delivery_validator: &mut MacosStreamDeliveryValidator,
     sample: RetainedNativeSample,
 ) -> Result<MacosFrameEvent, MacosCaptureError> {
     let status = match sample.attachments.status {
@@ -1587,15 +1737,56 @@ fn decode_sample(
 
     let pixel_buffer = sample
         .pixel_buffer
-        .ok_or(MacosCaptureError::MissingFramePayload)?;
+        .ok_or(MacosCaptureError::MissingFramePayload)
+        .map_err(|error| reject_first_delivery(delivery_validator, error))?;
     let frame = decode_complete_frame(
         pixel_buffer,
         sample.admission_lifetime,
         sample.cursor_composed,
-    )?;
+    )
+    .map_err(|error| reject_first_delivery(delivery_validator, error))?;
+    if matches!(
+        delivery_validator.state(),
+        MacosStreamDeliveryState::AwaitingFirstCompleteFrame(_)
+    ) {
+        delivery_validator.observe_first_complete(frame.surface.delivery_metadata())?;
+    }
     decoder.decode(MacosRawCaptureSample {
         frame: Some(frame),
         attachments: sample.attachments,
+    })
+}
+
+fn reject_first_delivery(
+    validator: &mut MacosStreamDeliveryValidator,
+    error: MacosCaptureError,
+) -> MacosCaptureError {
+    if !matches!(
+        validator.state(),
+        MacosStreamDeliveryState::AwaitingFirstCompleteFrame(_)
+    ) {
+        return error;
+    }
+    let rejection = match &error {
+        MacosCaptureError::MissingFramePayload => {
+            Some(MacosStreamDeliveryRejection::MissingFirstCompleteFrame)
+        }
+        MacosCaptureError::UnsupportedPixelFormat(_) => {
+            Some(MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("pixel_format"))
+        }
+        MacosCaptureError::MissingColorAttachment(field)
+        | MacosCaptureError::UnsupportedColorAttachment(field)
+        | MacosCaptureError::MalformedLuminanceAttachment(field) => {
+            Some(MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata(field))
+        }
+        MacosCaptureError::ColorMetadataMismatch | MacosCaptureError::MissingYuvColorMetadata => {
+            Some(MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("colorimetry"))
+        }
+        _ => None,
+    };
+    rejection.map_or(error, |rejection| {
+        validator.reject_delivery(rejection);
+        MacosCaptureError::StreamDeliveryRejected(rejection)
     })
 }
 
@@ -1612,7 +1803,18 @@ fn decode_complete_frame(
     let pixel_format = MacosCapturePixelFormat::from_fourcc(pixel_format_fourcc)?;
     let planes = planes(&pixel_buffer, storage_extent)?;
     let color = colorimetry(&pixel_buffer, pixel_format_fourcc, pixel_format)?;
-    let surface = MacosCaptureSurface::from_pixel_buffer(pixel_buffer, admission_lifetime)?;
+    let (source_reference_white_nits, content_headroom) = hdr_luminance_metadata(&pixel_buffer)?;
+    let delivery_metadata = MacosDeliveredFrameMetadata::new(
+        pixel_format,
+        color,
+        source_reference_white_nits,
+        content_headroom,
+    )?;
+    let surface = MacosCaptureSurface::from_pixel_buffer_with_delivery_metadata(
+        pixel_buffer,
+        admission_lifetime,
+        Some(delivery_metadata),
+    )?;
 
     Ok(MacosRawCompleteFrame {
         storage_extent,
@@ -1747,6 +1949,82 @@ fn colorimetry(
         range,
         chroma_location,
     })
+}
+
+fn hdr_luminance_metadata(
+    pixel_buffer: &CVPixelBuffer,
+) -> Result<(Option<f32>, Option<f32>), MacosCaptureError> {
+    let content_headroom = content_headroom(pixel_buffer)?;
+    let content_peak_nits = content_peak_nits(pixel_buffer)?;
+    let source_reference_white_nits = content_peak_nits
+        .zip(content_headroom)
+        .map(|(peak, headroom)| peak / headroom)
+        .filter(|reference| reference.is_finite() && *reference > 0.0);
+    Ok((source_reference_white_nits, content_headroom))
+}
+
+fn content_headroom(pixel_buffer: &CVPixelBuffer) -> Result<Option<f32>, MacosCaptureError> {
+    let surface =
+        CVPixelBufferGetIOSurface(Some(pixel_buffer)).ok_or(MacosCaptureError::MissingIoSurface)?;
+    // SAFETY: This is a process-lifetime IOSurface key available at the macOS
+    // 15.2 deployment floor.
+    let value = surface.value(unsafe { kIOSurfaceContentHeadroom });
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let headroom = value
+        .downcast_ref::<CFNumber>()
+        .and_then(CFNumber::as_f64)
+        .map(|value| value as f32)
+        .filter(|value| value.is_finite() && *value >= 1.0)
+        .ok_or(MacosCaptureError::MalformedLuminanceAttachment(
+            "content_headroom",
+        ))?;
+    Ok(Some(headroom))
+}
+
+fn content_peak_nits(pixel_buffer: &CVBuffer) -> Result<Option<f32>, MacosCaptureError> {
+    // SAFETY: This is a process-lifetime Core Video key, and a null mode
+    // pointer explicitly requests no attachment-mode output.
+    let value =
+        unsafe { pixel_buffer.attachment(kCVImageBufferContentLightLevelInfoKey, ptr::null_mut()) };
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let bytes = cf_data_bytes(&value).ok_or(MacosCaptureError::MalformedLuminanceAttachment(
+        "content_light_level_info",
+    ))?;
+    if bytes.len() != 4 {
+        return Err(MacosCaptureError::MalformedLuminanceAttachment(
+            "content_light_level_info",
+        ));
+    }
+    let max_content_light_level = u16::from_be_bytes([bytes[0], bytes[1]]);
+    Ok((max_content_light_level != 0).then_some(f32::from(max_content_light_level)))
+}
+
+fn cf_data_bytes(value: &CFType) -> Option<&[u8]> {
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C-unwind" {
+        fn CFDataGetTypeID() -> usize;
+        fn CFDataGetLength(data: *const c_void) -> isize;
+        fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+    }
+
+    // SAFETY: The CFType is live for the returned borrow, and the type ID is
+    // checked before calling CFData accessors.
+    unsafe {
+        if CFGetTypeID(Some(value)) != CFDataGetTypeID() {
+            return None;
+        }
+        let data = ptr::from_ref(value).cast::<c_void>();
+        let length = usize::try_from(CFDataGetLength(data)).ok()?;
+        let bytes = CFDataGetBytePtr(data);
+        if bytes.is_null() && length != 0 {
+            return None;
+        }
+        Some(std::slice::from_raw_parts(bytes, length))
+    }
 }
 
 fn yuv_matrix(pixel_buffer: &CVBuffer) -> Result<MacosYuvMatrix, MacosCaptureError> {
@@ -1965,9 +2243,45 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        MacosCaptureError, MacosCapturePixelFormat, MacosPixelExtent, PoolBackingLifetime,
-        PoolObservation, conservative_pool_quote, with_admitted_surface,
+        MacosCaptureDynamicRange, MacosCaptureError, MacosCapturePixelFormat,
+        MacosConfiguredStream, MacosPixelExtent, MacosStreamPreset, PoolBackingLifetime,
+        PoolObservation, SCCaptureDynamicRange, SCStreamConfiguration, SCStreamConfigurationPreset,
+        capture_dynamic_range, color_range_from_fourcc, conservative_pool_quote,
+        with_admitted_surface,
     };
+
+    #[test]
+    fn canonical_hdr_preset_resolves_to_a_valid_hdr_configuration() {
+        // SAFETY: The deployment floor includes this pure configuration
+        // constructor, which does not start capture or request TCC access.
+        let configuration = unsafe {
+            SCStreamConfiguration::streamConfigurationWithPreset(
+                SCStreamConfigurationPreset::CaptureHDRStreamCanonicalDisplay,
+            )
+        };
+        // SAFETY: Both values are initialized scalar configuration properties.
+        let configured = unsafe {
+            let fourcc = configuration.pixelFormat();
+            assert_eq!(
+                configuration.captureDynamicRange(),
+                SCCaptureDynamicRange::HDRCanonicalDisplay
+            );
+            MacosConfiguredStream {
+                requested_dynamic_range: MacosCaptureDynamicRange::Hdr,
+                requested_preset: MacosStreamPreset::CaptureHdrStreamCanonicalDisplay,
+                configured_dynamic_range: capture_dynamic_range(
+                    configuration.captureDynamicRange(),
+                )
+                .expect("preset dynamic range should decode"),
+                configured_pixel_format: MacosCapturePixelFormat::from_fourcc(fourcc)
+                    .expect("preset pixel format should be supported"),
+                configured_color_range: color_range_from_fourcc(fourcc),
+            }
+        };
+        configured
+            .validate()
+            .expect("canonical HDR preset should resolve to an accepted stream format");
+    }
 
     #[test]
     fn conservative_bgra_pool_quote_covers_aligned_native_storage() {
@@ -1977,6 +2291,19 @@ mod tests {
         assert!(quote.per_surface_bytes >= 3_840 * 2_160 * 4);
         assert_eq!(quote.per_surface_bytes % (16 * 1024), 0);
         assert!(quote.stream_metadata_bytes > 0);
+    }
+
+    #[test]
+    fn hdr_pool_quotes_cover_rgba16f_and_multiplane_storage() {
+        let extent = MacosPixelExtent::new(3_840, 2_160).expect("4K extent is valid");
+        let rgba = conservative_pool_quote(extent, MacosCapturePixelFormat::Rgba16Float)
+            .expect("RGBA16F quote should fit");
+        let yuv = conservative_pool_quote(extent, MacosCapturePixelFormat::Yuv420VideoRange)
+            .expect("YUV quote should fit");
+        assert!(rgba.per_surface_bytes >= 3_840 * 2_160 * 8);
+        assert!(yuv.per_surface_bytes >= 3_840 * 2_160 * 3 / 2);
+        assert_eq!(rgba.per_surface_bytes % (16 * 1024), 0);
+        assert_eq!(yuv.per_surface_bytes % (16 * 1024), 0);
     }
 
     #[test]

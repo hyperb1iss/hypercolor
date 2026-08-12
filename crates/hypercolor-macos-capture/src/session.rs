@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::MacosCaptureError;
+use crate::{MacosCaptureDynamicRange, MacosCaptureError, MacosStreamPreset};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MacosCaptureSelector {
@@ -94,6 +94,7 @@ impl MacosCaptureCadence {
 pub struct MacosStreamRequest {
     pub cadence: MacosCaptureCadence,
     pub cursor_composed: bool,
+    pub dynamic_range: MacosCaptureDynamicRange,
 }
 
 impl MacosStreamRequest {
@@ -105,7 +106,28 @@ impl MacosStreamRequest {
         Ok(Self {
             cadence,
             cursor_composed,
+            dynamic_range: MacosCaptureDynamicRange::Sdr,
         })
+    }
+
+    pub fn new_hdr(
+        cadence: MacosCaptureCadence,
+        cursor_composed: bool,
+    ) -> Result<Self, MacosCaptureError> {
+        cadence.timescale()?;
+        Ok(Self {
+            cadence,
+            cursor_composed,
+            dynamic_range: MacosCaptureDynamicRange::Hdr,
+        })
+    }
+
+    #[must_use]
+    pub const fn preset(self) -> MacosStreamPreset {
+        match self.dynamic_range {
+            MacosCaptureDynamicRange::Sdr => MacosStreamPreset::SdrDefault,
+            MacosCaptureDynamicRange::Hdr => MacosStreamPreset::CaptureHdrStreamCanonicalDisplay,
+        }
     }
 }
 
@@ -114,6 +136,7 @@ impl Default for MacosStreamRequest {
         Self {
             cadence: MacosCaptureCadence::FramesPerSecond(60),
             cursor_composed: true,
+            dynamic_range: MacosCaptureDynamicRange::Sdr,
         }
     }
 }

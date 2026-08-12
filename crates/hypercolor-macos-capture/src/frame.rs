@@ -22,6 +22,7 @@ use crate::geometry::{
     MacosCaptureGeometry, MacosGeometryError, MacosPixelExtent, MacosPixelRect, MacosPointRect,
     MacosScale,
 };
+use crate::{MacosDeliveredFrameMetadata, MacosStreamDeliveryRejection};
 
 pub const MACOS_STREAM_QUEUE_DEPTH: usize = 8;
 
@@ -225,6 +226,7 @@ pub struct MacosCaptureSurface {
     pub iosurface_id: u32,
     pub allocation_bytes: u64,
     owner: Arc<MacosRetainedPixelBuffer>,
+    delivery_metadata: Option<MacosDeliveredFrameMetadata>,
     _admission_lifetime: Option<Arc<dyn Send + Sync>>,
 }
 
@@ -329,7 +331,7 @@ impl MacosCaptureSurface {
         lock.unlock()?;
         let length_bytes = u64::try_from(CVPixelBufferGetDataSize(&pixel_buffer))
             .map_err(|_| MacosCaptureError::ArithmeticOverflow)?;
-        let surface = Self::from_pixel_buffer(pixel_buffer, None)?;
+        let surface = Self::from_pixel_buffer_with_delivery_metadata(pixel_buffer, None, None)?;
         Ok((
             surface,
             MacosCapturePlane {
@@ -357,6 +359,7 @@ impl MacosCaptureSurface {
                 fixture_id,
                 planes: None,
             }),
+            delivery_metadata: None,
             _admission_lifetime: None,
         })
     }
@@ -384,14 +387,31 @@ impl MacosCaptureSurface {
                 fixture_id,
                 planes: Some(planes.into()),
             }),
+            delivery_metadata: None,
             _admission_lifetime: None,
         })
     }
 
+    #[cfg(feature = "capture-fixtures")]
+    pub fn with_delivery_metadata(
+        mut self,
+        delivery_metadata: MacosDeliveredFrameMetadata,
+    ) -> Result<Self, MacosStreamDeliveryRejection> {
+        MacosDeliveredFrameMetadata::new(
+            delivery_metadata.pixel_format,
+            delivery_metadata.color,
+            delivery_metadata.source_reference_white_nits,
+            delivery_metadata.content_headroom,
+        )?;
+        self.delivery_metadata = Some(delivery_metadata);
+        Ok(self)
+    }
+
     #[cfg(target_os = "macos")]
-    pub(crate) fn from_pixel_buffer(
+    pub(crate) fn from_pixel_buffer_with_delivery_metadata(
         pixel_buffer: CFRetained<CVPixelBuffer>,
         admission_lifetime: Option<Arc<dyn Send + Sync>>,
+        delivery_metadata: Option<MacosDeliveredFrameMetadata>,
     ) -> Result<Self, MacosCaptureError> {
         let iosurface = CVPixelBufferGetIOSurface(Some(&pixel_buffer))
             .ok_or(MacosCaptureError::MissingIoSurface)?;
@@ -405,8 +425,14 @@ impl MacosCaptureSurface {
             iosurface_id,
             allocation_bytes,
             owner: Arc::new(MacosRetainedPixelBuffer::Native { pixel_buffer }),
+            delivery_metadata,
             _admission_lifetime: admission_lifetime,
         })
+    }
+
+    #[must_use]
+    pub const fn delivery_metadata(&self) -> Option<MacosDeliveredFrameMetadata> {
+        self.delivery_metadata
     }
 
     pub fn retained_owner_count(&self) -> usize {
@@ -669,6 +695,13 @@ pub struct MacosCaptureFrame {
     pub damage: Arc<[MacosPixelRect]>,
     pub cursor_composed: bool,
     pub surface: MacosCaptureSurface,
+}
+
+impl MacosCaptureFrame {
+    #[must_use]
+    pub const fn delivered_metadata(&self) -> Option<MacosDeliveredFrameMetadata> {
+        self.surface.delivery_metadata()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -968,6 +1001,8 @@ pub enum MacosCaptureError {
     UnknownFrameStatus(i64),
     #[error("unsupported Core Video pixel format {0:#010x}")]
     UnsupportedPixelFormat(u32),
+    #[error("unsupported ScreenCaptureKit configured dynamic range {0}")]
+    UnsupportedConfiguredDynamicRange(isize),
     #[error("complete frame has no image payload")]
     MissingFramePayload,
     #[error("pixel plane count mismatch: expected {expected}, got {actual}")]
@@ -998,6 +1033,12 @@ pub enum MacosCaptureError {
     AllocationTooSmall { required: u64, actual: u64 },
     #[error("pixel format and color metadata disagree")]
     ColorMetadataMismatch,
+    #[error(transparent)]
+    StreamDeliveryRejected(#[from] MacosStreamDeliveryRejection),
+    #[error("macOS capture capability probe failed: {0}")]
+    CapabilityProbeFailed(&'static str),
+    #[error("malformed HDR luminance attachment: {0}")]
+    MalformedLuminanceAttachment(&'static str),
     #[error("YUV frames require matrix and chroma-location metadata")]
     MissingYuvColorMetadata,
     #[error("missing Core Video color attachment: {0}")]

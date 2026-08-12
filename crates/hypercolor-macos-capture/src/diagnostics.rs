@@ -38,11 +38,13 @@ impl MacosFrameDropReason {
             | MacosCaptureError::MissingAttachment(_)
             | MacosCaptureError::MalformedAttachment(_)
             | MacosCaptureError::UnknownFrameStatus(_) => Self::Attachment,
-            MacosCaptureError::UnsupportedPixelFormat(_) => Self::UnsupportedFormat,
+            MacosCaptureError::UnsupportedPixelFormat(_)
+            | MacosCaptureError::UnsupportedConfiguredDynamicRange(_) => Self::UnsupportedFormat,
             MacosCaptureError::ColorMetadataMismatch
             | MacosCaptureError::MissingYuvColorMetadata
             | MacosCaptureError::MissingColorAttachment(_)
-            | MacosCaptureError::UnsupportedColorAttachment(_) => Self::ColorMetadata,
+            | MacosCaptureError::UnsupportedColorAttachment(_)
+            | MacosCaptureError::MalformedLuminanceAttachment(_) => Self::ColorMetadata,
             MacosCaptureError::MissingFramePayload
             | MacosCaptureError::InvalidSurface
             | MacosCaptureError::MissingIoSurface
@@ -79,6 +81,8 @@ impl MacosFrameDropReason {
             | MacosCaptureError::InvalidCpuDestinationStride { .. }
             | MacosCaptureError::CpuDestinationTooSmall { .. }
             | MacosCaptureError::SequenceExhausted
+            | MacosCaptureError::StreamDeliveryRejected(_)
+            | MacosCaptureError::CapabilityProbeFailed(_)
             | MacosCaptureError::Geometry(_) => Self::Validation,
             MacosCaptureError::ScreenResourceExhausted { .. } => Self::Resource,
         }

@@ -12,6 +12,7 @@ mod mailbox;
 #[cfg(target_os = "macos")]
 mod native;
 mod session;
+mod stream_contract;
 mod worker;
 
 #[cfg(target_os = "macos")]
@@ -36,4 +37,11 @@ pub use mailbox::MacosFrameMailbox;
 pub use session::{
     MacosCaptureCadence, MacosCaptureContentStyle, MacosCaptureSelection, MacosCaptureSelector,
     MacosStreamRequest,
+};
+pub use stream_contract::{
+    MacosCaptureCapabilities, MacosCaptureDynamicRange, MacosConfiguredStream,
+    MacosDeliveredFrameMetadata, MacosHostArchitecture, MacosRuntimeCapability,
+    MacosStreamDeliveryRejection, MacosStreamDeliveryState, MacosStreamDeliveryValidator,
+    MacosStreamPreset, MacosTahoeCapabilities, MacosTahoeRuntimeProbes,
+    MacosValidatedStreamDelivery,
 };

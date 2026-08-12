@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use hypercolor_macos_capture::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCadence,
-    MacosCaptureCallbackDiagnostics, MacosCaptureColorimetry, MacosCaptureError,
-    MacosCapturePixelFormat, MacosCaptureSelector, MacosCaptureSurface, MacosChromaLocation,
-    MacosColorPrimaries, MacosColorRange, MacosDisplayClock, MacosDisplayClockError,
+    MacosCaptureCallbackDiagnostics, MacosCaptureCapabilities, MacosCaptureColorimetry,
+    MacosCaptureDynamicRange, MacosCaptureError, MacosCapturePixelFormat, MacosCaptureSelector,
+    MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries, MacosColorRange,
+    MacosConfiguredStream, MacosDeliveredFrameMetadata, MacosDisplayClock, MacosDisplayClockError,
     MacosFrameDecoder, MacosFrameDropReason, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
-    MacosGeometryError, MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosRawCapturePlane,
-    MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments, MacosScale,
-    MacosStreamRequest, MacosTransferFunction, MacosYuvMatrix,
+    MacosGeometryError, MacosHostArchitecture, MacosPixelExtent, MacosPixelRect, MacosPointRect,
+    MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
+    MacosRuntimeCapability, MacosScale, MacosStreamDeliveryRejection, MacosStreamDeliveryState,
+    MacosStreamDeliveryValidator, MacosStreamPreset, MacosStreamRequest, MacosTahoeRuntimeProbes,
+    MacosTransferFunction, MacosYuvMatrix,
 };
 use std::time::{Duration, Instant};
 
@@ -60,6 +63,17 @@ fn system_display_clock_reads_the_native_timebase() {
     MacosDisplayClock::system().expect("macOS exposes its monotonic timebase");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn native_capability_probe_resolves_without_an_os_version_check() {
+    let capabilities = hypercolor_macos_capture::MacosScreenCaptureSession::capabilities()
+        .expect("native capability probes should resolve");
+    assert_eq!(
+        capabilities.hdr_stream.is_present(),
+        capabilities.host_architecture == MacosHostArchitecture::AppleSilicon
+    );
+}
+
 #[test]
 fn queue_depth_is_the_full_framework_limit() {
     assert_eq!(MACOS_STREAM_QUEUE_DEPTH, 8);
@@ -80,6 +94,273 @@ fn stream_requests_preserve_native_refresh_and_reject_invalid_rates() {
     assert_eq!(
         MacosStreamRequest::default().cadence,
         MacosCaptureCadence::FramesPerSecond(60)
+    );
+    assert_eq!(
+        MacosStreamRequest::default().preset(),
+        MacosStreamPreset::SdrDefault
+    );
+    assert_eq!(
+        MacosStreamRequest::new_hdr(MacosCaptureCadence::NativeRefresh, true)
+            .expect("valid HDR stream request")
+            .preset(),
+        MacosStreamPreset::CaptureHdrStreamCanonicalDisplay
+    );
+}
+
+#[test]
+fn hdr_preset_is_only_requested_evidence_until_rgba16f_arrives() {
+    let configured = configured_hdr(MacosCapturePixelFormat::Rgba16Float);
+    let mut validator = MacosStreamDeliveryValidator::new(configured);
+    validator
+        .validate_configuration()
+        .expect("canonical HDR configuration should validate");
+    assert_eq!(
+        validator.state(),
+        &MacosStreamDeliveryState::AwaitingFirstCompleteFrame(configured)
+    );
+
+    let delivered = MacosDeliveredFrameMetadata::new(
+        MacosCapturePixelFormat::Rgba16Float,
+        MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::DisplayP3,
+            transfer: MacosTransferFunction::Linear,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        },
+        Some(203.0),
+        Some(4.0),
+    )
+    .expect("RGBA16F HDR metadata should validate");
+    let confirmed = validator
+        .observe_first_complete(Some(delivered))
+        .expect("matching first complete frame should confirm HDR");
+    assert_eq!(confirmed.configured, configured);
+    assert_eq!(confirmed.delivered, delivered);
+    assert!(matches!(
+        validator.state(),
+        MacosStreamDeliveryState::Confirmed(_)
+    ));
+
+    let surface = MacosCaptureSurface::new_fixture(1, 64, 1)
+        .expect("fixture surface")
+        .with_delivery_metadata(delivered)
+        .expect("fixture metadata");
+    assert_eq!(surface.delivery_metadata(), Some(delivered));
+}
+
+#[test]
+fn hdr_yuv_delivery_preserves_exact_color_and_luminance_metadata() {
+    let color = MacosCaptureColorimetry {
+        primaries: MacosColorPrimaries::Rec2020,
+        transfer: MacosTransferFunction::Pq,
+        matrix: Some(MacosYuvMatrix::Bt2020),
+        range: MacosColorRange::Video,
+        chroma_location: Some(MacosChromaLocation::TopLeft),
+    };
+    let delivered = MacosDeliveredFrameMetadata::new(
+        MacosCapturePixelFormat::Yuv420VideoRange,
+        color,
+        Some(203.0),
+        Some(1000.0 / 203.0),
+    )
+    .expect("complete YUV HDR metadata should validate");
+    let mut validator = MacosStreamDeliveryValidator::new(configured_hdr(
+        MacosCapturePixelFormat::Yuv420VideoRange,
+    ));
+    let confirmed = validator
+        .observe_first_complete(Some(delivered))
+        .expect("matching YUV delivery should confirm");
+    assert_eq!(confirmed.delivered.color, color);
+    assert_eq!(
+        confirmed.delivered.pixel_format,
+        MacosCapturePixelFormat::Yuv420VideoRange
+    );
+    assert_eq!(confirmed.delivered.source_reference_white_nits, Some(203.0));
+    assert_eq!(confirmed.delivered.content_headroom, Some(1000.0 / 203.0));
+}
+
+#[test]
+fn first_complete_frame_rejects_range_format_and_missing_delivery() {
+    let mut configured_range = MacosStreamDeliveryValidator::new(MacosConfiguredStream {
+        requested_dynamic_range: MacosCaptureDynamicRange::Hdr,
+        requested_preset: MacosStreamPreset::CaptureHdrStreamCanonicalDisplay,
+        configured_dynamic_range: MacosCaptureDynamicRange::Sdr,
+        configured_pixel_format: MacosCapturePixelFormat::Bgra8,
+        configured_color_range: MacosColorRange::Full,
+    });
+    assert_eq!(
+        configured_range.validate_configuration(),
+        Err(
+            MacosStreamDeliveryRejection::ConfiguredDynamicRangeMismatch {
+                requested: MacosCaptureDynamicRange::Hdr,
+                configured: MacosCaptureDynamicRange::Sdr,
+            }
+        )
+    );
+
+    let rgba = hdr_rgb_metadata(MacosCapturePixelFormat::Rgba16Float);
+    let mut format =
+        MacosStreamDeliveryValidator::new(configured_hdr(MacosCapturePixelFormat::Argb2101010));
+    assert_eq!(
+        format.observe_first_complete(Some(rgba)),
+        Err(MacosStreamDeliveryRejection::DeliveredPixelFormatMismatch {
+            configured: MacosCapturePixelFormat::Argb2101010,
+            delivered: MacosCapturePixelFormat::Rgba16Float,
+        })
+    );
+
+    let mut range =
+        MacosStreamDeliveryValidator::new(configured_hdr(MacosCapturePixelFormat::Rgba16Float));
+    let sdr =
+        MacosDeliveredFrameMetadata::new(MacosCapturePixelFormat::Bgra8, rgb_color(), None, None)
+            .expect("SDR metadata");
+    assert_eq!(
+        range.observe_first_complete(Some(sdr)),
+        Err(
+            MacosStreamDeliveryRejection::DeliveredDynamicRangeMismatch {
+                configured: MacosCaptureDynamicRange::Hdr,
+                delivered: MacosCaptureDynamicRange::Sdr,
+            }
+        )
+    );
+
+    let yuv444_video = MacosDeliveredFrameMetadata::new(
+        MacosCapturePixelFormat::Yuv44410BiPlanar,
+        yuv_color(MacosColorRange::Video),
+        Some(203.0),
+        Some(4.0),
+    )
+    .expect("valid video-range YUV444 metadata");
+    let mut yuv444 = MacosStreamDeliveryValidator::new(configured_hdr(
+        MacosCapturePixelFormat::Yuv44410BiPlanar,
+    ));
+    assert_eq!(
+        yuv444.observe_first_complete(Some(yuv444_video)),
+        Err(MacosStreamDeliveryRejection::DeliveredColorRangeMismatch {
+            configured: MacosColorRange::Full,
+            delivered: MacosColorRange::Video,
+        })
+    );
+
+    let mut missing =
+        MacosStreamDeliveryValidator::new(configured_hdr(MacosCapturePixelFormat::Rgba16Float));
+    assert_eq!(
+        missing.finish_without_complete_frame(),
+        Err(MacosStreamDeliveryRejection::MissingFirstCompleteFrame)
+    );
+    assert_eq!(
+        missing.state(),
+        &MacosStreamDeliveryState::Rejected(
+            MacosStreamDeliveryRejection::MissingFirstCompleteFrame
+        )
+    );
+}
+
+#[test]
+fn missing_or_invalid_hdr_attachments_are_typed_rejections() {
+    assert_eq!(
+        MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Yuv420VideoRange,
+            MacosCaptureColorimetry {
+                primaries: MacosColorPrimaries::Rec2020,
+                transfer: MacosTransferFunction::Pq,
+                matrix: Some(MacosYuvMatrix::Bt2020),
+                range: MacosColorRange::Video,
+                chroma_location: None,
+            },
+            Some(203.0),
+            Some(4.0),
+        ),
+        Err(MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("colorimetry"))
+    );
+    assert_eq!(
+        MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            hdr_rgb_color(),
+            Some(203.0),
+            Some(0.5),
+        ),
+        Err(MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("content_headroom"))
+    );
+}
+
+#[test]
+fn sdr_delivery_preserves_existing_bgra_contract() {
+    let configured = MacosConfiguredStream {
+        requested_dynamic_range: MacosCaptureDynamicRange::Sdr,
+        requested_preset: MacosStreamPreset::SdrDefault,
+        configured_dynamic_range: MacosCaptureDynamicRange::Sdr,
+        configured_pixel_format: MacosCapturePixelFormat::Bgra8,
+        configured_color_range: MacosColorRange::Full,
+    };
+    let delivered =
+        MacosDeliveredFrameMetadata::new(MacosCapturePixelFormat::Bgra8, rgb_color(), None, None)
+            .expect("existing BGRA SDR metadata should remain valid");
+    let mut validator = MacosStreamDeliveryValidator::new(configured);
+    assert_eq!(
+        validator
+            .observe_first_complete(Some(delivered))
+            .expect("SDR delivery should confirm")
+            .delivered,
+        delivered
+    );
+}
+
+#[test]
+fn intel_hdr_is_rejected_while_sdr_remains_supported() {
+    let capabilities = MacosCaptureCapabilities::from_runtime(
+        MacosHostArchitecture::Intel,
+        false,
+        absent_tahoe_probes(),
+    );
+    assert_eq!(capabilities.hdr_stream, MacosRuntimeCapability::Absent);
+    assert_eq!(
+        capabilities.validate_dynamic_range(MacosCaptureDynamicRange::Hdr),
+        Err(MacosStreamDeliveryRejection::UnsupportedIntelHdr)
+    );
+    assert_eq!(
+        capabilities.validate_dynamic_range(MacosCaptureDynamicRange::Sdr),
+        Ok(())
+    );
+}
+
+#[test]
+fn tahoe_capabilities_require_callable_runtime_surface() {
+    let present = MacosCaptureCapabilities::from_runtime(
+        MacosHostArchitecture::AppleSilicon,
+        false,
+        MacosTahoeRuntimeProbes {
+            content_tone_mapping_info_symbol: MacosRuntimeCapability::Present,
+            screenshot_configuration_class: MacosRuntimeCapability::Present,
+            screenshot_dynamic_range_selector: MacosRuntimeCapability::Present,
+            screenshot_capture_selector: MacosRuntimeCapability::Present,
+        },
+    );
+    assert_eq!(
+        present.tahoe.content_tone_mapping_info,
+        MacosRuntimeCapability::Present
+    );
+    assert_eq!(
+        present.tahoe.dual_range_screenshots,
+        MacosRuntimeCapability::Present
+    );
+
+    let missing_selector = MacosCaptureCapabilities::from_runtime(
+        MacosHostArchitecture::AppleSilicon,
+        false,
+        MacosTahoeRuntimeProbes {
+            screenshot_capture_selector: MacosRuntimeCapability::Absent,
+            ..absent_tahoe_probes_with_screenshot_types()
+        },
+    );
+    assert_eq!(
+        missing_selector.tahoe.content_tone_mapping_info,
+        MacosRuntimeCapability::Absent
+    );
+    assert_eq!(
+        missing_selector.tahoe.dual_range_screenshots,
+        MacosRuntimeCapability::Absent
     );
 }
 
@@ -714,6 +995,52 @@ fn yuv_color(range: MacosColorRange) -> MacosCaptureColorimetry {
         matrix: Some(MacosYuvMatrix::Bt2020),
         range,
         chroma_location: Some(MacosChromaLocation::Left),
+    }
+}
+
+fn hdr_rgb_color() -> MacosCaptureColorimetry {
+    MacosCaptureColorimetry {
+        primaries: MacosColorPrimaries::DisplayP3,
+        transfer: MacosTransferFunction::Linear,
+        matrix: None,
+        range: MacosColorRange::Full,
+        chroma_location: None,
+    }
+}
+
+fn hdr_rgb_metadata(format: MacosCapturePixelFormat) -> MacosDeliveredFrameMetadata {
+    MacosDeliveredFrameMetadata::new(format, hdr_rgb_color(), Some(203.0), Some(4.0))
+        .expect("HDR RGB metadata should validate")
+}
+
+fn configured_hdr(format: MacosCapturePixelFormat) -> MacosConfiguredStream {
+    MacosConfiguredStream {
+        requested_dynamic_range: MacosCaptureDynamicRange::Hdr,
+        requested_preset: MacosStreamPreset::CaptureHdrStreamCanonicalDisplay,
+        configured_dynamic_range: MacosCaptureDynamicRange::Hdr,
+        configured_pixel_format: format,
+        configured_color_range: match format {
+            MacosCapturePixelFormat::Yuv420VideoRange => MacosColorRange::Video,
+            _ => MacosColorRange::Full,
+        },
+    }
+}
+
+const fn absent_tahoe_probes() -> MacosTahoeRuntimeProbes {
+    MacosTahoeRuntimeProbes {
+        content_tone_mapping_info_symbol: MacosRuntimeCapability::Absent,
+        screenshot_configuration_class: MacosRuntimeCapability::Absent,
+        screenshot_dynamic_range_selector: MacosRuntimeCapability::Absent,
+        screenshot_capture_selector: MacosRuntimeCapability::Absent,
+    }
+}
+
+const fn absent_tahoe_probes_with_screenshot_types() -> MacosTahoeRuntimeProbes {
+    MacosTahoeRuntimeProbes {
+        content_tone_mapping_info_symbol: MacosRuntimeCapability::Absent,
+        screenshot_configuration_class: MacosRuntimeCapability::Present,
+        screenshot_dynamic_range_selector: MacosRuntimeCapability::Present,
+        screenshot_capture_selector: MacosRuntimeCapability::Absent,
     }
 }
 
