@@ -298,7 +298,7 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
 
     if let Err(e) = result {
         ctx.error(&format!("{e:#}"));
-        std::process::exit(1);
+        std::process::exit(commands::status::exit_code_for_error(&e).unwrap_or(1));
     }
 
     Ok(())

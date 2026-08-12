@@ -1,9 +1,12 @@
 //! `hyper status` -- display current system state.
 
+use std::future::Future;
+use std::time::Duration;
+
 use anyhow::Result;
 use clap::Args;
 
-use crate::client::DaemonClient;
+use crate::client::{DaemonClient, DaemonEventSubscription};
 use crate::output::{OutputContext, OutputFormat, Painter};
 
 /// Show current system state: running effect, devices, FPS, audio capture.
@@ -13,9 +16,83 @@ pub struct StatusArgs {
     #[arg(long)]
     pub watch: bool,
 
-    /// Update interval for --watch mode in seconds.
+    /// Minimum render interval for --watch mode in seconds.
     #[arg(long, default_value = "1")]
     pub interval: f64,
+}
+
+trait StatusWatchClient {
+    type Events: StatusWatchEvents;
+
+    async fn subscribe_status_events(&self) -> Result<Self::Events>;
+    async fn status_snapshot(&self) -> Result<serde_json::Value>;
+}
+
+trait StatusWatchEvents {
+    async fn next_status_event(&mut self) -> Result<Option<serde_json::Value>>;
+    async fn close(self);
+}
+
+impl StatusWatchClient for DaemonClient {
+    type Events = DaemonEventSubscription;
+
+    async fn subscribe_status_events(&self) -> Result<Self::Events> {
+        self.subscribe_events().await
+    }
+
+    async fn status_snapshot(&self) -> Result<serde_json::Value> {
+        self.get("/status").await
+    }
+}
+
+impl StatusWatchEvents for DaemonEventSubscription {
+    async fn next_status_event(&mut self) -> Result<Option<serde_json::Value>> {
+        self.next_event().await
+    }
+
+    async fn close(self) {
+        self.close().await;
+    }
+}
+
+#[derive(Debug)]
+struct StatusWatchError {
+    exit_code: i32,
+    source: anyhow::Error,
+}
+
+impl StatusWatchError {
+    fn connection(source: anyhow::Error) -> Self {
+        Self {
+            exit_code: 2,
+            source,
+        }
+    }
+
+    fn stream(source: anyhow::Error) -> Self {
+        Self {
+            exit_code: 1,
+            source,
+        }
+    }
+}
+
+impl std::fmt::Display for StatusWatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("status watch failed")
+    }
+}
+
+impl std::error::Error for StatusWatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+pub(crate) fn exit_code_for_error(error: &anyhow::Error) -> Option<i32> {
+    error
+        .downcast_ref::<StatusWatchError>()
+        .map(|error| error.exit_code)
 }
 
 /// Execute the `status` subcommand.
@@ -25,31 +102,115 @@ pub struct StatusArgs {
 /// Returns an error if the daemon is unreachable.
 pub async fn execute(args: &StatusArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     if args.watch {
-        let interval = args.interval.max(0.2);
-        loop {
-            let response = client.get("/status").await?;
-            render_status(&response, ctx)?;
-
-            let sleep = tokio::time::sleep(std::time::Duration::from_secs_f64(interval));
-            tokio::pin!(sleep);
-            tokio::select! {
-                () = &mut sleep => {}
-                _ = tokio::signal::ctrl_c() => {
-                    if !ctx.quiet {
-                        println!();
-                        ctx.info("Stopped status watch.");
-                    }
-                    break;
-                }
-            }
-        }
-        return Ok(());
+        return watch_status(args, client, ctx).await;
     }
 
     let response = client.get("/status").await?;
     render_status(&response, ctx)?;
 
     Ok(())
+}
+
+async fn watch_status(args: &StatusArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    watch_status_until(args, client, ctx, tokio::signal::ctrl_c()).await
+}
+
+async fn watch_status_until<C, F>(
+    args: &StatusArgs,
+    client: &C,
+    ctx: &OutputContext,
+    interrupt: F,
+) -> Result<()>
+where
+    C: StatusWatchClient,
+    F: Future<Output = std::io::Result<()>>,
+{
+    let minimum_interval = Duration::from_secs_f64(args.interval.max(0.2));
+    tokio::pin!(interrupt);
+    let mut events = tokio::select! {
+        subscription = client.subscribe_status_events() => {
+            subscription.map_err(StatusWatchError::connection)?
+        }
+        signal = interrupt.as_mut() => {
+            signal?;
+            report_watch_stopped(ctx);
+            return Ok(());
+        }
+    };
+    let initial = tokio::select! {
+        response = client.status_snapshot() => {
+            response.map_err(StatusWatchError::connection)?
+        }
+        signal = interrupt.as_mut() => {
+            signal?;
+            events.close().await;
+            report_watch_stopped(ctx);
+            return Ok(());
+        }
+    };
+    render_status(&initial, ctx)?;
+    let mut last_rendered = tokio::time::Instant::now();
+
+    loop {
+        let next = tokio::select! {
+            event = events.next_status_event() => {
+                event.map_err(StatusWatchError::stream)?
+            },
+            signal = interrupt.as_mut() => {
+                signal?;
+                events.close().await;
+                report_watch_stopped(ctx);
+                return Ok(());
+            }
+        };
+        if next.is_none() {
+            return Err(StatusWatchError::stream(anyhow::anyhow!(
+                "Daemon event stream closed while watching status"
+            ))
+            .into());
+        }
+
+        let deadline = last_rendered + minimum_interval;
+        while tokio::time::Instant::now() < deadline {
+            tokio::select! {
+                () = tokio::time::sleep_until(deadline) => break,
+                event = events.next_status_event() => {
+                    if event.map_err(StatusWatchError::stream)?.is_none() {
+                        return Err(StatusWatchError::stream(anyhow::anyhow!(
+                            "Daemon event stream closed while watching status"
+                        )).into());
+                    }
+                }
+                signal = interrupt.as_mut() => {
+                    signal?;
+                    events.close().await;
+                    report_watch_stopped(ctx);
+                    return Ok(());
+                }
+            }
+        }
+
+        let status = tokio::select! {
+            response = client.status_snapshot() => {
+                response.map_err(StatusWatchError::stream)?
+            }
+            signal = interrupt.as_mut() => {
+                signal?;
+                events.close().await;
+                report_watch_stopped(ctx);
+                return Ok(());
+            }
+        };
+        render_status(&status, ctx)?;
+        last_rendered = tokio::time::Instant::now();
+    }
+}
+
+fn report_watch_stopped(ctx: &OutputContext) {
+    if !ctx.quiet {
+        println!();
+        ctx.info("Stopped status watch.");
+    }
 }
 
 fn render_status(data: &serde_json::Value, ctx: &OutputContext) -> Result<()> {
@@ -517,9 +678,301 @@ fn format_scene_summary(data: &serde_json::Value, p: &Painter) -> Option<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{format_count, format_kib, format_uptime, status_table_lines};
-    use crate::output::Painter;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use anyhow::Result;
+    use tokio::sync::{Mutex, Notify, mpsc, oneshot};
+
+    use super::{
+        StatusArgs, StatusWatchClient, StatusWatchError, StatusWatchEvents, exit_code_for_error,
+        format_count, format_kib, format_uptime, status_table_lines, watch_status_until,
+    };
+    use crate::output::{OutputContext, OutputFormat, Painter};
     use serde_json::json;
+
+    struct FakeWatchClient {
+        statuses: Mutex<mpsc::UnboundedReceiver<Result<serde_json::Value>>>,
+        events: Mutex<Option<mpsc::UnboundedReceiver<Result<Option<serde_json::Value>>>>>,
+        subscriptions: AtomicUsize,
+        status_requests: AtomicUsize,
+        closed: Arc<AtomicBool>,
+        subscription_gate: Option<Arc<Notify>>,
+    }
+
+    struct FakeWatchEvents {
+        events: mpsc::UnboundedReceiver<Result<Option<serde_json::Value>>>,
+        closed: Arc<AtomicBool>,
+    }
+
+    type FakeStatusSender = mpsc::UnboundedSender<Result<serde_json::Value>>;
+    type FakeEventSender = mpsc::UnboundedSender<Result<Option<serde_json::Value>>>;
+
+    impl StatusWatchClient for FakeWatchClient {
+        type Events = FakeWatchEvents;
+
+        async fn subscribe_status_events(&self) -> Result<Self::Events> {
+            self.subscriptions.fetch_add(1, Ordering::AcqRel);
+            if let Some(gate) = &self.subscription_gate {
+                gate.notified().await;
+            }
+            let events = self
+                .events
+                .lock()
+                .await
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("fixture subscription already consumed"))?;
+            Ok(FakeWatchEvents {
+                events,
+                closed: Arc::clone(&self.closed),
+            })
+        }
+
+        async fn status_snapshot(&self) -> Result<serde_json::Value> {
+            self.status_requests.fetch_add(1, Ordering::AcqRel);
+            self.statuses
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("fixture status stream closed"))?
+        }
+    }
+
+    impl StatusWatchEvents for FakeWatchEvents {
+        async fn next_status_event(&mut self) -> Result<Option<serde_json::Value>> {
+            self.events.recv().await.unwrap_or(Ok(None))
+        }
+
+        async fn close(self) {
+            self.closed.store(true, Ordering::Release);
+        }
+    }
+
+    fn fake_watch_client() -> (Arc<FakeWatchClient>, FakeStatusSender, FakeEventSender) {
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        (
+            Arc::new(FakeWatchClient {
+                statuses: Mutex::new(status_rx),
+                events: Mutex::new(Some(event_rx)),
+                subscriptions: AtomicUsize::new(0),
+                status_requests: AtomicUsize::new(0),
+                closed: Arc::new(AtomicBool::new(false)),
+                subscription_gate: None,
+            }),
+            status_tx,
+            event_tx,
+        )
+    }
+
+    fn watch_context() -> OutputContext {
+        OutputContext::new(OutputFormat::Plain, false, true, true, None)
+    }
+
+    async fn wait_for_status_requests(client: &FakeWatchClient, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while client.status_requests.load(Ordering::Acquire) != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fixture should reach the expected request count");
+    }
+
+    async fn wait_for_subscriptions(client: &FakeWatchClient, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while client.subscriptions.load(Ordering::Acquire) != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fixture should reach the expected subscription count");
+    }
+
+    #[tokio::test]
+    async fn watch_interrupt_cancels_a_blocked_subscription() {
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let client = Arc::new(FakeWatchClient {
+            statuses: Mutex::new(status_rx),
+            events: Mutex::new(Some(event_rx)),
+            subscriptions: AtomicUsize::new(0),
+            status_requests: AtomicUsize::new(0),
+            closed: Arc::new(AtomicBool::new(false)),
+            subscription_gate: Some(Arc::new(Notify::new())),
+        });
+        let (interrupt_tx, interrupt_rx) = oneshot::channel();
+        let task = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move {
+                watch_status_until(
+                    &StatusArgs {
+                        watch: true,
+                        interval: 0.2,
+                    },
+                    client.as_ref(),
+                    &watch_context(),
+                    async move {
+                        interrupt_rx
+                            .await
+                            .map_err(|_| std::io::Error::other("fixture interrupt sender dropped"))
+                    },
+                )
+                .await
+            }
+        });
+
+        wait_for_subscriptions(&client, 1).await;
+        interrupt_tx.send(()).expect("interrupt should deliver");
+        task.await
+            .expect("watch task should join")
+            .expect("interrupt should cancel the blocked subscription");
+
+        assert_eq!(client.status_requests.load(Ordering::Acquire), 0);
+        assert!(!client.closed.load(Ordering::Acquire));
+        drop(status_tx);
+        drop(event_tx);
+    }
+
+    #[tokio::test]
+    async fn watch_refreshes_only_after_events_and_reports_stream_close() {
+        let (client, status_tx, event_tx) = fake_watch_client();
+        status_tx
+            .send(Ok(json!({ "active_effect": "initial" })))
+            .expect("initial status should queue");
+        let task = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move {
+                watch_status_until(
+                    &StatusArgs {
+                        watch: true,
+                        interval: 0.2,
+                    },
+                    client.as_ref(),
+                    &watch_context(),
+                    std::future::pending::<std::io::Result<()>>(),
+                )
+                .await
+            }
+        });
+
+        wait_for_status_requests(&client, 1).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(client.status_requests.load(Ordering::Acquire), 1);
+
+        status_tx
+            .send(Ok(json!({ "active_effect": "updated" })))
+            .expect("updated status should queue");
+        event_tx
+            .send(Ok(Some(json!({ "type": "event" }))))
+            .expect("event should queue");
+        wait_for_status_requests(&client, 2).await;
+        drop(event_tx);
+
+        let error = task
+            .await
+            .expect("watch task should join")
+            .expect_err("unexpected stream close should fail");
+        assert_eq!(exit_code_for_error(&error), Some(1));
+        assert_eq!(client.subscriptions.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn watch_coalesces_event_bursts_and_closes_on_interrupt() {
+        let (client, status_tx, event_tx) = fake_watch_client();
+        status_tx
+            .send(Ok(json!({ "active_effect": "initial" })))
+            .expect("initial status should queue");
+        status_tx
+            .send(Ok(json!({ "active_effect": "coalesced" })))
+            .expect("coalesced status should queue");
+        let (interrupt_tx, interrupt_rx) = oneshot::channel();
+        let task = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move {
+                watch_status_until(
+                    &StatusArgs {
+                        watch: true,
+                        interval: 0.2,
+                    },
+                    client.as_ref(),
+                    &watch_context(),
+                    async move {
+                        interrupt_rx
+                            .await
+                            .map_err(|_| std::io::Error::other("fixture interrupt sender dropped"))
+                    },
+                )
+                .await
+            }
+        });
+
+        wait_for_status_requests(&client, 1).await;
+        for sequence in 1..=3 {
+            event_tx
+                .send(Ok(Some(json!({ "sequence": sequence }))))
+                .expect("burst event should queue");
+        }
+        wait_for_status_requests(&client, 2).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(client.status_requests.load(Ordering::Acquire), 2);
+
+        interrupt_tx.send(()).expect("interrupt should deliver");
+        task.await
+            .expect("watch task should join")
+            .expect("interrupt should stop cleanly");
+        assert!(client.closed.load(Ordering::Acquire));
+        assert_eq!(client.subscriptions.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn watch_interrupt_remains_live_during_rest_refresh() {
+        let (client, status_tx, event_tx) = fake_watch_client();
+        status_tx
+            .send(Ok(json!({ "active_effect": "initial" })))
+            .expect("initial status should queue");
+        let (interrupt_tx, interrupt_rx) = oneshot::channel();
+        let task = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move {
+                watch_status_until(
+                    &StatusArgs {
+                        watch: true,
+                        interval: 0.2,
+                    },
+                    client.as_ref(),
+                    &watch_context(),
+                    async move {
+                        interrupt_rx
+                            .await
+                            .map_err(|_| std::io::Error::other("fixture interrupt sender dropped"))
+                    },
+                )
+                .await
+            }
+        });
+
+        wait_for_status_requests(&client, 1).await;
+        tokio::time::sleep(Duration::from_millis(220)).await;
+        event_tx
+            .send(Ok(Some(json!({ "type": "event" }))))
+            .expect("event should queue");
+        wait_for_status_requests(&client, 2).await;
+        interrupt_tx.send(()).expect("interrupt should deliver");
+
+        task.await
+            .expect("watch task should join")
+            .expect("interrupt should cancel an in-flight refresh");
+        assert!(client.closed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn watch_connection_failures_use_exit_code_two() {
+        let error: anyhow::Error = StatusWatchError::connection(anyhow::anyhow!("offline")).into();
+        assert_eq!(exit_code_for_error(&error), Some(2));
+    }
 
     #[test]
     fn format_uptime_formats_correctly() {
