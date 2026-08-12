@@ -18,7 +18,7 @@ use hypercolor_macos_capture::{
     MacosCapturePixelFormat, MacosCaptureSelection, MacosCaptureSurface, MacosColorPrimaries,
     MacosColorRange, MacosFrameDecoder, MacosFrameEvent, MacosPixelExtent, MacosPointRect,
     MacosProtectedSourceState, MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame,
-    MacosRawFrameAttachments, MacosTransferFunction,
+    MacosRawFrameAttachments, MacosTahoeSelectionCapabilities, MacosTransferFunction,
 };
 
 const BGRA8: u32 = 0x4247_5241;
@@ -170,9 +170,23 @@ fn fixture_capture_activates_only_for_live_demand() {
         .set_screen_capture_demand(ScreenCaptureDemand::try_active(4, 2).expect("valid demand"))
         .expect("fixture demand activates");
     assert!(fixture.is_active());
+    let source_id = Arc::from("display:00000000-0000-0000-0000-000000000001");
     fixture.set_selection(MacosCaptureSelection::Display {
-        source_id: Arc::from("display:00000000-0000-0000-0000-000000000001"),
+        source_id: Arc::clone(&source_id),
     });
+    assert!(matches!(source.sample(), Ok(InputData::None)));
+    let selected = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = selected.platform.as_deref() else {
+        panic!("expected selected macOS screen platform status");
+    };
+    assert_eq!(platform.tahoe_selection, None);
+
+    fixture.set_tahoe_selection_capabilities(Some(MacosTahoeSelectionCapabilities {
+        source_id: Arc::clone(&source_id),
+        capture_session_generation: 1,
+        hdr_capture: true,
+        dual_range_screenshots: false,
+    }));
     let captured_at = Instant::now();
     fixture.publish_at(fixture_frame(1, [0, 0, 255, 255]), captured_at);
     let data = wait_for_screen(&mut source);
@@ -190,9 +204,48 @@ fn fixture_capture_activates_only_for_live_demand() {
     assert_eq!(
         platform.selection,
         MacosSelectionState::Display {
-            source_id: Arc::from("display:00000000-0000-0000-0000-000000000001"),
+            source_id: Arc::clone(&source_id),
         }
     );
+    let tahoe = platform
+        .tahoe_selection
+        .as_ref()
+        .expect("confirmed stream should publish Tahoe selection capabilities");
+    assert_eq!(tahoe.source_id, source_id);
+    assert_eq!(tahoe.capture_session_generation, 1);
+    assert!(tahoe.hdr_capture);
+    assert!(!tahoe.dual_range_screenshots);
+
+    let replacement_source_id = Arc::from("display:00000000-0000-0000-0000-000000000002");
+    fixture.set_selection(MacosCaptureSelection::Display {
+        source_id: Arc::clone(&replacement_source_id),
+    });
+    assert!(matches!(source.sample(), Ok(InputData::Screen(_))));
+    let repicked = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = repicked.platform.as_deref() else {
+        panic!("expected repicked macOS screen platform status");
+    };
+    assert_eq!(platform.tahoe_selection, None);
+
+    fixture.set_tahoe_selection_capabilities(Some(MacosTahoeSelectionCapabilities {
+        source_id: Arc::clone(&replacement_source_id),
+        capture_session_generation: 2,
+        hdr_capture: false,
+        dual_range_screenshots: true,
+    }));
+    assert!(matches!(source.sample(), Ok(InputData::Screen(_))));
+    let reconfirmed = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = reconfirmed.platform.as_deref() else {
+        panic!("expected reconfirmed macOS screen platform status");
+    };
+    let tahoe = platform
+        .tahoe_selection
+        .as_ref()
+        .expect("replacement stream should publish Tahoe selection capabilities");
+    assert_eq!(tahoe.source_id, replacement_source_id);
+    assert_eq!(tahoe.capture_session_generation, 2);
+    assert!(!tahoe.hdr_capture);
+    assert!(tahoe.dual_range_screenshots);
 
     source
         .set_screen_capture_demand(ScreenCaptureDemand::Inactive)
@@ -204,6 +257,7 @@ fn fixture_capture_activates_only_for_live_demand() {
         panic!("expected inactive macOS screen platform status");
     };
     assert_eq!(platform.state, CoreProtectedSourceState::ReadyIdle);
+    assert_eq!(platform.tahoe_selection, None);
 }
 
 #[test]

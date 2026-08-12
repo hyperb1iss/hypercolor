@@ -9,7 +9,8 @@ use hypercolor_macos_capture::{
     MacosCaptureContentStyle, MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat,
     MacosCaptureSelection, MacosColorPrimaries, MacosCpuSourceView, MacosDisplayClock,
     MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
-    MacosProtectedSourceState as NativeProtectedSourceState, MacosTransferFunction,
+    MacosProtectedSourceState as NativeProtectedSourceState,
+    MacosTahoeSelectionCapabilities as NativeTahoeSelectionCapabilities, MacosTransferFunction,
 };
 use tokio::sync::oneshot;
 
@@ -50,8 +51,8 @@ use crate::input::traits::{
 };
 use crate::input::{
     MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
-    MacosScreenPlatformStatus, MacosSelectionState, SourceKind, SourcePlatformStatus,
-    SourceStatusHandle, SourceStatusReporter,
+    MacosScreenPlatformStatus, MacosSelectionState, MacosTahoeSelectionCapabilities, SourceKind,
+    SourcePlatformStatus, SourceStatusHandle, SourceStatusReporter,
 };
 
 const WORKER_WAIT: Duration = Duration::from_millis(100);
@@ -277,6 +278,7 @@ trait MacosCaptureControl: Send + Sync {
     fn request_authorization(&self) -> NativeProtectedSourceState;
     fn status(&self) -> NativeProtectedSourceState;
     fn selection(&self) -> MacosCaptureSelection;
+    fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities>;
     fn authorization(&self) -> MacosAuthorizationState;
     fn captured_at(&self, display_time: u64) -> anyhow::Result<Instant>;
 }
@@ -311,6 +313,10 @@ impl MacosCaptureControl for NativeCaptureControl {
 
     fn selection(&self) -> MacosCaptureSelection {
         self.session.selection()
+    }
+
+    fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities> {
+        self.session.tahoe_selection_capabilities()
     }
 
     fn authorization(&self) -> MacosAuthorizationState {
@@ -737,7 +743,10 @@ impl MacosScreenCaptureInput {
                     tcc: self.control.authorization(),
                     owner: self.owner,
                     selection: map_selection(self.control.selection()),
-                    tahoe_selection: None,
+                    tahoe_selection: self
+                        .control
+                        .tahoe_selection_capabilities()
+                        .map(map_tahoe_selection_capabilities),
                     owner_conflict: self.owner_conflict.clone(),
                 },
             )))?;
@@ -2388,6 +2397,17 @@ fn map_selection(selection: MacosCaptureSelection) -> MacosSelectionState {
     }
 }
 
+fn map_tahoe_selection_capabilities(
+    capabilities: NativeTahoeSelectionCapabilities,
+) -> MacosTahoeSelectionCapabilities {
+    MacosTahoeSelectionCapabilities {
+        source_id: capabilities.source_id,
+        capture_session_generation: capabilities.capture_session_generation,
+        hdr_capture: capabilities.hdr_capture,
+        dual_range_screenshots: capabilities.dual_range_screenshots,
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -2401,6 +2421,7 @@ struct FixtureControl {
     active_transitions: AtomicU64,
     status: Mutex<NativeProtectedSourceState>,
     selection: Mutex<MacosCaptureSelection>,
+    tahoe_selection: Mutex<Option<NativeTahoeSelectionCapabilities>>,
     captured_at: Mutex<Option<Instant>>,
 }
 
@@ -2413,6 +2434,7 @@ impl Default for FixtureControl {
             active_transitions: AtomicU64::new(0),
             status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
             selection: Mutex::new(MacosCaptureSelection::None),
+            tahoe_selection: Mutex::new(None),
             captured_at: Mutex::new(None),
         }
     }
@@ -2427,6 +2449,9 @@ impl MacosCaptureControl for FixtureControl {
     fn set_active(&self, active: bool) {
         self.active_transitions.fetch_add(1, Ordering::AcqRel);
         self.active.store(active, Ordering::Release);
+        if !active {
+            *lock(&self.tahoe_selection) = None;
+        }
         *lock(&self.status) = if active {
             NativeProtectedSourceState::Starting
         } else {
@@ -2449,6 +2474,10 @@ impl MacosCaptureControl for FixtureControl {
 
     fn selection(&self) -> MacosCaptureSelection {
         lock(&self.selection).clone()
+    }
+
+    fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities> {
+        lock(&self.tahoe_selection).clone()
     }
 
     fn authorization(&self) -> MacosAuthorizationState {
@@ -2509,7 +2538,15 @@ impl MacosScreenCaptureFixture {
     }
 
     pub fn set_selection(&self, selection: MacosCaptureSelection) {
+        *lock(&self.control.tahoe_selection) = None;
         *lock(&self.control.selection) = selection;
+    }
+
+    pub fn set_tahoe_selection_capabilities(
+        &self,
+        capabilities: Option<NativeTahoeSelectionCapabilities>,
+    ) {
+        *lock(&self.control.tahoe_selection) = capabilities;
     }
 }
 
