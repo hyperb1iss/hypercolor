@@ -18,8 +18,14 @@ pub struct MacosMetal4CapabilityProbe {
     pub command_queue: bool,
     /// Whether the active device exposes Metal 4 command buffers.
     pub command_buffer: bool,
+    /// Whether the active device exposes Metal 4 argument tables.
+    pub argument_table: bool,
     /// Whether the active device exposes residency-set creation.
     pub residency_set: bool,
+    /// Whether the active device exposes shared events for completion timing.
+    pub shared_event: bool,
+    /// Whether the active device exposes command-buffer GPU interval feedback.
+    pub commit_feedback: bool,
 }
 
 impl MacosMetal4CapabilityProbe {
@@ -30,12 +36,15 @@ impl MacosMetal4CapabilityProbe {
             && self.command_allocator
             && self.command_queue
             && self.command_buffer
+            && self.argument_table
             && self.residency_set
+            && self.shared_event
+            && self.commit_feedback
     }
 
     /// Missing facilities in a stable order, padded with `None`.
     #[must_use]
-    pub const fn missing_facilities(self) -> [Option<&'static str>; 5] {
+    pub const fn missing_facilities(self) -> [Option<&'static str>; 8] {
         [
             if self.metal4_family {
                 None
@@ -57,10 +66,25 @@ impl MacosMetal4CapabilityProbe {
             } else {
                 Some("command_buffer")
             },
+            if self.argument_table {
+                None
+            } else {
+                Some("argument_table")
+            },
             if self.residency_set {
                 None
             } else {
                 Some("residency_set")
+            },
+            if self.shared_event {
+                None
+            } else {
+                Some("shared_event")
+            },
+            if self.commit_feedback {
+                None
+            } else {
+                Some("commit_feedback")
             },
         ]
     }

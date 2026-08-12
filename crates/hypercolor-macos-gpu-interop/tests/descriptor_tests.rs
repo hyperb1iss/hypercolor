@@ -17,10 +17,13 @@ fn metal4_probe_requires_every_facility() {
         command_allocator: true,
         command_queue: true,
         command_buffer: true,
+        argument_table: true,
         residency_set: true,
+        shared_event: true,
+        commit_feedback: true,
     };
     assert!(complete.all_required_facilities());
-    assert_eq!(complete.missing_facilities(), [None; 5]);
+    assert_eq!(complete.missing_facilities(), [None; 8]);
 
     let missing_command_buffer = MacosMetal4CapabilityProbe {
         command_buffer: false,
@@ -29,7 +32,37 @@ fn metal4_probe_requires_every_facility() {
     assert!(!missing_command_buffer.all_required_facilities());
     assert_eq!(
         missing_command_buffer.missing_facilities(),
-        [None, None, None, Some("command_buffer"), None]
+        [
+            None,
+            None,
+            None,
+            Some("command_buffer"),
+            None,
+            None,
+            None,
+            None
+        ]
+    );
+
+    let missing_completion = MacosMetal4CapabilityProbe {
+        argument_table: false,
+        shared_event: false,
+        commit_feedback: false,
+        ..complete
+    };
+    assert!(!missing_completion.all_required_facilities());
+    assert_eq!(
+        missing_completion.missing_facilities(),
+        [
+            None,
+            None,
+            None,
+            None,
+            Some("argument_table"),
+            None,
+            Some("shared_event"),
+            Some("commit_feedback"),
+        ]
     );
 }
 

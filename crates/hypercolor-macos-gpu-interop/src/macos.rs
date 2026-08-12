@@ -21,8 +21,8 @@ use objc2_io_surface::{
     kIOSurfaceHeight, kIOSurfacePixelFormat, kIOSurfaceWidth,
 };
 use objc2_metal::{
-    MTLCreateSystemDefaultDevice, MTLDevice, MTLGPUFamily, MTLPixelFormat, MTLResource,
-    MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
+    MTL4CommitOptions, MTLCreateSystemDefaultDevice, MTLDevice, MTLGPUFamily, MTLPixelFormat,
+    MTLResource, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
 };
 use thiserror::Error;
 
@@ -58,8 +58,14 @@ pub struct MacosMetal4CapabilityProbe {
     pub command_queue: bool,
     /// Whether the active device exposes Metal 4 command buffers.
     pub command_buffer: bool,
+    /// Whether the active device exposes Metal 4 argument tables.
+    pub argument_table: bool,
     /// Whether the active device exposes residency-set creation.
     pub residency_set: bool,
+    /// Whether the active device exposes shared events for completion timing.
+    pub shared_event: bool,
+    /// Whether the active device exposes command-buffer GPU interval feedback.
+    pub commit_feedback: bool,
 }
 
 /// Identity and family facts for the system-default Metal device.
@@ -81,12 +87,15 @@ impl MacosMetal4CapabilityProbe {
             && self.command_allocator
             && self.command_queue
             && self.command_buffer
+            && self.argument_table
             && self.residency_set
+            && self.shared_event
+            && self.commit_feedback
     }
 
     /// Missing facilities in a stable order, padded with `None`.
     #[must_use]
-    pub const fn missing_facilities(self) -> [Option<&'static str>; 5] {
+    pub const fn missing_facilities(self) -> [Option<&'static str>; 8] {
         [
             if self.metal4_family {
                 None
@@ -108,10 +117,25 @@ impl MacosMetal4CapabilityProbe {
             } else {
                 Some("command_buffer")
             },
+            if self.argument_table {
+                None
+            } else {
+                Some("argument_table")
+            },
             if self.residency_set {
                 None
             } else {
                 Some("residency_set")
+            },
+            if self.shared_event {
+                None
+            } else {
+                Some("shared_event")
+            },
+            if self.commit_feedback {
+                None
+            } else {
+                Some("commit_feedback")
             },
         ]
     }
@@ -127,13 +151,24 @@ pub fn probe_macos_metal4_capabilities(
     let hal_device = unsafe { device.as_hal::<wgpu_hal::api::Metal>() }
         .ok_or(MacosGpuInteropError::MissingWgpuMetalDevice)?;
     let raw_device = hal_device.raw_device();
+    let metal4_family = raw_device.supportsFamily(MTLGPUFamily::Metal4);
+    let command_queue = raw_device.respondsToSelector(sel!(newMTL4CommandQueue));
+    let commit_feedback = metal4_family
+        && command_queue
+        && raw_device.newMTL4CommandQueue().is_some_and(|queue| {
+            queue.respondsToSelector(sel!(commit:count:options:))
+                && MTL4CommitOptions::new().respondsToSelector(sel!(addFeedbackHandler:))
+        });
     Ok(MacosMetal4CapabilityProbe {
         metal_registry_id,
-        metal4_family: raw_device.supportsFamily(MTLGPUFamily::Metal4),
+        metal4_family,
         command_allocator: raw_device.respondsToSelector(sel!(newCommandAllocator)),
-        command_queue: raw_device.respondsToSelector(sel!(newMTL4CommandQueue)),
+        command_queue,
         command_buffer: raw_device.respondsToSelector(sel!(newCommandBuffer)),
+        argument_table: raw_device.respondsToSelector(sel!(newArgumentTableWithDescriptor:error:)),
         residency_set: raw_device.respondsToSelector(sel!(newResidencySetWithDescriptor:error:)),
+        shared_event: raw_device.respondsToSelector(sel!(newSharedEvent)),
+        commit_feedback,
     })
 }
 
