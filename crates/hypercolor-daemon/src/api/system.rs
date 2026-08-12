@@ -13,7 +13,12 @@ use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::screen::{
     PixelExtent, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan,
 };
-use hypercolor_core::input::{SourceFreshness, SourceIssue, SourceKind, SourceState, SourceStatus};
+use hypercolor_core::input::{
+    MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
+    MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
+    MacosSelectionState, MacosTahoeSelectionCapabilities, SourceFreshness, SourceIssue, SourceKind,
+    SourcePlatformStatus, SourceState, SourceStatus,
+};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
 use serde::Serialize;
@@ -172,6 +177,89 @@ pub struct InputSourceIssueStatus {
     pub retryable: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosProtectedSourceStateApi {
+    Disabled,
+    NeedsUserAction,
+    PermissionDenied,
+    NeedsProcessRestart,
+    NeedsSelection,
+    ReadyIdle,
+    Starting,
+    Live,
+    Interrupted,
+    Revoked,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosAuthorizationStateApi {
+    Unknown,
+    NotDetermined,
+    Denied,
+    Authorized,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosCapabilityOwnerApi {
+    AppSidecar,
+    App,
+    LaunchdService,
+    HomebrewService,
+    Broker,
+    Standalone,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosDaemonOwnerConflictApiStatus {
+    pub active: MacosCapabilityOwnerApi,
+    pub contender: MacosCapabilityOwnerApi,
+    pub observed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MacosSelectionStateApi {
+    None,
+    Display { source_id: String },
+    SessionScoped { content_style: String },
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosTahoeSelectionCapabilitiesApiStatus {
+    pub source_id: String,
+    pub capture_session_generation: u64,
+    pub hdr_capture: bool,
+    pub dual_range_screenshots: bool,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InputSourcePlatformStatus {
+    MacosInput {
+        keyboard: MacosProtectedSourceStateApi,
+        pointer: MacosProtectedSourceStateApi,
+        keyboard_tcc: MacosAuthorizationStateApi,
+        keyboard_owner: MacosCapabilityOwnerApi,
+        pointer_owner: MacosCapabilityOwnerApi,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_conflict: Option<MacosDaemonOwnerConflictApiStatus>,
+    },
+    MacosScreen {
+        state: MacosProtectedSourceStateApi,
+        tcc: MacosAuthorizationStateApi,
+        owner: MacosCapabilityOwnerApi,
+        selection: MacosSelectionStateApi,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tahoe_selection: Option<MacosTahoeSelectionCapabilitiesApiStatus>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_conflict: Option<MacosDaemonOwnerConflictApiStatus>,
+    },
+}
+
 /// Lock-free lifecycle and freshness status for one input source.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[allow(
@@ -202,6 +290,8 @@ pub struct InputSourceStatus {
     pub lifecycle_issue: Option<InputSourceIssueStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness_issue: Option<InputSourceIssueStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<InputSourcePlatformStatus>,
     pub retired: bool,
 }
 
@@ -595,7 +685,129 @@ fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus
         issue,
         lifecycle_issue,
         freshness_issue,
+        platform: source
+            .platform
+            .as_deref()
+            .and_then(input_source_platform_status),
         retired: source.retired,
+    }
+}
+
+fn input_source_platform_status(
+    platform: &SourcePlatformStatus,
+) -> Option<InputSourcePlatformStatus> {
+    match platform {
+        SourcePlatformStatus::MacosInput(status) => Some(macos_input_platform_status(status)),
+        SourcePlatformStatus::MacosScreen(status) => Some(macos_screen_platform_status(status)),
+        _ => None,
+    }
+}
+
+fn macos_input_platform_status(status: &MacosInputPlatformStatus) -> InputSourcePlatformStatus {
+    InputSourcePlatformStatus::MacosInput {
+        keyboard: macos_protected_source_state(status.keyboard),
+        pointer: macos_protected_source_state(status.pointer),
+        keyboard_tcc: macos_authorization_state(status.keyboard_tcc),
+        keyboard_owner: macos_capability_owner(status.keyboard_owner),
+        pointer_owner: macos_capability_owner(status.pointer_owner),
+        owner_conflict: status
+            .owner_conflict
+            .as_deref()
+            .map(macos_daemon_owner_conflict),
+    }
+}
+
+fn macos_screen_platform_status(status: &MacosScreenPlatformStatus) -> InputSourcePlatformStatus {
+    InputSourcePlatformStatus::MacosScreen {
+        state: macos_protected_source_state(status.state),
+        tcc: macos_authorization_state(status.tcc),
+        owner: macos_capability_owner(status.owner),
+        selection: macos_selection_state(&status.selection),
+        tahoe_selection: status
+            .tahoe_selection
+            .as_ref()
+            .map(macos_tahoe_selection_capabilities),
+        owner_conflict: status
+            .owner_conflict
+            .as_deref()
+            .map(macos_daemon_owner_conflict),
+    }
+}
+
+const fn macos_protected_source_state(
+    state: MacosProtectedSourceState,
+) -> MacosProtectedSourceStateApi {
+    match state {
+        MacosProtectedSourceState::Disabled => MacosProtectedSourceStateApi::Disabled,
+        MacosProtectedSourceState::NeedsUserAction => MacosProtectedSourceStateApi::NeedsUserAction,
+        MacosProtectedSourceState::PermissionDenied => {
+            MacosProtectedSourceStateApi::PermissionDenied
+        }
+        MacosProtectedSourceState::NeedsProcessRestart => {
+            MacosProtectedSourceStateApi::NeedsProcessRestart
+        }
+        MacosProtectedSourceState::NeedsSelection => MacosProtectedSourceStateApi::NeedsSelection,
+        MacosProtectedSourceState::ReadyIdle => MacosProtectedSourceStateApi::ReadyIdle,
+        MacosProtectedSourceState::Starting => MacosProtectedSourceStateApi::Starting,
+        MacosProtectedSourceState::Live => MacosProtectedSourceStateApi::Live,
+        MacosProtectedSourceState::Interrupted => MacosProtectedSourceStateApi::Interrupted,
+        MacosProtectedSourceState::Revoked => MacosProtectedSourceStateApi::Revoked,
+        MacosProtectedSourceState::Failed => MacosProtectedSourceStateApi::Failed,
+    }
+}
+
+const fn macos_authorization_state(state: MacosAuthorizationState) -> MacosAuthorizationStateApi {
+    match state {
+        MacosAuthorizationState::Unknown => MacosAuthorizationStateApi::Unknown,
+        MacosAuthorizationState::NotDetermined => MacosAuthorizationStateApi::NotDetermined,
+        MacosAuthorizationState::Denied => MacosAuthorizationStateApi::Denied,
+        MacosAuthorizationState::Authorized => MacosAuthorizationStateApi::Authorized,
+    }
+}
+
+const fn macos_capability_owner(owner: MacosCapabilityOwner) -> MacosCapabilityOwnerApi {
+    match owner {
+        MacosCapabilityOwner::AppSidecar => MacosCapabilityOwnerApi::AppSidecar,
+        MacosCapabilityOwner::App => MacosCapabilityOwnerApi::App,
+        MacosCapabilityOwner::LaunchdService => MacosCapabilityOwnerApi::LaunchdService,
+        MacosCapabilityOwner::HomebrewService => MacosCapabilityOwnerApi::HomebrewService,
+        MacosCapabilityOwner::Broker => MacosCapabilityOwnerApi::Broker,
+        MacosCapabilityOwner::Standalone => MacosCapabilityOwnerApi::Standalone,
+    }
+}
+
+fn macos_daemon_owner_conflict(
+    conflict: &MacosDaemonOwnerConflict,
+) -> MacosDaemonOwnerConflictApiStatus {
+    MacosDaemonOwnerConflictApiStatus {
+        active: macos_capability_owner(conflict.active),
+        contender: macos_capability_owner(conflict.contender),
+        observed_at_ms: conflict.observed_at_ms,
+    }
+}
+
+fn macos_selection_state(selection: &MacosSelectionState) -> MacosSelectionStateApi {
+    match selection {
+        MacosSelectionState::None => MacosSelectionStateApi::None,
+        MacosSelectionState::Display { source_id } => MacosSelectionStateApi::Display {
+            source_id: source_id.to_string(),
+        },
+        MacosSelectionState::SessionScoped { content_style } => {
+            MacosSelectionStateApi::SessionScoped {
+                content_style: content_style.to_string(),
+            }
+        }
+    }
+}
+
+fn macos_tahoe_selection_capabilities(
+    capabilities: &MacosTahoeSelectionCapabilities,
+) -> MacosTahoeSelectionCapabilitiesApiStatus {
+    MacosTahoeSelectionCapabilitiesApiStatus {
+        source_id: capabilities.source_id.to_string(),
+        capture_session_generation: capabilities.capture_session_generation,
+        hdr_capture: capabilities.hdr_capture,
+        dual_range_screenshots: capabilities.dual_range_screenshots,
     }
 }
 
@@ -1569,7 +1781,10 @@ fn round_2(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_sensor, get_sensors, get_status, us_to_ms_f64};
+    use super::{
+        get_sensor, get_sensors, get_status, input_source_status, macos_selection_state,
+        us_to_ms_f64,
+    };
     use crate::api::AppState;
     use crate::performance::{
         CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
@@ -1580,11 +1795,200 @@ mod tests {
     use axum::extract::{Path, State};
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
+    use hypercolor_core::input::{
+        MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
+        MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
+        MacosSelectionState, MacosTahoeSelectionCapabilities, SourceFreshness, SourceKind,
+        SourcePlatformStatus, SourceState, SourceStatus,
+    };
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
-    use serde_json::Value;
+    use serde::Deserialize;
+    use serde_json::{Value, json};
     use std::sync::Arc;
+    use std::time::Instant;
     use tokio::sync::watch;
+
+    fn source_status_fixture(platform: Option<SourcePlatformStatus>) -> SourceStatus {
+        SourceStatus {
+            source_id: Arc::from("fixture:source"),
+            kind: SourceKind::Interaction,
+            backend: Arc::from("fixture"),
+            configured: true,
+            consented: true,
+            demanded: true,
+            state: SourceState::Live,
+            freshness: SourceFreshness::NotApplicable,
+            source_graph_generation: 7,
+            session_generation: 11,
+            last_sample_at: None,
+            freshness_deadline: None,
+            resource_count: 2,
+            denied_resource_count: 0,
+            issue: None,
+            freshness_issue: None,
+            platform: platform.map(Arc::new),
+            retired: false,
+        }
+    }
+
+    #[test]
+    fn input_source_status_serializes_macos_input_platform() {
+        let platform = SourcePlatformStatus::MacosInput(MacosInputPlatformStatus {
+            keyboard: MacosProtectedSourceState::NeedsProcessRestart,
+            pointer: MacosProtectedSourceState::Live,
+            keyboard_tcc: MacosAuthorizationState::Authorized,
+            keyboard_owner: MacosCapabilityOwner::AppSidecar,
+            pointer_owner: MacosCapabilityOwner::Broker,
+            owner_conflict: Some(Arc::new(MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::LaunchdService,
+                contender: MacosCapabilityOwner::HomebrewService,
+                observed_at_ms: 1_725_000_000_123,
+            })),
+        });
+        let status = input_source_status(&source_status_fixture(Some(platform)), Instant::now());
+        let value = serde_json::to_value(status).expect("input status should serialize");
+
+        assert_eq!(
+            value["platform"],
+            json!({
+                "type": "macos_input",
+                "keyboard": "needs_process_restart",
+                "pointer": "live",
+                "keyboard_tcc": "authorized",
+                "keyboard_owner": "app_sidecar",
+                "pointer_owner": "broker",
+                "owner_conflict": {
+                    "active": "launchd_service",
+                    "contender": "homebrew_service",
+                    "observed_at_ms": 1_725_000_000_123_u64
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn input_source_status_serializes_macos_screen_platform() {
+        let platform = SourcePlatformStatus::MacosScreen(MacosScreenPlatformStatus {
+            state: MacosProtectedSourceState::Interrupted,
+            tcc: MacosAuthorizationState::Denied,
+            owner: MacosCapabilityOwner::Standalone,
+            selection: MacosSelectionState::SessionScoped {
+                content_style: Arc::from("multiple_windows"),
+            },
+            tahoe_selection: Some(MacosTahoeSelectionCapabilities {
+                source_id: Arc::from("session:23"),
+                capture_session_generation: 29,
+                hdr_capture: true,
+                dual_range_screenshots: true,
+            }),
+            owner_conflict: Some(Arc::new(MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::Standalone,
+                contender: MacosCapabilityOwner::App,
+                observed_at_ms: 1_725_000_000_456,
+            })),
+        });
+        let status = input_source_status(&source_status_fixture(Some(platform)), Instant::now());
+        let value = serde_json::to_value(status).expect("screen status should serialize");
+
+        assert_eq!(
+            value["platform"],
+            json!({
+                "type": "macos_screen",
+                "state": "interrupted",
+                "tcc": "denied",
+                "owner": "standalone",
+                "selection": {
+                    "type": "session_scoped",
+                    "content_style": "multiple_windows"
+                },
+                "tahoe_selection": {
+                    "source_id": "session:23",
+                    "capture_session_generation": 29,
+                    "hdr_capture": true,
+                    "dual_range_screenshots": true
+                },
+                "owner_conflict": {
+                    "active": "standalone",
+                    "contender": "app",
+                    "observed_at_ms": 1_725_000_000_456_u64
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn input_source_status_omits_absent_platform() {
+        let status = input_source_status(&source_status_fixture(None), Instant::now());
+        let value = serde_json::to_value(status).expect("source status should serialize");
+
+        assert!(value.get("platform").is_none());
+    }
+
+    #[test]
+    fn macos_selection_status_preserves_public_shapes() {
+        let empty = serde_json::to_value(macos_selection_state(&MacosSelectionState::None))
+            .expect("empty selection should serialize");
+        let display = serde_json::to_value(macos_selection_state(&MacosSelectionState::Display {
+            source_id: Arc::from("display:7a3f"),
+        }))
+        .expect("display selection should serialize");
+
+        assert_eq!(empty, json!({ "type": "none" }));
+        assert_eq!(
+            display,
+            json!({ "type": "display", "source_id": "display:7a3f" })
+        );
+    }
+
+    #[test]
+    fn macos_platform_json_tolerates_future_fields() {
+        #[derive(Debug, Deserialize)]
+        struct TolerantInputSourceStatus {
+            platform: Option<TolerantPlatformStatus>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum TolerantPlatformStatus {
+            MacosScreen { state: String },
+        }
+
+        let value = json!({
+            "platform": {
+                "type": "macos_screen",
+                "state": "live",
+                "future_probe": { "available": true }
+            },
+            "future_source_field": 42
+        });
+        let status: TolerantInputSourceStatus =
+            serde_json::from_value(value).expect("unknown fields should remain additive");
+        let Some(TolerantPlatformStatus::MacosScreen { state }) = status.platform else {
+            panic!("fixture should decode the macOS screen variant");
+        };
+
+        assert_eq!(state, "live");
+    }
+
+    #[test]
+    fn macos_platform_status_is_present_in_openapi() {
+        use utoipa::OpenApi;
+
+        let document = crate::api::openapi::ApiDoc::openapi();
+        let value = serde_json::to_value(document).expect("OpenAPI should serialize");
+        let schemas = value["components"]["schemas"]
+            .as_object()
+            .expect("OpenAPI should contain component schemas");
+
+        assert!(schemas.contains_key("InputSourcePlatformStatus"));
+        assert!(schemas.contains_key("MacosSelectionStateApi"));
+        assert!(schemas.contains_key("MacosTahoeSelectionCapabilitiesApiStatus"));
+        let platform_schema = &schemas["InputSourcePlatformStatus"];
+        let encoded = serde_json::to_string(platform_schema).expect("schema should encode");
+        assert!(encoded.contains("macos_input"));
+        assert!(encoded.contains("macos_screen"));
+    }
 
     #[expect(
         clippy::too_many_lines,
