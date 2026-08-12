@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use gloo_net::http::Request;
-use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
+use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use web_sys::{File, FormData};
 
 use super::client;
@@ -16,8 +16,9 @@ use super::client;
 // convenience shape derived from the shared wire response.
 use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResponse;
 pub use hypercolor_types::api::effects::{
-    ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet, EffectDetailResponse,
-    EffectListResponse, EffectSummary, InstalledEffectResponse,
+    ApplyEffectPresetRequest, ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet,
+    EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
+    EffectPresetSummary, EffectSummary, InstalledEffectResponse,
 };
 
 /// Active effect response from `GET /api/v1/effects/active`.
@@ -95,10 +96,33 @@ pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, Strin
         .map_err(Into::into)
 }
 
-/// Fetch the bundled (effect-defined) presets for an effect.
-pub async fn fetch_bundled_presets(id: &str) -> Result<Vec<PresetTemplate>, String> {
-    let detail = fetch_effect_detail(id).await?;
-    Ok(detail.presets)
+/// Fetch the bundled and saved preset stack for one effect.
+pub async fn fetch_effect_presets(id: &str) -> Result<Vec<EffectPresetSummary>, String> {
+    let response: EffectPresetListResponse =
+        client::fetch_json(&format!("/api/v1/effects/{id}/presets")).await?;
+    Ok(response.items)
+}
+
+/// Apply a bundled or saved preset to an effect and optional render group.
+pub async fn apply_effect_preset(
+    effect_id: &str,
+    preset_id: &str,
+    render_group: Option<&str>,
+) -> Result<(), String> {
+    let path = format!("/api/v1/effects/{effect_id}/presets/{preset_id}/apply");
+    match render_group {
+        Some(render_group) => {
+            client::post_json_discard(
+                &path,
+                &ApplyEffectPresetRequest {
+                    render_group: Some(render_group.to_owned()),
+                },
+            )
+            .await
+        }
+        None => client::post_empty(&path).await,
+    }
+    .map_err(Into::into)
 }
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass

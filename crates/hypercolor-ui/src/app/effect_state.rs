@@ -202,30 +202,33 @@ pub(super) fn apply_active_effect_snapshot(
     );
 }
 
-/// Re-applies a remembered preset + control snapshot on top of the
-/// daemon's defaults. Fully async: apply_preset first (if any), then
-/// update_controls using the same hex-color-encoding serializer the
-/// preset picker uses (the daemon silently ignores `ControlValue`'s
-/// default tagged JSON), then a final refresh so the UI mirrors the
-/// restored daemon state. Bails at every step if the user has switched
-/// effects in the meantime; a late-landing restore from effect A would
-/// otherwise trample a freshly-activated effect B.
+/// Restores either a remembered preset or a manual control snapshot.
+/// Preset provenance and manual controls are mutually exclusive in the
+/// daemon, so a successful preset apply must not be followed by a control
+/// patch that immediately clears its identifier.
 fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: EffectPreferences) {
     leptos::task::spawn_local(async move {
         if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
             return;
         }
 
-        if let Some(preset_id) = prefs.preset_id.as_ref() {
-            if let Err(error) = api::apply_preset(preset_id, None).await {
-                crate::toasts::toast_error(&format!("Couldn't restore saved preset: {error}"));
-            }
+        let preset_applied = if let Some(preset_id) = prefs.preset_id.as_ref() {
+            let applied = match api::apply_effect_preset(&effect_id, preset_id, None).await {
+                Ok(()) => true,
+                Err(error) => {
+                    crate::toasts::toast_error(&format!("Couldn't restore preset: {error}"));
+                    false
+                }
+            };
             if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
                 return;
             }
-        }
+            applied
+        } else {
+            false
+        };
 
-        if !prefs.control_values.is_empty() {
+        if !preset_applied && !prefs.control_values.is_empty() {
             let controls_json = serde_json::Value::Object(controls_to_json(&prefs.control_values));
             if let Err(error) = api::update_controls(&controls_json).await {
                 crate::toasts::toast_error(&format!("Couldn't restore saved controls: {error}"));

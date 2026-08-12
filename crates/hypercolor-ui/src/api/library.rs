@@ -73,24 +73,6 @@ pub async fn create_preset(req: &CreatePresetRequest) -> Result<PresetSummary, S
         .map_err(Into::into)
 }
 
-#[derive(Debug, Serialize)]
-struct ApplyPresetRequest<'a> {
-    render_group: &'a str,
-}
-
-/// Apply a saved preset by ID. `render_group` targets a specific zone;
-/// `None` keeps the daemon's legacy primary-zone semantics.
-pub async fn apply_preset(id: &str, render_group: Option<&str>) -> Result<(), String> {
-    let path = format!("/api/v1/library/presets/{id}/apply");
-    match render_group {
-        Some(zone) => {
-            client::post_json_discard(&path, &ApplyPresetRequest { render_group: zone }).await
-        }
-        None => client::post_empty(&path).await,
-    }
-    .map_err(Into::into)
-}
-
 /// Update an existing preset (name, controls, etc.).
 pub async fn update_preset(id: &str, req: &CreatePresetRequest) -> Result<PresetSummary, String> {
     client::put_json(&format!("/api/v1/library/presets/{id}"), req)
