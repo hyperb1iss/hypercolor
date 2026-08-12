@@ -12,7 +12,7 @@ use hypercolor_macos_capture::{
 
 #[cfg(target_os = "macos")]
 use hypercolor_macos_capture::{
-    MacosCaptureCadence, MacosScreenCaptureSession, MacosStreamRequest,
+    MacosCaptureCadence, MacosCaptureSelector, MacosScreenCaptureSession, MacosStreamRequest,
 };
 
 use super::{
@@ -136,7 +136,8 @@ impl MacosScreenCaptureInput {
             MacosCaptureCadence::FramesPerSecond(config.target_fps),
             true,
         )?;
-        let session = MacosScreenCaptureSession::new(request)?;
+        let selector = MacosCaptureSelector::parse(&config.source)?;
+        let session = MacosScreenCaptureSession::new(request, selector)?;
         let clock = MacosDisplayClock::system()?;
         Ok(Self::with_control(
             config,

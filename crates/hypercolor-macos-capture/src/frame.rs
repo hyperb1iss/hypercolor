@@ -805,6 +805,10 @@ pub enum MacosCaptureError {
     RetainNativeFilterFailed,
     #[error("display {0} has no canonical Core Graphics UUID")]
     DisplayUuidUnavailable(u32),
+    #[error("configured display source is unavailable: {0}")]
+    DisplaySourceUnavailable(String),
+    #[error("ScreenCaptureKit returned no shareable-content result")]
+    MissingShareableContent,
     #[error("capture surface has no CPU-mappable fixture or pixel buffer")]
     CpuMappingUnavailable,
     #[error("mapped CPU planes do not match the validated frame layout")]

@@ -51,6 +51,8 @@ impl MacosFrameDropReason {
             | MacosCaptureError::NativeOperation { .. }
             | MacosCaptureError::RetainNativeFilterFailed
             | MacosCaptureError::DisplayUuidUnavailable(_)
+            | MacosCaptureError::DisplaySourceUnavailable(_)
+            | MacosCaptureError::MissingShareableContent
             | MacosCaptureError::PlaneCount { .. }
             | MacosCaptureError::InvalidPlaneIndex { .. }
             | MacosCaptureError::InvalidPlaneExtent { .. }

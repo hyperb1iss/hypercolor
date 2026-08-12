@@ -109,6 +109,17 @@ fn capture_selectors_parse_and_normalize_display_identity() {
             "display:not-a-uuid".to_owned()
         ))
     );
+
+    let explicit = MacosCaptureSelector::parse("display:550e8400-e29b-41d4-a716-446655440000")
+        .expect("canonical display selector should parse");
+    assert_eq!(
+        explicit.configured_source(),
+        "display:550e8400-e29b-41d4-a716-446655440000"
+    );
+    assert!(explicit.matches_display(explicit.configured_source(), false));
+    assert!(!explicit.matches_display("display:00000000-0000-0000-0000-000000000000", true));
+    assert!(MacosCaptureSelector::Auto.matches_display("display:any", true));
+    assert!(!MacosCaptureSelector::SessionScoped.matches_display("display:any", true));
 }
 
 #[test]

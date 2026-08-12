@@ -1,7 +1,6 @@
-use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use block2::RcBlock;
@@ -13,8 +12,8 @@ use objc2_core_foundation::{
     CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFUUID, CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{
-    CGDirectDisplayID, CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
-    CGRequestScreenCaptureAccess,
+    CGDirectDisplayID, CGMainDisplayID, CGPreflightScreenCaptureAccess,
+    CGRectMakeWithDictionaryRepresentation, CGRequestScreenCaptureAccess,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::{
@@ -32,24 +31,24 @@ use objc2_core_video::{
     kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
     kCVImageBufferYCbCrMatrix_ITU_R_2020, kCVImageBufferYCbCrMatrixKey,
 };
-use objc2_foundation::{NSError, NSNumber, NSObject, NSObjectProtocol, NSString, NSValue};
+use objc2_foundation::{NSArray, NSError, NSNumber, NSObject, NSObjectProtocol, NSString, NSValue};
 use objc2_screen_capture_kit::{
     SCCaptureResolutionType, SCContentFilter, SCContentSharingPicker,
     SCContentSharingPickerConfiguration, SCContentSharingPickerMode,
-    SCContentSharingPickerObserver, SCStream, SCStreamConfiguration, SCStreamDelegate,
-    SCStreamErrorCode, SCStreamErrorDomain, SCStreamFrameInfoBoundingRect,
+    SCContentSharingPickerObserver, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCStreamDelegate, SCStreamErrorCode, SCStreamErrorDomain, SCStreamFrameInfoBoundingRect,
     SCStreamFrameInfoContentRect, SCStreamFrameInfoContentScale, SCStreamFrameInfoDirtyRects,
     SCStreamFrameInfoDisplayTime, SCStreamFrameInfoScaleFactor, SCStreamFrameInfoScreenRect,
-    SCStreamFrameInfoStatus, SCStreamOutput, SCStreamOutputType,
+    SCStreamFrameInfoStatus, SCStreamOutput, SCStreamOutputType, SCWindow,
 };
 
 use crate::diagnostics::CallbackCounters;
 use crate::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCallbackDiagnostics,
     MacosCaptureColorimetry, MacosCaptureContentStyle, MacosCaptureError, MacosCapturePixelFormat,
-    MacosCaptureSelection, MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries,
-    MacosColorRange, MacosFrameDecoder, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
-    MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosProtectedSourceState,
+    MacosCaptureSelection, MacosCaptureSelector, MacosCaptureSurface, MacosChromaLocation,
+    MacosColorPrimaries, MacosColorRange, MacosFrameDecoder, MacosFrameEvent, MacosFrameMailbox,
+    MacosFrameStatus, MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosProtectedSourceState,
     MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
     MacosScale, MacosStreamRequest, MacosTransferFunction, MacosYuvMatrix,
 };
@@ -59,18 +58,24 @@ struct SessionShared {
     mailbox: MacosFrameMailbox,
     status: Mutex<MacosProtectedSourceState>,
     selection: Mutex<MacosCaptureSelection>,
+    selector: Mutex<MacosCaptureSelector>,
     counters: CallbackCounters,
+    capture_active: AtomicBool,
     current_epoch: AtomicU64,
+    resolution_epoch: AtomicU64,
 }
 
 impl SessionShared {
-    fn new(status: MacosProtectedSourceState) -> Self {
+    fn new(status: MacosProtectedSourceState, selector: MacosCaptureSelector) -> Self {
         Self {
             mailbox: MacosFrameMailbox::new(),
             status: Mutex::new(status),
             selection: Mutex::new(MacosCaptureSelection::None),
+            selector: Mutex::new(selector),
             counters: CallbackCounters::default(),
+            capture_active: AtomicBool::new(false),
             current_epoch: AtomicU64::new(0),
+            resolution_epoch: AtomicU64::new(0),
         }
     }
 
@@ -88,6 +93,35 @@ impl SessionShared {
 
     fn set_selection(&self, selection: MacosCaptureSelection) {
         *lock(&self.selection) = selection;
+    }
+
+    fn selector(&self) -> MacosCaptureSelector {
+        lock(&self.selector).clone()
+    }
+
+    fn set_selector(&self, selector: MacosCaptureSelector) {
+        *lock(&self.selector) = selector;
+    }
+
+    fn capture_active(&self) -> bool {
+        self.capture_active.load(Ordering::Acquire)
+    }
+
+    fn set_capture_active(&self, active: bool) -> bool {
+        self.capture_active.swap(active, Ordering::AcqRel)
+    }
+
+    fn begin_resolution(&self) -> Result<u64, MacosCaptureError> {
+        self.resolution_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .map(|epoch| epoch + 1)
+            .map_err(|_| MacosCaptureError::SequenceExhausted)
+    }
+
+    fn resolution_is_current(&self, epoch: u64) -> bool {
+        self.resolution_epoch.load(Ordering::Acquire) == epoch
     }
 
     fn current_epoch(&self) -> u64 {
@@ -355,6 +389,7 @@ struct StreamState {
 struct StreamSlot {
     state: Mutex<StreamState>,
     shared: Arc<SessionShared>,
+    next_epoch: AtomicU64,
 }
 
 impl StreamSlot {
@@ -362,7 +397,16 @@ impl StreamSlot {
         Arc::new(Self {
             state: Mutex::new(StreamState::default()),
             shared,
+            next_epoch: AtomicU64::new(1),
         })
+    }
+
+    fn allocate_epoch(&self) -> Result<u64, MacosCaptureError> {
+        self.next_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .map_err(|_| MacosCaptureError::SequenceExhausted)
     }
 
     fn stage_candidate(
@@ -545,8 +589,6 @@ struct PickerObserverIvars {
     shared: Arc<SessionShared>,
     streams: Arc<StreamSlot>,
     request: MacosStreamRequest,
-    next_epoch: RefCell<u64>,
-    active: Cell<bool>,
 }
 
 define_class!(
@@ -581,25 +623,16 @@ define_class!(
             filter: &SCContentFilter,
             _stream: Option<&SCStream>,
         ) {
-            if self.ivars().active.get() {
-                self.install_filter(filter);
-            } else if let Err(error) = self.ivars().streams.store_selection(filter) {
-                if self.ivars().streams.has_selection() {
-                    self.ivars()
-                        .shared
-                        .set_status(MacosProtectedSourceState::ReadyIdle);
-                    self.ivars().shared.publish_recoverable_error(error);
-                } else {
-                    self.ivars()
-                        .shared
-                        .set_status(MacosProtectedSourceState::Failed);
-                    self.ivars().shared.publish_error(error);
-                }
-            } else {
-                self.ivars()
-                    .shared
-                    .set_status(MacosProtectedSourceState::ReadyIdle);
+            if let Err(error) = self.ivars().shared.begin_resolution() {
+                handle_filter_error(&self.ivars().streams, &self.ivars().shared, error);
+                return;
             }
+            accept_filter(
+                &self.ivars().streams,
+                &self.ivars().shared,
+                self.ivars().request,
+                filter,
+            );
         }
 
         #[allow(non_snake_case)]
@@ -637,8 +670,6 @@ impl PickerObserver {
             shared,
             streams,
             request,
-            next_epoch: RefCell::new(1),
-            active: Cell::new(false),
         });
         // SAFETY: NSObject has no additional initialization requirements for
         // this main-thread observer subclass.
@@ -646,30 +677,12 @@ impl PickerObserver {
     }
 
     fn install_filter(&self, filter: &SCContentFilter) {
-        let epoch = *self.ivars().next_epoch.borrow();
-        let result = epoch
-            .checked_add(1)
-            .ok_or(MacosCaptureError::SequenceExhausted)
-            .and_then(|next_epoch| {
-                *self.ivars().next_epoch.borrow_mut() = next_epoch;
-                self.ivars()
-                    .streams
-                    .stage_candidate(filter, self.ivars().request, epoch)
-            });
-        if let Err(error) = result {
-            let preserve_current = self.ivars().streams.has_current();
-            let status = if preserve_current {
-                MacosProtectedSourceState::Live
-            } else {
-                MacosProtectedSourceState::Failed
-            };
-            self.ivars().shared.set_status(status);
-            if preserve_current {
-                self.ivars().shared.publish_recoverable_error(error);
-            } else {
-                self.ivars().shared.publish_error(error);
-            }
-        }
+        stage_filter(
+            &self.ivars().streams,
+            &self.ivars().shared,
+            self.ivars().request,
+            filter,
+        );
     }
 
     fn present(&self, picker: &SCContentSharingPicker) {
@@ -685,7 +698,7 @@ impl PickerObserver {
     }
 
     fn set_active(&self, active: bool) {
-        if self.ivars().active.replace(active) == active {
+        if self.ivars().shared.set_capture_active(active) == active {
             return;
         }
         if !active {
@@ -708,8 +721,57 @@ impl PickerObserver {
     }
 
     fn stop(&self) {
-        self.ivars().active.set(false);
+        self.ivars().shared.set_capture_active(false);
         self.ivars().streams.stop();
+    }
+}
+
+fn accept_filter(
+    streams: &Arc<StreamSlot>,
+    shared: &Arc<SessionShared>,
+    request: MacosStreamRequest,
+    filter: &SCContentFilter,
+) {
+    if shared.capture_active() {
+        stage_filter(streams, shared, request, filter);
+    } else if let Err(error) = streams.store_selection(filter) {
+        handle_filter_error(streams, shared, error);
+    } else {
+        shared.set_status(MacosProtectedSourceState::ReadyIdle);
+    }
+}
+
+fn stage_filter(
+    streams: &Arc<StreamSlot>,
+    shared: &Arc<SessionShared>,
+    request: MacosStreamRequest,
+    filter: &SCContentFilter,
+) {
+    let result = streams
+        .allocate_epoch()
+        .and_then(|epoch| streams.stage_candidate(filter, request, epoch));
+    if let Err(error) = result {
+        handle_filter_error(streams, shared, error);
+    }
+}
+
+fn handle_filter_error(streams: &StreamSlot, shared: &SessionShared, error: MacosCaptureError) {
+    let preserve_current = streams.has_current();
+    let preserve_selection = streams.has_selection();
+    let status = if preserve_current {
+        MacosProtectedSourceState::Live
+    } else if preserve_selection {
+        MacosProtectedSourceState::ReadyIdle
+    } else if matches!(error, MacosCaptureError::DisplaySourceUnavailable(_)) {
+        MacosProtectedSourceState::NeedsSelection
+    } else {
+        MacosProtectedSourceState::Failed
+    };
+    shared.set_status(status);
+    if preserve_current || preserve_selection {
+        shared.publish_recoverable_error(error);
+    } else {
+        shared.publish_error(error);
     }
 }
 
@@ -721,19 +783,26 @@ struct MainThreadSession {
 pub struct MacosScreenCaptureSession {
     main: MainThreadBound<MainThreadSession>,
     shared: Arc<SessionShared>,
+    streams: Arc<StreamSlot>,
+    request: MacosStreamRequest,
 }
 
 impl MacosScreenCaptureSession {
-    pub fn new(request: MacosStreamRequest) -> Result<Self, MacosCaptureError> {
+    pub fn new(
+        request: MacosStreamRequest,
+        selector: MacosCaptureSelector,
+    ) -> Result<Self, MacosCaptureError> {
         request.cadence.timescale()?;
         let mtm = MainThreadMarker::new().ok_or(MacosCaptureError::NotMainThread)?;
-        let status = if CGPreflightScreenCaptureAccess() {
+        let authorized = CGPreflightScreenCaptureAccess();
+        let status = if authorized {
             MacosProtectedSourceState::NeedsSelection
         } else {
             MacosProtectedSourceState::NeedsUserAction
         };
-        let shared = Arc::new(SessionShared::new(status));
+        let shared = Arc::new(SessionShared::new(status, selector));
         let observer = PickerObserver::new(mtm, request, Arc::clone(&shared));
+        let streams = Arc::clone(&observer.ivars().streams);
         // SAFETY: These are main-thread ScreenCaptureKit setup calls. The
         // observer remains retained by this session until it is removed.
         let picker = unsafe {
@@ -756,10 +825,16 @@ impl MacosScreenCaptureSession {
             picker.setActive(true);
             picker
         };
-        Ok(Self {
+        let session = Self {
             main: MainThreadBound::new(MainThreadSession { picker, observer }, mtm),
             shared,
-        })
+            streams,
+            request,
+        };
+        if authorized {
+            session.resolve_configured_source()?;
+        }
+        Ok(session)
     }
 
     pub fn screen_authorized() -> bool {
@@ -767,13 +842,17 @@ impl MacosScreenCaptureSession {
     }
 
     pub fn request_authorization(&self) -> MacosProtectedSourceState {
-        let status = if CGRequestScreenCaptureAccess() {
-            MacosProtectedSourceState::NeedsSelection
+        if CGRequestScreenCaptureAccess() {
+            self.shared
+                .set_status(MacosProtectedSourceState::NeedsSelection);
+            if let Err(error) = self.resolve_configured_source() {
+                handle_filter_error(&self.streams, &self.shared, error);
+            }
         } else {
-            MacosProtectedSourceState::PermissionDenied
-        };
-        self.shared.set_status(status);
-        status
+            self.shared
+                .set_status(MacosProtectedSourceState::PermissionDenied);
+        }
+        self.shared.status()
     }
 
     pub fn present_picker(&self) -> Result<(), MacosCaptureError> {
@@ -782,6 +861,7 @@ impl MacosScreenCaptureSession {
                 .set_status(MacosProtectedSourceState::NeedsUserAction);
             return Err(MacosCaptureError::ScreenCapturePermissionRequired);
         }
+        self.shared.begin_resolution()?;
         self.main
             .get_on_main(|main| main.observer.present(&main.picker));
         Ok(())
@@ -811,6 +891,117 @@ impl MacosScreenCaptureSession {
         self.main
             .get_on_main(|main| main.observer.set_active(active));
     }
+
+    pub fn set_selector(&self, selector: MacosCaptureSelector) -> Result<(), MacosCaptureError> {
+        self.shared.set_selector(selector);
+        if CGPreflightScreenCaptureAccess() {
+            self.resolve_configured_source()
+        } else {
+            self.shared
+                .set_status(MacosProtectedSourceState::NeedsUserAction);
+            Ok(())
+        }
+    }
+
+    fn resolve_configured_source(&self) -> Result<(), MacosCaptureError> {
+        let selector = self.shared.selector();
+        if selector == MacosCaptureSelector::SessionScoped {
+            self.shared
+                .set_status(MacosProtectedSourceState::NeedsSelection);
+            return Ok(());
+        }
+        resolve_display_selector(
+            Arc::clone(&self.streams),
+            Arc::clone(&self.shared),
+            self.request,
+            selector,
+        )
+    }
+}
+
+fn resolve_display_selector(
+    streams: Arc<StreamSlot>,
+    shared: Arc<SessionShared>,
+    request: MacosStreamRequest,
+    selector: MacosCaptureSelector,
+) -> Result<(), MacosCaptureError> {
+    let resolution_epoch = shared.begin_resolution()?;
+    let completion = RcBlock::new(
+        move |content: *mut SCShareableContent, error: *mut NSError| {
+            if !shared.resolution_is_current(resolution_epoch) {
+                return;
+            }
+            // SAFETY: ScreenCaptureKit supplies callback objects for the
+            // duration of this invocation. Derived owners are retained before
+            // the callback returns.
+            let result = unsafe {
+                if let Some(error) = error.as_ref() {
+                    Err(native_error("enumerate ScreenCaptureKit content", error))
+                } else {
+                    content
+                        .as_ref()
+                        .ok_or(MacosCaptureError::MissingShareableContent)
+                        .and_then(|content| display_filter(content, &selector))
+                }
+            };
+            if !shared.resolution_is_current(resolution_epoch) {
+                return;
+            }
+            match result {
+                Ok(filter) => accept_filter(&streams, &shared, request, &filter),
+                Err(error) => handle_filter_error(&streams, &shared, error),
+            }
+        },
+    );
+    // SAFETY: ScreenCaptureKit copies the completion block for asynchronous
+    // use. The block owns every Rust value captured by the callback.
+    unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&completion) };
+    Ok(())
+}
+
+fn display_filter(
+    content: &SCShareableContent,
+    selector: &MacosCaptureSelector,
+) -> Result<Retained<SCContentFilter>, MacosCaptureError> {
+    // SAFETY: Shareable content owns an immutable display snapshot. The
+    // returned array and each selected display are retained locally.
+    let displays = unsafe { content.displays() };
+    let primary_display = CGMainDisplayID();
+    let mut primary_uuid_error = None;
+    for display in displays.to_vec() {
+        // SAFETY: The retained SCDisplay remains live for this query.
+        let display_id = unsafe { display.displayID() };
+        let source_id = match display_source_id(display_id) {
+            Ok(source_id) => source_id,
+            Err(error) if display_id == primary_display => {
+                primary_uuid_error = Some(error);
+                continue;
+            }
+            Err(_) => continue,
+        };
+        if selector.matches_display(&source_id, display_id == primary_display) {
+            let excluded = NSArray::<SCWindow>::from_slice(&[]);
+            // SAFETY: The filter retains the selected display and the empty
+            // exclusion list. The display comes from this content snapshot.
+            return Ok(unsafe {
+                SCContentFilter::initWithDisplay_excludingWindows(
+                    SCContentFilter::alloc(),
+                    &display,
+                    &excluded,
+                )
+            });
+        }
+    }
+    if matches!(
+        selector,
+        MacosCaptureSelector::Auto | MacosCaptureSelector::PrimaryDisplay
+    ) && let Some(error) = primary_uuid_error
+    {
+        return Err(error);
+    }
+    Err(MacosCaptureError::DisplaySourceUnavailable(
+        selector.configured_source().to_owned(),
+    ))
 }
 
 fn selection_from_filter(
@@ -830,14 +1021,9 @@ fn selection_from_filter(
                 .firstObject()
                 .ok_or(MacosCaptureError::DisplayUuidUnavailable(0))?;
             let display_id = display.displayID();
-            let uuid = display_uuid(display_id)
-                .ok_or(MacosCaptureError::DisplayUuidUnavailable(display_id))?;
-            let source_id = CFUUID::new_string(None, Some(&uuid))
-                .ok_or(MacosCaptureError::DisplayUuidUnavailable(display_id))?
-                .to_string()
-                .to_ascii_lowercase();
+            let source_id = display_source_id(display_id)?;
             return Ok(MacosCaptureSelection::Display {
-                source_id: Arc::from(format!("display:{source_id}")),
+                source_id: Arc::from(source_id),
             });
         }
         let content_style = if !windows.is_empty() && !applications.is_empty() {
@@ -853,6 +1039,16 @@ fn selection_from_filter(
         };
         Ok(MacosCaptureSelection::SessionScoped { content_style })
     }
+}
+
+fn display_source_id(display_id: CGDirectDisplayID) -> Result<String, MacosCaptureError> {
+    let uuid =
+        display_uuid(display_id).ok_or(MacosCaptureError::DisplayUuidUnavailable(display_id))?;
+    let uuid = CFUUID::new_string(None, Some(&uuid))
+        .ok_or(MacosCaptureError::DisplayUuidUnavailable(display_id))?
+        .to_string()
+        .to_ascii_lowercase();
+    Ok(format!("display:{uuid}"))
 }
 
 fn display_uuid(display_id: CGDirectDisplayID) -> Option<CFRetained<CFUUID>> {

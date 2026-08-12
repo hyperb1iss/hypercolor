@@ -28,6 +28,27 @@ impl MacosCaptureSelector {
             }
         }
     }
+
+    #[must_use]
+    pub fn configured_source(&self) -> &str {
+        match self {
+            Self::Auto => "auto",
+            Self::PrimaryDisplay => "primary_display",
+            Self::Display { source_id } => source_id,
+            Self::SessionScoped => "session_scoped",
+        }
+    }
+
+    #[must_use]
+    pub fn matches_display(&self, source_id: &str, primary: bool) -> bool {
+        match self {
+            Self::Auto | Self::PrimaryDisplay => primary,
+            Self::Display {
+                source_id: configured,
+            } => configured.as_ref() == source_id,
+            Self::SessionScoped => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
