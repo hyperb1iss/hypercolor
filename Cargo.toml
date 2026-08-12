@@ -143,6 +143,7 @@ hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
 hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
+hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture" }
 hypercolor-macos-input = { path = "crates/hypercolor-macos-input" }
 hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture" }
 hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop" }

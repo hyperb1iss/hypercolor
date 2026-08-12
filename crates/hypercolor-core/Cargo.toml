@@ -17,6 +17,7 @@ allocation-contract-tests = []
 spatial-workspace-test-hooks = []
 windows-capture-fixtures = []
 macos-native-fixtures = []
+macos-capture-fixtures = ["hypercolor-macos-capture/capture-fixtures"]
 media-lottie = ["dep:rlottie"]
 media-video = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 servo = [
@@ -48,6 +49,7 @@ hypercolor-windows-input = { path = "../hypercolor-windows-input" }
 # the capture crate supplies stubs when DXGI is unavailable.
 hypercolor-windows-capture = { path = "../hypercolor-windows-capture" }
 hypercolor-macos-input = { workspace = true }
+hypercolor-macos-capture = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
 hypercolor-platform-fs = { workspace = true }
@@ -147,6 +149,11 @@ required-features = ["allocation-contract-tests"]
 name = "spatial_area_reuse_tests"
 path = "tests/spatial_area_reuse_tests.rs"
 required-features = ["allocation-contract-tests"]
+
+[[test]]
+name = "macos_screen_capture_tests"
+path = "tests/macos_screen_capture_tests.rs"
+required-features = ["macos-capture-fixtures"]
 
 [[bench]]
 name = "core_pipeline"

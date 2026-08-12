@@ -24,11 +24,13 @@ mod fanout;
 mod frame;
 mod hub;
 mod ledger;
+mod macos;
 mod materialize;
 mod plan;
 mod process;
 mod publication;
 mod reducer;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod retained;
 mod sampling;
 pub mod sector;
@@ -89,6 +91,9 @@ pub use hub::{
 pub use ledger::{
     ScreenWorkerExactLedger, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError,
 };
+#[cfg(feature = "macos-capture-fixtures")]
+pub use macos::MacosScreenCaptureFixture;
+pub use macos::MacosScreenCaptureInput;
 pub use materialize::{
     CpuSurfaceMaterializationError, CpuZoneMaterializationError, PreparedCpuSurfaceMaterializer,
     PreparedCpuZoneMaterializer, StagedCpuZonePublication,
@@ -132,6 +137,7 @@ pub use reducer::{
     CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
     PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
 };
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) use retained::{ExactBoxList, ExactBoxNode};
 pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,

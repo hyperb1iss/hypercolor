@@ -5001,6 +5001,7 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-hal",
  "hypercolor-linux-gpu-interop",
+ "hypercolor-macos-capture",
  "hypercolor-macos-gpu-interop",
  "hypercolor-platform-fs",
  "hypercolor-types",
