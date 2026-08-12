@@ -404,6 +404,24 @@ pub enum EventControlValue {
     String(String),
 }
 
+/// Process topology that owns the active macOS daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosDaemonOwnerEvent {
+    AppSidecar,
+    LaunchdService,
+    HomebrewService,
+    Standalone,
+}
+
+/// Losing macOS daemon topology observed beside the active owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacosDaemonOwnerConflictEvent {
+    pub active: MacosDaemonOwnerEvent,
+    pub contender: MacosDaemonOwnerEvent,
+    pub observed_at_ms: u64,
+}
+
 /// Per-stage frame timing in microseconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameTiming {
@@ -939,6 +957,13 @@ pub enum HypercolorEvent {
         reason: String,
     },
 
+    /// The authoritative macOS daemon owner or contender changed.
+    MacosDaemonOwnershipChanged {
+        active_owner: MacosDaemonOwnerEvent,
+        owner_epoch: u64,
+        conflict: Option<MacosDaemonOwnerConflictEvent>,
+    },
+
     /// Global brightness changed.
     BrightnessChanged { old: u8, new_value: u8 },
 
@@ -1131,6 +1156,7 @@ impl HypercolorEvent {
             | Self::ShutdownRequested { .. }
             | Self::DaemonStarted { .. }
             | Self::DaemonShutdown { .. }
+            | Self::MacosDaemonOwnershipChanged { .. }
             | Self::BrightnessChanged { .. }
             | Self::Paused
             | Self::Resumed

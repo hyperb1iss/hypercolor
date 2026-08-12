@@ -8,8 +8,9 @@ use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
     EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
     FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
-    PointerScrollPhase, PointerScrollUnit, SceneChangeReason, Severity, TimedInputEvent,
-    TransitionRef, ZoneChangeKind, ZoneColors, ZoneRef,
+    MacosDaemonOwnerConflictEvent, MacosDaemonOwnerEvent, PointerScrollPhase, PointerScrollUnit,
+    SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
+    ZoneRef,
 };
 use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
@@ -306,6 +307,11 @@ fn system_events_have_system_category() {
         HypercolorEvent::DaemonShutdown {
             reason: "user".into(),
         },
+        HypercolorEvent::MacosDaemonOwnershipChanged {
+            active_owner: MacosDaemonOwnerEvent::AppSidecar,
+            owner_epoch: 7,
+            conflict: None,
+        },
         HypercolorEvent::BrightnessChanged {
             old: 100,
             new_value: 50,
@@ -327,6 +333,31 @@ fn system_events_have_system_category() {
             "Expected System category for {event:?}"
         );
     }
+}
+
+#[test]
+fn macos_daemon_ownership_event_round_trips_bounded_payload() {
+    let event = HypercolorEvent::MacosDaemonOwnershipChanged {
+        active_owner: MacosDaemonOwnerEvent::LaunchdService,
+        owner_epoch: 42,
+        conflict: Some(MacosDaemonOwnerConflictEvent {
+            active: MacosDaemonOwnerEvent::LaunchdService,
+            contender: MacosDaemonOwnerEvent::HomebrewService,
+            observed_at_ms: 1_777,
+        }),
+    };
+
+    let json = serde_json::to_value(&event).expect("serialize ownership event");
+    assert_eq!(json["type"], "MacosDaemonOwnershipChanged");
+    assert_eq!(json["data"]["active_owner"], "launchd_service");
+    assert_eq!(json["data"]["owner_epoch"], 42);
+    assert_eq!(json["data"]["conflict"]["contender"], "homebrew_service");
+    assert_eq!(
+        serde_json::from_value::<HypercolorEvent>(json)
+            .expect("deserialize ownership event")
+            .category(),
+        EventCategory::System
+    );
 }
 
 #[test]

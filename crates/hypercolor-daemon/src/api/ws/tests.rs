@@ -3881,6 +3881,18 @@ fn websocket_manifest_matches_protocol_constants() {
         manifest["json_payloads"]["timed_input_event_v1"]["schema_version"],
         hypercolor_leptos_ext::ws::INPUT_EVENT_PAYLOAD_SCHEMA
     );
+    let ownership = &manifest["json_payloads"]["macos_daemon_ownership_changed_v1"];
+    assert_eq!(ownership["schema_version"], 1);
+    assert_eq!(ownership["channel"], "events");
+    assert_eq!(ownership["event"], "macos_daemon_ownership_changed");
+    assert_eq!(
+        ownership["required_fields"],
+        serde_json::json!(["active_owner", "owner_epoch"])
+    );
+    assert_eq!(
+        ownership["optional_fields"]["conflict"],
+        serde_json::Value::Null
+    );
 
     let binary_tags = manifest["binary_messages"]
         .as_array()

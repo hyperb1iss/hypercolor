@@ -52,6 +52,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 def render(manifest: dict[str, Any]) -> str:
     channels = [str(channel["name"]) for channel in expect_list(manifest["channels"])]
+    json_payloads = expect_dict(manifest["json_payloads"])
     binary_messages = expect_list(manifest["binary_messages"])
     preview_messages = [
         message for message in binary_messages if message.get("layout") == "preview_frame"
@@ -74,6 +75,12 @@ def render(manifest: dict[str, Any]) -> str:
         *[f"    {quote(channel)}," for channel in channels],
         ")",
         *tuple_assignment("WS_CAPABILITIES", manifest["capabilities"]),
+        "",
+        "JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(",
+        "    {",
+        *render_json_payload_contracts(json_payloads),
+        "    }",
+        ")",
         "",
         "BINARY_MESSAGE_TAGS: Final = MappingProxyType(",
         "    {",
@@ -102,6 +109,22 @@ def render(manifest: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def render_json_payload_contracts(payloads: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for name, raw_contract in payloads.items():
+        contract = expect_dict(raw_contract)
+        lines.extend(
+            [
+                f"        {quote(name)}: (",
+                f"            {int(contract['schema_version'])},",
+                f"            {quote(str(contract['channel']))},",
+                f"            {quote(str(contract['event']))},",
+                "        ),",
+            ]
+        )
+    return lines
 
 
 def tuple_assignment(name: str, values: Any) -> list[str]:

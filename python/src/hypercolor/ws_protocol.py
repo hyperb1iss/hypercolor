@@ -49,6 +49,26 @@ WS_CAPABILITIES: Final = (
     "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
 )
 
+JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(
+    {
+        "timed_input_event_v1": (
+            1,
+            "input_events",
+            "input_event_received",
+        ),
+        "input_source_status_changed_v1": (
+            1,
+            "events",
+            "input_source_status_changed",
+        ),
+        "macos_daemon_ownership_changed_v1": (
+            1,
+            "events",
+            "macos_daemon_ownership_changed",
+        ),
+    }
+)
+
 BINARY_MESSAGE_TAGS: Final = MappingProxyType(
     {
         "led_frame": 0x01,

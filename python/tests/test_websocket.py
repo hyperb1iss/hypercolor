@@ -54,6 +54,14 @@ def test_ws_protocol_constants_match_manifest() -> None:
     assert manifest["subprotocol"] == ws_protocol.WS_SUBPROTOCOL
     assert list(ws_protocol.WS_CHANNELS) == [str(channel["name"]) for channel in channels]
     assert list(ws_protocol.WS_CAPABILITIES) == _expect_list(manifest["capabilities"])
+    assert dict(ws_protocol.JSON_PAYLOAD_CONTRACTS) == {
+        str(name): (
+            int(contract["schema_version"]),
+            str(contract["channel"]),
+            str(contract["event"]),
+        )
+        for name, contract in _expect_dict(manifest["json_payloads"]).items()
+    }
     assert dict(ws_protocol.BINARY_MESSAGE_TAGS) == {
         str(message["name"]): int(message["tag"]) for message in binary_messages
     }
