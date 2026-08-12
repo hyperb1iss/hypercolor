@@ -143,7 +143,7 @@ pub use reducer::{
 pub(crate) use retained::{ExactBoxList, ExactBoxNode};
 pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
-    CpuStorageCoordinate,
+    CpuScalarSamplingView, CpuScalarSource, CpuStorageCoordinate,
 };
 pub use sector::{LetterboxBars, SectorGrid, proportional_sector_bounds};
 pub use smooth::TemporalSmoother;

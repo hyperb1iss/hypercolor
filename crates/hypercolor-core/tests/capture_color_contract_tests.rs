@@ -848,20 +848,41 @@ fn hdr_passthrough_and_sdr_to_hdr_conversion_remain_unavailable() {
 }
 
 #[test]
-fn hlg_tone_mapping_requires_an_explicit_system_ootf_contract() {
+fn hlg_tone_mapping_uses_the_declared_system_ootf_contract() {
     let hlg = known_hdr(CaptureTransferFunction::Hlg, luminance(203.0, 1_000.0));
+    let hlg_source = source(CaptureColorimetry::from_known(hlg));
+    let calibration = LedToneMapCalibration::DEFAULT;
     let tone_map = native_surface(ScreenProcessingProfileConfig {
-        hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::new(
+        hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
             ScreenToneMapOperator::Bt2390Eetf,
-            luminance(100.0, 100.0),
+            calibration,
         )),
         ..ScreenProcessingProfileConfig::default()
     });
 
     assert_eq!(
-        tone_map.resolve(&source(CaptureColorimetry::from_known(hlg))),
-        Err(ScreenPublicationError::UnsupportedHdrConversion)
+        tone_map.resolve(&hlg_source),
+        Err(ScreenPublicationError::UnsupportedColorTransform)
     );
+    let descriptor = tone_map
+        .resolve_with_color_capabilities(
+            &hlg_source,
+            ScreenColorTransformCapabilities::new(
+                false,
+                false,
+                true,
+                LED_TONE_MAP_ALGORITHM_REVISION,
+            ),
+        )
+        .expect("declared HLG OOTF and BT.2390 support resolve the exact tone-map contract");
+    let ResolvedScreenColorTransform::ToneMap(resolved) =
+        descriptor.physical().color_pipeline().transform()
+    else {
+        panic!("HLG source should resolve the declared tone-map pipeline");
+    };
+    assert_eq!(resolved.operator(), ScreenToneMapOperator::Bt2390Eetf);
+    assert_eq!(resolved.source_luminance(), luminance(203.0, 1_000.0));
+    assert_eq!(resolved.target_luminance(), calibration.target_luminance());
 }
 
 #[test]

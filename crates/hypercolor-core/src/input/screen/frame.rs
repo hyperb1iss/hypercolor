@@ -333,6 +333,10 @@ pub enum CaptureTransferFunction {
     Srgb,
     /// Linear light.
     Linear,
+    /// ITU-R BT.709 opto-electronic transfer function.
+    Rec709,
+    /// ITU-R BT.2020 opto-electronic transfer function.
+    Rec2020,
     /// SMPTE ST 2084 perceptual quantizer.
     Pq,
     /// Hybrid log-gamma.
@@ -611,7 +615,9 @@ fn validate_transfer_range(
     let contradictory = matches!(
         (transfer_function, dynamic_range),
         (
-            CaptureTransferFunction::Srgb,
+            CaptureTransferFunction::Srgb
+                | CaptureTransferFunction::Rec709
+                | CaptureTransferFunction::Rec2020,
             Some(CaptureDynamicRange::High)
         ) | (
             CaptureTransferFunction::Pq | CaptureTransferFunction::Hlg,
@@ -813,12 +819,27 @@ pub enum CapturePixelFormat {
     Rgba8,
     /// Blue, green, red, alpha bytes.
     Bgra8,
+    /// Little-endian A2R10G10B10 packed pixels (`l10r`).
+    Argb2101010,
+    /// Little-endian RGBA binary16 components (`RGhA`).
+    Rgba16Float,
+    /// Bi-planar 8-bit 4:2:0 video-range YUV (`420v`).
+    Yuv420VideoRange,
+    /// Bi-planar 8-bit 4:2:0 full-range YUV (`420f`).
+    Yuv420FullRange,
+    /// Bi-planar MSB-aligned 10-bit 4:4:4 YUV (`xf44`).
+    Yuv44410BiPlanar,
 }
 
 impl CapturePixelFormat {
-    const fn bytes_per_pixel(self) -> usize {
+    pub(crate) const fn rgba8_bytes_per_pixel(self) -> Option<usize> {
         match self {
-            Self::Rgba8 | Self::Bgra8 => 4,
+            Self::Rgba8 | Self::Bgra8 => Some(4),
+            Self::Argb2101010
+            | Self::Rgba16Float
+            | Self::Yuv420VideoRange
+            | Self::Yuv420FullRange
+            | Self::Yuv44410BiPlanar => None,
         }
     }
 }
@@ -932,9 +953,10 @@ impl CpuCaptureStorage {
     }
 
     pub(crate) fn tightly_packed_rgba8(&self, extent: PixelExtent) -> Option<&[u8]> {
+        let bytes_per_pixel = self.format.rgba8_bytes_per_pixel()?;
         let row_bytes = usize::try_from(extent.width)
             .ok()?
-            .checked_mul(self.format.bytes_per_pixel())?;
+            .checked_mul(bytes_per_pixel)?;
         let expected = row_bytes.checked_mul(usize::try_from(extent.height).ok()?)?;
         if self.format != CapturePixelFormat::Rgba8
             || self.row_stride != i64::try_from(row_bytes).ok()?
@@ -947,9 +969,13 @@ impl CpuCaptureStorage {
     }
 
     fn validate(&self, extent: PixelExtent) -> Result<(), CaptureFrameError> {
+        let bytes_per_pixel = self
+            .format
+            .rgba8_bytes_per_pixel()
+            .ok_or(CaptureFrameError::UnsupportedCpuStorageFormat(self.format))?;
         let row_bytes = usize::try_from(extent.width)
             .ok()
-            .and_then(|width| width.checked_mul(self.format.bytes_per_pixel()))
+            .and_then(|width| width.checked_mul(bytes_per_pixel))
             .ok_or(CaptureFrameError::StorageSizeOverflow)?;
         let row_bytes_i64 =
             i64::try_from(row_bytes).map_err(|_| CaptureFrameError::StorageSizeOverflow)?;
@@ -1853,6 +1879,9 @@ pub enum CaptureFrameError {
     /// CPU stride cannot address one complete row.
     #[error("CPU stride {stride} is smaller than the {minimum}-byte row")]
     InvalidCpuStride { stride: i64, minimum: usize },
+    /// Packed and multi-plane native formats require their scalar decoder.
+    #[error("pixel format {0:?} cannot be represented by one RGBA8 CPU plane")]
+    UnsupportedCpuStorageFormat(CapturePixelFormat),
     /// CPU row addressing escaped the supplied allocation.
     #[error(
         "CPU storage ({buffer_len} bytes, row0 {row0_offset}, stride {stride}) cannot hold {extent:?}"

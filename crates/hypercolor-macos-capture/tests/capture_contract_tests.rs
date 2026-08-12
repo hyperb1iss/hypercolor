@@ -775,43 +775,278 @@ fn cpu_copy_rejects_non_bgra_input_without_mapping_it() {
 }
 
 #[test]
-fn bgra_sdr_conversion_swizzles_channels_and_preserves_alpha() {
-    let frame = bgra_cpu_frame([30, 20, 10, 127], rgb_color());
-    let mut destination = vec![0; 192];
-    frame
-        .convert_bgra8_sdr_to_rgba8(&mut destination, 32)
-        .expect("sRGB BGRA should convert");
-    for pixel in destination.chunks_exact(4) {
-        assert_eq!(pixel, &[10, 20, 30, 127]);
+fn scalar_oracle_decodes_bgra_l10r_and_rgha_without_early_quantization() {
+    let bgra = cpu_frame_from_planes(
+        pixel_extent(1, 1),
+        BGRA8,
+        rgb_color(),
+        vec![(
+            pixel_extent(1, 1),
+            7,
+            vec![30, 20, 10, 127, 0xcc, 0xcc, 0xcc],
+        )],
+    );
+    assert_rgba_close(
+        decoded_pixel(&bgra, 0, 0),
+        [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 127.0 / 255.0],
+    );
+
+    let packed = (2_u32 << 30) | (1_023 << 20) | (512 << 10);
+    let l10r = cpu_frame_from_planes(
+        pixel_extent(1, 1),
+        ARGB2101010,
+        hdr_rgb_color(),
+        vec![(pixel_extent(1, 1), 9, {
+            let mut row = packed.to_le_bytes().to_vec();
+            row.extend_from_slice(&[0xcc; 5]);
+            row
+        })],
+    );
+    assert_rgba_close(
+        decoded_pixel(&l10r, 0, 0),
+        [1.0, 512.0 / 1_023.0, 0.0, 2.0 / 3.0],
+    );
+
+    let rgha = cpu_frame_from_planes(
+        pixel_extent(1, 1),
+        RGBA16_FLOAT,
+        hdr_rgb_color(),
+        vec![(pixel_extent(1, 1), 13, {
+            let mut row = Vec::new();
+            for bits in [0x0001_u16, 0x3c00, 0x4000, 0x3800] {
+                row.extend_from_slice(&bits.to_le_bytes());
+            }
+            row.extend_from_slice(&[0xcc; 5]);
+            row
+        })],
+    );
+    assert_rgba_close(
+        decoded_pixel(&rgha, 0, 0),
+        [2.0_f32.powi(-24), 1.0, 2.0, 0.5],
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_fixture_constructor_materializes_every_retained_format() {
+    let extent = pixel_extent(4, 4);
+    let rgb = rgb_color();
+    let linear = MacosCaptureColorimetry {
+        transfer: MacosTransferFunction::Linear,
+        ..rgb
+    };
+    let video = yuv_color_for(
+        MacosColorRange::Video,
+        MacosYuvMatrix::Bt709,
+        MacosChromaLocation::Left,
+    );
+    let full = yuv_color_for(
+        MacosColorRange::Full,
+        MacosYuvMatrix::Bt2020,
+        MacosChromaLocation::TopLeft,
+    );
+    let fixtures = [
+        (
+            MacosCapturePixelFormat::Bgra8,
+            rgb,
+            vec![vec![0_u8; 4 * 4 * 4]],
+        ),
+        (
+            MacosCapturePixelFormat::Argb2101010,
+            linear,
+            vec![vec![0_u8; 4 * 4 * 4]],
+        ),
+        (
+            MacosCapturePixelFormat::Rgba16Float,
+            linear,
+            vec![vec![0_u8; 4 * 4 * 8]],
+        ),
+        (
+            MacosCapturePixelFormat::Yuv420VideoRange,
+            video,
+            vec![vec![16_u8; 4 * 4], vec![128_u8; 2 * 2 * 2]],
+        ),
+        (
+            MacosCapturePixelFormat::Yuv420FullRange,
+            full,
+            vec![vec![0_u8; 4 * 4], vec![128_u8; 2 * 2 * 2]],
+        ),
+        (
+            MacosCapturePixelFormat::Yuv44410BiPlanar,
+            full,
+            vec![vec![0_u8; 4 * 4 * 2], vec![0_u8; 4 * 4 * 4]],
+        ),
+    ];
+
+    for (format, color, planes) in fixtures {
+        let borrowed = planes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let (surface, descriptors) =
+            MacosCaptureSurface::new_native_fixture(extent, format, color, &borrowed)
+                .unwrap_or_else(|error| panic!("{format:?} native fixture failed: {error}"));
+        assert_eq!(descriptors.len(), planes.len());
+        assert!(surface.allocation_bytes > 0);
+        surface
+            .with_native_surface(|_| ())
+            .expect("native fixture exposes retained IOSurface handles");
     }
 }
 
 #[test]
-fn bgra_sdr_conversion_compresses_wide_gamut_primaries() {
-    let mut color = rgb_color();
-    color.primaries = MacosColorPrimaries::DisplayP3;
-    let frame = bgra_cpu_frame([0, 0, 255, 255], color);
-    let mut destination = vec![0; 192];
-    frame
-        .convert_bgra8_sdr_to_rgba8(&mut destination, 32)
-        .expect("Display P3 red should convert");
-    assert_eq!(destination[0], 255);
-    assert_eq!(destination[1], 0);
-    assert!(destination[2] < 64);
-    assert_eq!(destination[3], 255);
+fn scalar_oracle_distinguishes_yuv_video_and_full_range_extrema() {
+    let extent = pixel_extent(2, 2);
+    let chroma = pixel_extent(1, 1);
+    let video = cpu_frame_from_planes(
+        extent,
+        YUV420_VIDEO_RANGE,
+        yuv_color_for(
+            MacosColorRange::Video,
+            MacosYuvMatrix::Bt709,
+            MacosChromaLocation::Left,
+        ),
+        vec![
+            (extent, 4, vec![16, 235, 0xcc, 0xcc, 16, 235, 0xcc, 0xcc]),
+            (chroma, 4, vec![128, 128, 0xcc, 0xcc]),
+        ],
+    );
+    assert_rgba_close(decoded_pixel(&video, 0, 0), [0.0, 0.0, 0.0, 1.0]);
+    assert_rgba_close(decoded_pixel(&video, 1, 0), [1.0, 1.0, 1.0, 1.0]);
+
+    let full = cpu_frame_from_planes(
+        extent,
+        YUV420_FULL_RANGE,
+        yuv_color_for(
+            MacosColorRange::Full,
+            MacosYuvMatrix::Bt709,
+            MacosChromaLocation::Left,
+        ),
+        vec![
+            (
+                extent,
+                5,
+                vec![0, 255, 0xcc, 0xcc, 0xcc, 0, 255, 0xcc, 0xcc, 0xcc],
+            ),
+            (chroma, 5, vec![128, 128, 0xcc, 0xcc, 0xcc]),
+        ],
+    );
+    let full_black = decoded_pixel(&full, 0, 0);
+    assert_rgba_close(full_black, [0.0, 0.0, 0.0, 1.0]);
+    let full_white = decoded_pixel(&full, 1, 0);
+    assert_rgba_close(full_white, [1.0, 1.0, 1.0, 1.0]);
 }
 
 #[test]
-fn bgra_sdr_conversion_rejects_hdr_transfer_functions() {
-    let mut color = rgb_color();
-    color.transfer = MacosTransferFunction::Pq;
-    let frame = bgra_cpu_frame([0, 0, 255, 255], color);
-    assert_eq!(
-        frame.convert_bgra8_sdr_to_rgba8(&mut [0; 192], 32),
-        Err(MacosCaptureError::UnsupportedCpuTransferFunction(
-            MacosTransferFunction::Pq
-        ))
+fn yuv420_oracle_honors_chroma_siting_for_odd_extents_and_hostile_strides() {
+    let extent = pixel_extent(3, 3);
+    let chroma = pixel_extent(2, 2);
+    let planes = || {
+        vec![
+            (
+                extent,
+                5,
+                vec![
+                    128, 128, 128, 0xcc, 0xcc, 128, 128, 128, 0xcc, 0xcc, 128, 128, 128, 0xcc, 0xcc,
+                ],
+            ),
+            (
+                chroma,
+                7,
+                vec![
+                    16, 128, 240, 128, 0xcc, 0xcc, 0xcc, 240, 128, 240, 128, 0xcc, 0xcc, 0xcc,
+                ],
+            ),
+        ]
+    };
+    let left = cpu_frame_from_planes(
+        extent,
+        YUV420_FULL_RANGE,
+        yuv_color_for(
+            MacosColorRange::Full,
+            MacosYuvMatrix::Bt709,
+            MacosChromaLocation::Left,
+        ),
+        planes(),
     );
+    let center = cpu_frame_from_planes(
+        extent,
+        YUV420_FULL_RANGE,
+        yuv_color_for(
+            MacosColorRange::Full,
+            MacosYuvMatrix::Bt709,
+            MacosChromaLocation::Center,
+        ),
+        planes(),
+    );
+    let top_left = cpu_frame_from_planes(
+        extent,
+        YUV420_FULL_RANGE,
+        yuv_color_for(
+            MacosColorRange::Full,
+            MacosYuvMatrix::Bt709,
+            MacosChromaLocation::TopLeft,
+        ),
+        planes(),
+    );
+    let left_middle = decoded_pixel(&left, 1, 0);
+    let center_middle = decoded_pixel(&center, 1, 0);
+    assert!(left_middle[2] > center_middle[2]);
+    assert!((left_middle[2] - 128.0 / 255.0).abs() < 0.02);
+    assert!((center_middle[2] - 0.0945).abs() < 0.002);
+    assert!((decoded_pixel(&left, 0, 1)[2] - 0.0945).abs() < 0.002);
+    assert!((decoded_pixel(&top_left, 0, 1)[2] - 128.0 / 255.0).abs() < 0.02);
+    assert!(decoded_pixel(&left, 2, 2)[2] > 1.2);
+}
+
+#[test]
+fn xf44_oracle_reads_msb_aligned_10_bit_full_range() {
+    let extent = pixel_extent(2, 1);
+    let pack = |value: u16| (value << 6).to_le_bytes();
+    let mut luma = Vec::new();
+    luma.extend_from_slice(&pack(0));
+    luma.extend_from_slice(&pack(1_023));
+    luma.extend_from_slice(&[0xcc; 4]);
+    let mut chroma = Vec::new();
+    for _ in 0..2 {
+        chroma.extend_from_slice(&pack(512));
+        chroma.extend_from_slice(&pack(512));
+    }
+    chroma.extend_from_slice(&[0xcc; 4]);
+    let frame = cpu_frame_from_planes(
+        extent,
+        YUV44410_FULL_RANGE,
+        yuv_color_for(
+            MacosColorRange::Full,
+            MacosYuvMatrix::Bt2020,
+            MacosChromaLocation::TopLeft,
+        ),
+        vec![(extent, 8, luma), (extent, 12, chroma)],
+    );
+    let black = decoded_pixel(&frame, 0, 0);
+    let white = decoded_pixel(&frame, 1, 0);
+    assert!(black[0].abs() < 0.002 && black[2].abs() < 0.002);
+    assert!((white[1] - 1.0).abs() < 0.002);
+}
+
+#[test]
+fn rgba32f_copy_preserves_padding_and_malformed_planes_fail_before_writes() {
+    let frame = bgra_cpu_frame([30, 20, 10, 127], rgb_color());
+    let mut destination = vec![0xcc; 136 * 6];
+    frame
+        .copy_source_rgba32f_to(&mut destination, 136)
+        .expect("validated BGRA should decode to RGBA32Float");
+    assert_rgba_close(
+        read_rgba32f(&destination[..16]),
+        [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 127.0 / 255.0],
+    );
+    assert_eq!(&destination[128..136], &[0xcc; 8]);
+
+    let mut malformed = frame;
+    Arc::make_mut(&mut malformed.planes)[0].bytes_per_row = 1;
+    let mut untouched = [0x5a; 768];
+    assert_eq!(
+        malformed.copy_source_rgba32f_to(&mut untouched, 128),
+        Err(MacosCaptureError::CpuPlaneLayoutMismatch)
+    );
+    assert_eq!(untouched, [0x5a; 768]);
 }
 
 #[test]
@@ -943,6 +1178,88 @@ fn bgra_cpu_frame(
     decode_frame(&mut MacosFrameDecoder::new(1), sample)
 }
 
+fn cpu_frame_from_planes(
+    extent: MacosPixelExtent,
+    fourcc: u32,
+    color: MacosCaptureColorimetry,
+    planes: Vec<(MacosPixelExtent, usize, Vec<u8>)>,
+) -> hypercolor_macos_capture::MacosCaptureFrame {
+    let descriptors = planes
+        .iter()
+        .enumerate()
+        .map(|(index, (extent, stride, bytes))| MacosRawCapturePlane {
+            index: u32::try_from(index).expect("fixture plane index fits"),
+            extent: *extent,
+            bytes_per_row: *stride,
+            length_bytes: u64::try_from(bytes.len()).expect("fixture plane length fits"),
+        })
+        .collect::<Vec<_>>();
+    let allocation_bytes = descriptors.iter().map(|plane| plane.length_bytes).sum();
+    let surface = MacosCaptureSurface::new_cpu_fixture(
+        7,
+        allocation_bytes,
+        99,
+        planes
+            .into_iter()
+            .map(|(_, _, bytes)| Arc::<[u8]>::from(bytes))
+            .collect(),
+    )
+    .expect("CPU fixture surface should be valid");
+    let sample = MacosRawCaptureSample {
+        frame: Some(MacosRawCompleteFrame {
+            storage_extent: extent,
+            planes: descriptors,
+            pixel_format_fourcc: fourcc,
+            color,
+            cursor_composed: false,
+            surface,
+        }),
+        attachments: MacosRawFrameAttachments {
+            status: MacosAttachment::Value(0),
+            display_time: MacosAttachment::Value(1),
+            display_scale_factor: MacosAttachment::Value(1.0),
+            content_scale: MacosAttachment::Value(1.0),
+            content_rect: MacosAttachment::Value(point_rect(
+                0.0,
+                0.0,
+                f64::from(extent.width),
+                f64::from(extent.height),
+            )),
+            dirty_rects: MacosAttachment::Missing,
+            screen_rect: MacosAttachment::Missing,
+            bounding_rect: MacosAttachment::Missing,
+        },
+    };
+    decode_frame(&mut MacosFrameDecoder::new(1), sample)
+}
+
+fn decoded_pixel(frame: &hypercolor_macos_capture::MacosCaptureFrame, x: u32, y: u32) -> [f32; 4] {
+    frame
+        .with_cpu_source(|source| source.sample_rgba32f(x, y))
+        .expect("CPU source should map")
+        .expect("fixture pixel should decode")
+}
+
+fn read_rgba32f(bytes: &[u8]) -> [f32; 4] {
+    std::array::from_fn(|channel| {
+        let start = channel * 4;
+        f32::from_le_bytes(
+            bytes[start..start + 4]
+                .try_into()
+                .expect("RGBA32Float channel has four bytes"),
+        )
+    })
+}
+
+fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4]) {
+    for (channel, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+        assert!(
+            (actual - expected).abs() <= 1.0e-6,
+            "channel {channel}: expected {expected}, got {actual}"
+        );
+    }
+}
+
 fn complete_frame_mut(sample: &mut MacosRawCaptureSample) -> &mut MacosRawCompleteFrame {
     sample.frame.as_mut().expect("fixture frame should exist")
 }
@@ -1032,6 +1349,20 @@ fn yuv_color(range: MacosColorRange) -> MacosCaptureColorimetry {
         matrix: Some(MacosYuvMatrix::Bt2020),
         range,
         chroma_location: Some(MacosChromaLocation::Left),
+    }
+}
+
+fn yuv_color_for(
+    range: MacosColorRange,
+    matrix: MacosYuvMatrix,
+    chroma_location: MacosChromaLocation,
+) -> MacosCaptureColorimetry {
+    MacosCaptureColorimetry {
+        primaries: MacosColorPrimaries::Rec2020,
+        transfer: MacosTransferFunction::Pq,
+        matrix: Some(matrix),
+        range,
+        chroma_location: Some(chroma_location),
     }
 }
 

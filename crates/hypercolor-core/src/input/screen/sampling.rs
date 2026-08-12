@@ -680,6 +680,103 @@ pub struct CpuSamplingView<'frame> {
     transform: CpuSamplingTransform,
 }
 
+/// Full-precision scalar decoder over one retained native CPU-readable source.
+///
+/// Implementations return RGB in the declared source transfer domain and
+/// normalized alpha. The reducer owns transfer decoding, gamut conversion,
+/// tone mapping, spatial accumulation, and final output quantization.
+pub trait CpuScalarSource: Sync {
+    /// Native storage extent decoded by this source.
+    fn storage_extent(&self) -> PixelExtent;
+
+    /// Exact native pixel format decoded by this source.
+    fn pixel_format(&self) -> CapturePixelFormat;
+
+    /// Decode one stored pixel without output quantization.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sampling error if the validated source cannot supply the
+    /// requested in-bounds coordinate.
+    fn sample_rgba32f(&self, x: u32, y: u32) -> Result<[f32; 4], CpuSamplingError>;
+}
+
+/// Validated logical sampling lens over a retained native scalar decoder.
+pub struct CpuScalarSamplingView<'frame> {
+    source: &'frame ResolvedScreenSource,
+    frame: &'frame CaptureFrame<RawCaptureSurface>,
+    samples: &'frame dyn CpuScalarSource,
+}
+
+impl<'frame> CpuScalarSamplingView<'frame> {
+    /// Bind a retained native frame and scalar decoder to one resolved CPU source.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale frames, mismatched geometry, color, format, extent, cursor
+    /// ownership, and non-native frame storage before any destination is touched.
+    pub fn try_new(
+        frame: &'frame CaptureFrame<RawCaptureSurface>,
+        source: &'frame ResolvedScreenSource,
+        samples: &'frame dyn CpuScalarSource,
+    ) -> Result<Self, CpuSamplingError> {
+        CpuSamplingTransform::try_from_source(source)?;
+        frame.validate_epoch(source.epoch())?;
+        let config = source.config();
+        if frame.metadata().geometry != config.geometry() {
+            return Err(CpuSamplingError::SourceGeometryMismatch {
+                expected: config.geometry(),
+                actual: frame.metadata().geometry,
+            });
+        }
+        if frame.metadata().colorimetry != config.colorimetry() {
+            return Err(CpuSamplingError::SourceColorimetryMismatch {
+                expected: config.colorimetry(),
+                actual: frame.metadata().colorimetry,
+            });
+        }
+        let CaptureStorage::Gpu(storage) = frame.storage() else {
+            return Err(CpuSamplingError::ScalarSourceRequiresNativeStorage);
+        };
+        if storage.format() != config.pixel_format() {
+            return Err(CpuSamplingError::SourcePixelFormatMismatch {
+                expected: config.pixel_format(),
+                actual: storage.format(),
+            });
+        }
+        if samples.pixel_format() != config.pixel_format() {
+            return Err(CpuSamplingError::SourcePixelFormatMismatch {
+                expected: config.pixel_format(),
+                actual: samples.pixel_format(),
+            });
+        }
+        if samples.storage_extent() != config.geometry().storage_extent() {
+            return Err(CpuSamplingError::ScalarSourceExtentMismatch {
+                expected: config.geometry().storage_extent(),
+                actual: samples.storage_extent(),
+            });
+        }
+        validate_cursor_content(&frame.metadata().cursor.content, source)?;
+        Ok(Self {
+            source,
+            frame,
+            samples,
+        })
+    }
+
+    /// Native acquisition sequence borrowed by this view.
+    #[must_use]
+    pub const fn source_sequence(&self) -> u64 {
+        self.frame.metadata().sequence
+    }
+
+    /// Cursor ownership metadata retained without composition.
+    #[must_use]
+    pub const fn cursor(&self) -> &CaptureCursor {
+        &self.frame.metadata().cursor
+    }
+}
+
 impl<'frame> CpuSamplingView<'frame> {
     /// Validate a raw CPU frame against one immutable resolved source.
     ///
@@ -843,6 +940,52 @@ pub(crate) struct CpuSamplingRow<'frame> {
     format: CapturePixelFormat,
 }
 
+pub(crate) trait PreparedCpuSamplingSource: Sync {
+    type Row<'row>: PreparedCpuSamplingRow
+    where
+        Self: 'row;
+
+    fn storage_row(&self, y: u32) -> Result<Self::Row<'_>, CpuSamplingError>;
+}
+
+pub(crate) trait PreparedCpuSamplingRow: Copy {
+    fn read_rgba32f(self, x: u32) -> Result<[f32; 4], CpuSamplingError>;
+}
+
+impl PreparedCpuSamplingSource for CpuSamplingView<'_> {
+    type Row<'row>
+        = CpuSamplingRow<'row>
+    where
+        Self: 'row;
+
+    fn storage_row(&self, y: u32) -> Result<Self::Row<'_>, CpuSamplingError> {
+        Self::storage_row(self, y)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CpuScalarSamplingRow<'row> {
+    samples: &'row dyn CpuScalarSource,
+    y: u32,
+}
+
+impl PreparedCpuSamplingSource for CpuScalarSamplingView<'_> {
+    type Row<'row>
+        = CpuScalarSamplingRow<'row>
+    where
+        Self: 'row;
+
+    fn storage_row(&self, y: u32) -> Result<Self::Row<'_>, CpuSamplingError> {
+        if y >= self.source.config().geometry().storage_extent().height() {
+            return Err(CpuSamplingError::StorageAddressOverflow);
+        }
+        Ok(CpuScalarSamplingRow {
+            samples: self.samples,
+            y,
+        })
+    }
+}
+
 impl CpuSamplingRow<'_> {
     pub(crate) fn read_rgba(self, x: u32) -> Result<[u8; 4], CpuSamplingError> {
         let pixel_offset = usize::try_from(x)
@@ -862,7 +1005,26 @@ impl CpuSamplingRow<'_> {
         Ok(match self.format {
             CapturePixelFormat::Rgba8 => [pixel[0], pixel[1], pixel[2], pixel[3]],
             CapturePixelFormat::Bgra8 => [pixel[2], pixel[1], pixel[0], pixel[3]],
+            CapturePixelFormat::Argb2101010
+            | CapturePixelFormat::Rgba16Float
+            | CapturePixelFormat::Yuv420VideoRange
+            | CapturePixelFormat::Yuv420FullRange
+            | CapturePixelFormat::Yuv44410BiPlanar => {
+                unreachable!("validated byte sampling views retain RGBA8 storage")
+            }
         })
+    }
+}
+
+impl PreparedCpuSamplingRow for CpuSamplingRow<'_> {
+    fn read_rgba32f(self, x: u32) -> Result<[f32; 4], CpuSamplingError> {
+        Ok(self.read_rgba(x)?.map(|channel| f32::from(channel) / 255.0))
+    }
+}
+
+impl PreparedCpuSamplingRow for CpuScalarSamplingRow<'_> {
+    fn read_rgba32f(self, x: u32) -> Result<[f32; 4], CpuSamplingError> {
+        self.samples.sample_rgba32f(x, self.y)
     }
 }
 
@@ -1157,6 +1319,9 @@ pub enum CpuSamplingError {
     /// The frame contains an opaque GPU surface.
     #[error("CPU sampling cannot read GPU frame storage")]
     GpuFrameStorage,
+    /// Scalar native decoding requires a retained native surface owner.
+    #[error("scalar CPU sampling requires native frame storage")]
+    ScalarSourceRequiresNativeStorage,
     /// Frame geometry differs from the resolved source snapshot.
     #[error("frame geometry {actual:?} differs from resolved geometry {expected:?}")]
     SourceGeometryMismatch {
@@ -1175,6 +1340,15 @@ pub enum CpuSamplingError {
         expected: CapturePixelFormat,
         actual: CapturePixelFormat,
     },
+    /// Scalar decoder extent differs from the resolved native storage extent.
+    #[error("scalar source extent {actual:?} differs from resolved extent {expected:?}")]
+    ScalarSourceExtentMismatch {
+        expected: PixelExtent,
+        actual: PixelExtent,
+    },
+    /// A validated scalar decoder failed to supply an in-bounds stored pixel.
+    #[error("scalar source failed to decode stored pixel ({x}, {y})")]
+    ScalarSourceReadFailed { x: u32, y: u32 },
     /// Logical extent contradicts the exact physical-to-logical scale.
     #[error(
         "logical extent {logical_extent:?} does not equal rotated crop {rotated_crop_extent:?} scaled by {scale_numerator}/{scale_denominator}"

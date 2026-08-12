@@ -12,8 +12,9 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 use thiserror::Error;
 
 use super::sampling::{
-    CpuAxisInterpolation, CpuSamplingError, CpuSamplingRow, CpuSamplingTransform, CpuSamplingView,
-    CpuStorageAxis, CpuStorageSpan, PreparedCpuSamplingPlan,
+    CpuAxisInterpolation, CpuSamplingError, CpuSamplingTransform, CpuSamplingView,
+    CpuScalarSamplingView, CpuScalarSource, CpuStorageAxis, CpuStorageSpan,
+    PreparedCpuSamplingPlan, PreparedCpuSamplingRow, PreparedCpuSamplingSource,
 };
 use super::tone_map::{
     LED_TONE_MAP_ALGORITHM_REVISION, PreparedLedToneMap, PreparedLedToneMapError,
@@ -826,6 +827,30 @@ fn validate_aligned_schedule_disjoint(
     Ok(())
 }
 
+fn validate_aligned_publication_inputs(
+    batch: &PreparedCpuReductionBatch,
+    frame: &CaptureFrame<RawCaptureSurface>,
+    workspace: &PreparedCpuMaterializationWorkspace,
+    workspace_indices: &[usize],
+    surface_batch_indices: &[Option<usize>],
+    tone_map_overrides: &[Option<PreparedLedToneMap>],
+    publications: &[PreparedScreenPublication],
+) -> Result<Option<CpuReductionBatchReport>, CpuReductionError> {
+    if !Arc::ptr_eq(&batch.reductions, &workspace.reductions) {
+        return Err(CpuReductionError::WorkspaceBatchMismatch);
+    }
+    if tone_map_overrides.len() != batch.reductions.len() {
+        return Err(CpuReductionError::ToneMapOverrideCountMismatch {
+            expected: batch.reductions.len(),
+            actual: tone_map_overrides.len(),
+        });
+    }
+    validate_workspace_schedule(workspace, workspace_indices)?;
+    validate_aligned_surface_schedule(batch, surface_batch_indices, publications)?;
+    validate_aligned_schedule_disjoint(workspace, workspace_indices, surface_batch_indices)?;
+    empty_cpu_batch_report(batch, frame)
+}
+
 fn prepared_cpu_sampling_view<'frame>(
     batch: &'frame PreparedCpuReductionBatch,
     frame: &'frame CaptureFrame<RawCaptureSurface>,
@@ -1284,22 +1309,80 @@ impl CpuReductionExecutor {
         tone_map_overrides: &[Option<PreparedLedToneMap>],
         publications: &mut [PreparedScreenPublication],
     ) -> Result<CpuReductionBatchReport, CpuReductionError> {
-        if !Arc::ptr_eq(&batch.reductions, &workspace.reductions) {
-            return Err(CpuReductionError::WorkspaceBatchMismatch);
-        }
-        if tone_map_overrides.len() != batch.reductions.len() {
-            return Err(CpuReductionError::ToneMapOverrideCountMismatch {
-                expected: batch.reductions.len(),
-                actual: tone_map_overrides.len(),
-            });
-        }
-        validate_workspace_schedule(workspace, workspace_indices)?;
-        validate_aligned_surface_schedule(batch, surface_batch_indices, publications)?;
-        validate_aligned_schedule_disjoint(workspace, workspace_indices, surface_batch_indices)?;
-        if let Some(report) = empty_cpu_batch_report(batch, frame)? {
+        if let Some(report) = validate_aligned_publication_inputs(
+            batch,
+            frame,
+            workspace,
+            workspace_indices,
+            surface_batch_indices,
+            tone_map_overrides,
+            publications,
+        )? {
             return Ok(report);
         }
         let view = prepared_cpu_sampling_view(batch, frame)?;
+        self.execute_aligned_publications_with_view(
+            batch,
+            frame,
+            &view,
+            workspace,
+            workspace_indices,
+            surface_batch_indices,
+            tone_map_overrides,
+            publications,
+        )
+    }
+
+    pub(super) fn execute_aligned_scalar_publications(
+        &self,
+        batch: &PreparedCpuReductionBatch,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        samples: &dyn CpuScalarSource,
+        workspace: &mut PreparedCpuMaterializationWorkspace,
+        workspace_indices: &[usize],
+        surface_batch_indices: &[Option<usize>],
+        tone_map_overrides: &[Option<PreparedLedToneMap>],
+        publications: &mut [PreparedScreenPublication],
+    ) -> Result<CpuReductionBatchReport, CpuReductionError> {
+        if let Some(report) = validate_aligned_publication_inputs(
+            batch,
+            frame,
+            workspace,
+            workspace_indices,
+            surface_batch_indices,
+            tone_map_overrides,
+            publications,
+        )? {
+            return Ok(report);
+        }
+        let view = CpuScalarSamplingView::try_new(frame, &batch.source, samples)?;
+        self.execute_aligned_publications_with_view(
+            batch,
+            frame,
+            &view,
+            workspace,
+            workspace_indices,
+            surface_batch_indices,
+            tone_map_overrides,
+            publications,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "aligned execution retains every prevalidated publication slice without allocation"
+    )]
+    fn execute_aligned_publications_with_view<S: PreparedCpuSamplingSource + ?Sized>(
+        &self,
+        batch: &PreparedCpuReductionBatch,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        view: &S,
+        workspace: &mut PreparedCpuMaterializationWorkspace,
+        workspace_indices: &[usize],
+        surface_batch_indices: &[Option<usize>],
+        tone_map_overrides: &[Option<PreparedLedToneMap>],
+        publications: &mut [PreparedScreenPublication],
+    ) -> Result<CpuReductionBatchReport, CpuReductionError> {
         let source_sequence = frame.metadata().sequence;
         let mut output_bytes = 0_u64;
         let mut scheduled_tiles = 0_u64;
@@ -1371,7 +1454,7 @@ impl CpuReductionExecutor {
                                 .color
                                 .with_tone_map_override(tone_map_overrides[plane.batch_index])?;
                             reduce_prepared_in_pool(
-                                &view,
+                                view,
                                 reduction,
                                 color,
                                 self.inner.worker_count,
@@ -1393,7 +1476,7 @@ impl CpuReductionExecutor {
                                 .color
                                 .with_tone_map_override(tone_map_overrides[batch_index])?;
                             reduce_prepared_in_pool(
-                                &view,
+                                view,
                                 reduction,
                                 color,
                                 self.inner.worker_count,
@@ -1613,6 +1696,7 @@ impl CpuReductionExecutor {
         request: CpuReductionRequest<'_>,
         output: &mut [u8],
     ) -> Result<(), CpuReductionError> {
+        validate_reduced_format(request.target_format, true)?;
         let expected = request.layout.target_byte_len_usize();
         if output.len() != expected {
             return Err(CpuReductionError::OutputLengthMismatch {
@@ -1642,6 +1726,7 @@ fn prepare_physical_reduction(
     descriptor: &ScreenPhysicalReductionDescriptor,
     sampling_transform: CpuSamplingTransform,
 ) -> Result<PreparedCpuReduction, CpuReductionError> {
+    validate_reduced_format(descriptor.target_pixel_format(), true)?;
     if descriptor.algorithm_revision() != LED_TONE_MAP_ALGORITHM_REVISION {
         return Err(CpuReductionError::AlgorithmRevisionMismatch {
             expected: LED_TONE_MAP_ALGORITHM_REVISION,
@@ -1730,8 +1815,8 @@ fn reduce_request_in_pool(
         })
 }
 
-fn reduce_prepared_in_pool(
-    view: &CpuSamplingView<'_>,
+fn reduce_prepared_in_pool<S: PreparedCpuSamplingSource + ?Sized>(
+    view: &S,
     reduction: &PreparedCpuReduction,
     color: ReductionColor,
     worker_count: NonZeroUsize,
@@ -1811,8 +1896,8 @@ fn prepare_reduction_tiles(
     })
 }
 
-fn reduce_prepared_tile(
-    view: &CpuSamplingView<'_>,
+fn reduce_prepared_tile<S: PreparedCpuSamplingSource + ?Sized>(
+    view: &S,
     reduction: &PreparedCpuReduction,
     color: ReductionColor,
     tile_index: usize,
@@ -1846,8 +1931,8 @@ fn reduce_prepared_tile(
     Ok(())
 }
 
-fn reduce_prepared_row(
-    view: &CpuSamplingView<'_>,
+fn reduce_prepared_row<S: PreparedCpuSamplingSource + ?Sized>(
+    view: &S,
     reduction: &PreparedCpuReduction,
     color: ReductionColor,
     target_y: u32,
@@ -1867,8 +1952,8 @@ fn reduce_prepared_row(
     }
 }
 
-fn reduce_prepared_nearest_row(
-    view: &CpuSamplingView<'_>,
+fn reduce_prepared_nearest_row<S: PreparedCpuSamplingSource + ?Sized>(
+    view: &S,
     reduction: &PreparedCpuReduction,
     color: ReductionColor,
     target_y: u32,
@@ -1881,20 +1966,20 @@ fn reduce_prepared_nearest_row(
             let source_row = view.storage_row(fixed)?;
             write_prepared_row(reduction, first_target_x, row, |target_x| {
                 let sample =
-                    source_row.read_rgba(reduction.sampling.logical_x_nearest(target_x))?;
-                Ok(color.encode(color.decode(sample)))
+                    source_row.read_rgba32f(reduction.sampling.logical_x_nearest(target_x))?;
+                Ok(color.encode(color.decode_source(sample)))
             })
         }
         CpuStorageAxis::Y => write_prepared_row(reduction, first_target_x, row, |target_x| {
             let source_row = view.storage_row(reduction.sampling.logical_x_nearest(target_x))?;
-            let sample = source_row.read_rgba(fixed)?;
-            Ok(color.encode(color.decode(sample)))
+            let sample = source_row.read_rgba32f(fixed)?;
+            Ok(color.encode(color.decode_source(sample)))
         }),
     }
 }
 
-fn reduce_prepared_bilinear_row(
-    view: &CpuSamplingView<'_>,
+fn reduce_prepared_bilinear_row<S: PreparedCpuSamplingSource + ?Sized>(
+    view: &S,
     reduction: &PreparedCpuReduction,
     color: ReductionColor,
     target_y: u32,
@@ -1920,17 +2005,17 @@ fn reduce_prepared_bilinear_row(
     }
 }
 
-fn sample_prepared_bilinear(
-    top: CpuSamplingRow<'_>,
-    bottom: CpuSamplingRow<'_>,
+fn sample_prepared_bilinear<R: PreparedCpuSamplingRow>(
+    top: R,
+    bottom: R,
     x: CpuAxisInterpolation,
     y: CpuAxisInterpolation,
     color: ReductionColor,
 ) -> Result<[u8; 4], CpuReductionError> {
-    let top_left = color.decode(top.read_rgba(x.lower())?);
-    let top_right = color.decode(top.read_rgba(x.upper())?);
-    let bottom_left = color.decode(bottom.read_rgba(x.lower())?);
-    let bottom_right = color.decode(bottom.read_rgba(x.upper())?);
+    let top_left = color.decode_source(top.read_rgba32f(x.lower())?);
+    let top_right = color.decode_source(top.read_rgba32f(x.upper())?);
+    let bottom_left = color.decode_source(bottom.read_rgba32f(x.lower())?);
+    let bottom_right = color.decode_source(bottom.read_rgba32f(x.upper())?);
     let mut output = [0.0; 4];
     for channel in 0..4 {
         let top = lerp(top_left[channel], top_right[channel], x.upper_weight());
@@ -1944,8 +2029,8 @@ fn sample_prepared_bilinear(
     Ok(color.encode(output))
 }
 
-fn reduce_prepared_area_row(
-    view: &CpuSamplingView<'_>,
+fn reduce_prepared_area_row<S: PreparedCpuSamplingSource + ?Sized>(
+    view: &S,
     reduction: &PreparedCpuReduction,
     color: ReductionColor,
     target_y: u32,
@@ -1993,8 +2078,8 @@ fn write_prepared_row(
     Ok(())
 }
 
-fn sample_prepared_area(
-    view: &CpuSamplingView<'_>,
+fn sample_prepared_area<S: PreparedCpuSamplingSource + ?Sized>(
+    view: &S,
     x_span: CpuStorageSpan,
     y_span: CpuStorageSpan,
     color: ReductionColor,
@@ -2005,7 +2090,7 @@ fn sample_prepared_area(
         let row = view.storage_row(source_y)?;
         for source_x in x_span.start()..x_span.end() {
             let weight = x_span.normalized_weight(source_x) * y_weight;
-            let sample = color.decode(row.read_rgba(source_x)?);
+            let sample = color.decode_source(row.read_rgba32f(source_x)?);
             for channel in 0..4 {
                 sums[channel] += sample[channel] * weight;
             }
@@ -2035,6 +2120,12 @@ pub enum CpuReductionError {
     /// Source row addressing escapes retained CPU bytes.
     #[error("source plane addressing escapes its {buffer_len}-byte allocation")]
     SourceBufferOutOfBounds { buffer_len: usize },
+    /// A native packed or multi-plane format reached the byte-plane decoder.
+    #[error("unsupported single-plane CPU source format: {0:?}")]
+    UnsupportedSourcePixelFormat(CapturePixelFormat),
+    /// CPU reduction destinations are canonical RGBA8 or BGRA8 surfaces.
+    #[error("unsupported CPU reduction destination format: {0:?}")]
+    UnsupportedTargetPixelFormat(CapturePixelFormat),
     /// The exact preserve path was paired with byte-changing work.
     #[error("encoded-sample preservation requires equal extents, format, and nearest filtering")]
     InexactEncodedSamplePreservation,
@@ -2273,14 +2364,18 @@ impl ReductionColor {
     }
 
     fn decode(self, sample: [u8; 4]) -> [f64; 4] {
+        self.decode_source(sample.map(|channel| f32::from(channel) / 255.0))
+    }
+
+    fn decode_source(self, sample: [f32; 4]) -> [f64; 4] {
         match self {
             Self::Encoded => [
-                f64::from(sample[0]) / 255.0,
-                f64::from(sample[1]) / 255.0,
-                f64::from(sample[2]) / 255.0,
-                f64::from(sample[3]) / 255.0,
+                f64::from(sample[0]),
+                f64::from(sample[1]),
+                f64::from(sample[2]),
+                f64::from(sample[3]),
             ],
-            Self::Managed(prepared) => prepared.decode_and_map(sample),
+            Self::Managed(prepared) => prepared.decode_and_map_source(sample),
         }
     }
 
@@ -2329,6 +2424,7 @@ fn validate_source(
     source: &CpuCaptureStorage,
     layout: CpuReductionLayout,
 ) -> Result<(), CpuReductionError> {
+    validate_reduced_format(source.format(), false)?;
     let row_bytes = u64::from(layout.source_extent().width())
         .checked_mul(CHANNELS_PER_PIXEL)
         .ok_or(CpuReductionError::GeometryOverflow { resource: "source" })?;
@@ -2382,6 +2478,19 @@ fn validate_source(
         });
     }
     Ok(())
+}
+
+fn validate_reduced_format(
+    format: CapturePixelFormat,
+    target: bool,
+) -> Result<(), CpuReductionError> {
+    if format.rgba8_bytes_per_pixel().is_some() {
+        Ok(())
+    } else if target {
+        Err(CpuReductionError::UnsupportedTargetPixelFormat(format))
+    } else {
+        Err(CpuReductionError::UnsupportedSourcePixelFormat(format))
+    }
 }
 
 fn reduce_tile(
@@ -2600,6 +2709,15 @@ fn read_pixel(source: &CpuCaptureStorage, x: u32, y: u32) -> Result<[u8; 4], Cpu
     Ok(match source.format() {
         CapturePixelFormat::Rgba8 => [bytes[0], bytes[1], bytes[2], bytes[3]],
         CapturePixelFormat::Bgra8 => [bytes[2], bytes[1], bytes[0], bytes[3]],
+        CapturePixelFormat::Argb2101010
+        | CapturePixelFormat::Rgba16Float
+        | CapturePixelFormat::Yuv420VideoRange
+        | CapturePixelFormat::Yuv420FullRange
+        | CapturePixelFormat::Yuv44410BiPlanar => {
+            return Err(CpuReductionError::UnsupportedSourcePixelFormat(
+                source.format(),
+            ));
+        }
     })
 }
 
@@ -2608,6 +2726,13 @@ fn write_pixel(target: &mut [u8], format: CapturePixelFormat, sample: [u8; 4]) {
         CapturePixelFormat::Rgba8 => target.copy_from_slice(&sample),
         CapturePixelFormat::Bgra8 => {
             target.copy_from_slice(&[sample[2], sample[1], sample[0], sample[3]]);
+        }
+        CapturePixelFormat::Argb2101010
+        | CapturePixelFormat::Rgba16Float
+        | CapturePixelFormat::Yuv420VideoRange
+        | CapturePixelFormat::Yuv420FullRange
+        | CapturePixelFormat::Yuv44410BiPlanar => {
+            unreachable!("native source formats cannot be reduced CPU destinations")
         }
     }
 }

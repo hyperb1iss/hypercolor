@@ -338,6 +338,13 @@ fn encoded_pixel(color: [u8; 4], pixel_format: CapturePixelFormat) -> [u8; 4] {
     match pixel_format {
         CapturePixelFormat::Rgba8 => color,
         CapturePixelFormat::Bgra8 => [color[2], color[1], color[0], color[3]],
+        CapturePixelFormat::Argb2101010
+        | CapturePixelFormat::Rgba16Float
+        | CapturePixelFormat::Yuv420VideoRange
+        | CapturePixelFormat::Yuv420FullRange
+        | CapturePixelFormat::Yuv44410BiPlanar => {
+            panic!("branch processing fixtures accept only RGBA8 and BGRA8")
+        }
     }
 }
 
@@ -345,6 +352,13 @@ fn decoded_pixel(color: [u8; 4], pixel_format: CapturePixelFormat) -> [u8; 3] {
     match pixel_format {
         CapturePixelFormat::Rgba8 => color[..3].try_into().expect("pixel has RGB channels"),
         CapturePixelFormat::Bgra8 => [color[2], color[1], color[0]],
+        CapturePixelFormat::Argb2101010
+        | CapturePixelFormat::Rgba16Float
+        | CapturePixelFormat::Yuv420VideoRange
+        | CapturePixelFormat::Yuv420FullRange
+        | CapturePixelFormat::Yuv44410BiPlanar => {
+            panic!("branch processing fixtures accept only RGBA8 and BGRA8")
+        }
     }
 }
 

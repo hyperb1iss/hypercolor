@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_types::canvas::linear_to_srgb_u8;
 
 use super::frame::{
     CaptureColorSpace, CaptureDynamicRange, CaptureLuminanceContext, CapturePositiveScalar,
@@ -355,17 +355,34 @@ impl PreparedLedToneMap {
     /// Decode one source sample and apply the complete linear-light contract.
     #[must_use]
     pub fn decode_and_map(self, encoded: [u8; 4]) -> [f64; 4] {
-        let rgb = [
-            self.decode_channel(encoded[0]),
-            self.decode_channel(encoded[1]),
-            self.decode_channel(encoded[2]),
+        self.decode_and_map_source(encoded.map(|channel| f32::from(channel) / 255.0))
+    }
+
+    /// Decode one full-precision source-domain sample and apply the linear contract.
+    ///
+    /// Values are not clamped before transfer decoding. Extended-linear sources
+    /// therefore retain diffuse and specular values above one until tone mapping.
+    #[must_use]
+    pub fn decode_and_map_source(self, source: [f32; 4]) -> [f64; 4] {
+        let mut rgb = [
+            self.decode_source_channel(source[0]),
+            self.decode_source_channel(source[1]),
+            self.decode_source_channel(source[2]),
         ];
+        if self.source_transfer == CaptureTransferFunction::Hlg {
+            rgb = hlg_scene_to_reference_linear(
+                rgb,
+                &self.constants.source_luminance_and_exposure[..3],
+                self.constants.curve[1],
+                self.constants.curve[2],
+            );
+        }
         let mapped = self.map_linear(rgb);
         [
             f64::from(mapped[0]),
             f64::from(mapped[1]),
             f64::from(mapped[2]),
-            f64::from(encoded[3]) / 255.0,
+            f64::from(source[3]),
         ]
     }
 
@@ -404,6 +421,8 @@ impl PreparedLedToneMap {
         let encode = |value: f64| match self.output_transfer {
             CaptureTransferFunction::Srgb => linear_to_srgb_u8(value as f32),
             CaptureTransferFunction::Linear => encode_byte(value as f32),
+            CaptureTransferFunction::Rec709 => encode_byte(linear_to_rec709(value as f32)),
+            CaptureTransferFunction::Rec2020 => encode_byte(linear_to_rec2020(value as f32)),
             CaptureTransferFunction::Pq
             | CaptureTransferFunction::Hlg
             | CaptureTransferFunction::Unknown => {
@@ -418,13 +437,15 @@ impl PreparedLedToneMap {
         ]
     }
 
-    fn decode_channel(self, encoded: u8) -> f32 {
-        let value = f32::from(encoded) / 255.0;
+    fn decode_source_channel(self, encoded: f32) -> f32 {
         match self.source_transfer {
-            CaptureTransferFunction::Srgb => srgb_u8_to_linear(encoded),
-            CaptureTransferFunction::Linear => value,
-            CaptureTransferFunction::Pq => pq_to_nits(value) / self.constants.curve[2],
-            CaptureTransferFunction::Hlg | CaptureTransferFunction::Unknown => {
+            CaptureTransferFunction::Srgb => srgb_to_linear(encoded),
+            CaptureTransferFunction::Linear => encoded,
+            CaptureTransferFunction::Rec709 => rec709_to_linear(encoded),
+            CaptureTransferFunction::Rec2020 => rec2020_to_linear(encoded),
+            CaptureTransferFunction::Pq => pq_to_nits(encoded) / self.constants.curve[2],
+            CaptureTransferFunction::Hlg => hlg_inverse_oetf(encoded),
+            CaptureTransferFunction::Unknown => {
                 unreachable!("prepared source transfer remains executable")
             }
         }
@@ -561,7 +582,12 @@ fn validate_transfer(
                 CaptureTransferFunction::Srgb | CaptureTransferFunction::Linear,
                 CaptureDynamicRange::Standard
             ) | (
-                CaptureTransferFunction::Pq | CaptureTransferFunction::Linear,
+                CaptureTransferFunction::Rec709 | CaptureTransferFunction::Rec2020,
+                CaptureDynamicRange::Standard
+            ) | (
+                CaptureTransferFunction::Pq
+                    | CaptureTransferFunction::Hlg
+                    | CaptureTransferFunction::Linear,
                 CaptureDynamicRange::High
             )
         )
@@ -570,6 +596,9 @@ fn validate_transfer(
             (transfer, dynamic_range),
             (
                 CaptureTransferFunction::Srgb | CaptureTransferFunction::Linear,
+                CaptureDynamicRange::Standard
+            ) | (
+                CaptureTransferFunction::Rec709 | CaptureTransferFunction::Rec2020,
                 CaptureDynamicRange::Standard
             )
         )
@@ -668,6 +697,78 @@ fn pq_to_nits(encoded: f32) -> f32 {
     let numerator = (power - C1).max(0.0);
     let denominator = C2 - C3 * power;
     10_000.0 * (numerator / denominator).powf(1.0 / M1)
+}
+
+fn srgb_to_linear(encoded: f32) -> f32 {
+    if encoded <= 0.040_45 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn rec709_to_linear(encoded: f32) -> f32 {
+    if encoded < 0.081 {
+        encoded / 4.5
+    } else {
+        ((encoded + 0.099) / 1.099).powf(1.0 / 0.45)
+    }
+}
+
+fn linear_to_rec709(linear: f32) -> f32 {
+    if linear < 0.018 {
+        4.5 * linear
+    } else {
+        1.099 * linear.powf(0.45) - 0.099
+    }
+}
+
+fn rec2020_to_linear(encoded: f32) -> f32 {
+    const ALPHA: f32 = 1.099_296_8;
+    const BETA: f32 = 0.018_053_97;
+    if encoded < 4.5 * BETA {
+        encoded / 4.5
+    } else {
+        ((encoded + ALPHA - 1.0) / ALPHA).powf(1.0 / 0.45)
+    }
+}
+
+fn linear_to_rec2020(linear: f32) -> f32 {
+    const ALPHA: f32 = 1.099_296_8;
+    const BETA: f32 = 0.018_053_97;
+    if linear < BETA {
+        4.5 * linear
+    } else {
+        ALPHA * linear.powf(0.45) - (ALPHA - 1.0)
+    }
+}
+
+fn hlg_inverse_oetf(encoded: f32) -> f32 {
+    const A: f32 = 0.178_832_77;
+    const B: f32 = 0.284_668_92;
+    const C: f32 = 0.559_910_7;
+    let encoded = encoded.max(0.0);
+    if encoded <= 0.5 {
+        encoded * encoded / 3.0
+    } else {
+        (((encoded - C) / A).exp() + B) / 12.0
+    }
+}
+
+fn hlg_scene_to_reference_linear(
+    scene_rgb: [f32; 3],
+    source_luminance: &[f32],
+    source_headroom: f32,
+    source_reference_nits: f32,
+) -> [f32; 3] {
+    let source_peak_nits = source_reference_nits * source_headroom;
+    let system_gamma = 1.2 + 0.42 * (source_peak_nits / 1_000.0).log10();
+    let scene_luminance = dot3(source_luminance, scene_rgb).max(0.0);
+    if scene_luminance <= f32::EPSILON {
+        return [0.0; 3];
+    }
+    let ootf_scale = source_headroom * scene_luminance.powf(system_gamma - 1.0);
+    scene_rgb.map(|channel| channel * ootf_scale)
 }
 
 fn nits_to_pq(nits: f32) -> f32 {
@@ -795,6 +896,16 @@ mod tests {
         .expect("extended-linear HDR source is valid")
     }
 
+    fn hlg_hdr_source() -> KnownCaptureColorimetry {
+        KnownCaptureColorimetry::try_new(
+            CaptureColorSpace::Rec2020,
+            CaptureTransferFunction::Hlg,
+            CaptureDynamicRange::High,
+            Some(luminance(203.0, 1_000.0)),
+        )
+        .expect("HLG source is valid")
+    }
+
     #[test]
     fn golden_reference_white_and_highlight_shoulder() {
         let sdr = PreparedLedToneMap::prepare(
@@ -853,6 +964,51 @@ mod tests {
             assert_eq!(actual[1], actual[2]);
         }
         assert_eq!(prepared.decode_and_map([255; 4]), [0.5, 0.5, 0.5, 1.0]);
+        let specular = prepared.decode_and_map_source([1_000.0 / 203.0; 4]);
+        assert!((specular[0] - 1.0).abs() < 1.0e-6);
+        assert!(specular[3] > 4.9);
+    }
+
+    #[test]
+    fn hlg_diffuse_white_and_specular_peak_share_the_hdr_curve() {
+        let prepared = PreparedLedToneMap::prepare(
+            hlg_hdr_source(),
+            KnownCaptureColorimetry::SRGB,
+            LedToneMapCalibration::DEFAULT,
+        )
+        .expect("HLG HDR curve prepares");
+        let diffuse = prepared.decode_and_map_source([0.75, 0.75, 0.75, 1.0]);
+        assert!((diffuse[0] - 0.5).abs() < 5.0e-4);
+        assert_eq!(diffuse[0], diffuse[1]);
+        assert_eq!(diffuse[1], diffuse[2]);
+        let specular = prepared.decode_and_map_source([1.0; 4]);
+        assert!((specular[0] - 1.0).abs() < 2.0e-5);
+        assert_eq!(specular[0], specular[1]);
+        assert_eq!(specular[1], specular[2]);
+        let rec2020_luminance = &REC2020_TO_XYZ.padded_rows()[1][..3];
+        let neutral_1k = hlg_scene_to_reference_linear(
+            [1.0 / 12.0; 3],
+            rec2020_luminance,
+            1_000.0 / 203.0,
+            203.0,
+        );
+        assert!((neutral_1k[0] - 0.249_739_05).abs() < 1.0e-6);
+        let neutral_1600 = hlg_scene_to_reference_linear(
+            [1.0 / 12.0; 3],
+            rec2020_luminance,
+            1_600.0 / 203.0,
+            203.0,
+        );
+        assert!((neutral_1600[0] - 0.322_914_7).abs() < 1.0e-6);
+        let chromatic = hlg_scene_to_reference_linear(
+            [1.0, 1.0 / 12.0, 0.0],
+            rec2020_luminance,
+            1_000.0 / 203.0,
+            203.0,
+        );
+        assert!((chromatic[0] - 3.920_275_2).abs() < 1.0e-6);
+        assert!((chromatic[1] - 0.326_689_6).abs() < 1.0e-6);
+        assert_eq!(chromatic[2], 0.0);
     }
 
     #[test]

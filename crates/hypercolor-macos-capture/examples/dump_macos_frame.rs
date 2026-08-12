@@ -13,11 +13,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-#[cfg(any(target_os = "macos", all(test, feature = "capture-fixtures")))]
-use hypercolor_macos_capture::MacosCaptureFrame;
 use hypercolor_macos_capture::MacosCaptureSelector;
 #[cfg(target_os = "macos")]
 use hypercolor_macos_capture::MacosFrameDropReason;
+#[cfg(any(target_os = "macos", all(test, feature = "capture-fixtures")))]
+use hypercolor_macos_capture::{
+    MacosCaptureFrame, MacosCapturePixelFormat, MacosColorPrimaries, MacosTransferFunction,
+};
 
 const DEFAULT_FRAME_COUNT: usize = 1;
 const MAX_FRAME_COUNT: usize = 600;
@@ -396,10 +398,19 @@ fn export_frame_with_warning(
     let length = row_bytes
         .checked_mul(frame.storage_extent.height as usize)
         .ok_or_else(|| "pixel export length overflowed".to_owned())?;
+    if frame.pixel_format != MacosCapturePixelFormat::Bgra8
+        || frame.color.primaries != MacosColorPrimaries::Srgb
+        || frame.color.transfer != MacosTransferFunction::Srgb
+    {
+        return Err("PAM export supports sRGB BGRA frames only".to_owned());
+    }
     let mut rgba = vec![0_u8; length];
     frame
-        .convert_bgra8_sdr_to_rgba8(&mut rgba, row_bytes)
-        .map_err(|_| "pixel export supports SDR BGRA frames only".to_owned())?;
+        .copy_bgra8_to(&mut rgba, row_bytes)
+        .map_err(|_| "PAM export could not map the retained BGRA plane".to_owned())?;
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
 
     let file = std::fs::File::create(path)
         .map_err(|error| format!("could not create explicit output path: {error}"))?;

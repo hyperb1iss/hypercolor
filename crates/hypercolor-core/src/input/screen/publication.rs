@@ -2921,7 +2921,9 @@ fn resolve_hdr_color_pipeline(
             if source.dynamic_range() == CaptureDynamicRange::High
                 && matches!(
                     source.transfer_function(),
-                    CaptureTransferFunction::Pq | CaptureTransferFunction::Linear
+                    CaptureTransferFunction::Pq
+                        | CaptureTransferFunction::Hlg
+                        | CaptureTransferFunction::Linear
                 )
                 && target.dynamic_range() == CaptureDynamicRange::Standard =>
         {
@@ -3258,5 +3260,10 @@ const fn pixel_format_rank(format: CapturePixelFormat) -> u8 {
     match format {
         CapturePixelFormat::Rgba8 => 0,
         CapturePixelFormat::Bgra8 => 1,
+        CapturePixelFormat::Argb2101010 => 2,
+        CapturePixelFormat::Rgba16Float => 3,
+        CapturePixelFormat::Yuv420VideoRange => 4,
+        CapturePixelFormat::Yuv420FullRange => 5,
+        CapturePixelFormat::Yuv44410BiPlanar => 6,
     }
 }

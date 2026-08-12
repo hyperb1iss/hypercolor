@@ -73,11 +73,12 @@ impl MacosFrameDropReason {
             | MacosCaptureError::CpuPlaneLayoutMismatch
             | MacosCaptureError::PixelBufferLockFailed(_)
             | MacosCaptureError::PixelBufferUnlockFailed(_)
-            | MacosCaptureError::FixturePixelLength { .. }
+            | MacosCaptureError::FixturePlaneCount { .. }
+            | MacosCaptureError::FixturePlaneLength { .. }
             | MacosCaptureError::PixelBufferFixtureCreateFailed(_)
             | MacosCaptureError::MissingCpuPlaneAddress(_)
             | MacosCaptureError::UnsupportedCpuPixelFormat(_)
-            | MacosCaptureError::UnsupportedCpuTransferFunction(_)
+            | MacosCaptureError::CpuPixelOutsideStorage { .. }
             | MacosCaptureError::InvalidCpuDestinationStride { .. }
             | MacosCaptureError::CpuDestinationTooSmall { .. }
             | MacosCaptureError::SequenceExhausted

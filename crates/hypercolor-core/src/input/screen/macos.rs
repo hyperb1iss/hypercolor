@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use anyhow::anyhow;
 use hypercolor_macos_capture::{
     MacosCaptureContentStyle, MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat,
-    MacosCaptureSelection, MacosColorPrimaries, MacosDisplayClock, MacosFrameEvent,
-    MacosFrameMailbox, MacosFrameStatus, MacosProtectedSourceState as NativeProtectedSourceState,
-    MacosTransferFunction,
+    MacosCaptureSelection, MacosColorPrimaries, MacosCpuSourceView, MacosDisplayClock,
+    MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
+    MacosProtectedSourceState as NativeProtectedSourceState, MacosTransferFunction,
 };
 use tokio::sync::oneshot;
 
@@ -24,21 +24,21 @@ use super::{
     CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
     CaptureLuminanceContext, CapturePixelFormat, CapturePlanePool, CapturePositiveScalar,
     CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
-    CpuExactReductionWorkPlan, CpuReductionExecutor, LedToneMapCalibration, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
-    PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
-    ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
-    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
-    ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorCapabilities,
-    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativePreparationPayload,
-    ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPreparedWorkerToken,
-    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenRequiredResourceMinimum,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    CpuExactReductionWorkPlan, CpuPublicationFanoutError, CpuReductionExecutor, CpuSamplingError,
+    CpuScalarSource, LedToneMapCalibration, PixelExtent, PixelRect, PlatformGpuApi,
+    PlatformGpuSurface, PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate,
+    RawCaptureSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan,
+    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenBranchPublisher,
+    ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
+    ScreenCursorCapabilities, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
+    ScreenNativePreparationPayload, ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPreparedWorkerToken, ScreenPublicationColorimetry, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -404,20 +404,15 @@ impl MacosPublicationSource {
         }
     }
 
-    fn cpu_source(&self, selector: ScreenSourceSelector) -> anyhow::Result<ResolvedScreenSource> {
-        if self.pixel_format != MacosCapturePixelFormat::Bgra8 {
-            return Err(anyhow!(
-                "macOS CPU publication requires a byte-addressable BGRA source"
-            ));
-        }
-        Ok(ResolvedScreenSource::new(
+    fn cpu_source(&self, selector: ScreenSourceSelector) -> ResolvedScreenSource {
+        ResolvedScreenSource::new(
             selector,
             self.epoch.clone(),
             ResolvedScreenSourceConfig::new_with_cursor_capabilities(
                 self.geometry,
                 self.logical_extent,
                 ScreenSourceReflection::None,
-                CapturePixelFormat::Bgra8,
+                capture_pixel_format(self.pixel_format),
                 self.colorimetry,
                 self.cursor_capabilities(),
                 ScreenBackendResourceIdentity::new(
@@ -427,7 +422,7 @@ impl MacosPublicationSource {
                     self.resource_generation,
                 ),
             ),
-        ))
+        )
     }
 
     fn gpu_source(
@@ -444,14 +439,7 @@ impl MacosPublicationSource {
                 "macOS capture received a zero Metal registry identity"
             ));
         }
-        let pixel_format = match self.pixel_format {
-            MacosCapturePixelFormat::Bgra8 => CapturePixelFormat::Bgra8,
-            _ => {
-                return Err(anyhow!(
-                    "macOS native capture format is not implemented yet"
-                ));
-            }
-        };
+        let pixel_format = capture_pixel_format(self.pixel_format);
         Ok(ResolvedScreenSource::new(
             selector,
             self.epoch.clone(),
@@ -1253,7 +1241,7 @@ fn resolve_macos_publication_branch(
         ScreenPublicationExecutorRequest::Cpu
     ) {
         return Ok(Some(demand.resolve_with_color_capabilities(
-            &source.cpu_source(selector)?,
+            &source.cpu_source(selector),
             capabilities,
         )?));
     }
@@ -1278,13 +1266,14 @@ fn resolve_macos_publication_branch(
     }
 
     Ok(Some(demand.resolve_with_color_capabilities(
-        &source.cpu_source(selector)?,
+        &source.cpu_source(selector),
         capabilities,
     )?))
 }
 
 fn macos_native_descriptor_is_identity(descriptor: &ResolvedScreenPublicationDescriptor) -> bool {
-    descriptor.source().geometry().crop().is_none()
+    descriptor.source_pixel_format() == CapturePixelFormat::Bgra8
+        && descriptor.source().geometry().crop().is_none()
         && descriptor.geometry().output_extent() == descriptor.source().geometry().storage_extent()
         && descriptor.physical().reduction_extent()
             == descriptor.source().geometry().storage_extent()
@@ -1420,7 +1409,7 @@ fn prepare_macos_exact_runtime(
         (None, 0, 0)
     } else {
         let cpu_source =
-            source.cpu_source(ScreenSourceSelector::Exact(source.epoch.source_id.clone()))?;
+            source.cpu_source(ScreenSourceSelector::Exact(source.epoch.source_id.clone()));
         let batch_quote = executor.batch_allocation_quote(&cpu_source, &candidate)?;
         preflight_macos_scope_bytes(&mut ledger, &mut processing_minimum_remaining, batch_quote)?;
         let batch = executor.prepare_batch(&cpu_source, &candidate)?;
@@ -1803,7 +1792,21 @@ fn publish_frame(
         exact,
         exact_runtimes,
     )?;
+    if exact_delivery.cpu {
+        let capture =
+            native_cpu_capture_frame(&frame, captured_at, fresh_until, &source, source_id.clone())?;
+        publish_macos_scalar_exact(&frame, &capture, &source, exact, exact_runtimes)?;
+    }
     if exact_delivery.native && !exact_delivery.cpu {
+        if lock(publication).worker_generation == worker_generation {
+            lock(publication).latest = None;
+        }
+        if let Some(status) = status_session.load() {
+            status.record_sample(captured_at, fresh_until, 1)?;
+        }
+        return Ok(());
+    }
+    if frame.pixel_format != MacosCapturePixelFormat::Bgra8 {
         if lock(publication).worker_generation == worker_generation {
             lock(publication).latest = None;
         }
@@ -1874,7 +1877,9 @@ fn publish_frame(
         )),
         damage,
     )?;
-    publish_macos_cpu_exact(&capture, &source, exact, exact_runtimes)?;
+    if !exact_delivery.cpu {
+        publish_macos_cpu_exact(&capture, &source, exact, exact_runtimes)?;
+    }
     let snapshot = analyze_screen_frame(&mut prepared.analyzer, capture)?;
     if snapshot.geometry_frame().metadata().topology_generation != topology_generation {
         return Err(anyhow!("macOS analysis changed topology generation"));
@@ -1894,6 +1899,66 @@ fn publish_frame(
         publication.latest = Some(data);
     }
     Ok(())
+}
+
+fn native_cpu_capture_frame(
+    frame: &Arc<MacosCaptureFrame>,
+    captured_at: Instant,
+    fresh_until: Instant,
+    source: &MacosPublicationSource,
+    source_id: CaptureSourceId,
+) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
+    let sequence = frame
+        .sequence
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("macOS capture sequence exhausted"))?;
+    let surface = PlatformGpuSurface::new(
+        PlatformGpuApi::Metal,
+        u64::from(frame.surface.iosurface_id),
+        source.geometry.storage_extent(),
+        capture_pixel_format(frame.pixel_format),
+        Arc::clone(frame),
+    )?;
+    Ok(CaptureFrame::new(
+        CaptureFrameMetadata {
+            source_id,
+            topology_generation: source.epoch.topology_generation,
+            session_generation: frame.epoch,
+            sequence,
+            captured_at,
+            fresh_until,
+            geometry: source.geometry,
+            colorimetry: source.colorimetry,
+            cursor: CaptureCursor {
+                visible: frame.cursor_composed,
+                position: None,
+                hotspot: None,
+                shape_extent: None,
+                shape_generation: None,
+                content: if frame.cursor_composed {
+                    CaptureCursorContent::Composed
+                } else {
+                    CaptureCursorContent::Hidden
+                },
+            },
+        },
+        CaptureStorage::Gpu(surface),
+        CaptureDamage::new(
+            frame
+                .damage
+                .iter()
+                .map(|rect| {
+                    Ok(PixelRect::new(
+                        u32::try_from(rect.x)?,
+                        u32::try_from(rect.y)?,
+                        rect.width,
+                        rect.height,
+                    )?)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            Vec::new(),
+        ),
+    )?)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2008,6 +2073,39 @@ fn publish_macos_cpu_exact(
             Some(frame),
             Instant::now(),
             ScreenPublicationHealth::Healthy,
+        )?;
+    }
+    Ok(())
+}
+
+fn publish_macos_scalar_exact(
+    native_frame: &MacosCaptureFrame,
+    frame: &CaptureFrame<RawCaptureSurface>,
+    source: &MacosPublicationSource,
+    exact: &MacosExactPublicationShared,
+    runtimes: &mut [MacosExactRuntime],
+) -> anyhow::Result<()> {
+    let Some(hub) = exact.hub() else {
+        return Ok(());
+    };
+    let Some(runtime) =
+        bind_current_macos_exact_runtime(runtimes, source, &hub, frame.metadata().captured_at)?
+    else {
+        return Ok(());
+    };
+    if let Some(fanout) = runtime.fanout.as_mut() {
+        fanout.publish_due_scalar(
+            &hub,
+            frame,
+            Instant::now(),
+            ScreenPublicationHealth::Healthy,
+            |execute| {
+                native_frame
+                    .with_cpu_source(|samples| execute(&samples))
+                    .map_err(|error| {
+                        CpuPublicationFanoutError::ScalarSourceAccessFailed(error.to_string())
+                    })?
+            },
         )?;
     }
     Ok(())
@@ -2137,12 +2235,11 @@ fn capture_colorimetry(frame: &MacosCaptureFrame) -> anyhow::Result<CaptureColor
     };
     let transfer_function = match color.transfer {
         MacosTransferFunction::Srgb => CaptureTransferFunction::Srgb,
+        MacosTransferFunction::Rec709 => CaptureTransferFunction::Rec709,
+        MacosTransferFunction::Rec2020 => CaptureTransferFunction::Rec2020,
         MacosTransferFunction::Linear => CaptureTransferFunction::Linear,
         MacosTransferFunction::Pq => CaptureTransferFunction::Pq,
         MacosTransferFunction::Hlg => CaptureTransferFunction::Hlg,
-        MacosTransferFunction::Rec709 | MacosTransferFunction::Rec2020 => {
-            CaptureTransferFunction::Unknown
-        }
     };
     let delivered = frame.delivered_metadata();
     let dynamic_range = if matches!(
@@ -2192,6 +2289,35 @@ fn capture_colorimetry(frame: &MacosCaptureFrame) -> anyhow::Result<CaptureColor
         Some(dynamic_range),
         luminance,
     )?)
+}
+
+const fn capture_pixel_format(format: MacosCapturePixelFormat) -> CapturePixelFormat {
+    match format {
+        MacosCapturePixelFormat::Bgra8 => CapturePixelFormat::Bgra8,
+        MacosCapturePixelFormat::Argb2101010 => CapturePixelFormat::Argb2101010,
+        MacosCapturePixelFormat::Rgba16Float => CapturePixelFormat::Rgba16Float,
+        MacosCapturePixelFormat::Yuv420VideoRange => CapturePixelFormat::Yuv420VideoRange,
+        MacosCapturePixelFormat::Yuv420FullRange => CapturePixelFormat::Yuv420FullRange,
+        MacosCapturePixelFormat::Yuv44410BiPlanar => CapturePixelFormat::Yuv44410BiPlanar,
+    }
+}
+
+impl CpuScalarSource for MacosCpuSourceView<'_> {
+    fn storage_extent(&self) -> PixelExtent {
+        let extent = (*self).extent();
+        PixelExtent::new(extent.width, extent.height)
+            .expect("validated macOS CPU source has a non-empty extent")
+    }
+
+    fn pixel_format(&self) -> CapturePixelFormat {
+        capture_pixel_format((*self).pixel_format())
+    }
+
+    fn sample_rgba32f(&self, x: u32, y: u32) -> Result<[f32; 4], CpuSamplingError> {
+        (*self)
+            .sample_rgba32f(x, y)
+            .map_err(|_| CpuSamplingError::ScalarSourceReadFailed { x, y })
+    }
 }
 
 fn capture_origin(frame: &MacosCaptureFrame) -> anyhow::Result<super::PhysicalOrigin> {
@@ -2381,13 +2507,13 @@ mod tests {
     use super::*;
     use crate::input::screen::{
         CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
-        ResolvedScreenColorTransform, ScreenAdmissionCapacity, ScreenAspectPolicy,
-        ScreenBranchPublication, ScreenExtentRequest, ScreenHdrPolicy, ScreenInputGraphGeneration,
-        ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativeTargetPreparation,
-        ScreenNativeTargetPreparer, ScreenPlanBuilder, ScreenProcessingProfile,
-        ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationKind,
-        ScreenPublicationRequest, ScreenReductionFilter, ScreenSceneCutPolicy,
-        ScreenSmoothingPolicy, ScreenToneMapOperator, ScreenToneMapPolicy,
+        PreparedLedToneMap, ResolvedScreenColorTransform, ScreenAdmissionCapacity,
+        ScreenAspectPolicy, ScreenBranchPublication, ScreenExtentRequest, ScreenHdrPolicy,
+        ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+        ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPlanBuilder,
+        ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+        ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter,
+        ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenToneMapOperator, ScreenToneMapPolicy,
     };
     use hypercolor_macos_capture::{
         MacosAttachment, MacosCaptureColorimetry, MacosCaptureSurface, MacosColorRange,
@@ -2397,7 +2523,11 @@ mod tests {
     };
 
     const BGRA8: u32 = 0x4247_5241;
+    const ARGB2101010: u32 = 0x6c31_3072;
     const RGBA16_FLOAT: u32 = 0x5247_6841;
+    const YUV420_VIDEO_RANGE: u32 = 0x3432_3076;
+    const YUV420_FULL_RANGE: u32 = 0x3432_3066;
+    const YUV44410_FULL_RANGE: u32 = 0x7866_3434;
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -2570,6 +2700,73 @@ mod tests {
                     bytes_per_row: encoded_pixel.len() * 4,
                     length_bytes: byte_len,
                 }],
+                pixel_format_fourcc,
+                color,
+                cursor_composed: false,
+                surface,
+            }),
+            attachments: MacosRawFrameAttachments {
+                status: MacosAttachment::Value(0),
+                display_time: MacosAttachment::Value(1_000),
+                display_scale_factor: MacosAttachment::Value(1.0),
+                content_scale: MacosAttachment::Value(1.0),
+                content_rect: MacosAttachment::Value(
+                    MacosPointRect::new(0.0, 0.0, 4.0, 2.0).expect("fixture content rect is valid"),
+                ),
+                dirty_rects: MacosAttachment::Missing,
+                screen_rect: MacosAttachment::Missing,
+                bounding_rect: MacosAttachment::Missing,
+            },
+        };
+        let mut decoder = MacosFrameDecoder::new(7);
+        let MacosFrameEvent::Frame(frame) = decoder.decode(sample).expect("fixture frame decodes")
+        else {
+            panic!("complete fixture sample produces a frame");
+        };
+        Arc::from(frame)
+    }
+
+    fn frame_with_planes(
+        color: MacosCaptureColorimetry,
+        pixel_format_fourcc: u32,
+        planes: &[(&[u8], MacosPixelExtent, usize)],
+        delivered: Option<MacosDeliveredFrameMetadata>,
+    ) -> Arc<MacosCaptureFrame> {
+        let extent = MacosPixelExtent::new(4, 2).expect("fixture extent is valid");
+        let allocation_bytes = planes
+            .iter()
+            .try_fold(0_u64, |total, (bytes, _, _)| {
+                total.checked_add(u64::try_from(bytes.len()).ok()?)
+            })
+            .expect("fixture allocation fits");
+        let mut surface = MacosCaptureSurface::new_cpu_fixture(
+            7,
+            allocation_bytes,
+            1,
+            planes
+                .iter()
+                .map(|(bytes, _, _)| Arc::<[u8]>::from(*bytes))
+                .collect(),
+        )
+        .expect("fixture surface is valid");
+        if let Some(delivered) = delivered {
+            surface = surface
+                .with_delivery_metadata(delivered)
+                .expect("fixture delivery metadata is valid");
+        }
+        let sample = MacosRawCaptureSample {
+            frame: Some(MacosRawCompleteFrame {
+                storage_extent: extent,
+                planes: planes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (bytes, extent, stride))| MacosRawCapturePlane {
+                        index: u32::try_from(index).expect("fixture plane index fits"),
+                        extent: *extent,
+                        bytes_per_row: *stride,
+                        length_bytes: u64::try_from(bytes.len()).expect("fixture length fits"),
+                    })
+                    .collect(),
                 pixel_format_fourcc,
                 color,
                 cursor_composed: false,
@@ -2807,6 +3004,46 @@ mod tests {
         );
     }
 
+    fn publish_scalar_frame(
+        exact: &MacosExactPublicationShared,
+        runtimes: &mut [MacosExactRuntime],
+        source: &MacosPublicationSource,
+        frame: &Arc<MacosCaptureFrame>,
+        captured_at: Instant,
+    ) {
+        let capture = native_cpu_capture_frame(
+            frame,
+            captured_at,
+            captured_at + Duration::from_secs(1),
+            source,
+            source.epoch.source_id.clone(),
+        )
+        .expect("native scalar fixture envelope is valid");
+        let hub = exact.hub().expect("fixture hub remains installed");
+        let runtime = bind_current_macos_exact_runtime(runtimes, source, &hub, captured_at)
+            .expect("current macOS runtime binds")
+            .expect("committed runtime is current");
+        let report = runtime
+            .fanout
+            .as_mut()
+            .expect("CPU runtime owns a fanout")
+            .publish_due_scalar(
+                &hub,
+                &capture,
+                captured_at,
+                ScreenPublicationHealth::Healthy,
+                |execute| {
+                    frame
+                        .with_cpu_source(|samples| execute(&samples))
+                        .map_err(|error| {
+                            CpuPublicationFanoutError::ScalarSourceAccessFailed(error.to_string())
+                        })?
+                },
+            )
+            .expect("native scalar fanout publishes");
+        assert!(report.published() > 0);
+    }
+
     fn active_tone_map_transition_count(
         exact: &MacosExactPublicationShared,
         runtimes: &mut [MacosExactRuntime],
@@ -3015,7 +3252,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_cpu_resolves_p3_and_rejects_non_byte_addressable_hdr() {
+    fn macos_cpu_resolves_p3_and_full_precision_hdr() {
         let p3_color = MacosCaptureColorimetry {
             primaries: MacosColorPrimaries::DisplayP3,
             transfer: MacosTransferFunction::Linear,
@@ -3067,7 +3304,17 @@ mod tests {
             ..ScreenProcessingProfileConfig::default()
         })
         .with_led_tone_map(calibration);
-        assert!(resolve_macos_publication_branch(&hdr_source, &cpu_demand(hdr_profile)).is_err());
+        let hdr = resolve_macos_publication_branch(&hdr_source, &cpu_demand(hdr_profile))
+            .expect("full-precision HDR CPU demand resolves")
+            .expect("configured source owns HDR demand");
+        assert_eq!(
+            hdr.descriptor().source_pixel_format(),
+            CapturePixelFormat::Rgba16Float
+        );
+        assert!(matches!(
+            hdr.descriptor().physical().color_pipeline().transform(),
+            ResolvedScreenColorTransform::ToneMap(_)
+        ));
     }
 
     #[test]
@@ -3612,6 +3859,13 @@ mod tests {
     }
 
     fn native_demand(target: &ScreenNativeExecutionTarget) -> RegisteredScreenBranchDemand {
+        native_demand_for_format(target, CapturePixelFormat::Bgra8)
+    }
+
+    fn native_demand_for_format(
+        target: &ScreenNativeExecutionTarget,
+        format: CapturePixelFormat,
+    ) -> RegisteredScreenBranchDemand {
         RegisteredScreenBranchDemand::new(
             ScreenPublicationRequest::new(
                 ScreenSourceSelector::Configured,
@@ -3620,9 +3874,7 @@ mod tests {
                 ScreenExtentRequest::Native,
                 ScreenAspectPolicy::Contain,
                 Arc::new(ScreenProcessingProfile::new(
-                    ScreenProcessingProfileConfig::exact_encoded_identity(
-                        CapturePixelFormat::Bgra8,
-                    ),
+                    ScreenProcessingProfileConfig::exact_encoded_identity(format),
                 )),
             ),
             NonZeroU32::new(60).expect("nonzero cadence"),
@@ -3735,6 +3987,404 @@ mod tests {
         assert!(surface.retained_owner::<TestPreparedTarget>().is_some());
         assert!(surface.resource_lifetime().is_some());
         assert!(surface.capture_resource_lifetime().is_some());
+    }
+
+    #[test]
+    fn every_extended_native_format_publishes_deferred_work_without_masquerading() {
+        let mappings = [
+            (
+                MacosCapturePixelFormat::Argb2101010,
+                CapturePixelFormat::Argb2101010,
+            ),
+            (
+                MacosCapturePixelFormat::Rgba16Float,
+                CapturePixelFormat::Rgba16Float,
+            ),
+            (
+                MacosCapturePixelFormat::Yuv420VideoRange,
+                CapturePixelFormat::Yuv420VideoRange,
+            ),
+            (
+                MacosCapturePixelFormat::Yuv420FullRange,
+                CapturePixelFormat::Yuv420FullRange,
+            ),
+            (
+                MacosCapturePixelFormat::Yuv44410BiPlanar,
+                CapturePixelFormat::Yuv44410BiPlanar,
+            ),
+        ];
+        for (native, core) in mappings {
+            assert_eq!(capture_pixel_format(native), core);
+            let mut native_frame = (*frame()).clone();
+            native_frame.pixel_format = native;
+            let native_frame = Arc::new(native_frame);
+            let mut native_source = source(&frame());
+            native_source.pixel_format = native;
+            let demand = native_demand_for_format(&target(), core);
+            let resolved = resolve_macos_publication_branch(&native_source, &demand)
+                .expect("extended native demand resolves")
+                .expect("configured macOS source owns extended native demand");
+            assert!(matches!(
+                resolved.descriptor().executor(),
+                ScreenPublicationExecutor::SourceNative(_)
+            ));
+            assert!(!macos_native_descriptor_is_identity(resolved.descriptor()));
+            let publication = publish_native_fixture(&native_frame, &native_source, resolved);
+            let ScreenBranchPayload::NativeWork(payload) = publication.payload() else {
+                panic!("extended native source must publish deferred work");
+            };
+            assert_eq!(payload.source().format(), core);
+            assert_eq!(
+                payload.source().extent(),
+                native_source.geometry.storage_extent()
+            );
+        }
+    }
+
+    #[test]
+    fn rec709_and_rec2020_transfer_metadata_remain_exact() {
+        for (native, core) in [
+            (
+                MacosTransferFunction::Rec709,
+                CaptureTransferFunction::Rec709,
+            ),
+            (
+                MacosTransferFunction::Rec2020,
+                CaptureTransferFunction::Rec2020,
+            ),
+        ] {
+            let frame = frame_with_color(
+                MacosCaptureColorimetry {
+                    primaries: MacosColorPrimaries::Rec2020,
+                    transfer: native,
+                    matrix: None,
+                    range: MacosColorRange::Full,
+                    chroma_location: None,
+                },
+                BGRA8,
+                &[0, 0, 255, 255],
+                None,
+            );
+            assert_eq!(
+                capture_colorimetry(&frame)
+                    .expect("exact SDR transfer maps")
+                    .transfer_function(),
+                core
+            );
+        }
+    }
+
+    #[test]
+    fn rgba16float_cpu_publication_matches_the_shared_scalar_oracle() {
+        let color = MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::Rec2020,
+            transfer: MacosTransferFunction::Linear,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        };
+        let headroom = 1_000.0 / 203.0;
+        let delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            color,
+            Some(203.0),
+            Some(headroom),
+        )
+        .expect("extended-linear HDR delivery metadata is valid");
+        let encoded = [0x00, 0x38, 0x00, 0x3c, 0x00, 0x40, 0x00, 0x3c];
+        let native_frame = frame_with_color(color, RGBA16_FLOAT, &encoded, Some(delivered));
+        let native_source = source(&native_frame);
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        exact.replace_source(Some(native_source.clone()));
+        let resolved =
+            resolve_macos_publication_branch(&native_source, &cpu_demand(transition_profile(true)))
+                .expect("extended-linear CPU demand resolves")
+                .expect("configured source owns extended-linear CPU demand");
+        let mut runtimes = Vec::new();
+        let descriptor = commit_cpu_runtime(
+            &mut builder,
+            &exact,
+            &native_source,
+            resolved,
+            &mut runtimes,
+        );
+        let captured_at = Instant::now() + Duration::from_millis(20);
+        publish_scalar_frame(
+            &exact,
+            &mut runtimes,
+            &native_source,
+            &native_frame,
+            captured_at,
+        );
+        let output = published_surface_bytes(&exact, &descriptor);
+        let pipeline = descriptor.physical().color_pipeline();
+        let prepared = PreparedLedToneMap::prepare(
+            pipeline
+                .effective_source()
+                .expect("managed pipeline retains source"),
+            pipeline
+                .output()
+                .try_known()
+                .expect("managed output is known"),
+            pipeline.calibration().expect("managed calibration exists"),
+        )
+        .expect("shared scalar oracle prepares");
+        let expected = prepared.encode(prepared.decode_and_map_source([0.5, 1.0, 2.0, 1.0]));
+        assert_eq!(&output[..4], &expected);
+    }
+
+    #[test]
+    fn malformed_native_planes_fail_before_cpu_publication() {
+        let native_frame = frame();
+        let native_source = source(&native_frame);
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        exact.replace_source(Some(native_source.clone()));
+        let resolved = resolve_macos_publication_branch(
+            &native_source,
+            &cpu_demand(ScreenProcessingProfile::default()),
+        )
+        .expect("CPU demand resolves")
+        .expect("configured source owns CPU demand");
+        let mut runtimes = Vec::new();
+        let descriptor = commit_cpu_runtime(
+            &mut builder,
+            &exact,
+            &native_source,
+            resolved,
+            &mut runtimes,
+        );
+        let mut malformed = (*native_frame).clone();
+        let mut planes = malformed.planes.to_vec();
+        planes[0].bytes_per_row = 1;
+        malformed.planes = planes.into();
+        let captured_at = Instant::now() + Duration::from_millis(20);
+        let capture = native_cpu_capture_frame(
+            &Arc::new(malformed.clone()),
+            captured_at,
+            captured_at + Duration::from_secs(1),
+            &native_source,
+            native_source.epoch.source_id.clone(),
+        )
+        .expect("malformed plane metadata does not alter native ownership envelope");
+        assert!(
+            publish_macos_scalar_exact(
+                &malformed,
+                &capture,
+                &native_source,
+                &exact,
+                &mut runtimes,
+            )
+            .is_err()
+        );
+        let hub = exact.hub().expect("fixture hub remains installed");
+        let lease = hub
+            .lease(&descriptor)
+            .expect("committed branch has a lease");
+        assert!(lease.read().is_none());
+    }
+
+    #[test]
+    fn every_retained_format_cpu_publication_matches_the_shared_scalar_oracle() {
+        let sdr_rgb = MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::Srgb,
+            transfer: MacosTransferFunction::Srgb,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        };
+        let hdr_linear = MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::Rec2020,
+            transfer: MacosTransferFunction::Linear,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        };
+        let yuv_video = MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::Rec2020,
+            transfer: MacosTransferFunction::Pq,
+            matrix: Some(hypercolor_macos_capture::MacosYuvMatrix::Bt2020),
+            range: MacosColorRange::Video,
+            chroma_location: Some(hypercolor_macos_capture::MacosChromaLocation::Left),
+        };
+        let yuv_full = MacosCaptureColorimetry {
+            transfer: MacosTransferFunction::Hlg,
+            range: MacosColorRange::Full,
+            chroma_location: Some(hypercolor_macos_capture::MacosChromaLocation::Center),
+            ..yuv_video
+        };
+        let hdr_delivery = |format, color| {
+            MacosDeliveredFrameMetadata::new(format, color, Some(203.0), Some(1_000.0 / 203.0))
+                .expect("HDR delivery metadata is valid")
+        };
+        let bgra = frame_with_planes(
+            sdr_rgb,
+            BGRA8,
+            &[(
+                &[32, 64, 128, 255].repeat(8),
+                MacosPixelExtent::new(4, 2).expect("fixture extent is valid"),
+                16,
+            )],
+            None,
+        );
+        let packed_l10r = (3_u32 << 30) | (512 << 20) | (256 << 10) | 128;
+        let l10r_bytes = packed_l10r.to_le_bytes().repeat(8);
+        let l10r = frame_with_planes(
+            hdr_linear,
+            ARGB2101010,
+            &[(
+                &l10r_bytes,
+                MacosPixelExtent::new(4, 2).expect("fixture extent is valid"),
+                16,
+            )],
+            Some(hdr_delivery(
+                MacosCapturePixelFormat::Argb2101010,
+                hdr_linear,
+            )),
+        );
+        let rgba16_pixel = [0x00, 0x38, 0x00, 0x3c, 0x00, 0x40, 0x00, 0x3c];
+        let rgba16_bytes = rgba16_pixel.repeat(8);
+        let rgba16 = frame_with_planes(
+            hdr_linear,
+            RGBA16_FLOAT,
+            &[(
+                &rgba16_bytes,
+                MacosPixelExtent::new(4, 2).expect("fixture extent is valid"),
+                32,
+            )],
+            Some(hdr_delivery(
+                MacosCapturePixelFormat::Rgba16Float,
+                hdr_linear,
+            )),
+        );
+        let y_plane_video = vec![126; 8];
+        let chroma_video = vec![96, 160, 96, 160];
+        let yuv420v = frame_with_planes(
+            yuv_video,
+            YUV420_VIDEO_RANGE,
+            &[
+                (
+                    &y_plane_video,
+                    MacosPixelExtent::new(4, 2).expect("fixture extent is valid"),
+                    4,
+                ),
+                (
+                    &chroma_video,
+                    MacosPixelExtent::new(2, 1).expect("fixture extent is valid"),
+                    4,
+                ),
+            ],
+            Some(hdr_delivery(
+                MacosCapturePixelFormat::Yuv420VideoRange,
+                yuv_video,
+            )),
+        );
+        let y_plane_full = vec![128; 8];
+        let chroma_full = vec![96, 160, 96, 160];
+        let yuv420f = frame_with_planes(
+            yuv_full,
+            YUV420_FULL_RANGE,
+            &[
+                (
+                    &y_plane_full,
+                    MacosPixelExtent::new(4, 2).expect("fixture extent is valid"),
+                    4,
+                ),
+                (
+                    &chroma_full,
+                    MacosPixelExtent::new(2, 1).expect("fixture extent is valid"),
+                    4,
+                ),
+            ],
+            Some(hdr_delivery(
+                MacosCapturePixelFormat::Yuv420FullRange,
+                yuv_full,
+            )),
+        );
+        let yuv444_color = MacosCaptureColorimetry {
+            chroma_location: Some(hypercolor_macos_capture::MacosChromaLocation::TopLeft),
+            ..yuv_full
+        };
+        let y10 = (512_u16 << 6).to_le_bytes();
+        let cb10 = (384_u16 << 6).to_le_bytes();
+        let cr10 = (640_u16 << 6).to_le_bytes();
+        let y444 = y10.repeat(8);
+        let mut chroma444 = Vec::new();
+        for _ in 0..8 {
+            chroma444.extend_from_slice(&cb10);
+            chroma444.extend_from_slice(&cr10);
+        }
+        let yuv444 = frame_with_planes(
+            yuv444_color,
+            YUV44410_FULL_RANGE,
+            &[
+                (
+                    &y444,
+                    MacosPixelExtent::new(4, 2).expect("fixture extent is valid"),
+                    8,
+                ),
+                (
+                    &chroma444,
+                    MacosPixelExtent::new(4, 2).expect("fixture extent is valid"),
+                    16,
+                ),
+            ],
+            Some(hdr_delivery(
+                MacosCapturePixelFormat::Yuv44410BiPlanar,
+                yuv444_color,
+            )),
+        );
+
+        for frame in [bgra, l10r, rgba16, yuv420v, yuv420f, yuv444] {
+            assert_scalar_publication_matches_oracle(&frame);
+        }
+    }
+
+    fn assert_scalar_publication_matches_oracle(frame: &Arc<MacosCaptureFrame>) {
+        let native_source = source(frame);
+        let hdr = native_source.colorimetry.dynamic_range() == Some(CaptureDynamicRange::High);
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        exact.replace_source(Some(native_source.clone()));
+        let resolved =
+            resolve_macos_publication_branch(&native_source, &cpu_demand(transition_profile(hdr)))
+                .expect("native scalar CPU demand resolves")
+                .expect("configured source owns native scalar demand");
+        let mut runtimes = Vec::new();
+        let descriptor = commit_cpu_runtime(
+            &mut builder,
+            &exact,
+            &native_source,
+            resolved,
+            &mut runtimes,
+        );
+        let source_sample = frame
+            .with_cpu_source(|samples| samples.sample_rgba32f(0, 0))
+            .expect("native scalar source validates")
+            .expect("first source sample decodes");
+        let captured_at = Instant::now() + Duration::from_millis(20);
+        publish_scalar_frame(&exact, &mut runtimes, &native_source, frame, captured_at);
+        let output = published_surface_bytes(&exact, &descriptor);
+        let pipeline = descriptor.physical().color_pipeline();
+        let prepared = PreparedLedToneMap::prepare(
+            pipeline
+                .effective_source()
+                .expect("managed pipeline retains source"),
+            pipeline
+                .output()
+                .try_known()
+                .expect("managed output is known"),
+            pipeline.calibration().expect("managed calibration exists"),
+        )
+        .expect("shared scalar oracle prepares");
+        assert_eq!(
+            &output[..4],
+            &prepared.encode(prepared.decode_and_map_source(source_sample))
+        );
     }
 
     #[test]

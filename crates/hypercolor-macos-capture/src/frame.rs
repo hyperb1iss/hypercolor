@@ -13,7 +13,8 @@ use objc2_core_video::{
 };
 #[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
 use objc2_core_video::{
-    CVPixelBufferCreate, CVPixelBufferGetBytesPerRow, CVPixelBufferGetDataSize,
+    CVPixelBufferCreate, CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane,
+    CVPixelBufferGetHeightOfPlane, CVPixelBufferGetWidthOfPlane,
     kCVPixelBufferIOSurfacePropertiesKey,
 };
 use thiserror::Error;
@@ -263,24 +264,42 @@ impl MacosNativeSurfaceLease<'_> {
 }
 
 impl MacosCaptureSurface {
-    /// Creates an IOSurface-backed packed BGRA fixture and its exact plane.
+    /// Creates an IOSurface-backed native-format fixture and exact plane descriptors.
+    ///
+    /// Source planes are tightly packed according to the format's canonical plane
+    /// geometry. Core Video may choose wider native row strides; padding remains
+    /// zeroed and is described by the returned plane metadata.
     #[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
-    pub fn new_native_bgra_fixture(
+    pub fn new_native_fixture(
         extent: MacosPixelExtent,
-        pixels: &[u8],
-    ) -> Result<(Self, MacosCapturePlane), MacosCaptureError> {
-        let packed_stride = usize::try_from(extent.width)
-            .ok()
-            .and_then(|width| width.checked_mul(4))
-            .ok_or(MacosCaptureError::ArithmeticOverflow)?;
-        let expected_len = packed_stride
-            .checked_mul(extent.height as usize)
-            .ok_or(MacosCaptureError::ArithmeticOverflow)?;
-        if pixels.len() != expected_len {
-            return Err(MacosCaptureError::FixturePixelLength {
-                expected: expected_len,
-                actual: pixels.len(),
+        format: MacosCapturePixelFormat,
+        color: MacosCaptureColorimetry,
+        planes: &[&[u8]],
+    ) -> Result<(Self, Vec<MacosCapturePlane>), MacosCaptureError> {
+        color.validate_for(format)?;
+        let expected = format.plane_layout(extent);
+        if planes.len() != expected.len() {
+            return Err(MacosCaptureError::FixturePlaneCount {
+                expected: expected.len(),
+                actual: planes.len(),
             });
+        }
+        for (index, (source, (plane_extent, bytes_per_pixel))) in
+            planes.iter().zip(&expected).enumerate()
+        {
+            let expected_len = usize::try_from(plane_extent.width)
+                .ok()
+                .and_then(|width| width.checked_mul(usize::try_from(*bytes_per_pixel).ok()?))
+                .and_then(|row| row.checked_mul(usize::try_from(plane_extent.height).ok()?))
+                .ok_or(MacosCaptureError::ArithmeticOverflow)?;
+            if source.len() != expected_len {
+                return Err(MacosCaptureError::FixturePlaneLength {
+                    plane: u32::try_from(index)
+                        .map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
+                    expected: expected_len,
+                    actual: source.len(),
+                });
+            }
         }
 
         let empty = CFDictionary::<CFString, CFString>::from_slices(&[], &[]);
@@ -298,7 +317,7 @@ impl MacosCaptureSurface {
                 None,
                 extent.width as usize,
                 extent.height as usize,
-                BGRA8,
+                format.fourcc(color.range)?,
                 Some(attributes.as_opaque()),
                 std::ptr::NonNull::from(&mut raw_pixel_buffer),
             )
@@ -310,37 +329,116 @@ impl MacosCaptureSurface {
             .ok_or(MacosCaptureError::PixelBufferFixtureCreateFailed(code))?;
         // SAFETY: a successful create call returned ownership at +1.
         let pixel_buffer = unsafe { CFRetained::from_raw(raw_pixel_buffer) };
+        let native_plane_count = CVPixelBufferGetPlaneCount(&pixel_buffer);
+        let expected_native_plane_count = if expected.len() == 1 {
+            0
+        } else {
+            expected.len()
+        };
+        if native_plane_count != expected_native_plane_count {
+            return Err(MacosCaptureError::FixturePlaneCount {
+                expected: expected_native_plane_count,
+                actual: native_plane_count,
+            });
+        }
 
         let lock = PixelBufferWriteLock::acquire(&pixel_buffer)?;
-        let bytes_per_row = CVPixelBufferGetBytesPerRow(&pixel_buffer);
-        let base_address = CVPixelBufferGetBaseAddress(&pixel_buffer).cast::<u8>();
-        if base_address.is_null() || bytes_per_row < packed_stride {
-            return Err(MacosCaptureError::MissingCpuPlaneAddress(0));
-        }
-        for (row_index, source) in pixels.chunks_exact(packed_stride).enumerate() {
-            // SAFETY: the pixel buffer is locked, each destination row has at
-            // least packed_stride bytes, and source rows have that exact size.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    source.as_ptr(),
-                    base_address.add(row_index * bytes_per_row),
-                    packed_stride,
-                );
-            }
-        }
-        lock.unlock()?;
-        let length_bytes = u64::try_from(CVPixelBufferGetDataSize(&pixel_buffer))
+        let mut descriptors = Vec::new();
+        descriptors
+            .try_reserve_exact(expected.len())
             .map_err(|_| MacosCaptureError::ArithmeticOverflow)?;
-        let surface = Self::from_pixel_buffer_with_delivery_metadata(pixel_buffer, None, None)?;
-        Ok((
-            surface,
-            MacosCapturePlane {
-                index: 0,
-                extent,
+        for (index, (source, (plane_extent, bytes_per_pixel))) in
+            planes.iter().zip(expected).enumerate()
+        {
+            let (base_address, bytes_per_row, native_extent) = if native_plane_count == 0 {
+                (
+                    CVPixelBufferGetBaseAddress(&pixel_buffer).cast::<u8>(),
+                    CVPixelBufferGetBytesPerRow(&pixel_buffer),
+                    extent,
+                )
+            } else {
+                (
+                    CVPixelBufferGetBaseAddressOfPlane(&pixel_buffer, index).cast::<u8>(),
+                    CVPixelBufferGetBytesPerRowOfPlane(&pixel_buffer, index),
+                    MacosPixelExtent {
+                        width: u32::try_from(CVPixelBufferGetWidthOfPlane(&pixel_buffer, index))
+                            .map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
+                        height: u32::try_from(CVPixelBufferGetHeightOfPlane(&pixel_buffer, index))
+                            .map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
+                    },
+                )
+            };
+            if base_address.is_null() || native_extent != plane_extent {
+                return Err(MacosCaptureError::InvalidPlaneExtent {
+                    plane: u32::try_from(index)
+                        .map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
+                    expected: plane_extent,
+                    actual: native_extent,
+                });
+            }
+            let packed_row_bytes = usize::try_from(plane_extent.width)
+                .ok()
+                .and_then(|width| width.checked_mul(usize::try_from(bytes_per_pixel).ok()?))
+                .ok_or(MacosCaptureError::ArithmeticOverflow)?;
+            if bytes_per_row < packed_row_bytes {
+                return Err(MacosCaptureError::StrideTooSmall {
+                    plane: u32::try_from(index)
+                        .map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
+                    minimum: u64::try_from(packed_row_bytes)
+                        .map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
+                    actual: u64::try_from(bytes_per_row)
+                        .map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
+                });
+            }
+            for (row_index, source_row) in source.chunks_exact(packed_row_bytes).enumerate() {
+                // SAFETY: the pixel buffer is write-locked, the validated native
+                // stride contains each packed row, and source rows are exact.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        source_row.as_ptr(),
+                        base_address.add(row_index * bytes_per_row),
+                        packed_row_bytes,
+                    );
+                }
+            }
+            let length_bytes = u64::try_from(bytes_per_row)
+                .ok()
+                .and_then(|stride| stride.checked_mul(u64::from(plane_extent.height)))
+                .ok_or(MacosCaptureError::ArithmeticOverflow)?;
+            descriptors.push(MacosCapturePlane {
+                index: u32::try_from(index).map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
+                extent: plane_extent,
                 bytes_per_row,
                 length_bytes,
+            });
+        }
+        lock.unlock()?;
+        let surface = Self::from_pixel_buffer_with_delivery_metadata(pixel_buffer, None, None)?;
+        Ok((surface, descriptors))
+    }
+
+    /// Creates an IOSurface-backed packed BGRA fixture and its exact plane.
+    #[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
+    pub fn new_native_bgra_fixture(
+        extent: MacosPixelExtent,
+        pixels: &[u8],
+    ) -> Result<(Self, MacosCapturePlane), MacosCaptureError> {
+        let (surface, mut planes) = Self::new_native_fixture(
+            extent,
+            MacosCapturePixelFormat::Bgra8,
+            MacosCaptureColorimetry {
+                primaries: MacosColorPrimaries::Srgb,
+                transfer: MacosTransferFunction::Srgb,
+                matrix: None,
+                range: MacosColorRange::Full,
+                chroma_location: None,
             },
-        ))
+            &[pixels],
+        )?;
+        let plane = planes
+            .pop()
+            .expect("validated packed BGRA fixture contains one plane");
+        Ok((surface, plane))
     }
 
     #[cfg(feature = "capture-fixtures")]
@@ -1060,8 +1158,14 @@ pub enum MacosCaptureError {
     MissingIoSurface,
     #[error("capture surface has no native pixel buffer")]
     NativeSurfaceUnavailable,
-    #[error("native BGRA fixture expects {expected} bytes, got {actual}")]
-    FixturePixelLength { expected: usize, actual: usize },
+    #[error("native fixture expects {expected} planes, got {actual}")]
+    FixturePlaneCount { expected: usize, actual: usize },
+    #[error("native fixture plane {plane} expects {expected} bytes, got {actual}")]
+    FixturePlaneLength {
+        plane: u32,
+        expected: usize,
+        actual: usize,
+    },
     #[error("Core Video fixture pixel-buffer creation failed with code {0}")]
     PixelBufferFixtureCreateFailed(i32),
     #[error("ScreenCaptureKit filter retention failed")]
@@ -1088,10 +1192,14 @@ pub enum MacosCaptureError {
     PixelBufferUnlockFailed(i32),
     #[error("Core Video returned no base address for plane {0}")]
     MissingCpuPlaneAddress(usize),
-    #[error("CPU publication requires BGRA8 input, got {0:?}")]
+    #[error("exact BGRA copy requires BGRA8 input, got {0:?}")]
     UnsupportedCpuPixelFormat(MacosCapturePixelFormat),
-    #[error("CPU SDR publication does not support {0:?} transfer")]
-    UnsupportedCpuTransferFunction(MacosTransferFunction),
+    #[error("CPU pixel ({x}, {y}) is outside storage extent {extent:?}")]
+    CpuPixelOutsideStorage {
+        x: u32,
+        y: u32,
+        extent: MacosPixelExtent,
+    },
     #[error("CPU destination stride {actual} is smaller than {minimum}")]
     InvalidCpuDestinationStride { minimum: usize, actual: usize },
     #[error("CPU destination has {actual} bytes, but {required} are required")]

@@ -9,7 +9,7 @@ use thiserror::Error;
 use super::reducer::branch_requires_materialization;
 use super::{
     CaptureCadence, CaptureCadenceError, CaptureFrame, CapturePacer, CaptureTransferFunction,
-    CpuReductionError, CpuReductionExecutor, CpuSurfaceMaterializationError,
+    CpuReductionError, CpuReductionExecutor, CpuScalarSource, CpuSurfaceMaterializationError,
     CpuZoneMaterializationError, LedToneMapCurveTransition, PixelExtent,
     PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch, PreparedCpuSurfaceMaterializer,
     PreparedCpuZoneMaterializer, PreparedLedToneMap, PreparedScreenPublication, RawCaptureSurface,
@@ -657,6 +657,52 @@ impl PreparedCpuPublicationFanout {
         self.publish_due_inner(hub, frame, now, health, None)
     }
 
+    /// Publish due branches from one retained native scalar decoder.
+    ///
+    /// The native frame remains the exact format and lifetime authority. RGB
+    /// samples stay full precision until the prepared reducer writes its final
+    /// requested RGBA8 or BGRA8 destination. Only the scalar reduction runs
+    /// inside `with_source`; hub reservation and atomic finalization do not.
+    ///
+    /// # Errors
+    ///
+    /// Preserves [`Self::publish_due`] errors and rejects a scalar decoder whose
+    /// extent or native format differs from the resolved source.
+    pub fn publish_due_scalar(
+        &mut self,
+        hub: &ScreenPublicationHub,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        now: Instant,
+        health: ScreenPublicationHealth,
+        with_source: impl FnOnce(
+            &mut dyn FnMut(&dyn CpuScalarSource) -> Result<(), CpuPublicationFanoutError>,
+        ) -> Result<(), CpuPublicationFanoutError>,
+    ) -> Result<CpuPublicationFanoutReport, CpuPublicationFanoutError> {
+        self.observe_deadlines(now)?;
+        let mut report = self.prepare_due_inner(hub, frame, now, None)?;
+        let mut source_was_provided = false;
+        let source_result = {
+            let mut execute = |samples: &dyn CpuScalarSource| {
+                if source_was_provided {
+                    return Err(CpuPublicationFanoutError::ScalarSourceProvidedTwice);
+                }
+                source_was_provided = true;
+                self.execute_due_scalar(frame, samples)
+            };
+            with_source(&mut execute)
+        };
+        if let Err(error) = source_result {
+            self.clear_pending_publications();
+            return Err(error);
+        }
+        if !source_was_provided {
+            self.clear_pending_publications();
+            return Err(CpuPublicationFanoutError::ScalarSourceNotProvided);
+        }
+        self.finalize_due_inner(hub, frame, now, health, None, &mut report)?;
+        Ok(report)
+    }
+
     /// Publish only physical routes selected by an immutable preparation mask.
     ///
     /// Deadlines still advance for every logical branch so GPU-reduced routes
@@ -716,6 +762,19 @@ impl PreparedCpuPublicationFanout {
                 ..CpuPublicationFanoutReport::default()
             });
         };
+        let mut report = self.prepare_due_inner(hub, frame, now, physical_mask)?;
+        self.execute_due_bytes(frame)?;
+        self.finalize_due_inner(hub, frame, now, health, physical_mask, &mut report)?;
+        Ok(report)
+    }
+
+    fn prepare_due_inner(
+        &mut self,
+        hub: &ScreenPublicationHub,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        now: Instant,
+        physical_mask: Option<&[bool]>,
+    ) -> Result<CpuPublicationFanoutReport, CpuPublicationFanoutError> {
         let sequence = frame.metadata().sequence;
         let native_sequence =
             NonZeroU64::new(sequence).ok_or(CpuPublicationFanoutError::NativeSequenceZero)?;
@@ -731,7 +790,6 @@ impl PreparedCpuPublicationFanout {
             return Err(CpuPublicationFanoutError::ExecutionNotAttached);
         }
         let mut report = CpuPublicationFanoutReport::default();
-        let plan_generation = self.batch.plan_generation();
         self.reservations.clear();
         self.publications.clear();
         self.direct_batch_indices.clear();
@@ -811,6 +869,13 @@ impl PreparedCpuPublicationFanout {
             }
         }
         self.sample_tone_map_transitions(frame.metadata().captured_at);
+        Ok(report)
+    }
+
+    fn execute_due_bytes(
+        &mut self,
+        frame: &CaptureFrame<RawCaptureSurface>,
+    ) -> Result<(), CpuPublicationFanoutError> {
         let executor = self
             .executor
             .as_ref()
@@ -819,22 +884,73 @@ impl PreparedCpuPublicationFanout {
             .workspace
             .as_mut()
             .expect("attached fanout retains its workspace");
-        if let Err(error) = executor.execute_aligned_publications(
-            &self.batch,
-            frame,
-            workspace,
-            &self.workspace_schedule,
-            &self.direct_batch_indices,
-            &self.tone_map_overrides,
-            &mut self.publications,
-        ) {
-            clear_pending_publications(
-                &mut self.reservations,
+        executor
+            .execute_aligned_publications(
+                &self.batch,
+                frame,
+                workspace,
+                &self.workspace_schedule,
+                &self.direct_batch_indices,
+                &self.tone_map_overrides,
                 &mut self.publications,
-                &mut self.direct_batch_indices,
-            );
-            return Err(error.into());
-        }
+            )
+            .map(|_| ())
+            .map_err(CpuPublicationFanoutError::from)
+            .inspect_err(|_| self.clear_pending_publications())
+    }
+
+    fn execute_due_scalar(
+        &mut self,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        samples: &dyn CpuScalarSource,
+    ) -> Result<(), CpuPublicationFanoutError> {
+        let executor = self
+            .executor
+            .as_ref()
+            .expect("attached fanout retains its executor");
+        let workspace = self
+            .workspace
+            .as_mut()
+            .expect("attached fanout retains its workspace");
+        executor
+            .execute_aligned_scalar_publications(
+                &self.batch,
+                frame,
+                samples,
+                workspace,
+                &self.workspace_schedule,
+                &self.direct_batch_indices,
+                &self.tone_map_overrides,
+                &mut self.publications,
+            )
+            .map(|_| ())
+            .map_err(CpuPublicationFanoutError::from)
+            .inspect_err(|_| self.clear_pending_publications())
+    }
+
+    fn clear_pending_publications(&mut self) {
+        clear_pending_publications(
+            &mut self.reservations,
+            &mut self.publications,
+            &mut self.direct_batch_indices,
+        );
+    }
+
+    fn finalize_due_inner(
+        &mut self,
+        hub: &ScreenPublicationHub,
+        frame: &CaptureFrame<RawCaptureSurface>,
+        now: Instant,
+        health: ScreenPublicationHealth,
+        physical_mask: Option<&[bool]>,
+        report: &mut CpuPublicationFanoutReport,
+    ) -> Result<(), CpuPublicationFanoutError> {
+        let sequence = frame.metadata().sequence;
+        let plan_generation = self.batch.plan_generation();
+        let workspace = self
+            .workspace
+            .as_mut()
+            .expect("attached fanout retains its workspace");
 
         let (physical_routes, reservations, publications) = (
             &mut self.physical,
@@ -920,7 +1036,7 @@ impl PreparedCpuPublicationFanout {
             &mut self.direct_batch_indices,
         );
         report.needs_source |= self.any_pending(physical_mask);
-        Ok(report)
+        Ok(())
     }
 
     /// Publish one already-reduced physical RGBA plane to its due logical
@@ -1813,6 +1929,15 @@ pub enum CpuPublicationFanoutError {
     /// Hub metadata requires positive native sequence identity.
     #[error("CPU publication fanout received native sequence zero")]
     NativeSequenceZero,
+    /// A retained scalar source rejected access before reduction.
+    #[error("CPU scalar source access failed: {0}")]
+    ScalarSourceAccessFailed(String),
+    /// The retained source provider did not expose one scalar source.
+    #[error("CPU scalar source provider did not expose a source")]
+    ScalarSourceNotProvided,
+    /// The retained source provider exposed more than one scalar source.
+    #[error("CPU scalar source provider exposed more than one source")]
+    ScalarSourceProvidedTwice,
     /// A runtime physical selection mask belongs to another prepared shape.
     #[error("CPU fanout physical mask has {actual} entries; expected {expected}")]
     PhysicalMaskLengthMismatch { expected: usize, actual: usize },

@@ -400,6 +400,13 @@ fn patterned_pixels(extent: PixelExtent, format: CapturePixelFormat) -> Vec<u8> 
                 CapturePixelFormat::Bgra8 => {
                     pixels.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
                 }
+                CapturePixelFormat::Argb2101010
+                | CapturePixelFormat::Rgba16Float
+                | CapturePixelFormat::Yuv420VideoRange
+                | CapturePixelFormat::Yuv420FullRange
+                | CapturePixelFormat::Yuv44410BiPlanar => {
+                    panic!("packed reducer fixture accepts only RGBA8 and BGRA8")
+                }
             }
         }
     }
@@ -480,6 +487,13 @@ fn one_pixel_roundtrips_every_filter_and_channel_order() {
                 let expected = match target_format {
                     CapturePixelFormat::Rgba8 => vec![19, 71, 3, 127],
                     CapturePixelFormat::Bgra8 => vec![3, 71, 19, 127],
+                    CapturePixelFormat::Argb2101010
+                    | CapturePixelFormat::Rgba16Float
+                    | CapturePixelFormat::Yuv420VideoRange
+                    | CapturePixelFormat::Yuv420FullRange
+                    | CapturePixelFormat::Yuv44410BiPlanar => {
+                        panic!("packed reducer fixture accepts only RGBA8 and BGRA8")
+                    }
                 };
                 assert_eq!(output, expected);
             }
@@ -913,6 +927,13 @@ fn scalar_reference(
                 CapturePixelFormat::Bgra8 => {
                     output.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
                 }
+                CapturePixelFormat::Argb2101010
+                | CapturePixelFormat::Rgba16Float
+                | CapturePixelFormat::Yuv420VideoRange
+                | CapturePixelFormat::Yuv420FullRange
+                | CapturePixelFormat::Yuv44410BiPlanar => {
+                    panic!("packed reducer fixture accepts only RGBA8 and BGRA8")
+                }
             }
         }
     }
@@ -1034,6 +1055,13 @@ fn scalar_read(
             source[index],
             source[index + 3],
         ],
+        CapturePixelFormat::Argb2101010
+        | CapturePixelFormat::Rgba16Float
+        | CapturePixelFormat::Yuv420VideoRange
+        | CapturePixelFormat::Yuv420FullRange
+        | CapturePixelFormat::Yuv44410BiPlanar => {
+            panic!("packed reducer fixture accepts only RGBA8 and BGRA8")
+        }
     }
 }
 

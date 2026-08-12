@@ -19,6 +19,7 @@ mod worker;
 pub use native::MacosScreenCaptureSession;
 
 pub use clock::{MacosDisplayClock, MacosDisplayClockError};
+pub use cpu::MacosCpuSourceView;
 pub use diagnostics::{MacosCaptureCallbackDiagnostics, MacosFrameDropReason};
 #[cfg(target_os = "macos")]
 pub use frame::MacosNativeSurfaceLease;
