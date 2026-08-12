@@ -163,18 +163,6 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{ids, output_pause_for_menu_id};
-
-    #[test]
-    fn output_menu_ids_encode_the_displayed_desired_state() {
-        assert_eq!(output_pause_for_menu_id(ids::PAUSE_OUTPUT), Some(true));
-        assert_eq!(output_pause_for_menu_id(ids::RESUME_OUTPUT), Some(false));
-        assert_eq!(output_pause_for_menu_id("unrelated"), None);
-    }
-}
-
 /// Build menu items shown when disconnected from the daemon.
 fn build_disconnected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
     let status = MenuItem::with_id(
@@ -234,4 +222,16 @@ fn build_servers_submenu(state: &AppState) -> anyhow::Result<Submenu> {
 
 fn should_show_servers_menu(state: &AppState) -> bool {
     state.servers.len() > 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ids, output_pause_for_menu_id};
+
+    #[test]
+    fn output_menu_ids_encode_the_displayed_desired_state() {
+        assert_eq!(output_pause_for_menu_id(ids::PAUSE_OUTPUT), Some(true));
+        assert_eq!(output_pause_for_menu_id(ids::RESUME_OUTPUT), Some(false));
+        assert_eq!(output_pause_for_menu_id("unrelated"), None);
+    }
 }
