@@ -153,6 +153,15 @@ test ! -s "$SANDBOX/ambient.target-env"
 
 (
   cd "$SANDBOX/caller"
+  CARGO_TARGET_DIR=nextest-target run_wrapper nextest \
+    cargo nextest run --locked -p hypercolor-core
+)
+assert_args nextest nextest run --target-dir \
+  "$SANDBOX/caller/nextest-target" --locked -p hypercolor-core
+test ! -s "$SANDBOX/nextest.target-env"
+
+(
+  cd "$SANDBOX/caller"
   CARGO_TARGET_DIR=ignored run_wrapper explicit \
     cargo +nightly test --target-dir explicit-target -p hypercolor-core
 )

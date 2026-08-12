@@ -53,6 +53,16 @@ if [ "$CARGO_SUBCOMMAND" = "tauri" ]; then
   fi
 fi
 
+NEXTEST_SUBCOMMAND=""
+NEXTEST_SUBCOMMAND_INDEX=0
+if [ "$CARGO_SUBCOMMAND" = "nextest" ]; then
+  nextest_subcommand_index=$((CARGO_SUBCOMMAND_INDEX + 1))
+  if [ "$nextest_subcommand_index" -le "$#" ]; then
+    NEXTEST_SUBCOMMAND="${!nextest_subcommand_index}"
+    NEXTEST_SUBCOMMAND_INDEX="$nextest_subcommand_index"
+  fi
+fi
+
 TOP_LEVEL_COMMAND="$(basename "$1")"
 
 TARGET_DIR_ARG=""
@@ -296,7 +306,12 @@ done
 # --emit=metadata units at all.
 USES_TARGET_DIR=0
 case "$CARGO_SUBCOMMAND" in
-  build | check | test | bench | clippy | doc | run | clean | nextest)
+  build | check | test | bench | clippy | doc | run | clean)
+    USES_TARGET_DIR=1
+    ;;
+esac
+case "$NEXTEST_SUBCOMMAND" in
+  run | list | archive)
     USES_TARGET_DIR=1
     ;;
 esac
@@ -324,6 +339,11 @@ if [ "$USES_TARGET_DIR" -eq 1 ]; then
       else
         set -- "${cargo_args[@]}" -- --target-dir "$TARGET_DIR"
       fi
+    elif [ "$CARGO_SUBCOMMAND" = "nextest" ]; then
+      set -- \
+        "${cargo_args[@]:0:NEXTEST_SUBCOMMAND_INDEX}" \
+        --target-dir "$TARGET_DIR" \
+        "${cargo_args[@]:NEXTEST_SUBCOMMAND_INDEX}"
     else
       set -- \
         "${cargo_args[@]:0:CARGO_SUBCOMMAND_INDEX}" \
