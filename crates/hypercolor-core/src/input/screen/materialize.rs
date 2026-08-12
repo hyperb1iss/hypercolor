@@ -601,6 +601,7 @@ impl PreparedCpuSurfaceMaterializer {
                 elapsed,
                 self.committed_bars
                     .is_some_and(|committed| committed != bars),
+                false,
             )?;
             for (pixel, color) in output
                 .chunks_exact_mut(BYTES_PER_PIXEL)
@@ -1054,6 +1055,7 @@ impl PreparedCpuZoneMaterializer {
                 self.transfer,
                 elapsed,
                 reset_history,
+                false,
             )?;
         self.apply_tuning(&mut output[..color_count]);
         output[color_count..].fill([0, 0, 0]);

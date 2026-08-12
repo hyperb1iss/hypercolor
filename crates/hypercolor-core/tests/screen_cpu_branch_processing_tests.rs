@@ -364,6 +364,7 @@ fn smoothed_color(
             CaptureTransferFunction::Srgb,
             Duration::ZERO,
             false,
+            false,
         )
         .expect("reference baseline stages");
     assert!(smoother.commit_staged());
@@ -375,6 +376,7 @@ fn smoothed_color(
             1,
             CaptureTransferFunction::Srgb,
             elapsed,
+            false,
             false,
         )
         .expect("reference response stages");
@@ -1369,6 +1371,7 @@ fn prepared_smoothing_is_equivalent_at_30_60_and_120_hz() {
                 CaptureTransferFunction::Srgb,
                 Duration::ZERO,
                 false,
+                false,
             )
             .expect("initial state stages");
         assert!(smoother.commit_staged());
@@ -1382,6 +1385,7 @@ fn prepared_smoothing_is_equivalent_at_30_60_and_120_hz() {
                     1,
                     CaptureTransferFunction::Srgb,
                     interval,
+                    false,
                     false,
                 )
                 .expect("response stage succeeds");
@@ -1418,6 +1422,7 @@ fn normalized_scene_cut_resets_independent_of_grid_size() {
                 CaptureTransferFunction::Srgb,
                 Duration::ZERO,
                 false,
+                false,
             )
             .expect("baseline stages");
         assert!(smoother.commit_staged());
@@ -1430,10 +1435,50 @@ fn normalized_scene_cut_resets_independent_of_grid_size() {
                 CaptureTransferFunction::Srgb,
                 Duration::from_millis(16),
                 false,
+                false,
             )
             .expect("scene cut stages");
         assert!(colors.iter().all(|color| *color == [255, 255, 255]));
     }
+}
+
+#[test]
+fn prepared_smoothing_can_suppress_scene_cut_bypass() {
+    let policy = ScreenSmoothingPolicy::Exponential {
+        time_constant: Duration::from_mins(1),
+        scene_cut: ScreenSceneCutPolicy::MeanAbsoluteDelta {
+            threshold: scalar(0.01),
+        },
+    };
+    let mut smoother = PreparedTemporalSmoother::try_new(policy, 1, 1).expect("smoother prepares");
+    let mut colors = [[0, 0, 0]];
+    smoother
+        .stage(
+            &mut colors,
+            1,
+            1,
+            CaptureTransferFunction::Srgb,
+            Duration::ZERO,
+            false,
+            false,
+        )
+        .expect("baseline stages");
+    assert!(smoother.commit_staged());
+
+    colors[0] = [255, 255, 255];
+    smoother
+        .stage(
+            &mut colors,
+            1,
+            1,
+            CaptureTransferFunction::Srgb,
+            Duration::from_millis(16),
+            false,
+            true,
+        )
+        .expect("suppressed scene cut stages");
+
+    assert!(colors[0][0] < 255);
 }
 
 #[test]

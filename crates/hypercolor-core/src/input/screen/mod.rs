@@ -1011,6 +1011,7 @@ impl ScreenCaptureInput {
             &mut self.policy_pixels,
             elapsed,
             reset_smoother,
+            false,
             &self.surface_resource_owner,
         )?
         else {
@@ -1584,6 +1585,7 @@ fn downscale_frame(
     policy_pixels: &mut Vec<[u8; 3]>,
     elapsed: Duration,
     reset_smoother: bool,
+    suppress_scene_cut_bypass: bool,
     surface_resource_owner: &Arc<dyn SurfaceResourceOwner>,
 ) -> Result<Option<PublishedSurface>, SurfaceResourceError> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
@@ -1662,6 +1664,7 @@ fn downscale_frame(
         target_height,
         elapsed,
         reset_smoother,
+        suppress_scene_cut_bypass,
     ) {
         lease.release();
         return Ok(None);
