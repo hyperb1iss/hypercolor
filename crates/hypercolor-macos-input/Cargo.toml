@@ -30,3 +30,11 @@ objc2-core-graphics = { workspace = true, features = [
   "CGEventTypes",
 ] }
 mach2 = { workspace = true }
+
+[[example]]
+name = "dump_macos_input"
+test = true
+
+[[example]]
+name = "probe_macos_tcc_owner"
+test = true
