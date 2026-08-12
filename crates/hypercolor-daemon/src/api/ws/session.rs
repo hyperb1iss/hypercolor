@@ -59,6 +59,9 @@ use super::relays::{
 use crate::api::AppState;
 use crate::api::effects::active_primary_effect;
 use crate::api::layouts::validate_layout_sampling_radii;
+use crate::api::local::{
+    TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
+};
 use crate::api::scenes;
 use crate::api::security::RequestAuthContext;
 use crate::interaction_routing::{
@@ -96,7 +99,56 @@ pub(crate) async fn ws_handler(
     let ws = ws
         .max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES);
-    upgrade_handler(ws, move |socket| handle_socket(socket, state, auth_context))
+    upgrade_handler(ws, move |socket| {
+        handle_socket(SessionSocket::Network(socket), state, auth_context, None)
+    })
+}
+
+pub(crate) fn spawn_trusted_local_socket(
+    state: Arc<AppState>,
+    runtime: &tokio::runtime::Handle,
+) -> TrustedLocalWebSocket {
+    let (socket, transport) = trusted_local_socket_pair();
+    let shutdown = transport.shutdown_token();
+    drop(runtime.spawn(handle_socket(
+        SessionSocket::Local(transport),
+        state,
+        crate::api::security::trusted_local_control_context(),
+        Some(shutdown),
+    )));
+    socket
+}
+
+enum SessionSocket {
+    Network(WebSocket),
+    Local(TrustedLocalSocketTransport),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SessionSocketError {
+    #[error(transparent)]
+    Network(#[from] axum::Error),
+    #[error("trusted local websocket transport closed")]
+    LocalClosed,
+}
+
+impl SessionSocket {
+    async fn send(&mut self, message: Message) -> Result<(), SessionSocketError> {
+        match self {
+            Self::Network(socket) => socket.send(message).await.map_err(Into::into),
+            Self::Local(socket) => socket
+                .send(message)
+                .await
+                .map_err(|()| SessionSocketError::LocalClosed),
+        }
+    }
+
+    async fn recv(&mut self) -> Option<Result<Message, SessionSocketError>> {
+        match self {
+            Self::Network(socket) => socket.recv().await.map(|result| result.map_err(Into::into)),
+            Self::Local(socket) => socket.recv().await.map(Ok),
+        }
+    }
 }
 
 fn ws_origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
@@ -159,9 +211,10 @@ fn is_loopback_origin(origin: &HeaderValue) -> bool {
     reason = "Socket loop coordinates handshake, heartbeats, relay queues, and client messages"
 )]
 async fn handle_socket(
-    mut socket: WebSocket,
+    mut socket: SessionSocket,
     state: Arc<AppState>,
     auth_context: RequestAuthContext,
+    shutdown: Option<CancellationToken>,
 ) {
     let _client_guard = WsClientGuard::register();
 
@@ -308,6 +361,8 @@ async fn handle_socket(
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
+            () = wait_for_shutdown(shutdown.as_ref()) => break,
+
             // Outbound JSON: bounded queue (drop under pressure in producer tasks).
             json_msg = json_rx.recv() => {
                 match json_msg {
@@ -492,18 +547,22 @@ async fn handle_socket(
         }
     }
 
-    relay_handle.abort();
-    frame_relay_handle.abort();
-    spectrum_relay_handle.abort();
-    canvas_relay_handle.abort();
-    screen_canvas_relay_handle.abort();
-    screen_zones_relay_handle.abort();
-    web_viewport_canvas_relay_handle.abort();
-    display_preview_relay_handle.abort();
-    zone_preview_relay_handle.abort();
-    metrics_relay_handle.abort();
-    device_metrics_relay_handle.abort();
-    sensors_relay_handle.abort();
+    abort_and_join_relays([
+        relay_handle,
+        frame_relay_handle,
+        spectrum_relay_handle,
+        canvas_relay_handle,
+        screen_canvas_relay_handle,
+        screen_zones_relay_handle,
+        web_viewport_canvas_relay_handle,
+        display_preview_relay_handle,
+        zone_preview_relay_handle,
+        metrics_relay_handle,
+        device_metrics_relay_handle,
+        sensors_relay_handle,
+    ])
+    .await;
+    browser_previews.shutdown().await;
     while let Some(cursor) = preview_cursors.pop_next() {
         preview_rx.complete(cursor.publication());
     }
@@ -513,6 +572,22 @@ async fn handle_socket(
         .clear_many(zone_layout_preview_keys)
         .await;
     debug!("WebSocket client disconnected");
+}
+
+async fn wait_for_shutdown(shutdown: Option<&CancellationToken>) {
+    match shutdown {
+        Some(shutdown) => shutdown.cancelled().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn abort_and_join_relays<const N: usize>(handles: [JoinHandle<()>; N]) {
+    for handle in &handles {
+        handle.abort();
+    }
+    for handle in handles {
+        let _ = handle.await;
+    }
 }
 
 pub(super) struct WsInputDemandLeases {
@@ -927,6 +1002,17 @@ impl BrowserPreviewSession {
         }
     }
 
+    async fn shutdown(&mut self) {
+        let bindings = self
+            .previews
+            .drain()
+            .map(|(_, binding)| binding)
+            .collect::<Vec<_>>();
+        for binding in bindings {
+            close_preview_binding_and_wait(&self.interaction_routing, binding).await;
+        }
+    }
+
     fn active_attachment(
         &self,
         preview_id: &str,
@@ -1094,7 +1180,7 @@ async fn handle_client_message(
     preview_outbound: &PreviewOutboundSender,
     preview_capability: &mut PreviewTransportCapability,
     preview_cursors: &mut PreviewCursorQueue,
-    socket: &mut WebSocket,
+    socket: &mut SessionSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
         Ok(msg) => msg,
@@ -1295,7 +1381,7 @@ async fn handle_client_message(
 }
 
 async fn send_protocol_result(
-    socket: &mut WebSocket,
+    socket: &mut SessionSocket,
     result: Result<ServerMessage, WsProtocolError>,
 ) {
     let message = result.unwrap_or_else(WsProtocolError::into_message);
@@ -1526,7 +1612,10 @@ fn paced_fps(avg_frame_secs: f64, target_fps: u32) -> f64 {
 }
 
 /// Serialize and send a JSON message over the WebSocket.
-async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), axum::Error> {
+async fn send_json(
+    socket: &mut SessionSocket,
+    msg: &impl Serialize,
+) -> Result<(), SessionSocketError> {
     let json = serde_json::to_string(msg).unwrap_or_default();
     socket.send(Message::Text(json.into())).await.map_err(|e| {
         debug!("WebSocket send error: {e}");

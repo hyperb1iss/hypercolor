@@ -17,4 +17,5 @@ mod session;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use session::ws_handler;
+pub(crate) use protocol::MAX_WS_MESSAGE_BYTES;
+pub(crate) use session::{spawn_trusted_local_socket, ws_handler};

@@ -99,6 +99,10 @@ pub trait DaemonLifecycleExtension: Send + Sync {
         Ok(())
     }
 
+    async fn api_ready(&self, _daemon: &DaemonState, _state: Arc<AppState>) -> Result<()> {
+        Ok(())
+    }
+
     async fn shutdown(&self, _daemon: &DaemonState) -> Result<()> {
         Ok(())
     }

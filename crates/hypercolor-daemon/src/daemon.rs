@@ -178,6 +178,12 @@ pub async fn run_with_extensions(
     let ui_dir = resolve_ui_dir(options.ui_dir);
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
     api::displays::sync_display_preference_overlays(&app_state).await;
+    if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
+        if let Err(shutdown_error) = daemon_state.shutdown().await {
+            warn!(%shutdown_error, "Failed to roll back daemon after API-ready hook failure");
+        }
+        return Err(error);
+    }
     let router = api::build_router(app_state, ui_dir.as_deref());
 
     let mdns_publisher = MdnsPublisher::new(
@@ -204,6 +210,25 @@ pub async fn run_with_extensions(
     daemon_state.shutdown().await?;
 
     info!("Hypercolor daemon exited cleanly");
+    Ok(())
+}
+
+async fn notify_api_ready_extensions(daemon: &DaemonState, state: &Arc<AppState>) -> Result<()> {
+    for extension in daemon.lifecycle_extensions.clone() {
+        info!(
+            extension = extension.name(),
+            "Starting API-ready daemon extension hook"
+        );
+        extension
+            .api_ready(daemon, Arc::clone(state))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to start API-ready hook for daemon extension {}",
+                    extension.name()
+                )
+            })?;
+    }
     Ok(())
 }
 
@@ -708,8 +733,56 @@ fn unbracket_host(host: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_env_filter, resolve_log_level};
-    use hypercolor_types::config::{HypercolorConfig, LogLevel};
+    use std::sync::{Arc, Mutex};
+
+    use hypercolor_core::config::ConfigManager;
+    use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
+
+    use super::{default_env_filter, notify_api_ready_extensions, resolve_log_level};
+    use crate::api::AppState;
+    use crate::extensions::DaemonLifecycleExtension;
+    use crate::startup::{DaemonState, default_config};
+
+    struct DataDirOverride;
+
+    impl DataDirOverride {
+        fn install(path: std::path::PathBuf) -> Self {
+            ConfigManager::set_data_dir_override(Some(path));
+            Self
+        }
+    }
+
+    impl Drop for DataDirOverride {
+        fn drop(&mut self) {
+            ConfigManager::set_data_dir_override(None);
+        }
+    }
+
+    struct ApiReadyProbe {
+        name: &'static str,
+        expected_state: Arc<AppState>,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DaemonLifecycleExtension for ApiReadyProbe {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        async fn api_ready(
+            &self,
+            _daemon: &DaemonState,
+            state: Arc<AppState>,
+        ) -> anyhow::Result<()> {
+            assert!(Arc::ptr_eq(&state, &self.expected_state));
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(self.name);
+            Ok(())
+        }
+    }
 
     #[test]
     fn resolve_log_level_prefers_cli_flag() {
@@ -743,5 +816,36 @@ mod tests {
                 "level {level} should squelch mdns_sd"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn api_ready_hooks_receive_the_serving_state_in_registration_order() {
+        let directory = tempfile::tempdir().expect("daemon test directory should be created");
+        let _data_dir = DataDirOverride::install(directory.path().join("data"));
+        let mut config = default_config();
+        config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
+        let mut daemon = DaemonState::initialize(&config, directory.path().join("hypercolor.toml"))
+            .expect("daemon test state should initialize");
+        let state = Arc::new(AppState::new_with_data_dir(directory.path().join("api")));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        for name in ["first", "second"] {
+            daemon.register_lifecycle_extension(Arc::new(ApiReadyProbe {
+                name,
+                expected_state: Arc::clone(&state),
+                calls: Arc::clone(&calls),
+            }));
+        }
+
+        notify_api_ready_extensions(&daemon, &state)
+            .await
+            .expect("API-ready hooks should succeed");
+
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            ["first", "second"]
+        );
     }
 }
