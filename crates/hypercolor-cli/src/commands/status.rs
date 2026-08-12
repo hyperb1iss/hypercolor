@@ -102,6 +102,7 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
     let mut lines = Vec::with_capacity(16);
 
     lines.push(String::new());
+
     lines.push(format!("  {}", p.help_banner_title()));
     lines.push(format!("  {}", p.muted(&"\u{2500}".repeat(21))));
     lines.push(String::new());
@@ -133,6 +134,52 @@ fn status_table_lines(data: &serde_json::Value, p: &Painter) -> Vec<String> {
     lines.push(String::new());
 
     // ── Effect ──────────────────────────────────────────────────────
+    if let Some(ownership) = data.get("macos_daemon_ownership") {
+        let owner = ownership
+            .get("active_owner")
+            .and_then(serde_json::Value::as_str)
+            .map(humanize_macos_owner)
+            .unwrap_or_else(|| "unknown".to_owned());
+        let epoch = ownership
+            .get("owner_epoch")
+            .and_then(serde_json::Value::as_u64)
+            .map(|epoch| format!("epoch {epoch}"))
+            .unwrap_or_else(|| "epoch pending".to_owned());
+        lines.push(format!(
+            "  {}   {}  {}",
+            p.muted(&pad("macOS owner", 10)),
+            p.name(&owner),
+            p.muted(&epoch),
+        ));
+
+        if let Some(conflict) = ownership.get("conflict") {
+            let contender = conflict
+                .get("contender")
+                .and_then(serde_json::Value::as_str)
+                .map(humanize_macos_owner)
+                .unwrap_or_else(|| "unknown contender".to_owned());
+            lines.push(format!(
+                "  {}   {}",
+                p.muted(&pad("", 10)),
+                p.warning(&format!("{contender} also attempted startup")),
+            ));
+        }
+
+        if let Some(recovery) = ownership.get("recovery_required") {
+            let phase = recovery
+                .get("phase")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown_phase")
+                .replace('_', " ");
+            lines.push(format!(
+                "  {}   {}",
+                p.muted(&pad("", 10)),
+                p.warning(&format!("owner recovery required at {phase}")),
+            ));
+        }
+        lines.push(String::new());
+    }
+
     let effect_name = str_field(data, "active_effect", "off");
     lines.push(format!(
         "  {}   {}",
@@ -446,6 +493,16 @@ fn str_field<'a>(v: &'a serde_json::Value, key: &str, default: &'a str) -> &'a s
         .unwrap_or(default)
 }
 
+fn humanize_macos_owner(owner: &str) -> String {
+    match owner {
+        "app_sidecar" => "Hypercolor.app sidecar".to_owned(),
+        "launchd_service" | "direct_launchd" => "launchd service".to_owned(),
+        "homebrew_service" | "homebrew" => "Homebrew service".to_owned(),
+        "standalone" => "terminal daemon".to_owned(),
+        value => value.replace('_', " "),
+    }
+}
+
 fn format_scene_summary(data: &serde_json::Value, p: &Painter) -> Option<String> {
     let scene = data
         .get("active_scene")
@@ -506,6 +563,20 @@ mod tests {
             "active_scene_snapshot_locked": true,
             "device_count": 5,
             "effect_count": 18,
+            "macos_daemon_ownership": {
+                "active_owner": "launchd_service",
+                "owner_epoch": 7,
+                "conflict": {
+                    "active": "launchd_service",
+                    "contender": "homebrew_service",
+                    "observed_at_ms": 42
+                },
+                "recovery_required": {
+                    "requested_owner": "homebrew_service",
+                    "prior_owner": "launchd_service",
+                    "phase": "requested_owner_started"
+                }
+            },
             "latest_frame": {
                 "frame_token": 77,
                 "compositor_backend": "gpu_fallback",
@@ -535,6 +606,14 @@ mod tests {
         let painter = Painter::plain();
         let lines = status_table_lines(&data, &painter);
         let joined = lines.join("\n");
+        let running_index = lines
+            .iter()
+            .position(|line| line.contains("running"))
+            .expect("daemon state should render");
+        let owner_index = lines
+            .iter()
+            .position(|line| line.contains("macOS owner"))
+            .expect("macOS owner should render");
 
         assert!(joined.contains("Breakthrough"), "effect name present");
         assert!(joined.contains("Movie Night"), "scene name present");
@@ -560,5 +639,19 @@ mod tests {
         );
         assert!(joined.contains("5 devices"), "device count present");
         assert!(joined.contains("18 effects"), "effect count present");
+        assert!(joined.contains("launchd service"), "owner name present");
+        assert!(joined.contains("epoch 7"), "owner epoch present");
+        assert!(
+            owner_index > running_index,
+            "ownership should follow the daemon header"
+        );
+        assert!(
+            joined.contains("Homebrew service also attempted startup"),
+            "owner conflict present"
+        );
+        assert!(
+            joined.contains("owner recovery required at requested owner started"),
+            "owner recovery present"
+        );
     }
 }
