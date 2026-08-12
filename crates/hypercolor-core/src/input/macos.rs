@@ -16,8 +16,9 @@ use crate::input::traits::{
     InputData, InputSource, InteractionData, InteractionDegradation, MotionAggregate, PointerMode,
 };
 use crate::input::{
-    LegacyWheelProjector, SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle,
-    SourceStatusReporter,
+    LegacyWheelProjector, MacosAuthorizationState, MacosCapabilityOwner, MacosInputPlatformStatus,
+    MacosProtectedSourceState, SourceIssue, SourceKind, SourcePlatformStatus, SourceSessionSlot,
+    SourceStatusHandle, SourceStatusReporter,
 };
 use crate::types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
@@ -94,6 +95,8 @@ pub struct MacosHostInput {
     degraded: Option<InteractionDegradation>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
+    keyboard_tcc: MacosAuthorizationState,
+    owner: MacosCapabilityOwner,
     #[cfg(feature = "macos-native-fixtures")]
     fixture: Option<Arc<FixtureState>>,
 }
@@ -221,7 +224,14 @@ impl MacosHostInputFixture {
 impl MacosHostInput {
     #[must_use]
     pub fn new(capture_keyboard: bool, capture_pointer: bool) -> Self {
-        Self {
+        let keyboard_tcc = if !capture_keyboard {
+            MacosAuthorizationState::Unknown
+        } else if input_monitoring_granted() {
+            MacosAuthorizationState::Authorized
+        } else {
+            MacosAuthorizationState::NotDetermined
+        };
+        let mut source = Self {
             name: "MacosHostInput".to_owned(),
             running: false,
             capture_active: false,
@@ -242,9 +252,15 @@ impl MacosHostInput {
                 false,
             ),
             status_session: SourceSessionSlot::new(),
+            keyboard_tcc,
+            owner: MacosCapabilityOwner::Standalone,
             #[cfg(feature = "macos-native-fixtures")]
             fixture: None,
-        }
+        };
+        source
+            .refresh_platform_status()
+            .expect("new macOS input status is not retired");
+        source
     }
 
     #[cfg(feature = "macos-native-fixtures")]
@@ -255,11 +271,22 @@ impl MacosHostInput {
         backend: MacosInputFixtureBackend,
     ) -> (Self, MacosHostInputFixture) {
         let mut source = Self::new(capture_keyboard, capture_pointer);
+        let preflight_granted = backend.preflight_granted;
         let state = Arc::new(FixtureState {
             backend: Mutex::new(backend),
             active_epoch: Mutex::new(None),
         });
         source.fixture = Some(Arc::clone(&state));
+        source.keyboard_tcc = if capture_keyboard && preflight_granted {
+            MacosAuthorizationState::Authorized
+        } else if capture_keyboard {
+            MacosAuthorizationState::NotDetermined
+        } else {
+            MacosAuthorizationState::Unknown
+        };
+        source
+            .refresh_platform_status()
+            .expect("fixture macOS input status is not retired");
         let fixture = MacosHostInputFixture {
             state,
             shared: Arc::clone(&source.shared),
@@ -281,6 +308,11 @@ impl MacosHostInput {
     #[must_use]
     pub const fn capture_kinds(&self) -> (bool, bool) {
         (self.capture_keyboard, self.capture_pointer)
+    }
+
+    pub fn set_capability_owner(&mut self, owner: MacosCapabilityOwner) -> anyhow::Result<()> {
+        self.owner = owner;
+        self.refresh_platform_status()
     }
 
     #[must_use]
@@ -372,7 +404,83 @@ impl MacosHostInput {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .preflight_granted;
         }
-        input_monitoring_granted()
+        self.keyboard_tcc == MacosAuthorizationState::Authorized
+    }
+
+    fn effective_kinds(&self) -> (bool, bool) {
+        if let Some(session) = &self.session {
+            let masks = session.effective_masks();
+            return (masks.keyboard != 0, masks.pointer != 0);
+        }
+        #[cfg(feature = "macos-native-fixtures")]
+        if let Some(fixture) = &self.fixture
+            && self.fixture_session_active()
+        {
+            let masks = fixture
+                .backend
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .effective_masks;
+            return (
+                self.capture_keyboard && masks.keyboard != 0,
+                self.capture_pointer && masks.pointer != 0,
+            );
+        }
+        (false, false)
+    }
+
+    fn refresh_platform_status(&mut self) -> anyhow::Result<()> {
+        let (keyboard_live, pointer_live) = self.effective_kinds();
+        let interrupted = matches!(self.degraded, Some(InteractionDegradation::Unavailable(_)));
+        let revoked =
+            self.degraded == Some(InteractionDegradation::InputMonitoringPermissionRevoked);
+        let keyboard = if !self.capture_keyboard {
+            MacosProtectedSourceState::Disabled
+        } else if revoked {
+            MacosProtectedSourceState::Revoked
+        } else {
+            match self.keyboard_tcc {
+                MacosAuthorizationState::Unknown | MacosAuthorizationState::NotDetermined => {
+                    MacosProtectedSourceState::NeedsUserAction
+                }
+                MacosAuthorizationState::Denied => MacosProtectedSourceState::PermissionDenied,
+                MacosAuthorizationState::Authorized if !self.capture_active => {
+                    MacosProtectedSourceState::ReadyIdle
+                }
+                MacosAuthorizationState::Authorized if keyboard_live && interrupted => {
+                    MacosProtectedSourceState::Interrupted
+                }
+                MacosAuthorizationState::Authorized if keyboard_live => {
+                    MacosProtectedSourceState::Live
+                }
+                MacosAuthorizationState::Authorized => {
+                    MacosProtectedSourceState::NeedsProcessRestart
+                }
+            }
+        };
+        let pointer = if !self.capture_pointer {
+            MacosProtectedSourceState::Disabled
+        } else if !self.capture_active {
+            MacosProtectedSourceState::ReadyIdle
+        } else if pointer_live && interrupted {
+            MacosProtectedSourceState::Interrupted
+        } else if pointer_live {
+            MacosProtectedSourceState::Live
+        } else {
+            MacosProtectedSourceState::Failed
+        };
+        self.status
+            .set_platform(Some(SourcePlatformStatus::MacosInput(
+                MacosInputPlatformStatus {
+                    keyboard,
+                    pointer,
+                    keyboard_tcc: self.keyboard_tcc,
+                    keyboard_owner: self.owner,
+                    pointer_owner: self.owner,
+                    owner_conflict: None,
+                },
+            )))?;
+        Ok(())
     }
 
     fn active_kind_count(&self) -> usize {
@@ -592,6 +700,7 @@ impl InputSource for MacosHostInput {
             self.start_session();
         }
         self.running = true;
+        self.refresh_platform_status()?;
         Ok(())
     }
 
@@ -600,10 +709,13 @@ impl InputSource for MacosHostInput {
         self.status.stop();
         self.stop_session();
         self.running = false;
+        self.refresh_platform_status()
+            .expect("live macOS input status is not retired");
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
         self.refresh_worker_health();
+        self.refresh_platform_status()?;
         if !self.running || !self.capture_session_active() {
             return Ok(InputData::None);
         }
@@ -619,6 +731,9 @@ impl InputSource for MacosHostInput {
         _delta_secs: f32,
     ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
         self.refresh_worker_health();
+        if let Err(error) = self.refresh_platform_status() {
+            return (Err(error), Vec::new());
+        }
         if !self.running || !self.capture_session_active() {
             return (Ok(InputData::None), Vec::new());
         }
@@ -689,10 +804,12 @@ impl InputSource for MacosHostInput {
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.status.set_policy(true, true, active)?;
         if self.capture_active == active {
+            self.refresh_platform_status()?;
             return Ok(());
         }
         self.capture_active = active;
         if !self.running {
+            self.refresh_platform_status()?;
             return Ok(());
         }
         if active {
@@ -704,6 +821,7 @@ impl InputSource for MacosHostInput {
             self.status_session.clear();
             self.stop_session();
         }
+        self.refresh_platform_status()?;
         Ok(())
     }
 }

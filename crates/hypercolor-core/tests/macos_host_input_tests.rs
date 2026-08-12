@@ -333,7 +333,8 @@ fn state_gap_synthesizes_releases_and_stale_epoch_is_inert() {
 #[cfg(feature = "macos-native-fixtures")]
 mod fixtures {
     use hypercolor_core::input::{
-        InputData, InputSource, MacosHostInput, MacosInputFixtureBackend, SourceState,
+        InputData, InputSource, MacosAuthorizationState, MacosCapabilityOwner, MacosHostInput,
+        MacosInputFixtureBackend, MacosProtectedSourceState, SourcePlatformStatus, SourceState,
     };
     use hypercolor_macos_input::{MacosInputEvent, event_masks};
 
@@ -357,6 +358,21 @@ mod fixtures {
         assert!(fixture.is_active());
         assert_eq!(status.snapshot().state, SourceState::Degraded);
         assert_eq!(status.snapshot().resource_count, 1);
+        let snapshot = status.snapshot();
+        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
+            panic!("fixture should publish macOS input platform status");
+        };
+        assert_eq!(
+            platform.keyboard,
+            MacosProtectedSourceState::NeedsUserAction
+        );
+        assert_eq!(platform.pointer, MacosProtectedSourceState::Live);
+        assert_eq!(
+            platform.keyboard_tcc,
+            MacosAuthorizationState::NotDetermined
+        );
+        assert_eq!(platform.keyboard_owner, MacosCapabilityOwner::Standalone);
+        assert_eq!(platform.pointer_owner, MacosCapabilityOwner::Standalone);
         assert_eq!(
             status
                 .snapshot()
@@ -451,6 +467,37 @@ mod fixtures {
                 .as_ref(),
             "macos_input_tap_create_failed"
         );
+        let snapshot = status.snapshot();
+        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
+            panic!("fixture should publish macOS input platform status");
+        };
+        assert_eq!(
+            platform.keyboard,
+            MacosProtectedSourceState::NeedsProcessRestart
+        );
+        assert_eq!(platform.pointer, MacosProtectedSourceState::Failed);
+        assert_eq!(platform.keyboard_tcc, MacosAuthorizationState::Authorized);
+    }
+
+    #[test]
+    fn capability_owner_updates_both_input_kinds() {
+        let backend =
+            MacosInputFixtureBackend::new(true, true, event_masks(true, true), true, desktop(1));
+        let (mut source, _) = MacosHostInput::new_deterministic_fixture(true, true, backend);
+        let status = source
+            .source_status_handle()
+            .expect("macOS host source exposes status");
+
+        source
+            .set_capability_owner(MacosCapabilityOwner::AppSidecar)
+            .expect("owner update should publish");
+
+        let snapshot = status.snapshot();
+        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
+            panic!("fixture should publish macOS input platform status");
+        };
+        assert_eq!(platform.keyboard_owner, MacosCapabilityOwner::AppSidecar);
+        assert_eq!(platform.pointer_owner, MacosCapabilityOwner::AppSidecar);
     }
 
     #[test]
