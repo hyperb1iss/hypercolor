@@ -1,6 +1,10 @@
 use std::fmt;
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CFRetained;
+#[cfg(target_os = "macos")]
+use objc2_core_video::{CVPixelBuffer, CVPixelBufferGetIOSurface};
 use thiserror::Error;
 
 use crate::geometry::{
@@ -121,6 +125,8 @@ pub enum MacosColorPrimaries {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MacosTransferFunction {
     Srgb,
+    Rec709,
+    Rec2020,
     Linear,
     Pq,
     Hlg,
@@ -223,7 +229,28 @@ impl MacosCaptureSurface {
         Ok(Self {
             iosurface_id,
             allocation_bytes,
-            owner: Arc::new(MacosRetainedPixelBuffer { fixture_id }),
+            owner: Arc::new(MacosRetainedPixelBuffer::Fixture { fixture_id }),
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn from_pixel_buffer(
+        pixel_buffer: CFRetained<CVPixelBuffer>,
+    ) -> Result<Self, MacosCaptureError> {
+        let iosurface = CVPixelBufferGetIOSurface(Some(&pixel_buffer))
+            .ok_or(MacosCaptureError::MissingIoSurface)?;
+        let allocation_bytes = u64::try_from(iosurface.alloc_size())
+            .map_err(|_| MacosCaptureError::ArithmeticOverflow)?;
+        let iosurface_id = iosurface.id();
+        if iosurface_id == 0 || allocation_bytes == 0 {
+            return Err(MacosCaptureError::InvalidSurface);
+        }
+        Ok(Self {
+            iosurface_id,
+            allocation_bytes,
+            owner: Arc::new(MacosRetainedPixelBuffer::Native {
+                _pixel_buffer: pixel_buffer,
+            }),
         })
     }
 
@@ -232,8 +259,12 @@ impl MacosCaptureSurface {
     }
 
     #[cfg(feature = "capture-fixtures")]
-    pub fn fixture_id(&self) -> u64 {
-        self.owner.fixture_id
+    pub fn fixture_id(&self) -> Option<u64> {
+        match &*self.owner {
+            MacosRetainedPixelBuffer::Fixture { fixture_id } => Some(*fixture_id),
+            #[cfg(target_os = "macos")]
+            MacosRetainedPixelBuffer::Native { .. } => None,
+        }
     }
 }
 
@@ -247,11 +278,38 @@ impl fmt::Debug for MacosCaptureSurface {
     }
 }
 
-#[derive(Debug)]
-struct MacosRetainedPixelBuffer {
+enum MacosRetainedPixelBuffer {
+    #[cfg(target_os = "macos")]
+    Native {
+        _pixel_buffer: CFRetained<CVPixelBuffer>,
+    },
     #[cfg(feature = "capture-fixtures")]
-    fixture_id: u64,
+    Fixture { fixture_id: u64 },
 }
+
+impl fmt::Debug for MacosRetainedPixelBuffer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(target_os = "macos")]
+            Self::Native { .. } => formatter.write_str("MacosRetainedPixelBuffer::Native"),
+            #[cfg(feature = "capture-fixtures")]
+            Self::Fixture { fixture_id } => formatter
+                .debug_struct("MacosRetainedPixelBuffer::Fixture")
+                .field("fixture_id", fixture_id)
+                .finish(),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+// SAFETY: Core Video pixel buffers are reference-counted, immutable while
+// published, and coordinate CPU access through CVPixelBufferLockBaseAddress.
+unsafe impl Send for MacosRetainedPixelBuffer {}
+
+#[cfg(target_os = "macos")]
+// SAFETY: Concurrent owners only retain or inspect metadata; mutable byte
+// access is serialized by Core Video's lock contract.
+unsafe impl Sync for MacosRetainedPixelBuffer {}
 
 #[derive(Debug, Clone)]
 pub struct MacosCaptureFrame {
@@ -525,6 +583,26 @@ fn optional<T>(
 
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum MacosCaptureError {
+    #[error("Core Media sample buffer is invalid")]
+    InvalidSampleBuffer,
+    #[error("Core Media sample data is not ready")]
+    SampleDataNotReady,
+    #[error("unexpected ScreenCaptureKit output type {0}")]
+    UnexpectedStreamOutputType(isize),
+    #[error("capture cadence {0} cannot be represented by Core Media")]
+    InvalidCadence(u32),
+    #[error("ScreenCaptureKit UI must be controlled from the main thread")]
+    NotMainThread,
+    #[error("screen-capture authorization requires explicit user action")]
+    ScreenCapturePermissionRequired,
+    #[error("{operation} failed with native error {code}: {message}")]
+    NativeOperation {
+        operation: &'static str,
+        code: isize,
+        message: String,
+    },
+    #[error("sample buffer has no ScreenCaptureKit attachment dictionary")]
+    MissingFrameAttachments,
     #[error("missing ScreenCaptureKit attachment: {0}")]
     MissingAttachment(&'static str),
     #[error("malformed ScreenCaptureKit attachment: {0}")]
@@ -565,10 +643,16 @@ pub enum MacosCaptureError {
     ColorMetadataMismatch,
     #[error("YUV frames require matrix and chroma-location metadata")]
     MissingYuvColorMetadata,
+    #[error("missing Core Video color attachment: {0}")]
+    MissingColorAttachment(&'static str),
+    #[error("unsupported Core Video color attachment: {0}")]
+    UnsupportedColorAttachment(&'static str),
     #[error("{0} exceeds pixel storage")]
     GeometryOutsideStorage(&'static str),
     #[error("IOSurface identity and allocation must be nonzero")]
     InvalidSurface,
+    #[error("complete frame has no IOSurface-backed pixel buffer")]
+    MissingIoSurface,
     #[error("complete-frame sequence exhausted")]
     SequenceExhausted,
     #[error(transparent)]

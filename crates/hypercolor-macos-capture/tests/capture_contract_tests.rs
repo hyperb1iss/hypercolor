@@ -1,10 +1,11 @@
 use hypercolor_macos_capture::{
-    MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureColorimetry, MacosCaptureError,
+    MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCadence,
+    MacosCaptureCallbackDiagnostics, MacosCaptureColorimetry, MacosCaptureError,
     MacosCapturePixelFormat, MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries,
-    MacosColorRange, MacosFrameDecoder, MacosFrameEvent, MacosFrameStatus, MacosGeometryError,
-    MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosRawCapturePlane, MacosRawCaptureSample,
-    MacosRawCompleteFrame, MacosRawFrameAttachments, MacosScale, MacosTransferFunction,
-    MacosYuvMatrix,
+    MacosColorRange, MacosFrameDecoder, MacosFrameDropReason, MacosFrameEvent, MacosFrameMailbox,
+    MacosFrameStatus, MacosGeometryError, MacosPixelExtent, MacosPixelRect, MacosPointRect,
+    MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
+    MacosScale, MacosStreamRequest, MacosTransferFunction, MacosYuvMatrix,
 };
 
 const BGRA8: u32 = 0x4247_5241;
@@ -18,6 +19,24 @@ const YUV44410_FULL_RANGE: u32 = 0x7866_3434;
 #[test]
 fn queue_depth_is_the_full_framework_limit() {
     assert_eq!(MACOS_STREAM_QUEUE_DEPTH, 8);
+}
+
+#[test]
+fn stream_requests_preserve_native_refresh_and_reject_invalid_rates() {
+    assert_eq!(
+        MacosStreamRequest::new(MacosCaptureCadence::NativeRefresh, false)
+            .expect("native refresh should be supported")
+            .cadence,
+        MacosCaptureCadence::NativeRefresh
+    );
+    assert_eq!(
+        MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(0), true),
+        Err(MacosCaptureError::InvalidCadence(0))
+    );
+    assert_eq!(
+        MacosStreamRequest::default().cadence,
+        MacosCaptureCadence::FramesPerSecond(60)
+    );
 }
 
 #[test]
@@ -306,9 +325,40 @@ fn decoded_frames_keep_the_pixel_buffer_owner_alive() {
     let frame = decode_frame(&mut MacosFrameDecoder::new(1), complete_sample());
     let surface = frame.surface.clone();
     assert_eq!(frame.surface.retained_owner_count(), 2);
-    assert_eq!(surface.fixture_id(), 99);
+    assert_eq!(surface.fixture_id(), Some(99));
     drop(frame);
     assert_eq!(surface.retained_owner_count(), 1);
+}
+
+#[test]
+fn mailbox_replaces_stale_deliveries_without_growing() {
+    let mailbox = MacosFrameMailbox::new();
+    assert!(!mailbox.has_pending());
+    assert_eq!(mailbox.superseded_count(), 0);
+
+    mailbox.publish(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started)));
+    mailbox.publish(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle)));
+
+    assert!(mailbox.has_pending());
+    assert_eq!(mailbox.superseded_count(), 1);
+    assert!(matches!(
+        mailbox.take_latest(),
+        Some(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle)))
+    ));
+    assert!(!mailbox.has_pending());
+}
+
+#[test]
+fn callback_diagnostics_start_with_every_drop_reason_at_zero() {
+    let diagnostics = MacosCaptureCallbackDiagnostics::default();
+    assert_eq!(diagnostics.frames_received, 0);
+    assert_eq!(diagnostics.frames_published, 0);
+    assert_eq!(diagnostics.lifecycle_events, 0);
+    assert_eq!(diagnostics.superseded_deliveries, 0);
+    assert_eq!(diagnostics.total_dropped(), 0);
+    for reason in MacosFrameDropReason::ALL {
+        assert_eq!(diagnostics.dropped(reason), 0);
+    }
 }
 
 fn sample_with_status(status: i64) -> MacosRawCaptureSample {
