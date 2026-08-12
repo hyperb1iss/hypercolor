@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ..models.macos_daemon_owner_conflict_api_status import (
         MacosDaemonOwnerConflictApiStatus,
     )
+    from ..models.macos_input_telemetry_api_status import MacosInputTelemetryApiStatus
 
 
 T = TypeVar("T", bound="InputSourcePlatformStatusType0")
@@ -32,6 +33,7 @@ class InputSourcePlatformStatusType0:
         keyboard_tcc (MacosAuthorizationStateApi):
         pointer (MacosProtectedSourceStateApi):
         pointer_owner (MacosCapabilityOwnerApi):
+        telemetry (MacosInputTelemetryApiStatus):
         type_ (InputSourcePlatformStatusType0Type):
         owner_conflict (MacosDaemonOwnerConflictApiStatus | None | Unset):
     """
@@ -41,6 +43,7 @@ class InputSourcePlatformStatusType0:
     keyboard_tcc: MacosAuthorizationStateApi
     pointer: MacosProtectedSourceStateApi
     pointer_owner: MacosCapabilityOwnerApi
+    telemetry: MacosInputTelemetryApiStatus
     type_: InputSourcePlatformStatusType0Type
     owner_conflict: MacosDaemonOwnerConflictApiStatus | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -59,6 +62,8 @@ class InputSourcePlatformStatusType0:
         pointer = self.pointer.value
 
         pointer_owner = self.pointer_owner.value
+
+        telemetry = self.telemetry.to_dict()
 
         type_ = self.type_.value
 
@@ -79,6 +84,7 @@ class InputSourcePlatformStatusType0:
                 "keyboard_tcc": keyboard_tcc,
                 "pointer": pointer,
                 "pointer_owner": pointer_owner,
+                "telemetry": telemetry,
                 "type": type_,
             }
         )
@@ -92,6 +98,9 @@ class InputSourcePlatformStatusType0:
         from ..models.macos_daemon_owner_conflict_api_status import (
             MacosDaemonOwnerConflictApiStatus,
         )
+        from ..models.macos_input_telemetry_api_status import (
+            MacosInputTelemetryApiStatus,
+        )
 
         d = dict(src_dict)
         keyboard = MacosProtectedSourceStateApi(d.pop("keyboard"))
@@ -103,6 +112,8 @@ class InputSourcePlatformStatusType0:
         pointer = MacosProtectedSourceStateApi(d.pop("pointer"))
 
         pointer_owner = MacosCapabilityOwnerApi(d.pop("pointer_owner"))
+
+        telemetry = MacosInputTelemetryApiStatus.from_dict(d.pop("telemetry"))
 
         type_ = InputSourcePlatformStatusType0Type(d.pop("type"))
 
@@ -133,6 +144,7 @@ class InputSourcePlatformStatusType0:
             keyboard_tcc=keyboard_tcc,
             pointer=pointer,
             pointer_owner=pointer_owner,
+            telemetry=telemetry,
             type_=type_,
             owner_conflict=owner_conflict,
         )

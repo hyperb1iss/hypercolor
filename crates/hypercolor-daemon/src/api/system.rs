@@ -297,6 +297,109 @@ pub struct MacosTahoeCapabilitiesApiStatus {
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosInputTelemetryApiStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_last_transition_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_designated_requirement_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_architecture: Option<MacosArchitectureApi>,
+    pub executable_architecture: MacosArchitectureApi,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translated_process: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_session_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_capacity: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_depth: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_events_received: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_events_published: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_events_dropped: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap_disabled_timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap_disabled_user_input: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap_reenabled: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_gaps: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosFrameDropApiStatus {
+    pub reason: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosScreenTelemetryApiStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_last_transition_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_designated_requirement_hash: Option<String>,
+    pub executable_architecture: MacosArchitectureApi,
+    pub stream_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_session_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_plan_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_range: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_space: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_function: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_diagnostic_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_height: Option<u32>,
+    pub queue_depth: usize,
+    pub admitted_native_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_generations: Option<usize>,
+    pub frames_received: u64,
+    pub frames_published: u64,
+    pub frames_superseded: u64,
+    pub frames_malformed: u64,
+    pub frames_dropped: Vec<MacosFrameDropApiStatus>,
+    pub frames_stale: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    pub callback_total_ns: u64,
+    pub callback_max_ns: u64,
+    pub retain_total_ns: u64,
+    pub retain_max_ns: u64,
+    pub conversion_total_ns: u64,
+    pub conversion_max_ns: u64,
+    pub cpu_reduction_total_ns: u64,
+    pub cpu_reduction_max_ns: u64,
+    pub native_import_total_ns: u64,
+    pub native_import_max_ns: u64,
+    pub native_reduction_submit_total_ns: u64,
+    pub native_reduction_submit_max_ns: u64,
+    pub publication_total_ns: u64,
+    pub publication_max_ns: u64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputSourcePlatformStatus {
     MacosInput {
@@ -307,6 +410,7 @@ pub enum InputSourcePlatformStatus {
         pointer_owner: MacosCapabilityOwnerApi,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_conflict: Option<MacosDaemonOwnerConflictApiStatus>,
+        telemetry: MacosInputTelemetryApiStatus,
     },
     MacosScreen {
         state: MacosProtectedSourceStateApi,
@@ -318,6 +422,7 @@ pub enum InputSourcePlatformStatus {
         tahoe_selection: Option<MacosTahoeSelectionCapabilitiesApiStatus>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_conflict: Option<MacosDaemonOwnerConflictApiStatus>,
+        telemetry: MacosScreenTelemetryApiStatus,
     },
 }
 
@@ -751,22 +856,28 @@ fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus
         platform: source
             .platform
             .as_deref()
-            .and_then(input_source_platform_status),
+            .and_then(|platform| input_source_platform_status(platform, now)),
         retired: source.retired,
     }
 }
 
 fn input_source_platform_status(
     platform: &SourcePlatformStatus,
+    now: Instant,
 ) -> Option<InputSourcePlatformStatus> {
     match platform {
-        SourcePlatformStatus::MacosInput(status) => Some(macos_input_platform_status(status)),
-        SourcePlatformStatus::MacosScreen(status) => Some(macos_screen_platform_status(status)),
+        SourcePlatformStatus::MacosInput(status) => Some(macos_input_platform_status(status, now)),
+        SourcePlatformStatus::MacosScreen(status) => {
+            Some(macos_screen_platform_status(status, now))
+        }
         _ => None,
     }
 }
 
-fn macos_input_platform_status(status: &MacosInputPlatformStatus) -> InputSourcePlatformStatus {
+fn macos_input_platform_status(
+    status: &MacosInputPlatformStatus,
+    now: Instant,
+) -> InputSourcePlatformStatus {
     InputSourcePlatformStatus::MacosInput {
         keyboard: macos_protected_source_state(status.keyboard),
         pointer: macos_protected_source_state(status.pointer),
@@ -777,10 +888,36 @@ fn macos_input_platform_status(status: &MacosInputPlatformStatus) -> InputSource
             .owner_conflict
             .as_deref()
             .map(macos_daemon_owner_conflict),
+        telemetry: MacosInputTelemetryApiStatus {
+            authorization_last_transition_age_ms: status
+                .authorization_last_transition_at
+                .map(|transition| duration_ms(now.saturating_duration_since(transition))),
+            owner_designated_requirement_hash: status
+                .owner_designated_requirement_hash
+                .as_deref()
+                .map(str::to_owned),
+            host_architecture: status.host_architecture.map(macos_architecture),
+            executable_architecture: macos_architecture(status.executable_architecture),
+            translated_process: status.translated_process,
+            capture_session_generation: status.capture_session_generation,
+            topology_generation: status.topology_generation,
+            queue_capacity: status.queue_capacity,
+            queue_depth: status.queue_depth,
+            input_events_received: status.input_events_received,
+            input_events_published: status.input_events_published,
+            input_events_dropped: status.input_events_dropped,
+            tap_disabled_timeout: status.tap_disabled_timeout,
+            tap_disabled_user_input: status.tap_disabled_user_input,
+            tap_reenabled: status.tap_reenabled,
+            state_gaps: status.state_gaps,
+        },
     }
 }
 
-fn macos_screen_platform_status(status: &MacosScreenPlatformStatus) -> InputSourcePlatformStatus {
+fn macos_screen_platform_status(
+    status: &MacosScreenPlatformStatus,
+    now: Instant,
+) -> InputSourcePlatformStatus {
     InputSourcePlatformStatus::MacosScreen {
         state: macos_protected_source_state(status.state),
         tcc: macos_authorization_state(status.tcc),
@@ -795,6 +932,64 @@ fn macos_screen_platform_status(status: &MacosScreenPlatformStatus) -> InputSour
             .owner_conflict
             .as_deref()
             .map(macos_daemon_owner_conflict),
+        telemetry: MacosScreenTelemetryApiStatus {
+            authorization_last_transition_age_ms: status
+                .authorization_last_transition_at
+                .map(|transition| duration_ms(now.saturating_duration_since(transition))),
+            owner_designated_requirement_hash: status
+                .owner_designated_requirement_hash
+                .as_deref()
+                .map(str::to_owned),
+            executable_architecture: macos_architecture(status.executable_architecture),
+            stream_state: status.stream_state.to_string(),
+            capture_session_generation: status.capture_session_generation,
+            topology_generation: status.topology_generation,
+            resource_generation: status.resource_generation,
+            publication_plan_generation: status.publication_plan_generation,
+            pixel_format: status.pixel_format.as_deref().map(str::to_owned),
+            dynamic_range: status.dynamic_range.as_deref().map(str::to_owned),
+            color_space: status.color_space.as_deref().map(str::to_owned),
+            transfer_function: status.transfer_function.as_deref().map(str::to_owned),
+            selection_diagnostic_label: status
+                .selection_diagnostic_label
+                .as_deref()
+                .map(str::to_owned),
+            display_scale: status.display_scale_bits.map(f64::from_bits),
+            native_width: status.native_width,
+            native_height: status.native_height,
+            queue_depth: status.queue_depth,
+            admitted_native_bytes: status.admitted_native_bytes,
+            pinned_generations: status.pinned_generations,
+            frames_received: status.frames_received,
+            frames_published: status.frames_published,
+            frames_superseded: status.frames_superseded,
+            frames_malformed: status.frames_malformed,
+            frames_dropped: status
+                .frames_dropped
+                .iter()
+                .map(|(reason, count)| MacosFrameDropApiStatus {
+                    reason: reason.to_string(),
+                    count: *count,
+                })
+                .collect(),
+            frames_stale: status.frames_stale,
+            publication_path: status.publication_path.as_deref().map(str::to_owned),
+            fallback_reason: status.fallback_reason.as_deref().map(str::to_owned),
+            callback_total_ns: status.callback_total_ns,
+            callback_max_ns: status.callback_max_ns,
+            retain_total_ns: status.retain_total_ns,
+            retain_max_ns: status.retain_max_ns,
+            conversion_total_ns: status.conversion_total_ns,
+            conversion_max_ns: status.conversion_max_ns,
+            cpu_reduction_total_ns: status.cpu_reduction_total_ns,
+            cpu_reduction_max_ns: status.cpu_reduction_max_ns,
+            native_import_total_ns: status.native_import_total_ns,
+            native_import_max_ns: status.native_import_max_ns,
+            native_reduction_submit_total_ns: status.native_reduction_submit_total_ns,
+            native_reduction_submit_max_ns: status.native_reduction_submit_max_ns,
+            publication_total_ns: status.publication_total_ns,
+            publication_max_ns: status.publication_max_ns,
+        },
     }
 }
 
@@ -956,13 +1151,17 @@ fn macos_tahoe_capabilities(
     capabilities: &MacosTahoeCapabilities,
 ) -> MacosTahoeCapabilitiesApiStatus {
     MacosTahoeCapabilitiesApiStatus {
-        host_architecture: match capabilities.host_architecture {
-            MacosArchitecture::AppleSilicon => MacosArchitectureApi::AppleSilicon,
-            MacosArchitecture::Intel => MacosArchitectureApi::Intel,
-        },
+        host_architecture: macos_architecture(capabilities.host_architecture),
         translated_process: capabilities.translated_process,
         content_tone_mapping_info: capabilities.content_tone_mapping_info,
         metal4: capabilities.metal4,
+    }
+}
+
+const fn macos_architecture(architecture: MacosArchitecture) -> MacosArchitectureApi {
+    match architecture {
+        MacosArchitecture::AppleSilicon => MacosArchitectureApi::AppleSilicon,
+        MacosArchitecture::Intel => MacosArchitectureApi::Intel,
     }
 }
 
@@ -2011,6 +2210,22 @@ mod tests {
                 contender: MacosCapabilityOwner::HomebrewService,
                 observed_at_ms: 1_725_000_000_123,
             })),
+            authorization_last_transition_at: None,
+            owner_designated_requirement_hash: None,
+            host_architecture: Some(MacosArchitecture::AppleSilicon),
+            executable_architecture: MacosArchitecture::Intel,
+            translated_process: Some(true),
+            capture_session_generation: Some(31),
+            topology_generation: Some(5),
+            queue_capacity: Some(2_048),
+            queue_depth: Some(7),
+            input_events_received: Some(1_000),
+            input_events_published: Some(990),
+            input_events_dropped: Some(10),
+            tap_disabled_timeout: Some(2),
+            tap_disabled_user_input: Some(1),
+            tap_reenabled: Some(3),
+            state_gaps: Some(4),
         });
         let status = input_source_status(&source_status_fixture(Some(platform)), Instant::now());
         let value = serde_json::to_value(status).expect("input status should serialize");
@@ -2028,6 +2243,22 @@ mod tests {
                     "active": "launchd_service",
                     "contender": "homebrew_service",
                     "observed_at_ms": 1_725_000_000_123_u64
+                },
+                "telemetry": {
+                    "host_architecture": "apple_silicon",
+                    "executable_architecture": "intel",
+                    "translated_process": true,
+                    "capture_session_generation": 31,
+                    "topology_generation": 5,
+                    "queue_capacity": 2048,
+                    "queue_depth": 7,
+                    "input_events_received": 1000,
+                    "input_events_published": 990,
+                    "input_events_dropped": 10,
+                    "tap_disabled_timeout": 2,
+                    "tap_disabled_user_input": 1,
+                    "tap_reenabled": 3,
+                    "state_gaps": 4
                 }
             })
         );
@@ -2080,6 +2311,7 @@ mod tests {
             selection: MacosSelectionState::SessionScoped {
                 content_style: Arc::from("multiple_windows"),
             },
+            selection_diagnostic_label: Some(Arc::from("multiple_windows")),
             tahoe: MacosTahoeCapabilities {
                 host_architecture: MacosArchitecture::AppleSilicon,
                 translated_process: true,
@@ -2097,41 +2329,102 @@ mod tests {
                 contender: MacosCapabilityOwner::App,
                 observed_at_ms: 1_725_000_000_456,
             })),
+            authorization_last_transition_at: None,
+            owner_designated_requirement_hash: None,
+            executable_architecture: MacosArchitecture::Intel,
+            stream_state: Arc::from("stopped"),
+            capture_session_generation: Some(29),
+            topology_generation: Some(3),
+            resource_generation: Some(8),
+            publication_plan_generation: Some(13),
+            pixel_format: Some(Arc::from("rgba16_float")),
+            dynamic_range: Some(Arc::from("high")),
+            color_space: Some(Arc::from("display_p3")),
+            transfer_function: Some(Arc::from("linear")),
+            display_scale_bits: Some(2.0_f64.to_bits()),
+            native_width: Some(3_840),
+            native_height: Some(2_160),
+            queue_depth: 8,
+            admitted_native_bytes: 268_435_456,
+            pinned_generations: Some(2),
+            frames_received: 120,
+            frames_published: 116,
+            frames_superseded: 2,
+            frames_malformed: 1,
+            frames_dropped: Arc::from([(Arc::from("validation"), 2)]),
+            frames_stale: 1,
+            publication_path: Some(Arc::from("cpu_fallback")),
+            fallback_reason: Some(Arc::from("native_descriptor_incompatible")),
+            callback_total_ns: 900,
+            callback_max_ns: 90,
+            retain_total_ns: 400,
+            retain_max_ns: 40,
+            conversion_total_ns: 700,
+            conversion_max_ns: 70,
+            cpu_reduction_total_ns: 1_100,
+            cpu_reduction_max_ns: 110,
+            native_import_total_ns: 600,
+            native_import_max_ns: 60,
+            native_reduction_submit_total_ns: 800,
+            native_reduction_submit_max_ns: 80,
+            publication_total_ns: 500,
+            publication_max_ns: 50,
         });
         let status = input_source_status(&source_status_fixture(Some(platform)), Instant::now());
         let value = serde_json::to_value(status).expect("screen status should serialize");
 
         assert_eq!(value["active_consumer_count"], 2);
+        let platform = &value["platform"];
+        assert_eq!(platform["type"], "macos_screen");
+        assert_eq!(platform["state"], "interrupted");
+        assert_eq!(platform["tcc"], "denied");
+        assert_eq!(platform["owner"], "standalone");
         assert_eq!(
-            value["platform"],
-            json!({
-                "type": "macos_screen",
-                "state": "interrupted",
-                "tcc": "denied",
-                "owner": "standalone",
-                "selection": {
-                    "type": "session_scoped",
-                    "content_style": "multiple_windows"
-                },
-                "tahoe": {
-                    "host_architecture": "apple_silicon",
-                    "translated_process": true,
-                    "content_tone_mapping_info": true,
-                    "metal4": false
-                },
-                "tahoe_selection": {
-                    "source_id": "session:23",
-                    "capture_session_generation": 29,
-                    "hdr_capture": true,
-                    "dual_range_screenshots": true
-                },
-                "owner_conflict": {
-                    "active": "standalone",
-                    "contender": "app",
-                    "observed_at_ms": 1_725_000_000_456_u64
-                }
-            })
+            platform["selection"],
+            json!({"type": "session_scoped", "content_style": "multiple_windows"})
         );
+        assert_eq!(platform["tahoe"]["host_architecture"], "apple_silicon");
+        assert_eq!(
+            platform["tahoe_selection"]["capture_session_generation"],
+            29
+        );
+        assert_eq!(platform["owner_conflict"]["contender"], "app");
+        let telemetry = &platform["telemetry"];
+        assert_eq!(telemetry["executable_architecture"], "intel");
+        assert_eq!(telemetry["stream_state"], "stopped");
+        assert_eq!(telemetry["capture_session_generation"], 29);
+        assert_eq!(telemetry["topology_generation"], 3);
+        assert_eq!(telemetry["resource_generation"], 8);
+        assert_eq!(telemetry["publication_plan_generation"], 13);
+        assert_eq!(telemetry["pixel_format"], "rgba16_float");
+        assert_eq!(telemetry["dynamic_range"], "high");
+        assert_eq!(telemetry["color_space"], "display_p3");
+        assert_eq!(telemetry["transfer_function"], "linear");
+        assert_eq!(telemetry["selection_diagnostic_label"], "multiple_windows");
+        assert_eq!(telemetry["display_scale"], 2.0);
+        assert_eq!(telemetry["native_width"], 3_840);
+        assert_eq!(telemetry["native_height"], 2_160);
+        assert_eq!(telemetry["queue_depth"], 8);
+        assert_eq!(telemetry["admitted_native_bytes"], 268_435_456_u64);
+        assert_eq!(telemetry["pinned_generations"], 2);
+        assert_eq!(
+            telemetry["frames_dropped"],
+            json!([{"reason": "validation", "count": 2}])
+        );
+        assert_eq!(telemetry["frames_stale"], 1);
+        assert_eq!(telemetry["frames_malformed"], 1);
+        assert_eq!(telemetry["publication_path"], "cpu_fallback");
+        assert_eq!(
+            telemetry["fallback_reason"],
+            "native_descriptor_incompatible"
+        );
+        assert_eq!(telemetry["callback_total_ns"], 900);
+        assert_eq!(telemetry["retain_total_ns"], 400);
+        assert_eq!(telemetry["conversion_total_ns"], 700);
+        assert_eq!(telemetry["cpu_reduction_total_ns"], 1_100);
+        assert_eq!(telemetry["native_import_total_ns"], 600);
+        assert_eq!(telemetry["native_reduction_submit_total_ns"], 800);
+        assert_eq!(telemetry["publication_total_ns"], 500);
     }
 
     #[test]
@@ -2207,6 +2500,9 @@ mod tests {
         assert!(schemas.contains_key("MacosArchitectureApi"));
         assert!(schemas.contains_key("MacosTahoeCapabilitiesApiStatus"));
         assert!(schemas.contains_key("MacosTahoeSelectionCapabilitiesApiStatus"));
+        assert!(schemas.contains_key("MacosInputTelemetryApiStatus"));
+        assert!(schemas.contains_key("MacosScreenTelemetryApiStatus"));
+        assert!(schemas.contains_key("MacosFrameDropApiStatus"));
         let platform_schema = &schemas["InputSourcePlatformStatus"];
         let encoded = serde_json::to_string(platform_schema).expect("schema should encode");
         assert!(encoded.contains("macos_input"));

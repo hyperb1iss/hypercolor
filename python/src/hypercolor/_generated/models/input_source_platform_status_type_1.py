@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ..models.macos_daemon_owner_conflict_api_status import (
         MacosDaemonOwnerConflictApiStatus,
     )
+    from ..models.macos_screen_telemetry_api_status import MacosScreenTelemetryApiStatus
     from ..models.macos_selection_state_api_type_0 import MacosSelectionStateApiType0
     from ..models.macos_selection_state_api_type_1 import MacosSelectionStateApiType1
     from ..models.macos_selection_state_api_type_2 import MacosSelectionStateApiType2
@@ -41,6 +42,7 @@ class InputSourcePlatformStatusType1:
         state (MacosProtectedSourceStateApi):
         tahoe (MacosTahoeCapabilitiesApiStatus):
         tcc (MacosAuthorizationStateApi):
+        telemetry (MacosScreenTelemetryApiStatus):
         type_ (InputSourcePlatformStatusType1Type):
         owner_conflict (MacosDaemonOwnerConflictApiStatus | None | Unset):
         tahoe_selection (MacosTahoeSelectionCapabilitiesApiStatus | None | Unset):
@@ -55,6 +57,7 @@ class InputSourcePlatformStatusType1:
     state: MacosProtectedSourceStateApi
     tahoe: MacosTahoeCapabilitiesApiStatus
     tcc: MacosAuthorizationStateApi
+    telemetry: MacosScreenTelemetryApiStatus
     type_: InputSourcePlatformStatusType1Type
     owner_conflict: MacosDaemonOwnerConflictApiStatus | None | Unset = UNSET
     tahoe_selection: MacosTahoeSelectionCapabilitiesApiStatus | None | Unset = UNSET
@@ -90,6 +93,8 @@ class InputSourcePlatformStatusType1:
 
         tcc = self.tcc.value
 
+        telemetry = self.telemetry.to_dict()
+
         type_ = self.type_.value
 
         owner_conflict: dict[str, Any] | None | Unset
@@ -117,6 +122,7 @@ class InputSourcePlatformStatusType1:
                 "state": state,
                 "tahoe": tahoe,
                 "tcc": tcc,
+                "telemetry": telemetry,
                 "type": type_,
             }
         )
@@ -131,6 +137,9 @@ class InputSourcePlatformStatusType1:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.macos_daemon_owner_conflict_api_status import (
             MacosDaemonOwnerConflictApiStatus,
+        )
+        from ..models.macos_screen_telemetry_api_status import (
+            MacosScreenTelemetryApiStatus,
         )
         from ..models.macos_selection_state_api_type_0 import (
             MacosSelectionStateApiType0,
@@ -194,6 +203,8 @@ class InputSourcePlatformStatusType1:
 
         tcc = MacosAuthorizationStateApi(d.pop("tcc"))
 
+        telemetry = MacosScreenTelemetryApiStatus.from_dict(d.pop("telemetry"))
+
         type_ = InputSourcePlatformStatusType1Type(d.pop("type"))
 
         def _parse_owner_conflict(
@@ -244,6 +255,7 @@ class InputSourcePlatformStatusType1:
             state=state,
             tahoe=tahoe,
             tcc=tcc,
+            telemetry=telemetry,
             type_=type_,
             owner_conflict=owner_conflict,
             tahoe_selection=tahoe_selection,

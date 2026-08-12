@@ -317,6 +317,7 @@ pub struct InputManager {
     audio_capture_active: Option<bool>,
     macos_capability_owner: MacosCapabilityOwner,
     macos_owner_conflict: Option<MacosDaemonOwnerConflict>,
+    macos_owner_designated_requirement_hash: Option<Arc<str>>,
     macos_metal4: bool,
     screen_capture_demand: Option<ScreenCaptureDemand>,
     screen_publication_demand: Option<ScreenPublicationDemandSnapshot>,
@@ -575,6 +576,7 @@ impl InputManager {
             audio_capture_active: None,
             macos_capability_owner: MacosCapabilityOwner::Standalone,
             macos_owner_conflict: None,
+            macos_owner_designated_requirement_hash: None,
             macos_metal4: false,
             screen_capture_demand: None,
             screen_publication_demand: None,
@@ -1957,11 +1959,18 @@ impl InputManager {
         &mut self,
         owner: MacosCapabilityOwner,
         conflict: Option<MacosDaemonOwnerConflict>,
+        designated_requirement_hash: Option<Arc<str>>,
     ) -> anyhow::Result<()> {
         self.macos_capability_owner = owner;
         self.macos_owner_conflict.clone_from(&conflict);
+        self.macos_owner_designated_requirement_hash
+            .clone_from(&designated_requirement_hash);
         for source in &mut self.sources {
-            source.set_macos_daemon_ownership(owner, conflict.clone())?;
+            source.set_macos_daemon_ownership(
+                owner,
+                conflict.clone(),
+                designated_requirement_hash.clone(),
+            )?;
         }
         self.publish_source_status_registry();
         Ok(())
@@ -2070,6 +2079,7 @@ impl InputManager {
             .set_macos_daemon_ownership(
                 self.macos_capability_owner,
                 self.macos_owner_conflict.clone(),
+                self.macos_owner_designated_requirement_hash.clone(),
             )
             .expect("new source accepts retained macOS ownership status");
         source

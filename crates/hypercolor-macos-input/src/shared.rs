@@ -204,8 +204,16 @@ pub struct MacosInputBatch<'a> {
 /// Monotonic native diagnostics for one session.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MacosInputDiagnostics {
+    pub queue_capacity: usize,
+    pub queue_depth: usize,
+    pub events_received: u64,
+    pub events_published: u64,
     pub dropped_events: u64,
     pub tap_disable_count: u64,
+    pub tap_disabled_timeout: u64,
+    pub tap_disabled_user_input: u64,
+    pub tap_reenabled: u64,
+    pub state_gaps: u64,
     pub unsupported_system_events: u64,
     pub invalid_scroll_phases: u64,
     pub last_point_delta_x: i64,

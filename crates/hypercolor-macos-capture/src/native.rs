@@ -360,6 +360,7 @@ fn publish_decoded_result(
     streams: &Weak<StreamSlot>,
     shared: &Arc<SessionShared>,
 ) {
+    let _timing = shared.counters.observe_publication();
     match result {
         Ok(DecodedSample {
             event: MacosFrameEvent::Frame(frame),
@@ -411,6 +412,7 @@ define_class!(
             sample_buffer: &CMSampleBuffer,
             output_type: SCStreamOutputType,
         ) {
+            let _callback_timing = self.ivars().shared.counters.observe_callback();
             self.ivars().shared.counters.record_received();
             if self
                 .ivars()
@@ -421,6 +423,7 @@ define_class!(
                 return;
             }
             let sample = if output_type == SCStreamOutputType::Screen {
+                let _retain_timing = self.ivars().shared.counters.observe_retain();
                 retain_sample(
                     sample_buffer,
                     self.ivars().cursor_composed,
@@ -822,13 +825,17 @@ impl NativeStream {
         let mut decoder = MacosFrameDecoder::new(epoch);
         let mut delivery_validator = MacosStreamDeliveryValidator::new(configured_stream);
         delivery_validator.validate_configuration()?;
+        let decode_shared = Arc::clone(&shared);
         let worker_shared = Arc::clone(&shared);
         let worker_streams = streams.clone();
         let worker = LatestSampleWorker::spawn(
             "hypercolor-macos-screen-capture",
-            move |sample: Result<RetainedNativeSample, MacosCaptureError>| match sample {
-                Ok(sample) => decode_sample(&mut decoder, &mut delivery_validator, sample),
-                Err(error) => Err(classify_delivery_error(&mut delivery_validator, error)),
+            move |sample: Result<RetainedNativeSample, MacosCaptureError>| {
+                let _timing = decode_shared.counters.observe_conversion();
+                match sample {
+                    Ok(sample) => decode_sample(&mut decoder, &mut delivery_validator, sample),
+                    Err(error) => Err(classify_delivery_error(&mut delivery_validator, error)),
+                }
             },
             move |result| {
                 publish_decoded_result(result, epoch, &worker_streams, &worker_shared);

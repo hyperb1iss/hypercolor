@@ -51,6 +51,7 @@ struct StatusAwareScreenSource {
 struct RetainedMacosState {
     owner: MacosCapabilityOwner,
     conflict: Option<MacosDaemonOwnerConflict>,
+    designated_requirement_hash: Option<Arc<str>>,
     metal4: bool,
 }
 
@@ -85,10 +86,12 @@ impl InputSource for MacosStateAwareSource {
         &mut self,
         owner: MacosCapabilityOwner,
         conflict: Option<MacosDaemonOwnerConflict>,
+        designated_requirement_hash: Option<Arc<str>>,
     ) -> anyhow::Result<()> {
         let mut state = self.state.lock().expect("macOS state lock");
         state.owner = owner;
         state.conflict = conflict;
+        state.designated_requirement_hash = designated_requirement_hash;
         Ok(())
     }
 
@@ -1054,11 +1057,16 @@ fn late_source_inherits_retained_macos_process_state() {
     let state = Arc::new(Mutex::new(RetainedMacosState {
         owner: MacosCapabilityOwner::Standalone,
         conflict: None,
+        designated_requirement_hash: None,
         metal4: false,
     }));
     let mut manager = InputManager::new();
     manager
-        .set_macos_daemon_ownership(MacosCapabilityOwner::LaunchdService, Some(conflict.clone()))
+        .set_macos_daemon_ownership(
+            MacosCapabilityOwner::LaunchdService,
+            Some(conflict.clone()),
+            Some(Arc::from("designated-launchd")),
+        )
         .expect("manager retains macOS ownership before registration");
     manager
         .set_macos_metal4_capability(true)
@@ -1074,6 +1082,7 @@ fn late_source_inherits_retained_macos_process_state() {
         RetainedMacosState {
             owner: MacosCapabilityOwner::LaunchdService,
             conflict: Some(conflict),
+            designated_requirement_hash: Some(Arc::from("designated-launchd")),
             metal4: true,
         }
     );
@@ -3365,6 +3374,7 @@ fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
         tcc: MacosAuthorizationState::Authorized,
         owner: MacosCapabilityOwner::AppSidecar,
         selection: MacosSelectionState::None,
+        selection_diagnostic_label: None,
         tahoe: MacosTahoeCapabilities {
             host_architecture: MacosArchitecture::AppleSilicon,
             translated_process: false,
@@ -3373,6 +3383,46 @@ fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
         },
         tahoe_selection: None,
         owner_conflict: None,
+        authorization_last_transition_at: None,
+        owner_designated_requirement_hash: None,
+        executable_architecture: MacosArchitecture::AppleSilicon,
+        stream_state: Arc::from("inactive"),
+        capture_session_generation: None,
+        topology_generation: None,
+        resource_generation: None,
+        publication_plan_generation: None,
+        pixel_format: None,
+        dynamic_range: None,
+        color_space: None,
+        transfer_function: None,
+        display_scale_bits: None,
+        native_width: None,
+        native_height: None,
+        queue_depth: 8,
+        admitted_native_bytes: 0,
+        pinned_generations: None,
+        frames_received: 0,
+        frames_published: 0,
+        frames_superseded: 0,
+        frames_malformed: 0,
+        frames_dropped: Arc::from([]),
+        frames_stale: 0,
+        publication_path: Some(Arc::from("cpu")),
+        fallback_reason: None,
+        callback_total_ns: 0,
+        callback_max_ns: 0,
+        retain_total_ns: 0,
+        retain_max_ns: 0,
+        conversion_total_ns: 0,
+        conversion_max_ns: 0,
+        cpu_reduction_total_ns: 0,
+        cpu_reduction_max_ns: 0,
+        native_import_total_ns: 0,
+        native_import_max_ns: 0,
+        native_reduction_submit_total_ns: 0,
+        native_reduction_submit_max_ns: 0,
+        publication_total_ns: 0,
+        publication_max_ns: 0,
     });
 
     writer

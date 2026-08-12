@@ -7,7 +7,7 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
@@ -1273,6 +1273,15 @@ pub enum PlatformGpuApi {
     Other(Arc<str>),
 }
 
+/// Timing observer attached to one native GPU publication.
+pub trait PlatformGpuSurfaceTimingSink: Send + Sync {
+    /// Record a completed native import attempt.
+    fn record_import(&self, elapsed: Duration);
+
+    /// Record a completed native reduction command submission.
+    fn record_native_reduction_submission(&self, elapsed: Duration);
+}
+
 /// Opaque, lifetime-owning GPU surface descriptor.
 #[derive(Clone)]
 pub struct PlatformGpuSurface {
@@ -1285,6 +1294,7 @@ pub struct PlatformGpuSurface {
     target_resource_lifetime: Option<ScreenResourceLifetime>,
     shared_target_resource_lifetime: Option<ScreenResourceLifetime>,
     capture_resource_lifetime: Option<ScreenResourceLifetime>,
+    timing_sink: Option<Arc<dyn PlatformGpuSurfaceTimingSink>>,
 }
 
 /// Typed access to one GPU owner paired with every attached resource lifetime.
@@ -1356,7 +1366,18 @@ impl PlatformGpuSurface {
             target_resource_lifetime: None,
             shared_target_resource_lifetime: None,
             capture_resource_lifetime: None,
+            timing_sink: None,
         })
+    }
+
+    /// Attach a backend timing observer without exposing platform types.
+    #[must_use]
+    pub fn with_timing_sink<T>(mut self, timing_sink: Arc<T>) -> Self
+    where
+        T: PlatformGpuSurfaceTimingSink + 'static,
+    {
+        self.timing_sink = Some(timing_sink);
+        self
     }
 
     pub(crate) fn with_native_target_owners(
@@ -1455,6 +1476,12 @@ impl PlatformGpuSurface {
     #[must_use]
     pub const fn capture_resource_lifetime(&self) -> Option<&ScreenResourceLifetime> {
         self.capture_resource_lifetime.as_ref()
+    }
+
+    /// Backend timing observer retained with this publication.
+    #[must_use]
+    pub fn timing_sink(&self) -> Option<&Arc<dyn PlatformGpuSurfaceTimingSink>> {
+        self.timing_sink.as_ref()
     }
 }
 

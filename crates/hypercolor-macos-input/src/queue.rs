@@ -13,8 +13,14 @@ pub(crate) const DEFAULT_QUEUE_CAPACITY: usize = 2048;
 
 #[derive(Default)]
 pub(crate) struct Diagnostics {
+    events_received: AtomicU64,
+    events_published: AtomicU64,
     dropped_events: AtomicU64,
     tap_disable_count: AtomicU64,
+    tap_disabled_timeout: AtomicU64,
+    tap_disabled_user_input: AtomicU64,
+    tap_reenabled: AtomicU64,
+    state_gaps: AtomicU64,
     unsupported_system_events: AtomicU64,
     invalid_scroll_phases: AtomicU64,
     last_point_delta_x: AtomicI64,
@@ -23,15 +29,32 @@ pub(crate) struct Diagnostics {
 }
 
 impl Diagnostics {
-    pub(crate) fn snapshot(&self) -> MacosInputDiagnostics {
+    fn snapshot(&self, queue_capacity: usize, queue_depth: usize) -> MacosInputDiagnostics {
         MacosInputDiagnostics {
+            queue_capacity,
+            queue_depth,
+            events_received: self.events_received.load(Ordering::Relaxed),
+            events_published: self.events_published.load(Ordering::Relaxed),
             dropped_events: self.dropped_events.load(Ordering::Relaxed),
             tap_disable_count: self.tap_disable_count.load(Ordering::Relaxed),
+            tap_disabled_timeout: self.tap_disabled_timeout.load(Ordering::Relaxed),
+            tap_disabled_user_input: self.tap_disabled_user_input.load(Ordering::Relaxed),
+            tap_reenabled: self.tap_reenabled.load(Ordering::Relaxed),
+            state_gaps: self.state_gaps.load(Ordering::Relaxed),
             unsupported_system_events: self.unsupported_system_events.load(Ordering::Relaxed),
             invalid_scroll_phases: self.invalid_scroll_phases.load(Ordering::Relaxed),
             last_point_delta_x: self.last_point_delta_x.load(Ordering::Relaxed),
             last_point_delta_y: self.last_point_delta_y.load(Ordering::Relaxed),
         }
+    }
+
+    fn record_received(&self) {
+        self.events_received.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_published(&self, count: usize) {
+        self.events_published
+            .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
     pub(crate) fn record_drop(&self) {
@@ -40,6 +63,15 @@ impl Diagnostics {
 
     pub(crate) fn record_tap_disable(&self, repeated: bool, reason: MacosInputGapReason) {
         self.tap_disable_count.fetch_add(1, Ordering::Relaxed);
+        match reason {
+            MacosInputGapReason::TapDisabledTimeout => {
+                self.tap_disabled_timeout.fetch_add(1, Ordering::Relaxed);
+            }
+            MacosInputGapReason::TapDisabledUserInput => {
+                self.tap_disabled_user_input.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
         if repeated {
             let encoded = match reason {
                 MacosInputGapReason::TapDisabledTimeout => 1,
@@ -48,6 +80,14 @@ impl Diagnostics {
             };
             self.repeated_tap_disable.store(encoded, Ordering::Release);
         }
+    }
+
+    pub(crate) fn record_tap_reenabled(&self) {
+        self.tap_reenabled.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_gap(&self) {
+        self.state_gaps.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn record_unsupported_system_event(&self) {
@@ -98,6 +138,10 @@ impl EventQueue {
     }
 
     pub(crate) fn enqueue(&self, event: MacosInputEvent) {
+        self.diagnostics.record_received();
+        if matches!(event, MacosInputEvent::StateGap { .. }) {
+            self.diagnostics.record_gap();
+        }
         if self.overflowed.load(Ordering::Acquire) {
             self.diagnostics.record_drop();
             return;
@@ -110,6 +154,7 @@ impl EventQueue {
     }
 
     pub(crate) fn request_gap(&self, reason: MacosInputGapReason) {
+        self.diagnostics.record_gap();
         self.terminal_gaps
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -138,10 +183,12 @@ impl EventQueue {
     }
 
     pub(crate) fn drain_into(&self, output: &mut Vec<MacosInputEvent>) {
+        let initial_len = output.len();
         while let Some(event) = self.events.pop() {
             output.push(event);
         }
         if self.overflowed.swap(false, Ordering::AcqRel) {
+            self.diagnostics.record_gap();
             output.push(MacosInputEvent::StateGap {
                 reason: MacosInputGapReason::QueueOverflow,
             });
@@ -153,6 +200,8 @@ impl EventQueue {
                 .drain(..)
                 .map(|reason| MacosInputEvent::StateGap { reason }),
         );
+        self.diagnostics
+            .record_published(output.len().saturating_sub(initial_len));
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -167,6 +216,11 @@ impl EventQueue {
 
     pub(crate) fn diagnostics(&self) -> &Diagnostics {
         &self.diagnostics
+    }
+
+    pub(crate) fn diagnostics_snapshot(&self) -> MacosInputDiagnostics {
+        self.diagnostics
+            .snapshot(self.events.capacity(), self.events.len())
     }
 
     fn notify(&self) {
@@ -206,7 +260,13 @@ mod tests {
                 reason: MacosInputGapReason::QueueOverflow
             }
         );
-        assert_eq!(queue.diagnostics().snapshot().dropped_events, 2);
+        let diagnostics = queue.diagnostics_snapshot();
+        assert_eq!(diagnostics.queue_capacity, 2);
+        assert_eq!(diagnostics.queue_depth, 0);
+        assert_eq!(diagnostics.events_received, 4);
+        assert_eq!(diagnostics.events_published, 3);
+        assert_eq!(diagnostics.dropped_events, 2);
+        assert_eq!(diagnostics.state_gaps, 1);
     }
 
     #[test]
@@ -233,12 +293,21 @@ mod tests {
     #[test]
     fn repeated_tap_disable_retains_the_native_reason() {
         let diagnostics = Diagnostics::default();
+        diagnostics.record_tap_disable(false, MacosInputGapReason::TapDisabledTimeout);
         diagnostics.record_tap_disable(true, MacosInputGapReason::TapDisabledUserInput);
+        diagnostics.record_tap_reenabled();
 
         assert_eq!(
             diagnostics.take_repeated_tap_disable(),
             Some(MacosInputGapReason::TapDisabledUserInput)
         );
         assert_eq!(diagnostics.take_repeated_tap_disable(), None);
+        let snapshot = diagnostics.snapshot(2_048, 17);
+        assert_eq!(snapshot.queue_capacity, 2_048);
+        assert_eq!(snapshot.queue_depth, 17);
+        assert_eq!(snapshot.tap_disable_count, 2);
+        assert_eq!(snapshot.tap_disabled_timeout, 1);
+        assert_eq!(snapshot.tap_disabled_user_input, 1);
+        assert_eq!(snapshot.tap_reenabled, 1);
     }
 }

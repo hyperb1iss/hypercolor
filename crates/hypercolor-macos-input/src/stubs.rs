@@ -33,12 +33,7 @@ impl MacosInputSession {
     #[must_use]
     pub const fn diagnostics(&self) -> MacosInputDiagnostics {
         MacosInputDiagnostics {
-            dropped_events: 0,
-            tap_disable_count: 0,
-            unsupported_system_events: 0,
-            invalid_scroll_phases: 0,
-            last_point_delta_x: 0,
-            last_point_delta_y: 0,
+            ..MacosInputDiagnostics::default()
         }
     }
 

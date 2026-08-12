@@ -326,26 +326,28 @@ impl DaemonState {
 
         // ── Input Manager ───────────────────────────────────────────────
         #[cfg(target_os = "macos")]
-        let macos_owner_snapshot = match (pending_macos_owner_watch.as_mut(), macos_owner_snapshot)
-        {
-            (Some(watch), Some(snapshot)) => Some(
-                watch
-                    .reconcile_snapshot(snapshot)
-                    .context("failed to reconcile macOS daemon ownership before source startup")?,
-            ),
-            (None, snapshot) => snapshot,
-            (Some(_), None) => None,
-        };
+        let macos_owner_publication =
+            match (pending_macos_owner_watch.as_mut(), macos_owner_snapshot) {
+                (Some(watch), Some(snapshot)) => {
+                    Some(watch.reconcile_snapshot(snapshot).context(
+                        "failed to reconcile macOS daemon ownership before source startup",
+                    )?)
+                }
+                (None, snapshot) => {
+                    snapshot.map(super::macos_owner_watch::MacosOwnerPublication::without_identity)
+                }
+                (Some(_), None) => None,
+            };
         let (built_input_manager, browser_input) = build_input_manager(config, &config_manager)?;
         #[cfg(target_os = "macos")]
         let mut built_input_manager = built_input_manager;
         #[cfg(target_os = "macos")]
-        if let Some(snapshot) = macos_owner_snapshot {
+        if let Some(publication) = macos_owner_publication {
             super::macos_owner_watch::publish_owner_snapshot(
                 &macos_daemon_ownership,
                 &mut built_input_manager,
                 &event_bus,
-                snapshot,
+                publication,
             )?;
         }
         let interaction_routing = InteractionRoutingControl::new(

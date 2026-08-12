@@ -27,6 +27,30 @@ enum WatchSignal {
     Changed,
 }
 
+#[derive(Clone)]
+pub(crate) struct MacosOwnerPublication {
+    snapshot: MacosOwnerSnapshot,
+    designated_requirement_hash: Option<Arc<str>>,
+}
+
+impl MacosOwnerPublication {
+    fn from_record(record: &MacosOwnerRecord, startup_snapshot: MacosOwnerSnapshot) -> Self {
+        Self {
+            snapshot: snapshot_with_startup_recovery(record, startup_snapshot),
+            designated_requirement_hash: Some(Arc::from(
+                record.active_identity.designated_requirement_hash.as_str(),
+            )),
+        }
+    }
+
+    pub(crate) fn without_identity(snapshot: MacosOwnerSnapshot) -> Self {
+        Self {
+            snapshot,
+            designated_requirement_hash: None,
+        }
+    }
+}
+
 pub(crate) struct PendingMacosOwnerWatch {
     watcher: RecommendedWatcher,
     signal_tx: SyncSender<WatchSignal>,
@@ -84,13 +108,13 @@ impl PendingMacosOwnerWatch {
     pub(crate) fn reconcile_snapshot(
         &mut self,
         fallback: MacosOwnerSnapshot,
-    ) -> Result<MacosOwnerSnapshot, crate::macos_owner::MacosOwnerStoreError> {
+    ) -> Result<MacosOwnerPublication, crate::macos_owner::MacosOwnerStoreError> {
         let Some(record) = self.store.load_owner_record()? else {
             self.reconciled_fingerprint = None;
-            return Ok(fallback);
+            return Ok(MacosOwnerPublication::without_identity(fallback));
         };
         self.reconciled_fingerprint = Some(MacosOwnerIdentityFingerprint::from(&record));
-        Ok(snapshot_with_startup_recovery(
+        Ok(MacosOwnerPublication::from_record(
             &record,
             self.startup_snapshot,
         ))
@@ -132,12 +156,12 @@ impl PendingMacosOwnerWatch {
             .context("failed to spawn the macOS daemon owner watch worker")?;
         let publisher = tokio::spawn(async move {
             while snapshot_rx.changed().await.is_ok() {
-                let Some(snapshot) = *snapshot_rx.borrow_and_update() else {
+                let Some(publication) = snapshot_rx.borrow_and_update().clone() else {
                     continue;
                 };
                 let mut input_manager = input_manager.lock().await;
                 if let Err(error) =
-                    publish_owner_snapshot(&snapshots, &mut input_manager, &event_bus, snapshot)
+                    publish_owner_snapshot(&snapshots, &mut input_manager, &event_bus, publication)
                 {
                     warn!(%error, "failed to publish macOS daemon ownership");
                 }
@@ -194,7 +218,7 @@ fn watch_worker(
     signal_rx: Receiver<WatchSignal>,
     stopping: &AtomicBool,
     store: &MacosOwnerStore,
-    snapshots: &tokio::sync::watch::Sender<Option<MacosOwnerSnapshot>>,
+    snapshots: &tokio::sync::watch::Sender<Option<MacosOwnerPublication>>,
     startup_snapshot: MacosOwnerSnapshot,
     mut fingerprint: Option<MacosOwnerIdentityFingerprint>,
 ) {
@@ -214,19 +238,28 @@ pub(crate) fn publish_owner_snapshot(
     snapshots: &ArcSwapOption<MacosOwnerSnapshot>,
     input_manager: &mut InputManager,
     event_bus: &HypercolorBus,
-    snapshot: MacosOwnerSnapshot,
+    publication: MacosOwnerPublication,
 ) -> anyhow::Result<()> {
-    publish_owner_snapshot_with(snapshots, input_manager, snapshot, |published_snapshot| {
-        event_bus.publish(owner_event(published_snapshot));
-    })
+    publish_owner_snapshot_with(
+        snapshots,
+        input_manager,
+        publication,
+        |published_snapshot| {
+            event_bus.publish(owner_event(published_snapshot));
+        },
+    )
 }
 
 fn publish_owner_snapshot_with(
     snapshots: &ArcSwapOption<MacosOwnerSnapshot>,
     input_manager: &mut InputManager,
-    snapshot: MacosOwnerSnapshot,
+    publication: MacosOwnerPublication,
     publish_event: impl FnOnce(MacosOwnerSnapshot),
 ) -> anyhow::Result<()> {
+    let MacosOwnerPublication {
+        snapshot,
+        designated_requirement_hash,
+    } = publication;
     input_manager.set_macos_daemon_ownership(
         capability_owner(snapshot.active_owner),
         snapshot.conflict.map(|conflict| MacosDaemonOwnerConflict {
@@ -234,6 +267,7 @@ fn publish_owner_snapshot_with(
             contender: capability_owner(conflict.contender_owner),
             observed_at_ms: conflict.observed_at_ms,
         }),
+        designated_requirement_hash,
     )?;
     snapshots.store(Some(Arc::new(snapshot)));
     publish_event(snapshot);
@@ -242,7 +276,7 @@ fn publish_owner_snapshot_with(
 
 fn refresh_owner_snapshot(
     store: &MacosOwnerStore,
-    snapshots: &tokio::sync::watch::Sender<Option<MacosOwnerSnapshot>>,
+    snapshots: &tokio::sync::watch::Sender<Option<MacosOwnerPublication>>,
     fingerprint: &mut Option<MacosOwnerIdentityFingerprint>,
     startup_snapshot: MacosOwnerSnapshot,
 ) -> anyhow::Result<()> {
@@ -254,7 +288,7 @@ fn refresh_owner_snapshot(
         return Ok(());
     }
     *fingerprint = Some(next_fingerprint);
-    snapshots.send_replace(Some(snapshot_with_startup_recovery(
+    snapshots.send_replace(Some(MacosOwnerPublication::from_record(
         &record,
         startup_snapshot,
     )));
@@ -419,8 +453,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        MacosOwnerIdentityFingerprint, PendingMacosOwnerWatch, enqueue_change,
-        event_touches_owner_record, owner_event, publish_owner_snapshot_with,
+        MacosOwnerIdentityFingerprint, MacosOwnerPublication, PendingMacosOwnerWatch,
+        enqueue_change, event_touches_owner_record, owner_event, publish_owner_snapshot_with,
         refresh_owner_snapshot, snapshot_with_startup_recovery, watch_worker,
     };
     use crate::macos_owner::{
@@ -466,7 +500,9 @@ mod tests {
         assert_eq!(
             snapshot_rx
                 .borrow()
+                .as_ref()
                 .expect("updated snapshot should remain installed")
+                .snapshot
                 .conflict
                 .expect("updated snapshot should include conflict")
                 .observed_at_ms,
@@ -549,7 +585,10 @@ mod tests {
         publish_owner_snapshot_with(
             &snapshots,
             &mut input_manager,
-            snapshot,
+            MacosOwnerPublication {
+                snapshot,
+                designated_requirement_hash: Some(Arc::from("deadbeef")),
+            },
             |published_snapshot| {
                 assert_eq!(snapshots.load_full().as_deref(), Some(&published_snapshot));
                 event_published = true;
@@ -594,10 +633,15 @@ mod tests {
 
         assert_eq!(
             reconciled
+                .snapshot
                 .conflict
                 .expect("reconciled snapshot should include the contender")
                 .observed_at_ms,
             42
+        );
+        assert_eq!(
+            reconciled.designated_requirement_hash.as_deref(),
+            Some("deadbeef")
         );
         let record = store
             .load_owner_record()

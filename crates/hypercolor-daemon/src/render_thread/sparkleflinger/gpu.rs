@@ -26,6 +26,8 @@ use std::sync::Weak;
 ))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 #[cfg(test)]
@@ -2128,8 +2130,12 @@ impl GpuSparkleFlinger {
             .downgrade()
             .upgrade()
             .context("native macOS capture owner retired before import")?;
-        let (imported, storage_id) =
-            bridge.import_frame(&self.device, target_owner.resource_generation, capture)?;
+        let import_started = Instant::now();
+        let imported = bridge.import_frame(&self.device, target_owner.resource_generation, capture);
+        if let Some(timing_sink) = surface.timing_sink() {
+            timing_sink.record_import(import_started.elapsed());
+        }
+        let (imported, storage_id) = imported?;
         anyhow::ensure!(
             imported.capture().storage_extent.width == surface.extent().width()
                 && imported.capture().storage_extent.height == surface.extent().height(),
@@ -2139,6 +2145,8 @@ impl GpuSparkleFlinger {
         let descriptor = &target_owner.descriptor;
         let (width, height, storage_id, texture, view) = if requires_work {
             self.flush_pending_output_submission()?;
+            let reduction_started = Instant::now();
+            let mut submitted_native_reduction = false;
             let physical = target_owner
                 .physical
                 .as_ref()
@@ -2160,11 +2168,12 @@ impl GpuSparkleFlinger {
                     &mut encoder,
                 )?;
                 let _ = self.queue.submit(Some(encoder.finish()));
+                submitted_native_reduction = true;
                 *physical_sequence = Some(content_generation);
             }
             drop(physical_sequence);
 
-            if let Some(logical_target) = target_owner.logical_target.as_ref() {
+            let target = if let Some(logical_target) = target_owner.logical_target.as_ref() {
                 let mut logical_sequence = target_owner
                     .logical_content_sequence
                     .lock()
@@ -2189,6 +2198,7 @@ impl GpuSparkleFlinger {
                         &mut encoder,
                     )?;
                     let _ = self.queue.submit(Some(encoder.finish()));
+                    submitted_native_reduction = true;
                     *logical_sequence = Some(content_generation);
                 }
                 (
@@ -2208,7 +2218,11 @@ impl GpuSparkleFlinger {
                     physical.target.texture().clone(),
                     physical.target.view().clone(),
                 )
+            };
+            if submitted_native_reduction && let Some(timing_sink) = surface.timing_sink() {
+                timing_sink.record_native_reduction_submission(reduction_started.elapsed());
             }
+            target
         } else {
             let extent = descriptor.geometry().output_extent();
             anyhow::ensure!(

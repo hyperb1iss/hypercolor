@@ -236,6 +236,38 @@ pub struct MacosInputPlatformStatus {
     pub pointer_owner: MacosCapabilityOwner,
     /// Latest daemon-owner conflict, when one exists.
     pub owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
+    /// Age anchor for the latest observed Input Monitoring transition.
+    pub authorization_last_transition_at: Option<Instant>,
+    /// Designated-requirement hash when the owning process exposes one.
+    pub owner_designated_requirement_hash: Option<Arc<str>>,
+    /// Native host architecture when the process-stable probe succeeded.
+    pub host_architecture: Option<MacosArchitecture>,
+    /// Architecture of the running executable slice.
+    pub executable_architecture: MacosArchitecture,
+    /// Whether the process runs under Rosetta when the probe succeeded.
+    pub translated_process: Option<bool>,
+    /// Native capture epoch, absent before a session starts.
+    pub capture_session_generation: Option<u64>,
+    /// Display topology generation observed by pointer capture.
+    pub topology_generation: Option<u64>,
+    /// Fixed native event-queue capacity for the active session.
+    pub queue_capacity: Option<usize>,
+    /// Current number of native events awaiting delivery.
+    pub queue_depth: Option<usize>,
+    /// Native input events offered to the bounded queue.
+    pub input_events_received: Option<u64>,
+    /// Native input events and ordered gaps delivered to core.
+    pub input_events_published: Option<u64>,
+    /// Native input events rejected by queue pressure.
+    pub input_events_dropped: Option<u64>,
+    /// Event-tap disables caused by callback timeout.
+    pub tap_disabled_timeout: Option<u64>,
+    /// Event-tap disables caused by user input.
+    pub tap_disabled_user_input: Option<u64>,
+    /// Successful event-tap reenable attempts.
+    pub tap_reenabled: Option<u64>,
+    /// Ordered state gaps observed across native and core folding.
+    pub state_gaps: Option<u64>,
 }
 
 /// Platform detail for the macOS screen-capture adapter.
@@ -249,12 +281,94 @@ pub struct MacosScreenPlatformStatus {
     pub owner: MacosCapabilityOwner,
     /// Current system-picker selection.
     pub selection: MacosSelectionState,
+    /// Privacy-safe bounded label for the selected content style.
+    pub selection_diagnostic_label: Option<Arc<str>>,
     /// Process-stable Tahoe host and active Metal-device capabilities.
     pub tahoe: MacosTahoeCapabilities,
     /// Tahoe capabilities for the active selected stream.
     pub tahoe_selection: Option<MacosTahoeSelectionCapabilities>,
     /// Latest daemon-owner conflict, when one exists.
     pub owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
+    /// Age anchor for the latest observed Screen Recording transition.
+    pub authorization_last_transition_at: Option<Instant>,
+    /// Designated-requirement hash when the owning process exposes one.
+    pub owner_designated_requirement_hash: Option<Arc<str>>,
+    /// Architecture of the running executable slice.
+    pub executable_architecture: MacosArchitecture,
+    /// Bounded native stream state.
+    pub stream_state: Arc<str>,
+    /// ScreenCaptureKit stream generation from the latest accepted frame.
+    pub capture_session_generation: Option<u64>,
+    /// Geometry generation from the latest accepted frame.
+    pub topology_generation: Option<u64>,
+    /// Native resource generation from the latest accepted frame.
+    pub resource_generation: Option<u64>,
+    /// Publication plan generation used by the latest exact path.
+    pub publication_plan_generation: Option<u64>,
+    /// Bounded native pixel-format name.
+    pub pixel_format: Option<Arc<str>>,
+    /// Bounded dynamic-range name.
+    pub dynamic_range: Option<Arc<str>>,
+    /// Bounded color-space name.
+    pub color_space: Option<Arc<str>>,
+    /// Bounded transfer-function name.
+    pub transfer_function: Option<Arc<str>>,
+    /// Exact display scale encoded as `f64::to_bits`.
+    pub display_scale_bits: Option<u64>,
+    /// Exact native surface width.
+    pub native_width: Option<u32>,
+    /// Exact native surface height.
+    pub native_height: Option<u32>,
+    /// Configured ScreenCaptureKit queue depth.
+    pub queue_depth: usize,
+    /// Bytes currently admitted by the shared screen resource fence.
+    pub admitted_native_bytes: u64,
+    /// Retained old resource generations, when the backend can distinguish them.
+    pub pinned_generations: Option<usize>,
+    /// Native callback frames received.
+    pub frames_received: u64,
+    /// Native callback frames published after validation.
+    pub frames_published: u64,
+    /// Latest-value deliveries superseded before consumption.
+    pub frames_superseded: u64,
+    /// Native frames rejected for malformed attachment data.
+    pub frames_malformed: u64,
+    /// Malformed or rejected native frames grouped by bounded reason.
+    pub frames_dropped: Arc<[(Arc<str>, u64)]>,
+    /// Frames rejected after their freshness deadline.
+    pub frames_stale: u64,
+    /// Active bounded publication path after a route has resolved.
+    pub publication_path: Option<Arc<str>>,
+    /// Exact bounded reason for falling back from native publication.
+    pub fallback_reason: Option<Arc<str>>,
+    /// Total callback execution time measured by the native boundary.
+    pub callback_total_ns: u64,
+    /// Maximum callback execution time measured by the native boundary.
+    pub callback_max_ns: u64,
+    /// Total native surface validation and retain time.
+    pub retain_total_ns: u64,
+    /// Maximum native surface validation and retain time.
+    pub retain_max_ns: u64,
+    /// Total native frame conversion time.
+    pub conversion_total_ns: u64,
+    /// Maximum native frame conversion time.
+    pub conversion_max_ns: u64,
+    /// Total CPU reduction time measured by core.
+    pub cpu_reduction_total_ns: u64,
+    /// Maximum CPU reduction time measured by core.
+    pub cpu_reduction_max_ns: u64,
+    /// Total native IOSurface import time measured by the renderer.
+    pub native_import_total_ns: u64,
+    /// Maximum native IOSurface import time measured by the renderer.
+    pub native_import_max_ns: u64,
+    /// Total native reduction encode and queue-submission time.
+    pub native_reduction_submit_total_ns: u64,
+    /// Maximum native reduction encode and queue-submission time.
+    pub native_reduction_submit_max_ns: u64,
+    /// Total decoded-frame publication time measured by the native boundary.
+    pub publication_total_ns: u64,
+    /// Maximum decoded-frame publication time measured by the native boundary.
+    pub publication_max_ns: u64,
 }
 
 /// Platform-specific detail attached to a generic input-source status.

@@ -279,7 +279,10 @@ from .macos_daemon_owner_recovery_required_api_status import (
     MacosDaemonOwnerRecoveryRequiredApiStatus,
 )
 from .macos_daemon_ownership_api_status import MacosDaemonOwnershipApiStatus
+from .macos_frame_drop_api_status import MacosFrameDropApiStatus
+from .macos_input_telemetry_api_status import MacosInputTelemetryApiStatus
 from .macos_protected_source_state_api import MacosProtectedSourceStateApi
+from .macos_screen_telemetry_api_status import MacosScreenTelemetryApiStatus
 from .macos_selection_state_api_type_0 import MacosSelectionStateApiType0
 from .macos_selection_state_api_type_0_type import MacosSelectionStateApiType0Type
 from .macos_selection_state_api_type_1 import MacosSelectionStateApiType1
@@ -610,7 +613,10 @@ __all__ = (
     "MacosDaemonOwnerConflictApiStatus",
     "MacosDaemonOwnerRecoveryRequiredApiStatus",
     "MacosDaemonOwnershipApiStatus",
+    "MacosFrameDropApiStatus",
+    "MacosInputTelemetryApiStatus",
     "MacosProtectedSourceStateApi",
+    "MacosScreenTelemetryApiStatus",
     "MacosSelectionStateApiType0",
     "MacosSelectionStateApiType0Type",
     "MacosSelectionStateApiType1",

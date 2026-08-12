@@ -150,6 +150,7 @@ fn fixture_capture_activates_only_for_live_demand() {
                 contender: MacosCapabilityOwner::HomebrewService,
                 observed_at_ms: 42,
             }),
+            Some(Arc::from("designated-app-sidecar")),
         )
         .expect("fixture owner status updates");
     source
@@ -178,10 +179,17 @@ fn fixture_capture_activates_only_for_live_demand() {
         })
     );
     assert_eq!(platform.selection, MacosSelectionState::None);
+    assert_eq!(platform.selection_diagnostic_label, None);
     assert_eq!(platform.tahoe.host_architecture, MacosArchitecture::Intel);
     assert!(!platform.tahoe.translated_process);
     assert!(!platform.tahoe.content_tone_mapping_info);
     assert!(platform.tahoe.metal4);
+    assert_eq!(platform.stream_state.as_ref(), "inactive");
+    assert_eq!(platform.queue_depth, 8);
+    assert_eq!(platform.admitted_native_bytes, 0);
+    assert_eq!(platform.frames_received, 0);
+    assert_eq!(platform.frames_published, 0);
+    assert_eq!(platform.publication_path, None);
     assert!(!fixture.is_active());
     source.start().expect("fixture source starts idle");
     assert!(matches!(source.sample(), Ok(InputData::None)));
@@ -221,11 +229,27 @@ fn fixture_capture_activates_only_for_live_demand() {
         panic!("expected live macOS screen platform status");
     };
     assert_eq!(platform.state, CoreProtectedSourceState::Live);
+    assert_eq!(platform.stream_state.as_ref(), "active");
+    assert_eq!(platform.capture_session_generation, Some(1));
+    assert_eq!(platform.topology_generation, Some(1));
+    assert_eq!(platform.resource_generation, Some(1));
+    assert_eq!(platform.pixel_format.as_deref(), Some("bgra8"));
+    assert_eq!(platform.dynamic_range.as_deref(), Some("standard"));
+    assert_eq!(platform.color_space.as_deref(), Some("srgb"));
+    assert_eq!(platform.transfer_function.as_deref(), Some("srgb"));
+    assert_eq!(platform.native_width, Some(4));
+    assert_eq!(platform.native_height, Some(2));
+    assert!(platform.frames_received >= 1);
+    assert!(platform.frames_published >= 1);
     assert_eq!(
         platform.selection,
         MacosSelectionState::Display {
             source_id: Arc::clone(&source_id),
         }
+    );
+    assert_eq!(
+        platform.selection_diagnostic_label.as_deref(),
+        Some("display")
     );
     let tahoe = platform
         .tahoe_selection
@@ -278,6 +302,46 @@ fn fixture_capture_activates_only_for_live_demand() {
     };
     assert_eq!(platform.state, CoreProtectedSourceState::ReadyIdle);
     assert_eq!(platform.tahoe_selection, None);
+}
+
+#[test]
+fn stale_native_frame_never_enters_the_legacy_cpu_publication() {
+    let (mut source, fixture) = fixture_source(CaptureConfig {
+        target_fps: 60,
+        ..CaptureConfig::default()
+    });
+    let status = source
+        .source_status_handle()
+        .expect("macOS fixture exposes status");
+    source.start().expect("fixture source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active(
+            PixelExtent::new(4, 2).expect("fixture demand is valid"),
+        ))
+        .expect("fixture demand activates");
+    fixture.set_selection(MacosCaptureSelection::Display {
+        source_id: Arc::from("display:stale-fixture"),
+    });
+    fixture.publish_at(
+        fixture_frame(1, [0, 0, 255, 255]),
+        Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("fixture clock has one second of history"),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(matches!(source.sample(), Ok(InputData::None)));
+        let snapshot = status.snapshot();
+        let Some(SourcePlatformStatus::MacosScreen(platform)) = snapshot.platform.as_deref() else {
+            panic!("expected macOS screen platform status");
+        };
+        if platform.frames_stale == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "stale frame was not observed");
+        thread::yield_now();
+    }
 }
 
 #[test]
@@ -368,6 +432,7 @@ fn late_macos_capture_source_inherits_process_capabilities() {
         .set_macos_daemon_ownership(
             MacosCapabilityOwner::HomebrewService,
             Some(conflict.clone()),
+            Some(Arc::from("designated-homebrew")),
         )
         .expect("manager retains ownership before source registration");
     manager
@@ -382,5 +447,9 @@ fn late_macos_capture_source_inherits_process_capabilities() {
     };
     assert_eq!(platform.owner, MacosCapabilityOwner::HomebrewService);
     assert_eq!(platform.owner_conflict.as_deref(), Some(&conflict));
+    assert_eq!(
+        platform.owner_designated_requirement_hash.as_deref(),
+        Some("designated-homebrew")
+    );
     assert!(platform.tahoe.metal4);
 }

@@ -910,6 +910,7 @@ pub trait InputSource: Send {
         &mut self,
         _owner: crate::input::MacosCapabilityOwner,
         _conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+        _designated_requirement_hash: Option<Arc<str>>,
     ) -> anyhow::Result<()> {
         Ok(())
     }

@@ -214,7 +214,7 @@ impl MacosInputSession {
 
     #[must_use]
     pub fn diagnostics(&self) -> MacosInputDiagnostics {
-        self.queue.diagnostics().snapshot()
+        self.queue.diagnostics_snapshot()
     }
 
     /// Stop the run loop, tear down both taps, join their worker, then flush
@@ -449,6 +449,7 @@ fn handle_tap_disable(context: &TapContext, reason: MacosInputGapReason) {
     // SAFETY: the callback runs on the owning run-loop thread while the tap is
     // retained. Teardown clears this pointer only after removing the source.
     CGEvent::tap_enable(unsafe { &*tap }, true);
+    context.queue.diagnostics().record_tap_reenabled();
 }
 
 fn decode_native_event(

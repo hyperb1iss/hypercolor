@@ -3,6 +3,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use hypercolor_macos_input::{
     MacosInputBatch, MacosInputConfig, MacosInputError, MacosInputEvent, MacosInputGapReason,
@@ -31,6 +32,36 @@ const DEFAULT_EVENT_LIMIT: usize = crate::input::InteractionBatch::MAX_EVENTS;
 const AUTHORIZATION_NONE: u8 = 0;
 const AUTHORIZATION_GRANTED: u8 = 1;
 const AUTHORIZATION_DENIED: u8 = 2;
+
+fn native_process_architecture() -> (
+    Option<crate::input::MacosArchitecture>,
+    crate::input::MacosArchitecture,
+    Option<bool>,
+) {
+    let executable = if cfg!(target_arch = "aarch64") {
+        crate::input::MacosArchitecture::AppleSilicon
+    } else {
+        crate::input::MacosArchitecture::Intel
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let capabilities = hypercolor_macos_capture::MacosScreenCaptureSession::capabilities().ok();
+        let host = capabilities.map(|capabilities| match capabilities.host_architecture {
+            hypercolor_macos_capture::MacosHostArchitecture::AppleSilicon => {
+                crate::input::MacosArchitecture::AppleSilicon
+            }
+            hypercolor_macos_capture::MacosHostArchitecture::Intel => {
+                crate::input::MacosArchitecture::Intel
+            }
+        });
+        let translated = capabilities.map(|capabilities| capabilities.translated_process);
+        (host, executable, translated)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (None, executable, None)
+    }
+}
 
 type HeldStateKey = (Vec<String>, Vec<String>, i32, i32, i32, i32, bool);
 
@@ -101,8 +132,13 @@ pub struct MacosHostInput {
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
     keyboard_tcc: MacosAuthorizationState,
+    authorization_last_transition_at: Option<Instant>,
     owner: MacosCapabilityOwner,
     owner_conflict: Option<Arc<crate::input::MacosDaemonOwnerConflict>>,
+    owner_designated_requirement_hash: Option<Arc<str>>,
+    host_architecture: Option<crate::input::MacosArchitecture>,
+    executable_architecture: crate::input::MacosArchitecture,
+    translated_process: Option<bool>,
     authorization_result: Arc<AtomicU8>,
     #[cfg(feature = "macos-native-fixtures")]
     fixture: Option<Arc<FixtureState>>,
@@ -238,6 +274,8 @@ impl MacosHostInput {
         } else {
             MacosAuthorizationState::NotDetermined
         };
+        let (host_architecture, executable_architecture, translated_process) =
+            native_process_architecture();
         let mut source = Self {
             name: "MacosHostInput".to_owned(),
             running: false,
@@ -260,8 +298,13 @@ impl MacosHostInput {
             ),
             status_session: SourceSessionSlot::new(),
             keyboard_tcc,
+            authorization_last_transition_at: None,
             owner: MacosCapabilityOwner::Standalone,
             owner_conflict: None,
+            owner_designated_requirement_hash: None,
+            host_architecture,
+            executable_architecture,
+            translated_process,
             authorization_result: Arc::new(AtomicU8::new(AUTHORIZATION_NONE)),
             #[cfg(feature = "macos-native-fixtures")]
             fixture: None,
@@ -328,9 +371,11 @@ impl MacosHostInput {
         &mut self,
         owner: MacosCapabilityOwner,
         conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+        designated_requirement_hash: Option<Arc<str>>,
     ) -> anyhow::Result<()> {
         self.owner = owner;
         self.owner_conflict = conflict.map(Arc::new);
+        self.owner_designated_requirement_hash = designated_requirement_hash;
         self.refresh_platform_status()
     }
 
@@ -488,6 +533,18 @@ impl MacosHostInput {
         } else {
             MacosProtectedSourceState::Failed
         };
+        let native = self.session.as_ref().map(MacosInputSession::diagnostics);
+        let (capture_session_generation, topology_generation, folded_state_gaps) = self
+            .shared
+            .lock()
+            .map(|state| {
+                (
+                    self.capture_session_active().then_some(state.epoch),
+                    state.topology_generation,
+                    state.diagnostics.state_gaps,
+                )
+            })
+            .unwrap_or((None, None, 0));
         self.status
             .set_platform(Some(SourcePlatformStatus::MacosInput(
                 MacosInputPlatformStatus {
@@ -497,9 +554,38 @@ impl MacosHostInput {
                     keyboard_owner: self.owner,
                     pointer_owner: self.owner,
                     owner_conflict: self.owner_conflict.clone(),
+                    authorization_last_transition_at: self.authorization_last_transition_at,
+                    owner_designated_requirement_hash: self
+                        .owner_designated_requirement_hash
+                        .clone(),
+                    host_architecture: self.host_architecture,
+                    executable_architecture: self.executable_architecture,
+                    translated_process: self.translated_process,
+                    capture_session_generation,
+                    topology_generation,
+                    queue_capacity: native.map(|diagnostics| diagnostics.queue_capacity),
+                    queue_depth: native.map(|diagnostics| diagnostics.queue_depth),
+                    input_events_received: native.map(|diagnostics| diagnostics.events_received),
+                    input_events_published: native.map(|diagnostics| diagnostics.events_published),
+                    input_events_dropped: native.map(|diagnostics| diagnostics.dropped_events),
+                    tap_disabled_timeout: native
+                        .map(|diagnostics| diagnostics.tap_disabled_timeout),
+                    tap_disabled_user_input: native
+                        .map(|diagnostics| diagnostics.tap_disabled_user_input),
+                    tap_reenabled: native.map(|diagnostics| diagnostics.tap_reenabled),
+                    state_gaps: native
+                        .map(|diagnostics| diagnostics.state_gaps)
+                        .or((folded_state_gaps > 0).then_some(folded_state_gaps)),
                 },
             )))?;
         Ok(())
+    }
+
+    fn set_keyboard_tcc(&mut self, state: MacosAuthorizationState) {
+        if self.keyboard_tcc != state {
+            self.keyboard_tcc = state;
+            self.authorization_last_transition_at = Some(Instant::now());
+        }
     }
 
     fn apply_pending_authorization(&mut self) -> anyhow::Result<()> {
@@ -509,7 +595,7 @@ impl MacosHostInput {
         {
             AUTHORIZATION_NONE => return Ok(()),
             AUTHORIZATION_GRANTED => {
-                self.keyboard_tcc = MacosAuthorizationState::Authorized;
+                self.set_keyboard_tcc(MacosAuthorizationState::Authorized);
                 if matches!(
                     self.degraded,
                     Some(InteractionDegradation::InputMonitoringPermissionDenied)
@@ -522,7 +608,7 @@ impl MacosHostInput {
                 }
             }
             AUTHORIZATION_DENIED => {
-                self.keyboard_tcc = MacosAuthorizationState::Denied;
+                self.set_keyboard_tcc(MacosAuthorizationState::Denied);
                 if self.capture_active {
                     self.degraded = Some(InteractionDegradation::InputMonitoringPermissionDenied);
                 }
@@ -714,6 +800,7 @@ impl MacosHostInput {
                 }
             }
             MacosWorkerState::PermissionRevoked => {
+                self.set_keyboard_tcc(MacosAuthorizationState::Denied);
                 self.degraded = Some(InteractionDegradation::InputMonitoringPermissionRevoked);
                 if let Some(status) = self.status.session() {
                     status.unavailable(permission_revoked_issue());
@@ -742,8 +829,9 @@ impl InputSource for MacosHostInput {
         &mut self,
         owner: MacosCapabilityOwner,
         conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+        designated_requirement_hash: Option<Arc<str>>,
     ) -> anyhow::Result<()> {
-        self.set_daemon_ownership(owner, conflict)
+        self.set_daemon_ownership(owner, conflict, designated_requirement_hash)
     }
 
     fn start(&mut self) -> anyhow::Result<()> {

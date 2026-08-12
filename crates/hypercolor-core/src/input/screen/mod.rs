@@ -76,8 +76,8 @@ pub use frame::{
     CapturePlanePool, CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureStageKind,
     CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, GeometryNormalizedCaptureSurface,
     KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi,
-    PlatformGpuSurface, PlatformGpuSurfaceOwner, PooledCapturePlane, RawCaptureSurface,
-    SourceScale,
+    PlatformGpuSurface, PlatformGpuSurfaceOwner, PlatformGpuSurfaceTimingSink, PooledCapturePlane,
+    RawCaptureSurface, SourceScale,
 };
 pub use hub::{
     PreparedScreenPublication, ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState,

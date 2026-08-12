@@ -332,6 +332,8 @@ fn state_gap_synthesizes_releases_and_stale_epoch_is_inert() {
 
 #[cfg(feature = "macos-native-fixtures")]
 mod fixtures {
+    use std::sync::Arc;
+
     use hypercolor_core::input::{
         InputData, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
         MacosDaemonOwnerConflict, MacosHostInput, MacosInputFixtureBackend,
@@ -497,6 +499,7 @@ mod fixtures {
                     contender: MacosCapabilityOwner::HomebrewService,
                     observed_at_ms: 42,
                 }),
+                Some(Arc::from("designated-app-sidecar")),
             )
             .expect("owner update should publish");
 
@@ -513,6 +516,10 @@ mod fixtures {
                 contender: MacosCapabilityOwner::HomebrewService,
                 observed_at_ms: 42,
             })
+        );
+        assert_eq!(
+            platform.owner_designated_requirement_hash.as_deref(),
+            Some("designated-app-sidecar")
         );
     }
 
@@ -552,5 +559,21 @@ mod fixtures {
         };
         assert_eq!(platform.keyboard_tcc, MacosAuthorizationState::Authorized);
         assert_eq!(platform.keyboard, MacosProtectedSourceState::ReadyIdle);
+        assert!(platform.authorization_last_transition_at.is_some());
+        assert_eq!(
+            platform.executable_architecture,
+            if cfg!(target_arch = "aarch64") {
+                hypercolor_core::input::MacosArchitecture::AppleSilicon
+            } else {
+                hypercolor_core::input::MacosArchitecture::Intel
+            }
+        );
+        if cfg!(target_os = "macos") {
+            assert!(platform.host_architecture.is_some());
+            assert!(platform.translated_process.is_some());
+        } else {
+            assert_eq!(platform.host_architecture, None);
+            assert_eq!(platform.translated_process, None);
+        }
     }
 }
