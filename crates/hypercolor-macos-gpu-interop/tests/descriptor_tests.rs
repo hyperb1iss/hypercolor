@@ -30,3 +30,46 @@ fn descriptor_accepts_largest_iosurface_row_shape() {
     assert_eq!(descriptor.height, 1);
     assert_eq!(descriptor.format, ImportedFrameFormat::Bgra8Unorm);
 }
+
+#[test]
+fn capture_plane_formats_map_to_exact_wgpu_formats() {
+    let mappings = [
+        (
+            ImportedFrameFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Bgra8Unorm,
+        ),
+        (
+            ImportedFrameFormat::Rgba16Float,
+            wgpu::TextureFormat::Rgba16Float,
+        ),
+        (ImportedFrameFormat::R8Unorm, wgpu::TextureFormat::R8Unorm),
+        (ImportedFrameFormat::Rg8Unorm, wgpu::TextureFormat::Rg8Unorm),
+        (ImportedFrameFormat::R16Unorm, wgpu::TextureFormat::R16Unorm),
+        (
+            ImportedFrameFormat::Rg16Unorm,
+            wgpu::TextureFormat::Rg16Unorm,
+        ),
+    ];
+
+    for (format, expected) in mappings {
+        assert_eq!(format.wgpu_format(), expected);
+    }
+}
+
+#[test]
+fn descriptor_bounds_each_format_by_its_exact_texel_width() {
+    let formats = [
+        (ImportedFrameFormat::R8Unorm, 1),
+        (ImportedFrameFormat::Rg8Unorm, 2),
+        (ImportedFrameFormat::R16Unorm, 2),
+        (ImportedFrameFormat::Bgra8Unorm, 4),
+        (ImportedFrameFormat::Rg16Unorm, 4),
+        (ImportedFrameFormat::Rgba16Float, 8),
+    ];
+
+    for (format, bytes_per_texel) in formats {
+        let maximum_width = i32::MAX as u32 / bytes_per_texel;
+        assert!(MacosIosurfaceImportDescriptor::new(maximum_width, 1, format).is_ok());
+        assert!(MacosIosurfaceImportDescriptor::new(maximum_width + 1, 1, format).is_err());
+    }
+}

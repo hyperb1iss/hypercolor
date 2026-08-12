@@ -378,11 +378,12 @@ struct PreparedWindowsScreenTarget {
 struct MacosScreenBridge {
     interop: MacosInteropScreenBridge,
     storage_ids: Mutex<HashMap<MacosScreenStorageIdentity, u64>>,
+    lifetime: Arc<()>,
 }
 
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 struct MacosScreenTargetPreparer {
-    bridge: Weak<MacosScreenBridge>,
+    bridge_lifetime: Weak<()>,
 }
 
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
@@ -464,7 +465,7 @@ impl ScreenNativeTargetPreparer for MacosScreenTargetPreparer {
             .downcast_ref::<MacosNativeTargetManifest>()
             .context("macOS screen target received an unknown preparation manifest")?;
         validate_macos_target_manifest(descriptor, manifest)?;
-        self.bridge
+        self.bridge_lifetime
             .upgrade()
             .context("macOS screen renderer was retired during target admission")?;
         prepared_macos_screen_target_metadata_bytes()
@@ -479,7 +480,7 @@ impl ScreenNativeTargetPreparer for MacosScreenTargetPreparer {
             .downcast_ref::<MacosNativeTargetManifest>()
             .context("macOS screen target received an unknown preparation manifest")?;
         validate_macos_target_manifest(descriptor, manifest)?;
-        self.bridge
+        self.bridge_lifetime
             .upgrade()
             .context("macOS screen renderer was retired during target preparation")?;
         Ok(ScreenNativeTargetPreparation::new(
@@ -874,6 +875,7 @@ fn create_screen_bridge(
     let bridge = Arc::new(MacosScreenBridge {
         interop,
         storage_ids: Mutex::new(HashMap::new()),
+        lifetime: Arc::new(()),
     });
     let target = create_screen_target(&bridge, max_texture_dimension);
     (Some(bridge), target)
@@ -901,7 +903,7 @@ fn create_screen_target(
         NonZeroU32::new(max_texture_dimension)
             .expect("wgpu devices expose a non-zero texture dimension limit"),
         Arc::new(MacosScreenTargetPreparer {
-            bridge: Arc::downgrade(bridge),
+            bridge_lifetime: Arc::downgrade(&bridge.lifetime),
         }),
     ))
 }
@@ -1797,8 +1799,16 @@ impl GpuSparkleFlinger {
         let width = extent.width();
         let height = extent.height();
         let content_generation = imported.content_sequence();
-        let texture = imported.texture().as_ref().clone();
-        let view = imported.view().as_ref().clone();
+        let texture = imported
+            .texture()
+            .context("native macOS publication has no wgpu texture")?
+            .as_ref()
+            .clone();
+        let view = imported
+            .view()
+            .context("native macOS publication has no wgpu texture view")?
+            .as_ref()
+            .clone();
         Ok(Some(GpuTextureFrame {
             width,
             height,

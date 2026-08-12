@@ -10,7 +10,7 @@ description = "macOS IOSurface/Metal texture import boundary for Hypercolor"
 
 [features]
 default = []
-screen-capture = ["dep:hypercolor-macos-capture"]
+screen-capture = ["dep:hypercolor-macos-capture", "dep:objc2-core-video"]
 servo-context = [
   "dep:cgl",
   "dep:dpi",
@@ -39,6 +39,18 @@ image = { workspace = true, optional = true }
 libc = { workspace = true }
 objc2 = { workspace = true, features = ["std"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-video = { workspace = true, optional = true, features = [
+  "std",
+  "CVBase",
+  "CVBuffer",
+  "CVImageBuffer",
+  "CVMetalTexture",
+  "CVMetalTextureCache",
+  "CVPixelBuffer",
+  "CVReturn",
+  "objc2",
+  "objc2-metal",
+] }
 objc2-io-surface = { workspace = true, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation", "libc", "bitflags"] }
 objc2-metal = { workspace = true, features = ["std", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "objc2-io-surface"] }
 paint_api = { workspace = true, optional = true }

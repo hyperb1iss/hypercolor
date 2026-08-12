@@ -35,6 +35,12 @@ fn bridge_imports_and_caches_complete_capture_storage_identity() -> Result<(), S
     assert_eq!(first.storage_identity().capture_session_generation, 5);
     assert_eq!(first.storage_identity().resource_generation, 11);
     assert_eq!(
+        first.storage_identity().source_fourcc,
+        MacosCapturePixelFormat::Bgra8
+            .fourcc(MacosColorRange::Full)
+            .expect("BGRA has one canonical full-range FourCC")
+    );
+    assert_eq!(
         first.storage_identity().iosurface_id,
         frame.surface.iosurface_id
     );
@@ -43,18 +49,40 @@ fn bridge_imports_and_caches_complete_capture_storage_identity() -> Result<(), S
         frame.planes[0].bytes_per_row
     );
     assert!(Arc::ptr_eq(first.capture(), &frame));
-    assert!(Arc::ptr_eq(first.texture(), second.texture()));
-    assert!(Arc::ptr_eq(first.view(), second.view()));
+    assert_eq!(first.planes().len(), 1);
+    assert_eq!(
+        first.planes()[0].format(),
+        hypercolor_macos_gpu_interop::ImportedMacosScreenPlaneFormat::Wgpu(
+            hypercolor_macos_gpu_interop::ImportedFrameFormat::Bgra8Unorm
+        )
+    );
+    assert_eq!(
+        first.planes()[0].storage_identity(),
+        first.storage_identity()
+    );
+    assert_eq!(
+        first.storage_identities().collect::<Vec<_>>(),
+        vec![first.storage_identity()]
+    );
+    let first_texture = first.texture().expect("BGRA import has a wgpu texture");
+    let second_texture = second.texture().expect("BGRA import has a wgpu texture");
+    let first_view = first.view().expect("BGRA import has a wgpu view");
+    let second_view = second.view().expect("BGRA import has a wgpu view");
+    assert!(Arc::ptr_eq(first_texture, second_texture));
+    assert!(Arc::ptr_eq(first_view, second_view));
     assert_eq!(bridge.cached_wrap_count(), 1);
     assert_eq!(
-        read_texture_pixels(&wgpu.device, &wgpu.queue, first.texture(), WIDTH, HEIGHT,)?,
+        read_texture_pixels(&wgpu.device, &wgpu.queue, first_texture, WIDTH, HEIGHT,)?,
         fixture_pixels()
     );
 
     let next_resource = bridge
         .import_bgra_frame(&wgpu.device, 12, Arc::clone(&frame))
         .map_err(|error| error.to_string())?;
-    assert!(!Arc::ptr_eq(first.texture(), next_resource.texture()));
+    let next_texture = next_resource
+        .texture()
+        .expect("BGRA import has a wgpu texture");
+    assert!(!Arc::ptr_eq(first_texture, next_texture));
     assert_eq!(bridge.cached_wrap_count(), 2);
 
     drop(frame);

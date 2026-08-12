@@ -2,8 +2,6 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-const BYTES_PER_PIXEL: u32 = 4;
-
 /// Result type for macOS GPU interop operations.
 pub type Result<T> = std::result::Result<T, MacosGpuInteropError>;
 
@@ -49,6 +47,16 @@ pub enum MacosMetalStorageMode {
 pub enum ImportedFrameFormat {
     /// 8-bit normalized BGRA.
     Bgra8Unorm,
+    /// 16-bit floating-point RGBA.
+    Rgba16Float,
+    /// One 8-bit normalized component.
+    R8Unorm,
+    /// Two 8-bit normalized components.
+    Rg8Unorm,
+    /// One 16-bit normalized component.
+    R16Unorm,
+    /// Two 16-bit normalized components.
+    Rg16Unorm,
 }
 
 impl ImportedFrameFormat {
@@ -57,6 +65,21 @@ impl ImportedFrameFormat {
     pub const fn wgpu_format(self) -> wgpu::TextureFormat {
         match self {
             Self::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+            Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+            Self::R8Unorm => wgpu::TextureFormat::R8Unorm,
+            Self::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
+            Self::R16Unorm => wgpu::TextureFormat::R16Unorm,
+            Self::Rg16Unorm => wgpu::TextureFormat::Rg16Unorm,
+        }
+    }
+
+    const fn bytes_per_texel(self) -> u32 {
+        match self {
+            Self::Bgra8Unorm => 4,
+            Self::Rgba16Float => 8,
+            Self::R8Unorm => 1,
+            Self::Rg8Unorm | Self::R16Unorm => 2,
+            Self::Rg16Unorm => 4,
         }
     }
 }
@@ -77,7 +100,7 @@ impl MacosIosurfaceImportDescriptor {
     pub const fn new(width: u32, height: u32, format: ImportedFrameFormat) -> Result<Self> {
         if width == 0
             || height == 0
-            || width > i32::MAX as u32 / BYTES_PER_PIXEL
+            || width > i32::MAX as u32 / format.bytes_per_texel()
             || height > i32::MAX as u32
         {
             Err(MacosGpuInteropError::InvalidDimensions { width, height })
