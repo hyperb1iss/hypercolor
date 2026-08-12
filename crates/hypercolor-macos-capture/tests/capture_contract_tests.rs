@@ -376,6 +376,46 @@ fn cpu_copy_rejects_non_bgra_input_without_mapping_it() {
 }
 
 #[test]
+fn bgra_sdr_conversion_swizzles_channels_and_preserves_alpha() {
+    let frame = bgra_cpu_frame([30, 20, 10, 127], rgb_color());
+    let mut destination = vec![0; 192];
+    frame
+        .convert_bgra8_sdr_to_rgba8(&mut destination, 32)
+        .expect("sRGB BGRA should convert");
+    for pixel in destination.chunks_exact(4) {
+        assert_eq!(pixel, &[10, 20, 30, 127]);
+    }
+}
+
+#[test]
+fn bgra_sdr_conversion_compresses_wide_gamut_primaries() {
+    let mut color = rgb_color();
+    color.primaries = MacosColorPrimaries::DisplayP3;
+    let frame = bgra_cpu_frame([0, 0, 255, 255], color);
+    let mut destination = vec![0; 192];
+    frame
+        .convert_bgra8_sdr_to_rgba8(&mut destination, 32)
+        .expect("Display P3 red should convert");
+    assert_eq!(destination[0], 255);
+    assert_eq!(destination[1], 0);
+    assert!(destination[2] < 64);
+    assert_eq!(destination[3], 255);
+}
+
+#[test]
+fn bgra_sdr_conversion_rejects_hdr_transfer_functions() {
+    let mut color = rgb_color();
+    color.transfer = MacosTransferFunction::Pq;
+    let frame = bgra_cpu_frame([0, 0, 255, 255], color);
+    assert_eq!(
+        frame.convert_bgra8_sdr_to_rgba8(&mut [0; 192], 32),
+        Err(MacosCaptureError::UnsupportedCpuTransferFunction(
+            MacosTransferFunction::Pq
+        ))
+    );
+}
+
+#[test]
 fn mailbox_replaces_stale_deliveries_without_growing() {
     let mailbox = MacosFrameMailbox::new();
     assert!(!mailbox.has_pending());
@@ -441,6 +481,20 @@ fn complete_sample() -> MacosRawCaptureSample {
             bounding_rect: MacosAttachment::Missing,
         },
     }
+}
+
+fn bgra_cpu_frame(
+    pixel: [u8; 4],
+    color: MacosCaptureColorimetry,
+) -> hypercolor_macos_capture::MacosCaptureFrame {
+    let mut sample = complete_sample();
+    let source = pixel.repeat(48);
+    let frame = complete_frame_mut(&mut sample);
+    frame.color = color;
+    frame.surface =
+        MacosCaptureSurface::new_cpu_fixture(7, 192, 99, vec![Arc::<[u8]>::from(source)])
+            .expect("CPU fixture surface should be valid");
+    decode_frame(&mut MacosFrameDecoder::new(1), sample)
 }
 
 fn complete_frame_mut(sample: &mut MacosRawCaptureSample) -> &mut MacosRawCompleteFrame {

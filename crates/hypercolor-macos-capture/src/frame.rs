@@ -812,6 +812,8 @@ pub enum MacosCaptureError {
     MissingCpuPlaneAddress(usize),
     #[error("CPU publication requires BGRA8 input, got {0:?}")]
     UnsupportedCpuPixelFormat(MacosCapturePixelFormat),
+    #[error("CPU SDR publication does not support {0:?} transfer")]
+    UnsupportedCpuTransferFunction(MacosTransferFunction),
     #[error("CPU destination stride {actual} is smaller than {minimum}")]
     InvalidCpuDestinationStride { minimum: usize, actual: usize },
     #[error("CPU destination has {actual} bytes, but {required} are required")]

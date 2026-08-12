@@ -63,6 +63,7 @@ impl MacosFrameDropReason {
             | MacosCaptureError::PixelBufferUnlockFailed(_)
             | MacosCaptureError::MissingCpuPlaneAddress(_)
             | MacosCaptureError::UnsupportedCpuPixelFormat(_)
+            | MacosCaptureError::UnsupportedCpuTransferFunction(_)
             | MacosCaptureError::InvalidCpuDestinationStride { .. }
             | MacosCaptureError::CpuDestinationTooSmall { .. }
             | MacosCaptureError::SequenceExhausted
