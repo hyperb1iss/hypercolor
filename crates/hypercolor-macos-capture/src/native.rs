@@ -1185,6 +1185,7 @@ fn display_source_id(display_id: CGDirectDisplayID) -> Result<String, MacosCaptu
 }
 
 fn display_uuid(display_id: CGDirectDisplayID) -> Option<CFRetained<CFUUID>> {
+    #[link(name = "ColorSync", kind = "framework")]
     unsafe extern "C-unwind" {
         fn CGDisplayCreateUUIDFromDisplayID(display: CGDirectDisplayID) -> Option<NonNull<CFUUID>>;
     }
