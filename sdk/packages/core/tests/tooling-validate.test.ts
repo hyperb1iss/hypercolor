@@ -80,7 +80,7 @@ describe('tooling validate', () => {
         const html = VALID_EFFECT.replace(
             '</head>',
             `
-    <meta preset="Breeze" preset-id="\u001ccalm\uFEFF" preset-controls='{"speed":"3"}' />
+    <meta preset="Breeze" preset-id="\u001ccalm\u0085\uFEFF" preset-controls='{"speed":"3"}' />
   </head>`,
         )
 

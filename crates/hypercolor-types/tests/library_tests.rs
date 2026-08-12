@@ -32,6 +32,7 @@ fn authored_preset_id_normalizes_cross_runtime_whitespace() {
     assert_eq!(canonical, PresetId::stable("  deep\tocean\n"));
     assert_eq!(canonical, PresetId::stable("deep\u{1c}ocean"));
     assert_eq!(canonical, PresetId::stable("deep\u{1f}ocean"));
+    assert_eq!(canonical, PresetId::stable("deep\u{85}ocean"));
     assert_eq!(canonical, PresetId::stable("deep\u{feff}ocean"));
     assert_eq!(PresetId::normalize_key("\u{feff}\u{1c}"), "");
 }

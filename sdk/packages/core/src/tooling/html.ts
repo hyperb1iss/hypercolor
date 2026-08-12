@@ -27,7 +27,7 @@ function attr(attrs: Map<string, string>, name: string): string | undefined {
 export function normalizePresetKey(value: string): string {
     const normalized = Array.from(value, (character) => {
         const codePoint = character.codePointAt(0) ?? 0
-        return codePoint >= 0x1c && codePoint <= 0x1f ? ' ' : character
+        return (codePoint >= 0x1c && codePoint <= 0x1f) || codePoint === 0x85 ? ' ' : character
     }).join('')
 
     return normalized.trim().split(/\s+/u).filter(Boolean).join(' ')
