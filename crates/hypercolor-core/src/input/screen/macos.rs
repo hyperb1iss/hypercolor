@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use hypercolor_macos_capture::{
-    MacosCaptureContentStyle, MacosCaptureFrame, MacosCaptureSelection, MacosFrameEvent,
-    MacosFrameMailbox, MacosFrameStatus, MacosProtectedSourceState as NativeProtectedSourceState,
+    MacosCaptureContentStyle, MacosCaptureFrame, MacosCaptureSelection, MacosDisplayClock,
+    MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
+    MacosProtectedSourceState as NativeProtectedSourceState,
 };
 
 #[cfg(target_os = "macos")]
@@ -40,11 +41,13 @@ trait MacosCaptureControl: Send + Sync {
     fn status(&self) -> NativeProtectedSourceState;
     fn selection(&self) -> MacosCaptureSelection;
     fn authorization(&self) -> MacosAuthorizationState;
+    fn captured_at(&self, display_time: u64) -> anyhow::Result<Instant>;
 }
 
 #[cfg(target_os = "macos")]
 struct NativeCaptureControl {
     session: MacosScreenCaptureSession,
+    clock: MacosDisplayClock,
 }
 
 #[cfg(target_os = "macos")]
@@ -81,6 +84,12 @@ impl MacosCaptureControl for NativeCaptureControl {
         } else {
             MacosAuthorizationState::NotDetermined
         }
+    }
+
+    fn captured_at(&self, display_time: u64) -> anyhow::Result<Instant> {
+        self.clock
+            .timestamp(display_time)
+            .map_err(anyhow::Error::from)
     }
 }
 
@@ -127,10 +136,11 @@ impl MacosScreenCaptureInput {
             true,
         )?;
         let session = MacosScreenCaptureSession::new(request)?;
+        let clock = MacosDisplayClock::system()?;
         Ok(Self::with_control(
             config,
             admission,
-            Arc::new(NativeCaptureControl { session }),
+            Arc::new(NativeCaptureControl { session, clock }),
         ))
     }
 
@@ -235,6 +245,7 @@ impl MacosScreenCaptureInput {
             .checked_add(1)
             .ok_or_else(|| anyhow!("macOS capture worker generation exhausted"))?;
         let mailbox = self.control.mailbox();
+        let control = Arc::clone(&self.control);
         let publication = Arc::clone(&self.publication);
         let status_session = self.status_session.clone();
         let target_fps = prepared.target_fps;
@@ -260,6 +271,7 @@ impl MacosScreenCaptureInput {
                         target_fps,
                         status_session,
                         worker_stop,
+                        control,
                     )
                 };
                 let _ = exit_tx.send(result);
@@ -535,6 +547,7 @@ fn run_worker(
     target_fps: u32,
     status_session: SourceSessionSlot,
     stop: Arc<AtomicBool>,
+    control: Arc<dyn MacosCaptureControl>,
 ) -> anyhow::Result<()> {
     let source_id = CaptureSourceId::new(Arc::<str>::from("macos:session"))?;
     let mut topology = TopologyState::default();
@@ -553,6 +566,7 @@ fn run_worker(
                     worker_generation,
                     target_fps,
                     &status_session,
+                    &control,
                 )?;
             }
             Ok(MacosFrameEvent::Lifecycle(
@@ -576,6 +590,7 @@ fn publish_frame(
     worker_generation: u64,
     target_fps: u32,
     status_session: &SourceSessionSlot,
+    control: &Arc<dyn MacosCaptureControl>,
 ) -> anyhow::Result<()> {
     let extent = PixelExtent::new(frame.storage_extent.width, frame.storage_extent.height)?;
     let row_stride = usize::try_from(extent.width())
@@ -588,7 +603,7 @@ fn publish_frame(
     let mut plane = prepared.plane_pool.try_acquire(byte_len)?;
     plane.resize(byte_len, 0);
     frame.convert_bgra8_sdr_to_rgba8(&mut plane, row_stride)?;
-    let captured_at = Instant::now();
+    let captured_at = control.captured_at(frame.display_time)?;
     let fresh_until = captured_at
         .checked_add(Duration::from_nanos(
             2_000_000_000_u64.div_ceil(u64::from(target_fps)),
@@ -659,15 +674,18 @@ fn publish_frame(
         return Err(anyhow!("macOS analysis changed topology generation"));
     }
     let data = Arc::new(InputData::Screen(snapshot.data().clone()));
+    if lock(publication).worker_generation != worker_generation {
+        return Ok(());
+    }
+    if let Some(status) = status_session.load() {
+        status.record_sample(captured_at, fresh_until, 1)?;
+    }
     {
         let mut publication = lock(publication);
         if publication.worker_generation != worker_generation {
             return Ok(());
         }
         publication.latest = Some(data);
-    }
-    if let Some(status) = status_session.load() {
-        status.record_sample(captured_at, fresh_until, 1)?;
     }
     Ok(())
 }
@@ -790,6 +808,7 @@ struct FixtureControl {
     active: AtomicBool,
     status: Mutex<NativeProtectedSourceState>,
     selection: Mutex<MacosCaptureSelection>,
+    captured_at: Mutex<Option<Instant>>,
 }
 
 #[cfg(feature = "macos-capture-fixtures")]
@@ -800,6 +819,7 @@ impl Default for FixtureControl {
             active: AtomicBool::new(false),
             status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
             selection: Mutex::new(MacosCaptureSelection::None),
+            captured_at: Mutex::new(None),
         }
     }
 }
@@ -846,6 +866,10 @@ impl MacosCaptureControl for FixtureControl {
             _ => MacosAuthorizationState::Authorized,
         }
     }
+
+    fn captured_at(&self, _display_time: u64) -> anyhow::Result<Instant> {
+        Ok(lock(&self.captured_at).take().unwrap_or_else(Instant::now))
+    }
 }
 
 #[cfg(feature = "macos-capture-fixtures")]
@@ -872,6 +896,11 @@ impl MacosScreenCaptureFixture {
         self.control
             .mailbox
             .publish(Ok(MacosFrameEvent::Frame(Box::new(frame))));
+    }
+
+    pub fn publish_at(&self, frame: MacosCaptureFrame, captured_at: Instant) {
+        *lock(&self.control.captured_at) = Some(captured_at);
+        self.publish(frame);
     }
 
     pub fn is_active(&self) -> bool {

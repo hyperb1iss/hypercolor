@@ -3,6 +3,7 @@
 //! Native framework ownership remains private to this crate. The public frame
 //! boundary contains only plain Rust metadata plus an opaque retained surface.
 
+mod clock;
 mod cpu;
 mod diagnostics;
 mod frame;
@@ -15,6 +16,7 @@ mod session;
 #[cfg(target_os = "macos")]
 pub use native::MacosScreenCaptureSession;
 
+pub use clock::{MacosDisplayClock, MacosDisplayClockError};
 pub use diagnostics::{MacosCaptureCallbackDiagnostics, MacosFrameDropReason};
 pub use frame::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureColorimetry, MacosCaptureError,

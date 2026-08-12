@@ -113,6 +113,10 @@ fn fixture_capture_activates_only_for_live_demand() {
     source
         .set_capability_owner(MacosCapabilityOwner::AppSidecar)
         .expect("fixture owner status updates");
+    source
+        .source_status_reporter()
+        .expect("macOS fixture exposes status reporting")
+        .set_source_graph_generation(1);
     let status = source
         .source_status_handle()
         .expect("macOS fixture exposes status");
@@ -135,7 +139,8 @@ fn fixture_capture_activates_only_for_live_demand() {
     fixture.set_selection(MacosCaptureSelection::Display {
         source_id: Arc::from("display:00000000-0000-0000-0000-000000000001"),
     });
-    fixture.publish(fixture_frame(1, [0, 0, 255, 255]));
+    let captured_at = Instant::now();
+    fixture.publish_at(fixture_frame(1, [0, 0, 255, 255]), captured_at);
     let data = wait_for_screen(&mut source);
     assert_eq!(data.grid_width, 2);
     assert_eq!(data.grid_height, 1);
@@ -143,6 +148,7 @@ fn fixture_capture_activates_only_for_live_demand() {
     assert_eq!(data.source_height, 2);
     assert_eq!(data.zone_colors.len(), 2);
     let live = status.snapshot();
+    assert_eq!(live.last_sample_at, Some(captured_at));
     let Some(SourcePlatformStatus::MacosScreen(platform)) = live.platform.as_deref() else {
         panic!("expected live macOS screen platform status");
     };

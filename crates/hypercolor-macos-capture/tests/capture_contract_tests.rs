@@ -4,11 +4,13 @@ use hypercolor_macos_capture::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCadence,
     MacosCaptureCallbackDiagnostics, MacosCaptureColorimetry, MacosCaptureError,
     MacosCapturePixelFormat, MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries,
-    MacosColorRange, MacosFrameDecoder, MacosFrameDropReason, MacosFrameEvent, MacosFrameMailbox,
-    MacosFrameStatus, MacosGeometryError, MacosPixelExtent, MacosPixelRect, MacosPointRect,
-    MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
-    MacosScale, MacosStreamRequest, MacosTransferFunction, MacosYuvMatrix,
+    MacosColorRange, MacosDisplayClock, MacosDisplayClockError, MacosFrameDecoder,
+    MacosFrameDropReason, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosGeometryError,
+    MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosRawCapturePlane, MacosRawCaptureSample,
+    MacosRawCompleteFrame, MacosRawFrameAttachments, MacosScale, MacosStreamRequest,
+    MacosTransferFunction, MacosYuvMatrix,
 };
+use std::time::{Duration, Instant};
 
 const BGRA8: u32 = 0x4247_5241;
 const ARGB2101010: u32 = 0x5231_306b;
@@ -17,6 +19,46 @@ const YUV420_VIDEO_RANGE: u32 = 0x3432_3076;
 const YUV420_FULL_RANGE: u32 = 0x3432_3066;
 const YUV44410_VIDEO_RANGE: u32 = 0x7834_3434;
 const YUV44410_FULL_RANGE: u32 = 0x7866_3434;
+
+#[test]
+fn display_clock_maps_mach_ticks_around_its_monotonic_anchor() {
+    let anchor = Instant::now();
+    let clock = MacosDisplayClock::new(100, anchor, 125, 3).expect("valid timebase");
+
+    assert_eq!(clock.timestamp(100), Ok(anchor));
+    assert_eq!(clock.timestamp(124), Ok(anchor + Duration::from_micros(1)));
+    assert_eq!(clock.timestamp(76), Ok(anchor - Duration::from_micros(1)));
+}
+
+#[test]
+fn display_clock_rejects_invalid_or_unrepresentable_timebases() {
+    let anchor = Instant::now();
+    assert_eq!(
+        MacosDisplayClock::new(0, anchor, 0, 1).expect_err("zero numerator must fail"),
+        MacosDisplayClockError::InvalidTimebase {
+            numerator: 0,
+            denominator: 1,
+        }
+    );
+    assert_eq!(
+        MacosDisplayClock::new(0, anchor, 1, 0).expect_err("zero denominator must fail"),
+        MacosDisplayClockError::InvalidTimebase {
+            numerator: 1,
+            denominator: 0,
+        }
+    );
+    let clock = MacosDisplayClock::new(0, anchor, u32::MAX, 1).expect("valid timebase");
+    assert_eq!(
+        clock.timestamp(u64::MAX),
+        Err(MacosDisplayClockError::DurationOutOfRange)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn system_display_clock_reads_the_native_timebase() {
+    MacosDisplayClock::system().expect("macOS exposes its monotonic timebase");
+}
 
 #[test]
 fn queue_depth_is_the_full_framework_limit() {
