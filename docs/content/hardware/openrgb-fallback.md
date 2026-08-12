@@ -4,8 +4,6 @@ description = "The OpenRGB SDK bridge: a user-run server on :6742, ownership mod
 weight = 90
 +++
 
-# OpenRGB fallback
-
 Hypercolor ships a bridge driver that talks to a running [OpenRGB](https://openrgb.org)
 server over the OpenRGB SDK wire protocol on TCP port 6742. The bridge lets you control
 hardware that OpenRGB already supports but Hypercolor does not yet have a native driver

@@ -70,16 +70,11 @@
     margin: 0 auto;
   }
 
-  .footer__message,
-  .footer__copyright {
-    margin: 4px 0;
-  }
-
   a {
     color: var(--accent);
     transition:
-      color var(--duration-medium) var(--ease-smooth),
-      text-shadow var(--duration-medium) var(--ease-smooth);
+      color var(--duration-normal) var(--ease-silk),
+      text-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       color: var(--accent-hover);

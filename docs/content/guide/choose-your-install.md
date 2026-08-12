@@ -4,8 +4,6 @@ description = "Pick the right Hypercolor install path for your OS and skill leve
 weight = 20
 +++
 
-# Choose your install
-
 Not every install path is right for every person. This page routes you to the correct one before you spend time on the wrong steps.
 
 {% callout(type="info") %}

@@ -4,8 +4,6 @@ description = "Reach the utoipa-backed OpenAPI document, the bundled Swagger UI,
 weight = 70
 +++
 
-# OpenAPI / generated spec
-
 The daemon ships a machine-readable OpenAPI 3.1 document describing its `/api/v1`
 surface, plus a bundled Swagger UI to browse it. The spec is generated at compile
 time by [utoipa](https://github.com/juhaku/utoipa) from the same Rust types the

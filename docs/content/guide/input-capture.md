@@ -4,8 +4,6 @@ description = "Let effects react to your keyboard and mouse: how consent works, 
 weight = 125
 +++
 
-# Input capture 🎹
-
 Some effects react to what you are doing: a ripple that spreads from each keypress, a glow that tracks your cursor, a shockwave on every click. For any of that to work, Hypercolor has to be able to observe your keyboard and mouse, and that is exactly the kind of capability you should have to turn on deliberately.
 
 This page covers:

@@ -5,8 +5,6 @@ weight = 60
 template = "page.html"
 +++
 
-# Auth & security
-
 The daemon ships **open on loopback and closed to the network**. Local clients
 on `127.0.0.1` (CLI, TUI, web UI, an MCP client on the same box) work with no
 credentials, while every off-host request is gated by the layers on this page:

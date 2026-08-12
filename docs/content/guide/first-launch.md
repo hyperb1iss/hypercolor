@@ -4,8 +4,6 @@ description = "What happens the first time Hypercolor runs: app starts, daemon b
 weight = 60
 +++
 
-# First launch ⚡
-
 The first time you open Hypercolor, several things happen in quick succession. The app
 shell starts, the daemon boots inside it, a single-instance guard fires, and a welcome
 wizard guides you through the three setup decisions that matter most. This page walks you

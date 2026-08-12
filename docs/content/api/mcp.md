@@ -4,8 +4,6 @@ description = "Hypercolor's Model Context Protocol server: 16 tools, 5 resources
 weight = 80
 +++
 
-# MCP server
-
 Hypercolor ships a [Model Context Protocol](https://modelcontextprotocol.io/)
 server so AI agents can drive your lighting through structured tool calls instead
 of raw REST. It runs inside the daemon and speaks the MCP **Streamable HTTP**

@@ -31,7 +31,7 @@ The MCP server is **off by default**. Until you enable it in config, `http://127
 
 The MCP server speaks in three kinds of building blocks. Knowing which is which tells an agent how to use it.
 
-```mermaid
+{% mermaid() %}
 graph TD
     A[AI Agent] -->|calls| T[Tools]
     A -->|reads| R[Resources]
@@ -40,7 +40,7 @@ graph TD
     R -->|reflect| E
     P -->|orchestrate| T
     P -->|reference| R
-```
+{% end %}
 
 **Tools** are actions and queries the model invokes with structured arguments, the verbs. There are **16**: `set_effect`, `list_effects`, `stop_effect`, `set_color`, `get_devices`, `set_brightness`, `get_status`, `activate_scene`, `list_scenes`, `create_scene`, `get_audio_state`, `get_sensor_data`, `set_display_face`, `set_profile`, `get_layout`, and `diagnose`. Eight of those are read-only (`get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`); the rest mutate state. See the [tools reference](@/agents/tools-reference.md).
 

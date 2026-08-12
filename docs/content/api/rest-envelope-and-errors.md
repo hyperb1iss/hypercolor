@@ -4,8 +4,6 @@ description = "The shared REST envelope: meta fields, success and error shapes, 
 weight = 20
 +++
 
-# Envelope & errors
-
 Every `/api/v1` response the daemon returns is wrapped in one of two envelopes.
 Success bodies carry their payload under `data`; error bodies carry an error
 detail under `error`. Both always include a `meta` block with the API version, a

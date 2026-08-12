@@ -4,8 +4,6 @@ description = "Remove Hypercolor cleanly: stop the daemon, remove binaries, udev
 weight = 160
 +++
 
-# Uninstall & reset
-
 Hypercolor touches several system integration points on install: binaries, a
 systemd user service or launchd agent, udev rules, desktop autostart, and a few
 data directories. A clean uninstall needs to reach all of them. This page walks
