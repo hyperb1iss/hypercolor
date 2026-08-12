@@ -1021,12 +1021,16 @@ The adapter maps these attachment keys into canonical metadata:
 - screen rect; and
 - bounding rect for multi-window content.
 
-ScreenCaptureKit rect attachments are in logical points. Storage and
-destination extents are in pixels. The adapter uses the delivered scale-factor
-and content-scale attachments to convert rects, applies outward rounding for
-coverage, clips only after conversion, and rejects a frame whose converted
-bounds exceed its plane storage. Dirty rect fixtures include fractional Retina
-origins so a point value can never be mistaken for a pixel value.
+ScreenCaptureKit content and bounding rect attachments are in logical points.
+Dirty rects are already in pixels. Storage and destination extents are also in
+pixels. The adapter validates both delivered scale attachments, converts point
+rects with the display scale factor, applies outward rounding for coverage,
+clips only after conversion, and rejects a frame whose converted storage-local
+bounds exceed its plane storage. Content and bounding rect fixtures include
+fractional Retina origins so a point value can never be mistaken for a pixel
+value. Content scale remains explicit geometry metadata describing how the
+original content was scaled into the surface; applying it again during point to
+pixel conversion would double-scale the frame.
 
 `Idle`, `Blank`, `Suspended`, `Started`, and `Stopped` frames update lifecycle
 telemetry but do not masquerade as complete image data. A malformed present
@@ -1934,8 +1938,8 @@ Fixture tests cover:
   YUV44410 bi-planar, and unsupported formats;
 - content rect, display scale, content scale, negative screen origin, and
   multi-window bounding rect;
-- point-to-pixel conversion with fractional Retina origins and outward
-  rounding;
+- point-to-pixel conversion for content and bounding rects with fractional
+  Retina origins and outward rounding;
 - dirty rect validation;
 - cursor composed and hidden capability matching;
 - source, topology, session, resource, and plan generation fencing;
