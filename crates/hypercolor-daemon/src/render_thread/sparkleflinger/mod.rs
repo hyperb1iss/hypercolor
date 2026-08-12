@@ -1586,6 +1586,20 @@ impl SparkleFlinger {
         }
     }
 
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn sample_texture_zone_plan(
+        &mut self,
+        frame: &GpuTextureFrame,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> Result<Option<Vec<ZoneColors>>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.sample_texture_zone_plan(frame, prepared_zones)
+            }
+        }
+    }
+
     #[allow(
         clippy::unnecessary_wraps,
         reason = "the wrapper preserves the fallible GPU snapshot contract in CPU-only builds"

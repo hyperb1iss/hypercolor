@@ -302,6 +302,15 @@ impl DaemonState {
             .map(RenderThread::input_publication_demands)
     }
 
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn macos_screen_parity_diagnostics(
+        &self,
+    ) -> Option<crate::render_thread::MacosScreenParityDiagnosticHandle> {
+        self.render_thread
+            .as_ref()
+            .map(RenderThread::macos_screen_parity_diagnostics)
+    }
+
     pub(super) fn discovery_runtime(&self) -> discovery::DiscoveryRuntime {
         self.driver_host.discovery_runtime()
     }

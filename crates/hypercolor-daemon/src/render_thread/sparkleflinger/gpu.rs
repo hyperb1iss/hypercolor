@@ -64,6 +64,7 @@ use hypercolor_macos_gpu_interop::{
     MacosScreenBridge as MacosInteropScreenBridge, MacosScreenStorageIdentity,
     probe_macos_metal4_capabilities,
 };
+use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ZoneId;
 #[cfg(target_os = "windows")]
 use hypercolor_windows_capture::{
@@ -91,7 +92,7 @@ use crate::render_thread::producer_queue::{
     GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin, ProducerFrame,
 };
 use crate::render_thread::sparkleflinger::gpu_sampling::{
-    GpuSamplingPlan, GpuSamplingPreparation, GpuSpatialSampler,
+    GpuSampleSource, GpuSamplingPlan, GpuSamplingPreparation, GpuSpatialSampler,
 };
 
 mod compositor;
@@ -2312,6 +2313,41 @@ impl GpuSparkleFlinger {
             #[cfg(all(target_os = "macos", feature = "screen-capture"))]
             macos_screen_lease: None,
         }))
+    }
+
+    pub(crate) fn sample_texture_zone_plan(
+        &mut self,
+        frame: &GpuTextureFrame,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> Result<Option<Vec<ZoneColors>>> {
+        self.spatial_sampler.clear_bind_groups();
+        let result = (|| {
+            let mut zones = Vec::new();
+            let dispatch = self.spatial_sampler.sample_texture_into(
+                &self.device,
+                &self.queue,
+                GpuSampleSource::Diagnostic,
+                &frame.view,
+                frame.width,
+                frame.height,
+                prepared_zones,
+                &mut zones,
+                None,
+            )?;
+            if dispatch.queue_saturated || !dispatch.sampled {
+                if let Some(pending) = dispatch.pending_readback {
+                    self.spatial_sampler.discard_pending_readback(pending);
+                }
+                return Ok(None);
+            }
+            if let Some(pending) = dispatch.pending_readback {
+                self.spatial_sampler
+                    .finish_pending_readback(&self.device, pending, &mut zones)?;
+            }
+            Ok(Some(zones))
+        })();
+        self.spatial_sampler.clear_bind_groups();
+        result
     }
 
     fn prepare_empty_projected_bind_groups(

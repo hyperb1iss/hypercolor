@@ -27,7 +27,7 @@ pub(super) struct GpuAreaResources {
     horizontal_sums: GpuAreaHierarchy,
     vertical_sums: GpuAreaHierarchy,
     params: wgpu::Buffer,
-    bind_groups: [Option<wgpu::BindGroup>; 2],
+    bind_groups: [Option<wgpu::BindGroup>; 3],
 }
 
 struct GpuAreaHierarchy {

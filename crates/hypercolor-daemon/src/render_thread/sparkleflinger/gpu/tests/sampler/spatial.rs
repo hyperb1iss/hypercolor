@@ -1,5 +1,40 @@
 use super::super::*;
 
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+#[test]
+fn gpu_sampler_reads_diagnostic_texture_without_replacing_live_output() {
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
+    };
+    let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(7))),
+            ),
+            false,
+            None,
+        )
+        .expect("live output should compose");
+    let output_generation = compositor.output_generation;
+    let output_surface = compositor.current_output;
+    let diagnostic_canvas = patterned_canvas(29);
+    let diagnostic_frame = compositor
+        .upload_canvas_frame(&diagnostic_canvas)
+        .expect("diagnostic texture should upload");
+
+    let sampled = compositor
+        .sample_texture_zone_plan(&diagnostic_frame, engine.sampling_plan().as_ref())
+        .expect("diagnostic texture sampling should succeed")
+        .expect("diagnostic texture sampling should be admitted");
+
+    assert_zone_colors_within(&sampled, &engine.sample(&diagnostic_canvas), 1);
+    assert_eq!(compositor.output_generation, output_generation);
+    assert_eq!(compositor.current_output, output_surface);
+}
+
 #[test]
 fn gpu_sampler_matches_cpu_spatial_sampling_for_bilinear_plans() {
     let Some(mut compositor) = gpu_test_compositor() else {

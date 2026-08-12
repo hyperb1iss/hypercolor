@@ -431,6 +431,15 @@ pub(crate) async fn execute_frame(
             &registry,
         ))
     };
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    if let Some(render_device) = state.render_gpu_device.as_ref() {
+        render.service_macos_screen_parity(
+            render_device,
+            inputs.screen_publication.as_ref(),
+            inputs.screen_descriptor.as_ref(),
+            &scene_snapshot.spatial_engine,
+        );
+    }
     let input_done_at = Instant::now();
     let input_us = micros_between(input_start, input_done_at);
     let input_done_us = micros_between(frame_start, input_done_at);

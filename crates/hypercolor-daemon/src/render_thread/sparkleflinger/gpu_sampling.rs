@@ -324,6 +324,7 @@ impl GpuSamplingPreparation {
 pub(super) enum GpuSampleSource {
     Front,
     Back,
+    Diagnostic,
 }
 
 impl GpuSampleSource {
@@ -331,6 +332,7 @@ impl GpuSampleSource {
         match self {
             Self::Front => 0,
             Self::Back => 1,
+            Self::Diagnostic => 2,
         }
     }
 }
@@ -613,7 +615,7 @@ impl GpuSpatialSampler {
             buffer_generation: 0,
             cached_plan: None,
             uploaded_plan: None,
-            cached_bind_groups: Vec::with_capacity(2),
+            cached_bind_groups: Vec::with_capacity(3),
             last_readback_wait_blocked: false,
             #[cfg(test)]
             sample_dispatch_count: 0,

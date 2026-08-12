@@ -21,6 +21,8 @@ pub mod layers;
 pub mod layouts;
 pub mod library;
 pub mod local;
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+mod macos_screen_parity;
 pub mod openapi;
 pub mod output;
 pub mod preview;
@@ -198,6 +200,11 @@ pub struct AppState {
 
     /// Aggregate typed input demand shared with render and connection consumers.
     pub input_publication_demands: InputPublicationDemandHandle,
+
+    /// Active-renderer mailbox for explicit macOS screen parity snapshots.
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) macos_screen_parity_diagnostics:
+        Option<crate::render_thread::MacosScreenParityDiagnosticHandle>,
 
     /// Lock-free latest-value health for the live input graph.
     pub input_status: SourceStatusRegistry,
@@ -594,6 +601,8 @@ impl AppState {
             input_manager,
             screen_capacity_status,
             input_publication_demands: InputPublicationDemandHandle::new(),
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_diagnostics: None,
             input_status,
             browser_input,
             interaction_routing,
@@ -681,6 +690,8 @@ impl AppState {
             input_publication_demands: daemon
                 .input_publication_demands()
                 .expect("live API state requires a running input publication pump"),
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_diagnostics: daemon.macos_screen_parity_diagnostics(),
             input_status: daemon.input_status.clone(),
             browser_input: daemon.browser_input.clone(),
             interaction_routing: daemon.interaction_routing.clone(),

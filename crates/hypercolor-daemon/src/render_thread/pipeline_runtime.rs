@@ -16,8 +16,9 @@ use hypercolor_core::input::routing::{
     InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
 };
 use hypercolor_core::input::screen::{
-    PixelExtent, ScreenBranchLease, ScreenBranchPublication, ScreenNativeExecutionTarget,
-    ScreenNativeExecutionTargetId, ScreenPlanGeneration, ScreenPublicationExecutorRequest,
+    PixelExtent, ResolvedScreenPublicationDescriptor, ScreenBranchLease, ScreenBranchPublication,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenPlanGeneration,
+    ScreenPublicationExecutorRequest,
 };
 use hypercolor_core::input::{
     InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
@@ -52,6 +53,8 @@ use super::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationReader, OwnedInputPublicationDemand,
 };
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+use super::macos_screen_diagnostics::MacosScreenParityDiagnosticMailbox;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::{
     PreparedZoneReconcile, RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime,
@@ -89,6 +92,7 @@ pub(crate) struct FrameInputs {
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) screen_publication: Option<Arc<ScreenBranchPublication>>,
+    pub(crate) screen_descriptor: Option<ResolvedScreenPublicationDescriptor>,
     pub(crate) sensors: Arc<SystemSnapshot>,
     pub(crate) input_availability: InputSourceAvailability,
     empty_sensors: Arc<SystemSnapshot>,
@@ -165,6 +169,7 @@ impl InputReuseState {
             .expect("render canvas dimensions are non-empty");
         let (generation, publication) = self.routes.read_screen(screen_target, screen_extent);
         self.cached_inputs.screen_publication = publication;
+        self.cached_inputs.screen_descriptor = self.routes.screen_descriptor().cloned();
         generation
     }
 
@@ -306,6 +311,13 @@ impl InputRouteCache {
             .and_then(|route| route.lease.as_ref())
             .and_then(ScreenBranchLease::read);
         (plan_generation, publication)
+    }
+
+    fn screen_descriptor(&self) -> Option<&ResolvedScreenPublicationDescriptor> {
+        self.screen_publication_route
+            .as_ref()
+            .and_then(|route| route.lease.as_ref())
+            .map(ScreenBranchLease::descriptor)
     }
 
     fn route_interaction_into(
@@ -642,6 +654,7 @@ impl FrameInputs {
             interaction: InteractionData::default(),
             screen_data: None,
             screen_publication: None,
+            screen_descriptor: None,
             sensors: Arc::clone(&empty_sensors),
             input_availability: InputSourceAvailability::default(),
             empty_sensors,
@@ -1361,6 +1374,8 @@ pub(crate) struct RenderCaches {
     pub(crate) screen_queue: ProducerQueue,
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
     #[cfg(feature = "wgpu")]
     pub(crate) display_sparkleflinger: SparkleFlinger,
     #[cfg(feature = "wgpu")]
@@ -1848,6 +1863,23 @@ impl ZoneTransitionPlanner {
 }
 
 impl RenderCaches {
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn service_macos_screen_parity(
+        &mut self,
+        render_device: &GpuRenderDevice,
+        publication: Option<&Arc<ScreenBranchPublication>>,
+        descriptor: Option<&ResolvedScreenPublicationDescriptor>,
+        spatial_engine: &SpatialEngine,
+    ) {
+        self.macos_screen_parity_mailbox.service(
+            render_device,
+            &mut self.sparkleflinger,
+            publication,
+            descriptor,
+            spatial_engine,
+        );
+    }
+
     pub(crate) fn clear_inactive_groups(&mut self) {
         #[cfg(feature = "wgpu")]
         for pending in self.display_finalize_runtime.drain() {
@@ -2095,6 +2127,8 @@ impl PipelineRuntime {
         state: &RenderThreadState,
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
     ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.read().await.clone();
         let pipeline = Self::new_with_gpu_device(
@@ -2105,6 +2139,8 @@ impl PipelineRuntime {
             state.render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             state.render_gpu_device.clone(),
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_mailbox,
             Some(Arc::clone(&state.asset_library)),
             state.configured_max_fps_tier.get(),
             input_reader,
@@ -2132,6 +2168,9 @@ impl PipelineRuntime {
         configured_max_fps_tier: FpsTier,
     ) -> Result<Self> {
         let input_demands = InputPublicationDemandHandle::new();
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        let (_, macos_screen_parity_mailbox) =
+            super::macos_screen_diagnostics::macos_screen_parity_diagnostic_channel();
         Self::new_with_gpu_device(
             canvas_width,
             canvas_height,
@@ -2140,6 +2179,8 @@ impl PipelineRuntime {
             render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             None,
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            macos_screen_parity_mailbox,
             None,
             configured_max_fps_tier,
             InputPublicationReader::empty(),
@@ -2155,6 +2196,8 @@ impl PipelineRuntime {
         screen_capture_configured: bool,
         render_acceleration_mode: RenderAccelerationMode,
         #[cfg(feature = "wgpu")] render_gpu_device: Option<GpuRenderDevice>,
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
         asset_library: Option<Arc<RwLock<AssetLibrary>>>,
         configured_max_fps_tier: FpsTier,
         input_reader: InputPublicationReader,
@@ -2216,6 +2259,8 @@ impl PipelineRuntime {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger,
+                #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+                macos_screen_parity_mailbox,
                 #[cfg(feature = "wgpu")]
                 display_sparkleflinger,
                 #[cfg(feature = "wgpu")]
