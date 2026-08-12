@@ -75,7 +75,8 @@ pub use frame::{
     CapturePlanePool, CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureStageKind,
     CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, GeometryNormalizedCaptureSurface,
     KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi,
-    PlatformGpuSurface, PooledCapturePlane, RawCaptureSurface, SourceScale,
+    PlatformGpuSurface, PlatformGpuSurfaceOwner, PooledCapturePlane, RawCaptureSurface,
+    SourceScale,
 };
 pub use hub::{
     PreparedScreenPublication, ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState,
@@ -93,7 +94,7 @@ pub use ledger::{
 };
 #[cfg(feature = "macos-capture-fixtures")]
 pub use macos::MacosScreenCaptureFixture;
-pub use macos::MacosScreenCaptureInput;
+pub use macos::{MacosNativeTargetManifest, MacosScreenCaptureInput};
 pub use materialize::{
     CpuSurfaceMaterializationError, CpuZoneMaterializationError, PreparedCpuSurfaceMaterializer,
     PreparedCpuZoneMaterializer, StagedCpuZonePublication,
