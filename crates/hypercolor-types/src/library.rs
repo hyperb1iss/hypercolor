@@ -29,7 +29,7 @@ impl PresetId {
     /// Derive a stable identifier for an effect-authored preset.
     #[must_use]
     pub fn stable(key: &str) -> Self {
-        let mut hash: u128 = 0x52a2_4f6d_0959_4929_82b3_c28ad44a_a910;
+        let mut hash: u128 = 0x52a2_4f6d_0959_4929_82b3_c28a_d44a_a910;
         for byte in b"hypercolor:preset:".iter().chain(key.as_bytes()) {
             hash ^= u128::from(*byte);
             hash = hash.wrapping_mul(0x1000_0000_01b3);
