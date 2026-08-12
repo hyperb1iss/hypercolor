@@ -831,6 +831,7 @@ fn try_write_stage_aware(
             source,
         });
     }
+    drop(state);
 
     #[cfg(unix)]
     {
@@ -853,7 +854,6 @@ fn try_write_stage_aware(
             return AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error);
         }
     }
-    drop(state);
     AtomicWriteCommitResult::DurableWritten
 }
 

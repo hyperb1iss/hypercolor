@@ -335,6 +335,8 @@ enum FavoriteChange {
 struct UncertainFavoriteChange {
     change: FavoriteChange,
     revision: u64,
+    predecessor_added_at_ms: Option<u64>,
+    predecessor_revision: u64,
     durable: bool,
 }
 
@@ -465,6 +467,8 @@ impl JsonLibraryStore {
         effect_id: EffectId,
         change: FavoriteChange,
         revision: u64,
+        predecessor_added_at_ms: Option<u64>,
+        predecessor_revision: u64,
     ) {
         self.uncertain_favorites
             .lock()
@@ -474,6 +478,8 @@ impl JsonLibraryStore {
                 UncertainFavoriteChange {
                     change,
                     revision,
+                    predecessor_added_at_ms,
+                    predecessor_revision,
                     durable: false,
                 },
             );
@@ -484,7 +490,7 @@ impl JsonLibraryStore {
         data: &InMemoryLibraryData,
         effect_id: EffectId,
         change: &FavoriteChange,
-    ) -> Option<(bool, u64)> {
+    ) -> Option<UncertainFavoriteChange> {
         self.uncertain_favorites
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -492,7 +498,7 @@ impl JsonLibraryStore {
             .filter(|pending| {
                 pending.change == *change && data.favorite_revision(effect_id) == pending.revision
             })
-            .map(|pending| (pending.durable, pending.revision))
+            .cloned()
     }
 
     fn clear_uncertain_favorite(&self, effect_id: EffectId) {
@@ -508,13 +514,12 @@ impl JsonLibraryStore {
         effect_id: EffectId,
         change: &FavoriteChange,
     ) -> Result<Option<u64>, LibraryStoreError> {
-        let Some((durable, revision)) = self.matching_uncertain_favorite(data, effect_id, change)
-        else {
+        let Some(uncertain) = self.matching_uncertain_favorite(data, effect_id, change) else {
             return Ok(None);
         };
-        if durable {
+        if uncertain.durable {
             self.clear_uncertain_favorite(effect_id);
-            return Ok(Some(revision));
+            return Ok(Some(uncertain.revision));
         }
 
         let pending = self
@@ -524,7 +529,7 @@ impl JsonLibraryStore {
             AtomicWriteCommitResult::DurableWritten => {
                 self.reconcile_uncertain_favorites(data);
                 self.clear_uncertain_favorite(effect_id);
-                Ok(Some(revision))
+                Ok(Some(uncertain.revision))
             }
             AtomicWriteCommitResult::Superseded => Err(LibraryStoreError::Persistence(
                 "favorite retry snapshot was superseded before replacement".to_owned(),
@@ -546,6 +551,8 @@ impl JsonLibraryStore {
             return Ok((true, revision));
         }
 
+        let predecessor_added_at_ms = data.favorite_state(effect_id);
+        let predecessor_revision = data.favorite_revision(effect_id);
         let mut candidate = data.clone();
         let Some(revision) = candidate.apply_favorite_change(effect_id, &change)? else {
             self.writer.kick();
@@ -571,7 +578,13 @@ impl JsonLibraryStore {
             }
             AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
                 *data = candidate;
-                self.record_uncertain_favorite(effect_id, change, revision);
+                self.record_uncertain_favorite(
+                    effect_id,
+                    change,
+                    revision,
+                    predecessor_added_at_ms,
+                    predecessor_revision,
+                );
                 Err(LibraryStoreError::Persistence(error.to_string()))
             }
         }
@@ -779,8 +792,22 @@ impl LibraryStore for JsonLibraryStore {
             }
             ConditionalFavoriteMutation::Remove => FavoriteChange::Remove,
         };
-        if let Some(revision) = self.retry_uncertain_favorite(&data, effect_id, &change)? {
-            return Ok(ConditionalFavoriteMutationOutcome::Applied { revision });
+        if let Some(pending) = self.matching_uncertain_favorite(&data, effect_id, &change) {
+            let predecessor_matches = pending.predecessor_added_at_ms == expected_added_at_ms
+                && pending.predecessor_revision == expected_revision;
+            let current_matches = data.favorite_state(effect_id) == expected_added_at_ms
+                && data.favorite_revision(effect_id) == expected_revision;
+            if !predecessor_matches && !current_matches {
+                return Ok(ConditionalFavoriteMutationOutcome::ConcurrentLocalEdit);
+            }
+            let revision = self
+                .retry_uncertain_favorite(&data, effect_id, &change)?
+                .expect("matching uncertain favorite remained current under the data write lock");
+            return Ok(if predecessor_matches {
+                ConditionalFavoriteMutationOutcome::Applied { revision }
+            } else {
+                ConditionalFavoriteMutationOutcome::AlreadyCurrent { revision }
+            });
         }
         let current = data.favorite_state(effect_id);
         if current != expected_added_at_ms || data.favorite_revision(effect_id) != expected_revision
@@ -1598,6 +1625,50 @@ mod tests {
                 .await
                 .expect("durable remove should be current"),
             ConditionalFavoriteMutationOutcome::AlreadyCurrent { revision: 2 }
+        );
+    }
+
+    #[cfg(all(unix, feature = "persistence-test-hooks"))]
+    #[tokio::test]
+    async fn conditional_favorite_replay_rejects_stale_predecessor() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("library.json");
+        let store = JsonLibraryStore::open(path).expect("open json store");
+        let effect_id = EffectId::new(Uuid::now_v7());
+        store
+            .upsert_favorite(effect_id, 10)
+            .await
+            .expect("seed favorite");
+        store.writer.set_injected_directory_sync_failures(1);
+
+        store
+            .mutate_favorite_if_current(effect_id, Some(10), 1, ConditionalFavoriteMutation::Remove)
+            .await
+            .expect_err("directory sync failure must remain observable");
+
+        assert_eq!(
+            store
+                .mutate_favorite_if_current(
+                    effect_id,
+                    Some(10),
+                    0,
+                    ConditionalFavoriteMutation::Remove,
+                )
+                .await
+                .expect("stale replay should be classified"),
+            ConditionalFavoriteMutationOutcome::ConcurrentLocalEdit
+        );
+        assert_eq!(
+            store
+                .mutate_favorite_if_current(
+                    effect_id,
+                    Some(10),
+                    1,
+                    ConditionalFavoriteMutation::Remove,
+                )
+                .await
+                .expect("original replay should converge"),
+            ConditionalFavoriteMutationOutcome::Applied { revision: 2 }
         );
     }
 

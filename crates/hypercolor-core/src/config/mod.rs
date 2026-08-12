@@ -645,7 +645,7 @@ impl ConfigManager {
 fn sync_parent_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let parent = parent_directory(path);
         std::fs::File::open(parent)
             .with_context(|| format!("failed to open {} for sync", parent.display()))?
             .sync_all()
@@ -661,6 +661,13 @@ fn sync_parent_directory(path: &Path) -> Result<()> {
 
     #[cfg(not(any(unix, target_os = "windows")))]
     anyhow::bail!("durable config replacement is unsupported on this platform")
+}
+
+#[cfg(any(unix, test))]
+fn parent_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 fn input_field_missing(document: &toml::Value, field: &str) -> bool {
@@ -724,6 +731,15 @@ mod persistence_tests {
         let manager = ConfigManager::new(path.clone()).expect("config manager");
         manager.save().expect("persist default");
         (manager, path)
+    }
+
+    #[test]
+    fn bare_config_path_syncs_the_current_directory() {
+        assert_eq!(parent_directory(Path::new("config.toml")), Path::new("."));
+        assert_eq!(
+            parent_directory(Path::new("nested/config.toml")),
+            Path::new("nested")
+        );
     }
 
     #[test]
