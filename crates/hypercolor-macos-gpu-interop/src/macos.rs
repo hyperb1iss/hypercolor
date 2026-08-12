@@ -21,8 +21,8 @@ use objc2_io_surface::{
     kIOSurfaceHeight, kIOSurfacePixelFormat, kIOSurfaceWidth,
 };
 use objc2_metal::{
-    MTLDevice, MTLGPUFamily, MTLPixelFormat, MTLResource, MTLStorageMode, MTLTexture,
-    MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
+    MTLCreateSystemDefaultDevice, MTLDevice, MTLGPUFamily, MTLPixelFormat, MTLResource,
+    MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
 };
 use thiserror::Error;
 
@@ -60,6 +60,17 @@ pub struct MacosMetal4CapabilityProbe {
     pub command_buffer: bool,
     /// Whether the active device exposes residency-set creation.
     pub residency_set: bool,
+}
+
+/// Identity and family facts for the system-default Metal device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacosSystemMetalDeviceQualification {
+    /// Human-readable device name emitted by native runner qualification.
+    pub device_name: String,
+    /// Global IORegistry identity of the system-default device.
+    pub registry_id: u64,
+    /// Whether the system-default device reports an Apple GPU family.
+    pub apple_family: bool,
 }
 
 impl MacosMetal4CapabilityProbe {
@@ -126,10 +137,25 @@ pub fn probe_macos_metal4_capabilities(
     })
 }
 
+/// Query the system-default Metal device for native runner qualification.
+pub fn qualify_macos_system_default_metal_device() -> Result<MacosSystemMetalDeviceQualification> {
+    let device =
+        MTLCreateSystemDefaultDevice().ok_or(MacosGpuInteropError::MissingSystemMetalDevice)?;
+    Ok(MacosSystemMetalDeviceQualification {
+        device_name: device.name().to_string(),
+        registry_id: device.registryID(),
+        apple_family: device.supportsFamily(MTLGPUFamily::Apple1),
+    })
+}
+
 /// Errors raised while preparing or importing macOS GPU surfaces.
 #[derive(Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MacosGpuInteropError {
+    /// `MTLCreateSystemDefaultDevice` did not return a usable device.
+    #[error("MTLCreateSystemDefaultDevice returned no Metal device")]
+    MissingSystemMetalDevice,
+
     /// The active wgpu device is not backed by Metal.
     #[error("wgpu device is not backed by the Metal HAL")]
     MissingWgpuMetalDevice,

@@ -8,6 +8,12 @@ use hypercolor_macos_capture::{
     MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosScale, MacosTransferFunction,
     MacosYuvMatrix,
 };
+#[cfg(target_arch = "x86_64")]
+use hypercolor_macos_gpu_interop::{
+    ImportedFrameFormat, MacosIosurfaceImportDescriptor, MacosIosurfaceImporter,
+    MacosScreenImporterCandidate, create_bgra_iosurface, qualify_macos_system_default_metal_device,
+    write_bgra_pixels,
+};
 use hypercolor_macos_gpu_interop::{
     MacosMetalStorageMode, MacosNativeLetterboxFill, MacosNativeReducer,
     MacosNativeReductionDescriptor, MacosNativeReductionError, MacosNativeReductionFilter,
@@ -93,6 +99,84 @@ fn bridge_imports_and_caches_complete_capture_storage_identity() -> Result<(), S
     drop(frame);
     assert_eq!(Arc::strong_count(first.capture()), 3);
     assert_eq!(first.capture().surface.retained_owner_count(), 1);
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn intel_runner_qualification_requires_native_device_and_both_import_candidates()
+-> Result<(), String> {
+    let qualification =
+        qualify_macos_system_default_metal_device().map_err(|error| error.to_string())?;
+    println!(
+        "Intel Metal qualification: device={} registry_id={} apple_family={}",
+        qualification.device_name, qualification.registry_id, qualification.apple_family
+    );
+    if qualification.apple_family {
+        return Err(
+            "Intel runner qualification requires a non-Apple-family Metal device".to_owned(),
+        );
+    }
+
+    let wgpu = WgpuFixture::new()?;
+    let pixels = fixture_pixels();
+    let iosurface = create_bgra_iosurface(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
+    write_bgra_pixels(&iosurface, WIDTH, HEIGHT, &pixels).map_err(|error| error.to_string())?;
+    let descriptor =
+        MacosIosurfaceImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Bgra8Unorm)
+            .map_err(|error| error.to_string())?;
+    let mut importer =
+        MacosIosurfaceImporter::new(&wgpu.device, descriptor).map_err(|error| error.to_string())?;
+    if importer.metal_registry_id() != qualification.registry_id {
+        return Err(format!(
+            "wgpu Metal device {} does not match system-default device {}",
+            importer.metal_registry_id(),
+            qualification.registry_id
+        ));
+    }
+    let imported = importer
+        .import_iosurface_for_test(&wgpu.device, &iosurface)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        read_texture_pixels(&wgpu.device, &wgpu.queue, &imported.texture, WIDTH, HEIGHT)?,
+        pixels
+    );
+
+    let frame = Arc::new(capture_frame()?);
+    let bridge = MacosScreenBridge::new(&wgpu.device).map_err(|error| error.to_string())?;
+    let direct = bridge
+        .import_frame_via_candidate_for_test(
+            MacosScreenImporterCandidate::DirectIosurface,
+            &wgpu.device,
+            31,
+            Arc::clone(&frame),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(!direct.planes()[0].uses_core_video_texture_cache());
+    let direct_texture = direct
+        .texture()
+        .expect("BGRA direct import has a wgpu texture");
+    assert_eq!(
+        read_texture_pixels(&wgpu.device, &wgpu.queue, direct_texture, WIDTH, HEIGHT)?,
+        fixture_pixels()
+    );
+
+    let core_video = bridge
+        .import_frame_via_candidate_for_test(
+            MacosScreenImporterCandidate::CoreVideoTextureCache,
+            &wgpu.device,
+            32,
+            frame,
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(core_video.planes()[0].uses_core_video_texture_cache());
+    let core_video_texture = core_video
+        .texture()
+        .expect("BGRA Core Video import has a wgpu texture");
+    assert_eq!(
+        read_texture_pixels(&wgpu.device, &wgpu.queue, core_video_texture, WIDTH, HEIGHT)?,
+        fixture_pixels()
+    );
     Ok(())
 }
 

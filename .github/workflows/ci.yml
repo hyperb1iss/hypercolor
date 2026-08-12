@@ -284,6 +284,14 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Qualify Intel Metal fixture
+        if: matrix.expected-arch == 'x86_64'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked -p hypercolor-macos-gpu-interop
+          --features screen-capture --test screen_capture_bridge_tests
+          -E 'test(intel_runner_qualification_requires_native_device_and_both_import_candidates)'
+
       - name: Check macOS workspace
         run: >-
           ./scripts/cargo-cache-build.sh
@@ -292,7 +300,8 @@ jobs:
       - name: Clippy macOS interop
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo clippy --locked -p hypercolor-macos-gpu-interop --all-targets
+          cargo clippy --locked -p hypercolor-macos-gpu-interop --features screen-capture
+          --all-targets
           -- -D warnings
 
       - name: Clippy macOS capture fixtures
@@ -311,6 +320,7 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked -p hypercolor-macos-gpu-interop
+          --features screen-capture
 
       - name: Run macOS capture fixtures
         run: |
@@ -323,6 +333,31 @@ jobs:
             -p hypercolor-core --features macos-capture-fixtures \
             --test macos_screen_capture_tests
 
+      - name: Run macOS host input and ownership fixtures
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-macos-input \
+            --test input_contract_tests \
+            --test process_identity_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-macos-owner \
+            --test coordinator_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-core --features macos-native-fixtures \
+            --test macos_host_input_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-daemon --no-default-features \
+            --test macos_owner_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-daemon --no-default-features \
+            --bin hypercolor-daemon \
+            -E 'test(/(launchd_managed_contenders_exit_zero_without_respawn|held_guard_applies_topology_policy_without_an_owner_record|malformed_diagnostics_never_override_held_guard_policy)/)'
+
       - name: Run macOS status API fixtures
         run: >-
           ./scripts/cargo-cache-build.sh
@@ -330,15 +365,30 @@ jobs:
           -p hypercolor-daemon --no-default-features --features wgpu
           -E 'test(/api::system::tests::(input_source_status|macos_)/)'
 
-      - name: Build deployment target fixture
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo build --locked -p hypercolor-cli --bin hypercolor
+      - name: Build deployment and Sequoia availability fixtures
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo build --locked -p hypercolor-cli --bin hypercolor
+          ./scripts/cargo-cache-build.sh \
+            cargo build --locked -p hypercolor-daemon --no-default-features \
+            --features wgpu,screen-capture --bin hypercolor-daemon
 
       - name: Verify deployment target
-        run: >-
-          ./scripts/verify-macos-deployment-target.sh
-          "${CARGO_TARGET_DIR}/debug/hypercolor"
+        run: |
+          ./scripts/verify-macos-deployment-target.sh \
+            "${CARGO_TARGET_DIR}/debug/hypercolor" \
+            "${CARGO_TARGET_DIR}/debug/hypercolor-daemon"
+
+      - name: Reject unguarded Tahoe symbols in the Sequoia artifact
+        run: |
+          set -euo pipefail
+          artifact="${CARGO_TARGET_DIR}/debug/hypercolor-daemon"
+          tahoe_symbols='SCScreenshot(Configuration|Manager)|CG(Context(Get|Set)ContentToneMappingInfo|ImageGetContentAverageLightLevel)|kCG(PreferredDynamicRange|DynamicRange(Standard|Constrained|High)|ContentAverageLightLevel)'
+          if xcrun nm -u "${artifact}" | grep -E "${tahoe_symbols}"; then
+            echo "unguarded Tahoe-only symbol found in ${artifact}" >&2
+            exit 1
+          fi
+          echo "Sequoia availability scan passed: Tahoe-only APIs are runtime-resolved"
 
   # ── Generated Effects Artifact ────────────────────────────────
   generated-effects:

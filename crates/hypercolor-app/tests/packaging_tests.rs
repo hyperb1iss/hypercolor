@@ -136,6 +136,14 @@ fn macos_launchers_identify_their_daemon_topology() {
 }
 
 #[test]
+fn macos_launchd_conflict_exit_does_not_restart_the_losing_daemon() {
+    assert!(MACOS_LAUNCHD_PLIST.contains(
+        "<key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key>\n        <false/>"
+    ));
+    assert!(CI_WORKFLOW.contains("launchd_managed_contenders_exit_zero_without_respawn"));
+}
+
+#[test]
 fn app_sidecar_identity_matches_tauri_and_signing_artifacts() {
     let config: serde_json::Value =
         serde_json::from_str(TAURI_CONFIG).expect("Tauri config should parse");

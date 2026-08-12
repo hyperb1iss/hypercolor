@@ -445,6 +445,67 @@ impl MacosScreenBridge {
         })
     }
 
+    /// Import one frame through an explicit native candidate for fixture tests.
+    #[doc(hidden)]
+    pub fn import_frame_via_candidate_for_test(
+        &self,
+        candidate: MacosScreenImporterCandidate,
+        device: &wgpu::Device,
+        resource_generation: u64,
+        frame: Arc<MacosCaptureFrame>,
+    ) -> Result<ImportedMacosScreenFrame, MacosScreenBridgeError> {
+        self.import_frame_via_candidate(candidate, device, resource_generation, frame)
+    }
+
+    fn import_frame_via_candidate(
+        &self,
+        candidate: MacosScreenImporterCandidate,
+        device: &wgpu::Device,
+        resource_generation: u64,
+        frame: Arc<MacosCaptureFrame>,
+    ) -> Result<ImportedMacosScreenFrame, MacosScreenBridgeError> {
+        let device_contract = metal_device_import_contract(device)?;
+        validate_import_device_contract(
+            self.metal_registry_id,
+            self.storage_mode,
+            device_contract,
+        )?;
+        let plane_descriptors = validate_frame(&frame, resource_generation)?;
+        let source_pixel_format = frame
+            .pixel_format
+            .fourcc(frame.color.range)
+            .map_err(|_| MacosScreenBridgeError::InvalidFrame("invalid source color range"))?;
+        let imported_planes = frame
+            .surface
+            .with_native_surface(|lease| {
+                // SAFETY: the opaque lease was created from this exact
+                // retained IOSurface and cannot outlive this closure.
+                let iosurface = unsafe { lease.iosurface_ptr().cast::<IOSurfaceRef>().as_ref() };
+                // SAFETY: the opaque lease was created from this exact
+                // retained pixel buffer and cannot outlive this closure.
+                let pixel_buffer =
+                    unsafe { lease.pixel_buffer_ptr().cast::<CVPixelBuffer>().as_ref() };
+                validate_native_surface(iosurface, &frame)?;
+                self.import_candidate(
+                    candidate,
+                    device,
+                    iosurface,
+                    pixel_buffer,
+                    &frame,
+                    resource_generation,
+                    source_pixel_format,
+                    &plane_descriptors,
+                )
+            })
+            .map_err(|error| MacosScreenBridgeError::SurfaceHandoff(error.to_string()))??;
+
+        Ok(ImportedMacosScreenFrame {
+            content_sequence: frame.sequence,
+            capture: frame,
+            planes: imported_planes.into(),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn import_candidate(
         &self,
