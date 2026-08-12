@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WRAPPER="$ROOT_DIR/scripts/cargo-cache-build.sh"
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
+unset CARGO_TARGET_DIR
 
 mkdir -p "$SANDBOX/bin" "$SANDBOX/caller"
 cat >"$SANDBOX/bin/cargo" <<'EOF'
