@@ -741,6 +741,8 @@ pub enum MacosCaptureError {
     NotMainThread,
     #[error("screen-capture authorization requires explicit user action")]
     ScreenCapturePermissionRequired,
+    #[error("invalid macOS capture source selector: {0}")]
+    InvalidSourceSelector(String),
     #[error("{operation} failed with native error {code}: {message}")]
     NativeOperation {
         operation: &'static str,

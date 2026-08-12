@@ -47,6 +47,7 @@ impl MacosFrameDropReason {
             MacosCaptureError::InvalidCadence(_)
             | MacosCaptureError::NotMainThread
             | MacosCaptureError::ScreenCapturePermissionRequired
+            | MacosCaptureError::InvalidSourceSelector(_)
             | MacosCaptureError::NativeOperation { .. }
             | MacosCaptureError::RetainNativeFilterFailed
             | MacosCaptureError::DisplayUuidUnavailable(_)

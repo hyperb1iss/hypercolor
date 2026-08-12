@@ -3,12 +3,12 @@ use std::sync::Arc;
 use hypercolor_macos_capture::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCadence,
     MacosCaptureCallbackDiagnostics, MacosCaptureColorimetry, MacosCaptureError,
-    MacosCapturePixelFormat, MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries,
-    MacosColorRange, MacosDisplayClock, MacosDisplayClockError, MacosFrameDecoder,
-    MacosFrameDropReason, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosGeometryError,
-    MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosRawCapturePlane, MacosRawCaptureSample,
-    MacosRawCompleteFrame, MacosRawFrameAttachments, MacosScale, MacosStreamRequest,
-    MacosTransferFunction, MacosYuvMatrix,
+    MacosCapturePixelFormat, MacosCaptureSelector, MacosCaptureSurface, MacosChromaLocation,
+    MacosColorPrimaries, MacosColorRange, MacosDisplayClock, MacosDisplayClockError,
+    MacosFrameDecoder, MacosFrameDropReason, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
+    MacosGeometryError, MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosRawCapturePlane,
+    MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments, MacosScale,
+    MacosStreamRequest, MacosTransferFunction, MacosYuvMatrix,
 };
 use std::time::{Duration, Instant};
 
@@ -80,6 +80,34 @@ fn stream_requests_preserve_native_refresh_and_reject_invalid_rates() {
     assert_eq!(
         MacosStreamRequest::default().cadence,
         MacosCaptureCadence::FramesPerSecond(60)
+    );
+}
+
+#[test]
+fn capture_selectors_parse_and_normalize_display_identity() {
+    assert_eq!(
+        MacosCaptureSelector::parse("auto"),
+        Ok(MacosCaptureSelector::Auto)
+    );
+    assert_eq!(
+        MacosCaptureSelector::parse("primary_display"),
+        Ok(MacosCaptureSelector::PrimaryDisplay)
+    );
+    assert_eq!(
+        MacosCaptureSelector::parse("session_scoped"),
+        Ok(MacosCaptureSelector::SessionScoped)
+    );
+    assert_eq!(
+        MacosCaptureSelector::parse("display:550E8400-E29B-41D4-A716-446655440000"),
+        Ok(MacosCaptureSelector::Display {
+            source_id: Arc::from("display:550e8400-e29b-41d4-a716-446655440000"),
+        })
+    );
+    assert_eq!(
+        MacosCaptureSelector::parse("display:not-a-uuid"),
+        Err(MacosCaptureError::InvalidSourceSelector(
+            "display:not-a-uuid".to_owned()
+        ))
     );
 }
 

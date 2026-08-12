@@ -2,6 +2,34 @@ use std::sync::Arc;
 
 use crate::MacosCaptureError;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MacosCaptureSelector {
+    Auto,
+    PrimaryDisplay,
+    Display { source_id: Arc<str> },
+    SessionScoped,
+}
+
+impl MacosCaptureSelector {
+    pub fn parse(source: &str) -> Result<Self, MacosCaptureError> {
+        match source.trim() {
+            "auto" => Ok(Self::Auto),
+            "primary_display" => Ok(Self::PrimaryDisplay),
+            "session_scoped" => Ok(Self::SessionScoped),
+            source => {
+                let Some(uuid) = source.strip_prefix("display:") else {
+                    return Err(MacosCaptureError::InvalidSourceSelector(source.to_owned()));
+                };
+                let uuid = uuid::Uuid::parse_str(uuid)
+                    .map_err(|_| MacosCaptureError::InvalidSourceSelector(source.to_owned()))?;
+                Ok(Self::Display {
+                    source_id: Arc::from(format!("display:{}", uuid.hyphenated())),
+                })
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MacosCaptureContentStyle {
     Window,

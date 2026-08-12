@@ -5331,6 +5331,7 @@ dependencies = [
  "objc2-io-surface",
  "objc2-screen-capture-kit",
  "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
