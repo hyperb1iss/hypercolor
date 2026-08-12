@@ -24,7 +24,9 @@ use super::{
     analyze_screen_frame,
 };
 use crate::input::status::SourceSessionSlot;
-use crate::input::traits::{InputData, InputSource};
+use crate::input::traits::{
+    InputData, InputSource, ProtectedSourceAuthorizationAction, ScreenSourcePickerAction,
+};
 use crate::input::{
     MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
     MacosScreenPlatformStatus, MacosSelectionState, SourceKind, SourcePlatformStatus,
@@ -535,6 +537,19 @@ impl InputSource for MacosScreenCaptureInput {
 
     fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
         self.present_picker()
+    }
+
+    fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        let control = Arc::clone(&self.control);
+        Some(Arc::new(move || {
+            control.request_authorization();
+            Ok(control.authorization() == MacosAuthorizationState::Authorized)
+        }))
+    }
+
+    fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        let control = Arc::clone(&self.control);
+        Some(Arc::new(move || control.present_picker()))
     }
 }
 

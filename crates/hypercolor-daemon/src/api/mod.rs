@@ -1545,6 +1545,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── Screen Capture ───────────────────────────────────────────
         .route(
+            "/input/authorize",
+            axum::routing::post(capture::authorize_input_monitoring),
+        )
+        .route(
+            "/capture/authorize",
+            axum::routing::post(capture::authorize_screen_recording),
+        )
+        .route(
             "/capture/source/pick",
             axum::routing::post(capture::pick_capture_source),
         )

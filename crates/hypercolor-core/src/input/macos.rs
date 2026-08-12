@@ -1,19 +1,21 @@
 //! macOS host input folded from Core Graphics event-tap batches.
 
 use std::collections::{BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hypercolor_macos_input::{
     MacosInputBatch, MacosInputConfig, MacosInputError, MacosInputEvent, MacosInputGapReason,
     MacosInputSession, MacosModifierFlags, MacosPointerButton, MacosScrollPhase, MacosScrollUnit,
     MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState, input_monitoring_granted,
+    request_input_monitoring,
 };
 use tracing::{info, warn};
 
 use crate::input::keymap::{macos_key_name, macos_media_key_name};
 use crate::input::traits::{
     InputData, InputSource, InteractionData, InteractionDegradation, MotionAggregate, PointerMode,
+    ProtectedSourceAuthorizationAction,
 };
 use crate::input::{
     LegacyWheelProjector, MacosAuthorizationState, MacosCapabilityOwner, MacosInputPlatformStatus,
@@ -26,6 +28,9 @@ use crate::types::event::{
 
 const SOURCE_ID: &str = "host:macos";
 const DEFAULT_EVENT_LIMIT: usize = crate::input::InteractionBatch::MAX_EVENTS;
+const AUTHORIZATION_NONE: u8 = 0;
+const AUTHORIZATION_GRANTED: u8 = 1;
+const AUTHORIZATION_DENIED: u8 = 2;
 
 type HeldStateKey = (Vec<String>, Vec<String>, i32, i32, i32, i32, bool);
 
@@ -97,6 +102,7 @@ pub struct MacosHostInput {
     status_session: SourceSessionSlot,
     keyboard_tcc: MacosAuthorizationState,
     owner: MacosCapabilityOwner,
+    authorization_result: Arc<AtomicU8>,
     #[cfg(feature = "macos-native-fixtures")]
     fixture: Option<Arc<FixtureState>>,
 }
@@ -254,6 +260,7 @@ impl MacosHostInput {
             status_session: SourceSessionSlot::new(),
             keyboard_tcc,
             owner: MacosCapabilityOwner::Standalone,
+            authorization_result: Arc::new(AtomicU8::new(AUTHORIZATION_NONE)),
             #[cfg(feature = "macos-native-fixtures")]
             fixture: None,
         };
@@ -481,6 +488,36 @@ impl MacosHostInput {
                 },
             )))?;
         Ok(())
+    }
+
+    fn apply_pending_authorization(&mut self) -> anyhow::Result<()> {
+        match self
+            .authorization_result
+            .swap(AUTHORIZATION_NONE, Ordering::AcqRel)
+        {
+            AUTHORIZATION_NONE => return Ok(()),
+            AUTHORIZATION_GRANTED => {
+                self.keyboard_tcc = MacosAuthorizationState::Authorized;
+                if matches!(
+                    self.degraded,
+                    Some(InteractionDegradation::InputMonitoringPermissionDenied)
+                ) {
+                    self.degraded = None;
+                }
+                if self.running && self.capture_active {
+                    self.stop_session();
+                    self.start_session();
+                }
+            }
+            AUTHORIZATION_DENIED => {
+                self.keyboard_tcc = MacosAuthorizationState::Denied;
+                if self.capture_active {
+                    self.degraded = Some(InteractionDegradation::InputMonitoringPermissionDenied);
+                }
+            }
+            _ => unreachable!("macOS authorization result is bounded"),
+        }
+        self.refresh_platform_status()
     }
 
     fn active_kind_count(&self) -> usize {
@@ -714,6 +751,7 @@ impl InputSource for MacosHostInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
+        self.apply_pending_authorization()?;
         self.refresh_worker_health();
         self.refresh_platform_status()?;
         if !self.running || !self.capture_session_active() {
@@ -730,6 +768,9 @@ impl InputSource for MacosHostInput {
         &mut self,
         _delta_secs: f32,
     ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
+        if let Err(error) = self.apply_pending_authorization() {
+            return (Err(error), Vec::new());
+        }
         self.refresh_worker_health();
         if let Err(error) = self.refresh_platform_status() {
             return (Err(error), Vec::new());
@@ -773,6 +814,43 @@ impl InputSource for MacosHostInput {
 
     fn is_host_capture_source(&self) -> bool {
         true
+    }
+
+    fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        if !self.capture_keyboard {
+            return None;
+        }
+        let result = Arc::clone(&self.authorization_result);
+        #[cfg(feature = "macos-native-fixtures")]
+        let fixture = self.fixture.clone();
+        Some(Arc::new(move || {
+            #[cfg(feature = "macos-native-fixtures")]
+            let granted = fixture
+                .as_ref()
+                .map_or_else(request_input_monitoring, |fixture| {
+                    let mut backend = fixture
+                        .backend
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if backend.request_granted {
+                        backend.preflight_granted = true;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            #[cfg(not(feature = "macos-native-fixtures"))]
+            let granted = request_input_monitoring();
+            result.store(
+                if granted {
+                    AUTHORIZATION_GRANTED
+                } else {
+                    AUTHORIZATION_DENIED
+                },
+                Ordering::Release,
+            );
+            Ok(granted)
+        }))
     }
 
     fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {

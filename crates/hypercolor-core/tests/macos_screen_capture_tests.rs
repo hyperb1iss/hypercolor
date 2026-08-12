@@ -237,3 +237,28 @@ fn reconfiguration_fences_the_previous_worker_generation() {
     assert_eq!(data.grid_height, 1);
     assert_eq!(data.zone_colors.len(), 1);
 }
+
+#[test]
+fn authorization_and_picker_actions_run_outside_graph_ownership() {
+    let (mut source, _) = fixture_source(CaptureConfig::default());
+    let status = source
+        .source_status_handle()
+        .expect("macOS fixture exposes status");
+    let authorize = source
+        .screen_authorization_action()
+        .expect("screen source exposes authorization");
+    let picker = source
+        .screen_source_picker_action()
+        .expect("screen source exposes picker action");
+
+    assert!(authorize().expect("fixture authorization succeeds"));
+    picker().expect("fixture picker succeeds");
+    source.sample().expect("source refreshes platform status");
+
+    let snapshot = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = snapshot.platform.as_deref() else {
+        panic!("fixture should publish macOS screen status");
+    };
+    assert_eq!(platform.tcc, MacosAuthorizationState::Authorized);
+    assert_eq!(platform.state, CoreProtectedSourceState::NeedsSelection);
+}

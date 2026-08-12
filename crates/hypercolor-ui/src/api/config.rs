@@ -85,6 +85,20 @@ pub async fn pick_capture_source() -> Result<(), String> {
         .map_err(Into::into)
 }
 
+/// Explicitly request Input Monitoring from the active macOS owner.
+pub async fn authorize_input_monitoring() -> Result<(), String> {
+    client::post_empty("/api/v1/input/authorize")
+        .await
+        .map_err(Into::into)
+}
+
+/// Explicitly request Screen Recording from the active macOS owner.
+pub async fn authorize_screen_recording() -> Result<(), String> {
+    client::post_empty("/api/v1/capture/authorize")
+        .await
+        .map_err(Into::into)
+}
+
 fn applies_live(key: &str) -> bool {
     key == "audio"
         || key.starts_with("audio.")

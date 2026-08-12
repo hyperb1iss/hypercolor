@@ -512,4 +512,29 @@ mod fixtures {
                 .expect("owner restart succeeds")
         );
     }
+
+    #[test]
+    fn authorization_action_publishes_granted_tcc_without_graph_locking() {
+        let backend =
+            MacosInputFixtureBackend::new(false, true, event_masks(true, true), true, desktop(1));
+        let (mut source, _) = MacosHostInput::new_deterministic_fixture(true, true, backend);
+        let status = source
+            .source_status_handle()
+            .expect("macOS host source exposes status");
+        let action = source
+            .input_authorization_action()
+            .expect("keyboard source should expose authorization");
+
+        assert!(action().expect("fixture authorization should succeed"));
+        source
+            .sample()
+            .expect("source should consume action result");
+
+        let snapshot = status.snapshot();
+        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
+            panic!("fixture should publish macOS input platform status");
+        };
+        assert_eq!(platform.keyboard_tcc, MacosAuthorizationState::Authorized);
+        assert_eq!(platform.keyboard, MacosProtectedSourceState::ReadyIdle);
+    }
 }

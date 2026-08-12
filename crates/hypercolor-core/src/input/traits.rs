@@ -14,6 +14,12 @@ use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::Deref;
 use std::sync::Arc;
 
+/// Explicit local authorization request detached from input-graph locks.
+pub type ProtectedSourceAuthorizationAction = Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>;
+
+/// Explicit native source-picker presentation detached from input-graph locks.
+pub type ScreenSourcePickerAction = Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>;
+
 // ── InputData ──────────────────────────────────────────────────────────────
 
 /// A single sample from an input source.
@@ -872,5 +878,20 @@ pub trait InputSource: Send {
     /// Returns an error if the source cannot restart its capture session.
     fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    /// Return the explicit Input Monitoring request owned by this source.
+    fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        None
+    }
+
+    /// Return the explicit Screen Recording request owned by this source.
+    fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        None
+    }
+
+    /// Return the system source-picker action owned by this source.
+    fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        None
     }
 }

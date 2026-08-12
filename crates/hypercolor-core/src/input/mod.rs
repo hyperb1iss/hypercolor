@@ -55,8 +55,9 @@ pub use status::{
 };
 pub use traits::{
     InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
-    InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode, ScreenData,
-    ScreenZoneColors, ScrollAggregate,
+    InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode,
+    ProtectedSourceAuthorizationAction, ScreenData, ScreenSourcePickerAction, ScreenZoneColors,
+    ScrollAggregate,
 };
 pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
@@ -1883,6 +1884,33 @@ impl InputManager {
         }
         self.publish_source_status_registry();
         result
+    }
+
+    /// Resolve the explicit Input Monitoring request without retaining the
+    /// input-manager lock while native authorization UI runs.
+    #[must_use]
+    pub fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        self.sources
+            .iter()
+            .find_map(|source| source.input_authorization_action())
+    }
+
+    /// Resolve the explicit Screen Recording request without retaining the
+    /// input-manager lock while native authorization UI runs.
+    #[must_use]
+    pub fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        self.sources
+            .iter()
+            .find_map(|source| source.screen_authorization_action())
+    }
+
+    /// Resolve the native picker action without retaining the input-manager
+    /// lock while system UI runs.
+    #[must_use]
+    pub fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        self.sources
+            .iter()
+            .find_map(|source| source.screen_source_picker_action())
     }
 
     /// Ask screen sources to discard their persisted selection and re-prompt.
