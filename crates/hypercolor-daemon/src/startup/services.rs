@@ -73,6 +73,19 @@ use super::config::resolve_server_identity;
 use super::resolve_compositor_acceleration_mode;
 use crate::render_thread::ConfiguredFpsTier;
 
+fn open_persisted_library_store(
+    path: &std::path::Path,
+) -> Result<Arc<dyn crate::library::LibraryStore>> {
+    Ok(Arc::new(
+        crate::library::JsonLibraryStore::open(path.to_owned()).with_context(|| {
+            format!(
+                "failed to open persisted library store at {}",
+                path.display()
+            )
+        })?,
+    ))
+}
+
 impl DaemonState {
     /// Initialize all subsystems from a loaded configuration.
     ///
@@ -544,18 +557,7 @@ impl DaemonState {
         info!("Device backends registered");
 
         let library_path = ConfigManager::data_dir().join("library.json");
-        let library_store: Arc<dyn crate::library::LibraryStore> =
-            match crate::library::JsonLibraryStore::open(library_path.clone()) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    warn!(
-                        path = %library_path.display(),
-                        %error,
-                        "Failed to load persisted library store; falling back to in-memory store"
-                    );
-                    Arc::new(crate::library::InMemoryLibraryStore::new())
-                }
-            };
+        let library_store = open_persisted_library_store(&library_path)?;
         let profiles_path = ConfigManager::data_dir().join("profiles.json");
         let profiles =
             crate::profile_store::ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
@@ -1330,3 +1332,41 @@ fn noise_gate_to_db(noise_gate: f32) -> f32 {
 
 #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
 mod tests;
+
+#[cfg(test)]
+mod library_startup_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_persisted_library_stops_store_initialization() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("library.json");
+        std::fs::write(&path, b"not-json").expect("corrupt fixture");
+
+        let Err(error) = open_persisted_library_store(&path) else {
+            panic!("corrupt library must fail closed");
+        };
+
+        assert!(format!("{error:#}").contains("failed to open persisted library store"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inaccessible_persisted_library_stops_store_initialization() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("library.json");
+        symlink("library.json", &path).expect("self-referential symlink");
+
+        let Err(error) = open_persisted_library_store(&path) else {
+            panic!("inaccessible library must fail closed");
+        };
+
+        assert!(format!("{error:#}").contains("failed to open persisted library store"));
+        assert!(matches!(
+            error.downcast_ref::<crate::library::JsonLibraryStoreOpenError>(),
+            Some(crate::library::JsonLibraryStoreOpenError::Read { .. })
+        ));
+    }
+}

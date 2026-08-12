@@ -134,6 +134,31 @@ pub enum AtomicWriteOutcome {
     Superseded,
 }
 
+/// Stage-aware result of attempting one admitted atomic replacement.
+#[derive(Debug)]
+pub enum AtomicWriteCommitResult {
+    /// A newer admitted generation won before this write replaced the file.
+    Superseded,
+    /// The replacement and its parent-directory durability barrier completed.
+    DurableWritten,
+    /// The destination was not replaced.
+    FailedBeforeReplacement(PersistenceError),
+    /// The replacement is visible, but parent-directory durability was not proven.
+    ReplacementVisibleButNotDurable(PersistenceError),
+}
+
+impl AtomicWriteCommitResult {
+    fn into_compatibility_result(self) -> Result<AtomicWriteOutcome, PersistenceError> {
+        match self {
+            Self::Superseded => Ok(AtomicWriteOutcome::Superseded),
+            Self::DurableWritten => Ok(AtomicWriteOutcome::Written),
+            Self::FailedBeforeReplacement(error) | Self::ReplacementVisibleButNotDurable(error) => {
+                Err(error)
+            }
+        }
+    }
+}
+
 /// Result of waiting for one destination's dirty snapshot to converge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersistenceFlushOutcome {
@@ -224,6 +249,8 @@ struct Destination {
     state_changed: Condvar,
     #[cfg(feature = "persistence-test-hooks")]
     injected_replace_failures: AtomicUsize,
+    #[cfg(all(unix, feature = "persistence-test-hooks"))]
+    injected_directory_sync_failures: AtomicUsize,
 }
 
 #[cfg(windows)]
@@ -332,6 +359,8 @@ impl AtomicFileWriter {
             state_changed: Condvar::new(),
             #[cfg(feature = "persistence-test-hooks")]
             injected_replace_failures: AtomicUsize::new(0),
+            #[cfg(all(unix, feature = "persistence-test-hooks"))]
+            injected_directory_sync_failures: AtomicUsize::new(0),
         });
 
         #[cfg(windows)]
@@ -426,6 +455,14 @@ impl AtomicFileWriter {
             .injected_replace_failures
             .store(count, Ordering::Release);
     }
+
+    /// Inject post-replacement directory-sync failures for deterministic tests.
+    #[cfg(all(unix, feature = "persistence-test-hooks"))]
+    pub fn set_injected_directory_sync_failures(&self, count: usize) {
+        self.destination
+            .injected_directory_sync_failures
+            .store(count, Ordering::Release);
+    }
 }
 
 impl Destination {
@@ -477,7 +514,7 @@ impl Destination {
     fn finish_attempt(
         self: &Arc<Self>,
         generation: u64,
-        result: &Result<AtomicWriteOutcome, PersistenceError>,
+        result: &AtomicWriteCommitResult,
         retry_attempt: bool,
     ) {
         let retry_needed = {
@@ -489,7 +526,7 @@ impl Destination {
                 state.active_generation = None;
             }
             match result {
-                Ok(AtomicWriteOutcome::Written) => {
+                AtomicWriteCommitResult::DurableWritten => {
                     if state.pending.as_ref().map(|pending| pending.generation) == Some(generation)
                     {
                         state.pending = None;
@@ -497,10 +534,11 @@ impl Destination {
                     state.last_outcome = retry_attempt.then_some(AtomicWriteOutcome::Written);
                     state.last_error = None;
                 }
-                Ok(AtomicWriteOutcome::Superseded) => {
+                AtomicWriteCommitResult::Superseded => {
                     state.last_outcome = retry_attempt.then_some(AtomicWriteOutcome::Superseded);
                 }
-                Err(error) => {
+                AtomicWriteCommitResult::FailedBeforeReplacement(error)
+                | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
                     state.last_error = Some(error.to_string());
                 }
             }
@@ -528,9 +566,13 @@ impl Destination {
             pending
         };
 
-        let result = try_write(self, pending.generation, &pending.payload);
+        let result = try_write_stage_aware(self, pending.generation, &pending.payload);
         self.finish_attempt(pending.generation, &result, true);
-        if result.is_err() {
+        if matches!(
+            result,
+            AtomicWriteCommitResult::FailedBeforeReplacement(_)
+                | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(_)
+        ) {
             Some(RETRY_DELAY)
         } else {
             let state = self
@@ -599,12 +641,18 @@ impl AdmittedAtomicWrite {
     /// # Errors
     ///
     /// Returns the typed preparation or replacement error from this attempt.
-    pub fn commit(mut self) -> Result<AtomicWriteOutcome, PersistenceError> {
+    pub fn commit(self) -> Result<AtomicWriteOutcome, PersistenceError> {
+        self.commit_stage_aware().into_compatibility_result()
+    }
+
+    /// Attempt the replacement and preserve whether failure occurred before or after visibility.
+    #[must_use]
+    pub fn commit_stage_aware(mut self) -> AtomicWriteCommitResult {
         self.armed = false;
         if !self.destination.begin_foreground(self.generation) {
-            return Ok(AtomicWriteOutcome::Superseded);
+            return AtomicWriteCommitResult::Superseded;
         }
-        let result = try_write(&self.destination, self.generation, &self.payload);
+        let result = try_write_stage_aware(&self.destination, self.generation, &self.payload);
         self.destination
             .finish_attempt(self.generation, &result, false);
         result
@@ -723,37 +771,43 @@ fn retry_worker(supervisor: Arc<RetrySupervisor>) {
     }
 }
 
-fn try_write(
+fn try_write_stage_aware(
     destination: &Arc<Destination>,
     generation: u64,
     payload: &[u8],
-) -> Result<AtomicWriteOutcome, PersistenceError> {
-    let mut temporary = NamedTempFile::new_in(&destination.parent).map_err(|source| {
-        PersistenceError::CreateTemporary {
-            path: destination.path.clone(),
-            source,
+) -> AtomicWriteCommitResult {
+    let mut temporary = match NamedTempFile::new_in(&destination.parent) {
+        Ok(temporary) => temporary,
+        Err(source) => {
+            return AtomicWriteCommitResult::FailedBeforeReplacement(
+                PersistenceError::CreateTemporary {
+                    path: destination.path.clone(),
+                    source,
+                },
+            );
         }
-    })?;
-    temporary
-        .write_all(payload)
-        .map_err(|source| PersistenceError::WriteTemporary {
+    };
+    if let Err(source) = temporary.write_all(payload) {
+        return AtomicWriteCommitResult::FailedBeforeReplacement(
+            PersistenceError::WriteTemporary {
+                path: destination.path.clone(),
+                source,
+            },
+        );
+    }
+    if let Err(source) = temporary.as_file().sync_all() {
+        return AtomicWriteCommitResult::FailedBeforeReplacement(PersistenceError::SyncTemporary {
             path: destination.path.clone(),
             source,
-        })?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|source| PersistenceError::SyncTemporary {
-            path: destination.path.clone(),
-            source,
-        })?;
+        });
+    }
 
     let state = destination
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if generation != state.latest_admitted_generation {
-        return Ok(AtomicWriteOutcome::Superseded);
+        return AtomicWriteCommitResult::Superseded;
     }
 
     #[cfg(feature = "persistence-test-hooks")]
@@ -764,24 +818,43 @@ fn try_write(
         })
         .is_ok()
     {
-        return Err(PersistenceError::Replace {
+        return AtomicWriteCommitResult::FailedBeforeReplacement(PersistenceError::Replace {
             path: destination.path.clone(),
             source: std::io::Error::other("injected persistence replacement failure"),
         });
     }
 
     let temporary_path = temporary.into_temp_path();
-    hypercolor_platform_fs::replace_file(&temporary_path, &destination.path).map_err(|source| {
-        PersistenceError::Replace {
+    if let Err(source) = hypercolor_platform_fs::replace_file(&temporary_path, &destination.path) {
+        return AtomicWriteCommitResult::FailedBeforeReplacement(PersistenceError::Replace {
             path: destination.path.clone(),
             source,
-        }
-    })?;
+        });
+    }
+    drop(state);
 
     #[cfg(unix)]
-    sync_parent_directory(&destination.parent)?;
-    drop(state);
-    Ok(AtomicWriteOutcome::Written)
+    {
+        #[cfg(feature = "persistence-test-hooks")]
+        if destination
+            .injected_directory_sync_failures
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return AtomicWriteCommitResult::ReplacementVisibleButNotDurable(
+                PersistenceError::SyncDirectory {
+                    path: destination.parent.clone(),
+                    source: std::io::Error::other("injected persistence directory sync failure"),
+                },
+            );
+        }
+        if let Err(error) = sync_parent_directory(&destination.parent) {
+            return AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error);
+        }
+    }
+    AtomicWriteCommitResult::DurableWritten
 }
 
 /// Write a complete file beside its destination and atomically replace it.

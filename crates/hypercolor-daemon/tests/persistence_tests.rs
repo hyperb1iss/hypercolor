@@ -797,7 +797,7 @@ fn failed_runtime_snapshot_create_eventually_converges() {
 
 #[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
-async fn library_no_op_retriggers_a_failed_delete() {
+async fn library_failed_delete_returns_error_and_retry_converges() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("library.json");
     let store = JsonLibraryStore::open(path.clone()).expect("library store");
@@ -809,18 +809,23 @@ async fn library_no_op_retriggers_a_failed_delete() {
     let writer = AtomicFileWriter::new(&path).expect("atomic writer");
     writer.set_injected_replace_failures(usize::MAX);
 
+    assert!(store.remove_favorite(effect_id).await.is_err());
+    assert_eq!(store.list_favorites().await.len(), 1);
+    let before_retry = JsonLibraryStore::open(path.clone()).expect("reload retained favorite");
+    assert_eq!(before_retry.list_favorites().await.len(), 1);
+
+    writer.set_injected_replace_failures(0);
     assert!(
         store
             .remove_favorite(effect_id)
             .await
-            .expect("remove favorite")
+            .expect("retry favorite removal")
     );
-    writer.set_injected_replace_failures(0);
     assert!(
         !store
             .remove_favorite(effect_id)
             .await
-            .expect("remove missing favorite")
+            .expect("remove missing favorite after durable retry")
     );
     writer
         .flush(Duration::from_secs(5))
