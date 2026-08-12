@@ -330,12 +330,18 @@ while IFS=$'\t' read -r activity size index; do
   profile="${PROFILE_PATHS[index]}"
   root="${PROFILE_ROOTS[index]}"
   owner="${PROFILE_OWNERS[index]}"
+  needed=$((remaining - LOW_WATER))
 
   if [ "${PROFILE_DIRTY[index]}" -eq 1 ]; then
     echo "[cargo-gc] keeping dirty worktree profile: $profile"
     continue
   fi
   if [ "$activity" -gt "$cutoff" ]; then
+    continue
+  fi
+  if [ "$remaining" -le "$HIGH_WATER" ] && [ "$size" -gt "$needed" ]; then
+    printf '[cargo-gc] keeping oversized profile %s above the low-water target: %s\n' \
+      "$(human_bytes "$size")" "$profile"
     continue
   fi
   if [ -n "$owner" ] \
@@ -364,12 +370,15 @@ while IFS=$'\t' read -r activity size index; do
   removed=$((removed + size))
 done < <(printf '%s\n' "${CANDIDATE_ROWS[@]:-}" | sort -n -k1,1)
 
-if [ "$remaining" -gt "$LOW_WATER" ]; then
-  printf '[cargo-gc] pressure remains at %s; active, locked, dirty, or recent profiles were preserved\n' \
-    "$(human_bytes "$remaining")"
-else
+if [ "$remaining" -le "$LOW_WATER" ]; then
   verb=eligible
   [ "$MODE" = dry-run ] || verb=removed
   printf '[cargo-gc] %s %s, projected usage %s\n' \
     "$verb" "$(human_bytes "$removed")" "$(human_bytes "$remaining")"
+elif [ "$remaining" -le "$HIGH_WATER" ]; then
+  printf '[cargo-gc] pressure cleared at %s; oversized, active, locked, dirty, or recent profiles were preserved\n' \
+    "$(human_bytes "$remaining")"
+else
+  printf '[cargo-gc] pressure remains at %s; active, locked, dirty, or recent profiles were preserved\n' \
+    "$(human_bytes "$remaining")"
 fi

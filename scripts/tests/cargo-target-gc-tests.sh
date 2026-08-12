@@ -11,8 +11,8 @@ run_gc() {
   HYPERCOLOR_CACHE_DIR="$SANDBOX/cache" \
     HYPERCOLOR_GC_REPOS="${HYPERCOLOR_GC_REPOS:-}" \
     HYPERCOLOR_GC_TARGETS="${HYPERCOLOR_GC_TARGETS:-}" \
-    HYPERCOLOR_GC_HIGH_WATER_BYTES=1 \
-    HYPERCOLOR_GC_LOW_WATER_BYTES=0 \
+    HYPERCOLOR_GC_HIGH_WATER_BYTES="${HYPERCOLOR_GC_HIGH_WATER_BYTES:-1}" \
+    HYPERCOLOR_GC_LOW_WATER_BYTES="${HYPERCOLOR_GC_LOW_WATER_BYTES:-0}" \
     HYPERCOLOR_GC_MIN_AGE_DAYS="${HYPERCOLOR_GC_MIN_AGE_DAYS:-14}" \
     "$GC" "$@"
 }
@@ -38,6 +38,26 @@ test -d "$old_profile"
 HYPERCOLOR_GC_TARGETS="$target" run_gc --apply >"$SANDBOX/apply.log"
 test ! -e "$old_profile"
 test -d "$recent_profile"
+
+bounded_target="$SANDBOX/bounded/target"
+small_profile="$bounded_target/a-small"
+large_profile="$bounded_target/b-large"
+make_profile "$small_profile" '40 days ago'
+make_profile "$large_profile" '30 days ago'
+truncate -s 1048576 "$large_profile/deps/artifact"
+small_size="$(du -sb "$small_profile" | awk '{print $1}')"
+large_size="$(du -sb "$large_profile" | awk '{print $1}')"
+bounded_total=$((small_size + large_size))
+bounded_high=$((bounded_total - small_size))
+bounded_low=$((bounded_high - 1))
+HYPERCOLOR_GC_TARGETS="$bounded_target" \
+  HYPERCOLOR_GC_HIGH_WATER_BYTES="$bounded_high" \
+  HYPERCOLOR_GC_LOW_WATER_BYTES="$bounded_low" \
+  run_gc --apply >"$SANDBOX/bounded.log"
+test ! -e "$small_profile"
+test -d "$large_profile"
+grep -Fq "keeping oversized profile" "$SANDBOX/bounded.log"
+grep -Fq "pressure cleared" "$SANDBOX/bounded.log"
 
 locked_target="$SANDBOX/locked/target"
 locked_profile="$locked_target/debug"
