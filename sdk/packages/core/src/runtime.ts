@@ -59,6 +59,12 @@ interface HypercolorSensorReading {
  * LightScript runtime. Effects and faces access it through this global.
  */
 interface HypercolorEngine {
+    /** Active render time in seconds. Paused output does not advance it. */
+    time: number
+    /** Active render delta in seconds. */
+    deltaTime: number
+    /** Monotonic rendered frame number. */
+    frame: number
     /** Audio analysis data */
     audio: HypercolorAudio
     /** Screen zone color data */
@@ -95,6 +101,19 @@ interface HypercolorEngine {
     width: number
     /** Canvas height in pixels. */
     height: number
+}
+
+export function hostFrameTimeSeconds(fallback: number): number {
+    if (typeof globalThis !== 'object' || globalThis === null) return fallback
+
+    const globals = globalThis as Record<string, unknown>
+    const host = typeof window === 'undefined' ? globals : (window as unknown as Record<string, unknown>)
+    const captureMode = Boolean(host.__hypercolorCaptureMode ?? globals.__hypercolorCaptureMode)
+    if (!captureMode) return fallback
+
+    const runtimeEngine = (host.engine ?? globals.engine) as { time?: unknown } | undefined
+    const time = runtimeEngine?.time
+    return typeof time === 'number' && Number.isFinite(time) ? time : fallback
 }
 
 /**

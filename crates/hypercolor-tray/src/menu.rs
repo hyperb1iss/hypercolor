@@ -11,7 +11,8 @@ use crate::state::AppState;
 /// Well-known menu item IDs for dispatching click events.
 pub mod ids {
     pub const OPEN_WEB_UI: &str = "open_web_ui";
-    pub const PAUSE_RESUME: &str = "pause_resume";
+    pub const PAUSE_OUTPUT: &str = "pause_output";
+    pub const RESUME_OUTPUT: &str = "resume_output";
     pub const REFRESH_SERVERS: &str = "refresh_servers";
     pub const STOP_EFFECT: &str = "stop_effect";
     pub const QUIT: &str = "quit";
@@ -24,6 +25,16 @@ pub mod ids {
 
     /// Prefix for dynamically generated server items.
     pub const SERVER_PREFIX: &str = "server:";
+}
+
+/// Resolve an output menu ID to its encoded desired pause state.
+#[must_use]
+pub fn output_pause_for_menu_id(id: &str) -> Option<bool> {
+    match id {
+        ids::PAUSE_OUTPUT => Some(true),
+        ids::RESUME_OUTPUT => Some(false),
+        _ => None,
+    }
 }
 
 /// Build the complete tray menu for the current application state.
@@ -129,9 +140,12 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
     );
     menu.append(&brightness)?;
 
-    // Pause/Resume toggle
-    let pause_label = if state.paused { "Resume" } else { "Pause" };
-    let pause_item = MenuItem::with_id(MenuId::new(ids::PAUSE_RESUME), pause_label, true, None);
+    let (pause_id, pause_label) = if state.paused {
+        (ids::RESUME_OUTPUT, "Resume")
+    } else {
+        (ids::PAUSE_OUTPUT, "Pause")
+    };
+    let pause_item = MenuItem::with_id(MenuId::new(pause_id), pause_label, true, None);
     menu.append(&pause_item)?;
 
     // Stop effect (only when an effect is active)
@@ -147,6 +161,18 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
     menu.append(&open_ui)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ids, output_pause_for_menu_id};
+
+    #[test]
+    fn output_menu_ids_encode_the_displayed_desired_state() {
+        assert_eq!(output_pause_for_menu_id(ids::PAUSE_OUTPUT), Some(true));
+        assert_eq!(output_pause_for_menu_id(ids::RESUME_OUTPUT), Some(false));
+        assert_eq!(output_pause_for_menu_id("unrelated"), None);
+    }
 }
 
 /// Build menu items shown when disconnected from the daemon.

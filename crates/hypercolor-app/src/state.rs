@@ -90,6 +90,7 @@ impl AppState {
             }
             StateUpdate::EffectStopped => {
                 self.current_effect = None;
+                self.paused = false;
             }
             StateUpdate::SceneChanged {
                 name,
@@ -112,6 +113,19 @@ impl AppState {
             }
             StateUpdate::EffectsRefreshed(effects) => {
                 self.effects = effects;
+            }
+            StateUpdate::Snapshot {
+                running,
+                paused,
+                brightness,
+                device_count,
+                effect,
+            } => {
+                self.running = running;
+                self.paused = paused;
+                self.brightness = brightness;
+                self.device_count = device_count;
+                self.current_effect = effect;
             }
         }
     }
@@ -180,6 +194,14 @@ pub enum StateUpdate {
     DeviceCountChanged(usize),
     /// Effect list was updated (rescan).
     EffectsRefreshed(Vec<EffectInfo>),
+    /// Authoritative state snapshot from the WebSocket hello message.
+    Snapshot {
+        running: bool,
+        paused: bool,
+        brightness: u8,
+        device_count: usize,
+        effect: Option<EffectInfo>,
+    },
 }
 
 /// Commands from the tray UI thread to the async daemon client.
@@ -194,8 +216,8 @@ pub enum TrayCommand {
     StopEffect,
     /// Set global brightness (0-100).
     SetBrightness(u8),
-    /// Toggle pause/resume.
-    TogglePause,
+    /// Set the reversible global output pause state.
+    SetPaused(bool),
     /// Open the web UI in the default browser.
     OpenWebUi,
     /// Switch the active daemon connection.
@@ -297,4 +319,11 @@ pub struct WsEventMessage {
     pub event: String,
     #[serde(default)]
     pub data: serde_json::Value,
+}
+
+impl WsEventMessage {
+    #[must_use]
+    pub fn requires_full_resync(&self) -> bool {
+        self.msg_type == "event" && self.event == "resync_required"
+    }
 }

@@ -3,7 +3,12 @@
 //! Organized by domain: effects, devices, layouts, library (presets/favorites),
 //! config, and system status.
 
+use std::future::Future;
+
+use leptos::prelude::{Get, LocalResource, expect_context};
 use serde::Deserialize;
+
+use crate::app::WsContext;
 
 pub mod assets;
 pub mod client;
@@ -27,6 +32,18 @@ pub mod zones;
 #[derive(Debug, Deserialize)]
 pub struct ApiEnvelope<T> {
     pub data: T,
+}
+
+pub fn daemon_resource<T, Fut>(fetcher: impl Fn() -> Fut + 'static) -> LocalResource<T>
+where
+    T: 'static,
+    Fut: Future<Output = T> + 'static,
+{
+    let connection_generation = expect_context::<WsContext>().connection_generation;
+    LocalResource::new(move || {
+        connection_generation.get();
+        fetcher()
+    })
 }
 
 // ── Re-exports ──────────────────────────────────────────────────────────────

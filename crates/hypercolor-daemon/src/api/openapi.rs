@@ -10,7 +10,7 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::{
-    config, controls, devices, drivers, effects, envelope, layers, profiles, scenes_zones,
+    config, controls, devices, drivers, effects, envelope, layers, output, profiles, scenes_zones,
     settings, system,
 };
 
@@ -30,6 +30,10 @@ use crate::api::{
         effects::list_effect_presets,
         effects::apply_effect,
         effects::apply_effect_preset,
+        effects::pause_effect,
+        effects::resume_effect,
+        output::get_output_power,
+        output::put_output_power,
     ),
     components(
         schemas(
@@ -52,6 +56,9 @@ use crate::api::{
             envelope::ApiResponse<effects::ActiveEffectResponse>,
             envelope::ApiResponse<effects::EffectPresetListResponse>,
             envelope::ApiResponse<effects::ApplyEffectResponse>,
+            envelope::ApiResponse<effects::PauseEffectResponse>,
+            envelope::ApiResponse<effects::ResumeEffectResponse>,
+            envelope::ApiResponse<hypercolor_types::api::output::OutputPowerResponse>,
             envelope::ApiResponse<devices::DeviceBindingsResponse>,
             envelope::ApiResponse<devices::RebindDeviceResponse>,
             devices::UpdateDeviceRequest,
@@ -59,6 +66,10 @@ use crate::api::{
             devices::DiscoverRequest,
             devices::RebindDeviceRequest,
             effects::UpdateCurrentControlsRequest,
+            hypercolor_types::api::output::OutputPowerMode,
+            hypercolor_types::api::output::OutputPowerResponse,
+            hypercolor_types::api::output::OutputPowerStatus,
+            hypercolor_types::api::output::SetOutputPowerRequest,
             layers::BroadcastMediaLayerRequest,
             layers::BroadcastMediaLayerTarget,
             layers::BroadcastMediaLayerGroupResponse,
@@ -145,6 +156,8 @@ use crate::api::{
             effects::ApplyTransitionResponse,
             effects::EffectRefSummary,
             effects::ApplyEffectResponse,
+            effects::PauseEffectResponse,
+            effects::ResumeEffectResponse,
             hypercolor_driver_api::DeviceAuthState,
             hypercolor_driver_api::PairingFlowKind,
             hypercolor_driver_api::PairingFieldDescriptor,
@@ -195,6 +208,7 @@ use crate::api::{
         (name = "effects", description = "Effect catalog and runtime control"),
         (name = "displays", description = "Display devices, faces, and simulators"),
         (name = "attachments", description = "Physical attachment templates and bindings"),
+        (name = "output", description = "Global output power state"),
         (name = "scenes", description = "Scene CRUD and activation"),
         (name = "profiles", description = "Saved lighting profile snapshots"),
         (name = "layouts", description = "Spatial layout CRUD and preview"),
@@ -627,6 +641,19 @@ pub const ROUTES: &[RouteSpec] = &[
         "attachments",
         "List attachment vendors",
     ),
+    RouteSpec::get(
+        "/api/v1/output/power",
+        "get_output_power",
+        "output",
+        "Get global output power",
+    ),
+    RouteSpec::put(
+        "/api/v1/output/power",
+        "put_output_power",
+        "output",
+        "Set global output power",
+    )
+    .with_request_body("SetOutputPowerRequest", true),
     RouteSpec::get("/api/v1/effects", "list_effects", "effects", "List effects"),
     RouteSpec::get(
         "/api/v1/effects/active",
@@ -1159,6 +1186,7 @@ impl Modify for RouteCatalogAddon {
             "displays",
             "controls",
             "attachments",
+            "output",
             "scenes",
             "profiles",
             "layouts",

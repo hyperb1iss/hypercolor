@@ -264,6 +264,7 @@ impl DeviceWriteOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputCadence {
     min_interval: Option<Duration>,
+    max_frame_silence: Option<Duration>,
     target_fps: u32,
 }
 
@@ -274,12 +275,14 @@ impl OutputCadence {
         if target_fps == 0 {
             return Self {
                 min_interval: None,
+                max_frame_silence: None,
                 target_fps,
             };
         }
 
         Self {
             min_interval: Some(Duration::from_secs_f64(1.0 / f64::from(target_fps))),
+            max_frame_silence: None,
             target_fps,
         }
     }
@@ -289,14 +292,34 @@ impl OutputCadence {
     pub const fn from_min_interval(min_interval: Duration, target_fps: u32) -> Self {
         Self {
             min_interval: Some(min_interval),
+            max_frame_silence: None,
             target_fps,
         }
+    }
+
+    /// Require the output worker to resend its cached payload after this much
+    /// transport silence. A zero duration disables cached-payload replay.
+    #[must_use]
+    pub const fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
+        self.max_frame_silence = if max_frame_silence.is_zero() {
+            None
+        } else {
+            Some(max_frame_silence)
+        };
+        self
     }
 
     /// Minimum interval between output attempts, or `None` for unpaced output.
     #[must_use]
     pub const fn min_interval(self) -> Option<Duration> {
         self.min_interval
+    }
+
+    /// Maximum time between completed transport writes before the cached
+    /// payload must be resent.
+    #[must_use]
+    pub const fn max_frame_silence(self) -> Option<Duration> {
+        self.max_frame_silence
     }
 
     /// Legacy integer target FPS for displays that cannot represent sub-Hz rates.
@@ -309,6 +332,15 @@ impl OutputCadence {
     #[must_use]
     pub fn interval_ms(self) -> Option<u64> {
         self.min_interval.map(|interval| {
+            let millis = interval.as_millis();
+            u64::try_from(millis).unwrap_or(u64::MAX)
+        })
+    }
+
+    /// Maximum transport silence in milliseconds for telemetry.
+    #[must_use]
+    pub fn max_frame_silence_ms(self) -> Option<u64> {
+        self.max_frame_silence.map(|interval| {
             let millis = interval.as_millis();
             u64::try_from(millis).unwrap_or(u64::MAX)
         })

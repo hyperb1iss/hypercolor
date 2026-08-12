@@ -35,6 +35,8 @@ pub struct ActiveEffectResponse {
     #[serde(default)]
     pub active_preset_id: Option<String>,
     #[serde(default)]
+    pub active_preset_modified: bool,
+    #[serde(default)]
     pub render_group_id: Option<String>,
     /// Server-side controls version (matches the `ETag` header).
     /// `Some` while an effect is running, `None` on the idle response.
@@ -84,6 +86,7 @@ pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, Strin
             controls: effect.controls,
             control_values: effect.control_values,
             active_preset_id: effect.active_preset_id,
+            active_preset_modified: effect.active_preset_modified,
             render_group_id: effect.render_group_id,
             controls_version: effect.controls_version,
         })
@@ -144,16 +147,22 @@ pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<()
 
 /// Pause output while preserving the currently active effect and controls.
 pub async fn pause_effect() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/pause")
-        .await
-        .map_err(Into::into)
+    client::put_json_discard(
+        "/api/v1/output/power",
+        &serde_json::json!({ "state": "paused" }),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 /// Resume output for the preserved active effect.
 pub async fn resume_effect() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/resume")
-        .await
-        .map_err(Into::into)
+    client::put_json_discard(
+        "/api/v1/output/power",
+        &serde_json::json!({ "state": "running" }),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 /// Stop the currently active effect.

@@ -178,8 +178,8 @@ impl ScenesContext {
 pub fn provide_scene_contexts(
     last_scene_event: ReadSignal<Option<SceneEventHint>>,
 ) -> (ZonesContext, ScenesContext) {
-    let active_scene_resource = LocalResource::new(api::fetch_active_scene);
-    let scenes_resource = LocalResource::new(api::list_scenes);
+    let active_scene_resource = api::daemon_resource(api::fetch_active_scene);
+    let scenes_resource = api::daemon_resource(api::list_scenes);
 
     // Memo (not derive) so refetches that return identical state don't
     // wake every zone-aware surface in the app.

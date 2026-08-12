@@ -180,7 +180,7 @@ pub fn StudioPage() -> impl IntoView {
         }
     });
 
-    let layers_resource = LocalResource::new(move || {
+    let layers_resource = api::daemon_resource(move || {
         let _ = layers_tick.get();
         let scene = active_scene.get();
         let group_id = selected_surface_id.get();

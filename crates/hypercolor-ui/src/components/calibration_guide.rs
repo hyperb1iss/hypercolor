@@ -98,7 +98,7 @@ pub fn CalibrationGuide(
     let fx = expect_context::<EffectsContext>();
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
-    let bundled_presets = LocalResource::new(move || {
+    let bundled_presets = api::daemon_resource(move || {
         let id = effect_id.get();
         async move {
             if let Some(id) = id {

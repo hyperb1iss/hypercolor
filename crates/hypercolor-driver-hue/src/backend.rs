@@ -13,7 +13,7 @@ use tracing::{info, warn};
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
+    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, OutputCadence,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
@@ -27,6 +27,7 @@ use super::types::{
 };
 
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
+const HUE_MAX_FRAME_SILENCE: Duration = Duration::from_secs(1);
 
 /// Deadline for a healthy bridge handshake, not for a single request.
 ///
@@ -467,6 +468,10 @@ impl DeviceBackend for HueBackend {
 
     fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
         Some(50)
+    }
+
+    fn output_cadence(&self, _id: &DeviceId) -> Option<OutputCadence> {
+        Some(OutputCadence::from_fps(50).with_max_frame_silence(HUE_MAX_FRAME_SILENCE))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

@@ -21,6 +21,7 @@ pub mod layers;
 pub mod layouts;
 pub mod library;
 pub mod openapi;
+pub mod output;
 pub mod preview;
 pub mod profiles;
 pub mod scenes;
@@ -271,6 +272,9 @@ pub struct AppState {
 
     /// Shared user/session output brightness state.
     pub power_state: watch::Sender<OutputPowerState>,
+
+    /// Serializes global output transitions and their persistence boundary.
+    pub output_power_transition: Arc<Mutex<()>>,
 
     /// Frame-boundary scene changes mirrored into the render thread.
     pub scene_transactions: SceneTransactionQueue,
@@ -611,6 +615,7 @@ impl AppState {
             effect_layout_links_path,
             runtime_state_path,
             power_state,
+            output_power_transition: Arc::new(Mutex::new(())),
             scene_transactions,
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
@@ -696,6 +701,7 @@ impl AppState {
             effect_layout_links_path: daemon.effect_layout_links_path.clone(),
             runtime_state_path: daemon.runtime_state_path.clone(),
             power_state: daemon.power_state.clone(),
+            output_power_transition: Arc::clone(&daemon.output_power_transition),
             scene_transactions: daemon.scene_transactions.clone(),
             library_store,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
@@ -1056,6 +1062,7 @@ pub(crate) async fn build_runtime_session_snapshot(
         snapshot.active_layout_id = Some(spatial.layout().id.clone());
     }
     snapshot.global_brightness = current_global_brightness(&state.power_state);
+    snapshot.manual_paused = state.power_state.borrow().manually_paused();
     state
         .driver_host
         .driver_inventory()
@@ -1295,6 +1302,11 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/attachments/vendors",
             axum::routing::get(attachments::list_vendors),
+        )
+        // ── Output ───────────────────────────────────────────────────
+        .route(
+            "/output/power",
+            axum::routing::get(output::get_output_power).put(output::put_output_power),
         )
         // ── Effects ──────────────────────────────────────────────────
         .route("/effects", axum::routing::get(effects::list_effects))

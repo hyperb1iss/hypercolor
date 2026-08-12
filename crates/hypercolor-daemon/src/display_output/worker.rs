@@ -993,7 +993,7 @@ async fn record_display_write_failure(display_frames: &Arc<RwLock<DisplayFrameRu
 
 fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -> bool {
     let state = *power_state.borrow();
-    state.sleeping && state.off_output_behavior == OffOutputBehavior::Static
+    state.sleeping() && state.effective_off_output_behavior() == OffOutputBehavior::Static
 }
 
 fn static_hold_refresh_deadline(

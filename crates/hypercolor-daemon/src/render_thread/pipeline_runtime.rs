@@ -125,6 +125,10 @@ impl Default for FrameClockState {
 }
 
 impl FrameClockState {
+    pub(crate) fn rebase(&mut self, frame_start: Instant) {
+        self.last_tick = frame_start;
+    }
+
     pub(crate) fn advance(&mut self, frame_start: Instant) -> FrameTick {
         let frame_interval = frame_start.saturating_duration_since(self.last_tick);
         self.last_tick = frame_start;
@@ -2260,13 +2264,26 @@ mod tests {
     };
 
     use super::{
-        EffectDeltaClock, FrameInputs, InputRouteCache, OutputFrameSource, OutputReuseKey,
-        OutputReuseState, PipelineRuntime, aggregate_interaction_availability,
+        EffectDeltaClock, FrameClockState, FrameInputs, InputRouteCache, OutputFrameSource,
+        OutputReuseKey, OutputReuseState, PipelineRuntime, aggregate_interaction_availability,
         authoritative_input_demand, should_publish_preview_frame,
     };
     use crate::interaction_routing::InteractionRoutingControl;
     use crate::render_thread::input_publication::{InputPublicationDemand, InputPublicationReader};
     use crate::render_thread::scene_snapshot::EffectDemand;
+
+    #[test]
+    fn frame_clock_rebase_excludes_paused_wall_time() {
+        let start = Instant::now();
+        let mut clock = FrameClockState { last_tick: start };
+        let resumed_at = start + Duration::from_secs(30);
+
+        clock.rebase(resumed_at);
+        let resumed = clock.advance(resumed_at);
+
+        assert_eq!(resumed.frame_interval, Duration::ZERO);
+        assert_eq!(resumed.delta_secs, 0.0);
+    }
 
     struct FixedInteractionSource {
         sample: InteractionData,

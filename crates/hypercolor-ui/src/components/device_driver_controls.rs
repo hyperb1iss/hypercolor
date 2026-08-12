@@ -23,7 +23,7 @@ use crate::toasts;
 #[component]
 pub fn DeviceDriverControls(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
     let ws_ctx = expect_context::<WsContext>();
-    let surfaces_resource = LocalResource::new(move || {
+    let surfaces_resource = api::daemon_resource(move || {
         let id = device_id.get();
         async move { api::fetch_device_control_surfaces(&id, false).await }
     });

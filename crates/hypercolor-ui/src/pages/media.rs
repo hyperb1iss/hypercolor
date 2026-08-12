@@ -64,7 +64,7 @@ pub fn MediaPage() -> impl IntoView {
     let is_dragging = Memo::new(move |_| drag_depth.get() > 0);
     let input_ref = NodeRef::<html::Input>::new();
 
-    let media_resource = LocalResource::new(move || {
+    let media_resource = api::daemon_resource(move || {
         let _ = refresh_tick.get();
         async move { api::list_assets().await }
     });

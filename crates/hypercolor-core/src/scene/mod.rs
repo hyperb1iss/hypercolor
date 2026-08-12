@@ -1445,18 +1445,12 @@ impl SceneManager {
             let Some(layer) = group.layers.iter_mut().find(|layer| layer.id == layer_id) else {
                 return Err(LayerMutationError::LayerMissing { layer_id });
             };
-            let LayerSource::Effect {
-                controls,
-                preset_id,
-                ..
-            } = &mut layer.source
-            else {
+            let LayerSource::Effect { controls, .. } = &mut layer.source else {
                 return Err(LayerMutationError::InvalidLayer {
                     errors: vec![format!("layer {layer_id} is not an effect layer")],
                 });
             };
             controls.extend(updates);
-            *preset_id = None;
             Ok(())
         })
     }
@@ -1569,7 +1563,6 @@ impl SceneManager {
         }
         if group.layers.is_empty() {
             group.controls.extend(updates);
-            group.preset_id = None;
         } else {
             let effect_layer_count = group
                 .layers
@@ -1599,16 +1592,10 @@ impl SceneManager {
                     Err(ControlsVersionMismatch::AmbiguousLayerStack)
                 };
             };
-            let LayerSource::Effect {
-                controls,
-                preset_id,
-                ..
-            } = &mut group.layers[*index].source
-            else {
+            let LayerSource::Effect { controls, .. } = &mut group.layers[*index].source else {
                 unreachable!("matching layer index must point to an effect layer");
             };
             controls.extend(updates);
-            *preset_id = None;
             sync_legacy_effect_fields(group);
         }
         group.controls_version = group.controls_version.saturating_add(1);
@@ -1727,18 +1714,14 @@ impl SceneManager {
         let scene = self.active_scene_mut()?;
         let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
         if let Some(LayerSource::Effect {
-            control_bindings,
-            preset_id,
-            ..
+            control_bindings, ..
         }) = legacy_effect_layer_source_mut(group)
         {
             control_bindings.insert(control_id, binding);
-            *preset_id = None;
             sync_legacy_effect_fields(group);
             group.layers_version = group.layers_version.saturating_add(1);
         } else {
             group.control_bindings.insert(control_id, binding);
-            group.preset_id = None;
         }
         // Bindings surface as control values at render time, so a
         // new binding changes what the user would see if they opened

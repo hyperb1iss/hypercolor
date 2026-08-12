@@ -112,7 +112,7 @@ from .models.library import (
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
 from .models.scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
 from .models.spatial import SpatialLayout
-from .models.system import HealthStatus, SystemState
+from .models.system import HealthStatus, OutputPowerState, SystemState
 from .models.zone import (
     UnassignedBehaviorResult,
     ZoneDeleteResult,
@@ -230,16 +230,31 @@ class HypercolorClient:
             BrightnessUpdate,
         )
 
-    async def pause_rendering(self) -> MutationResult:
-        """Backward-compatible alias that stops the active effect."""
+    async def get_output_power(self) -> OutputPowerState:
+        """Return the current global output power state."""
 
-        return await self.stop_effect()
+        return await self._request_model("GET", "/output/power", OutputPowerState)
 
-    async def resume_rendering(self) -> MutationResult:
-        """The daemon does not expose a resume endpoint."""
+    async def set_output_power(self, *, paused: bool) -> OutputPowerState:
+        """Set global output power without discarding active effect state."""
 
-        message = "Hypercolor cannot resume rendering directly; apply an effect or profile instead"
-        raise HypercolorApiError(message)
+        state = "paused" if paused else "running"
+        return await self._request_model(
+            "PUT",
+            "/output/power",
+            OutputPowerState,
+            body={"state": state},
+        )
+
+    async def pause_rendering(self) -> OutputPowerState:
+        """Pause all output while preserving active effect state."""
+
+        return await self.set_output_power(paused=True)
+
+    async def resume_rendering(self) -> OutputPowerState:
+        """Resume output from the preserved active effect state."""
+
+        return await self.set_output_power(paused=False)
 
     async def get_devices(self, **filters: Any) -> list[Device]:
         """List devices."""
@@ -458,7 +473,10 @@ class HypercolorClient:
             decoded = response.text
         return self._unwrap_data(decoded)
 
-    async def update_controls(self, controls: Mapping[str, Any]) -> ControlUpdateResult:
+    async def update_controls(
+        self,
+        controls: Mapping[str, Any],
+    ) -> ControlUpdateResult:
         """Update controls on the active effect."""
         return await self._generated_model(
             generated_update_current_controls._get_kwargs(
@@ -1500,6 +1518,7 @@ def _normalize_payload(value: Any) -> Any:
         if isinstance(normalized.get("labels"), list):
             normalized.setdefault("options", normalized["labels"])
     for key in (
+        "controls",
         "control_values",
         "active_control_values",
         "applied_controls",

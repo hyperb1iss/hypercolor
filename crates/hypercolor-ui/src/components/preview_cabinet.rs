@@ -111,6 +111,7 @@ pub fn PreviewCabinet(
     let control_values: Signal<HashMap<String, ControlValue>> = fx.active_control_values.into();
     let effect_id = Signal::derive(move || fx.active_effect_id.get());
     let active_preset_id_signal = Signal::derive(move || fx.active_preset_id.get());
+    let active_preset_modified_signal = Signal::derive(move || fx.active_preset_modified.get());
     let has_effect = Memo::new(move |_| fx.active_effect_id.get().is_some());
 
     // Ignition pulse — toggles briefly whenever the active effect changes so
@@ -449,6 +450,7 @@ pub fn PreviewCabinet(
                                     accent_rgb=accent_signal
                                     on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
                                     active_preset_id_signal=active_preset_id_signal
+                                    active_preset_modified_signal=active_preset_modified_signal
                                 />
                             }.into_any()
                         } else {

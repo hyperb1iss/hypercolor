@@ -22,6 +22,10 @@ pub enum EffectCommand {
     Activate(EffectActivateArgs),
     /// Stop the currently running effect.
     Stop,
+    /// Pause all output without discarding the active effect state.
+    Pause,
+    /// Resume output from the preserved effect state.
+    Resume,
     /// Show detailed information about an effect.
     Info(EffectInfoArgs),
     /// Patch controls on the currently running effect (without re-applying).
@@ -158,6 +162,8 @@ pub async fn execute(args: &EffectsArgs, client: &DaemonClient, ctx: &OutputCont
             execute_activate(activate_args, client, ctx).await
         }
         EffectCommand::Stop => execute_stop(client, ctx).await,
+        EffectCommand::Pause => execute_output_power(client, ctx, "paused").await,
+        EffectCommand::Resume => execute_output_power(client, ctx, "running").await,
         EffectCommand::Info(info_args) => execute_info(info_args, client, ctx).await,
         EffectCommand::Patch(patch_args) => execute_patch(patch_args, client, ctx).await,
         EffectCommand::Reset => execute_reset(client, ctx).await,
@@ -282,6 +288,29 @@ async fn execute_stop(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
             ctx.success("Effect stopped");
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_output_power(
+    client: &DaemonClient,
+    ctx: &OutputContext,
+    state: &str,
+) -> Result<()> {
+    let response = client
+        .put("/output/power", &serde_json::json!({ "state": state }))
+        .await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            ctx.success(if state == "paused" {
+                "Output paused"
+            } else {
+                "Output resumed"
+            });
         }
     }
 

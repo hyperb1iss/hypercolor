@@ -67,7 +67,7 @@ pub fn LayerPanel(
 ) -> impl IntoView {
     // Content selection is owned here, not driven by the host page — the
     // asset list backs both media-name resolution and the picker's Media tab.
-    let assets_resource = LocalResource::new(|| async { api::list_assets().await });
+    let assets_resource = api::daemon_resource(|| async { api::list_assets().await });
     let assets = Signal::derive(move || {
         assets_resource
             .get()
@@ -84,7 +84,7 @@ pub fn LayerPanel(
     });
     // Effect ids on a layer are UUIDs; resolve them to registry names so
     // a layer row reads "Effect Aurora", never "Effect <uuid>".
-    let effects_resource = LocalResource::new(api::fetch_effects);
+    let effects_resource = api::daemon_resource(api::fetch_effects);
     let effect_names = Memo::new(move |_| {
         effects_resource
             .get()

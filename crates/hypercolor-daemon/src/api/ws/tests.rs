@@ -2710,6 +2710,37 @@ async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
 }
 
 #[tokio::test]
+async fn lagged_event_relay_emits_reliable_resync_hint() {
+    let bus = HypercolorBus::new();
+    let event_rx = bus.subscribe_all();
+    for _ in 0..300 {
+        bus.publish(HypercolorEvent::Paused);
+    }
+    let subscriptions = SubscriptionState {
+        channels: ChannelSet::from_channels(&[WsChannel::Events]),
+        ..SubscriptionState::default()
+    };
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
+    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
+
+    let json = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
+        .await
+        .expect("lagged event relay should respond")
+        .expect("lagged event relay should remain open");
+    let wire: serde_json::Value = serde_json::from_str(json.as_str()).expect("relay JSON");
+    assert_eq!(wire["event"], "resync_required");
+    assert!(
+        wire["data"]["dropped_events"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
+}
+
+#[tokio::test]
 async fn worker_failure_relay_invalidates_input_status_immediately() {
     let (state, session_slot) = status_event_state();
     let event_rx = state.event_bus.subscribe_all();

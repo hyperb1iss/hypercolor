@@ -116,6 +116,11 @@ pub async fn spawn_data_bridge(
                                 let _ = action_tx.send(Action::SpectrumUpdated(Arc::new(snapshot)));
                             }
                             Some(WsMessage::Event(event)) => {
+                                if requires_full_resync(&event) {
+                                    tracing::debug!("Daemon requested a full TUI state resync");
+                                    ws_handle.abort();
+                                    break;
+                                }
                                 if let Err(error) = refresh_for_event(
                                     &client,
                                     &action_tx,
@@ -341,6 +346,10 @@ fn event_name(event: &serde_json::Value) -> Option<&str> {
         .or_else(|| event.get("event_type").and_then(serde_json::Value::as_str))
 }
 
+fn requires_full_resync(event: &serde_json::Value) -> bool {
+    event_name(event) == Some("resync_required")
+}
+
 fn event_data(event: &serde_json::Value) -> &serde_json::Value {
     event.get("data").unwrap_or(event)
 }
@@ -495,4 +504,22 @@ fn parse_hello_state(hello: &serde_json::Value) -> Option<DaemonState> {
             .and_then(serde_json::Value::as_u64)
             .map_or(0, |v| v as u32),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::requires_full_resync;
+
+    #[test]
+    fn resync_required_restarts_the_authoritative_bootstrap() {
+        assert!(requires_full_resync(&json!({
+            "event": "resync_required",
+            "data": { "channel": "events" }
+        })));
+        assert!(!requires_full_resync(&json!({
+            "event": "paused"
+        })));
+    }
 }

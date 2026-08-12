@@ -7,9 +7,11 @@ use super::{
 };
 use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
+use crate::api::output::set_output_power;
 use crate::api::system::{actionable_input_diagnostics, input_status_snapshot};
 use crate::session::current_global_brightness;
 use hypercolor_core::input::InteractionDegradation;
+use hypercolor_types::api::output::OutputPowerMode;
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
 
@@ -26,6 +28,39 @@ pub(super) fn build_get_status() -> ToolDefinition {
         }),
         output_schema: default_output_schema(),
         read_only: true,
+        idempotent: true,
+    }
+}
+
+pub(super) fn build_set_output_power() -> ToolDefinition {
+    ToolDefinition {
+        name: "set_output_power".into(),
+        title: "Set Output Power".into(),
+        description: "Pause or resume all output without discarding the active effect, controls, preset provenance, or scene state.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "state": {
+                    "type": "string",
+                    "enum": ["running", "paused"],
+                    "description": "Desired global output power state"
+                }
+            },
+            "required": ["state"],
+            "additionalProperties": false
+        }),
+        output_schema: json!({
+            "type": "object",
+            "properties": {
+                "state": {
+                    "type": "string",
+                    "enum": ["running", "paused"]
+                }
+            },
+            "required": ["state"],
+            "additionalProperties": false
+        }),
+        read_only: false,
         idempotent: true,
     }
 }
@@ -168,6 +203,32 @@ pub(super) fn handle_get_status(_params: &Value) -> Result<Value, ToolError> {
     }))
 }
 
+pub(super) fn handle_set_output_power(params: &Value) -> Result<Value, ToolError> {
+    let state = parse_output_power_mode(params)?;
+    Ok(json!({ "state": state }))
+}
+
+pub(super) async fn handle_set_output_power_with_state(
+    params: &Value,
+    state: &AppState,
+) -> Result<Value, ToolError> {
+    let requested = parse_output_power_mode(params)?;
+    let response = set_output_power(state, requested).await;
+    Ok(json!({ "state": response.state }))
+}
+
+fn parse_output_power_mode(params: &Value) -> Result<OutputPowerMode, ToolError> {
+    match params.get("state").and_then(Value::as_str) {
+        Some("running") => Ok(OutputPowerMode::Running),
+        Some("paused") => Ok(OutputPowerMode::Paused),
+        Some(value) => Err(ToolError::InvalidParam {
+            param: "state".into(),
+            reason: format!("expected 'running' or 'paused', got '{value}'"),
+        }),
+        None => Err(ToolError::MissingParam("state".into())),
+    }
+}
+
 #[expect(
     clippy::unnecessary_wraps,
     reason = "will return errors when wired to audio state"
@@ -305,9 +366,12 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
         "disabled"
     };
 
+    let power = *state.power_state.borrow();
+    let paused = power.reported_paused();
+
     Ok(json!({
-        "running": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Running),
-        "paused": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Paused),
+        "running": !power.sleeping(),
+        "paused": paused,
         "brightness": brightness,
         "fps": {
             "target": target_fps,

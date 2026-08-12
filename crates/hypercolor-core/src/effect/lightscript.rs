@@ -435,6 +435,14 @@ impl LightscriptRuntime {
         script.push_str("  }\n");
         script.push_str("  window.__hypercolorControlsDirty = true;\n");
         script.push_str("  window.__hypercolorLastControlUpdateTime = -Infinity;\n");
+        script
+            .push_str("  if (!Number.isFinite(window.engine.time)) { window.engine.time = 0; }\n");
+        script.push_str(
+            "  if (!Number.isFinite(window.engine.deltaTime)) { window.engine.deltaTime = 0; }\n",
+        );
+        script.push_str(
+            "  if (!Number.isFinite(window.engine.frame)) { window.engine.frame = 0; }\n",
+        );
         script.push_str("  if (typeof window.__hypercolorRenderHostFrame !== 'function') {\n");
         script.push_str("  window.__hypercolorRenderHostFrame = function() {\n");
         script.push_str(
@@ -451,9 +459,7 @@ impl LightscriptRuntime {
         script.push_str("    if (typeof instance.syncCanvasSizeFromEngine === 'function') {\n");
         script.push_str("      try { instance.syncCanvasSizeFromEngine(); } catch (_err) {}\n");
         script.push_str("    }\n");
-        script.push_str(
-            "    const time = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() * 0.001 : Date.now() * 0.001;\n",
-        );
+        script.push_str("    const time = Number.isFinite(window.engine.time) ? window.engine.time : ((window.performance && typeof window.performance.now === 'function') ? window.performance.now() * 0.001 : Date.now() * 0.001);\n");
         script.push_str("    const shouldUpdateControls = !!window.__hypercolorControlsDirty || time - window.__hypercolorLastControlUpdateTime >= 0.1;\n");
         script.push_str("    if (shouldUpdateControls && typeof window.update === 'function') {\n");
         script.push_str("      try {\n");

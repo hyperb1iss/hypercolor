@@ -48,8 +48,8 @@ fn settings_section_targets(extension_ids: &[&'static str]) -> Vec<web_sys::Elem
 #[component]
 pub fn SettingsPage() -> impl IntoView {
     let config_ctx = expect_context::<ConfigContext>();
-    let devices_resource = LocalResource::new(api::fetch_audio_devices);
-    let drivers_resource = LocalResource::new(api::fetch_drivers);
+    let devices_resource = api::daemon_resource(api::fetch_audio_devices);
+    let drivers_resource = api::daemon_resource(api::fetch_drivers);
     let config = config_ctx.config;
     let set_config = config_ctx.set_config;
     let (active_section, set_active_section) = signal("audio".to_string());

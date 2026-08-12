@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
+use hypercolor_core::bus::EventTimestamp;
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::BrowserInputPublicationId;
@@ -1346,8 +1347,8 @@ fn publish_preview(
     }
 }
 
-/// Relay events from the broadcast bus to a bounded mpsc channel.
-/// Drops events when the consumer is slow (backpressure).
+/// Relay discrete events from the broadcast bus to a bounded mpsc channel.
+/// Slow consumers backpressure this relay and receive a resync hint after lag.
 pub(super) async fn relay_events(
     mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
@@ -1374,10 +1375,25 @@ pub(super) async fn relay_events(
                     continue;
                 };
 
-                let _ = try_enqueue_json(&json_tx, json, "events");
+                if json_tx.send(json.into()).await.is_err() {
+                    break;
+                }
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("WebSocket consumer lagged by {n} events");
+                if subscriptions.borrow().channels.contains(WsChannel::Events) {
+                    let msg = ServerMessage::Event {
+                        event: "resync_required".to_owned(),
+                        timestamp: EventTimestamp::now().to_string(),
+                        data: serde_json::json!({ "dropped_events": n }),
+                    };
+                    let Ok(json) = serde_json::to_string(&msg) else {
+                        continue;
+                    };
+                    if json_tx.send(json.into()).await.is_err() {
+                        break;
+                    }
+                }
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }

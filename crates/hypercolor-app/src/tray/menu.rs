@@ -18,7 +18,8 @@ pub mod ids {
     pub const OPEN_USER_EFFECTS_FOLDER: &str = "open_user_effects_folder";
     pub const EXPORT_DIAGNOSTICS: &str = "export_diagnostics";
     pub const SETTINGS: &str = "settings";
-    pub const PAUSE_RESUME: &str = "pause_resume";
+    pub const PAUSE_OUTPUT: &str = "pause_output";
+    pub const RESUME_OUTPUT: &str = "resume_output";
     pub const REFRESH_SERVERS: &str = "refresh_servers";
     pub const STOP_EFFECT: &str = "stop_effect";
     pub const QUIT: &str = "quit";
@@ -49,7 +50,7 @@ pub enum MenuAction {
     OpenUserEffectsFolder,
     ExportDiagnostics,
     Settings,
-    TogglePause,
+    SetPaused(bool),
     RefreshServers,
     StopEffect,
     Quit,
@@ -163,7 +164,8 @@ pub fn action_for_menu_id(id: &str) -> Option<MenuAction> {
         ids::OPEN_USER_EFFECTS_FOLDER => Some(MenuAction::OpenUserEffectsFolder),
         ids::EXPORT_DIAGNOSTICS => Some(MenuAction::ExportDiagnostics),
         ids::SETTINGS => Some(MenuAction::Settings),
-        ids::PAUSE_RESUME => Some(MenuAction::TogglePause),
+        ids::PAUSE_OUTPUT => Some(MenuAction::SetPaused(true)),
+        ids::RESUME_OUTPUT => Some(MenuAction::SetPaused(false)),
         ids::REFRESH_SERVERS => Some(MenuAction::RefreshServers),
         ids::STOP_EFFECT => Some(MenuAction::StopEffect),
         ids::QUIT => Some(MenuAction::Quit),
@@ -248,6 +250,12 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
 
     entries.push(MenuEntry::Separator);
     entries.push(brightness_submenu(state));
+
+    if state.paused {
+        entries.push(item(ids::RESUME_OUTPUT, "Resume", true));
+    } else {
+        entries.push(item(ids::PAUSE_OUTPUT, "Pause", true));
+    }
 
     if state.current_effect.is_some() {
         entries.push(item(ids::STOP_EFFECT, "Stop Effect", true));

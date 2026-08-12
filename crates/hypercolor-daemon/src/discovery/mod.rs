@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use hypercolor_core::attachment::ComponentRegistry;
@@ -47,7 +47,10 @@ pub use lifecycle::{
     disconnect_tracked_device, release_renderable_devices, release_renderable_network_devices,
     shutdown_renderable_devices,
 };
-pub use scan::{DiscoveryScanResult, execute_discovery_scan, execute_discovery_scan_if_idle};
+pub use scan::{
+    DiscoveryScanResult, execute_discovery_scan, execute_discovery_scan_if_idle,
+    execute_discovery_scan_or_enqueue, schedule_discovery_scan,
+};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
@@ -133,8 +136,54 @@ pub struct DiscoveryRuntime {
     /// Shared "scan in progress" lock flag.
     pub in_progress: Arc<AtomicBool>,
 
+    /// Coalesced background scans that must run after the current owner exits.
+    pub pending_scans: Arc<StdMutex<PendingDiscoveryScans>>,
+
     /// Main daemon runtime handle for detached background work.
     pub task_spawner: Handle,
+}
+
+/// Work-conserving queue for background discovery requests.
+#[derive(Debug, Default)]
+pub struct PendingDiscoveryScans {
+    targets: HashSet<DiscoveryTarget>,
+    timeout: Duration,
+    config: Option<Arc<HypercolorConfig>>,
+}
+
+impl PendingDiscoveryScans {
+    fn merge(
+        &mut self,
+        targets: Vec<DiscoveryTarget>,
+        timeout: Duration,
+        config: Arc<HypercolorConfig>,
+    ) {
+        self.targets.extend(targets);
+        self.timeout = self.timeout.max(timeout);
+        self.config = Some(config);
+    }
+
+    fn take(&mut self) -> Option<PendingDiscoveryScan> {
+        let config = self.config.take()?;
+        let mut targets = self.targets.drain().collect::<Vec<_>>();
+        targets.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        let timeout = std::mem::take(&mut self.timeout);
+        Some(PendingDiscoveryScan {
+            targets,
+            timeout,
+            config,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.config.is_none()
+    }
+}
+
+struct PendingDiscoveryScan {
+    targets: Vec<DiscoveryTarget>,
+    timeout: Duration,
+    config: Arc<HypercolorConfig>,
 }
 
 /// Scanner implementation used for one resolved discovery target.
@@ -500,21 +549,11 @@ pub fn rescan_targets_for_driver(
     resolve_targets(Some(&target_ids), config, driver_registry)
 }
 
-struct DiscoveryFlagGuard {
-    flag: Arc<AtomicBool>,
-}
-
-impl Drop for DiscoveryFlagGuard {
-    fn drop(&mut self) {
-        self.flag.store(false, Ordering::Release);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        DiscoveryTarget, default_timeout, normalize_timeout_ms, rescan_targets_for_driver,
-        resolve_targets,
+        DiscoveryTarget, PendingDiscoveryScans, default_timeout, normalize_timeout_ms,
+        rescan_targets_for_driver, resolve_targets,
     };
     use crate::api::AppState;
     use hypercolor_driver_api::{
@@ -527,6 +566,8 @@ mod tests {
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
         DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, DriverTransportKind, ZoneInfo,
     };
+    use std::sync::Arc;
+    use std::time::Duration;
 
     fn builtin_registry() -> AppState {
         AppState::new()
@@ -673,6 +714,41 @@ mod tests {
     #[test]
     fn default_timeout_is_ten_seconds() {
         assert_eq!(default_timeout().as_millis(), 10_000);
+    }
+
+    #[test]
+    fn pending_scans_coalesce_targets_and_keep_longest_timeout() {
+        let mut pending = PendingDiscoveryScans::default();
+        let first_config = Arc::new(HypercolorConfig::default());
+        let mut latest = HypercolorConfig::default();
+        latest.discovery.mdns_enabled = false;
+        let latest_config = Arc::new(latest);
+        pending.merge(
+            vec![DiscoveryTarget::driver("wled")],
+            Duration::from_secs(2),
+            first_config,
+        );
+        pending.merge(
+            vec![
+                DiscoveryTarget::driver("hue"),
+                DiscoveryTarget::driver("wled"),
+            ],
+            Duration::from_secs(5),
+            Arc::clone(&latest_config),
+        );
+
+        let scan = pending.take().expect("pending scan should exist");
+
+        assert_eq!(
+            scan.targets
+                .iter()
+                .map(DiscoveryTarget::as_str)
+                .collect::<Vec<_>>(),
+            vec!["hue", "wled"]
+        );
+        assert_eq!(scan.timeout, Duration::from_secs(5));
+        assert!(Arc::ptr_eq(&scan.config, &latest_config));
+        assert!(pending.is_empty());
     }
 
     #[test]

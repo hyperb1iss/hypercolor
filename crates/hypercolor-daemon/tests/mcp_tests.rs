@@ -276,6 +276,42 @@ async fn mcp_input_status_surfaces_do_not_wait_for_input_manager() {
     }));
 }
 
+#[tokio::test]
+async fn mcp_status_surfaces_report_effective_session_pause() {
+    let state = fresh_app_state();
+    state
+        .power_state
+        .send_modify(|power| power.session_sleeping = true);
+
+    let status = execute_tool_with_state("get_status", &json!({}), &state)
+        .await
+        .expect("get_status should succeed");
+    assert_eq!(status["running"], false);
+    assert_eq!(status["paused"], true);
+
+    let resource = read_resource_with_state("hypercolor://state", &state)
+        .await
+        .expect("state resource should exist");
+    assert_eq!(resource["running"], false);
+    assert_eq!(resource["paused"], true);
+
+    state.power_state.send_modify(|power| {
+        power.output_override = hypercolor_daemon::session::OutputOverride::Stopped
+    });
+
+    let stopped_status = execute_tool_with_state("get_status", &json!({}), &state)
+        .await
+        .expect("stopped status should succeed");
+    assert_eq!(stopped_status["running"], false);
+    assert_eq!(stopped_status["paused"], false);
+
+    let stopped_resource = read_resource_with_state("hypercolor://state", &state)
+        .await
+        .expect("stopped state resource should exist");
+    assert_eq!(stopped_resource["running"], false);
+    assert_eq!(stopped_resource["paused"], false);
+}
+
 async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> DeviceId {
     let id = DeviceId::new();
     let info = DeviceInfo {
@@ -604,7 +640,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 17);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
@@ -1444,7 +1480,7 @@ async fn stateful_set_profile_preserves_primary_assignment_when_custom_zones_exi
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 17);
     assert!(
         tools
             .iter()
@@ -1471,6 +1507,51 @@ fn set_color_tool_executes_and_validates() {
     let error =
         execute_tool("set_color", &json!({})).expect_err("missing color should return an error");
     assert!(matches!(error, ToolError::MissingParam(_)));
+}
+
+#[test]
+fn set_output_power_tool_validates_desired_state() {
+    let result = execute_tool("set_output_power", &json!({ "state": "paused" }))
+        .expect("paused output state should be accepted");
+    assert_eq!(result["state"], "paused");
+
+    let error = execute_tool("set_output_power", &json!({ "state": "off" }))
+        .expect_err("unknown output state should be rejected");
+    assert!(matches!(error, ToolError::InvalidParam { .. }));
+}
+
+#[tokio::test]
+async fn stateful_set_output_power_is_reversible_and_idempotent() {
+    let state = Arc::new(fresh_app_state());
+
+    let paused = execute_tool_with_state(
+        "set_output_power",
+        &json!({ "state": "paused" }),
+        state.as_ref(),
+    )
+    .await
+    .expect("pause should succeed");
+    assert_eq!(paused["state"], "paused");
+    assert!(state.power_state.borrow().manually_paused());
+
+    let paused_again = execute_tool_with_state(
+        "set_output_power",
+        &json!({ "state": "paused" }),
+        state.as_ref(),
+    )
+    .await
+    .expect("repeated pause should succeed");
+    assert_eq!(paused_again["state"], "paused");
+
+    let running = execute_tool_with_state(
+        "set_output_power",
+        &json!({ "state": "running" }),
+        state.as_ref(),
+    )
+    .await
+    .expect("resume should succeed");
+    assert_eq!(running["state"], "running");
+    assert!(!state.power_state.borrow().sleeping());
 }
 
 #[test]

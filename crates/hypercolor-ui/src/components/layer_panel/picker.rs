@@ -58,7 +58,7 @@ pub fn AddLayerPicker(
     let emit = Callback::new(move |draft: NewLayerDraft| {
         on_pick.run((draft, scope.get()));
     });
-    let effects = LocalResource::new(api::fetch_effects);
+    let effects = api::daemon_resource(api::fetch_effects);
 
     view! {
         <Modal

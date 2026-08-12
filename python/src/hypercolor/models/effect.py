@@ -32,6 +32,7 @@ class EffectPresetSummary(msgspec.Struct, kw_only=True):
     description: str | None = None
     controls: dict[str, Any] = msgspec.field(default_factory=dict)
     is_default: bool = False
+    controls: dict[str, Any] = msgspec.field(default_factory=dict)
 
 
 class EffectPresetOrigin(StrEnum):
@@ -87,6 +88,7 @@ class ActiveEffect(msgspec.Struct, kw_only=True):
     controls: list[ControlDefinition] = msgspec.field(default_factory=list)
     control_values: dict[str, Any] = msgspec.field(default_factory=dict)
     active_preset_id: str | None = None
+    active_preset_modified: bool = False
     cover_image_url: str | None = None
 
 

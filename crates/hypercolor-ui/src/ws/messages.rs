@@ -793,6 +793,12 @@ pub fn interactive_preview_supported(message: &serde_json::Value) -> bool {
             })
 }
 
+#[must_use]
+pub fn is_resync_required(message: &serde_json::Value) -> bool {
+    message.get("type").and_then(serde_json::Value::as_str) == Some("event")
+        && message.get("event").and_then(serde_json::Value::as_str) == Some("resync_required")
+}
+
 // ── JSON Message Handler ────────────────────────────────────────────────────
 
 /// Handle incoming JSON events from the daemon.
@@ -800,6 +806,7 @@ pub fn interactive_preview_supported(message: &serde_json::Value) -> bool {
 pub(super) fn handle_json_message(
     msg: &serde_json::Value,
     set_active: &WriteSignal<Option<String>>,
+    set_output_paused: &WriteSignal<bool>,
     metrics: ReadSignal<Option<PerformanceMetrics>>,
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
     set_device_metrics: &WriteSignal<Option<DeviceMetricsSnapshot>>,
@@ -827,6 +834,12 @@ pub(super) fn handle_json_message(
             // Extract active effect from hello state
             if let Some(state) = msg.get("state") {
                 set_active.set(extract_active_effect_name(state));
+                set_output_paused.set(
+                    state
+                        .get("paused")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                );
 
                 let target = state
                     .get("fps")
@@ -928,6 +941,10 @@ pub(super) fn handle_json_message(
                     ));
                 } else if EFFECT_STOPPED_EVENTS.contains(&event_type) {
                     set_active.set(None);
+                } else if event_type == "paused" {
+                    set_output_paused.set(true);
+                } else if event_type == "resumed" {
+                    set_output_paused.set(false);
                 } else if event_type == "audio_level_update" {
                     if let Some(data) = msg.get("data") {
                         let f = |key| data.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;

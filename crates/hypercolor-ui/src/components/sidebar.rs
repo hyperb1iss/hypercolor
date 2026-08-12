@@ -14,7 +14,7 @@ use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
-use crate::components::zone_now_playing::{SidebarZoneRows, set_zone_enabled};
+use crate::components::zone_now_playing::SidebarZoneRows;
 use crate::config_state::ConfigContext;
 use crate::extensions::SidebarExtensionWidgets;
 use crate::icons::*;
@@ -80,9 +80,13 @@ pub fn Sidebar() -> impl IntoView {
             Signal::derive(|| 0_u32),
         ),
     };
+    let output_paused = ws.map_or_else(
+        || Signal::derive(|| false),
+        |ctx| Signal::from(ctx.output_paused),
+    );
     let frame_analysis = use_context::<FrameAnalysisContext>();
     let (live_palette, set_live_palette) = signal(None::<CanvasPalette>);
-    let global_brightness_resource = LocalResource::new(api::fetch_global_brightness);
+    let global_brightness_resource = api::daemon_resource(api::fetch_global_brightness);
     let (global_brightness, set_global_brightness) = signal(100_u8);
 
     Effect::new(move |_| {
@@ -440,51 +444,12 @@ pub fn Sidebar() -> impl IntoView {
                             >
                                 <Icon icon=LuSkipBack width="16px" height="16px" />
                             </button>
-                            // In a multi-zone scene the pause toggle acts on
-                            // the focused zone (primary when none is focused)
-                            // and says so — it never silently stops only the
-                            // primary while other zones keep rendering.
-                            {move || if zones_ctx.multi_zone.get() {
-                                let Some(state) = fx.focused_zone_effect.get() else {
-                                    return ().into_any();
-                                };
-                                let zone_id = state.zone.id.clone();
-                                let zone_name = state.zone.name.clone();
-                                let enabled = state.zone.enabled;
-                                let label = if enabled {
-                                    format!("Pause {zone_name}")
-                                } else {
-                                    format!("Resume {zone_name}")
-                                };
-                                let icon_class = if enabled {
-                                    "p-1.5 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
-                                } else {
-                                    "p-1.5 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
-                                };
-                                view! {
-                                    <button
-                                        class=icon_class
-                                        title=label.clone()
-                                        aria-label=label
-                                        on:click=move |_| set_zone_enabled(
-                                            zones_ctx,
-                                            zone_id.clone(),
-                                            !enabled,
-                                        )
-                                    >
-                                        {if enabled {
-                                            view! { <Icon icon=LuPause width="16px" height="16px" /> }.into_any()
-                                        } else {
-                                            view! { <Icon icon=LuPlay width="16px" height="16px" /> }.into_any()
-                                        }}
-                                    </button>
-                                }.into_any()
-                            } else if fx.is_playing.get() {
+                            {move || if !output_paused.get() {
                                 view! {
                                     <button
                                         class="p-1.5 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
-                                        title="Pause effect"
-                                        aria-label="Pause effect"
+                                        title="Pause all output"
+                                        aria-label="Pause all output"
                                         on:click=move |_| fx.stop_effect()
                                     >
                                         <Icon icon=LuPause width="16px" height="16px" />
@@ -494,8 +459,8 @@ pub fn Sidebar() -> impl IntoView {
                                 view! {
                                     <button
                                         class="p-1.5 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
-                                        title="Resume effect"
-                                        aria-label="Resume effect"
+                                        title="Resume all output"
+                                        aria-label="Resume all output"
                                         on:click=move |_| fx.resume_effect()
                                     >
                                         <Icon icon=LuPlay width="16px" height="16px" />

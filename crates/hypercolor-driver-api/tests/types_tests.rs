@@ -6,7 +6,7 @@ use hypercolor_driver_api::{
     ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice, DriverDiscoveryState,
     DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
-    DriverRuntimeActions, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
+    DriverRuntimeActions, OutputCadence, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
     PairingFieldDescriptor, PairingFlowKind, ValidatedControlChanges, support,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
@@ -20,6 +20,26 @@ use hypercolor_types::device::{
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
     DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind, ZoneInfo,
 };
+
+#[test]
+fn output_cadence_tracks_optional_maximum_frame_silence() {
+    let cadence = OutputCadence::from_fps(50).with_max_frame_silence(Duration::from_millis(1_250));
+
+    assert_eq!(cadence.target_fps(), 50);
+    assert_eq!(
+        cadence.max_frame_silence(),
+        Some(Duration::from_millis(1_250))
+    );
+    assert_eq!(cadence.max_frame_silence_ms(), Some(1_250));
+}
+
+#[test]
+fn zero_maximum_frame_silence_disables_cached_payload_replay() {
+    let cadence = OutputCadence::from_fps(60).with_max_frame_silence(Duration::ZERO);
+
+    assert_eq!(cadence.max_frame_silence(), None);
+    assert_eq!(cadence.max_frame_silence_ms(), None);
+}
 
 #[test]
 fn driver_descriptor_constructor_sets_expected_flags() {

@@ -239,6 +239,9 @@ pub struct DaemonState {
     /// Shared session-driven output power state for the render thread.
     pub power_state: watch::Sender<OutputPowerState>,
 
+    /// Serializes output state changes with hardware hold reconciliation.
+    pub output_power_transition: Arc<Mutex<()>>,
+
     /// Frame-boundary scene changes mirrored into the render thread.
     pub scene_transactions: SceneTransactionQueue,
 
@@ -254,6 +257,7 @@ pub struct DaemonState {
     /// Effect-error fallback worker driven by the event bus.
     pub(super) effect_error_fallback_task: Option<tokio::task::JoinHandle<()>>,
     pub(super) display_preference_sync_task: Option<tokio::task::JoinHandle<()>>,
+    pub(super) output_static_hold_task: Option<tokio::task::JoinHandle<()>>,
 
     /// Periodic discovery worker task.
     pub(super) discovery_task: Option<tokio::task::JoinHandle<()>>,

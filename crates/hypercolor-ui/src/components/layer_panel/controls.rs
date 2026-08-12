@@ -51,7 +51,7 @@ pub fn EffectControlsSection(
     };
 
     let effect_id_str = effect_id.to_string();
-    let detail = LocalResource::new({
+    let detail = api::daemon_resource({
         let effect_id_str = effect_id_str.clone();
         move || {
             let effect_id_str = effect_id_str.clone();

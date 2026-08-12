@@ -202,6 +202,11 @@ async fn lifecycle_policy_outlasts_the_bridge_handshake_round_trips() -> TestRes
         "connects stay inline until background ones are tracked and cancellable"
     );
     assert!(policy.retry_on_connect_timeout());
+    let cadence = backend
+        .output_cadence(&info.id)
+        .expect("Hue should declare its entertainment stream cadence");
+    assert_eq!(cadence.target_fps(), 50);
+    assert_eq!(cadence.max_frame_silence(), Some(Duration::from_secs(1)));
     Ok(())
 }
 
