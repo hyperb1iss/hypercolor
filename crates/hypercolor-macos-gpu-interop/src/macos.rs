@@ -13,8 +13,8 @@ use objc2_io_surface::{
     kIOSurfaceHeight, kIOSurfacePixelFormat, kIOSurfaceWidth,
 };
 use objc2_metal::{
-    MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureType,
-    MTLTextureUsage,
+    MTLDevice, MTLGPUFamily, MTLPixelFormat, MTLResource, MTLStorageMode, MTLTexture,
+    MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
 };
 use thiserror::Error;
 
@@ -141,10 +141,78 @@ pub enum MacosGpuInteropError {
     /// Metal could not create a texture from the IOSurface.
     #[error("Metal failed to create texture from IOSurface")]
     MetalTextureCreateFailed,
+
+    /// The import used another physical Metal device.
+    #[error("Metal registry identity mismatch: expected {expected}, got {actual}")]
+    MetalRegistryIdMismatch {
+        /// Registry identity captured when the importer was created.
+        expected: u64,
+        /// Registry identity observed during import.
+        actual: u64,
+    },
+
+    /// Metal created a texture with another storage mode.
+    #[error("Metal texture storage mode mismatch: expected {expected:?}, got {actual:?}")]
+    MetalStorageModeMismatch {
+        /// Family-selected storage mode.
+        expected: MacosMetalStorageMode,
+        /// Created texture storage mode.
+        actual: MacosMetalStorageMode,
+    },
+
+    /// Metal returned a texture that names another IOSurface.
+    #[error("Metal texture IOSurface mismatch: expected {expected}, got {actual}")]
+    MetalIosurfaceIdentityMismatch {
+        /// Source IOSurface identity.
+        expected: u32,
+        /// Created texture IOSurface identity.
+        actual: u32,
+    },
+
+    /// Metal returned a texture that names another IOSurface plane.
+    #[error("Metal texture IOSurface plane mismatch: expected {expected}, got {actual}")]
+    MetalIosurfacePlaneMismatch {
+        /// Requested IOSurface plane.
+        expected: usize,
+        /// Created texture IOSurface plane.
+        actual: usize,
+    },
+
+    /// Metal reported a storage mode outside the supported import contract.
+    #[error("unsupported Metal texture storage mode {0}")]
+    UnsupportedMetalStorageMode(usize),
+}
+
+/// Family-selected Metal storage mode for imported IOSurfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MacosMetalStorageMode {
+    /// Coherent shared storage on Apple-family GPUs.
+    Shared,
+    /// Managed storage required by non-Apple-family GPUs.
+    Managed,
+}
+
+impl MacosMetalStorageMode {
+    const fn native(self) -> MTLStorageMode {
+        match self {
+            Self::Shared => MTLStorageMode::Shared,
+            Self::Managed => MTLStorageMode::Managed,
+        }
+    }
+
+    fn from_native(mode: MTLStorageMode) -> Result<Self> {
+        if mode == MTLStorageMode::Shared {
+            Ok(Self::Shared)
+        } else if mode == MTLStorageMode::Managed {
+            Ok(Self::Managed)
+        } else {
+            Err(MacosGpuInteropError::UnsupportedMetalStorageMode(mode.0))
+        }
+    }
 }
 
 /// Pixel format shared by the IOSurface and imported wgpu texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ImportedFrameFormat {
     /// 8-bit normalized BGRA.
@@ -233,6 +301,18 @@ struct CachedIosurfaceWrap {
     view: Arc<wgpu::TextureView>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct IosurfaceWrapKey {
+    surface_id: u32,
+    plane: usize,
+    width: u32,
+    height: u32,
+    bytes_per_row: usize,
+    format: ImportedFrameFormat,
+    storage_mode: MacosMetalStorageMode,
+    metal_registry_id: u64,
+}
+
 /// Reusable importer for wrapping IOSurfaces as wgpu textures.
 ///
 /// Wraps are cached per IOSurface identity, so re-importing a ring slot on
@@ -240,7 +320,9 @@ struct CachedIosurfaceWrap {
 /// recreating it.
 pub struct MacosIosurfaceImporter {
     descriptor: MacosIosurfaceImportDescriptor,
-    wraps: HashMap<u32, CachedIosurfaceWrap>,
+    storage_mode: MacosMetalStorageMode,
+    metal_registry_id: u64,
+    wraps: HashMap<IosurfaceWrapKey, CachedIosurfaceWrap>,
 }
 
 impl MacosIosurfaceImporter {
@@ -251,9 +333,11 @@ impl MacosIosurfaceImporter {
             descriptor.height,
             descriptor.format,
         )?;
-        require_metal_device(device)?;
+        let (metal_registry_id, storage_mode) = metal_device_import_contract(device)?;
         Ok(Self {
             descriptor,
+            storage_mode,
+            metal_registry_id,
             wraps: HashMap::new(),
         })
     }
@@ -262,6 +346,18 @@ impl MacosIosurfaceImporter {
     #[must_use]
     pub const fn descriptor(&self) -> MacosIosurfaceImportDescriptor {
         self.descriptor
+    }
+
+    /// Metal registry identity this importer is bound to.
+    #[must_use]
+    pub const fn metal_registry_id(&self) -> u64 {
+        self.metal_registry_id
+    }
+
+    /// Family-selected storage mode used for IOSurface textures.
+    #[must_use]
+    pub const fn storage_mode(&self) -> MacosMetalStorageMode {
+        self.storage_mode
     }
 
     /// Number of IOSurface wraps currently cached.
@@ -282,10 +378,28 @@ impl MacosIosurfaceImporter {
         content_generation: u64,
     ) -> Result<ImportedEffectFrame> {
         validate_iosurface_shape(self.descriptor, iosurface)?;
+        validate_iosurface_format(self.descriptor, iosurface)?;
+        let (actual_registry_id, _) = metal_device_import_contract(device)?;
+        if actual_registry_id != self.metal_registry_id {
+            return Err(MacosGpuInteropError::MetalRegistryIdMismatch {
+                expected: self.metal_registry_id,
+                actual: actual_registry_id,
+            });
+        }
 
         let total_start = Instant::now();
         let surface_id = iosurface.id();
-        if let Some(cached) = self.wraps.get(&surface_id) {
+        let cache_key = IosurfaceWrapKey {
+            surface_id,
+            plane: 0,
+            width: self.descriptor.width,
+            height: self.descriptor.height,
+            bytes_per_row: iosurface.bytes_per_row(),
+            format: self.descriptor.format,
+            storage_mode: self.storage_mode,
+            metal_registry_id: self.metal_registry_id,
+        };
+        if let Some(cached) = self.wraps.get(&cache_key) {
             return Ok(ImportedEffectFrame {
                 width: self.descriptor.width,
                 height: self.descriptor.height,
@@ -303,12 +417,13 @@ impl MacosIosurfaceImporter {
         let wrap_start = Instant::now();
         let metal_texture = {
             let hal_device = require_metal_device(device)?;
-            let descriptor = metal_texture_descriptor(self.descriptor);
+            let descriptor = metal_texture_descriptor(self.descriptor, self.storage_mode);
             hal_device
                 .raw_device()
                 .newTextureWithDescriptor_iosurface_plane(&descriptor, iosurface, 0)
                 .ok_or(MacosGpuInteropError::MetalTextureCreateFailed)?
         };
+        validate_metal_texture(&metal_texture, surface_id, 0, self.storage_mode)?;
         let wrap_us = elapsed_micros(wrap_start);
 
         let wgpu_desc = wgpu_texture_descriptor(self.descriptor);
@@ -343,7 +458,7 @@ impl MacosIosurfaceImporter {
             self.wraps.clear();
         }
         self.wraps.insert(
-            surface_id,
+            cache_key,
             CachedIosurfaceWrap {
                 texture: Arc::clone(&texture),
                 view: Arc::clone(&view),
@@ -471,6 +586,7 @@ pub(crate) fn create_iosurface(
 
 fn metal_texture_descriptor(
     descriptor: MacosIosurfaceImportDescriptor,
+    storage_mode: MacosMetalStorageMode,
 ) -> objc2::rc::Retained<MTLTextureDescriptor> {
     // SAFETY: descriptor dimensions are validated by
     // MacosIosurfaceImportDescriptor::new.
@@ -484,7 +600,7 @@ fn metal_texture_descriptor(
     };
     texture_descriptor.setTextureType(MTLTextureType::Type2D);
     texture_descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
-    texture_descriptor.setStorageMode(MTLStorageMode::Shared);
+    texture_descriptor.setStorageMode(storage_mode.native());
     texture_descriptor
 }
 
@@ -525,6 +641,65 @@ fn validate_iosurface_shape(
             actual_height,
         })
     }
+}
+
+fn validate_iosurface_format(
+    descriptor: MacosIosurfaceImportDescriptor,
+    iosurface: &IOSurfaceRef,
+) -> Result<()> {
+    let expected = match descriptor.format {
+        ImportedFrameFormat::Bgra8Unorm => PIXEL_FORMAT_BGRA as u32,
+    };
+    let actual = iosurface.pixel_format();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(MacosGpuInteropError::IosurfacePixelFormatMismatch { expected, actual })
+    }
+}
+
+fn validate_metal_texture(
+    texture: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>,
+    expected_surface_id: u32,
+    expected_plane: usize,
+    expected_storage_mode: MacosMetalStorageMode,
+) -> Result<()> {
+    let actual_storage_mode = MacosMetalStorageMode::from_native(texture.storageMode())?;
+    if actual_storage_mode != expected_storage_mode {
+        return Err(MacosGpuInteropError::MetalStorageModeMismatch {
+            expected: expected_storage_mode,
+            actual: actual_storage_mode,
+        });
+    }
+    let actual_surface_id = texture
+        .iosurface()
+        .ok_or(MacosGpuInteropError::MetalTextureCreateFailed)?
+        .id();
+    if actual_surface_id != expected_surface_id {
+        return Err(MacosGpuInteropError::MetalIosurfaceIdentityMismatch {
+            expected: expected_surface_id,
+            actual: actual_surface_id,
+        });
+    }
+    let actual_plane = texture.iosurfacePlane();
+    if actual_plane != expected_plane {
+        return Err(MacosGpuInteropError::MetalIosurfacePlaneMismatch {
+            expected: expected_plane,
+            actual: actual_plane,
+        });
+    }
+    Ok(())
+}
+
+fn metal_device_import_contract(device: &wgpu::Device) -> Result<(u64, MacosMetalStorageMode)> {
+    let hal_device = require_metal_device(device)?;
+    let raw_device = hal_device.raw_device();
+    let storage_mode = if raw_device.supportsFamily(MTLGPUFamily::Apple1) {
+        MacosMetalStorageMode::Shared
+    } else {
+        MacosMetalStorageMode::Managed
+    };
+    Ok((raw_device.registryID(), storage_mode))
 }
 
 fn require_metal_device(

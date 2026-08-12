@@ -23,6 +23,17 @@ fn imports_synthetic_iosurface_into_wgpu_texture() -> Result<(), String> {
 
     let mut importer =
         MacosIosurfaceImporter::new(&wgpu.device, descriptor).map_err(|error| error.to_string())?;
+    assert_ne!(importer.metal_registry_id(), 0);
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(
+        importer.storage_mode(),
+        hypercolor_macos_gpu_interop::MacosMetalStorageMode::Shared
+    );
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(
+        importer.storage_mode(),
+        hypercolor_macos_gpu_interop::MacosMetalStorageMode::Managed
+    );
     let frame = importer
         .import_iosurface_for_test(&wgpu.device, &iosurface)
         .map_err(|error| error.to_string())?;

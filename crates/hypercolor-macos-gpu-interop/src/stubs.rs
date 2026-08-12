@@ -34,8 +34,17 @@ pub enum MacosGpuInteropError {
     },
 }
 
+/// Family-selected Metal storage mode for imported IOSurfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MacosMetalStorageMode {
+    /// Coherent shared storage on Apple-family GPUs.
+    Shared,
+    /// Managed storage required by non-Apple-family GPUs.
+    Managed,
+}
+
 /// Pixel format shared by the IOSurface and imported wgpu texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ImportedFrameFormat {
     /// 8-bit normalized BGRA.
@@ -115,6 +124,8 @@ pub struct ImportedFrameTimings {
 /// Reusable importer for wrapping IOSurfaces as wgpu textures.
 pub struct MacosIosurfaceImporter {
     descriptor: MacosIosurfaceImportDescriptor,
+    storage_mode: MacosMetalStorageMode,
+    metal_registry_id: u64,
 }
 
 impl MacosIosurfaceImporter {
@@ -132,5 +143,17 @@ impl MacosIosurfaceImporter {
     #[must_use]
     pub const fn descriptor(&self) -> MacosIosurfaceImportDescriptor {
         self.descriptor
+    }
+
+    /// Metal registry identity this importer is bound to.
+    #[must_use]
+    pub const fn metal_registry_id(&self) -> u64 {
+        self.metal_registry_id
+    }
+
+    /// Family-selected storage mode used for IOSurface textures.
+    #[must_use]
+    pub const fn storage_mode(&self) -> MacosMetalStorageMode {
+        self.storage_mode
     }
 }
