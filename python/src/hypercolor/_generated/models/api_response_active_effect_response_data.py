@@ -26,6 +26,7 @@ class ApiResponseActiveEffectResponseData:
         Attributes:
             state (str):
             active_preset_id (None | str | Unset):
+            active_preset_modified (bool | Unset):
             control_values (ApiResponseActiveEffectResponseDataControlValues | Unset):
             controls (list[ControlDefinition] | Unset):
             controls_version (int | None | Unset): Server-side version token for the group's controls. Clients
@@ -40,6 +41,7 @@ class ApiResponseActiveEffectResponseData:
 
     state: str
     active_preset_id: None | str | Unset = UNSET
+    active_preset_modified: bool | Unset = UNSET
     control_values: ApiResponseActiveEffectResponseDataControlValues | Unset = UNSET
     controls: list[ControlDefinition] | Unset = UNSET
     controls_version: int | None | Unset = UNSET
@@ -57,6 +59,8 @@ class ApiResponseActiveEffectResponseData:
             active_preset_id = UNSET
         else:
             active_preset_id = self.active_preset_id
+
+        active_preset_modified = self.active_preset_modified
 
         control_values: dict[str, Any] | Unset = UNSET
         if not isinstance(self.control_values, Unset):
@@ -108,6 +112,8 @@ class ApiResponseActiveEffectResponseData:
         )
         if active_preset_id is not UNSET:
             field_dict["active_preset_id"] = active_preset_id
+        if active_preset_modified is not UNSET:
+            field_dict["active_preset_modified"] = active_preset_modified
         if control_values is not UNSET:
             field_dict["control_values"] = control_values
         if controls is not UNSET:
@@ -143,6 +149,8 @@ class ApiResponseActiveEffectResponseData:
             return cast(None | str | Unset, data)
 
         active_preset_id = _parse_active_preset_id(d.pop("active_preset_id", UNSET))
+
+        active_preset_modified = d.pop("active_preset_modified", UNSET)
 
         _control_values = d.pop("control_values", UNSET)
         control_values: ApiResponseActiveEffectResponseDataControlValues | Unset
@@ -210,6 +218,7 @@ class ApiResponseActiveEffectResponseData:
         api_response_active_effect_response_data = cls(
             state=state,
             active_preset_id=active_preset_id,
+            active_preset_modified=active_preset_modified,
             control_values=control_values,
             controls=controls,
             controls_version=controls_version,
