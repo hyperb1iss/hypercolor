@@ -931,34 +931,36 @@ impl InputSource for MacosHostInput {
         let result = Arc::clone(&self.authorization_result);
         #[cfg(feature = "macos-native-fixtures")]
         let fixture = self.fixture.clone();
-        Some(Arc::new(move || {
-            #[cfg(feature = "macos-native-fixtures")]
-            let granted = fixture
-                .as_ref()
-                .map_or_else(request_input_monitoring, |fixture| {
-                    let mut backend = fixture
-                        .backend
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if backend.request_granted {
-                        backend.preflight_granted = true;
-                        true
+        Some(ProtectedSourceAuthorizationAction::current_macos_process(
+            Arc::new(move || {
+                #[cfg(feature = "macos-native-fixtures")]
+                let granted = fixture
+                    .as_ref()
+                    .map_or_else(request_input_monitoring, |fixture| {
+                        let mut backend = fixture
+                            .backend
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if backend.request_granted {
+                            backend.preflight_granted = true;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                #[cfg(not(feature = "macos-native-fixtures"))]
+                let granted = request_input_monitoring();
+                result.store(
+                    if granted {
+                        AUTHORIZATION_GRANTED
                     } else {
-                        false
-                    }
-                });
-            #[cfg(not(feature = "macos-native-fixtures"))]
-            let granted = request_input_monitoring();
-            result.store(
-                if granted {
-                    AUTHORIZATION_GRANTED
-                } else {
-                    AUTHORIZATION_DENIED
-                },
-                Ordering::Release,
-            );
-            Ok(granted)
-        }))
+                        AUTHORIZATION_DENIED
+                    },
+                    Ordering::Release,
+                );
+                Ok(granted)
+            }),
+        ))
     }
 
     fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {

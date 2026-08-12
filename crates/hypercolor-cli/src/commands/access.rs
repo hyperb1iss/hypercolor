@@ -40,6 +40,28 @@ impl AccessCommand {
             Self::ChooseScreenSource => "Screen source picker completed",
         }
     }
+
+    fn human_success_message(self, response: &serde_json::Value) -> String {
+        let owner = response
+            .get("grant_owner")
+            .and_then(serde_json::Value::as_str)
+            .map(grant_owner_label)
+            .unwrap_or("unavailable from this daemon");
+        format!("{}; grant owner: {owner}", self.success_message())
+    }
+}
+
+fn grant_owner_label(owner: &str) -> &str {
+    match owner {
+        "app_sidecar" => "Hypercolor.app sidecar",
+        "app" => "Hypercolor.app",
+        "launchd_service" => "direct launchd service",
+        "homebrew_service" => "Homebrew service",
+        "broker" => "authenticated app broker",
+        "standalone" => "standalone daemon",
+        "platform_backend" => "active platform backend",
+        _ => "unknown process topology",
+    }
 }
 
 /// Execute one explicit protected-source action.
@@ -56,7 +78,7 @@ pub async fn execute(args: &AccessArgs, client: &DaemonClient, ctx: &OutputConte
     if ctx.format == OutputFormat::Json {
         ctx.print_json(&response)?;
     } else {
-        ctx.success(args.command.success_message());
+        ctx.success(&args.command.human_success_message(&response));
     }
     Ok(())
 }
@@ -65,7 +87,7 @@ pub async fn execute(args: &AccessArgs, client: &DaemonClient, ctx: &OutputConte
 mod tests {
     use clap::Parser;
 
-    use super::AccessCommand;
+    use super::{AccessCommand, grant_owner_label};
     use crate::{Cli, Commands};
 
     #[test]
@@ -104,5 +126,23 @@ mod tests {
             };
             assert_eq!(args.command, expected);
         }
+    }
+
+    #[test]
+    fn protected_actions_name_the_exact_grant_owner() {
+        let response = serde_json::json!({"grant_owner": "broker"});
+        assert_eq!(
+            AccessCommand::AuthorizeInputMonitoring.human_success_message(&response),
+            "Input Monitoring request completed; grant owner: authenticated app broker"
+        );
+        assert_eq!(grant_owner_label("homebrew_service"), "Homebrew service");
+        assert_eq!(
+            grant_owner_label("platform_backend"),
+            "active platform backend"
+        );
+        assert_eq!(
+            AccessCommand::ChooseScreenSource.human_success_message(&serde_json::json!({})),
+            "Screen source picker completed; grant owner: unavailable from this daemon"
+        );
     }
 }

@@ -404,8 +404,8 @@ fn authorization_and_picker_actions_run_outside_graph_ownership() {
         .screen_source_picker_action()
         .expect("screen source exposes picker action");
 
-    assert!(authorize().expect("fixture authorization succeeds"));
-    picker().expect("fixture picker succeeds");
+    assert!(authorize.execute().expect("fixture authorization succeeds"));
+    picker.execute().expect("fixture picker succeeds");
     source.sample().expect("source refreshes platform status");
 
     let snapshot = status.snapshot();
@@ -414,6 +414,47 @@ fn authorization_and_picker_actions_run_outside_graph_ownership() {
     };
     assert_eq!(platform.tcc, MacosAuthorizationState::Authorized);
     assert_eq!(platform.state, CoreProtectedSourceState::NeedsSelection);
+}
+
+#[test]
+fn manager_gates_headless_macos_picker_before_local_execution() {
+    let (source, _) = fixture_source(CaptureConfig::default());
+    let status = source
+        .source_status_handle()
+        .expect("macOS fixture exposes status");
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(source));
+    manager
+        .set_macos_daemon_ownership(MacosCapabilityOwner::LaunchdService, None, None)
+        .expect("owner update should publish");
+
+    let authorize = manager
+        .resolved_screen_authorization_action()
+        .expect("manager should preserve the authorization request");
+    let picker = manager
+        .resolved_screen_source_picker_action()
+        .expect("manager should preserve the picker request");
+
+    assert!(matches!(
+        authorize,
+        hypercolor_core::input::ResolvedProtectedSourceAction::Local {
+            owner: hypercolor_core::input::ProtectedSourceActionOwner::Macos(
+                MacosCapabilityOwner::LaunchdService
+            ),
+            ..
+        }
+    ));
+    assert!(matches!(
+        picker,
+        hypercolor_core::input::ResolvedProtectedSourceAction::RequiresAppUi {
+            active_owner: MacosCapabilityOwner::LaunchdService,
+        }
+    ));
+    let snapshot = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = snapshot.platform.as_deref() else {
+        panic!("fixture should publish macOS screen status");
+    };
+    assert_eq!(platform.selection, MacosSelectionState::None);
 }
 
 #[test]

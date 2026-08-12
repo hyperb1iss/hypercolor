@@ -2550,6 +2550,41 @@ fn wayland_screen_capture_input_stays_idle_without_capture_demand() {
     assert!(!src.is_running());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn wayland_picker_action_is_detached_and_names_the_platform_backend() {
+    let persisted = Arc::new(Mutex::new(Vec::new()));
+    let sink_log = Arc::clone(&persisted);
+    let mut config = CaptureConfig::default();
+    config.restore_token = Some("persisted-selection".to_owned());
+    let source =
+        WaylandScreenCaptureInput::new(config).with_restore_token_sink(Arc::new(move |token| {
+            sink_log
+                .lock()
+                .expect("restore-token sink lock")
+                .push(token)
+        }));
+    let mut manager = InputManager::new();
+    manager.add_source(Box::new(source));
+
+    let action = manager
+        .resolved_screen_source_picker_action()
+        .expect("Wayland source exposes a detached picker request");
+    let hypercolor_core::input::ResolvedProtectedSourceAction::Local { action, owner } = action
+    else {
+        panic!("Wayland picker must execute in its platform backend");
+    };
+    assert_eq!(
+        owner,
+        hypercolor_core::input::ProtectedSourceActionOwner::PlatformBackend
+    );
+    action.execute().expect("detached picker request succeeds");
+    assert_eq!(
+        *persisted.lock().expect("restore-token result lock"),
+        vec![None]
+    );
+}
+
 // ── Screen Capture Live Reconfiguration ──────────────────────────────────
 
 #[derive(Default)]

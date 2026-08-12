@@ -49,7 +49,7 @@ use crate::input::screen::{
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
-use crate::input::traits::{InputData, InputSource};
+use crate::input::traits::{InputData, InputSource, ScreenSourcePickerAction};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
@@ -1775,22 +1775,7 @@ impl WaylandScreenCaptureInput {
             return Ok(());
         }
 
-        {
-            // The session-epoch lock serializes this clear against the
-            // worker's own token persist, so a grant landing concurrently
-            // cannot interleave with the clear in either order.
-            let _session_guard = self
-                .settings
-                .expected_epoch
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Ok(mut current) = self.settings.config.lock() {
-                current.restore_token = None;
-            }
-            if let Some(sink) = &self.token_sink {
-                sink(None);
-            }
-        }
+        clear_restore_token(&self.settings, self.token_sink.as_ref());
 
         if !self.running || !self.capture_demand.is_active() {
             return Ok(());
@@ -1798,6 +1783,33 @@ impl WaylandScreenCaptureInput {
 
         info!("Re-opening Wayland screencast source picker");
         self.restart_worker()
+    }
+
+    fn detached_reselect_action(&self) -> ScreenSourcePickerAction {
+        let settings = Arc::clone(&self.settings);
+        let token_sink = self.token_sink.clone();
+        let worker = self.worker.as_ref().map(|worker| {
+            (
+                Arc::clone(&worker.portal_pending),
+                worker.command_tx.clone(),
+            )
+        });
+        ScreenSourcePickerAction::platform_backend(Arc::new(move || {
+            if worker
+                .as_ref()
+                .is_some_and(|(portal_pending, _)| portal_pending.load(Ordering::SeqCst))
+            {
+                debug!("Portal source picker is already open; ignoring re-pick request");
+                return Ok(());
+            }
+            clear_restore_token(&settings, token_sink.as_ref());
+            if let Some((_, command_tx)) = &worker {
+                command_tx
+                    .send(WorkerCommand::Reselect)
+                    .map_err(|_| anyhow!("Wayland capture worker rejected source reselect"))?;
+            }
+            Ok(())
+        }))
     }
 
     fn portal_pending(&self) -> bool {
@@ -2386,6 +2398,25 @@ impl InputSource for WaylandScreenCaptureInput {
     fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
         self.reselect_source()
     }
+
+    fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        Some(self.detached_reselect_action())
+    }
+}
+
+fn clear_restore_token(settings: &SharedSettings, token_sink: Option<&RestoreTokenSink>) {
+    let _session_guard = settings
+        .expected_epoch
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    settings
+        .config
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .restore_token = None;
+    if let Some(sink) = token_sink {
+        sink(None);
+    }
 }
 
 struct WaylandCaptureWorker {
@@ -2461,6 +2492,7 @@ struct WorkerFlags {
 
 enum WorkerCommand {
     SetDemand(ScreenCaptureDemand),
+    Reselect,
     PrepareExact {
         ticket: ScreenWorkerPreparationTicket,
         cancelled: Arc<AtomicBool>,
@@ -3803,6 +3835,12 @@ fn run_capture_worker(
 
         let reason = match loop_outcome {
             Ok(PipeWireLoopExit::Stopped) => return,
+            Ok(PipeWireLoopExit::Reselect) => {
+                extent_corrections = 0;
+                native_extent_override = None;
+                info!("Re-opening Wayland screencast source picker");
+                continue;
+            }
             Ok(PipeWireLoopExit::RequiresNativeExtent(extent)) => {
                 if extent_corrections >= 3 {
                     let parking =
@@ -4016,6 +4054,7 @@ async fn open_portal_session(
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PipeWireLoopExit {
     Stopped,
+    Reselect,
     Terminal(String),
     Unavailable(String),
     /// Initial negotiation fixated a different native extent than requested
@@ -4700,6 +4739,13 @@ fn run_pipewire_loop(
                 if let Err(error) = stream.set_active(active) {
                     warn!(active, %error, "Failed to update PipeWire stream active state");
                 }
+            }
+            WorkerCommand::Reselect => {
+                *loop_exit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(PipeWireLoopExit::Reselect);
+                mainloop.quit();
             }
             WorkerCommand::PrepareExact {
                 ticket,

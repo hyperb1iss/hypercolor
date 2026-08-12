@@ -1558,15 +1558,19 @@ impl InputSource for MacosScreenCaptureInput {
 
     fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
         let control = Arc::clone(&self.control);
-        Some(Arc::new(move || {
-            control.request_authorization();
-            Ok(control.authorization() == MacosAuthorizationState::Authorized)
-        }))
+        Some(ProtectedSourceAuthorizationAction::current_macos_process(
+            Arc::new(move || {
+                control.request_authorization();
+                Ok(control.authorization() == MacosAuthorizationState::Authorized)
+            }),
+        ))
     }
 
     fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
         let control = Arc::clone(&self.control);
-        Some(Arc::new(move || control.present_picker()))
+        Some(ScreenSourcePickerAction::current_macos_process(Arc::new(
+            move || control.present_picker(),
+        )))
     }
 
     #[cfg(target_os = "macos")]

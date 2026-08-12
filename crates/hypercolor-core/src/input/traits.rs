@@ -5,7 +5,9 @@
 //! the render loop consumes per frame.
 
 use super::graph::InteractionSourceOrigin;
-use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
+use super::status::{
+    MacosCapabilityOwner, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
+};
 use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
 use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
@@ -14,11 +16,115 @@ use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::Deref;
 use std::sync::Arc;
 
+/// Process class that executes one detached protected-source action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProtectedSourceActionExecutor {
+    /// The macOS process hosting the source executes the action locally.
+    CurrentMacosProcess,
+    /// The active platform backend executes the action locally.
+    PlatformBackend,
+}
+
+/// Exact process identity that owns a successfully executed protected action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProtectedSourceActionOwner {
+    /// The authoritative macOS daemon topology for the current process.
+    Macos(MacosCapabilityOwner),
+    /// The active non-macOS capture backend.
+    PlatformBackend,
+}
+
+/// Whether a detached protected-source action can execute in this process.
+pub enum ResolvedProtectedSourceAction<A> {
+    /// The callback is locally executable after the input-manager lock drops.
+    Local {
+        /// Detached callback owned by the resolved executor.
+        action: A,
+        /// Exact owner of the resulting grant or selection.
+        owner: ProtectedSourceActionOwner,
+    },
+    /// The active topology cannot present the required native UI.
+    RequiresAppUi {
+        /// Authoritative macOS daemon topology that rejected local execution.
+        active_owner: MacosCapabilityOwner,
+    },
+}
+
 /// Explicit local authorization request detached from input-graph locks.
-pub type ProtectedSourceAuthorizationAction = Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>;
+#[derive(Clone)]
+pub struct ProtectedSourceAuthorizationAction {
+    callback: Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>,
+    executor: ProtectedSourceActionExecutor,
+}
+
+impl ProtectedSourceAuthorizationAction {
+    pub(crate) fn current_macos_process(
+        callback: Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>,
+    ) -> Self {
+        Self {
+            callback,
+            executor: ProtectedSourceActionExecutor::CurrentMacosProcess,
+        }
+    }
+
+    /// Return the process class that owns callback execution.
+    #[must_use]
+    pub const fn executor(&self) -> ProtectedSourceActionExecutor {
+        self.executor
+    }
+
+    /// Execute the detached authorization request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the native authorization API rejects the request.
+    pub fn execute(&self) -> anyhow::Result<bool> {
+        (self.callback)()
+    }
+}
 
 /// Explicit native source-picker presentation detached from input-graph locks.
-pub type ScreenSourcePickerAction = Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>;
+#[derive(Clone)]
+pub struct ScreenSourcePickerAction {
+    callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+    executor: ProtectedSourceActionExecutor,
+}
+
+impl ScreenSourcePickerAction {
+    pub(crate) fn current_macos_process(
+        callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+    ) -> Self {
+        Self {
+            callback,
+            executor: ProtectedSourceActionExecutor::CurrentMacosProcess,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn platform_backend(
+        callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+    ) -> Self {
+        Self {
+            callback,
+            executor: ProtectedSourceActionExecutor::PlatformBackend,
+        }
+    }
+
+    /// Return the process class that owns callback execution.
+    #[must_use]
+    pub const fn executor(&self) -> ProtectedSourceActionExecutor {
+        self.executor
+    }
+
+    /// Execute the detached picker request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the native picker cannot be presented.
+    pub fn execute(&self) -> anyhow::Result<()> {
+        (self.callback)()
+    }
+}
 
 #[cfg(target_os = "macos")]
 pub type MacosScreenshotReferenceAction = Arc<

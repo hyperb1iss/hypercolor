@@ -58,7 +58,8 @@ pub use traits::MacosScreenshotReferenceAction;
 pub use traits::{
     InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
     InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode,
-    ProtectedSourceAuthorizationAction, ScreenData, ScreenSourcePickerAction, ScreenZoneColors,
+    ProtectedSourceActionExecutor, ProtectedSourceActionOwner, ProtectedSourceAuthorizationAction,
+    ResolvedProtectedSourceAction, ScreenData, ScreenSourcePickerAction, ScreenZoneColors,
     ScrollAggregate,
 };
 pub use windows::WindowsHostInput;
@@ -1999,6 +2000,47 @@ impl InputManager {
             .find_map(|source| source.input_authorization_action())
     }
 
+    fn resolve_protected_source_action<A>(
+        &self,
+        action: A,
+        executor: ProtectedSourceActionExecutor,
+        presentation_required: bool,
+    ) -> ResolvedProtectedSourceAction<A> {
+        if executor == ProtectedSourceActionExecutor::PlatformBackend {
+            return ResolvedProtectedSourceAction::Local {
+                action,
+                owner: ProtectedSourceActionOwner::PlatformBackend,
+            };
+        }
+
+        let active_owner = self.macos_capability_owner;
+        let requires_app_ui = matches!(
+            active_owner,
+            MacosCapabilityOwner::App | MacosCapabilityOwner::Broker
+        ) || presentation_required
+            && matches!(
+                active_owner,
+                MacosCapabilityOwner::LaunchdService | MacosCapabilityOwner::HomebrewService
+            );
+        if requires_app_ui {
+            return ResolvedProtectedSourceAction::RequiresAppUi { active_owner };
+        }
+        ResolvedProtectedSourceAction::Local {
+            action,
+            owner: ProtectedSourceActionOwner::Macos(active_owner),
+        }
+    }
+
+    /// Resolve the explicit Input Monitoring request against this process.
+    #[must_use]
+    pub fn resolved_input_authorization_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
+        let action = self.input_authorization_action()?;
+        let executor = action.executor();
+        Some(self.resolve_protected_source_action(action, executor, false))
+    }
+
     /// Resolve the explicit Screen Recording request without retaining the
     /// input-manager lock while native authorization UI runs.
     #[must_use]
@@ -2008,6 +2050,16 @@ impl InputManager {
             .find_map(|source| source.screen_authorization_action())
     }
 
+    /// Resolve the explicit Screen Recording request against this process.
+    #[must_use]
+    pub fn resolved_screen_authorization_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
+        let action = self.screen_authorization_action()?;
+        let executor = action.executor();
+        Some(self.resolve_protected_source_action(action, executor, false))
+    }
+
     /// Resolve the native picker action without retaining the input-manager
     /// lock while system UI runs.
     #[must_use]
@@ -2015,6 +2067,16 @@ impl InputManager {
         self.sources
             .iter()
             .find_map(|source| source.screen_source_picker_action())
+    }
+
+    /// Resolve the native picker request against its exact local executor.
+    #[must_use]
+    pub fn resolved_screen_source_picker_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ScreenSourcePickerAction>> {
+        let action = self.screen_source_picker_action()?;
+        let executor = action.executor();
+        Some(self.resolve_protected_source_action(action, executor, true))
     }
 
     #[cfg(target_os = "macos")]

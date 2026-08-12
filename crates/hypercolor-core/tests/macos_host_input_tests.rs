@@ -335,7 +335,7 @@ mod fixtures {
     use std::sync::Arc;
 
     use hypercolor_core::input::{
-        InputData, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
+        InputData, InputManager, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
         MacosDaemonOwnerConflict, MacosHostInput, MacosInputFixtureBackend,
         MacosProtectedSourceState, SourcePlatformStatus, SourceState,
     };
@@ -548,7 +548,11 @@ mod fixtures {
             .input_authorization_action()
             .expect("keyboard source should expose authorization");
 
-        assert!(action().expect("fixture authorization should succeed"));
+        assert!(
+            action
+                .execute()
+                .expect("fixture authorization should succeed")
+        );
         source
             .sample()
             .expect("source should consume action result");
@@ -575,5 +579,38 @@ mod fixtures {
             assert_eq!(platform.host_architecture, None);
             assert_eq!(platform.translated_process, None);
         }
+    }
+
+    #[test]
+    fn manager_rejects_daemon_local_authorization_for_a_broker_owner() {
+        let backend =
+            MacosInputFixtureBackend::new(false, true, event_masks(true, true), true, desktop(1));
+        let (source, _) = MacosHostInput::new_deterministic_fixture(true, true, backend);
+        let status = source
+            .source_status_handle()
+            .expect("macOS host source exposes status");
+        let mut manager = InputManager::new();
+        manager.add_source(Box::new(source));
+        manager
+            .set_macos_daemon_ownership(MacosCapabilityOwner::Broker, None, None)
+            .expect("owner update should publish");
+
+        let action = manager
+            .resolved_input_authorization_action()
+            .expect("manager should preserve the explicit request");
+        assert!(matches!(
+            action,
+            hypercolor_core::input::ResolvedProtectedSourceAction::RequiresAppUi {
+                active_owner: MacosCapabilityOwner::Broker,
+            }
+        ));
+        let snapshot = status.snapshot();
+        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
+            panic!("fixture should publish macOS input platform status");
+        };
+        assert_eq!(
+            platform.keyboard_tcc,
+            MacosAuthorizationState::NotDetermined
+        );
     }
 }
