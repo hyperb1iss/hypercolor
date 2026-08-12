@@ -8,6 +8,98 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CALLER_DIR="$PWD"
+
+# Default the bare invocation before command detection so it routes like an
+# explicit `cargo build --workspace` instead of falling through to
+# incremental mode.
+if [ "$#" -eq 0 ]; then
+  set -- cargo build --workspace
+fi
+
+CARGO_SUBCOMMAND=""
+CARGO_SUBCOMMAND_INDEX=0
+if [ "$#" -gt 1 ]; then
+  case "$(basename "$1")" in
+    cargo | cargo.exe)
+      i=2
+      while [ "$i" -le "$#" ]; do
+        arg="${!i}"
+        case "$arg" in
+          --color | --config | -Z)
+            i=$((i + 2))
+            continue
+            ;;
+          -* | +*)
+            i=$((i + 1))
+            continue
+            ;;
+          *)
+            CARGO_SUBCOMMAND="$arg"
+            CARGO_SUBCOMMAND_INDEX="$i"
+            break
+            ;;
+        esac
+      done
+      ;;
+  esac
+fi
+
+TAURI_SUBCOMMAND=""
+if [ "$CARGO_SUBCOMMAND" = "tauri" ]; then
+  tauri_subcommand_index=$((CARGO_SUBCOMMAND_INDEX + 1))
+  if [ "$tauri_subcommand_index" -le "$#" ]; then
+    TAURI_SUBCOMMAND="${!tauri_subcommand_index}"
+  fi
+fi
+
+NEXTEST_SUBCOMMAND=""
+NEXTEST_SUBCOMMAND_INDEX=0
+if [ "$CARGO_SUBCOMMAND" = "nextest" ]; then
+  nextest_subcommand_index=$((CARGO_SUBCOMMAND_INDEX + 1))
+  if [ "$nextest_subcommand_index" -le "$#" ]; then
+    NEXTEST_SUBCOMMAND="${!nextest_subcommand_index}"
+    NEXTEST_SUBCOMMAND_INDEX="$nextest_subcommand_index"
+  fi
+fi
+
+TOP_LEVEL_COMMAND="$(basename "$1")"
+
+TARGET_DIR_ARG=""
+TARGET_DIR_IS_EXPLICIT=0
+for ((i = 1; i <= $#; i++)); do
+  arg="${!i}"
+  case "$arg" in
+    --)
+      if [ "$CARGO_SUBCOMMAND" != "tauri" ] || [ "$TAURI_SUBCOMMAND" != "build" ]; then
+        break
+      fi
+      ;;
+    --target-dir)
+      next_index=$((i + 1))
+      if [ "$next_index" -gt "$#" ]; then
+        echo "[cargo-cache] --target-dir requires a path" >&2
+        exit 2
+      fi
+      TARGET_DIR_ARG="${!next_index}"
+      TARGET_DIR_IS_EXPLICIT=1
+      break
+      ;;
+    --target-dir=*)
+      TARGET_DIR_ARG="${arg#--target-dir=}"
+      TARGET_DIR_IS_EXPLICIT=1
+      break
+      ;;
+  esac
+done
+
+if [ "$TARGET_DIR_IS_EXPLICIT" -eq 1 ]; then
+  TARGET_DIR="$TARGET_DIR_ARG"
+else
+  TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
+fi
+mkdir -p "$TARGET_DIR"
+TARGET_DIR="$(cd "$TARGET_DIR" && pwd -P)"
 
 # Servo builds spawn hundreds of parallel rustc+sccache clients; source hashing
 # trips EMFILE on macOS launchd's default soft limit (256).
@@ -17,14 +109,128 @@ if [ "$current_nofile" != "unlimited" ] && [ "$current_nofile" -lt 65536 ]; then
 fi
 
 CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 export MOZBUILD_STATE_PATH="${MOZBUILD_STATE_PATH:-$CACHE_ROOT/mozbuild}"
 TOOLCHAIN_DIR="$CACHE_ROOT/toolchain"
 
-mkdir -p "$CARGO_TARGET_DIR" "$MOZBUILD_STATE_PATH" "$TOOLCHAIN_DIR"
+mkdir -p "$MOZBUILD_STATE_PATH" "$TOOLCHAIN_DIR"
+
+portable_lock_helper() {
+  local source="$SCRIPT_DIR/cargo-cache-lock.rs"
+  local version helper_dir helper temp
+  version="$(cksum "$source" | awk '{print $1 "-" $2}')"
+  helper_dir="$TOOLCHAIN_DIR/portable-lock-$version"
+  helper="$helper_dir/cargo-cache-lock"
+  if [ ! -x "$helper" ]; then
+    mkdir -p "$helper_dir"
+    temp="$helper.$$"
+    rustc --edition=2024 -O "$source" -o "$temp"
+    chmod +x "$temp"
+    mv "$temp" "$helper"
+  fi
+  printf '%s\n' "$helper"
+}
+
+TARGET_BUILD_LOCK_PID=""
+TARGET_BUILD_LOCK_CHANNEL_DIR=""
+SCCACHE_CONFIG_LOCK_KIND=""
+SCCACHE_CONFIG_LOCK_PID=""
+SCCACHE_CONFIG_LOCK_CHANNEL_DIR=""
+
+acquire_target_build_lock() {
+  local helper release_fifo ready_fifo ready
+  helper="$(portable_lock_helper)"
+  TARGET_BUILD_LOCK_CHANNEL_DIR="$(mktemp -d "$CACHE_ROOT/target-lock.XXXXXX")"
+  release_fifo="$TARGET_BUILD_LOCK_CHANNEL_DIR/release"
+  ready_fifo="$TARGET_BUILD_LOCK_CHANNEL_DIR/ready"
+  mkfifo "$release_fifo" "$ready_fifo"
+  "$helper" shared "$TARGET_DIR/.cargo-build-lock" \
+    <"$release_fifo" >"$ready_fifo" &
+  TARGET_BUILD_LOCK_PID="$!"
+  exec 6>"$release_fifo"
+  exec 8<"$ready_fifo"
+  if ! IFS= read -r ready <&8 || [ "$ready" != "locked" ]; then
+    exec 6>&-
+    exec 8<&-
+    wait "$TARGET_BUILD_LOCK_PID" || true
+    rm -f "$release_fifo" "$ready_fifo"
+    rmdir "$TARGET_BUILD_LOCK_CHANNEL_DIR" 2>/dev/null || true
+    return 1
+  fi
+}
+
+release_target_build_lock() {
+  [ -n "$TARGET_BUILD_LOCK_PID" ] || return 0
+  printf 'release\n' >&6 || true
+  exec 6>&-
+  exec 8<&-
+  wait "$TARGET_BUILD_LOCK_PID" || true
+  rm -f \
+    "$TARGET_BUILD_LOCK_CHANNEL_DIR/release" \
+    "$TARGET_BUILD_LOCK_CHANNEL_DIR/ready"
+  rmdir "$TARGET_BUILD_LOCK_CHANNEL_DIR" 2>/dev/null || true
+  TARGET_BUILD_LOCK_PID=""
+  TARGET_BUILD_LOCK_CHANNEL_DIR=""
+}
+
+acquire_sccache_config_lock() {
+  local lock_file="$1"
+  local helper ready release_fifo ready_fifo
+  if command -v flock >/dev/null 2>&1 \
+    && [ "${HYPERCOLOR_FORCE_PORTABLE_LOCK:-0}" != "1" ]; then
+    exec 9>"$lock_file"
+    flock 9
+    SCCACHE_CONFIG_LOCK_KIND="flock"
+    return 0
+  fi
+
+  helper="$(portable_lock_helper)"
+  SCCACHE_CONFIG_LOCK_CHANNEL_DIR="$(mktemp -d "$CACHE_ROOT/sccache-lock.XXXXXX")"
+  release_fifo="$SCCACHE_CONFIG_LOCK_CHANNEL_DIR/release"
+  ready_fifo="$SCCACHE_CONFIG_LOCK_CHANNEL_DIR/ready"
+  mkfifo "$release_fifo" "$ready_fifo"
+  "$helper" exclusive "$lock_file" <"$release_fifo" >"$ready_fifo" &
+  SCCACHE_CONFIG_LOCK_PID="$!"
+  exec 5>"$release_fifo"
+  exec 4<"$ready_fifo"
+  if ! IFS= read -r ready <&4 || [ "$ready" != "locked" ]; then
+    exec 5>&-
+    exec 4<&-
+    wait "$SCCACHE_CONFIG_LOCK_PID" || true
+    rm -f "$release_fifo" "$ready_fifo"
+    rmdir "$SCCACHE_CONFIG_LOCK_CHANNEL_DIR" 2>/dev/null || true
+    return 1
+  fi
+  SCCACHE_CONFIG_LOCK_KIND="helper"
+}
+
+release_sccache_config_lock() {
+  case "$SCCACHE_CONFIG_LOCK_KIND" in
+    flock)
+      exec 9>&-
+      ;;
+    helper)
+      printf 'release\n' >&5 || true
+      exec 5>&-
+      exec 4<&-
+      wait "$SCCACHE_CONFIG_LOCK_PID" || true
+      rm -f \
+        "$SCCACHE_CONFIG_LOCK_CHANNEL_DIR/release" \
+        "$SCCACHE_CONFIG_LOCK_CHANNEL_DIR/ready"
+      rmdir "$SCCACHE_CONFIG_LOCK_CHANNEL_DIR" 2>/dev/null || true
+      ;;
+  esac
+  SCCACHE_CONFIG_LOCK_KIND=""
+  SCCACHE_CONFIG_LOCK_PID=""
+  SCCACHE_CONFIG_LOCK_CHANNEL_DIR=""
+}
+
+cleanup_locks() {
+  release_sccache_config_lock
+  release_target_build_lock
+}
 
 prune_stale_turbojpeg_cmake_cache() {
-  [ -d "$CARGO_TARGET_DIR" ] || return 0
+  [ -d "$TARGET_DIR" ] || return 0
 
   local cache_path stale_root
   while IFS= read -r -d '' cache_path; do
@@ -33,14 +239,24 @@ prune_stale_turbojpeg_cmake_cache() {
       echo "[cargo-cache] pruning stale turbojpeg CMake cache: $stale_root"
       rm -rf "$stale_root"
     fi
-  done < <(find "$CARGO_TARGET_DIR" -path '*/build/turbojpeg-sys-*/out/build/CMakeCache.txt' -print0)
+  done < <(find "$TARGET_DIR" -path '*/build/turbojpeg-sys-*/out/build/CMakeCache.txt' -print0)
 }
-
-prune_stale_turbojpeg_cmake_cache
 
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 
+if ld.lld --help 2>/dev/null | grep -Fq -- '--compress-debug-sections=[none,zlib,zstd]'; then
+  case "$HOST_TRIPLE" in
+    x86_64-unknown-linux-gnu)
+      export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:--C link-arg=-fuse-ld=lld -C link-arg=-Wl,--compress-debug-sections=zstd}"
+      ;;
+    aarch64-unknown-linux-gnu)
+      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:--C link-arg=-fuse-ld=lld -C link-arg=-Wl,--compress-debug-sections=zstd}"
+      ;;
+  esac
+fi
+
 if [ "$HOST_TRIPLE" = "x86_64-pc-windows-msvc" ]; then
+  export CARGO_TARGET_DIR="$TARGET_DIR"
   PS_WRAPPER="$SCRIPT_DIR/cargo-cache-build.ps1"
   if command -v cygpath >/dev/null 2>&1; then
     PS_WRAPPER="$(cygpath -w "$PS_WRAPPER")"
@@ -48,12 +264,9 @@ if [ "$HOST_TRIPLE" = "x86_64-pc-windows-msvc" ]; then
   exec powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_WRAPPER" "$@"
 fi
 
-# Default the bare invocation before mode detection so it routes like an
-# explicit `cargo build --workspace` instead of falling through to
-# incremental mode.
-if [ "$#" -eq 0 ]; then
-  set -- cargo build --workspace
-fi
+acquire_target_build_lock
+trap 'cleanup_locks' EXIT
+prune_stale_turbojpeg_cmake_cache
 
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"
@@ -81,30 +294,86 @@ for ((i = 1; i <= $#; i++)); do
   esac
 done
 
-# sccache is the cross-worktree sharing layer: every worktree keeps its own
+# sccache is the clean-target sharing layer: every worktree keeps its own
 # target dir (so parallel agent builds never contend on Cargo's target lock),
-# while identical compiles hit one bounded cache under the shared cache root.
+# while reusable compiles hit one bounded cache under the shared cache root.
+# Released sccache versions keep Rust artifacts checkout-sensitive, but
+# SCCACHE_BASEDIRS still normalizes C and C++ compiles across worktrees.
 # sccache and incremental compilation are mutually exclusive (sccache 0.17
 # hard-errors on either the env var or -Cincremental), so the wrapper picks
 # per command: codegen-heavy tree ops go through sccache; metadata-only ops
 # (check/clippy) keep incremental because sccache cannot cache
 # --emit=metadata units at all.
-CARGO_SUBCOMMAND=""
-if [ "$#" -gt 1 ]; then
-  case "$(basename "$1")" in
-    cargo | cargo.exe)
-      for ((i = 2; i <= $#; i++)); do
-        arg="${!i}"
-        case "$arg" in
-          -* | +*) continue ;;
-          *)
-            CARGO_SUBCOMMAND="$arg"
-            break
-            ;;
-        esac
+USES_TARGET_DIR=0
+case "$CARGO_SUBCOMMAND" in
+  build | check | test | bench | clippy | doc | run | clean)
+    USES_TARGET_DIR=1
+    ;;
+esac
+case "$NEXTEST_SUBCOMMAND" in
+  run | list | archive)
+    USES_TARGET_DIR=1
+    ;;
+esac
+if [ "$CARGO_SUBCOMMAND" = "tauri" ] && [ "$TAURI_SUBCOMMAND" = "build" ]; then
+  USES_TARGET_DIR=1
+fi
+
+# Cargo hashes an exported CARGO_TARGET_DIR into compiler invocations, which
+# prevents a clean target from reusing otherwise identical Rust objects.
+# Passing the location through the subcommand flag preserves target isolation
+# without poisoning sccache's compiler key.
+if [ "$USES_TARGET_DIR" -eq 1 ]; then
+  if [ "$TARGET_DIR_IS_EXPLICIT" -eq 0 ]; then
+    cargo_args=("$@")
+    if [ "$CARGO_SUBCOMMAND" = "tauri" ]; then
+      has_forwarding_delimiter=0
+      for arg in "${cargo_args[@]:CARGO_SUBCOMMAND_INDEX}"; do
+        if [ "$arg" = "--" ]; then
+          has_forwarding_delimiter=1
+          break
+        fi
       done
-      ;;
-  esac
+      if [ "$has_forwarding_delimiter" -eq 1 ]; then
+        set -- "${cargo_args[@]}" --target-dir "$TARGET_DIR"
+      else
+        set -- "${cargo_args[@]}" -- --target-dir "$TARGET_DIR"
+      fi
+    elif [ "$CARGO_SUBCOMMAND" = "nextest" ]; then
+      set -- \
+        "${cargo_args[@]:0:NEXTEST_SUBCOMMAND_INDEX}" \
+        --target-dir "$TARGET_DIR" \
+        "${cargo_args[@]:NEXTEST_SUBCOMMAND_INDEX}"
+    else
+      set -- \
+        "${cargo_args[@]:0:CARGO_SUBCOMMAND_INDEX}" \
+        --target-dir "$TARGET_DIR" \
+        "${cargo_args[@]:CARGO_SUBCOMMAND_INDEX}"
+    fi
+  fi
+  unset CARGO_TARGET_DIR
+fi
+
+if [ "$TOP_LEVEL_COMMAND" = "trunk" ] || [ "$TOP_LEVEL_COMMAND" = "trunk.exe" ]; then
+  real_cargo="$(command -v cargo || true)"
+  if [ -z "$real_cargo" ]; then
+    echo "[cargo-cache] cargo not found for Trunk build" >&2
+    exit 127
+  fi
+  shim_source="$SCRIPT_DIR/cargo-cache-cargo-shim.sh"
+  shim_version="$(cksum "$shim_source" | awk '{print $1 "-" $2}')"
+  cargo_shim_dir="$TARGET_DIR/.hypercolor-toolchain/cargo-shim-$shim_version"
+  mkdir -p "$cargo_shim_dir"
+  if [ ! -e "$cargo_shim_dir/cargo" ]; then
+    shim_temp="$cargo_shim_dir/cargo.$$"
+    cp "$shim_source" "$shim_temp"
+    chmod +x "$shim_temp"
+    mv "$shim_temp" "$cargo_shim_dir/cargo"
+  fi
+  export HYPERCOLOR_REAL_CARGO="$real_cargo"
+  export HYPERCOLOR_NESTED_CARGO_TARGET_DIR="$TARGET_DIR"
+  export PATH="$cargo_shim_dir:$PATH"
+  unset CARGO_TARGET_DIR
 fi
 
 FORCE_SCCACHE="${HYPERCOLOR_FORCE_SCCACHE:-0}"
@@ -125,10 +394,116 @@ if [ "$DISABLE_SCCACHE" = "1" ] || [ "$DISABLE_SCCACHE" = "true" ] \
   WANTS_SCCACHE=0
 fi
 
-if [ -n "$SCCACHE_BIN" ] && [ "$WANTS_SCCACHE" -eq 1 ]; then
+add_sccache_basedir() {
+  local candidate="$1"
+  [ -d "$candidate" ] || return 0
+
+  local logical physical existing
+  logical="$(cd "$candidate" && pwd -L)"
+  physical="$(cd "$candidate" && pwd -P)"
+  for candidate in "$logical" "$physical"; do
+    for existing in "${SCCACHE_BASEDIR_LIST[@]:-}"; do
+      [ "$existing" = "$candidate" ] && continue 2
+    done
+    SCCACHE_BASEDIR_LIST+=("$candidate")
+  done
+}
+
+collect_sccache_basedirs() {
+  SCCACHE_BASEDIR_LIST=()
+  add_sccache_basedir "$ROOT_DIR"
+
+  local caller_root repo worktree configured
+  caller_root="$(git -C "$CALLER_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -z "$caller_root" ] || add_sccache_basedir "$caller_root"
+
+  for repo in "$HOME/dev/hypercolor" "$HOME/dev/hypercolor.lighting"; do
+    [ -e "$repo/.git" ] || continue
+    while IFS= read -r worktree; do
+      [ -d "$worktree/oss" ] && add_sccache_basedir "$worktree/oss"
+      add_sccache_basedir "$worktree"
+    done < <(git -C "$repo" worktree list --porcelain | sed -n 's/^worktree //p')
+  done
+
+  if [ -n "${SCCACHE_BASEDIRS:-}" ]; then
+    while IFS= read -r configured; do
+      [ -z "$configured" ] || add_sccache_basedir "$configured"
+    done < <(printf '%s\n' "$SCCACHE_BASEDIRS" | tr ':' '\n')
+  fi
+
+  local i j swap
+  for ((i = 0; i < ${#SCCACHE_BASEDIR_LIST[@]}; i++)); do
+    for ((j = i + 1; j < ${#SCCACHE_BASEDIR_LIST[@]}; j++)); do
+      if [ "${#SCCACHE_BASEDIR_LIST[j]}" -gt "${#SCCACHE_BASEDIR_LIST[i]}" ] \
+        || { [ "${#SCCACHE_BASEDIR_LIST[j]}" -eq "${#SCCACHE_BASEDIR_LIST[i]}" ] \
+          && [[ "${SCCACHE_BASEDIR_LIST[j]}" < "${SCCACHE_BASEDIR_LIST[i]}" ]]; }; then
+        swap="${SCCACHE_BASEDIR_LIST[i]}"
+        SCCACHE_BASEDIR_LIST[i]="${SCCACHE_BASEDIR_LIST[j]}"
+        SCCACHE_BASEDIR_LIST[j]="$swap"
+      fi
+    done
+  done
+
+  local joined
+  joined="$(IFS=:; printf '%s' "${SCCACHE_BASEDIR_LIST[*]}")"
+  export SCCACHE_BASEDIRS="$joined"
+}
+
+hypercolor_sccache_clients_are_active() {
+  local pid
+  while IFS= read -r pid; do
+    [ -r "/proc/$pid/environ" ] || return 0
+    if tr '\0' '\n' <"/proc/$pid/environ" \
+      | grep -Fqx "SCCACHE_SERVER_UDS=$SCCACHE_SERVER_UDS"; then
+      return 0
+    fi
+  done < <(pgrep -u "$(id -u)" -f '[s]ccache .+' 2>/dev/null || true)
+  return 1
+}
+
+refresh_sccache_server_config() {
+  local state_file="$CACHE_ROOT/sccache-server-config"
+  local lock_file="$CACHE_ROOT/sccache-config.lock"
+  local desired
+  local current=""
+  desired="$("$SCCACHE_BIN" --version)|$SCCACHE_CACHE_SIZE|$SCCACHE_BASEDIRS"
+  [ ! -f "$state_file" ] || current="$(<"$state_file")"
+  [ "$current" = "$desired" ] && return 0
+
+  acquire_sccache_config_lock "$lock_file"
+
+  [ ! -f "$state_file" ] || current="$(<"$state_file")"
+  if [ "$current" = "$desired" ]; then
+    release_sccache_config_lock
+    return 0
+  fi
+  if hypercolor_sccache_clients_are_active; then
+    echo "[cargo-cache] active Hypercolor compiles deferred sccache normalization refresh"
+    release_sccache_config_lock
+    return 0
+  fi
+
+  "$SCCACHE_BIN" --stop-server >/dev/null 2>&1 || true
+  if ! "$SCCACHE_BIN" --start-server 4>&- 5>&- 6>&- 8>&- 9>&- >/dev/null; then
+    release_sccache_config_lock
+    return 1
+  fi
+  printf '%s\n' "$desired" >"$state_file.tmp.$$"
+  mv "$state_file.tmp.$$" "$state_file"
+  release_sccache_config_lock
+  echo "[cargo-cache] refreshed checkout path normalization"
+}
+
+if [ -n "$SCCACHE_BIN" ] && { [ "$WANTS_SCCACHE" -eq 1 ] || [ -z "$CCACHE_BIN" ]; }; then
   export SCCACHE_DIR="${SCCACHE_DIR:-$CACHE_ROOT/sccache}"
   mkdir -p "$SCCACHE_DIR"
   export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-${HYPERCOLOR_SCCACHE_SIZE:-75G}}"
+  export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-$CACHE_ROOT/sccache.sock}"
+  collect_sccache_basedirs
+  refresh_sccache_server_config
+fi
+
+if [ -n "$SCCACHE_BIN" ] && [ "$WANTS_SCCACHE" -eq 1 ]; then
   export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$SCCACHE_BIN}"
   export CARGO_INCREMENTAL="0"
   echo "[cargo-cache] sccache mode: Rust cached, incremental off (cap $SCCACHE_CACHE_SIZE)"
@@ -249,8 +624,12 @@ for tc in "$HOME"/.cargo/registry/src/*/mozjs_sys-*/mozjs/build/moz.configure/to
   fi
 done
 
-echo "[cargo-cache] CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
+echo "[cargo-cache] target directory=$TARGET_DIR"
 echo "[cargo-cache] MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH"
 
 echo "[cargo-cache] running: $*"
-exec "$@"
+release_sccache_config_lock
+lock_helper="$(portable_lock_helper)"
+exec "$lock_helper" run-shared \
+  "$TARGET_DIR/.cargo-build-lock" "$TARGET_DIR/.cargo-build-pgid.$$" \
+  "$TARGET_BUILD_LOCK_PID" "$@" 4>&- 5>&- 7>&- 9>&-

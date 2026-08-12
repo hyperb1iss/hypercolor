@@ -27,8 +27,8 @@ RUST_TARGET=""
 RELEASE_VERSION=""
 BUILD_ROOT=""
 
-CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
+CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
 
 info()  { printf '\033[38;2;128;255;234m→\033[0m %s\n' "$*"; }
 ok()    { printf '\033[38;2;80;250;123m✅\033[0m %s\n' "$*"; }
@@ -203,7 +203,8 @@ else
     if command -v rustup >/dev/null 2>&1; then
       rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
     fi
-    env -u NO_COLOR trunk build --release
+    HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR \
+      "${CARGO_CACHE_BUILD}" trunk build --release --locked
   )
 
   if [[ "${SKIP_EFFECTS}" -eq 0 ]]; then

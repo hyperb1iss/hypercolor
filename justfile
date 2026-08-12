@@ -29,8 +29,30 @@ alias py := python-verify
 # ─── Core ─────────────────────────────────────────────────
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict fmt-check lint test alloc-contracts
+verify: oss-boundary-check-strict build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
+
+# Verify target isolation and Cargo argument normalization
+[unix]
+build-wrapper-test:
+    ./scripts/tests/cargo-cache-build-tests.sh
+
+[windows]
+build-wrapper-test:
+    @echo 'Build wrapper contract is covered by the Rust packaging tests on Windows'
+
+# Prove stale, recent, locked, and dirty target profiles are handled safely
+[linux]
+cargo-gc-test:
+    ./scripts/tests/cargo-target-gc-tests.sh
+
+[macos]
+cargo-gc-test:
+    @echo 'Cargo target GC is installed only on Linux hosts'
+
+[windows]
+cargo-gc-test:
+    @echo 'Cargo target GC is installed only on Linux hosts'
 
 # Check OSS/internal boundary guard scaffolding without strict enforcement
 oss-boundary-check:
@@ -44,6 +66,15 @@ oss-boundary-check-strict:
 [unix]
 build *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} {{ args }}
+
+# Build with full symbols for debugger sessions
+[unix]
+debug-build *args='':
+    ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --profile debugging {{ args }}
+
+[windows]
+debug-build *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build {{ workspace_args }} --profile debugging {{ args }}
 
 [windows]
 build *args='':
@@ -423,7 +454,7 @@ app-bundle-assets *args='':
 # Build native Tauri bundles for the unified desktop app
 [unix]
 app-bundle *args='': app-assets
-    cd crates/hypercolor-app && cargo tauri build --config tauri.bundle.conf.json {{ args }}
+    cd crates/hypercolor-app && HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
 
 [windows]
 app-bundle *args='': app-assets
@@ -598,13 +629,16 @@ tui-dev *args='':
 
 # ─── UI ──────────────────────────────────────────────────
 
+ui-deps:
+    cd crates/hypercolor-ui && bun install --frozen-lockfile
+
 [private]
 prepare-dev-assets:
     cd sdk && bun scripts/build-effect.ts --all
 
 # Run Servo daemon + UI dev server together (daemon bind from config, UI on :9430)
 [unix]
-dev *args='':
+dev *args='': ui-deps
     #!/usr/bin/env bash
     set -euo pipefail
     daemon_pid=""
@@ -668,7 +702,7 @@ dev *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
     daemon_pid=$!
     sleep 2
-    (cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev) &
+    (cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev) &
     trunk_pid=$!
     wait_for_first_exit
 
@@ -680,12 +714,12 @@ dev *args='':
 # port and optionally a bind address to run beside another stack:
 # `just ui-dev 9431`, or `just ui-dev 9431 0.0.0.0` to reach it from a
 # phone on the LAN. The API proxy target (:9420) is unaffected.
-ui-dev port='9430' host='127.0.0.1':
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
+ui-dev port='9430' host='127.0.0.1': ui-deps
+    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
 
 # Build the UI for production
-ui-build:
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk build --release
+ui-build: ui-deps
+    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk build --release --locked
 
 # Build UI and copy dist for daemon embedding
 ui-dist: ui-build
@@ -865,26 +899,34 @@ disk:
     @if [ -d "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}" ]; then du -sh "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/* 2>/dev/null | sort -rh | head -15 || true; else echo '(no target dir)'; fi
     @echo "── shared caches (${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}) ──"
     @if [ -d "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}" ]; then du -sh "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"/* 2>/dev/null | sort -rh || true; else echo '(no cache dir)'; fi
-    @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi
+    @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache.sock}" SCCACHE_DIR="${SCCACHE_DIR:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache}" sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi
 
-# Sweep stale build artifacts (orphaned toolchains, then >14 days old) from this checkout
+# Preview pressure-triggered collection across public and proprietary worktrees
+[linux]
 gc:
-    @command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
-    cargo sweep --installed
-    cargo sweep --time 14
-    @echo '🧹 stale artifacts swept'
+    ./scripts/cargo-target-gc.sh --dry-run
 
-# Sweep every worktree of this repo (run after merges or when disk runs hot)
-gc-worktrees:
-    @command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
-    git worktree prune
-    git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do [ -d "$wt/target" ] || continue; echo "── sweeping $wt"; cargo sweep --installed "$wt" || true; cargo sweep --time 14 "$wt" || true; done
-    @echo '🧹 all worktree lanes swept'
+# Apply pressure-triggered collection across public and proprietary worktrees
+[linux]
+gc-apply:
+    ./scripts/cargo-target-gc.sh --apply
 
-# Deep clean: sweep, then drop incremental state and the CPU-smoke lane
-gc-deep: gc
-    rm -rf "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/*/incremental "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/cpu-smoke"
-    @echo '🧹 incremental state and cpu-smoke lane dropped'
+# Reclaim pressure immediately while preserving dirty and Cargo-locked profiles
+[linux]
+gc-reclaim:
+    ./scripts/cargo-target-gc.sh --reclaim-now
+
+# Install and enable the daily user timer
+[linux]
+gc-install *args='':
+    ./scripts/install-cargo-target-gc.sh {{ args }}
+
+# Show the next scheduled collection and the previous service result
+[linux]
+gc-status:
+    systemctl --user list-timers hypercolor-cargo-target-gc.timer --no-pager
+    systemctl --user show hypercolor-cargo-target-gc.service --property=Result,ExecMainStatus
+    @if [ -f "$HOME/.local/share/hypercolor/libexec/cargo-target-gc" ]; then sha256sum scripts/cargo-target-gc.sh "$HOME/.local/share/hypercolor/libexec/cargo-target-gc"; else echo '(collector is not installed)'; fi
 
 # Show workspace dependency tree
 deps:

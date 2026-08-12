@@ -241,14 +241,14 @@ strip = true
 # completely unoptimized Servo/canvas streaming in debug builds.
 [profile.dev]
 opt-level = 1
-debug = 1
+debug = "line-tables-only"
 
 # Keep Hypercolor crates debuggable, but treat third-party dependencies more
 # like "runtime" code: optimize them, trim debug payload, and drop expensive
 # safety instrumentation that mostly hurts hot render paths.
 [profile.dev.package."*"]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 debug-assertions = false
 overflow-checks = false
 
@@ -268,52 +268,40 @@ opt-level = 2
 # avoiding debug-profile runtime cliffs for live preview.
 [profile.dev.package.servo]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.vello_cpu]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.vello_common]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.fearless_simd]
 opt-level = 3
-debug = 0
 
 # JavaScript-heavy effects spend significant time in Servo's script pipeline.
 [profile.dev.package.mozjs]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.mozjs_sys]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.servo-script]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.servo-script-bindings]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.servo-paint]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.servo-layout]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.webrender]
 opt-level = 3
-debug = 0
 
 [profile.dev.package.webrender_api]
 opt-level = 3
-debug = 0
 
 # Preview keeps the fast inner dev loop from `dev`, but disables the remaining
 # runtime-heavy safety checks in Hypercolor crates so local daemon/UI runs feel
@@ -325,9 +313,18 @@ overflow-checks = false
 
 [profile.preview.package."*"]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 debug-assertions = false
 overflow-checks = false
+
+# Preserve full symbols as an explicit opt-in without making every local test
+# executable carry them by default.
+[profile.debugging]
+inherits = "dev"
+debug = "full"
+
+[profile.debugging.package."*"]
+debug = "full"
 
 [profile.preview.package.hypercolor-core]
 opt-level = 2

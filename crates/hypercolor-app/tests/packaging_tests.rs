@@ -2,8 +2,16 @@ const HOMEBREW_CASK: &str = include_str!("../../../packaging/homebrew/hypercolor
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const JUSTFILE: &str = include_str!("../../../justfile");
 const WINDOWS_INSTALLER_SCRIPT: &str = include_str!("../../../scripts/build-windows-installer.ps1");
+const DIST_SH: &str = include_str!("../../../scripts/dist.sh");
+const INSTALL_SH: &str = include_str!("../../../scripts/install.sh");
+const BUILD_MAC_INSTALLER_SH: &str = include_str!("../../../scripts/build-mac-installer.sh");
 const CARGO_CACHE_BUILD_SH: &str = include_str!("../../../scripts/cargo-cache-build.sh");
 const CARGO_CACHE_BUILD_PS1: &str = include_str!("../../../scripts/cargo-cache-build.ps1");
+const CARGO_TARGET_GC_SH: &str = include_str!("../../../scripts/cargo-target-gc.sh");
+const CARGO_TARGET_GC_SERVICE: &str =
+    include_str!("../../../packaging/systemd/user/hypercolor-cargo-target-gc.service");
+const CARGO_TARGET_GC_TIMER: &str =
+    include_str!("../../../packaging/systemd/user/hypercolor-cargo-target-gc.timer");
 const BRAND_BUILD_PY: &str = include_str!("../../../assets/brand/build.py");
 const DIAGNOSE_WINDOWS_PS1: &str = include_str!("../../../scripts/diagnose-windows.ps1");
 const FETCH_PAWNIO_ASSETS_PS1: &str = include_str!("../../../scripts/fetch-pawnio-assets.ps1");
@@ -250,15 +258,67 @@ fn justfile_exposes_single_windows_installer_target() {
 
 #[test]
 fn local_build_wrappers_default_to_workspace_target_dir() {
-    assert!(
-        CARGO_CACHE_BUILD_SH
-            .contains(r#"export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}""#)
-    );
+    assert!(CARGO_CACHE_BUILD_SH.contains(r#"TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}""#));
+    assert!(CARGO_CACHE_BUILD_SH.contains("unset CARGO_TARGET_DIR"));
+    assert!(CARGO_CACHE_BUILD_SH.contains("--target-dir \"$TARGET_DIR\""));
+    assert!(CARGO_CACHE_BUILD_SH.contains("SCCACHE_SERVER_UDS"));
+    assert!(CARGO_CACHE_BUILD_SH.contains("collect_sccache_basedirs"));
     assert!(CARGO_CACHE_BUILD_PS1.contains("$env:CARGO_TARGET_DIR = Join-Path $RepoRoot 'target'"));
     assert!(STAGE_APP_BUNDLE_SH.contains(r#"STAGE_DIR="${ROOT_DIR}/target/bundle-stage""#));
     assert!(
         STAGE_APP_BUNDLE_PS1.contains("$StageDir = Join-Path $RepoRoot 'target\\bundle-stage'")
     );
+}
+
+#[test]
+fn ui_cargo_builds_use_the_shared_cache_policy() {
+    assert!(JUSTFILE.contains(
+        r#"HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve"#
+    ));
+    assert!(JUSTFILE.contains(
+        r#"HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk build"#
+    ));
+    assert!(CARGO_CACHE_BUILD_SH.contains("HYPERCOLOR_NESTED_CARGO_TARGET_DIR"));
+}
+
+#[test]
+fn unix_app_bundles_use_the_shared_cache_policy() {
+    assert!(JUSTFILE.contains(
+        r#"HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build"#
+    ));
+    for script in [DIST_SH, INSTALL_SH, BUILD_MAC_INSTALLER_SH] {
+        assert!(script.contains("cargo-cache-build.sh"));
+        assert!(script.contains("trunk build --release --locked"));
+    }
+    assert!(
+        BUILD_MAC_INSTALLER_SH
+            .contains(r#"HYPERCOLOR_FORCE_SCCACHE=1 "${CARGO_CACHE_BUILD}" cargo"#)
+    );
+}
+
+#[test]
+fn cargo_target_gc_is_pressure_triggered_and_lock_aware() {
+    for required in [
+        "HYPERCOLOR_GC_HIGH_WATER_BYTES",
+        "HYPERCOLOR_GC_LOW_WATER_BYTES",
+        "HYPERCOLOR_GC_MIN_AGE_DAYS",
+        "HYPERCOLOR_GC_RECLAIM_MIN_AGE_SECONDS",
+        "status --porcelain=v1",
+        ".cargo-lock",
+        "flock -n",
+        "clear_profile_preserving_locks",
+    ] {
+        assert!(
+            CARGO_TARGET_GC_SH.contains(required),
+            "Cargo target GC should enforce {required}"
+        );
+    }
+    assert!(CARGO_TARGET_GC_SERVICE.contains("Nice=19"));
+    assert!(CARGO_TARGET_GC_SERVICE.contains("IOSchedulingClass=idle"));
+    assert!(CARGO_TARGET_GC_SERVICE.contains("TimeoutStartSec=45min"));
+    assert!(CARGO_TARGET_GC_TIMER.contains("OnStartupSec=30min"));
+    assert!(CARGO_TARGET_GC_TIMER.contains("OnUnitActiveSec=1d"));
+    assert!(!CARGO_TARGET_GC_TIMER.contains("Persistent=true"));
 }
 
 #[test]
