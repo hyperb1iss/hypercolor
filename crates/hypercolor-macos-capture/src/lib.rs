@@ -3,6 +3,7 @@
 //! Native framework ownership remains private to this crate. The public frame
 //! boundary contains only plain Rust metadata plus an opaque retained surface.
 
+mod cpu;
 mod diagnostics;
 mod frame;
 mod geometry;

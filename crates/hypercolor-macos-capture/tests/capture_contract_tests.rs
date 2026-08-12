@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use hypercolor_macos_capture::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCadence,
     MacosCaptureCallbackDiagnostics, MacosCaptureColorimetry, MacosCaptureError,
@@ -328,6 +330,49 @@ fn decoded_frames_keep_the_pixel_buffer_owner_alive() {
     assert_eq!(surface.fixture_id(), Some(99));
     drop(frame);
     assert_eq!(surface.retained_owner_count(), 1);
+}
+
+#[test]
+fn bgra_cpu_copy_preserves_rows_and_ignores_padding() {
+    let mut sample = complete_sample();
+    let source = (0_u8..192).collect::<Vec<_>>();
+    complete_frame_mut(&mut sample).surface =
+        MacosCaptureSurface::new_cpu_fixture(7, 192, 99, vec![Arc::<[u8]>::from(source.clone())])
+            .expect("CPU fixture surface should be valid");
+    let frame = decode_frame(&mut MacosFrameDecoder::new(1), sample);
+    let mut destination = vec![0xcc; 36 * 6];
+
+    frame
+        .copy_bgra8_to(&mut destination, 36)
+        .expect("BGRA rows should copy");
+
+    for row in 0..6 {
+        assert_eq!(
+            &destination[row * 36..row * 36 + 32],
+            &source[row * 32..row * 32 + 32]
+        );
+        assert_eq!(&destination[row * 36 + 32..(row + 1) * 36], &[0xcc; 4]);
+    }
+    assert_eq!(
+        frame.copy_bgra8_to(&mut destination, 31),
+        Err(MacosCaptureError::InvalidCpuDestinationStride {
+            minimum: 32,
+            actual: 31,
+        })
+    );
+}
+
+#[test]
+fn cpu_copy_rejects_non_bgra_input_without_mapping_it() {
+    let mut sample = complete_sample();
+    complete_frame_mut(&mut sample).pixel_format_fourcc = ARGB2101010;
+    let frame = decode_frame(&mut MacosFrameDecoder::new(1), sample);
+    assert_eq!(
+        frame.copy_bgra8_to(&mut [0; 192], 32),
+        Err(MacosCaptureError::UnsupportedCpuPixelFormat(
+            MacosCapturePixelFormat::Argb2101010
+        ))
+    );
 }
 
 #[test]

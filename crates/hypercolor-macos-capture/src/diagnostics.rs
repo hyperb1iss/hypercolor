@@ -56,6 +56,14 @@ impl MacosFrameDropReason {
             | MacosCaptureError::ArithmeticOverflow
             | MacosCaptureError::AllocationTooSmall { .. }
             | MacosCaptureError::GeometryOutsideStorage(_)
+            | MacosCaptureError::CpuMappingUnavailable
+            | MacosCaptureError::CpuPlaneLayoutMismatch
+            | MacosCaptureError::PixelBufferLockFailed(_)
+            | MacosCaptureError::PixelBufferUnlockFailed(_)
+            | MacosCaptureError::MissingCpuPlaneAddress(_)
+            | MacosCaptureError::UnsupportedCpuPixelFormat(_)
+            | MacosCaptureError::InvalidCpuDestinationStride { .. }
+            | MacosCaptureError::CpuDestinationTooSmall { .. }
             | MacosCaptureError::SequenceExhausted
             | MacosCaptureError::Geometry(_) => Self::Validation,
         }

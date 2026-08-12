@@ -4,7 +4,11 @@ use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::CFRetained;
 #[cfg(target_os = "macos")]
-use objc2_core_video::{CVPixelBuffer, CVPixelBufferGetIOSurface};
+use objc2_core_video::{
+    CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane,
+    CVPixelBufferGetIOSurface, CVPixelBufferGetPlaneCount, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVReturnSuccess,
+};
 use thiserror::Error;
 
 use crate::geometry::{
@@ -229,7 +233,36 @@ impl MacosCaptureSurface {
         Ok(Self {
             iosurface_id,
             allocation_bytes,
-            owner: Arc::new(MacosRetainedPixelBuffer::Fixture { fixture_id }),
+            owner: Arc::new(MacosRetainedPixelBuffer::Fixture {
+                fixture_id,
+                planes: None,
+            }),
+        })
+    }
+
+    #[cfg(feature = "capture-fixtures")]
+    pub fn new_cpu_fixture(
+        iosurface_id: u32,
+        allocation_bytes: u64,
+        fixture_id: u64,
+        planes: Vec<Arc<[u8]>>,
+    ) -> Result<Self, MacosCaptureError> {
+        if iosurface_id == 0 || allocation_bytes == 0 || planes.is_empty() {
+            return Err(MacosCaptureError::InvalidSurface);
+        }
+        let used_bytes = planes.iter().try_fold(0_u64, |total, plane| {
+            total.checked_add(u64::try_from(plane.len()).ok()?)
+        });
+        if used_bytes.is_none_or(|used_bytes| used_bytes > allocation_bytes) {
+            return Err(MacosCaptureError::InvalidSurface);
+        }
+        Ok(Self {
+            iosurface_id,
+            allocation_bytes,
+            owner: Arc::new(MacosRetainedPixelBuffer::Fixture {
+                fixture_id,
+                planes: Some(planes.into()),
+            }),
         })
     }
 
@@ -248,9 +281,7 @@ impl MacosCaptureSurface {
         Ok(Self {
             iosurface_id,
             allocation_bytes,
-            owner: Arc::new(MacosRetainedPixelBuffer::Native {
-                _pixel_buffer: pixel_buffer,
-            }),
+            owner: Arc::new(MacosRetainedPixelBuffer::Native { pixel_buffer }),
         })
     }
 
@@ -261,9 +292,38 @@ impl MacosCaptureSurface {
     #[cfg(feature = "capture-fixtures")]
     pub fn fixture_id(&self) -> Option<u64> {
         match &*self.owner {
-            MacosRetainedPixelBuffer::Fixture { fixture_id } => Some(*fixture_id),
+            MacosRetainedPixelBuffer::Fixture { fixture_id, .. } => Some(*fixture_id),
             #[cfg(target_os = "macos")]
             MacosRetainedPixelBuffer::Native { .. } => None,
+        }
+    }
+
+    pub(crate) fn with_plane_bytes<R>(
+        &self,
+        lengths: &[u64],
+        operation: impl FnOnce(&[&[u8]]) -> R,
+    ) -> Result<R, MacosCaptureError> {
+        match &*self.owner {
+            #[cfg(target_os = "macos")]
+            MacosRetainedPixelBuffer::Native { pixel_buffer } => {
+                with_native_plane_bytes(pixel_buffer, lengths, operation)
+            }
+            #[cfg(feature = "capture-fixtures")]
+            MacosRetainedPixelBuffer::Fixture { planes, .. } => {
+                let planes = planes
+                    .as_ref()
+                    .ok_or(MacosCaptureError::CpuMappingUnavailable)?;
+                if planes.len() != lengths.len()
+                    || planes
+                        .iter()
+                        .zip(lengths)
+                        .any(|(plane, length)| u64::try_from(plane.len()).ok() != Some(*length))
+                {
+                    return Err(MacosCaptureError::CpuPlaneLayoutMismatch);
+                }
+                let borrowed = planes.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+                Ok(operation(&borrowed))
+            }
         }
     }
 }
@@ -281,10 +341,13 @@ impl fmt::Debug for MacosCaptureSurface {
 enum MacosRetainedPixelBuffer {
     #[cfg(target_os = "macos")]
     Native {
-        _pixel_buffer: CFRetained<CVPixelBuffer>,
+        pixel_buffer: CFRetained<CVPixelBuffer>,
     },
     #[cfg(feature = "capture-fixtures")]
-    Fixture { fixture_id: u64 },
+    Fixture {
+        fixture_id: u64,
+        planes: Option<Arc<[Arc<[u8]>]>>,
+    },
 }
 
 impl fmt::Debug for MacosRetainedPixelBuffer {
@@ -293,7 +356,7 @@ impl fmt::Debug for MacosRetainedPixelBuffer {
             #[cfg(target_os = "macos")]
             Self::Native { .. } => formatter.write_str("MacosRetainedPixelBuffer::Native"),
             #[cfg(feature = "capture-fixtures")]
-            Self::Fixture { fixture_id } => formatter
+            Self::Fixture { fixture_id, .. } => formatter
                 .debug_struct("MacosRetainedPixelBuffer::Fixture")
                 .field("fixture_id", fixture_id)
                 .finish(),
@@ -310,6 +373,88 @@ unsafe impl Send for MacosRetainedPixelBuffer {}
 // SAFETY: Concurrent owners only retain or inspect metadata; mutable byte
 // access is serialized by Core Video's lock contract.
 unsafe impl Sync for MacosRetainedPixelBuffer {}
+
+#[cfg(target_os = "macos")]
+struct PixelBufferReadLock<'a> {
+    pixel_buffer: &'a CVPixelBuffer,
+    locked: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> PixelBufferReadLock<'a> {
+    fn acquire(pixel_buffer: &'a CVPixelBuffer) -> Result<Self, MacosCaptureError> {
+        // SAFETY: The retained pixel buffer remains live through this guard,
+        // and read-only is used symmetrically for lock and unlock.
+        let code =
+            unsafe { CVPixelBufferLockBaseAddress(pixel_buffer, CVPixelBufferLockFlags::ReadOnly) };
+        if code != kCVReturnSuccess {
+            return Err(MacosCaptureError::PixelBufferLockFailed(code));
+        }
+        Ok(Self {
+            pixel_buffer,
+            locked: true,
+        })
+    }
+
+    fn unlock(mut self) -> Result<(), MacosCaptureError> {
+        // SAFETY: This guard owns the successful matching read-only lock and
+        // marks it released before Drop can run.
+        let code = unsafe {
+            CVPixelBufferUnlockBaseAddress(self.pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
+        };
+        self.locked = false;
+        if code == kCVReturnSuccess {
+            Ok(())
+        } else {
+            Err(MacosCaptureError::PixelBufferUnlockFailed(code))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for PixelBufferReadLock<'_> {
+    fn drop(&mut self) {
+        if self.locked {
+            // SAFETY: Drop runs only while the successful read-only lock is
+            // still owned, including unwinding from the mapping closure.
+            let _ = unsafe {
+                CVPixelBufferUnlockBaseAddress(self.pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
+            };
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn with_native_plane_bytes<R>(
+    pixel_buffer: &CVPixelBuffer,
+    lengths: &[u64],
+    operation: impl FnOnce(&[&[u8]]) -> R,
+) -> Result<R, MacosCaptureError> {
+    let lock = PixelBufferReadLock::acquire(pixel_buffer)?;
+    let plane_count = CVPixelBufferGetPlaneCount(pixel_buffer);
+    let actual_count = if plane_count == 0 { 1 } else { plane_count };
+    if actual_count != lengths.len() {
+        return Err(MacosCaptureError::CpuPlaneLayoutMismatch);
+    }
+    let mut planes = Vec::with_capacity(actual_count);
+    for (index, length) in lengths.iter().copied().enumerate() {
+        let address = if plane_count == 0 {
+            CVPixelBufferGetBaseAddress(pixel_buffer)
+        } else {
+            CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, index)
+        };
+        let length = usize::try_from(length).map_err(|_| MacosCaptureError::ArithmeticOverflow)?;
+        if address.is_null() {
+            return Err(MacosCaptureError::MissingCpuPlaneAddress(index));
+        }
+        // SAFETY: The read lock keeps every non-null plane address valid for
+        // its validated Core Video plane length until operation returns.
+        planes.push(unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) });
+    }
+    let result = operation(&planes);
+    lock.unlock()?;
+    Ok(result)
+}
 
 #[derive(Debug, Clone)]
 pub struct MacosCaptureFrame {
@@ -653,6 +798,22 @@ pub enum MacosCaptureError {
     InvalidSurface,
     #[error("complete frame has no IOSurface-backed pixel buffer")]
     MissingIoSurface,
+    #[error("capture surface has no CPU-mappable fixture or pixel buffer")]
+    CpuMappingUnavailable,
+    #[error("mapped CPU planes do not match the validated frame layout")]
+    CpuPlaneLayoutMismatch,
+    #[error("Core Video pixel-buffer lock failed with code {0}")]
+    PixelBufferLockFailed(i32),
+    #[error("Core Video pixel-buffer unlock failed with code {0}")]
+    PixelBufferUnlockFailed(i32),
+    #[error("Core Video returned no base address for plane {0}")]
+    MissingCpuPlaneAddress(usize),
+    #[error("CPU publication requires BGRA8 input, got {0:?}")]
+    UnsupportedCpuPixelFormat(MacosCapturePixelFormat),
+    #[error("CPU destination stride {actual} is smaller than {minimum}")]
+    InvalidCpuDestinationStride { minimum: usize, actual: usize },
+    #[error("CPU destination has {actual} bytes, but {required} are required")]
+    CpuDestinationTooSmall { required: usize, actual: usize },
     #[error("complete-frame sequence exhausted")]
     SequenceExhausted,
     #[error(transparent)]
