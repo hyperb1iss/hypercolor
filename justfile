@@ -677,7 +677,7 @@ dev *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
     daemon_pid=$!
     sleep 2
-    (cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev) &
+    (cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk serve --dist .dist-dev) &
     trunk_pid=$!
     wait_for_first_exit
 
@@ -690,11 +690,11 @@ dev *args='':
 # `just ui-dev 9431`, or `just ui-dev 9431 0.0.0.0` to reach it from a
 # phone on the LAN. The API proxy target (:9420) is unaffected.
 ui-dev port='9430' host='127.0.0.1':
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
+    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
 
 # Build the UI for production
 ui-build:
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk build --release
+    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk build --release
 
 # Build UI and copy dist for daemon embedding
 ui-dist: ui-build

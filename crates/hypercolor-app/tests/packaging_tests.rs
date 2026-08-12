@@ -265,6 +265,16 @@ fn local_build_wrappers_default_to_workspace_target_dir() {
 }
 
 #[test]
+fn ui_cargo_builds_use_the_shared_cache_policy() {
+    assert!(JUSTFILE.contains(
+        r#"HYPERCOLOR_ITERATE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk serve"#
+    ));
+    assert!(JUSTFILE.contains(
+        r#"HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk build"#
+    ));
+}
+
+#[test]
 fn windows_installer_target_builds_all_bundle_inputs() {
     for required in [
         "cargo tauri --version",

@@ -19,6 +19,7 @@ else
 fi
 EOF
 chmod +x "$SANDBOX/bin/cargo"
+ln -s cargo "$SANDBOX/bin/trunk"
 
 run_wrapper() {
   local log_name="$1"
@@ -59,6 +60,13 @@ test ! -s "$SANDBOX/explicit.target-env"
 )
 assert_args deny deny check
 test "$(<"$SANDBOX/deny.target-env")" = "deny-target"
+
+(
+  cd "$SANDBOX/caller"
+  CARGO_TARGET_DIR=ui-target run_wrapper trunk env -u NO_COLOR trunk build --release
+)
+assert_args trunk build --release
+test "$(<"$SANDBOX/trunk.target-env")" = "ui-target"
 
 run_wrapper default
 assert_args default build --target-dir "$ROOT_DIR/target" --workspace
