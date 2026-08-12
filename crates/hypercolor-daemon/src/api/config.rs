@@ -188,6 +188,48 @@ pub async fn set_config_value(
         }
     }
 
+    if should_reconfigure_input(Some(&key)) {
+        match apply_host_input_config_transaction(&state, &current_snapshot, updated.input.clone())
+            .await
+        {
+            Ok(live) => {
+                let effective_config = manager.get();
+                let effective_root = match serde_json::to_value(&**effective_config) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return ApiError::internal(format!(
+                            "Failed to serialize canonicalized config: {error}"
+                        ));
+                    }
+                };
+                let Some(effective_value) = get_json_path(&effective_root, &key).cloned() else {
+                    return ApiError::internal(format!(
+                        "Canonicalized config is missing expected key: {key}"
+                    ));
+                };
+                return ApiResponse::ok(serde_json::json!({
+                    "key": key,
+                    "value": effective_value,
+                    "live": live,
+                    "path": manager.path().display().to_string(),
+                }));
+            }
+            Err(HostInputConfigTransactionError::Conflict) => {
+                return ApiError::conflict(
+                    "Input config or source graph changed while its candidate was prepared; retry the update",
+                );
+            }
+            Err(HostInputConfigTransactionError::Prepare(error)) => {
+                return ApiError::validation(format!(
+                    "Failed to prepare live host input config: {error}"
+                ));
+            }
+            Err(HostInputConfigTransactionError::Persist(error)) => {
+                return ApiError::internal(format!("Failed to persist config: {error}"));
+            }
+        }
+    }
+
     // Re-apply the validated key against the freshest config under the
     // manager's write lock, so a concurrent targeted writer (e.g. the
     // capture restore-token sink) is not clobbered by this handler's
@@ -337,6 +379,40 @@ pub async fn reset_config_value(
             "key": normalized_key,
             "reset": true,
             "live": true,
+            "path": manager.path().display().to_string(),
+        }));
+    }
+
+    if normalized_key
+        .as_deref()
+        .is_some_and(|key| should_reconfigure_input(Some(key)))
+    {
+        let live = match apply_host_input_config_transaction(
+            &state,
+            &current_snapshot,
+            updated.input.clone(),
+        )
+        .await
+        {
+            Ok(live) => live,
+            Err(HostInputConfigTransactionError::Conflict) => {
+                return ApiError::conflict(
+                    "Input config or source graph changed while its candidate was prepared; retry the reset",
+                );
+            }
+            Err(HostInputConfigTransactionError::Prepare(error)) => {
+                return ApiError::validation(format!(
+                    "Failed to prepare live host input config: {error}"
+                ));
+            }
+            Err(HostInputConfigTransactionError::Persist(error)) => {
+                return ApiError::internal(format!("Failed to persist config: {error}"));
+            }
+        };
+        return ApiResponse::ok(serde_json::json!({
+            "key": normalized_key,
+            "reset": true,
+            "live": live,
             "path": manager.path().display().to_string(),
         }));
     }
@@ -711,14 +787,11 @@ async fn apply_capture_config_transaction(
         )));
     };
     #[cfg(target_os = "macos")]
-    if capture_diff_is_processing_only(&expected_config.capture, &capture) {
-        return apply_macos_capture_processing_transaction(
-            state,
-            manager,
-            expected_config,
-            capture,
-        )
-        .await;
+    if capture_diff_is_live_compatible(&expected_config.capture, &capture)
+        && capture_runtime_matches(state, expected_config).await
+    {
+        return apply_macos_capture_live_transaction(state, manager, expected_config, capture)
+            .await;
     }
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     let (plan, capacity_plan, capacity_preparation, admission_coordinator) = {
@@ -914,8 +987,19 @@ async fn apply_capture_config_transaction(
 }
 
 #[cfg(target_os = "macos")]
-fn capture_diff_is_processing_only(previous: &CaptureConfig, next: &CaptureConfig) -> bool {
+fn capture_diff_is_live_compatible(previous: &CaptureConfig, next: &CaptureConfig) -> bool {
     let mut normalized = previous.clone();
+    normalized.capture_fps = next.capture_fps;
+    normalized.cadence = next.cadence;
+    normalized.grid_cols = next.grid_cols;
+    normalized.grid_rows = next.grid_rows;
+    normalized.smoothing = next.smoothing;
+    normalized.scene_cut_threshold = next.scene_cut_threshold;
+    normalized.letterbox = next.letterbox;
+    normalized.letterbox_threshold = next.letterbox_threshold;
+    normalized.saturation = next.saturation;
+    normalized.brightness = next.brightness;
+    normalized.gamma = next.gamma;
     normalized.target_led_white_x = next.target_led_white_x;
     normalized.target_led_white_y = next.target_led_white_y;
     normalized.target_led_reference_white_nits = next.target_led_reference_white_nits;
@@ -925,7 +1009,7 @@ fn capture_diff_is_processing_only(previous: &CaptureConfig, next: &CaptureConfi
 }
 
 #[cfg(target_os = "macos")]
-async fn apply_macos_capture_processing_transaction(
+async fn apply_macos_capture_live_transaction(
     state: &Arc<AppState>,
     manager: &Arc<hypercolor_core::config::ConfigManager>,
     expected_config: &Arc<HypercolorConfig>,
@@ -940,7 +1024,7 @@ async fn apply_macos_capture_processing_transaction(
         return Err(CaptureConfigTransactionError::Conflict);
     }
     input_manager
-        .reconfigure_screen_processing(&next)
+        .reconfigure_screen_capture(&next)
         .map_err(CaptureConfigTransactionError::Prepare)?;
     let persisted = manager.modify_and_save_if_current(expected_config, |config| {
         config.capture.clone_from(&capture);
@@ -948,21 +1032,23 @@ async fn apply_macos_capture_processing_transaction(
     match persisted {
         Ok(true) => {}
         Ok(false) => {
-            input_manager
-                .reconfigure_screen_processing(&previous)
-                .map_err(CaptureConfigTransactionError::Prepare)?;
+            if let Err(error) = input_manager.reconfigure_screen_capture(&previous) {
+                manager.invalidate_capture_runtime_applied();
+                return Err(CaptureConfigTransactionError::Prepare(error));
+            }
             return Err(CaptureConfigTransactionError::Conflict);
         }
         Err(error) => {
-            input_manager
-                .reconfigure_screen_processing(&previous)
-                .map_err(CaptureConfigTransactionError::Prepare)?;
+            if let Err(rollback_error) = input_manager.reconfigure_screen_capture(&previous) {
+                manager.invalidate_capture_runtime_applied();
+                return Err(CaptureConfigTransactionError::Prepare(rollback_error));
+            }
             return Err(CaptureConfigTransactionError::Persist(error));
         }
     }
     manager.mark_capture_runtime_applied(&capture);
     drop(input_manager);
-    info!("Applied live macOS screen processing config without reopening capture");
+    info!("Applied compatible macOS capture config without reopening the native stream");
     Ok(())
 }
 
@@ -1063,6 +1149,142 @@ fn should_reconfigure_input(key: Option<&str>) -> bool {
     key.is_none_or(|value| value == "input" || value.starts_with("input."))
 }
 
+#[derive(Debug, thiserror::Error)]
+enum HostInputConfigTransactionError {
+    #[error("input config identity or source topology changed during preparation")]
+    Conflict,
+    #[error(transparent)]
+    Prepare(anyhow::Error),
+    #[error(transparent)]
+    Persist(anyhow::Error),
+}
+
+async fn apply_host_input_config_transaction(
+    state: &Arc<AppState>,
+    expected_config: &Arc<HypercolorConfig>,
+    input: hypercolor_types::config::InputConfig,
+) -> Result<bool, HostInputConfigTransactionError> {
+    apply_host_input_config_transaction_with_builder(
+        state,
+        expected_config,
+        input,
+        crate::startup::services::build_interaction_source,
+    )
+    .await
+}
+
+async fn apply_host_input_config_transaction_with_builder(
+    state: &Arc<AppState>,
+    expected_config: &Arc<HypercolorConfig>,
+    input: hypercolor_types::config::InputConfig,
+    build_source: impl FnOnce(&hypercolor_types::config::InputConfig) -> Option<Box<dyn InputSource>>,
+) -> Result<bool, HostInputConfigTransactionError> {
+    let Some(manager) = state.config_manager.as_ref() else {
+        return Err(HostInputConfigTransactionError::Prepare(anyhow::anyhow!(
+            "config manager unavailable"
+        )));
+    };
+    let route_snapshot = state.interaction_routing.snapshot();
+    let route_changed = route_snapshot.daemon_policy != input.daemon_route
+        || route_snapshot.preview_policy != input.preview_route;
+    let host_changed = expected_config.input.enabled != input.enabled
+        || expected_config.input.keyboard != input.keyboard
+        || expected_config.input.mouse != input.mouse;
+
+    let mut replacement = host_changed.then(|| build_source(&input)).flatten();
+    if let Some(mut candidate) = replacement.take() {
+        candidate = tokio::task::spawn_blocking(move || {
+            candidate.start()?;
+            Ok::<_, anyhow::Error>(candidate)
+        })
+        .await
+        .map_err(|error| {
+            HostInputConfigTransactionError::Prepare(anyhow::anyhow!(
+                "host input preparation task failed: {error}"
+            ))
+        })?
+        .map_err(HostInputConfigTransactionError::Prepare)?;
+        replacement = Some(candidate);
+    }
+
+    let mut input_manager = state.input_manager.lock().await;
+    if !manager.is_current(expected_config) {
+        drop(input_manager);
+        stop_prepared_host_source(replacement).await;
+        return Err(HostInputConfigTransactionError::Conflict);
+    }
+    let persisted = match manager.modify_and_save_if_current(expected_config, |config| {
+        config.input.clone_from(&input);
+    }) {
+        Ok(persisted) => persisted,
+        Err(error) => {
+            drop(input_manager);
+            stop_prepared_host_source(replacement).await;
+            return Err(HostInputConfigTransactionError::Persist(error));
+        }
+    };
+    if !persisted {
+        drop(input_manager);
+        stop_prepared_host_source(replacement).await;
+        return Err(HostInputConfigTransactionError::Conflict);
+    }
+    let persisted_snapshot = Arc::clone(&manager.get());
+
+    let retirement = if host_changed {
+        match input_manager.swap_host_capture_source(&mut replacement) {
+            Ok(retirement) => Some(retirement),
+            Err(error) => {
+                let rollback = manager.modify_and_save_if_current(&persisted_snapshot, |config| {
+                    config.input.clone_from(&expected_config.input);
+                });
+                drop(input_manager);
+                stop_prepared_host_source(replacement).await;
+                match rollback {
+                    Ok(true) => {}
+                    Ok(false) => return Err(HostInputConfigTransactionError::Conflict),
+                    Err(rollback_error) => {
+                        return Err(HostInputConfigTransactionError::Persist(rollback_error));
+                    }
+                }
+                return Err(HostInputConfigTransactionError::Prepare(anyhow::anyhow!(
+                    error
+                )));
+            }
+        }
+    } else {
+        None
+    };
+    drop(input_manager);
+
+    if let Some(retirement) = retirement
+        && let Err(error) = tokio::task::spawn_blocking(move || retirement.retire()).await
+    {
+        warn!(%error, "Detached host input source retirement task failed");
+    }
+    if route_changed {
+        state.interaction_routing.publish_policies(
+            route_snapshot
+                .config_generation
+                .checked_add(1)
+                .expect("interaction route config generation exhausted"),
+            input.daemon_route,
+            input.preview_route,
+        );
+    }
+    info!(
+        host_changed,
+        route_changed, "Applied live host input config"
+    );
+    Ok(host_changed || route_changed)
+}
+
+async fn stop_prepared_host_source(source: Option<Box<dyn InputSource>>) {
+    let Some(mut source) = source else {
+        return;
+    };
+    let _ = tokio::task::spawn_blocking(move || source.stop()).await;
+}
+
 /// Apply host-input config changes live.
 ///
 /// Enable/disable adds or removes the interaction source on the running
@@ -1096,27 +1318,40 @@ async fn maybe_apply_input_config_change(state: &Arc<AppState>, key: Option<&str
         return route_changed;
     }
 
-    let mut input_manager = state.input_manager.lock().await;
-    // Only the host hardware source is consent-gated; the browser injection
-    // source is always registered and must survive enable/disable toggles.
-    let had_source = input_manager.has_host_capture_source();
-    let replacement = crate::startup::services::build_interaction_source(&input);
-
-    // Rebuild on any change so keyboard/mouse toggles apply, not just enable
-    // and disable.
-    input_manager.remove_host_capture_sources();
-    let Some(mut source) = replacement else {
-        if had_source {
-            info!("Disabled host input capture live");
+    let mut replacement = crate::startup::services::build_interaction_source(&input);
+    if let Some(mut candidate) = replacement.take() {
+        match tokio::task::spawn_blocking(move || {
+            candidate.start()?;
+            Ok::<_, anyhow::Error>(candidate)
+        })
+        .await
+        {
+            Ok(Ok(candidate)) => replacement = Some(candidate),
+            Ok(Err(error)) => {
+                warn!(%error, "Failed to prepare live host input source; retaining last-good source");
+                return route_changed;
+            }
+            Err(error) => {
+                warn!(%error, "Host input preparation task failed; retaining last-good source");
+                return route_changed;
+            }
         }
-        return had_source || route_changed;
-    };
-
-    if let Err(error) = source.start() {
-        warn!(%error, "Failed to start live host input source");
-        return had_source || route_changed;
     }
-    input_manager.add_source(source);
+
+    let mut input_manager = state.input_manager.lock().await;
+    let retirement = match input_manager.swap_host_capture_source(&mut replacement) {
+        Ok(retirement) => retirement,
+        Err(error) => {
+            drop(input_manager);
+            stop_prepared_host_source(replacement).await;
+            warn!(%error, "Host input graph changed; retaining last-good source");
+            return route_changed;
+        }
+    };
+    drop(input_manager);
+    if let Err(error) = tokio::task::spawn_blocking(move || retirement.retire()).await {
+        warn!(%error, "Detached host input source retirement task failed");
+    }
     info!("Applied live host input capture config");
     true
 }
@@ -1296,13 +1531,16 @@ async fn sync_active_layout_canvas_size_workflow(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use hypercolor_core::config::ConfigManager;
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
-    use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
+    use hypercolor_core::input::screen::{
+        CaptureConfig as ScreenCaptureConfig, PixelExtent, ScreenCaptureDemand,
+    };
     use hypercolor_core::input::{
         InputData, InputManager, InputSource, ScreenReconfigurationConflict, SourceIssue,
         SourceKind, SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
@@ -1310,10 +1548,11 @@ mod tests {
     use hypercolor_types::config::InteractionRoutePolicy;
 
     #[cfg(target_os = "macos")]
-    use super::capture_diff_is_processing_only;
+    use super::capture_diff_is_live_compatible;
     use super::{
         CAPTURE_CALIBRATION_RESET_KEY, CaptureConfigTransactionError, ResetConfigRequest,
-        SetConfigRequest, apply_capture_config_transaction, canvas_dimensions_differ,
+        SetConfigRequest, apply_capture_config_transaction,
+        apply_host_input_config_transaction_with_builder, canvas_dimensions_differ,
         capture_statuses_match, maybe_apply_input_config_change, reset_config_value,
         reset_json_scope, set_config_value, validate_prepared_capture_status,
     };
@@ -1323,6 +1562,63 @@ mod tests {
         running: bool,
         demand: ScreenCaptureDemand,
         stopped: Arc<AtomicBool>,
+        reconfigurations: Option<Arc<StdMutex<Vec<ScreenCaptureConfig>>>>,
+        reject_reconfiguration: Arc<AtomicBool>,
+        reject_after_first_reconfiguration: bool,
+        reconfiguration_attempts: usize,
+    }
+
+    struct TestHostSource {
+        name: &'static str,
+        running: bool,
+        start_error: bool,
+        stopped: Arc<AtomicBool>,
+    }
+
+    impl TestHostSource {
+        fn new(name: &'static str, start_error: bool, stopped: Arc<AtomicBool>) -> Self {
+            Self {
+                name,
+                running: false,
+                start_error,
+                stopped,
+            }
+        }
+    }
+
+    impl InputSource for TestHostSource {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            if self.start_error {
+                anyhow::bail!("test host source start failed");
+            }
+            self.running = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.running = false;
+            self.stopped.store(true, Ordering::Release);
+        }
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        fn is_interaction_source(&self) -> bool {
+            true
+        }
+
+        fn is_host_capture_source(&self) -> bool {
+            true
+        }
     }
 
     impl TestScreenSource {
@@ -1331,6 +1627,41 @@ mod tests {
                 running: false,
                 demand: ScreenCaptureDemand::Inactive,
                 stopped,
+                reconfigurations: None,
+                reject_reconfiguration: Arc::new(AtomicBool::new(false)),
+                reject_after_first_reconfiguration: false,
+                reconfiguration_attempts: 0,
+            }
+        }
+
+        fn tracked(
+            stopped: Arc<AtomicBool>,
+            reconfigurations: Arc<StdMutex<Vec<ScreenCaptureConfig>>>,
+            reject_reconfiguration: Arc<AtomicBool>,
+        ) -> Self {
+            Self {
+                running: false,
+                demand: ScreenCaptureDemand::Inactive,
+                stopped,
+                reconfigurations: Some(reconfigurations),
+                reject_reconfiguration,
+                reject_after_first_reconfiguration: false,
+                reconfiguration_attempts: 0,
+            }
+        }
+
+        fn reject_rollback(
+            stopped: Arc<AtomicBool>,
+            reconfigurations: Arc<StdMutex<Vec<ScreenCaptureConfig>>>,
+        ) -> Self {
+            Self {
+                running: false,
+                demand: ScreenCaptureDemand::Inactive,
+                stopped,
+                reconfigurations: Some(reconfigurations),
+                reject_reconfiguration: Arc::new(AtomicBool::new(false)),
+                reject_after_first_reconfiguration: true,
+                reconfiguration_attempts: 0,
             }
         }
     }
@@ -1368,6 +1699,25 @@ mod tests {
 
         fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
             self.demand = demand;
+            Ok(())
+        }
+
+        fn reconfigure_screen_capture(
+            &mut self,
+            config: &ScreenCaptureConfig,
+        ) -> anyhow::Result<()> {
+            self.reconfiguration_attempts = self.reconfiguration_attempts.saturating_add(1);
+            if self.reject_reconfiguration.load(Ordering::Acquire)
+                || self.reject_after_first_reconfiguration && self.reconfiguration_attempts > 1
+            {
+                anyhow::bail!("test source rejected capture config");
+            }
+            if let Some(reconfigurations) = &self.reconfigurations {
+                reconfigurations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(config.clone());
+            }
             Ok(())
         }
     }
@@ -1470,6 +1820,97 @@ mod tests {
             state.input_manager.lock().await.source_graph_generation(),
             graph_generation
         );
+    }
+
+    #[tokio::test]
+    async fn failed_host_candidate_preserves_last_good_source_and_config() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let manager = Arc::new(
+            ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+                .expect("test config manager should initialize"),
+        );
+        manager.modify(|config| config.input.enabled = true);
+        let expected = Arc::clone(&manager.get());
+        let old_stopped = Arc::new(AtomicBool::new(false));
+        let mut old = Box::new(TestHostSource::new(
+            "last-good-host",
+            false,
+            Arc::clone(&old_stopped),
+        ));
+        old.start().expect("last-good host source starts");
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        state.input_manager.lock().await.add_source(old);
+        let state = Arc::new(state);
+        let mut next = expected.input.clone();
+        next.keyboard = !next.keyboard;
+
+        let result =
+            apply_host_input_config_transaction_with_builder(&state, &expected, next, |_| {
+                Some(Box::new(TestHostSource::new(
+                    "failed-candidate",
+                    true,
+                    Arc::new(AtomicBool::new(false)),
+                )))
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(super::HostInputConfigTransactionError::Prepare(_))
+        ));
+        assert_eq!(manager.get().input.keyboard, expected.input.keyboard);
+        assert!(
+            state
+                .input_manager
+                .lock()
+                .await
+                .source_names()
+                .contains(&"last-good-host".to_owned())
+        );
+        assert!(!old_stopped.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn successful_host_candidate_commits_before_retiring_last_good() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let manager = Arc::new(
+            ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+                .expect("test config manager should initialize"),
+        );
+        manager.modify(|config| config.input.enabled = true);
+        let expected = Arc::clone(&manager.get());
+        let old_stopped = Arc::new(AtomicBool::new(false));
+        let candidate_stopped = Arc::new(AtomicBool::new(false));
+        let mut old = Box::new(TestHostSource::new(
+            "last-good-host",
+            false,
+            Arc::clone(&old_stopped),
+        ));
+        old.start().expect("last-good host source starts");
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        state.input_manager.lock().await.add_source(old);
+        let state = Arc::new(state);
+        let mut next = expected.input.clone();
+        next.keyboard = !next.keyboard;
+
+        apply_host_input_config_transaction_with_builder(&state, &expected, next.clone(), |_| {
+            Some(Box::new(TestHostSource::new(
+                "candidate-host",
+                false,
+                Arc::clone(&candidate_stopped),
+            )))
+        })
+        .await
+        .expect("prepared host candidate commits");
+
+        assert_eq!(manager.get().input.keyboard, next.keyboard);
+        assert!(old_stopped.load(Ordering::Acquire));
+        assert!(!candidate_stopped.load(Ordering::Acquire));
+        let sources = state.input_manager.lock().await.source_names();
+        assert!(sources.contains(&"candidate-host".to_owned()));
+        assert!(!sources.contains(&"last-good-host".to_owned()));
     }
 
     #[tokio::test]
@@ -1579,7 +2020,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_processing_only_diff_accepts_exactly_the_five_tone_fields() {
+    fn macos_live_compatible_diff_accepts_processing_and_acquisition_fields() {
         let original = hypercolor_types::config::CaptureConfig::default();
         let mut calibration = original.clone();
         calibration.target_led_white_x = 0.3000;
@@ -1587,7 +2028,18 @@ mod tests {
         calibration.target_led_reference_white_nits = 180.0;
         calibration.target_led_peak_nits = 500.0;
         calibration.exposure_ev = 1.25;
-        assert!(capture_diff_is_processing_only(&original, &calibration));
+        calibration.capture_fps += 1;
+        calibration.cadence = hypercolor_types::config::CaptureCadenceMode::NativeRefresh;
+        calibration.grid_cols += 1;
+        calibration.grid_rows += 1;
+        calibration.smoothing = 0.75;
+        calibration.scene_cut_threshold = 72.0;
+        calibration.letterbox = !original.letterbox;
+        calibration.letterbox_threshold = 0.08;
+        calibration.saturation = 1.2;
+        calibration.brightness = 1.1;
+        calibration.gamma = 1.3;
+        assert!(capture_diff_is_live_compatible(&original, &calibration));
 
         for divergent in [
             {
@@ -1602,17 +2054,179 @@ mod tests {
             },
             {
                 let mut config = calibration.clone();
-                config.capture_fps = original.capture_fps + 1;
+                config.publication_memory_bytes = Some(1_000_000);
                 config
             },
             {
                 let mut config = calibration.clone();
-                config.smoothing = 0.75;
+                config.restore_token = Some("other-session".to_owned());
                 config
             },
         ] {
-            assert!(!capture_diff_is_processing_only(&original, &divergent));
+            assert!(!capture_diff_is_live_compatible(&original, &divergent));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn compatible_macos_capture_update_keeps_source_and_session_scope() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let manager = Arc::new(
+            ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+                .expect("test config manager should initialize"),
+        );
+        manager.modify(|config| {
+            config.capture.enabled = true;
+            config.capture.source = "session_scoped".to_owned();
+        });
+        let expected = Arc::clone(&manager.get());
+        manager.mark_capture_runtime_applied(&expected.capture);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let reconfigurations = Arc::new(StdMutex::new(Vec::new()));
+        let reject = Arc::new(AtomicBool::new(false));
+        let source = Box::new(TestScreenSource::tracked(
+            Arc::clone(&stopped),
+            Arc::clone(&reconfigurations),
+            reject,
+        ));
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        {
+            let mut input_manager = state.input_manager.lock().await;
+            input_manager.add_source(source);
+            input_manager
+                .start_all()
+                .expect("last-good input graph starts");
+        }
+        let state = Arc::new(state);
+        let mut capture = expected.capture.clone();
+        capture.capture_fps += 1;
+        capture.cadence = hypercolor_types::config::CaptureCadenceMode::NativeRefresh;
+        capture.grid_cols += 1;
+        capture.grid_rows += 1;
+        capture.smoothing = 0.8;
+        capture.scene_cut_threshold = 65.0;
+        capture.letterbox = true;
+        capture.letterbox_threshold = 0.08;
+        capture.saturation = 1.2;
+        capture.brightness = 1.1;
+        capture.gamma = 1.3;
+        capture.target_led_white_x = 0.31;
+        capture.target_led_white_y = 0.33;
+        capture.target_led_reference_white_nits = 180.0;
+        capture.target_led_peak_nits = 500.0;
+        capture.exposure_ev = 1.0;
+        let expected_runtime = crate::startup::services::screen_capture_config_from(&capture)
+            .expect("compatible runtime config should build");
+
+        apply_capture_config_transaction(&state, &expected, capture.clone())
+            .await
+            .expect("compatible update applies in place");
+
+        assert_eq!(manager.get().capture, capture);
+        assert_eq!(manager.get().capture.source, "session_scoped");
+        assert_eq!(
+            state.input_manager.lock().await.source_names(),
+            ["BrowserInput", "test_screen"]
+        );
+        assert!(!stopped.load(Ordering::Acquire));
+        let applied = reconfigurations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(applied.as_slice(), [expected_runtime]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn rejected_macos_live_update_preserves_last_good_config_and_source() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let manager = Arc::new(
+            ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+                .expect("test config manager should initialize"),
+        );
+        manager.modify(|config| config.capture.enabled = true);
+        let expected = Arc::clone(&manager.get());
+        manager.mark_capture_runtime_applied(&expected.capture);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let reject = Arc::new(AtomicBool::new(true));
+        let source = Box::new(TestScreenSource::tracked(
+            Arc::clone(&stopped),
+            Arc::new(StdMutex::new(Vec::new())),
+            reject,
+        ));
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        {
+            let mut input_manager = state.input_manager.lock().await;
+            input_manager.add_source(source);
+            input_manager
+                .start_all()
+                .expect("last-good input graph starts");
+        }
+        let state = Arc::new(state);
+        let mut capture = expected.capture.clone();
+        capture.capture_fps += 1;
+
+        let result = apply_capture_config_transaction(&state, &expected, capture).await;
+
+        assert!(matches!(
+            result,
+            Err(CaptureConfigTransactionError::Prepare(_))
+        ));
+        assert_eq!(manager.get().capture, expected.capture);
+        assert!(state.input_manager.lock().await.has_screen_source());
+        assert!(!stopped.load(Ordering::Acquire));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn failed_macos_live_rollback_invalidates_runtime_fingerprint() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let blocked_parent = tempdir.path().join("blocked-parent");
+        std::fs::write(&blocked_parent, "not a directory")
+            .expect("persistence blocker should be created");
+        let manager = Arc::new(
+            ConfigManager::new(blocked_parent.join("hypercolor.toml"))
+                .expect("test config manager should initialize"),
+        );
+        manager.modify(|config| config.capture.enabled = true);
+        let expected = Arc::clone(&manager.get());
+        manager.mark_capture_runtime_applied(&expected.capture);
+        let reconfigurations = Arc::new(StdMutex::new(Vec::new()));
+        let source = Box::new(TestScreenSource::reject_rollback(
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&reconfigurations),
+        ));
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        {
+            let mut input_manager = state.input_manager.lock().await;
+            input_manager.add_source(source);
+            input_manager
+                .start_all()
+                .expect("last-good input graph starts");
+        }
+        let state = Arc::new(state);
+        let mut capture = expected.capture.clone();
+        capture.capture_fps += 1;
+        let candidate = capture.clone();
+
+        let result = apply_capture_config_transaction(&state, &expected, capture).await;
+
+        assert!(matches!(
+            result,
+            Err(CaptureConfigTransactionError::Prepare(_))
+        ));
+        assert_eq!(manager.get().capture, expected.capture);
+        assert!(!manager.capture_runtime_matches(&expected.capture));
+        assert!(!manager.capture_runtime_matches(&candidate));
+        assert_eq!(
+            reconfigurations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

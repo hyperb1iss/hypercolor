@@ -54,6 +54,18 @@ pub(crate) struct RequestAuthContext {
 #[derive(Debug, Clone, Copy)]
 struct TrustedLocalControl;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestLocality {
+    loopback: bool,
+}
+
+impl RequestLocality {
+    #[must_use]
+    pub(crate) const fn is_loopback(self) -> bool {
+        self.loopback
+    }
+}
+
 impl RequestAuthContext {
     #[must_use]
     pub(crate) const fn unsecured() -> Self {
@@ -520,6 +532,10 @@ pub async fn enforce_security(
     next: Next,
 ) -> Response {
     let mut request = request;
+    let loopback = request_is_loopback(&request);
+    request
+        .extensions_mut()
+        .insert(RequestLocality { loopback });
 
     if request
         .extensions_mut()
@@ -795,11 +811,8 @@ fn request_is_loopback(request: &Request<Body>) -> bool {
 
 fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
     if let Some(socket_addr) = peer_socket_addr(request) {
-        if socket_addr.ip().is_loopback()
-            && let Some(forwarded_client) = forwarded_client_ip(request)
-            && let Ok(forwarded_ip) = forwarded_client.parse::<IpAddr>()
-        {
-            return Some(forwarded_ip);
+        if socket_addr.ip().is_loopback() && forwarded_client_header_present(request) {
+            return forwarded_client_ip(request)?.parse::<IpAddr>().ok();
         }
         return Some(socket_addr.ip());
     }
@@ -815,26 +828,24 @@ fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
 }
 
 fn forwarded_client_ip(request: &Request<Body>) -> Option<String> {
-    if let Some(forwarded) = request.headers().get("x-forwarded-for")
-        && let Ok(value) = forwarded.to_str()
-        && let Some(first) = value.split(',').next()
-    {
+    if let Some(forwarded) = request.headers().get("x-forwarded-for") {
+        let value = forwarded.to_str().ok()?;
+        let first = value.split(',').next()?;
         let trimmed = first.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
 
-    if let Some(real_ip) = request.headers().get("x-real-ip")
-        && let Ok(value) = real_ip.to_str()
-    {
+    if let Some(real_ip) = request.headers().get("x-real-ip") {
+        let value = real_ip.to_str().ok()?;
         let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
 
     None
+}
+
+fn forwarded_client_header_present(request: &Request<Body>) -> bool {
+    request.headers().contains_key("x-forwarded-for") || request.headers().contains_key("x-real-ip")
 }
 
 fn apply_rate_headers(response: &mut Response, decision: &RateDecision) {

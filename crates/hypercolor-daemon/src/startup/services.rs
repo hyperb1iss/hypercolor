@@ -977,6 +977,11 @@ struct CaptureConfigPersistenceState {
 }
 
 enum CaptureConfigPersistenceUpdate {
+    #[cfg(target_os = "macos")]
+    MacosSource {
+        configured: String,
+        resolved: String,
+    },
     #[cfg(target_os = "windows")]
     WindowsSource(ResolvedCaptureSource),
     #[cfg(target_os = "linux")]
@@ -1022,6 +1027,25 @@ impl CaptureConfigPersistenceGate {
         state.source_status = Some(status);
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn for_macos_picker(
+        config_manager: Arc<ConfigManager>,
+        expected: &Arc<HypercolorConfig>,
+        status: SourceStatusHandle,
+    ) -> Result<Self> {
+        let persistence = Self::new(config_manager, expected, true)?;
+        persistence.bind_source(status);
+        Ok(persistence)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn publish_macos_selection(&self, configured: String, resolved: String) {
+        self.publish(CaptureConfigPersistenceUpdate::MacosSource {
+            configured,
+            resolved,
+        });
+    }
+
     pub(crate) fn epoch(&self) -> CapturePersistenceEpoch {
         self.inner
             .state
@@ -1039,7 +1063,7 @@ impl CaptureConfigPersistenceGate {
         source_identity(&state)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     fn publish(&self, update: CaptureConfigPersistenceUpdate) {
         let persistence = {
             let mut state = self
@@ -1130,7 +1154,7 @@ impl CaptureConfigPersistenceGate {
         self.inner.config_manager.revoke_capture_persistence(epoch);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     fn persist(
         &self,
         epoch: CapturePersistenceEpoch,
@@ -1143,6 +1167,10 @@ impl CaptureConfigPersistenceGate {
         let config_manager = &self.inner.config_manager;
         let snapshot = Arc::clone(&config_manager.get());
         let should_persist = match &update {
+            #[cfg(target_os = "macos")]
+            CaptureConfigPersistenceUpdate::MacosSource { configured, .. } => {
+                snapshot.capture.source == *configured
+            }
             #[cfg(target_os = "windows")]
             CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
                 snapshot.capture.source == resolved.configured_source
@@ -1165,6 +1193,10 @@ impl CaptureConfigPersistenceGate {
         }
 
         let mutate = |capture: &mut hypercolor_types::config::CaptureConfig| match update {
+            #[cfg(target_os = "macos")]
+            CaptureConfigPersistenceUpdate::MacosSource { resolved, .. } => {
+                capture.source = resolved;
+            }
             #[cfg(target_os = "windows")]
             CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
                 capture.source = resolved.stable_source;
@@ -1193,7 +1225,7 @@ impl CaptureConfigPersistenceGate {
         }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     fn persist(
         &self,
         _epoch: CapturePersistenceEpoch,
@@ -1219,14 +1251,16 @@ fn source_identity(state: &CaptureConfigPersistenceState) -> Option<CapturePersi
 
 /// Whether an update's authorization must pin a source identity.
 ///
-/// Restore tokens do not: the capture worker serializes them under its
-/// session-epoch guard, their session generations legitimately advance
-/// across in-worker reconnects, and pinning the first observed generation
-/// rejects every later rotation, stranding consumed tokens on disk. They
-/// authorize by persistence epoch alone.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+/// Restore tokens authorize by persistence epoch because their session
+/// generations legitimately advance across reconnects. macOS picker updates
+/// also authorize by epoch: the observer is bound to one exact status handle
+/// and accepts only the first strictly newer native selection revision, even
+/// while capture has no active session generation.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn requires_source_identity(update: &CaptureConfigPersistenceUpdate) -> bool {
     match update {
+        #[cfg(target_os = "macos")]
+        CaptureConfigPersistenceUpdate::MacosSource { .. } => false,
         #[cfg(target_os = "windows")]
         CaptureConfigPersistenceUpdate::WindowsSource(_) => true,
         #[cfg(target_os = "linux")]
@@ -1234,7 +1268,7 @@ fn requires_source_identity(update: &CaptureConfigPersistenceUpdate) -> bool {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const fn requires_source_identity(_update: &CaptureConfigPersistenceUpdate) -> bool {
     false
 }
@@ -1360,10 +1394,20 @@ pub(crate) fn screen_capture_config_from(
     capture
         .validate()
         .context("invalid screen capture configuration")?;
-    hypercolor_core::input::screen::CaptureCadence::new(capture.capture_fps)
-        .context("screen capture cadence is not representable by the runtime scheduler")?;
+    let acquisition_cadence = match capture.cadence {
+        hypercolor_types::config::CaptureCadenceMode::Fixed => {
+            hypercolor_core::input::screen::ScreenCaptureCadence::frames_per_second(
+                capture.capture_fps,
+            )
+            .context("screen capture cadence is not representable by the runtime scheduler")?
+        }
+        hypercolor_types::config::CaptureCadenceMode::NativeRefresh => {
+            hypercolor_core::input::screen::ScreenCaptureCadence::NativeRefresh
+        }
+    };
     Ok(ScreenCaptureConfig {
         target_fps: capture.capture_fps,
+        acquisition_cadence,
         grid_cols: capture.grid_cols,
         grid_rows: capture.grid_rows,
         analysis_memory_bytes: u64::MAX,

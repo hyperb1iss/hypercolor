@@ -329,7 +329,7 @@ pub fn CaptureSection(
                     <div class="min-w-0">
                         <div class="text-[13px] text-fg-primary">"Capture source"</div>
                         <div class="text-xs text-fg-tertiary">
-                            "Pick which screen or window to mirror; the choice persists across restarts"
+                            "Pick a display, window, or app. Displays persist across restarts; windows and apps stay session scoped"
                         </div>
                     </div>
                     <button

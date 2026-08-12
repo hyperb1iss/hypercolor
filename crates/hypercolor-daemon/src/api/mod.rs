@@ -41,8 +41,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
+#[cfg(any(target_os = "macos", test))]
+use std::sync::atomic::AtomicU64;
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -112,6 +114,9 @@ use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 #[cfg(test)]
 static APP_STATE_TEST_DATA_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
+type CapturePickerPersistenceTask = Arc<StdMutex<Option<(u64, JoinHandle<()>)>>>;
 
 /// Shared application state injected into every API handler.
 ///
@@ -197,6 +202,14 @@ pub struct AppState {
 
     /// Exact lock-free screen capacity policy and physical usage.
     pub screen_capacity_status: ScreenCapacityStatusHandle,
+
+    /// Monotonic request order for macOS picker-persistence observers.
+    #[cfg(target_os = "macos")]
+    pub(crate) capture_picker_request_epoch: Arc<AtomicU64>,
+
+    /// Latest macOS picker-persistence observer, fenced by request order.
+    #[cfg(target_os = "macos")]
+    pub(crate) capture_picker_persistence_task: CapturePickerPersistenceTask,
 
     /// Aggregate typed input demand shared with render and connection consumers.
     pub input_publication_demands: InputPublicationDemandHandle,
@@ -600,6 +613,10 @@ impl AppState {
             api_extensions: Vec::new(),
             input_manager,
             screen_capacity_status,
+            #[cfg(target_os = "macos")]
+            capture_picker_request_epoch: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            capture_picker_persistence_task: Arc::new(StdMutex::new(None)),
             input_publication_demands: InputPublicationDemandHandle::new(),
             #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
             macos_screen_parity_diagnostics: None,
@@ -687,6 +704,10 @@ impl AppState {
             api_extensions: daemon.api_extensions.clone(),
             input_manager: Arc::clone(&daemon.input_manager),
             screen_capacity_status: daemon.screen_capacity_status.clone(),
+            #[cfg(target_os = "macos")]
+            capture_picker_request_epoch: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            capture_picker_persistence_task: Arc::new(StdMutex::new(None)),
             input_publication_demands: daemon
                 .input_publication_demands()
                 .expect("live API state requires a running input publication pump"),
@@ -1548,7 +1569,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── System ───────────────────────────────────────────────────
         .route("/server", axum::routing::get(system::get_server))
-        .route("/status", axum::routing::get(system::get_status))
+        .route("/status", axum::routing::get(system::get_status_route))
         .route("/system/sensors", axum::routing::get(system::get_sensors))
         .route(
             "/system/sensors/{label}",

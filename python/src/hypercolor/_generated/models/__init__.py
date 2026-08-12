@@ -26,6 +26,16 @@ from .api_response_apply_effect_response_data import ApiResponseApplyEffectRespo
 from .api_response_apply_effect_response_data_applied_controls import (
     ApiResponseApplyEffectResponseDataAppliedControls,
 )
+from .api_response_capture_authorization_response import (
+    ApiResponseCaptureAuthorizationResponse,
+)
+from .api_response_capture_authorization_response_data import (
+    ApiResponseCaptureAuthorizationResponseData,
+)
+from .api_response_capture_picker_response import ApiResponseCapturePickerResponse
+from .api_response_capture_picker_response_data import (
+    ApiResponseCapturePickerResponseData,
+)
 from .api_response_control_action_result import ApiResponseControlActionResult
 from .api_response_control_action_result_data import ApiResponseControlActionResultData
 from .api_response_control_action_result_data_result_type_0 import (
@@ -89,6 +99,10 @@ from .api_response_server_info import ApiResponseServerInfo
 from .api_response_server_info_data import ApiResponseServerInfoData
 from .api_response_system_status import ApiResponseSystemStatus
 from .api_response_system_status_data import ApiResponseSystemStatusData
+from .api_response_vec_capture_monitor import ApiResponseVecCaptureMonitor
+from .api_response_vec_capture_monitor_data_item import (
+    ApiResponseVecCaptureMonitorDataItem,
+)
 from .applied_control_change import AppliedControlChange
 from .applied_control_change_value import AppliedControlChangeValue
 from .apply_control_changes_request import ApplyControlChangesRequest
@@ -131,6 +145,9 @@ from .broadcast_media_layer_response import BroadcastMediaLayerResponse
 from .broadcast_media_layer_target import BroadcastMediaLayerTarget
 from .broadcast_media_layer_target_adjust import BroadcastMediaLayerTargetAdjust
 from .broadcast_media_layer_target_transform import BroadcastMediaLayerTargetTransform
+from .capture_authorization_response import CaptureAuthorizationResponse
+from .capture_monitor import CaptureMonitor
+from .capture_picker_response import CapturePickerResponse
 from .control_access import ControlAccess
 from .control_action_descriptor import ControlActionDescriptor
 from .control_action_descriptor_availability import ControlActionDescriptorAvailability
@@ -314,6 +331,7 @@ from .preset_template_controls import PresetTemplateControls
 from .preview_demand_status import PreviewDemandStatus
 from .preview_runtime_status import PreviewRuntimeStatus
 from .preview_source import PreviewSource
+from .protected_source_grant_owner import ProtectedSourceGrantOwner
 from .rebind_candidate_summary import RebindCandidateSummary
 from .rebind_device_request import RebindDeviceRequest
 from .rejected_control_change import RejectedControlChange
@@ -404,6 +422,10 @@ __all__ = (
     "ApiResponseApplyEffectResponse",
     "ApiResponseApplyEffectResponseData",
     "ApiResponseApplyEffectResponseDataAppliedControls",
+    "ApiResponseCaptureAuthorizationResponse",
+    "ApiResponseCaptureAuthorizationResponseData",
+    "ApiResponseCapturePickerResponse",
+    "ApiResponseCapturePickerResponseData",
     "ApiResponseControlActionResult",
     "ApiResponseControlActionResultData",
     "ApiResponseControlActionResultDataResultType0",
@@ -441,6 +463,8 @@ __all__ = (
     "ApiResponseServerInfoData",
     "ApiResponseSystemStatus",
     "ApiResponseSystemStatusData",
+    "ApiResponseVecCaptureMonitor",
+    "ApiResponseVecCaptureMonitorDataItem",
     "AppliedControlChange",
     "AppliedControlChangeValue",
     "ApplyControlChangesRequest",
@@ -475,6 +499,9 @@ __all__ = (
     "BroadcastMediaLayerTargetTransform",
     "BTreeMap",
     "BTreeMapAdditionalProperty",
+    "CaptureAuthorizationResponse",
+    "CaptureMonitor",
+    "CapturePickerResponse",
     "ControlAccess",
     "ControlActionDescriptor",
     "ControlActionDescriptorAvailability",
@@ -646,6 +673,7 @@ __all__ = (
     "PreviewDemandStatus",
     "PreviewRuntimeStatus",
     "PreviewSource",
+    "ProtectedSourceGrantOwner",
     "RebindCandidateSummary",
     "RebindDeviceRequest",
     "RejectedControlChange",

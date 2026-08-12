@@ -1111,9 +1111,34 @@ of your output, not a microphone, if you want lights to follow what's playing.
 
 ## Screen capture
 
+The four protected capture operations below only accept local requests. A
+remote client receives `403 Forbidden` even when it presents a valid control
+key. The locality decision uses the socket peer and only trusts forwarded
+addresses from a loopback proxy.
+
+The system status response keeps the selected session source identifier for a
+local request. Any remote response replaces application and window selection
+identifiers with `session_scoped`; stable display UUIDs remain available for
+diagnostics.
+
+{% api_endpoint(method="POST", path="/api/v1/input/authorize") %}
+Request Input Monitoring authorization from the process that owns host keyboard
+capture. The response reports whether access is currently authorized and names
+the process topology that owns the grant.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/capture/authorize") %}
+Request Screen Recording authorization from the process that owns screen
+capture. The response reports whether access is currently authorized and names
+the process topology that owns the grant.
+{% end %}
+
 {% api_endpoint(method="POST", path="/api/v1/capture/source/pick") %}
-Open the platform picker so the user can choose a screen or window capture
-source for screen-reactive effects.
+Open the platform picker so the user can choose a display, window, or application
+for screen-reactive effects. An accepted display persists by its stable display
+UUID. Window and application choices persist as `session_scoped`, so Hypercolor
+remembers the privacy boundary without writing the selected window ID or bundle
+ID to configuration. Cancelling the picker leaves the current source unchanged.
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/capture/monitors") %}

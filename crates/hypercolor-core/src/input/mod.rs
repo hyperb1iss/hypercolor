@@ -75,6 +75,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
+use thiserror::Error;
 use tokio::sync::watch;
 
 use tracing::{error, info};
@@ -231,6 +232,38 @@ pub enum ScreenReconfigurationConflict {
     /// The prepared replacement does not match the plan.
     #[error("prepared screen source does not match the reconfiguration plan")]
     InvalidReplacement,
+}
+
+/// Rejected host-input source swap.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum HostReconfigurationError {
+    /// More than one host source violates the manager's replacement invariant.
+    #[error("more than one host input source is registered")]
+    SourceTopologyChanged,
+    /// The candidate is not a running host interaction source.
+    #[error("prepared host input replacement is invalid")]
+    InvalidReplacement,
+}
+
+/// Host sources detached by an atomic graph commit.
+#[must_use = "retired host sources must be stopped outside the input manager lock"]
+pub struct HostRuntimeRetirement {
+    source: Option<ManagedInputSource>,
+    source_graph_generation: u64,
+}
+
+impl HostRuntimeRetirement {
+    /// Stop the detached source and retire its status handle.
+    pub fn retire(mut self) {
+        let Some(source) = &mut self.source else {
+            return;
+        };
+        source.stop();
+        if let Err(error) = source.retire_source_status(self.source_graph_generation) {
+            error!(source = source.name(), %error, "Failed to retire host input source status");
+        }
+        info!(source = source.name(), "Retired host input source");
+    }
 }
 
 /// Screen sources detached by an atomic graph commit.
@@ -391,6 +424,17 @@ impl ManagedInputSource {
 
     fn source_status_handle(&self) -> SourceStatusHandle {
         self.slot.status().clone()
+    }
+
+    fn mark_prestarted_compatibility_live(&mut self) {
+        let Some(status) = &mut self.compatibility_status else {
+            return;
+        };
+        let session = status
+            .begin_session()
+            .expect("validated compatibility host source can begin its session")
+            .expect("manager-bound compatibility host source creates a session");
+        session.mark_event_driven_live_without_deadline(1);
     }
 
     fn set_source_graph_generation(&mut self, source_graph_generation: u64) {
@@ -1846,6 +1890,69 @@ impl InputManager {
             .any(|source| source.is_host_capture_source())
     }
 
+    /// Atomically replace the registered host source with one pre-started candidate.
+    ///
+    /// The detached source remains running in the returned retirement owner until
+    /// the caller releases it outside the input-manager lock. A rejected candidate
+    /// leaves the current source and graph generation unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager does not contain exactly zero or one host
+    /// source, or when the supplied candidate is not a running host interaction
+    /// source.
+    pub fn swap_host_capture_source(
+        &mut self,
+        replacement: &mut Option<Box<dyn InputSource>>,
+    ) -> Result<HostRuntimeRetirement, HostReconfigurationError> {
+        let mut host_indices = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(index, source)| source.is_host_capture_source().then_some(index));
+        let current_index = host_indices.next();
+        if host_indices.next().is_some() {
+            return Err(HostReconfigurationError::SourceTopologyChanged);
+        }
+        if replacement.as_ref().is_some_and(|source| {
+            !source.is_host_capture_source()
+                || !source.is_interaction_source()
+                || !source.is_running()
+        }) {
+            return Err(HostReconfigurationError::InvalidReplacement);
+        }
+        if current_index.is_none() && replacement.is_none() {
+            return Ok(HostRuntimeRetirement {
+                source: None,
+                source_graph_generation: self.source_graph_generation,
+            });
+        }
+
+        let source_graph_generation = self.bump_source_graph_generation();
+        let prepared = replacement.take().map(|source| {
+            let mut prepared = self.create_managed_source(source, source_graph_generation);
+            prepared.mark_prestarted_compatibility_live();
+            prepared
+        });
+        let retired = match (current_index, prepared) {
+            (Some(index), Some(prepared)) => {
+                Some(std::mem::replace(&mut self.sources[index], prepared))
+            }
+            (Some(index), None) => Some(self.sources.remove(index)),
+            (None, Some(prepared)) => {
+                self.sources.push(prepared);
+                None
+            }
+            (None, None) => unreachable!("empty host swap returned before graph mutation"),
+        };
+        self.interaction_capture_active = None;
+        self.publish_source_status_registry();
+        Ok(HostRuntimeRetirement {
+            source: retired,
+            source_graph_generation,
+        })
+    }
+
     /// Stop and remove only host hardware capture sources.
     ///
     /// Leaves the browser injection source in place so disabling host
@@ -2469,5 +2576,122 @@ fn sample_managed_source(
 impl Default for InputManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod host_source_swap_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{HostReconfigurationError, InputData, InputManager, InputSource, SourceState};
+
+    struct HostSource {
+        name: &'static str,
+        running: bool,
+        stopped: Arc<AtomicBool>,
+    }
+
+    impl HostSource {
+        fn new(name: &'static str, stopped: Arc<AtomicBool>) -> Self {
+            Self {
+                name,
+                running: false,
+                stopped,
+            }
+        }
+    }
+
+    impl InputSource for HostSource {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.running = false;
+            self.stopped.store(true, Ordering::Release);
+        }
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+
+        fn is_interaction_source(&self) -> bool {
+            true
+        }
+
+        fn is_host_capture_source(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn successful_host_swap_defers_old_source_retirement() {
+        let old_stopped = Arc::new(AtomicBool::new(false));
+        let candidate_stopped = Arc::new(AtomicBool::new(false));
+        let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
+        old.start().expect("old host source starts");
+        let mut manager = InputManager::new();
+        manager.add_source(old);
+        let initial_generation = manager.source_graph_generation();
+
+        let mut candidate: Option<Box<dyn InputSource>> = Some(Box::new(HostSource::new(
+            "candidate-host",
+            Arc::clone(&candidate_stopped),
+        )));
+        candidate
+            .as_mut()
+            .expect("candidate exists")
+            .start()
+            .expect("candidate host source starts");
+        let retirement = manager
+            .swap_host_capture_source(&mut candidate)
+            .expect("running candidate swaps atomically");
+
+        assert!(candidate.is_none());
+        assert_eq!(manager.source_names(), ["candidate-host"]);
+        assert!(manager.source_graph_generation() > initial_generation);
+        assert_eq!(
+            manager.source_status_registry().snapshot().statuses()[0].state,
+            SourceState::Live
+        );
+        assert!(!old_stopped.load(Ordering::Acquire));
+        assert!(!candidate_stopped.load(Ordering::Acquire));
+
+        retirement.retire();
+        assert!(old_stopped.load(Ordering::Acquire));
+        assert!(!candidate_stopped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn nonrunning_candidate_preserves_last_good_host_source() {
+        let old_stopped = Arc::new(AtomicBool::new(false));
+        let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
+        old.start().expect("old host source starts");
+        let mut manager = InputManager::new();
+        manager.add_source(old);
+        let initial_generation = manager.source_graph_generation();
+        let mut candidate: Option<Box<dyn InputSource>> = Some(Box::new(HostSource::new(
+            "failed-candidate",
+            Arc::new(AtomicBool::new(false)),
+        )));
+
+        assert!(matches!(
+            manager.swap_host_capture_source(&mut candidate),
+            Err(HostReconfigurationError::InvalidReplacement)
+        ));
+        assert!(candidate.is_some());
+        assert_eq!(manager.source_names(), ["old-host"]);
+        assert_eq!(manager.source_graph_generation(), initial_generation);
+        assert!(!old_stopped.load(Ordering::Acquire));
     }
 }

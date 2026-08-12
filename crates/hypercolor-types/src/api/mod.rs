@@ -18,6 +18,7 @@
 //! does NOT — those shapes move fast with perf work, and clients consume
 //! tolerant subsets of them by design.
 
+pub mod capture;
 pub mod common;
 pub mod devices;
 pub mod effects;

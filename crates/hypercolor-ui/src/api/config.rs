@@ -2,6 +2,8 @@
 
 use serde::Deserialize;
 
+pub use hypercolor_types::api::capture::CaptureMonitor;
+
 use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -49,18 +51,6 @@ pub async fn reset_config_key(key: &str) -> Result<(), String> {
     client::post_json_discard("/api/v1/config/reset", &body)
         .await
         .map_err(Into::into)
-}
-
-/// One display output capture can address, from `/api/v1/capture/monitors`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct CaptureMonitor {
-    pub index: usize,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    pub primary: bool,
-    /// Ready-to-store `capture.source` value selecting this output.
-    pub value: String,
 }
 
 /// Display outputs the capture backend can address. Empty on portal

@@ -132,6 +132,27 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(source_status["properties"]["freshness_remaining_ms"].is_object());
     assert!(source_status["properties"]["denied_resource_count"].is_object());
     assert!(body["components"]["schemas"]["InputSourceIssueStatus"].is_object());
+    for (path, method) in [
+        ("/api/v1/input/authorize", "post"),
+        ("/api/v1/capture/authorize", "post"),
+        ("/api/v1/capture/source/pick", "post"),
+        ("/api/v1/capture/monitors", "get"),
+    ] {
+        assert!(
+            body["paths"][path][method].is_object(),
+            "missing capture operation {} {path}",
+            method.to_uppercase()
+        );
+        assert_eq!(
+            body["paths"][path][method]["responses"]["403"]["content"]["application/json"]["schema"]
+                ["$ref"],
+            "#/components/schemas/ApiErrorResponse"
+        );
+    }
+    assert!(body["components"]["schemas"]["CaptureAuthorizationResponse"].is_object());
+    assert!(body["components"]["schemas"]["CapturePickerResponse"].is_object());
+    assert!(body["components"]["schemas"]["CaptureMonitor"].is_object());
+    assert!(body["components"]["schemas"]["ProtectedSourceGrantOwner"].is_object());
 
     for route in ROUTES {
         let operation = &body["paths"][route.path][route.method];
@@ -149,6 +170,102 @@ async fn openapi_json_is_served_with_expected_paths() {
             route.path
         );
     }
+}
+
+fn balanced_call(input: &str) -> &str {
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut saw_open = false;
+
+    for (index, character) in input.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '(' => {
+                saw_open = true;
+                depth += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if saw_open && depth == 0 {
+                    return &input[..=index];
+                }
+            }
+            _ => {}
+        }
+    }
+
+    panic!("unterminated router call: {input}");
+}
+
+fn quoted_path(call: &str) -> &str {
+    let start = call.find('"').expect("router call should contain a path") + 1;
+    let end = call[start..]
+        .find('"')
+        .expect("router path should have a closing quote");
+    &call[start..start + end]
+}
+
+fn router_operations() -> BTreeSet<(String, String)> {
+    let source = include_str!("../src/api/mod.rs");
+    let mut router = source
+        .split_once("let api = Router::new()")
+        .expect("router construction should be present")
+        .1
+        .split_once("let mut api = api;")
+        .expect("router construction should have a stable boundary")
+        .0;
+    let mut operations = BTreeSet::new();
+
+    while let Some(index) = router.find(".route(") {
+        let call = balanced_call(&router[index..]);
+        let path = format!("/api/v1{}", quoted_path(call));
+        for method in ["get", "post", "put", "patch", "delete"] {
+            if call.contains(&format!("axum::routing::{method}("))
+                || call.contains(&format!(".{method}("))
+            {
+                operations.insert((method.to_owned(), path.clone()));
+            }
+        }
+        router = &router[index + call.len()..];
+    }
+
+    let screenshot_index = source
+        .find(".nest_service(")
+        .expect("effect screenshot service should be mounted");
+    let screenshot_service = balanced_call(&source[screenshot_index..]);
+    operations.insert((
+        "get".to_owned(),
+        format!("/api/v1{}", quoted_path(screenshot_service)),
+    ));
+    operations
+}
+
+#[test]
+fn every_static_router_operation_is_cataloged() {
+    let catalog = ROUTES
+        .iter()
+        .map(|route| (route.method.to_owned(), route.path.to_owned()))
+        .collect::<BTreeSet<_>>();
+    let missing = router_operations()
+        .difference(&catalog)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    assert!(
+        missing.is_empty(),
+        "router operations missing from OpenAPI catalog: {missing:?}"
+    );
 }
 
 #[test]

@@ -448,6 +448,15 @@ impl ConfigManager {
         writer.applied_capture = Some(capture.clone());
     }
 
+    /// Forget which capture config the installed runtime source graph represents.
+    pub fn invalidate_capture_runtime_applied(&self) {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        writer.applied_capture = None;
+    }
+
     /// Whether the installed capture runtime was built from this exact config.
     #[must_use]
     pub fn capture_runtime_matches(&self, capture: &CaptureConfig) -> bool {

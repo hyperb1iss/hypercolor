@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::screen::{
@@ -26,6 +26,7 @@ use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::security::RequestLocality;
 use crate::api::settings;
 use crate::macos_owner::{MacosDaemonOwner, MacosHandoverPhase, MacosOwnerSnapshot};
 use crate::performance::LatestFrameMetrics;
@@ -727,9 +728,16 @@ pub struct ServerInfo {
     pub auth_required: bool,
 }
 
-/// Build the canonical lock-free input health snapshot used by every status surface.
+/// Build the redacted input health snapshot used by non-local status surfaces.
 #[must_use]
 pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
+    input_status_snapshot_with_privacy(state, false)
+}
+
+fn input_status_snapshot_with_privacy(
+    state: &AppState,
+    include_private_selection_ids: bool,
+) -> InputStatus {
     let now = Instant::now();
     let registry = state.input_status.snapshot();
     let statuses = registry
@@ -742,7 +750,7 @@ pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
         .filter(|source| is_host_interaction_source(source));
     let sources = statuses
         .iter()
-        .map(|source| input_source_status(source, now))
+        .map(|source| input_source_status(source, now, include_private_selection_ids))
         .collect();
 
     InputStatus {
@@ -822,7 +830,11 @@ pub(crate) fn actionable_input_diagnostics(input: &InputStatus) -> Vec<InputDiag
         .collect()
 }
 
-fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus {
+fn input_source_status(
+    source: &SourceStatus,
+    now: Instant,
+    include_private_selection_ids: bool,
+) -> InputSourceStatus {
     let lifecycle_issue = source.issue.as_ref().map(input_source_issue_status);
     let freshness_issue = source
         .freshness_issue
@@ -853,10 +865,9 @@ fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus
         issue,
         lifecycle_issue,
         freshness_issue,
-        platform: source
-            .platform
-            .as_deref()
-            .and_then(|platform| input_source_platform_status(platform, now)),
+        platform: source.platform.as_deref().and_then(|platform| {
+            input_source_platform_status(platform, now, include_private_selection_ids)
+        }),
         retired: source.retired,
     }
 }
@@ -864,12 +875,15 @@ fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus
 fn input_source_platform_status(
     platform: &SourcePlatformStatus,
     now: Instant,
+    include_private_selection_ids: bool,
 ) -> Option<InputSourcePlatformStatus> {
     match platform {
         SourcePlatformStatus::MacosInput(status) => Some(macos_input_platform_status(status, now)),
-        SourcePlatformStatus::MacosScreen(status) => {
-            Some(macos_screen_platform_status(status, now))
-        }
+        SourcePlatformStatus::MacosScreen(status) => Some(macos_screen_platform_status(
+            status,
+            now,
+            include_private_selection_ids,
+        )),
         _ => None,
     }
 }
@@ -917,6 +931,7 @@ fn macos_input_platform_status(
 fn macos_screen_platform_status(
     status: &MacosScreenPlatformStatus,
     now: Instant,
+    include_private_selection_ids: bool,
 ) -> InputSourcePlatformStatus {
     InputSourcePlatformStatus::MacosScreen {
         state: macos_protected_source_state(status.state),
@@ -924,10 +939,9 @@ fn macos_screen_platform_status(
         owner: macos_capability_owner(status.owner),
         selection: macos_selection_state(&status.selection),
         tahoe: macos_tahoe_capabilities(&status.tahoe),
-        tahoe_selection: status
-            .tahoe_selection
-            .as_ref()
-            .map(macos_tahoe_selection_capabilities),
+        tahoe_selection: status.tahoe_selection.as_ref().map(|capabilities| {
+            macos_tahoe_selection_capabilities(capabilities, include_private_selection_ids)
+        }),
         owner_conflict: status
             .owner_conflict
             .as_deref()
@@ -1138,9 +1152,16 @@ fn macos_selection_state(selection: &MacosSelectionState) -> MacosSelectionState
 
 fn macos_tahoe_selection_capabilities(
     capabilities: &MacosTahoeSelectionCapabilities,
+    include_private_selection_ids: bool,
 ) -> MacosTahoeSelectionCapabilitiesApiStatus {
     MacosTahoeSelectionCapabilitiesApiStatus {
-        source_id: capabilities.source_id.to_string(),
+        source_id: if include_private_selection_ids
+            || !capabilities.source_id.starts_with("macos:session:")
+        {
+            capabilities.source_id.to_string()
+        } else {
+            "session_scoped".to_owned()
+        },
         capture_session_generation: capabilities.capture_session_generation,
         hdr_capture: capabilities.hdr_capture,
         dual_range_screenshots: capabilities.dual_range_screenshots,
@@ -1241,6 +1262,20 @@ fn duration_ms(duration: Duration) -> u64 {
     tag = "system"
 )]
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
+    get_status_with_privacy(state, true).await
+}
+
+pub(crate) async fn get_status_route(
+    State(state): State<Arc<AppState>>,
+    Extension(locality): Extension<RequestLocality>,
+) -> Response {
+    get_status_with_privacy(state, locality.is_loopback()).await
+}
+
+async fn get_status_with_privacy(
+    state: Arc<AppState>,
+    include_private_selection_ids: bool,
+) -> Response {
     let device_count = state.device_registry.len().await;
     let effect_count = state.effect_registry.read().await.len();
     let scene_count = state.scene_manager.read().await.scene_count();
@@ -1400,7 +1435,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     };
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
-    let input_status = input_status_snapshot(&state);
+    let input_status = input_status_snapshot_with_privacy(&state, include_private_selection_ids);
     let screen_capture_capacity = {
         let capacity_snapshot = state.screen_capacity_status.snapshot();
         let policy = capacity_snapshot.policy();
@@ -2142,8 +2177,9 @@ fn round_2(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        get_sensor, get_sensors, get_status, input_source_status, macos_daemon_ownership,
-        macos_selection_state, us_to_ms_f64,
+        get_sensor, get_sensors, get_status, input_source_status, input_status_snapshot,
+        macos_daemon_ownership, macos_selection_state, macos_tahoe_selection_capabilities,
+        us_to_ms_f64,
     };
     use crate::api::AppState;
     use crate::macos_owner::{
@@ -2160,10 +2196,11 @@ mod tests {
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_core::input::{
-        MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
-        MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
-        MacosSelectionState, MacosTahoeCapabilities, MacosTahoeSelectionCapabilities,
-        SourceFreshness, SourceKind, SourcePlatformStatus, SourceState, SourceStatus,
+        InputData, InputSource, MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner,
+        MacosDaemonOwnerConflict, MacosInputPlatformStatus, MacosProtectedSourceState,
+        MacosScreenPlatformStatus, MacosSelectionState, MacosTahoeCapabilities,
+        MacosTahoeSelectionCapabilities, SourceFreshness, SourceKind, SourcePlatformStatus,
+        SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
     };
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
@@ -2172,6 +2209,59 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::sync::watch;
+
+    struct TestStatusSource {
+        status: SourceStatusReporter,
+    }
+
+    impl TestStatusSource {
+        fn new(platform: SourcePlatformStatus) -> Self {
+            let mut status = SourceStatusReporter::new(
+                "test-screen",
+                SourceKind::Screen,
+                "test",
+                true,
+                true,
+                false,
+            );
+            status
+                .set_platform(Some(platform))
+                .expect("test platform status should publish");
+            Self { status }
+        }
+    }
+
+    impl InputSource for TestStatusSource {
+        fn name(&self) -> &str {
+            "test-screen"
+        }
+
+        fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+            Some(self.status.handle())
+        }
+
+        fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+            Some(&mut self.status)
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn stop(&mut self) {}
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            false
+        }
+
+        fn is_screen_source(&self) -> bool {
+            true
+        }
+    }
 
     fn source_status_fixture(platform: Option<SourcePlatformStatus>) -> SourceStatus {
         SourceStatus {
@@ -2227,7 +2317,8 @@ mod tests {
             tap_reenabled: Some(3),
             state_gaps: Some(4),
         });
-        let status = input_source_status(&source_status_fixture(Some(platform)), Instant::now());
+        let status =
+            input_source_status(&source_status_fixture(Some(platform)), Instant::now(), true);
         let value = serde_json::to_value(status).expect("input status should serialize");
 
         assert_eq!(
@@ -2302,8 +2393,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn input_source_status_serializes_macos_screen_platform() {
+    #[tokio::test]
+    async fn input_source_status_serializes_macos_screen_platform() {
         let platform = SourcePlatformStatus::MacosScreen(MacosScreenPlatformStatus {
             state: MacosProtectedSourceState::Interrupted,
             tcc: MacosAuthorizationState::Denied,
@@ -2312,6 +2403,7 @@ mod tests {
                 content_style: Arc::from("multiple_windows"),
             },
             selection_diagnostic_label: Some(Arc::from("multiple_windows")),
+            selection_revision: 17,
             tahoe: MacosTahoeCapabilities {
                 host_architecture: MacosArchitecture::AppleSilicon,
                 translated_process: true,
@@ -2319,7 +2411,7 @@ mod tests {
                 metal4: false,
             },
             tahoe_selection: Some(MacosTahoeSelectionCapabilities {
-                source_id: Arc::from("session:23"),
+                source_id: Arc::from("macos:session:multiple-windows:w42:a18:com.secret.private"),
                 capture_session_generation: 29,
                 hdr_capture: true,
                 dual_range_screenshots: true,
@@ -2370,7 +2462,14 @@ mod tests {
             publication_total_ns: 500,
             publication_max_ns: 50,
         });
-        let status = input_source_status(&source_status_fixture(Some(platform)), Instant::now());
+        let state = AppState::new();
+        state
+            .input_manager
+            .lock()
+            .await
+            .add_source(Box::new(TestStatusSource::new(platform.clone())));
+        let source = source_status_fixture(Some(platform));
+        let status = input_source_status(&source, Instant::now(), true);
         let value = serde_json::to_value(status).expect("screen status should serialize");
 
         assert_eq!(value["active_consumer_count"], 2);
@@ -2387,6 +2486,10 @@ mod tests {
         assert_eq!(
             platform["tahoe_selection"]["capture_session_generation"],
             29
+        );
+        assert_eq!(
+            platform["tahoe_selection"]["source_id"],
+            "macos:session:multiple-windows:w42:a18:com.secret.private"
         );
         assert_eq!(platform["owner_conflict"]["contender"], "app");
         let telemetry = &platform["telemetry"];
@@ -2425,11 +2528,26 @@ mod tests {
         assert_eq!(telemetry["native_import_total_ns"], 600);
         assert_eq!(telemetry["native_reduction_submit_total_ns"], 800);
         assert_eq!(telemetry["publication_total_ns"], 500);
+
+        let remote = input_source_status(&source, Instant::now(), false);
+        let remote = serde_json::to_value(remote).expect("remote screen status should serialize");
+        assert_eq!(
+            remote["platform"]["tahoe_selection"]["source_id"],
+            "session_scoped"
+        );
+        assert!(!remote.to_string().contains("com.secret.private"));
+        assert!(!remote.to_string().contains("w42"));
+
+        let public = serde_json::to_value(input_status_snapshot(&state))
+            .expect("public input status should serialize");
+        assert!(!public.to_string().contains("com.secret.private"));
+        assert!(!public.to_string().contains("w42"));
+        assert!(public.to_string().contains("session_scoped"));
     }
 
     #[test]
     fn input_source_status_omits_absent_platform() {
-        let status = input_source_status(&source_status_fixture(None), Instant::now());
+        let status = input_source_status(&source_status_fixture(None), Instant::now(), true);
         let value = serde_json::to_value(status).expect("source status should serialize");
 
         assert!(value.get("platform").is_none());
@@ -2449,6 +2567,17 @@ mod tests {
             display,
             json!({ "type": "display", "source_id": "display:7a3f" })
         );
+
+        let display_capabilities = macos_tahoe_selection_capabilities(
+            &MacosTahoeSelectionCapabilities {
+                source_id: Arc::from("display:7a3f"),
+                capture_session_generation: 1,
+                hdr_capture: false,
+                dual_range_screenshots: false,
+            },
+            false,
+        );
+        assert_eq!(display_capabilities.source_id, "display:7a3f");
     }
 
     #[test]
@@ -2566,6 +2695,7 @@ mod tests {
             performance.record_effect_fallback_applied();
             let frame = LatestFrameMetrics {
                 timestamp_ms: 40,
+                input_sampled: true,
                 input_us: 100,
                 deferred_sample_us: 40,
                 producer_us: 500,
