@@ -220,12 +220,14 @@ impl ScreenPublicationAwaitGuard {
         mut self,
         demand: ScreenPublicationDemandSnapshot,
         source_resolution_revision: u64,
+        active_consumer_counts: Vec<(CaptureSourceId, usize)>,
     ) -> PreparedScreenPublicationPlan {
         debug_assert!(self.completions.is_empty());
         PreparedScreenPublicationPlan {
             preparing: self.preparing.take(),
             demand,
             source_resolution_revision,
+            active_consumer_counts,
             worker_aborts: std::mem::take(&mut self.worker_aborts),
         }
     }
@@ -246,6 +248,7 @@ pub struct ScreenPublicationPreparation {
     workers: Vec<PendingScreenWorkerPreparation>,
     demand: ScreenPublicationDemandSnapshot,
     source_resolution_revision: u64,
+    active_consumer_counts: Vec<(CaptureSourceId, usize)>,
 }
 
 impl ScreenPublicationPreparation {
@@ -254,12 +257,14 @@ impl ScreenPublicationPreparation {
         workers: Vec<PendingScreenWorkerPreparation>,
         demand: ScreenPublicationDemandSnapshot,
         source_resolution_revision: u64,
+        active_consumer_counts: Vec<(CaptureSourceId, usize)>,
     ) -> Self {
         Self {
             preparing: Some(preparing),
             workers,
             demand,
             source_resolution_revision,
+            active_consumer_counts,
         }
     }
 
@@ -303,7 +308,11 @@ impl ScreenPublicationPreparation {
                 ));
             }
         }
-        Ok(awaiting.into_prepared(self.demand.clone(), self.source_resolution_revision))
+        Ok(awaiting.into_prepared(
+            self.demand.clone(),
+            self.source_resolution_revision,
+            self.active_consumer_counts.clone(),
+        ))
     }
 
     /// Explicitly abandon all started worker preparations.
@@ -340,6 +349,7 @@ pub struct PreparedScreenPublicationPlan {
     preparing: Option<PreparingScreenPlan>,
     demand: ScreenPublicationDemandSnapshot,
     source_resolution_revision: u64,
+    active_consumer_counts: Vec<(CaptureSourceId, usize)>,
     worker_aborts: Vec<ScreenWorkerAbort>,
 }
 
@@ -356,6 +366,10 @@ impl PreparedScreenPublicationPlan {
 
     pub(crate) const fn source_resolution_revision(&self) -> u64 {
         self.source_resolution_revision
+    }
+
+    pub(crate) fn active_consumer_counts(&self) -> &[(CaptureSourceId, usize)] {
+        &self.active_consumer_counts
     }
 
     pub(crate) fn disarm_worker_aborts(&mut self) {

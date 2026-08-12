@@ -459,6 +459,8 @@ pub struct SourceStatus {
     pub consented: bool,
     /// Whether the current render graph demands source data.
     pub demanded: bool,
+    /// Number of committed consumers currently reading this source domain.
+    pub active_consumer_count: usize,
     /// Lifecycle health, independent of sample freshness.
     pub state: SourceState,
     /// Freshness of the latest sampled data.
@@ -501,6 +503,7 @@ impl SourceStatus {
             configured,
             consented,
             demanded,
+            active_consumer_count: 0,
             state: SourceState::Stopped,
             freshness: SourceFreshness::NotApplicable,
             source_graph_generation: 0,
@@ -1086,6 +1089,25 @@ impl SourceStatusWriter {
         Ok(())
     }
 
+    /// Publish the committed consumer count without disturbing lifecycle state.
+    pub fn set_active_consumer_count(
+        &self,
+        active_consumer_count: usize,
+    ) -> Result<(), SourceStatusError> {
+        let _control = lock_control(&self.shared);
+        let current = self.shared.latest.load_full();
+        if current.retired {
+            return Err(SourceStatusError::Retired);
+        }
+        if current.active_consumer_count == active_consumer_count {
+            return Ok(());
+        }
+        let mut status = (*current).clone();
+        status.active_consumer_count = active_consumer_count;
+        publish_structural(&self.shared, status);
+        Ok(())
+    }
+
     /// Publish platform-specific state without disturbing generic lifecycle.
     ///
     /// # Errors
@@ -1199,6 +1221,7 @@ impl SourceStatusWriter {
         control.active_session = None;
         let mut status = (*current).clone();
         clear_stopped_state(&mut status);
+        status.active_consumer_count = 0;
         status.source_graph_generation = removal_graph_generation;
         status.retired = true;
         publish_structural(&self.shared, status);
@@ -1391,6 +1414,14 @@ impl SourceStatusReporter {
     /// Publish the backend selected by a successfully committed configuration.
     pub fn set_backend(&mut self, backend: impl Into<Arc<str>>) -> Result<(), SourceStatusError> {
         self.writer.set_backend(backend)
+    }
+
+    /// Publish the committed consumer count without disturbing lifecycle state.
+    pub fn set_active_consumer_count(
+        &mut self,
+        active_consumer_count: usize,
+    ) -> Result<(), SourceStatusError> {
+        self.writer.set_active_consumer_count(active_consumer_count)
     }
 
     /// Publish platform-specific state without disturbing generic lifecycle.

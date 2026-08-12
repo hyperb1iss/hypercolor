@@ -241,6 +241,7 @@ impl ScreenRuntimeRetirement {
     /// Stop detached workers and retire their status handles.
     pub fn retire(mut self) {
         for source in &mut self.sources {
+            source.set_active_consumer_count(0);
             source.stop();
             if let Err(error) = source.retire_source_status(self.source_graph_generation) {
                 error!(source = source.name(), %error, "Failed to retire screen input source status");
@@ -390,6 +391,17 @@ impl ManagedInputSource {
             .set_source_graph_generation(source_graph_generation);
         if let Some(status) = &mut self.compatibility_status {
             status.set_source_graph_generation(source_graph_generation);
+        }
+    }
+
+    fn set_active_consumer_count(&mut self, active_consumer_count: usize) {
+        if let Err(error) = self.source.set_active_consumer_count(active_consumer_count) {
+            error!(source = self.source.name(), %error, "Failed to publish active consumer count");
+        }
+        if let Some(status) = &mut self.compatibility_status
+            && let Err(error) = status.set_active_consumer_count(active_consumer_count)
+        {
+            error!(source = self.source.name(), %error, "Failed to publish compatibility consumer count");
         }
     }
 
@@ -617,6 +629,9 @@ impl InputManager {
         );
         let replacement = self.create_managed_source(source, source_graph_generation);
         let mut previous = std::mem::replace(&mut self.sources[index], replacement);
+        if previous_domains.1 {
+            previous.set_active_consumer_count(0);
+        }
         previous.stop();
         if let Err(error) = previous.retire_source_status(source_graph_generation) {
             error!(source = previous.name(), %error, "Failed to retire replaced input source status");
@@ -1415,7 +1430,7 @@ impl InputManager {
         resolved
             .try_reserve_exact(demand.branches().len())
             .map_err(|_| screen::ScreenPlanError::AllocationFailed)?;
-        let mut owners: Vec<(screen::CaptureSourceId, usize)> = Vec::new();
+        let mut owners: Vec<(screen::CaptureSourceId, usize, usize)> = Vec::new();
         for (branch_index, branch) in demand.branches().iter().enumerate() {
             let mut resolution = None;
             for (source_index, source) in self.sources.iter().enumerate() {
@@ -1448,7 +1463,10 @@ impl InputManager {
                 });
             };
             let source_id = branch.descriptor().source_epoch().source_id.clone();
-            if let Some((_, owner)) = owners.iter().find(|(candidate, _)| *candidate == source_id) {
+            if let Some((_, owner, active_consumer_count)) = owners
+                .iter_mut()
+                .find(|(candidate, _, _)| *candidate == source_id)
+            {
                 if *owner != source_index {
                     return Err(
                         screen::ScreenPublicationTransitionError::SourceOwnershipConflict {
@@ -1456,14 +1474,25 @@ impl InputManager {
                         },
                     );
                 }
+                *active_consumer_count += 1;
             } else {
                 owners
                     .try_reserve(1)
                     .map_err(|_| screen::ScreenPlanError::AllocationFailed)?;
-                owners.push((source_id, source_index));
+                owners.push((source_id, source_index, 1));
             }
             resolved.push(branch);
         }
+
+        let mut active_consumer_counts = Vec::new();
+        active_consumer_counts
+            .try_reserve_exact(owners.len())
+            .map_err(|_| screen::ScreenPlanError::AllocationFailed)?;
+        active_consumer_counts.extend(
+            owners
+                .iter()
+                .map(|(source_id, _, count)| (source_id.clone(), *count)),
+        );
 
         let compatibility_surface =
             resolved_compatibility_descriptor(&demand, &resolved, demand.compatibility_surface());
@@ -1498,8 +1527,8 @@ impl InputManager {
             };
             let owner = owners
                 .iter()
-                .find(|(candidate, _)| candidate == &source_id)
-                .map(|(_, source_index)| *source_index)
+                .find(|(candidate, _, _)| candidate == &source_id)
+                .map(|(_, source_index, _)| *source_index)
                 .or_else(|| {
                     self.sources.iter().position(|source| {
                         source.is_screen_source()
@@ -1554,6 +1583,7 @@ impl InputManager {
             workers,
             demand,
             source_resolution_revision,
+            active_consumer_counts,
         )))
     }
 
@@ -1575,6 +1605,7 @@ impl InputManager {
         screen::ScreenPublicationTransitionFailure,
     > {
         let demand = prepared.demand().clone();
+        let active_consumer_counts = prepared.active_consumer_counts().to_vec();
         let expected_source_resolution_revision = prepared.source_resolution_revision();
         let observed_source_resolution_revision = self.screen_publication_resolution_revision();
         if expected_source_resolution_revision != observed_source_resolution_revision {
@@ -1614,6 +1645,7 @@ impl InputManager {
                 )
             })?;
         prepared.disarm_worker_aborts();
+        self.set_screen_publication_active_consumer_counts(&active_consumer_counts);
         self.screen_publication_demand = Some(demand);
         self.committed_screen_publication_resolution_revision =
             Some(observed_source_resolution_revision);
@@ -1724,6 +1756,9 @@ impl InputManager {
                 self.sources.push(replacement);
             }
             (None, None) => {}
+        }
+        if topology_changed {
+            self.invalidate_capture_domains((false, true, false));
         }
         self.screen_capture_demand = Some(plan.capture_demand);
         ScreenRuntimeRetirement {
@@ -1837,6 +1872,7 @@ impl InputManager {
         let source_graph_generation = self.bump_source_graph_generation();
         self.sources.retain_mut(|source| {
             if source.is_screen_source() {
+                source.set_active_consumer_count(0);
                 source.stop();
                 if let Err(error) = source.retire_source_status(source_graph_generation) {
                     error!(source = source.name(), %error, "Failed to retire screen input source status");
@@ -1847,7 +1883,7 @@ impl InputManager {
                 true
             }
         });
-        self.screen_capture_demand = None;
+        self.invalidate_capture_domains((false, true, false));
         self.publish_source_status_registry();
     }
 
@@ -2189,9 +2225,38 @@ impl InputManager {
             self.screen_capture_demand = None;
             self.screen_publication_demand = None;
             self.committed_screen_publication_resolution_revision = None;
+            self.set_screen_publication_active_consumer_count(0);
         }
         if domains.2 {
             self.interaction_capture_active = None;
+        }
+    }
+
+    fn set_screen_publication_active_consumer_count(&mut self, active_consumer_count: usize) {
+        for source in self
+            .sources
+            .iter_mut()
+            .filter(|source| source.is_screen_source())
+        {
+            source.set_active_consumer_count(active_consumer_count);
+        }
+    }
+
+    fn set_screen_publication_active_consumer_counts(
+        &mut self,
+        active_consumer_counts: &[(screen::CaptureSourceId, usize)],
+    ) {
+        for source in self
+            .sources
+            .iter_mut()
+            .filter(|source| source.is_screen_source())
+        {
+            let active_consumer_count = active_consumer_counts
+                .iter()
+                .filter(|(source_id, _)| source.owns_screen_publication_source(source_id))
+                .map(|(_, count)| *count)
+                .sum();
+            source.set_active_consumer_count(active_consumer_count);
         }
     }
 

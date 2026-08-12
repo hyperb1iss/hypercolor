@@ -546,6 +546,16 @@ pub trait InputSource: Send {
         }
     }
 
+    /// Publish the number of consumers in the committed source domain.
+    fn set_active_consumer_count(
+        &mut self,
+        active_consumer_count: usize,
+    ) -> Result<(), SourceStatusError> {
+        self.source_status_reporter().map_or(Ok(()), |status| {
+            status.set_active_consumer_count(active_consumer_count)
+        })
+    }
+
     /// Permanently retire this source's status at its removal generation.
     ///
     /// # Errors

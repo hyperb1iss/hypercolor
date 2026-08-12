@@ -3058,6 +3058,49 @@ fn source_session_slot_hands_a_long_lived_worker_the_successor_session() {
 }
 
 #[test]
+fn active_consumer_count_survives_session_churn_until_domain_commit_changes_it() {
+    let (writer, handle) = test_status_writer();
+    writer
+        .set_active_consumer_count(3)
+        .expect("consumer count should publish");
+    let session = writer
+        .begin_session(1)
+        .expect("eligible source session should start");
+    assert_eq!(handle.snapshot().active_consumer_count, 3);
+
+    let sampled_at = Instant::now();
+    assert_eq!(
+        session.record_sample(sampled_at, sampled_at + Duration::from_secs(1), 1),
+        Ok(true)
+    );
+    writer.stop();
+    let stopped = handle.snapshot();
+    assert_eq!(stopped.state, SourceState::Stopped);
+    assert_eq!(stopped.active_consumer_count, 3);
+
+    writer
+        .set_active_consumer_count(0)
+        .expect("domain invalidation should clear the count");
+    let cleared = handle.snapshot();
+    assert_eq!(cleared.state, SourceState::Stopped);
+    assert_eq!(cleared.session_generation, stopped.session_generation);
+    assert_eq!(cleared.active_consumer_count, 0);
+}
+
+#[test]
+fn source_retirement_clears_active_consumer_count() {
+    let (writer, handle) = test_status_writer();
+    writer
+        .set_active_consumer_count(2)
+        .expect("consumer count should publish");
+    writer.retire(1).expect("source retirement should publish");
+
+    let retired = handle.snapshot();
+    assert!(retired.retired);
+    assert_eq!(retired.active_consumer_count, 0);
+}
+
+#[test]
 fn source_resource_scan_health_maps_access_failure_and_recovery() {
     assert_eq!(
         classify_source_resource_scan(2, 0, 0),
