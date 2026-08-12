@@ -13,6 +13,63 @@ use crate::input_access::{
     primary_input_source_issue,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MacosSystemSettingsRemedy {
+    label: &'static str,
+    pane: crate::tauri_bridge::MacosSystemSettingsPane,
+}
+
+pub(super) const fn macos_system_settings_remedy(
+    pane: crate::tauri_bridge::MacosSystemSettingsPane,
+) -> MacosSystemSettingsRemedy {
+    match pane {
+        crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring => {
+            MacosSystemSettingsRemedy {
+                label: "Open Input Monitoring",
+                pane,
+            }
+        }
+        crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording => {
+            MacosSystemSettingsRemedy {
+                label: "Open Screen Recording",
+                pane,
+            }
+        }
+    }
+}
+
+#[component]
+pub(super) fn MacosSystemSettingsButton(
+    pane: crate::tauri_bridge::MacosSystemSettingsPane,
+) -> impl IntoView {
+    let remedy = macos_system_settings_remedy(pane);
+    let native_available = crate::tauri_bridge::is_tauri_available();
+    let open_settings = move |_| {
+        leptos::task::spawn_local(async move {
+            match crate::tauri_bridge::open_macos_system_settings(remedy.pane).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    leptos::logging::warn!("macOS System Settings opener is unavailable");
+                }
+                Err(error) => {
+                    leptos::logging::warn!("macOS System Settings opener failed: {error}");
+                }
+            }
+        });
+    };
+
+    view! {
+        <button
+            type="button"
+            class="inline-flex shrink-0 items-center rounded-md border border-edge-subtle bg-surface-overlay/60 px-2.5 py-1.5 text-xs text-fg-secondary hover:border-accent-muted hover:text-accent disabled:opacity-50"
+            disabled=move || !native_available
+            on:click=open_settings
+        >
+            {remedy.label}
+        </button>
+    }
+}
+
 #[component]
 pub fn InputSection(
     #[prop(into)] config: Signal<Option<HypercolorConfig>>,
@@ -127,17 +184,22 @@ pub fn InputSection(
                     <div class="min-w-0">
                         <div class="text-[13px] text-fg-primary">"Input Monitoring"</div>
                         <div class="text-xs text-fg-tertiary">
-                            "Keyboard effects need this macOS permission. Pointer-only effects do not."
+                            "Open Input Monitoring in System Settings, enable Hypercolor, then return here."
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        class="glow-ring inline-flex shrink-0 items-center rounded-md border border-accent-muted bg-accent-subtle px-2.5 py-1.5 text-xs text-accent hover:bg-accent-muted/20 disabled:opacity-50"
-                        disabled=move || authorizing.get()
-                        on:click=authorize_keyboard
-                    >
-                        {move || if authorizing.get() { "Requesting…" } else { "Authorize" }}
-                    </button>
+                    <div class="flex shrink-0 items-center gap-2">
+                        <MacosSystemSettingsButton
+                            pane=crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring
+                        />
+                        <button
+                            type="button"
+                            class="glow-ring inline-flex shrink-0 items-center rounded-md border border-accent-muted bg-accent-subtle px-2.5 py-1.5 text-xs text-accent hover:bg-accent-muted/20 disabled:opacity-50"
+                            disabled=move || authorizing.get()
+                            on:click=authorize_keyboard
+                        >
+                            {move || if authorizing.get() { "Requesting…" } else { "Authorize" }}
+                        </button>
+                    </div>
                 </div>
             </Show>
             {move || input_status
@@ -357,12 +419,7 @@ pub(super) fn platform_status_view(platform: InputSourcePlatformStatus) -> impl 
                 .as_ref()
                 .map(screen_selection_label)
                 .unwrap_or_else(|| "Unknown selection".to_owned());
-            let range = tahoe_selection
-                .and_then(|capabilities| capabilities.hdr_capture)
-                .map_or(
-                    "Dynamic range pending",
-                    |hdr| if hdr { "HDR" } else { "SDR" },
-                );
+            let range = tahoe_dynamic_range_label(tahoe.as_ref(), tahoe_selection.as_ref());
             let host = tahoe.as_ref().map(tahoe_host_label);
             view! {
                 <div class="mt-2 border-t border-edge-subtle/40 pt-2 text-[11px] text-fg-secondary">
@@ -447,6 +504,21 @@ fn tahoe_host_label(capabilities: &crate::api::MacosTahoeStatus) -> String {
     )
 }
 
+fn tahoe_dynamic_range_label(
+    host: Option<&crate::api::MacosTahoeStatus>,
+    selection: Option<&crate::api::MacosTahoeSelectionStatus>,
+) -> &'static str {
+    let intel_host =
+        host.and_then(|capabilities| capabilities.host_architecture.as_deref()) == Some("intel");
+
+    match selection.and_then(|capabilities| capabilities.hdr_capture) {
+        Some(_) if intel_host => "HDR unsupported on Intel",
+        Some(true) => "HDR",
+        Some(false) => "SDR",
+        None => "Dynamic range pending",
+    }
+}
+
 pub(super) fn macos_keyboard_needs_authorization(status: &InputStatus) -> bool {
     status.sources.iter().any(|source| {
         if source.retired {
@@ -521,11 +593,12 @@ pub(super) fn humanize(value: &str) -> String {
 mod tests {
     use crate::api::{
         InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosDaemonOwnershipStatus,
-        MacosTahoeStatus, SystemStatus,
+        MacosTahoeSelectionStatus, MacosTahoeStatus, SystemStatus,
     };
 
     use super::{
-        macos_keyboard_needs_authorization, macos_keyboard_restart_coordinates, tahoe_host_label,
+        macos_keyboard_needs_authorization, macos_keyboard_restart_coordinates,
+        macos_system_settings_remedy, tahoe_dynamic_range_label, tahoe_host_label,
     };
 
     fn system_status(
@@ -632,6 +705,73 @@ mod tests {
         assert_eq!(
             tahoe_host_label(&capabilities),
             "Host Apple silicon · Rosetta translated no · Core Graphics tone mapping available · Metal 4 unavailable"
+        );
+    }
+
+    #[test]
+    fn macos_permission_remedies_keep_exact_labels_and_deep_links() {
+        let input = macos_system_settings_remedy(
+            crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring,
+        );
+        assert_eq!(input.label, "Open Input Monitoring");
+        assert_eq!(
+            input.pane,
+            crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring
+        );
+
+        let screen = macos_system_settings_remedy(
+            crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording,
+        );
+        assert_eq!(screen.label, "Open Screen Recording");
+        assert_eq!(
+            screen.pane,
+            crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording
+        );
+    }
+
+    #[test]
+    fn tahoe_dynamic_range_label_marks_intel_hdr_unsupported_and_tolerates_absence() {
+        let intel = MacosTahoeStatus {
+            host_architecture: Some("intel".to_owned()),
+            ..MacosTahoeStatus::default()
+        };
+        let apple_silicon = MacosTahoeStatus {
+            host_architecture: Some("apple_silicon".to_owned()),
+            ..MacosTahoeStatus::default()
+        };
+        let hdr = MacosTahoeSelectionStatus {
+            hdr_capture: Some(true),
+            ..MacosTahoeSelectionStatus::default()
+        };
+
+        assert_eq!(
+            tahoe_dynamic_range_label(Some(&intel), Some(&hdr)),
+            "HDR unsupported on Intel"
+        );
+        let sdr = MacosTahoeSelectionStatus {
+            hdr_capture: Some(false),
+            ..MacosTahoeSelectionStatus::default()
+        };
+        assert_eq!(
+            tahoe_dynamic_range_label(Some(&intel), Some(&sdr)),
+            "HDR unsupported on Intel"
+        );
+        assert_eq!(
+            tahoe_dynamic_range_label(Some(&apple_silicon), Some(&hdr)),
+            "HDR"
+        );
+        assert_eq!(
+            tahoe_dynamic_range_label(Some(&apple_silicon), Some(&sdr)),
+            "SDR"
+        );
+        assert_eq!(tahoe_dynamic_range_label(None, Some(&hdr)), "HDR");
+        assert_eq!(
+            tahoe_dynamic_range_label(Some(&apple_silicon), None),
+            "Dynamic range pending"
+        );
+        assert_eq!(
+            tahoe_dynamic_range_label(None, None),
+            "Dynamic range pending"
         );
     }
 

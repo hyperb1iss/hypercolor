@@ -18,6 +18,11 @@ pub const WINDOW_VISIBILITY_GLOBAL: &str = "__HYPERCOLOR_TAURI_WINDOW_VISIBLE";
 /// Web UI route for the settings page.
 pub const SETTINGS_ROUTE: &str = "/settings";
 
+const INPUT_MONITORING_SETTINGS_URL: &str =
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent";
+const SCREEN_RECORDING_SETTINGS_URL: &str =
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture";
+
 /// Return true when a webview new-window request should open in the system browser.
 #[must_use]
 pub fn should_open_in_system_browser(url: &Url) -> bool {
@@ -38,6 +43,20 @@ pub fn system_browser_url(raw: &str) -> Result<Url, String> {
     }
 }
 
+/// Resolve a permitted macOS privacy pane to its System Settings deep link.
+///
+/// # Errors
+///
+/// Returns an error unless `pane` names one of Hypercolor's two supported
+/// privacy remedies.
+pub fn macos_system_settings_url(pane: &str) -> Result<&'static str, String> {
+    match pane {
+        "input_monitoring" => Ok(INPUT_MONITORING_SETTINGS_URL),
+        "screen_recording" => Ok(SCREEN_RECORDING_SETTINGS_URL),
+        _ => Err("unsupported macOS System Settings pane".to_owned()),
+    }
+}
+
 /// Open a URL in the system browser for the embedded web UI.
 ///
 /// # Errors
@@ -48,6 +67,29 @@ pub fn system_browser_url(raw: &str) -> Result<Url, String> {
 pub fn open_external_url(url: String) -> Result<(), String> {
     let url = system_browser_url(&url)?;
     open::that_detached(url.as_str()).map_err(|error| format!("failed to open URL: {error}"))
+}
+
+/// Open one of Hypercolor's macOS privacy remedies through the native shell.
+///
+/// # Errors
+///
+/// Returns an error when the pane is not allowlisted, the app is not running
+/// on macOS, or the operating system rejects the handoff.
+#[tauri::command]
+pub fn open_macos_system_settings(pane: String) -> Result<(), String> {
+    let url = macos_system_settings_url(&pane)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        open::that_detached(url)
+            .map_err(|error| format!("failed to open macOS System Settings: {error}"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err("macOS System Settings are unavailable on this platform".to_owned())
+    }
 }
 
 /// Open a new-window request in the system browser instead of spawning a Tauri webview.

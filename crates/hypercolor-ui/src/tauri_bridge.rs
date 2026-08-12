@@ -9,6 +9,26 @@ use wasm_bindgen_futures::JsFuture;
 #[cfg(target_arch = "wasm32")]
 use hypercolor_leptos_ext::events::window as browser_window;
 
+/// macOS privacy remedy that the native app may open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosSystemSettingsPane {
+    InputMonitoring,
+    ScreenRecording,
+}
+
+impl MacosSystemSettingsPane {
+    #[must_use]
+    pub const fn invoke_value(self) -> &'static str {
+        match self {
+            Self::InputMonitoring => "input_monitoring",
+            Self::ScreenRecording => "screen_recording",
+        }
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+const MACOS_SYSTEM_SETTINGS_COMMAND: &str = "open_macos_system_settings";
+
 /// Status for a native Windows service.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -534,6 +554,25 @@ pub async fn open_external_url(_url: &str) -> Result<bool, String> {
     Ok(false)
 }
 
+/// Open a limited macOS privacy remedy through the native app bridge.
+///
+/// Returns `Ok(false)` when the UI is not running inside the native app.
+#[cfg(target_arch = "wasm32")]
+pub async fn open_macos_system_settings(pane: MacosSystemSettingsPane) -> Result<bool, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(false);
+    };
+
+    let args = string_arg_to_js("pane", pane.invoke_value())?;
+    let _ = invoke_command(&invoke, MACOS_SYSTEM_SETTINGS_COMMAND, Some(args)).await?;
+    Ok(true)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn open_macos_system_settings(_pane: MacosSystemSettingsPane) -> Result<bool, String> {
+    Ok(false)
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn invoke_command(
     invoke: &js_sys::Function,
@@ -658,10 +697,23 @@ fn js_error_string(value: JsValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MacosOwnerCoordinatorOutcome, MacosOwnerRemedy, PawnIoModuleStatus, PawnIoSupportStatus,
-        ServiceSupportStatus, bundled_payload_ready, smbus_support_ready,
-        windows_daemon_service_conflict,
+        MACOS_SYSTEM_SETTINGS_COMMAND, MacosOwnerCoordinatorOutcome, MacosOwnerRemedy,
+        MacosSystemSettingsPane, PawnIoModuleStatus, PawnIoSupportStatus, ServiceSupportStatus,
+        bundled_payload_ready, smbus_support_ready, windows_daemon_service_conflict,
     };
+
+    #[test]
+    fn macos_system_settings_panes_route_to_the_scoped_native_command() {
+        assert_eq!(MACOS_SYSTEM_SETTINGS_COMMAND, "open_macos_system_settings");
+        assert_eq!(
+            MacosSystemSettingsPane::InputMonitoring.invoke_value(),
+            "input_monitoring"
+        );
+        assert_eq!(
+            MacosSystemSettingsPane::ScreenRecording.invoke_value(),
+            "screen_recording"
+        );
+    }
 
     #[test]
     fn bundled_payload_ready_requires_installer_and_all_modules() {

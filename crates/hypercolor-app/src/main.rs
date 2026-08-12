@@ -56,7 +56,8 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::support::detect_windows_daemon_service,
             hypercolor_app::support::launch_pawnio_helper,
             hypercolor_app::support::repair_smbus_service,
-            hypercolor_app::window::open_external_url
+            hypercolor_app::window::open_external_url,
+            hypercolor_app::window::open_macos_system_settings
         ])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let forwarded = hypercolor_app::cli::AppArgs::parse(args);

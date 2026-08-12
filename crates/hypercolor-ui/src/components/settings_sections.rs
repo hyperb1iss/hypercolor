@@ -25,6 +25,8 @@ mod discovery;
 mod input;
 mod session;
 
+use input::MacosSystemSettingsButton;
+
 pub use about::AboutSection;
 pub use audio::AudioSection;
 pub use developer::DeveloperSection;
@@ -263,17 +265,22 @@ pub fn CaptureSection(
                     <div class="min-w-0">
                         <div class="text-[13px] text-fg-primary">"Screen Recording"</div>
                         <div class="text-xs text-fg-tertiary">
-                            "Authorize the active macOS capture owner before choosing content."
+                            "Open Screen Recording in System Settings, enable Hypercolor, then return here."
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        class="glow-ring inline-flex shrink-0 items-center rounded-md border border-accent-muted bg-accent-subtle px-2.5 py-1.5 text-xs text-accent hover:bg-accent-muted/20 disabled:opacity-50"
-                        disabled=move || !enabled.get() || authorizing.get()
-                        on:click=authorize_screen
-                    >
-                        {move || if authorizing.get() { "Requesting…" } else { "Authorize" }}
-                    </button>
+                    <div class="flex shrink-0 items-center gap-2">
+                        <MacosSystemSettingsButton
+                            pane=crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording
+                        />
+                        <button
+                            type="button"
+                            class="glow-ring inline-flex shrink-0 items-center rounded-md border border-accent-muted bg-accent-subtle px-2.5 py-1.5 text-xs text-accent hover:bg-accent-muted/20 disabled:opacity-50"
+                            disabled=move || !enabled.get() || authorizing.get()
+                            on:click=authorize_screen
+                        >
+                            {move || if authorizing.get() { "Requesting…" } else { "Authorize" }}
+                        </button>
+                    </div>
                 </div>
             </Show>
             {move || capture_status
