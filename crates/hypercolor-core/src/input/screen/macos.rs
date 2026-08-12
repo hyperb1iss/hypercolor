@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use hypercolor_macos_capture::{
-    MacosCaptureFrame, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
-    MacosProtectedSourceState,
+    MacosCaptureContentStyle, MacosCaptureFrame, MacosCaptureSelection, MacosFrameEvent,
+    MacosFrameMailbox, MacosFrameStatus, MacosProtectedSourceState as NativeProtectedSourceState,
 };
 
 #[cfg(target_os = "macos")]
@@ -24,7 +24,11 @@ use super::{
 };
 use crate::input::status::SourceSessionSlot;
 use crate::input::traits::{InputData, InputSource};
-use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
+use crate::input::{
+    MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
+    MacosScreenPlatformStatus, MacosSelectionState, SourceKind, SourcePlatformStatus,
+    SourceStatusHandle, SourceStatusReporter,
+};
 
 const WORKER_WAIT: Duration = Duration::from_millis(100);
 
@@ -32,8 +36,10 @@ trait MacosCaptureControl: Send + Sync {
     fn mailbox(&self) -> MacosFrameMailbox;
     fn set_active(&self, active: bool);
     fn present_picker(&self) -> anyhow::Result<()>;
-    fn request_authorization(&self) -> MacosProtectedSourceState;
-    fn status(&self) -> MacosProtectedSourceState;
+    fn request_authorization(&self) -> NativeProtectedSourceState;
+    fn status(&self) -> NativeProtectedSourceState;
+    fn selection(&self) -> MacosCaptureSelection;
+    fn authorization(&self) -> MacosAuthorizationState;
 }
 
 #[cfg(target_os = "macos")]
@@ -55,12 +61,26 @@ impl MacosCaptureControl for NativeCaptureControl {
         self.session.present_picker().map_err(anyhow::Error::from)
     }
 
-    fn request_authorization(&self) -> MacosProtectedSourceState {
+    fn request_authorization(&self) -> NativeProtectedSourceState {
         self.session.request_authorization()
     }
 
-    fn status(&self) -> MacosProtectedSourceState {
+    fn status(&self) -> NativeProtectedSourceState {
         self.session.status()
+    }
+
+    fn selection(&self) -> MacosCaptureSelection {
+        self.session.selection()
+    }
+
+    fn authorization(&self) -> MacosAuthorizationState {
+        if MacosScreenCaptureSession::screen_authorized() {
+            MacosAuthorizationState::Authorized
+        } else if self.session.status() == NativeProtectedSourceState::PermissionDenied {
+            MacosAuthorizationState::Denied
+        } else {
+            MacosAuthorizationState::NotDetermined
+        }
     }
 }
 
@@ -93,6 +113,7 @@ pub struct MacosScreenCaptureInput {
     running: bool,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
+    owner: MacosCapabilityOwner,
 }
 
 impl MacosScreenCaptureInput {
@@ -118,13 +139,8 @@ impl MacosScreenCaptureInput {
         admission: ScreenByteAdmissionCoordinator,
         control: Arc<dyn MacosCaptureControl>,
     ) -> Self {
-        let consented = !matches!(
-            control.status(),
-            MacosProtectedSourceState::NeedsUserAction
-                | MacosProtectedSourceState::PermissionDenied
-                | MacosProtectedSourceState::Revoked
-        );
-        Self {
+        let consented = control.authorization() == MacosAuthorizationState::Authorized;
+        let mut source = Self {
             config,
             control,
             admission,
@@ -142,21 +158,50 @@ impl MacosScreenCaptureInput {
                 false,
             ),
             status_session: SourceSessionSlot::new(),
-        }
+            owner: MacosCapabilityOwner::Standalone,
+        };
+        source
+            .refresh_platform_status()
+            .expect("new macOS screen status is not retired");
+        source
     }
 
-    pub fn authorize(&mut self) -> anyhow::Result<MacosProtectedSourceState> {
+    pub fn authorize(&mut self) -> anyhow::Result<NativeProtectedSourceState> {
         let state = self.control.request_authorization();
         self.refresh_policy()?;
+        self.refresh_platform_status()?;
         Ok(state)
     }
 
-    pub fn present_picker(&self) -> anyhow::Result<()> {
-        self.control.present_picker()
+    pub fn present_picker(&mut self) -> anyhow::Result<()> {
+        let result = self.control.present_picker();
+        self.refresh_platform_status()?;
+        result
     }
 
-    pub fn protected_state(&self) -> MacosProtectedSourceState {
+    pub fn protected_state(&self) -> NativeProtectedSourceState {
         self.control.status()
+    }
+
+    pub fn set_capability_owner(&mut self, owner: MacosCapabilityOwner) -> anyhow::Result<()> {
+        self.owner = owner;
+        self.refresh_platform_status()
+    }
+
+    fn refresh_platform_status(&mut self) -> anyhow::Result<()> {
+        let state = self.control.status();
+        self.status
+            .set_platform(Some(SourcePlatformStatus::MacosScreen(
+                MacosScreenPlatformStatus {
+                    state: map_protected_state(state),
+                    tcc: self.control.authorization(),
+                    owner: self.owner,
+                    selection: map_selection(self.control.selection()),
+                    tahoe_selection: None,
+                    owner_conflict: None,
+                },
+            )))?;
+        Ok(())
     }
 
     fn refresh_policy(&mut self) -> anyhow::Result<()> {
@@ -164,12 +209,7 @@ impl MacosScreenCaptureInput {
     }
 
     fn refresh_policy_for(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
-        let consented = !matches!(
-            self.control.status(),
-            MacosProtectedSourceState::NeedsUserAction
-                | MacosProtectedSourceState::PermissionDenied
-                | MacosProtectedSourceState::Revoked
-        );
+        let consented = self.control.authorization() == MacosAuthorizationState::Authorized;
         self.status
             .set_policy(true, consented, demand.is_active())?;
         Ok(())
@@ -304,12 +344,15 @@ impl InputSource for MacosScreenCaptureInput {
             }
             self.control.set_active(true);
         }
+        self.refresh_platform_status()?;
         self.running = true;
         Ok(())
     }
 
     fn stop(&mut self) {
         self.control.set_active(false);
+        self.refresh_platform_status()
+            .expect("live macOS screen status is not retired");
         self.status_session.clear();
         self.stop_worker();
         self.status.stop();
@@ -318,6 +361,7 @@ impl InputSource for MacosScreenCaptureInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
+        self.refresh_platform_status()?;
         self.observe_worker_exit()?;
         if !self.running || !self.demand.is_active() {
             return Ok(InputData::None);
@@ -338,6 +382,7 @@ impl InputSource for MacosScreenCaptureInput {
         _delta_secs: f32,
         _events: &mut Vec<crate::types::event::TimedInputEvent>,
     ) -> anyhow::Result<Option<Arc<InputData>>> {
+        self.refresh_platform_status()?;
         self.observe_worker_exit()?;
         if !self.running || !self.demand.is_active() {
             return Ok(None);
@@ -437,6 +482,7 @@ impl InputSource for MacosScreenCaptureInput {
             self.refresh_policy_for(demand)?;
         }
         self.demand = demand;
+        self.refresh_platform_status()?;
         Ok(())
     }
 
@@ -695,6 +741,43 @@ fn scaled_coordinate(value: f64, scale: f64) -> anyhow::Result<i32> {
     Ok(value as i32)
 }
 
+const fn map_protected_state(state: NativeProtectedSourceState) -> MacosProtectedSourceState {
+    match state {
+        NativeProtectedSourceState::Disabled => MacosProtectedSourceState::Disabled,
+        NativeProtectedSourceState::NeedsUserAction => MacosProtectedSourceState::NeedsUserAction,
+        NativeProtectedSourceState::PermissionDenied => MacosProtectedSourceState::PermissionDenied,
+        NativeProtectedSourceState::NeedsProcessRestart => {
+            MacosProtectedSourceState::NeedsProcessRestart
+        }
+        NativeProtectedSourceState::NeedsSelection => MacosProtectedSourceState::NeedsSelection,
+        NativeProtectedSourceState::ReadyIdle => MacosProtectedSourceState::ReadyIdle,
+        NativeProtectedSourceState::Starting => MacosProtectedSourceState::Starting,
+        NativeProtectedSourceState::Live => MacosProtectedSourceState::Live,
+        NativeProtectedSourceState::Interrupted => MacosProtectedSourceState::Interrupted,
+        NativeProtectedSourceState::Revoked => MacosProtectedSourceState::Revoked,
+        NativeProtectedSourceState::Failed => MacosProtectedSourceState::Failed,
+    }
+}
+
+fn map_selection(selection: MacosCaptureSelection) -> MacosSelectionState {
+    match selection {
+        MacosCaptureSelection::None => MacosSelectionState::None,
+        MacosCaptureSelection::Display { source_id } => MacosSelectionState::Display { source_id },
+        MacosCaptureSelection::SessionScoped { content_style } => {
+            let content_style = match content_style {
+                MacosCaptureContentStyle::Window => "window",
+                MacosCaptureContentStyle::MultipleWindows => "multiple_windows",
+                MacosCaptureContentStyle::Application => "application",
+                MacosCaptureContentStyle::MultipleApplications => "multiple_applications",
+                MacosCaptureContentStyle::Mixed => "mixed",
+            };
+            MacosSelectionState::SessionScoped {
+                content_style: Arc::from(content_style),
+            }
+        }
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -705,7 +788,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 struct FixtureControl {
     mailbox: MacosFrameMailbox,
     active: AtomicBool,
-    status: Mutex<MacosProtectedSourceState>,
+    status: Mutex<NativeProtectedSourceState>,
+    selection: Mutex<MacosCaptureSelection>,
 }
 
 #[cfg(feature = "macos-capture-fixtures")]
@@ -714,7 +798,8 @@ impl Default for FixtureControl {
         Self {
             mailbox: MacosFrameMailbox::default(),
             active: AtomicBool::new(false),
-            status: Mutex::new(MacosProtectedSourceState::ReadyIdle),
+            status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
+            selection: Mutex::new(MacosCaptureSelection::None),
         }
     }
 }
@@ -728,9 +813,9 @@ impl MacosCaptureControl for FixtureControl {
     fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::Release);
         *lock(&self.status) = if active {
-            MacosProtectedSourceState::Starting
+            NativeProtectedSourceState::Starting
         } else {
-            MacosProtectedSourceState::ReadyIdle
+            NativeProtectedSourceState::ReadyIdle
         };
     }
 
@@ -738,12 +823,28 @@ impl MacosCaptureControl for FixtureControl {
         Ok(())
     }
 
-    fn request_authorization(&self) -> MacosProtectedSourceState {
-        MacosProtectedSourceState::NeedsSelection
+    fn request_authorization(&self) -> NativeProtectedSourceState {
+        *lock(&self.status) = NativeProtectedSourceState::NeedsSelection;
+        NativeProtectedSourceState::NeedsSelection
     }
 
-    fn status(&self) -> MacosProtectedSourceState {
+    fn status(&self) -> NativeProtectedSourceState {
         *lock(&self.status)
+    }
+
+    fn selection(&self) -> MacosCaptureSelection {
+        lock(&self.selection).clone()
+    }
+
+    fn authorization(&self) -> MacosAuthorizationState {
+        match self.status() {
+            NativeProtectedSourceState::PermissionDenied | NativeProtectedSourceState::Revoked => {
+                MacosAuthorizationState::Denied
+            }
+            NativeProtectedSourceState::NeedsUserAction => MacosAuthorizationState::NotDetermined,
+            NativeProtectedSourceState::Disabled => MacosAuthorizationState::Unknown,
+            _ => MacosAuthorizationState::Authorized,
+        }
     }
 }
 
@@ -759,7 +860,7 @@ impl MacosScreenCaptureFixture {
         admission: ScreenByteAdmissionCoordinator,
     ) -> (MacosScreenCaptureInput, Self) {
         let control = Arc::new(FixtureControl {
-            status: Mutex::new(MacosProtectedSourceState::ReadyIdle),
+            status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
             ..FixtureControl::default()
         });
         let source = MacosScreenCaptureInput::with_control(config, admission, control.clone());
@@ -767,6 +868,7 @@ impl MacosScreenCaptureFixture {
     }
 
     pub fn publish(&self, frame: MacosCaptureFrame) {
+        *lock(&self.control.status) = NativeProtectedSourceState::Live;
         self.control
             .mailbox
             .publish(Ok(MacosFrameEvent::Frame(Box::new(frame))));
@@ -774,5 +876,9 @@ impl MacosScreenCaptureFixture {
 
     pub fn is_active(&self) -> bool {
         self.control.active.load(Ordering::Acquire)
+    }
+
+    pub fn set_selection(&self, selection: MacosCaptureSelection) {
+        *lock(&self.control.selection) = selection;
     }
 }

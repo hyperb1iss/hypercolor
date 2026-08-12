@@ -28,4 +28,6 @@ pub use geometry::{
     MacosScale,
 };
 pub use mailbox::MacosFrameMailbox;
-pub use session::{MacosCaptureCadence, MacosStreamRequest};
+pub use session::{
+    MacosCaptureCadence, MacosCaptureContentStyle, MacosCaptureSelection, MacosStreamRequest,
+};

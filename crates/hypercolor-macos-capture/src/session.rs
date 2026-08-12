@@ -1,4 +1,27 @@
+use std::sync::Arc;
+
 use crate::MacosCaptureError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MacosCaptureContentStyle {
+    Window,
+    MultipleWindows,
+    Application,
+    MultipleApplications,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum MacosCaptureSelection {
+    #[default]
+    None,
+    Display {
+        source_id: Arc<str>,
+    },
+    SessionScoped {
+        content_style: MacosCaptureContentStyle,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MacosCaptureCadence {

@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::fmt;
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
@@ -10,10 +10,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{
-    CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize,
+    CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFUUID, CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{
-    CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
+    CGDirectDisplayID, CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
     CGRequestScreenCaptureAccess,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime};
@@ -46,18 +46,19 @@ use objc2_screen_capture_kit::{
 use crate::diagnostics::CallbackCounters;
 use crate::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCallbackDiagnostics,
-    MacosCaptureColorimetry, MacosCaptureError, MacosCapturePixelFormat, MacosCaptureSurface,
-    MacosChromaLocation, MacosColorPrimaries, MacosColorRange, MacosFrameDecoder, MacosFrameEvent,
-    MacosFrameMailbox, MacosFrameStatus, MacosPixelExtent, MacosPixelRect, MacosPointRect,
-    MacosProtectedSourceState, MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame,
-    MacosRawFrameAttachments, MacosScale, MacosStreamRequest, MacosTransferFunction,
-    MacosYuvMatrix,
+    MacosCaptureColorimetry, MacosCaptureContentStyle, MacosCaptureError, MacosCapturePixelFormat,
+    MacosCaptureSelection, MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries,
+    MacosColorRange, MacosFrameDecoder, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
+    MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosProtectedSourceState,
+    MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
+    MacosScale, MacosStreamRequest, MacosTransferFunction, MacosYuvMatrix,
 };
 
 #[derive(Debug)]
 struct SessionShared {
     mailbox: MacosFrameMailbox,
     status: Mutex<MacosProtectedSourceState>,
+    selection: Mutex<MacosCaptureSelection>,
     counters: CallbackCounters,
     current_epoch: AtomicU64,
 }
@@ -67,6 +68,7 @@ impl SessionShared {
         Self {
             mailbox: MacosFrameMailbox::new(),
             status: Mutex::new(status),
+            selection: Mutex::new(MacosCaptureSelection::None),
             counters: CallbackCounters::default(),
             current_epoch: AtomicU64::new(0),
         }
@@ -78,6 +80,14 @@ impl SessionShared {
 
     fn set_status(&self, status: MacosProtectedSourceState) {
         *lock(&self.status) = status;
+    }
+
+    fn selection(&self) -> MacosCaptureSelection {
+        lock(&self.selection).clone()
+    }
+
+    fn set_selection(&self, selection: MacosCaptureSelection) {
+        *lock(&self.selection) = selection;
     }
 
     fn current_epoch(&self) -> u64 {
@@ -246,6 +256,7 @@ unsafe impl Send for NativeFilter {}
 struct NativeStream {
     stream: Retained<SCStream>,
     filter: NativeFilter,
+    selection: MacosCaptureSelection,
     _output: Retained<CaptureOutput>,
     _queue: DispatchRetained<DispatchQueue>,
 }
@@ -264,6 +275,7 @@ impl NativeStream {
         streams: Weak<StreamSlot>,
     ) -> Result<Self, MacosCaptureError> {
         let (configuration, display_filter) = stream_configuration(filter, request)?;
+        let selection = selection_from_filter(filter)?;
         // SAFETY: The picker callback supplies a live filter. Retaining it
         // preserves the immutable selection through stream retirement.
         let retained_filter = unsafe {
@@ -307,6 +319,7 @@ impl NativeStream {
         Ok(Self {
             stream,
             filter: NativeFilter(retained_filter),
+            selection,
             _output: output,
             _queue: queue,
         })
@@ -385,6 +398,9 @@ impl StreamSlot {
             };
             let previous = state.current.replace(candidate);
             state.selected_filter = state.current.as_ref().map(|current| current.filter.clone());
+            if let Some(current) = &state.current {
+                self.shared.set_selection(current.selection.clone());
+            }
             self.shared.activate_epoch(epoch);
             previous
         };
@@ -425,6 +441,7 @@ impl StreamSlot {
     }
 
     fn store_selection(&self, filter: &SCContentFilter) -> Result<(), MacosCaptureError> {
+        let selection = selection_from_filter(filter)?;
         // SAFETY: The picker callback supplies a live immutable filter. The
         // retained owner remains process-local and is never serialized.
         let filter = unsafe {
@@ -432,6 +449,7 @@ impl StreamSlot {
                 .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
         };
         lock(&self.state).selected_filter = Some(NativeFilter(filter));
+        self.shared.set_selection(selection);
         Ok(())
     }
 
@@ -739,6 +757,10 @@ impl MacosScreenCaptureSession {
         self.shared.status()
     }
 
+    pub fn selection(&self) -> MacosCaptureSelection {
+        self.shared.selection()
+    }
+
     pub fn mailbox(&self) -> MacosFrameMailbox {
         self.shared.mailbox.clone()
     }
@@ -755,6 +777,57 @@ impl MacosScreenCaptureSession {
         self.main
             .get_on_main(|main| main.observer.set_active(active));
     }
+}
+
+fn selection_from_filter(
+    filter: &SCContentFilter,
+) -> Result<MacosCaptureSelection, MacosCaptureError> {
+    // SAFETY: Picker-delivered filters are immutable and retain every array
+    // member for the duration of this metadata query.
+    unsafe {
+        let displays = filter.includedDisplays();
+        let windows = filter.includedWindows();
+        let applications = filter.includedApplications();
+        if displays.is_empty() && windows.is_empty() && applications.is_empty() {
+            return Ok(MacosCaptureSelection::None);
+        }
+        if windows.is_empty() && applications.is_empty() && displays.len() == 1 {
+            let display = displays
+                .firstObject()
+                .ok_or(MacosCaptureError::DisplayUuidUnavailable(0))?;
+            let display_id = display.displayID();
+            let uuid = display_uuid(display_id)
+                .ok_or(MacosCaptureError::DisplayUuidUnavailable(display_id))?;
+            let source_id = CFUUID::new_string(None, Some(&uuid))
+                .ok_or(MacosCaptureError::DisplayUuidUnavailable(display_id))?
+                .to_string()
+                .to_ascii_lowercase();
+            return Ok(MacosCaptureSelection::Display {
+                source_id: Arc::from(format!("display:{source_id}")),
+            });
+        }
+        let content_style = if !windows.is_empty() && !applications.is_empty() {
+            MacosCaptureContentStyle::Mixed
+        } else if windows.len() > 1 {
+            MacosCaptureContentStyle::MultipleWindows
+        } else if !windows.is_empty() {
+            MacosCaptureContentStyle::Window
+        } else if applications.len() > 1 {
+            MacosCaptureContentStyle::MultipleApplications
+        } else {
+            MacosCaptureContentStyle::Application
+        };
+        Ok(MacosCaptureSelection::SessionScoped { content_style })
+    }
+}
+
+fn display_uuid(display_id: CGDirectDisplayID) -> Option<CFRetained<CFUUID>> {
+    unsafe extern "C-unwind" {
+        fn CGDisplayCreateUUIDFromDisplayID(display: CGDirectDisplayID) -> Option<NonNull<CFUUID>>;
+    }
+    // SAFETY: Core Graphics returns a nullable create-rule CFUUID reference.
+    // CFRetained assumes the owning +1 reference and balances it on drop.
+    unsafe { CGDisplayCreateUUIDFromDisplayID(display_id).map(|uuid| CFRetained::from_raw(uuid)) }
 }
 
 impl fmt::Debug for MacosScreenCaptureSession {

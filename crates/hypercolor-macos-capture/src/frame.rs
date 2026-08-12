@@ -800,6 +800,8 @@ pub enum MacosCaptureError {
     MissingIoSurface,
     #[error("ScreenCaptureKit filter retention failed")]
     RetainNativeFilterFailed,
+    #[error("display {0} has no canonical Core Graphics UUID")]
+    DisplayUuidUnavailable(u32),
     #[error("capture surface has no CPU-mappable fixture or pixel buffer")]
     CpuMappingUnavailable,
     #[error("mapped CPU planes do not match the validated frame layout")]

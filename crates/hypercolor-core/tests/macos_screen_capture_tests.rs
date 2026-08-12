@@ -8,12 +8,17 @@ use hypercolor_core::input::screen::{
     CaptureConfig, MacosScreenCaptureFixture, PixelExtent, ScreenAdmissionCapacity,
     ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
 };
-use hypercolor_core::input::{InputData, InputSource};
+use hypercolor_core::input::{
+    InputData, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
+    MacosProtectedSourceState as CoreProtectedSourceState, MacosSelectionState,
+    SourcePlatformStatus,
+};
 use hypercolor_macos_capture::{
     MacosAttachment, MacosCaptureColorimetry, MacosCaptureFrame, MacosCapturePixelFormat,
-    MacosCaptureSurface, MacosColorPrimaries, MacosColorRange, MacosFrameDecoder, MacosFrameEvent,
-    MacosPixelExtent, MacosPointRect, MacosProtectedSourceState, MacosRawCapturePlane,
-    MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments, MacosTransferFunction,
+    MacosCaptureSelection, MacosCaptureSurface, MacosColorPrimaries, MacosColorRange,
+    MacosFrameDecoder, MacosFrameEvent, MacosPixelExtent, MacosPointRect,
+    MacosProtectedSourceState, MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame,
+    MacosRawFrameAttachments, MacosTransferFunction,
 };
 
 const BGRA8: u32 = 0x4247_5241;
@@ -105,6 +110,20 @@ fn fixture_capture_activates_only_for_live_demand() {
         source.protected_state(),
         MacosProtectedSourceState::ReadyIdle
     );
+    source
+        .set_capability_owner(MacosCapabilityOwner::AppSidecar)
+        .expect("fixture owner status updates");
+    let status = source
+        .source_status_handle()
+        .expect("macOS fixture exposes status");
+    let initial = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = initial.platform.as_deref() else {
+        panic!("expected macOS screen platform status");
+    };
+    assert_eq!(platform.state, CoreProtectedSourceState::ReadyIdle);
+    assert_eq!(platform.tcc, MacosAuthorizationState::Authorized);
+    assert_eq!(platform.owner, MacosCapabilityOwner::AppSidecar);
+    assert_eq!(platform.selection, MacosSelectionState::None);
     assert!(!fixture.is_active());
     source.start().expect("fixture source starts idle");
     assert!(matches!(source.sample(), Ok(InputData::None)));
@@ -113,6 +132,9 @@ fn fixture_capture_activates_only_for_live_demand() {
         .set_screen_capture_demand(ScreenCaptureDemand::try_active(4, 2).expect("valid demand"))
         .expect("fixture demand activates");
     assert!(fixture.is_active());
+    fixture.set_selection(MacosCaptureSelection::Display {
+        source_id: Arc::from("display:00000000-0000-0000-0000-000000000001"),
+    });
     fixture.publish(fixture_frame(1, [0, 0, 255, 255]));
     let data = wait_for_screen(&mut source);
     assert_eq!(data.grid_width, 2);
@@ -120,12 +142,28 @@ fn fixture_capture_activates_only_for_live_demand() {
     assert_eq!(data.source_width, 4);
     assert_eq!(data.source_height, 2);
     assert_eq!(data.zone_colors.len(), 2);
+    let live = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = live.platform.as_deref() else {
+        panic!("expected live macOS screen platform status");
+    };
+    assert_eq!(platform.state, CoreProtectedSourceState::Live);
+    assert_eq!(
+        platform.selection,
+        MacosSelectionState::Display {
+            source_id: Arc::from("display:00000000-0000-0000-0000-000000000001"),
+        }
+    );
 
     source
         .set_screen_capture_demand(ScreenCaptureDemand::Inactive)
         .expect("fixture demand deactivates");
     assert!(!fixture.is_active());
     assert!(matches!(source.sample(), Ok(InputData::None)));
+    let inactive = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = inactive.platform.as_deref() else {
+        panic!("expected inactive macOS screen platform status");
+    };
+    assert_eq!(platform.state, CoreProtectedSourceState::ReadyIdle);
 }
 
 #[test]
