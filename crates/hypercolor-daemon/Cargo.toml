@@ -31,8 +31,20 @@ wgpu = [
     "dep:hypercolor-windows-capture",
     "dep:hypercolor-windows-gpu-interop",
 ]
+screen-capture = [
+    "wgpu",
+    "dep:hypercolor-macos-capture",
+    "dep:hypercolor-macos-gpu-interop",
+    "hypercolor-macos-gpu-interop/screen-capture",
+]
 servo-gpu-import = ["servo", "wgpu", "hypercolor-core/servo-gpu-import"]
-default = ["builtin-drivers", "wgpu", "servo", "servo-gpu-import"]
+default = [
+    "builtin-drivers",
+    "wgpu",
+    "screen-capture",
+    "servo",
+    "servo-gpu-import",
+]
 servo = ["hypercolor-core/servo"]
 
 [dependencies]
@@ -85,8 +97,13 @@ sysinfo = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = "0.3.1"
+hypercolor-macos-capture = { workspace = true, optional = true }
+hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }
 sysinfo = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+hypercolor-macos-capture = { workspace = true, features = ["capture-fixtures"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 hypercolor-windows-capture = { workspace = true, optional = true }

@@ -1,11 +1,23 @@
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::ImportedEffectFrame;
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+use hypercolor_core::input::screen::PlatformGpuSurfaceOwner;
+#[cfg(all(
+    feature = "wgpu",
+    any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    )
+))]
 use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::input::screen::{
     CapturePixelFormat, ScreenBranchPayload, ScreenBranchPublication, ScreenSurfacePayload,
 };
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+use hypercolor_macos_capture::MacosCaptureFrame;
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+use hypercolor_macos_gpu_interop::ImportedMacosScreenFrame;
 #[cfg(all(feature = "wgpu", target_os = "windows"))]
 use hypercolor_windows_gpu_interop::ScreenTextureCopy;
 use std::sync::Arc;
@@ -28,6 +40,8 @@ pub(crate) struct GpuTextureFrame {
     pub(crate) immutable_lease: Option<Arc<GpuTextureFrameLease>>,
     #[cfg(target_os = "windows")]
     pub(crate) windows_screen_lease: Option<WindowsScreenTextureLease>,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    pub(crate) macos_screen_lease: Option<MacosScreenTextureLease>,
 }
 
 #[cfg(feature = "wgpu")]
@@ -55,18 +69,86 @@ impl WindowsScreenTextureLease {
             _capture_lifetime: capture_lifetime,
         }
     }
+}
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+#[derive(Clone)]
+pub(crate) struct MacosScreenTextureLease {
+    _imported: ImportedMacosScreenFrame,
+    _capture_owner: PlatformGpuSurfaceOwner<MacosCaptureFrame>,
+    _target_owner: PlatformGpuSurfaceOwner<
+        crate::render_thread::sparkleflinger::gpu::PreparedMacosScreenTarget,
+    >,
+    _target_lifetime: ScreenResourceLifetime,
+}
 
-    pub(crate) const fn target_lifetime(&self) -> &ScreenResourceLifetime {
-        &self.target_lifetime
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+impl MacosScreenTextureLease {
+    pub(crate) fn new(
+        imported: ImportedMacosScreenFrame,
+        capture_owner: PlatformGpuSurfaceOwner<MacosCaptureFrame>,
+        target_owner: PlatformGpuSurfaceOwner<
+            crate::render_thread::sparkleflinger::gpu::PreparedMacosScreenTarget,
+        >,
+        target_lifetime: ScreenResourceLifetime,
+    ) -> Self {
+        Self {
+            _imported: imported,
+            _capture_owner: capture_owner,
+            _target_owner: target_owner,
+            _target_lifetime: target_lifetime,
+        }
+    }
+}
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+impl std::fmt::Debug for MacosScreenTextureLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MacosScreenTextureLease")
+            .finish_non_exhaustive()
     }
 }
 
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(all(
+    feature = "wgpu",
+    any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    )
+))]
+#[derive(Debug, Clone)]
+#[allow(
+    dead_code,
+    reason = "cache lease payloads are retained for ownership rather than inspected"
+)]
+pub(crate) enum NativeScreenCacheLease {
+    #[cfg(target_os = "windows")]
+    Windows(ScreenResourceLifetime),
+    #[cfg(target_os = "macos")]
+    Macos(MacosScreenTextureLease),
+}
+
+#[cfg(all(
+    feature = "wgpu",
+    any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    )
+))]
 impl GpuTextureFrame {
-    pub(crate) fn screen_target_lifetime(&self) -> Option<&ScreenResourceLifetime> {
-        self.windows_screen_lease
-            .as_ref()
-            .map(WindowsScreenTextureLease::target_lifetime)
+    pub(crate) fn native_screen_cache_lease(&self) -> Option<NativeScreenCacheLease> {
+        #[cfg(target_os = "windows")]
+        {
+            self.windows_screen_lease
+                .as_ref()
+                .map(|lease| NativeScreenCacheLease::Windows(lease.target_lifetime.clone()))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_screen_lease
+                .as_ref()
+                .cloned()
+                .map(NativeScreenCacheLease::Macos)
+        }
     }
 }
 
@@ -363,7 +445,16 @@ impl ProducerQueue {
         self.replace_latest(ProducerSubmission { frame, fresh: true })
     }
 
-    #[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
+    #[cfg(any(
+        test,
+        all(
+            feature = "wgpu",
+            any(
+                target_os = "windows",
+                all(target_os = "macos", feature = "screen-capture")
+            )
+        )
+    ))]
     pub(crate) const fn has_latest(&self) -> bool {
         self.latest.is_some()
     }

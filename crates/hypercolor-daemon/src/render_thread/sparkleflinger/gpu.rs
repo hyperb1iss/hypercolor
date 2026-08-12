@@ -1,15 +1,29 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
 use std::alloc::Layout;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
-#[cfg(target_os = "windows")]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use std::sync::Mutex;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
 use std::sync::Weak;
-#[cfg(target_os = "windows")]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -25,9 +39,24 @@ use hypercolor_core::input::screen::{
     ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
     ScreenPlanGeneration, ScreenPublicationKind, ScreenReductionFilter, ScreenResourceApi,
 };
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use hypercolor_core::input::screen::{
+    MacosNativeTargetManifest, PlatformGpuApi, ResolvedScreenPublicationDescriptor,
+    ScreenBranchPayload, ScreenBranchPublication, ScreenCaptureBackend,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
+    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPublicationKind, ScreenResourceApi,
+};
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{
     BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
+};
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use hypercolor_macos_capture::MacosCaptureFrame;
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use hypercolor_macos_gpu_interop::{
+    ImportedMacosScreenFrame, MacosScreenBridge as MacosInteropScreenBridge,
+    MacosScreenStorageIdentity,
 };
 use hypercolor_types::scene::ZoneId;
 #[cfg(target_os = "windows")]
@@ -48,6 +77,8 @@ use super::{
 use crate::render_thread::gpu_device::{
     GpuBackendPreference, GpuRenderDevice, texture_format_name,
 };
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use crate::render_thread::producer_queue::MacosScreenTextureLease;
 #[cfg(target_os = "windows")]
 use crate::render_thread::producer_queue::WindowsScreenTextureLease;
 use crate::render_thread::producer_queue::{
@@ -124,7 +155,10 @@ const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 const IMMUTABLE_SCENE_GENERATIONS_IN_FLIGHT: usize = 2;
 static NEXT_GPU_TEXTURE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_GPU_SURFACE_SET_GENERATION: AtomicU64 = AtomicU64::new(1);
-#[cfg(target_os = "windows")]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
 static NEXT_SCREEN_TARGET_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,6 +374,163 @@ struct PreparedWindowsScreenTarget {
     storage_id: u64,
 }
 
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+struct MacosScreenBridge {
+    interop: MacosInteropScreenBridge,
+    storage_ids: Mutex<HashMap<MacosScreenStorageIdentity, u64>>,
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+struct MacosScreenTargetPreparer {
+    bridge: Weak<MacosScreenBridge>,
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+#[derive(Clone)]
+pub(crate) struct PreparedMacosScreenTarget {
+    resource_generation: u64,
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+impl MacosScreenBridge {
+    fn import_frame(
+        &self,
+        device: &wgpu::Device,
+        resource_generation: u64,
+        frame: Arc<MacosCaptureFrame>,
+    ) -> Result<(ImportedMacosScreenFrame, u64)> {
+        let imported = self
+            .interop
+            .import_bgra_frame(device, resource_generation, frame)
+            .context("failed to import the native macOS screen publication")?;
+        let identity = imported.storage_identity();
+        let mut storage_ids = self
+            .storage_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let storage_id = match storage_ids.entry(identity) {
+            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let storage_id = next_gpu_texture_storage_id()?;
+                entry.insert(storage_id);
+                storage_id
+            }
+        };
+        Ok((imported, storage_id))
+    }
+
+    fn clear_storage_ids(&self) {
+        self.storage_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn next_gpu_texture_storage_id() -> Result<u64> {
+    NEXT_GPU_TEXTURE_STORAGE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| anyhow::anyhow!("GPU texture storage identity space is exhausted"))
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn prepared_macos_screen_target_metadata_bytes() -> Result<u64> {
+    checked_macos_arc_allocation_bytes::<PreparedMacosScreenTarget>()?
+        .checked_add(checked_macos_arc_allocation_bytes::<
+            ResolvedScreenPublicationDescriptor,
+        >()?)
+        .context("macOS prepared target metadata accounting overflow")
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn checked_macos_arc_allocation_bytes<T>() -> Result<u64> {
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<T>())
+        .context("macOS Arc allocation layout overflow")?;
+    u64::try_from(layout.pad_to_align().size()).context("macOS Arc allocation exceeds u64")
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+impl ScreenNativeTargetPreparer for MacosScreenTargetPreparer {
+    fn quote_retained_bytes(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> Result<u64> {
+        let manifest = platform
+            .downcast_ref::<MacosNativeTargetManifest>()
+            .context("macOS screen target received an unknown preparation manifest")?;
+        validate_macos_target_manifest(descriptor, manifest)?;
+        self.bridge
+            .upgrade()
+            .context("macOS screen renderer was retired during target admission")?;
+        prepared_macos_screen_target_metadata_bytes()
+    }
+
+    fn prepare(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> Result<ScreenNativeTargetPreparation> {
+        let manifest = platform
+            .downcast_ref::<MacosNativeTargetManifest>()
+            .context("macOS screen target received an unknown preparation manifest")?;
+        validate_macos_target_manifest(descriptor, manifest)?;
+        self.bridge
+            .upgrade()
+            .context("macOS screen renderer was retired during target preparation")?;
+        Ok(ScreenNativeTargetPreparation::new(
+            ScreenNativePreparationPayload::new(
+                descriptor,
+                platform.plan_generation(),
+                Arc::new(PreparedMacosScreenTarget {
+                    resource_generation: manifest.resource_generation(),
+                }),
+            ),
+            prepared_macos_screen_target_metadata_bytes()?,
+        ))
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn validate_macos_target_manifest(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+    manifest: &MacosNativeTargetManifest,
+) -> Result<()> {
+    anyhow::ensure!(
+        descriptor.kind() == ScreenPublicationKind::Surface,
+        "macOS native target requires a Surface descriptor"
+    );
+    let source = descriptor.source();
+    let resources = source.resources();
+    anyhow::ensure!(
+        resources.backend() == &ScreenCaptureBackend::MacosScreenCaptureKit
+            && resources.api() == &ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
+        "macOS target manifest was paired with a non-Metal source"
+    );
+    anyhow::ensure!(
+        matches!(
+            resources.physical_gpu_device(),
+            Some(ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(registry_id))
+                if *registry_id == manifest.metal_registry_id()
+        ),
+        "macOS target manifest Metal device does not match the resolved source"
+    );
+    anyhow::ensure!(
+        descriptor.source_epoch().session_generation == manifest.capture_session_generation()
+            && resources.device_generation() == manifest.capture_session_generation(),
+        "macOS target manifest capture session does not match the resolved source"
+    );
+    anyhow::ensure!(
+        resources.resource_generation() == manifest.resource_generation(),
+        "macOS target manifest resource generation does not match the resolved source"
+    );
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NativeScreenCopyFailurePolicy {
@@ -372,6 +563,11 @@ pub(crate) fn native_screen_copy_error_invalidates_frame(error: &anyhow::Error) 
             native_screen_copy_failure_policy(error)
                 == NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare
         })
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+pub(crate) const fn native_screen_copy_error_invalidates_frame(_error: &anyhow::Error) -> bool {
+    false
 }
 
 #[cfg(target_os = "windows")]
@@ -412,6 +608,11 @@ pub(crate) fn is_retryable_native_screen_copy_error(error: &anyhow::Error) -> bo
         .is_some_and(|error| {
             native_screen_copy_failure_policy(error) == NativeScreenCopyFailurePolicy::Retain
         })
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+pub(crate) const fn is_retryable_native_screen_copy_error(_error: &anyhow::Error) -> bool {
+    false
 }
 
 #[cfg(target_os = "windows")]
@@ -655,6 +856,56 @@ fn create_screen_target(
     Some(target)
 }
 
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn create_screen_bridge(
+    device: &wgpu::Device,
+    max_texture_dimension: u32,
+) -> (
+    Option<Arc<MacosScreenBridge>>,
+    Option<ScreenNativeExecutionTarget>,
+) {
+    let interop = match MacosInteropScreenBridge::new(device) {
+        Ok(bridge) => bridge,
+        Err(error) => {
+            tracing::debug!(%error, "renderer does not expose a Metal screen-import target");
+            return (None, None);
+        }
+    };
+    let bridge = Arc::new(MacosScreenBridge {
+        interop,
+        storage_ids: Mutex::new(HashMap::new()),
+    });
+    let target = create_screen_target(&bridge, max_texture_dimension);
+    (Some(bridge), target)
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn create_screen_target(
+    bridge: &Arc<MacosScreenBridge>,
+    max_texture_dimension: u32,
+) -> Option<ScreenNativeExecutionTarget> {
+    let Ok(target_id) =
+        NEXT_SCREEN_TARGET_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+    else {
+        tracing::warn!("screen target identity space is exhausted");
+        return None;
+    };
+    Some(ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(target_id).expect("screen target identities start at one"),
+        ),
+        PlatformGpuApi::Metal,
+        ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(bridge.interop.metal_registry_id()),
+        NonZeroU32::new(max_texture_dimension)
+            .expect("wgpu devices expose a non-zero texture dimension limit"),
+        Arc::new(MacosScreenTargetPreparer {
+            bridge: Arc::downgrade(bridge),
+        }),
+    ))
+}
+
 pub(crate) struct GpuSparkleFlinger {
     _render_device: GpuRenderDevice,
     device: wgpu::Device,
@@ -692,6 +943,10 @@ pub(crate) struct GpuSparkleFlinger {
     screen_target: Option<ScreenNativeExecutionTarget>,
     #[cfg(target_os = "windows")]
     screen_storage_id: Option<u64>,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    screen_bridge: Option<Arc<MacosScreenBridge>>,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    screen_target: Option<ScreenNativeExecutionTarget>,
     #[cfg(test)]
     superseded_frame_count: usize,
     #[cfg(test)]
@@ -1052,6 +1307,9 @@ impl GpuSparkleFlinger {
         #[cfg(target_os = "windows")]
         let (screen_bridge, screen_target) =
             create_screen_bridge(&device, &queue, probe.max_texture_dimension_2d);
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        let (screen_bridge, screen_target) =
+            create_screen_bridge(&device, probe.max_texture_dimension_2d);
 
         Ok(Self {
             _render_device: render_device,
@@ -1090,6 +1348,10 @@ impl GpuSparkleFlinger {
             screen_target,
             #[cfg(target_os = "windows")]
             screen_storage_id: None,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            screen_bridge,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            screen_target,
             #[cfg(test)]
             superseded_frame_count: 0,
             #[cfg(test)]
@@ -1210,7 +1472,10 @@ impl GpuSparkleFlinger {
         &self.probe.backend
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
     pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
         if !self.canvas_gpu_admitted {
             return None;
@@ -1368,11 +1633,17 @@ impl GpuSparkleFlinger {
         self.ready_preview_surface = None;
         self.cached_sample_result = None;
         self.spatial_sampler.clear_bind_groups();
-        #[cfg(target_os = "windows")]
+        #[cfg(any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        ))]
         self.release_native_screen_caches();
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
     pub(crate) fn release_native_screen_caches(&mut self) {
         if let Some(surfaces) = &mut self.surfaces {
             surfaces
@@ -1390,7 +1661,16 @@ impl GpuSparkleFlinger {
                 .source_copy_bind_groups
                 .release_native_screen_entries();
         }
-        self.screen_storage_id = None;
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        {
+            if let Some(bridge) = &self.screen_bridge {
+                bridge.clear_storage_ids();
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.screen_storage_id = None;
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -1476,6 +1756,67 @@ impl GpuSparkleFlinger {
         }))
     }
 
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    pub(crate) fn copy_screen_publication(
+        &mut self,
+        publication: &Arc<ScreenBranchPublication>,
+    ) -> Result<Option<GpuTextureFrame>> {
+        let Some(bridge) = self.screen_bridge.clone() else {
+            return Ok(None);
+        };
+        let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
+            return Ok(None);
+        };
+        let surface = payload.surface();
+        let capture_owner = surface
+            .owner::<MacosCaptureFrame>()
+            .context("native macOS screen publication has an unknown capture owner")?;
+        let target_owner = surface
+            .retained_owner::<PreparedMacosScreenTarget>()
+            .context("native macOS screen publication has no prepared renderer target")?;
+        let target_lifetime = surface
+            .resource_lifetime()
+            .cloned()
+            .context("native macOS screen publication has no renderer allocation lifetime")?;
+        anyhow::ensure!(
+            surface.capture_resource_lifetime().is_some(),
+            "native macOS screen publication has no capture allocation lifetime"
+        );
+        let capture = capture_owner
+            .downgrade()
+            .upgrade()
+            .context("native macOS capture owner retired before import")?;
+        let (imported, storage_id) =
+            bridge.import_frame(&self.device, target_owner.resource_generation, capture)?;
+        let extent = surface.extent();
+        anyhow::ensure!(
+            imported.capture().storage_extent.width == extent.width()
+                && imported.capture().storage_extent.height == extent.height(),
+            "native macOS imported extent does not match the published surface"
+        );
+        let width = extent.width();
+        let height = extent.height();
+        let content_generation = imported.content_sequence();
+        let texture = imported.texture().as_ref().clone();
+        let view = imported.view().as_ref().clone();
+        Ok(Some(GpuTextureFrame {
+            width,
+            height,
+            storage_id,
+            content_generation,
+            origin: GpuTextureFrameOrigin::ProducerTexture,
+            texture,
+            view,
+            immutable_lease: None,
+            macos_screen_lease: Some(MacosScreenTextureLease::new(
+                imported,
+                capture_owner,
+                target_owner,
+                target_lifetime,
+            )),
+        }))
+    }
+
     pub(crate) fn can_sample_zone_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
         let dimensions = self
             .surfaces
@@ -1535,6 +1876,8 @@ impl GpuSparkleFlinger {
             immutable_lease: None,
             #[cfg(target_os = "windows")]
             windows_screen_lease: None,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            macos_screen_lease: None,
         }))
     }
 
@@ -1997,6 +2340,8 @@ impl GpuSparkleFlinger {
             immutable_lease: Some(Arc::clone(&snapshot.lease)),
             #[cfg(target_os = "windows")]
             windows_screen_lease: None,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            macos_screen_lease: None,
         })
     }
 
@@ -2020,6 +2365,8 @@ impl GpuSparkleFlinger {
             immutable_lease: None,
             #[cfg(target_os = "windows")]
             windows_screen_lease: None,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            macos_screen_lease: None,
         })
     }
 
@@ -2077,6 +2424,8 @@ impl GpuSparkleFlinger {
             immutable_lease: Some(Arc::clone(&snapshot.lease)),
             #[cfg(target_os = "windows")]
             windows_screen_lease: None,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            macos_screen_lease: None,
         })
     }
 
@@ -2189,6 +2538,8 @@ impl GpuSparkleFlinger {
             immutable_lease: None,
             #[cfg(target_os = "windows")]
             windows_screen_lease: None,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            macos_screen_lease: None,
         })
     }
 

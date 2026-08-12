@@ -1,7 +1,5 @@
 use std::borrow::Cow;
 
-#[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurfaceStorageIdentity};
 use wgpu::util::DeviceExt;
 
@@ -14,6 +12,11 @@ use super::{
     GpuCompositorSurfaceSet, GpuCompositorTexture, GpuDisplaySourceTexture, PendingUploadBuffers,
     SOURCE_COPY_PARAM_BYTES, texture_extent,
 };
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
+use crate::render_thread::producer_queue::NativeScreenCacheLease;
 use crate::render_thread::producer_queue::{GpuTextureFrame, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu::telemetry::record_gpu_source_upload_skipped;
 
@@ -57,8 +60,11 @@ struct CachedSourceCopyBindGroup {
     source_view: wgpu::TextureView,
     output_view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
-    #[cfg(target_os = "windows")]
-    screen_target_lifetime: Option<ScreenResourceLifetime>,
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
+    native_screen_lease: Option<NativeScreenCacheLease>,
 }
 
 const SOURCE_COPY_BIND_GROUP_CACHE_CAP: usize = 8;
@@ -70,7 +76,11 @@ impl SourceCopyBindGroupCache {
         pipeline: &GpuCompositorPipeline,
         source_view: &wgpu::TextureView,
         output_view: &wgpu::TextureView,
-        #[cfg(target_os = "windows")] screen_target_lifetime: Option<&ScreenResourceLifetime>,
+        #[cfg(any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        ))]
+        native_screen_lease: Option<NativeScreenCacheLease>,
     ) -> wgpu::BindGroup {
         if let Some(cached) = self
             .entries
@@ -91,16 +101,22 @@ impl SourceCopyBindGroupCache {
             source_view: source_view.clone(),
             output_view: output_view.clone(),
             bind_group: bind_group.clone(),
-            #[cfg(target_os = "windows")]
-            screen_target_lifetime: screen_target_lifetime.cloned(),
+            #[cfg(any(
+                target_os = "windows",
+                all(target_os = "macos", feature = "screen-capture")
+            ))]
+            native_screen_lease,
         });
         bind_group
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
     pub(super) fn release_native_screen_entries(&mut self) {
         self.entries
-            .retain(|entry| entry.screen_target_lifetime.is_none());
+            .retain(|entry| entry.native_screen_lease.is_none());
     }
 }
 
@@ -249,6 +265,11 @@ impl GpuSourceFrame<'_> {
         }
     }
 
+    fn requires_shader_copy_to(&self, output: &wgpu::Texture) -> bool {
+        self.needs_shader_copy()
+            || self.texture().format().remove_srgb_suffix() != output.format().remove_srgb_suffix()
+    }
+
     pub(super) const fn needs_display_source_copy(&self) -> bool {
         match self {
             #[cfg(feature = "servo-gpu-import")]
@@ -287,12 +308,15 @@ impl GpuSourceFrame<'_> {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    pub(super) fn screen_target_lifetime(&self) -> Option<&ScreenResourceLifetime> {
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
+    pub(super) fn native_screen_cache_lease(&self) -> Option<NativeScreenCacheLease> {
         match self {
             #[cfg(feature = "servo-gpu-import")]
             Self::Imported(_) => None,
-            Self::Texture(frame) => frame.screen_target_lifetime(),
+            Self::Texture(frame) => frame.native_screen_cache_lease(),
         }
     }
 }
@@ -356,7 +380,7 @@ pub(super) fn copy_gpu_source_frame_into_texture(
     frame: &GpuSourceFrame<'_>,
     output: &GpuCompositorTexture,
 ) {
-    if frame.needs_shader_copy() {
+    if frame.requires_shader_copy_to(&output.texture) {
         let params_offset = encode_source_copy_params_upload(
             device,
             queue,
@@ -374,8 +398,11 @@ pub(super) fn copy_gpu_source_frame_into_texture(
             pipeline,
             frame.view(),
             &output.view,
-            #[cfg(target_os = "windows")]
-            frame.screen_target_lifetime(),
+            #[cfg(any(
+                target_os = "windows",
+                all(target_os = "macos", feature = "screen-capture")
+            ))]
+            frame.native_screen_cache_lease(),
         );
         dispatch_source_copy_pass(
             encoder,

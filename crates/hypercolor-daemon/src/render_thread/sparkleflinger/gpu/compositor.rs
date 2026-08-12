@@ -4,8 +4,6 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-#[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::types::canvas::{
     PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
@@ -37,6 +35,11 @@ use super::{
     ScreenUploadContentKey, padded_bytes_per_row, texture_extent,
 };
 use crate::performance::CompositorBackendKind;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
+use crate::render_thread::producer_queue::NativeScreenCacheLease;
 use crate::render_thread::producer_queue::{
     GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin, ProducerFrame,
 };
@@ -1290,8 +1293,11 @@ fn compose_layer_into_gpu(
                     use_front_as_current,
                     current_view,
                     output_view,
-                    #[cfg(target_os = "windows")]
-                    frame.screen_target_lifetime(),
+                    #[cfg(any(
+                        target_os = "windows",
+                        all(target_os = "macos", feature = "screen-capture")
+                    ))]
+                    frame.native_screen_cache_lease(),
                 )
             }
         };
@@ -1479,8 +1485,11 @@ struct CachedComposeSourceBindGroup {
     source_view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     source_lease: Option<Weak<GpuTextureFrameLease>>,
-    #[cfg(target_os = "windows")]
-    screen_target_lifetime: Option<ScreenResourceLifetime>,
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
+    native_screen_lease: Option<NativeScreenCacheLease>,
 }
 
 const COMPOSE_SOURCE_BIND_GROUP_CACHE_CAP: usize = 4;
@@ -1534,8 +1543,11 @@ impl ComposeSourceBindGroupCache {
                             "SparkleFlinger admitted projected-source bind group",
                         ),
                         source_lease: Some(source_lease.clone()),
-                        #[cfg(target_os = "windows")]
-                        screen_target_lifetime: None,
+                        #[cfg(any(
+                            target_os = "windows",
+                            all(target_os = "macos", feature = "screen-capture")
+                        ))]
+                        native_screen_lease: None,
                     }
                 };
                 entries.insert(key, entry);
@@ -1627,7 +1639,11 @@ impl ComposeSourceBindGroupCache {
         front_as_current: bool,
         current_view: &wgpu::TextureView,
         output_view: &wgpu::TextureView,
-        #[cfg(target_os = "windows")] screen_target_lifetime: Option<&ScreenResourceLifetime>,
+        #[cfg(any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        ))]
+        native_screen_lease: Option<NativeScreenCacheLease>,
     ) -> wgpu::BindGroup {
         let key = ComposeSourceBindGroupKey {
             target_generation,
@@ -1662,8 +1678,11 @@ impl ComposeSourceBindGroupCache {
                 source_view: source_view.clone(),
                 bind_group: bind_group.clone(),
                 source_lease: None,
-                #[cfg(target_os = "windows")]
-                screen_target_lifetime: screen_target_lifetime.cloned(),
+                #[cfg(any(
+                    target_os = "windows",
+                    all(target_os = "macos", feature = "screen-capture")
+                ))]
+                native_screen_lease,
             });
         bind_group
     }
@@ -1677,14 +1696,17 @@ impl ComposeSourceBindGroupCache {
             .retain(|entry| entry.key.source_storage_id != source_storage_id);
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    ))]
     pub(super) fn release_native_screen_entries(&mut self) {
         self.projected_entries
-            .retain(|_, entry| entry.screen_target_lifetime.is_none());
+            .retain(|_, entry| entry.native_screen_lease.is_none());
         self.retired_projected_entries
-            .retain(|_, entry| entry.screen_target_lifetime.is_none());
+            .retain(|_, entry| entry.native_screen_lease.is_none());
         self.transient_entries
-            .retain(|entry| entry.screen_target_lifetime.is_none());
+            .retain(|entry| entry.native_screen_lease.is_none());
     }
 
     #[cfg(test)]

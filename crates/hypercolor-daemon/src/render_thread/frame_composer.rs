@@ -477,7 +477,13 @@ impl ComposeContext<'_> {
 
     fn latch_screen_frame(&mut self) -> Option<ProducedFrame> {
         let native_submitted = {
-            #[cfg(all(feature = "wgpu", target_os = "windows"))]
+            #[cfg(all(
+                feature = "wgpu",
+                any(
+                    target_os = "windows",
+                    all(target_os = "macos", feature = "screen-capture")
+                )
+            ))]
             {
                 self.inputs.screen_publication.as_ref().is_some_and(
                     |publication| match self
@@ -518,7 +524,13 @@ impl ComposeContext<'_> {
                     },
                 )
             }
-            #[cfg(not(all(feature = "wgpu", target_os = "windows")))]
+            #[cfg(not(all(
+                feature = "wgpu",
+                any(
+                    target_os = "windows",
+                    all(target_os = "macos", feature = "screen-capture")
+                )
+            )))]
             {
                 false
             }
@@ -719,7 +731,16 @@ pub(super) fn synchronize_screen_plan_generation(
     changed
 }
 
-#[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
+#[cfg(any(
+    test,
+    all(
+        feature = "wgpu",
+        any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        )
+    )
+))]
 fn native_copy_failure_retains_last_frame(screen_queue: &ProducerQueue) -> bool {
     screen_queue.has_latest()
 }

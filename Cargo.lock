@@ -5071,6 +5071,8 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-driver-builtin",
  "hypercolor-leptos-ext",
+ "hypercolor-macos-capture",
+ "hypercolor-macos-gpu-interop",
  "hypercolor-network",
  "hypercolor-platform-fs",
  "hypercolor-types",

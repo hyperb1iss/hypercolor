@@ -28,7 +28,13 @@ impl ProjectedLookupAllocationFixture {
 use anyhow::{Result, bail};
 #[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayYuv420Frame;
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(all(
+    feature = "wgpu",
+    any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "screen-capture")
+    )
+))]
 use hypercolor_core::input::screen::ScreenBranchPublication;
 use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
 use hypercolor_core::spatial::PreparedZonePlan;
@@ -781,7 +787,13 @@ impl SparkleFlinger {
     }
 
     pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
-        #[cfg(all(feature = "wgpu", target_os = "windows"))]
+        #[cfg(all(
+            feature = "wgpu",
+            any(
+                target_os = "windows",
+                all(target_os = "macos", feature = "screen-capture")
+            )
+        ))]
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
             return gpu.screen_native_execution_target();
         }
@@ -789,13 +801,25 @@ impl SparkleFlinger {
     }
 
     pub(crate) fn release_native_screen_caches(&mut self) {
-        #[cfg(all(feature = "wgpu", target_os = "windows"))]
+        #[cfg(all(
+            feature = "wgpu",
+            any(
+                target_os = "windows",
+                all(target_os = "macos", feature = "screen-capture")
+            )
+        ))]
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
             gpu.release_native_screen_caches();
         }
     }
 
-    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    #[cfg(all(
+        feature = "wgpu",
+        any(
+            target_os = "windows",
+            all(target_os = "macos", feature = "screen-capture")
+        )
+    ))]
     pub(crate) fn copy_screen_publication(
         &mut self,
         publication: &std::sync::Arc<ScreenBranchPublication>,

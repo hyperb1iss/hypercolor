@@ -1,14 +1,23 @@
 #[cfg(any(
     all(feature = "servo-gpu-import", target_os = "linux"),
-    all(feature = "servo-gpu-import", target_os = "macos")
+    all(feature = "servo-gpu-import", target_os = "macos"),
+    all(feature = "screen-capture", target_os = "macos")
 ))]
 use std::sync::Arc;
 use std::sync::mpsc;
 
 use hypercolor_core::blend_math::encode_srgb_channel;
+#[cfg(all(feature = "screen-capture", target_os = "macos"))]
+use hypercolor_core::input::screen::{PlatformGpuApi, ScreenPhysicalGpuDeviceIdentity};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
+};
+#[cfg(all(feature = "screen-capture", target_os = "macos"))]
+use hypercolor_macos_capture::{
+    MacosCaptureColorimetry, MacosCaptureFrame, MacosCaptureGeometry, MacosCapturePixelFormat,
+    MacosCaptureSurface, MacosColorPrimaries, MacosColorRange, MacosPixelExtent, MacosPixelRect,
+    MacosPointRect, MacosScale, MacosTransferFunction,
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
@@ -1593,6 +1602,105 @@ fn native_screen_manifest_generation_is_an_exact_fence() {
     assert!(validate_windows_plan_generation(7, 8).is_err());
 }
 
+#[cfg(all(feature = "screen-capture", target_os = "macos"))]
+#[test]
+fn metal_compositor_registers_and_composes_native_capture() {
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
+    };
+    let target = compositor
+        .screen_native_execution_target()
+        .expect("Metal compositor should expose a native screen target");
+    let bridge = Arc::clone(
+        compositor
+            .screen_bridge
+            .as_ref()
+            .expect("Metal compositor should retain its screen bridge"),
+    );
+    assert_eq!(target.accepted_api(), &PlatformGpuApi::Metal);
+    assert_eq!(
+        target.physical_gpu_device(),
+        &ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(bridge.interop.metal_registry_id())
+    );
+    assert_eq!(
+        target.max_texture_dimension().get(),
+        compositor.probe.max_texture_dimension_2d
+    );
+
+    let pixels = [17, 43, 91, 255].repeat(12);
+    let capture = Arc::new(macos_capture_frame(&pixels));
+    let (imported, storage_id) = bridge
+        .import_frame(&compositor.device, 11, Arc::clone(&capture))
+        .expect("native capture should import through the daemon bridge");
+    let (_, repeated_storage_id) = bridge
+        .import_frame(&compositor.device, 11, capture)
+        .expect("the same native storage should import again");
+    assert_eq!(storage_id, repeated_storage_id);
+
+    let plan = CompositionPlan::single(
+        4,
+        3,
+        CompositionLayer::replace(ProducerFrame::GpuTexture(GpuTextureFrame {
+            width: 4,
+            height: 3,
+            storage_id,
+            content_generation: imported.content_sequence(),
+            origin: GpuTextureFrameOrigin::ProducerTexture,
+            texture: imported.texture().as_ref().clone(),
+            view: imported.view().as_ref().clone(),
+            immutable_lease: None,
+            macos_screen_lease: None,
+        })),
+    );
+    compositor
+        .compose(&plan, false, full_preview_request(&plan))
+        .expect("native capture should compose without CPU materialization");
+    let preview = resolve_preview_surface_blocking(&mut compositor);
+    assert!(
+        preview
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| pixel == [91, 43, 17, 255])
+    );
+}
+
+#[cfg(all(feature = "screen-capture", target_os = "macos"))]
+fn macos_capture_frame(pixels: &[u8]) -> MacosCaptureFrame {
+    let extent = MacosPixelExtent::new(4, 3).expect("fixture extent should be valid");
+    let (surface, plane) = MacosCaptureSurface::new_native_bgra_fixture(extent, pixels)
+        .expect("native BGRA fixture should be valid");
+    MacosCaptureFrame {
+        epoch: 5,
+        sequence: 0,
+        display_time: 13,
+        storage_extent: extent,
+        planes: Arc::from([plane]),
+        pixel_format: MacosCapturePixelFormat::Bgra8,
+        color: MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::Srgb,
+            transfer: MacosTransferFunction::Srgb,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        },
+        geometry: MacosCaptureGeometry {
+            display_scale_factor: MacosScale::display(1.0)
+                .expect("fixture display scale should be valid"),
+            content_scale: MacosScale::new(1.0).expect("fixture content scale should be valid"),
+            content_rect_points: MacosPointRect::new(0.0, 0.0, 4.0, 3.0)
+                .expect("fixture content points should be valid"),
+            content_rect_pixels: MacosPixelRect::new(0, 0, 4, 3)
+                .expect("fixture content pixels should be valid"),
+            screen_rect_points: None,
+            bounding_rect_points: None,
+            bounding_rect_pixels: None,
+        },
+        damage: Arc::from([]),
+        cursor_composed: true,
+        surface,
+    }
+}
+
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 #[test]
 fn gpu_macos_imported_frame_composes_without_cpu_readback() {
@@ -1795,6 +1903,8 @@ fn gpu_compositor_rejects_every_cached_surface_texture_before_reactivation() {
                 immutable_lease: None,
                 #[cfg(target_os = "windows")]
                 windows_screen_lease: None,
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                macos_screen_lease: None,
             }
         };
         [
