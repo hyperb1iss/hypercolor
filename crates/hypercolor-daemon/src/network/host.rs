@@ -62,6 +62,7 @@ pub struct DaemonDriverHost {
     credential_store: Arc<CredentialStore>,
     driver_registry: Arc<DriverModuleRegistry>,
     discovery_in_progress: Arc<AtomicBool>,
+    pending_discovery_scans: Arc<StdMutex<crate::discovery::PendingDiscoveryScans>>,
     scene_transactions: SceneTransactionQueue,
     config_manager: Option<Arc<ConfigManager>>,
 }
@@ -114,6 +115,7 @@ impl DaemonDriverHost {
             credential_store,
             driver_registry,
             discovery_in_progress,
+            pending_discovery_scans: Arc::default(),
             scene_transactions,
             config_manager,
         }
@@ -154,6 +156,7 @@ impl DaemonDriverHost {
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.discovery_in_progress),
+            pending_scans: Arc::clone(&self.pending_discovery_scans),
             scene_transactions: self.scene_transactions.clone(),
             task_spawner: tokio::runtime::Handle::current(),
         }
@@ -170,10 +173,15 @@ impl DaemonDriverHost {
     }
 
     fn current_config(&self) -> Arc<HypercolorConfig> {
-        self.config_manager.as_ref().map_or_else(
-            || Arc::new(HypercolorConfig::default()),
-            |manager| Arc::clone(&manager.get()),
-        )
+        self.current_config_snapshot()
+            .unwrap_or_else(|| Arc::new(HypercolorConfig::default()))
+    }
+
+    #[must_use]
+    pub(crate) fn current_config_snapshot(&self) -> Option<Arc<HypercolorConfig>> {
+        self.config_manager
+            .as_ref()
+            .map(|manager| Arc::clone(&manager.get()))
     }
 
     async fn device_control_settings_key(&self, device_id: DeviceId) -> String {
@@ -364,9 +372,7 @@ impl DriverLifecycleActions for DaemonDriverHost {
     }
 
     async fn rescan_driver(&self, driver_id: &str) -> Result<()> {
-        let driver_id = driver_id.to_owned();
         let runtime = self.discovery_runtime();
-        let task_spawner = runtime.task_spawner.clone();
         let driver_registry = Arc::clone(&self.driver_registry);
         let driver_host = Arc::new(self.clone());
         let config = self.current_config();
@@ -382,24 +388,14 @@ impl DriverLifecycleActions for DaemonDriverHost {
             }
         };
 
-        task_spawner.spawn(async move {
-            if discovery::execute_discovery_scan_if_idle(
-                runtime,
-                driver_registry,
-                driver_host,
-                config,
-                targets,
-                discovery::default_timeout(),
-            )
-            .await
-            .is_none()
-            {
-                warn!(
-                    driver_id,
-                    "Skipped driver control rescan because discovery is already running"
-                );
-            }
-        });
+        discovery::schedule_discovery_scan(
+            runtime,
+            driver_registry,
+            driver_host,
+            config,
+            targets,
+            discovery::default_timeout(),
+        );
 
         Ok(())
     }

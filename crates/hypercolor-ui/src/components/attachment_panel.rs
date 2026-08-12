@@ -37,7 +37,7 @@ pub fn WiringPanel(
     // rather than refetching — that's what preserves scroll position and input
     // focus in the component editor. The resources still re-trigger naturally
     // when `device_id` changes (device switch).
-    let attachments = LocalResource::new(move || {
+    let attachments = api::daemon_resource(move || {
         let id = device_id.get();
         async move {
             if id.is_empty() {
@@ -53,7 +53,7 @@ pub fn WiringPanel(
         }
     });
 
-    let templates = LocalResource::new(move || async move {
+    let templates = api::daemon_resource(move || async move {
         api::fetch_attachment_templates(None)
             .await
             .unwrap_or_default()
@@ -62,7 +62,7 @@ pub fn WiringPanel(
     // Layout zone display-names — used as fallback when localStorage has no
     // custom channel name.  This picks up renames the user made in the layout
     // zone properties panel.
-    let layout_zone_names = LocalResource::new(move || {
+    let layout_zone_names = api::daemon_resource(move || {
         let dev = device.get();
         async move {
             let Some(dev) = dev else {

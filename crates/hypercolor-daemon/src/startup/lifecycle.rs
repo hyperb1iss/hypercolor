@@ -26,7 +26,9 @@ use crate::interactive_preview::{
 use crate::persistence::{self, AtomicWriteOutcome};
 use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
-use crate::session::{SessionController, current_global_brightness, set_global_brightness};
+use crate::session::{
+    SessionController, current_global_brightness, restore_manual_pause, set_global_brightness,
+};
 use crate::simulators::activate_simulated_displays;
 
 use super::DaemonState;
@@ -89,12 +91,13 @@ impl DaemonState {
         .await;
 
         // Restore persisted scene state before the render loop begins producing frames.
-        self.restore_runtime_session_if_configured(&config).await;
+        self.restore_runtime_session(&config).await;
 
         self.session_controller = Some(SessionController::start(
             Arc::clone(&self.config_manager),
             Arc::clone(&self.event_bus),
             self.power_state.clone(),
+            Arc::clone(&self.output_power_transition),
             self.discovery_runtime(),
             Arc::clone(&self.driver_host),
             Arc::clone(&self.driver_registry),
@@ -108,6 +111,9 @@ impl DaemonState {
         {
             let mut loop_guard = self.render_loop.write().await;
             loop_guard.start();
+            if self.power_state.borrow().manually_paused() {
+                loop_guard.pause();
+            }
         }
 
         // Spawn the render thread.
@@ -192,6 +198,8 @@ impl DaemonState {
             display_frames: Arc::clone(&self.display_frames),
             face_fps_cap: config.display.effective_face_fps_cap(),
         }));
+        let startup_output_state = AppState::from_daemon_state(self);
+        crate::api::effects::reconcile_static_output_hold(&startup_output_state).await;
         self.device_metrics_collector_task = Some(spawn_device_metrics_collector(
             Arc::clone(&self.device_metrics),
             Arc::clone(&self.backend_manager),
@@ -217,6 +225,7 @@ impl DaemonState {
         }
 
         self.spawn_effect_error_fallback_worker();
+        self.spawn_output_static_hold_worker();
         self.spawn_display_preference_sync_worker();
         if config.discovery.background_enabled {
             self.spawn_discovery_worker(Arc::clone(&config));
@@ -300,6 +309,9 @@ impl DaemonState {
             handle.abort();
         }
         if let Some(handle) = self.display_preference_sync_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.output_static_hold_task.take() {
             handle.abort();
         }
         if let Some(handle) = self.effect_error_fallback_task.take() {
@@ -414,6 +426,7 @@ impl DaemonState {
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
         snapshot.global_brightness = current_global_brightness(&self.power_state);
+        snapshot.manual_paused = self.power_state.borrow().manually_paused();
         self.driver_host
             .driver_inventory()
             .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
@@ -434,12 +447,7 @@ impl DaemonState {
         store.save_reserved(pending)
     }
 
-    async fn restore_runtime_session_if_configured(&self, config: &HypercolorConfig) {
-        let profile_mode = config.daemon.start_profile.trim();
-        if !profile_mode.eq_ignore_ascii_case("last") {
-            return;
-        }
-
+    async fn restore_runtime_session(&self, config: &HypercolorConfig) {
         let snapshot = match runtime_state::load(&self.runtime_state_path) {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -458,6 +466,13 @@ impl DaemonState {
             );
             return;
         };
+        if snapshot.manual_paused {
+            restore_manual_pause(&self.power_state, [0, 0, 0]);
+        }
+        let profile_mode = config.daemon.start_profile.trim();
+        if !profile_mode.eq_ignore_ascii_case("last") {
+            return;
+        }
         set_global_brightness(&self.power_state, snapshot.global_brightness);
         {
             let mut settings = self.device_settings.write().await;
@@ -641,6 +656,27 @@ impl DaemonState {
                 };
                 if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) {
                     crate::api::displays::sync_display_preference_overlays(&state).await;
+                }
+            }
+        }));
+    }
+
+    fn spawn_output_static_hold_worker(&mut self) {
+        let state = Arc::new(AppState::from_daemon_state(self));
+        let mut event_rx = state.event_bus.subscribe_all();
+
+        self.output_static_hold_task = Some(tokio::spawn(async move {
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) => {
+                        crate::api::effects::reconcile_static_output_hold(&state).await;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "Static output hold worker lagged");
+                        crate::api::effects::reconcile_static_output_hold(&state).await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         }));

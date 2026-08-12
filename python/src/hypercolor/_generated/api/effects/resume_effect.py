@@ -5,6 +5,9 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.api_response_resume_effect_response import (
+    ApiResponseResumeEffectResponse,
+)
 from ...types import Response
 
 
@@ -20,27 +23,11 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | None:
+) -> ApiResponseResumeEffectResponse | None:
     if response.status_code == 200:
-        return None
+        response_200 = ApiResponseResumeEffectResponse.from_dict(response.json())
 
-    if response.status_code == 400:
-        return None
-
-    if response.status_code == 404:
-        return None
-
-    if response.status_code == 409:
-        return None
-
-    if response.status_code == 412:
-        return None
-
-    if response.status_code == 422:
-        return None
-
-    if response.status_code == 500:
-        return None
+        return response_200
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -50,7 +37,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any]:
+) -> Response[ApiResponseResumeEffectResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,15 +49,15 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
-    """Resume active effect output
+) -> Response[ApiResponseResumeEffectResponse]:
+    """`POST /api/v1/effects/resume` — Resume output for the preserved active effect.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        Response[ApiResponseResumeEffectResponse]
     """
 
     kwargs = _get_kwargs()
@@ -82,18 +69,37 @@ def sync_detailed(
     return _build_response(client=client, response=response)
 
 
-async def asyncio_detailed(
+def sync(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
-    """Resume active effect output
+) -> ApiResponseResumeEffectResponse | None:
+    """`POST /api/v1/effects/resume` — Resume output for the preserved active effect.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        ApiResponseResumeEffectResponse
+    """
+
+    return sync_detailed(
+        client=client,
+    ).parsed
+
+
+async def asyncio_detailed(
+    *,
+    client: AuthenticatedClient | Client,
+) -> Response[ApiResponseResumeEffectResponse]:
+    """`POST /api/v1/effects/resume` — Resume output for the preserved active effect.
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        Response[ApiResponseResumeEffectResponse]
     """
 
     kwargs = _get_kwargs()
@@ -101,3 +107,24 @@ async def asyncio_detailed(
     response = await client.get_async_httpx_client().request(**kwargs)
 
     return _build_response(client=client, response=response)
+
+
+async def asyncio(
+    *,
+    client: AuthenticatedClient | Client,
+) -> ApiResponseResumeEffectResponse | None:
+    """`POST /api/v1/effects/resume` — Resume output for the preserved active effect.
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        ApiResponseResumeEffectResponse
+    """
+
+    return (
+        await asyncio_detailed(
+            client=client,
+        )
+    ).parsed

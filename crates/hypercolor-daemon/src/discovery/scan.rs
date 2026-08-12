@@ -95,6 +95,165 @@ pub async fn execute_discovery_scan_if_idle(
     )
 }
 
+/// Execute a scan now when idle, or merge it into the next background scan.
+pub async fn execute_discovery_scan_or_enqueue(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+    config: Arc<HypercolorConfig>,
+    targets: Vec<DiscoveryTarget>,
+    timeout: Duration,
+) -> Option<DiscoveryScanResult> {
+    enqueue_pending_scan(&runtime, targets, timeout, config);
+    if runtime
+        .in_progress
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+
+    let pending = take_pending_scan(&runtime, &driver_host)
+        .expect("discovery owner should find the request it just enqueued");
+    Some(
+        execute_discovery_scan(
+            runtime,
+            driver_registry,
+            driver_host,
+            pending.config,
+            pending.targets,
+            pending.timeout,
+        )
+        .await,
+    )
+}
+
+/// Merge a background discovery request and ensure a worker owns it.
+pub fn schedule_discovery_scan(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+    config: Arc<HypercolorConfig>,
+    targets: Vec<DiscoveryTarget>,
+    timeout: Duration,
+) {
+    if targets.is_empty() {
+        return;
+    }
+    enqueue_pending_scan(&runtime, targets, timeout, config);
+    spawn_pending_scan_if_idle(runtime, driver_registry, driver_host);
+}
+
+fn enqueue_pending_scan(
+    runtime: &DiscoveryRuntime,
+    targets: Vec<DiscoveryTarget>,
+    timeout: Duration,
+    config: Arc<HypercolorConfig>,
+) {
+    let mut pending = runtime
+        .pending_scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pending.merge(targets, timeout, config);
+}
+
+fn take_pending_scan(
+    runtime: &DiscoveryRuntime,
+    driver_host: &DaemonDriverHost,
+) -> Option<super::PendingDiscoveryScan> {
+    let mut pending = runtime
+        .pending_scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut scan = pending.take()?;
+    if let Some(config) = driver_host.current_config_snapshot() {
+        scan.config = config;
+    }
+    Some(scan)
+}
+
+fn has_pending_scan(runtime: &DiscoveryRuntime) -> bool {
+    !runtime
+        .pending_scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_empty()
+}
+
+fn spawn_pending_scan_if_idle(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+) {
+    if runtime
+        .in_progress
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return;
+    }
+
+    let Some(pending) = take_pending_scan(&runtime, &driver_host) else {
+        runtime
+            .in_progress
+            .store(false, std::sync::atomic::Ordering::Release);
+        if has_pending_scan(&runtime) {
+            spawn_pending_scan_if_idle(runtime, driver_registry, driver_host);
+        }
+        return;
+    };
+
+    let task_spawner = runtime.task_spawner.clone();
+    task_spawner.spawn(async move {
+        let result = execute_discovery_scan(
+            runtime,
+            driver_registry,
+            driver_host,
+            pending.config,
+            pending.targets,
+            pending.timeout,
+        )
+        .await;
+        debug!(
+            found = result.new_devices.len() + result.reappeared_devices.len(),
+            vanished = result.vanished_devices.len(),
+            duration_ms = result.duration_ms,
+            "Queued discovery scan finished"
+        );
+    });
+}
+
+struct DiscoveryFlagGuard {
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+}
+
+impl Drop for DiscoveryFlagGuard {
+    fn drop(&mut self) {
+        self.runtime
+            .in_progress
+            .store(false, std::sync::atomic::Ordering::Release);
+        if has_pending_scan(&self.runtime) {
+            spawn_pending_scan_if_idle(
+                self.runtime.clone(),
+                Arc::clone(&self.driver_registry),
+                Arc::clone(&self.driver_host),
+            );
+        }
+    }
+}
+
 struct DriverModuleScanner {
     driver: Arc<dyn DriverModule>,
     driver_id: String,
@@ -169,8 +328,10 @@ pub async fn execute_discovery_scan(
     targets: Vec<DiscoveryTarget>,
     timeout: Duration,
 ) -> DiscoveryScanResult {
-    let _flag_guard = super::DiscoveryFlagGuard {
-        flag: Arc::clone(&runtime.in_progress),
+    let _flag_guard = DiscoveryFlagGuard {
+        runtime: runtime.clone(),
+        driver_registry: Arc::clone(&driver_registry),
+        driver_host: Arc::clone(&driver_host),
     };
     let target_names = super::target_names(&targets);
     let transient_miss_targets = targets

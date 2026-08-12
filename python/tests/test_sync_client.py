@@ -35,6 +35,34 @@ def test_sync_client_delegates_health() -> None:
     assert result.status == "healthy"
 
 
+def test_sync_client_delegates_output_power() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/output/power"
+        assert request.method == "PUT"
+        assert json.loads(request.content) == {"state": "paused"}
+        return httpx.Response(
+            200,
+            content=msgspec.json.encode(
+                {
+                    "data": {"state": "paused"},
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_123",
+                        "timestamp": "2026-03-08T00:00:00Z",
+                    },
+                }
+            ),
+        )
+
+    client = SyncHypercolorClient(transport=httpx.MockTransport(handler))
+    try:
+        result = client.pause_rendering()
+    finally:
+        client.close()
+
+    assert result.paused is True
+
+
 def test_sync_client_delegates_driver_inventory() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/drivers"

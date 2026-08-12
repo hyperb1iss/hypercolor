@@ -34,7 +34,7 @@ pub fn SceneSelector() -> impl IntoView {
     // ephemeral default scene; the active scene is folded into `options`
     // below so the picker can always name what is on screen.
     let (list_tick, set_list_tick) = signal(0_u64);
-    let scenes = LocalResource::new(move || {
+    let scenes = api::daemon_resource(move || {
         let _ = list_tick.get();
         async move { api::list_scenes().await }
     });

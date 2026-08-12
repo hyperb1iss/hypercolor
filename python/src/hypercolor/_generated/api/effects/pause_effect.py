@@ -5,6 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.api_response_pause_effect_response import ApiResponsePauseEffectResponse
 from ...types import Response
 
 
@@ -20,27 +21,11 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | None:
+) -> ApiResponsePauseEffectResponse | None:
     if response.status_code == 200:
-        return None
+        response_200 = ApiResponsePauseEffectResponse.from_dict(response.json())
 
-    if response.status_code == 400:
-        return None
-
-    if response.status_code == 404:
-        return None
-
-    if response.status_code == 409:
-        return None
-
-    if response.status_code == 412:
-        return None
-
-    if response.status_code == 422:
-        return None
-
-    if response.status_code == 500:
-        return None
+        return response_200
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -50,7 +35,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any]:
+) -> Response[ApiResponsePauseEffectResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,15 +47,15 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
-    """Pause active effect output
+) -> Response[ApiResponsePauseEffectResponse]:
+    """`POST /api/v1/effects/pause` — Pause output without clearing active effect state.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        Response[ApiResponsePauseEffectResponse]
     """
 
     kwargs = _get_kwargs()
@@ -82,18 +67,37 @@ def sync_detailed(
     return _build_response(client=client, response=response)
 
 
-async def asyncio_detailed(
+def sync(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
-    """Pause active effect output
+) -> ApiResponsePauseEffectResponse | None:
+    """`POST /api/v1/effects/pause` — Pause output without clearing active effect state.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        ApiResponsePauseEffectResponse
+    """
+
+    return sync_detailed(
+        client=client,
+    ).parsed
+
+
+async def asyncio_detailed(
+    *,
+    client: AuthenticatedClient | Client,
+) -> Response[ApiResponsePauseEffectResponse]:
+    """`POST /api/v1/effects/pause` — Pause output without clearing active effect state.
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        Response[ApiResponsePauseEffectResponse]
     """
 
     kwargs = _get_kwargs()
@@ -101,3 +105,24 @@ async def asyncio_detailed(
     response = await client.get_async_httpx_client().request(**kwargs)
 
     return _build_response(client=client, response=response)
+
+
+async def asyncio(
+    *,
+    client: AuthenticatedClient | Client,
+) -> ApiResponsePauseEffectResponse | None:
+    """`POST /api/v1/effects/pause` — Pause output without clearing active effect state.
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        ApiResponsePauseEffectResponse
+    """
+
+    return (
+        await asyncio_detailed(
+            client=client,
+        )
+    ).parsed

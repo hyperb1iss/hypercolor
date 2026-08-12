@@ -41,7 +41,7 @@ pub fn ScreenCompositionSection(
     // The face assignment for the selected screen. Retargets when the
     // selection moves and refreshes after every composition commit.
     let (face_tick, set_face_tick) = signal(0_u64);
-    let face_resource = LocalResource::new(move || {
+    let face_resource = api::daemon_resource(move || {
         let _ = face_tick.get();
         let device_id = display_device_id.get();
         async move {

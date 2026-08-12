@@ -235,9 +235,12 @@ async fn read_state_with_state(state: &AppState) -> Value {
     };
     let input = input_status_snapshot(state);
 
+    let power = *state.power_state.borrow();
+    let paused = power.reported_paused();
+
     json!({
-        "running": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Running),
-        "paused": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Paused),
+        "running": !power.sleeping(),
+        "paused": paused,
         "brightness": brightness,
         "fps": {
             "target": target_fps,

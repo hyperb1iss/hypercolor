@@ -1203,6 +1203,11 @@ async fn backend_connect_reuses_shared_socket_and_allocates_e131_universes() {
     assert_eq!(backend.connected_e131_start_universe(&device_a), Some(1));
     assert_eq!(backend.connected_e131_start_universe(&device_b), Some(3));
     assert_eq!(backend.target_fps(&device_a), Some(30));
+    let cadence = backend
+        .output_cadence(&device_a)
+        .expect("connected WLED device should declare an output cadence");
+    assert_eq!(cadence.target_fps(), 30);
+    assert_eq!(cadence.max_frame_silence(), Some(Duration::from_secs(2)));
 }
 
 #[tokio::test]

@@ -5,6 +5,18 @@ from __future__ import annotations
 import msgspec
 
 
+class OutputPowerState(msgspec.Struct, kw_only=True):
+    """Current global output power state."""
+
+    state: str
+
+    @property
+    def paused(self) -> bool:
+        """Return whether output is paused."""
+
+        return self.state == "paused"
+
+
 class ServerIdentity(msgspec.Struct, kw_only=True):
     """Stable daemon identity."""
 

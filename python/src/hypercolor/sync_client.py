@@ -34,7 +34,7 @@ from .models.layout import Layout, LayoutSummary
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
 from .models.scene import ActivateSceneResult, ActiveScene, DeactivateSceneResult, Scene
 from .models.spatial import SpatialLayout
-from .models.system import HealthStatus, SystemState
+from .models.system import HealthStatus, OutputPowerState, SystemState
 from .models.zone import (
     UnassignedBehaviorResult,
     ZoneDeleteResult,
@@ -94,10 +94,16 @@ class SyncHypercolorClient:
     def set_brightness(self, brightness: int) -> BrightnessUpdate:
         return self._run(self._client.set_brightness(brightness))
 
-    def pause_rendering(self) -> MutationResult:
+    def get_output_power(self) -> OutputPowerState:
+        return self._run(self._client.get_output_power())
+
+    def set_output_power(self, *, paused: bool) -> OutputPowerState:
+        return self._run(self._client.set_output_power(paused=paused))
+
+    def pause_rendering(self) -> OutputPowerState:
         return self._run(self._client.pause_rendering())
 
-    def resume_rendering(self) -> MutationResult:
+    def resume_rendering(self) -> OutputPowerState:
         return self._run(self._client.resume_rendering())
 
     def get_devices(self, **filters: Any) -> list[Device]:
@@ -202,7 +208,10 @@ class SyncHypercolorClient:
     def reset_controls(self, *, render_group: str | None = None) -> MutationResult:
         return self._run(self._client.reset_controls(render_group=render_group))
 
-    def update_controls(self, controls: Mapping[str, Any]) -> ControlUpdateResult:
+    def update_controls(
+        self,
+        controls: Mapping[str, Any],
+    ) -> ControlUpdateResult:
         return self._run(self._client.update_controls(controls))
 
     def get_control_surfaces(

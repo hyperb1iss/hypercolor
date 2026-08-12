@@ -221,7 +221,7 @@ fn ZoneControlsPanel(
         Signal::derive(move || category_accent_rgb(&category).to_string())
     };
 
-    let schema = LocalResource::new({
+    let schema = api::daemon_resource({
         let effect_id = effect_id.clone();
         move || {
             let effect_id = effect_id.clone();

@@ -39,6 +39,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         effects::build_set_effect(),
         effects::build_list_effects(),
+        system::build_set_output_power(),
         effects::build_stop_effect(),
         effects::build_set_color(),
         devices::build_get_devices(),
@@ -68,6 +69,7 @@ pub fn execute_tool(name: &str, params: &Value) -> Result<Value, ToolError> {
     match name {
         "set_effect" => effects::handle_set_effect(params),
         "list_effects" => effects::handle_list_effects(params),
+        "set_output_power" => system::handle_set_output_power(params),
         "stop_effect" => effects::handle_stop_effect(params),
         "set_color" => effects::handle_set_color(params),
         "get_devices" => devices::handle_get_devices(params),
@@ -95,6 +97,7 @@ pub async fn execute_tool_with_state(
     match name {
         "set_effect" => effects::handle_set_effect_with_state(params, state).await,
         "list_effects" => effects::handle_list_effects_with_state(params, state).await,
+        "set_output_power" => system::handle_set_output_power_with_state(params, state).await,
         "stop_effect" => effects::handle_stop_effect_with_state(params, state).await,
         "set_color" => effects::handle_set_color_with_state(params, state).await,
         "get_devices" => devices::handle_get_devices_with_state(params, state).await,

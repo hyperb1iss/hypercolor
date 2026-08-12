@@ -61,6 +61,24 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["paths"]["/api/v1/status"].is_object());
     assert!(body["paths"]["/api/v1/devices"].is_object());
     assert!(body["paths"]["/api/v1/effects"].is_object());
+    assert!(body["paths"]["/api/v1/output/power"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/output/power"]["put"].is_object());
+    assert_eq!(
+        body["paths"]["/api/v1/output/power"]["put"]["requestBody"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/SetOutputPowerRequest"
+    );
+    assert!(body["components"]["schemas"]["OutputPowerResponse"].is_object());
+    assert_eq!(
+        body["paths"]["/api/v1/effects/pause"]["post"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/ApiResponse_PauseEffectResponse"
+    );
+    assert_eq!(
+        body["paths"]["/api/v1/effects/resume"]["post"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/ApiResponse_ResumeEffectResponse"
+    );
     assert!(body["paths"]["/api/v1/effects/{id}/apply"].is_object());
     assert_ne!(
         body["paths"]["/api/v1/effects/{id}/apply"]["post"]["requestBody"]["required"],

@@ -395,7 +395,8 @@ async def test_get_active_effect_decodes_live_state(client: HypercolorClient) ->
                         }
                     ],
                     "control_values": {"speed": {"integer": 72}},
-                    "active_preset_id": None,
+                    "active_preset_id": "preset_night",
+                    "active_preset_modified": True,
                     "cover_image_url": "/api/v1/effects/aurora/cover",
                 }
             ),
@@ -407,6 +408,8 @@ async def test_get_active_effect_decodes_live_state(client: HypercolorClient) ->
     assert isinstance(effect, ActiveEffect)
     assert effect.state == "running"
     assert effect.control_values["speed"] == 72
+    assert effect.active_preset_id == "preset_night"
+    assert effect.active_preset_modified is True
     assert effect.controls[0].label == "Speed"
     assert effect.controls[0].type == "number"
     assert effect.controls[0].default == 40
@@ -690,6 +693,27 @@ async def test_stop_effect_uses_generated_route(client: HypercolorClient) -> Non
 
     assert route.called
     assert result.stopped is True
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_pause_and_resume_preserve_effect_state(client: HypercolorClient) -> None:
+    route = respx.put("http://hyperia.test:9420/api/v1/output/power").mock(
+        side_effect=[
+            httpx.Response(200, content=_envelope({"state": "paused"})),
+            httpx.Response(200, content=_envelope({"state": "running"})),
+        ]
+    )
+
+    paused = await client.pause_rendering()
+
+    assert paused.paused is True
+    assert route.calls[0].request.content == b'{"state":"paused"}'
+
+    running = await client.resume_rendering()
+
+    assert running.paused is False
+    assert route.calls[1].request.content == b'{"state":"running"}'
 
 
 @respx.mock
@@ -1309,6 +1333,7 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
     assert effect.controls[0].label == "Animation Speed"
     assert effect.active_control_values == {"effectSpeed": 40}
     assert effect.presets[0].name == "Default"
+    assert effect.presets[0].controls == {"effectSpeed": 40}
 
 
 @respx.mock

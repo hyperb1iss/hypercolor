@@ -251,6 +251,8 @@ fn build_cmd() -> clap::Command {
                         .arg(Arg::new("transition").long("transition").default_value("0")),
                 )
                 .subcommand(Command::new("stop").about("Stop effect"))
+                .subcommand(Command::new("pause").about("Pause all output"))
+                .subcommand(Command::new("resume").about("Resume all output"))
                 .subcommand(
                     Command::new("info")
                         .about("Show effect info")
@@ -913,6 +915,17 @@ fn parse_effects_stop() {
         .expect("effects stop should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
     assert_eq!(sub.subcommand_name(), Some("stop"));
+}
+
+#[test]
+fn parse_effects_pause_and_resume() {
+    for command in ["pause", "resume"] {
+        let matches = build_cmd()
+            .try_get_matches_from(["hyper", "effects", command])
+            .expect("effects output command should parse");
+        let (_, sub) = matches.subcommand().expect("should have subcommand");
+        assert_eq!(sub.subcommand_name(), Some(command));
+    }
 }
 
 #[test]

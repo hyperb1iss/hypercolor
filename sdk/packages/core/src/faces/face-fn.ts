@@ -32,6 +32,7 @@ import { inferControl } from '../controls/infer'
 import { deriveLabel } from '../controls/names'
 import { isControlSpec } from '../controls/specs'
 import type { DesignBasis } from '../math/scale'
+import { hostFrameTimeSeconds } from '../runtime'
 import type { FaceContext, FaceUpdateFn } from './context'
 import { buildAudioAccessor, buildFaceDataSources, buildSensorAccessor, resolveDisplayInfo } from './context'
 
@@ -310,7 +311,7 @@ function startFaceLoop(
             window.performance && typeof window.performance.now === 'function'
                 ? window.performance.now() * 0.001
                 : Date.now() * 0.001
-        renderAt(time)
+        renderAt(hostFrameTimeSeconds(time))
     }
 
     if (shouldUseHostDrivenFaceLoop()) {
@@ -319,7 +320,7 @@ function startFaceLoop(
     }
 
     function tick(timestamp: number): void {
-        renderAt(timestamp / 1000)
+        renderAt(hostFrameTimeSeconds(timestamp / 1000))
         requestAnimationFrame(tick)
     }
 

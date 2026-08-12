@@ -74,6 +74,7 @@ use crate::render_thread::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputScreenBranchDemand,
 };
+use crate::session::current_global_brightness;
 
 const WS_PROTOCOL_VERSION: &str = "1.0";
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -1481,8 +1482,8 @@ async fn build_hello_state(state: &AppState) -> HelloState {
 
     HelloState {
         running: render_snapshot.state != hypercolor_core::engine::RenderLoopState::Stopped,
-        paused: render_snapshot.state == hypercolor_core::engine::RenderLoopState::Paused,
-        brightness: 100,
+        paused: state.power_state.borrow().reported_paused(),
+        brightness: brightness_percent(current_global_brightness(&state.power_state)),
         fps: HelloFps {
             target: target_fps,
             capacity: (capacity_fps * 10.0).round() / 10.0,
@@ -1496,6 +1497,23 @@ async fn build_hello_state(state: &AppState) -> HelloState {
         layout: None,
         device_count: devices.len(),
         total_leds,
+    }
+}
+
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "brightness is clamped to 0-100 percent before narrowing to a byte"
+)]
+fn brightness_percent(brightness: f32) -> u8 {
+    let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
+    if scaled <= 0.0 {
+        0
+    } else if scaled >= 100.0 {
+        100
+    } else {
+        scaled as u8
     }
 }
 
@@ -1514,6 +1532,40 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
         debug!("WebSocket send error: {e}");
         e
     })
+}
+
+#[cfg(test)]
+mod hello_state_tests {
+    use super::build_hello_state;
+    use crate::api::AppState;
+    use crate::session::{OutputOverride, set_global_brightness};
+
+    #[tokio::test]
+    async fn hello_reports_effective_pause_and_actual_brightness() {
+        let state = AppState::new();
+        set_global_brightness(&state.power_state, 0.42);
+        state
+            .power_state
+            .send_modify(|power| power.session_sleeping = true);
+
+        let hello = build_hello_state(&state).await;
+
+        assert!(hello.paused);
+        assert_eq!(hello.brightness, 42);
+    }
+
+    #[tokio::test]
+    async fn hello_does_not_report_destructive_stop_as_pause() {
+        let state = AppState::new();
+        state
+            .power_state
+            .send_modify(|power| power.output_override = OutputOverride::Stopped);
+
+        let hello = build_hello_state(&state).await;
+
+        assert!(!hello.paused);
+        assert!(hello.effect.is_none());
+    }
 }
 
 #[cfg(test)]

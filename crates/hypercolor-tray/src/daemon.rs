@@ -10,6 +10,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use hypercolor_core::config::paths;
 use hypercolor_core::device::discover_servers;
+use hypercolor_types::api::output::{OutputPowerResponse, OutputPowerStatus};
 use hypercolor_types::server::ServerIdentity;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -115,7 +116,7 @@ impl DaemonClient {
                 ws_msg = ws_read.next() => {
                     match ws_msg {
                         Some(Ok(Message::Text(text))) => {
-                            self.handle_ws_message(&text).await;
+                            self.handle_ws_message(&text).await?;
                         }
                         Some(Ok(Message::Ping(payload))) => {
                             let _ = ws_write.send(Message::Pong(payload)).await;
@@ -159,6 +160,7 @@ impl DaemonClient {
             .ok_or_else(|| anyhow::anyhow!("Missing data in server response"))?;
 
         let status = self.fetch_status().await?;
+        let power = self.fetch_output_power().await?;
 
         let effects_url = format!("{}/api/v1/effects", self.base_url);
         let effects_resp: ApiEnvelope<EffectListResponse> = self
@@ -228,7 +230,7 @@ impl DaemonClient {
         Ok(AppState {
             connected: true,
             running: status.running,
-            paused: false,
+            paused: power.state == OutputPowerStatus::Paused,
             brightness: status.global_brightness,
             current_effect,
             active_scene_name: status.active_scene,
@@ -255,11 +257,24 @@ impl DaemonClient {
             .ok_or_else(|| anyhow::anyhow!("Missing data in status response"))
     }
 
+    async fn fetch_output_power(&self) -> anyhow::Result<OutputPowerResponse> {
+        let url = format!("{}/api/v1/output/power", self.base_url);
+        let response: ApiEnvelope<OutputPowerResponse> = self
+            .auth_request(self.http.get(&url))
+            .send()
+            .await?
+            .json()
+            .await?;
+        response
+            .data
+            .ok_or_else(|| anyhow::anyhow!("Missing data in output power response"))
+    }
+
     /// Parse a WebSocket text message and send a state update if relevant.
-    async fn handle_ws_message(&self, text: &str) {
+    async fn handle_ws_message(&self, text: &str) -> anyhow::Result<()> {
         let Ok(msg) = serde_json::from_str::<WsEventMessage>(text) else {
             debug!("Ignoring unparseable WS message");
-            return;
+            return Ok(());
         };
 
         if msg.msg_type == "hello"
@@ -268,27 +283,27 @@ impl DaemonClient {
         {
             let _ = self
                 .tx
-                .send(DaemonMessage::StateUpdate(StateUpdate::BrightnessChanged(
-                    state.brightness,
-                )));
-            if state.paused {
-                let _ = self
-                    .tx
-                    .send(DaemonMessage::StateUpdate(StateUpdate::Paused));
-            }
-            if let Some(effect) = state.effect {
-                let _ = self
-                    .tx
-                    .send(DaemonMessage::StateUpdate(StateUpdate::EffectChanged {
+                .send(DaemonMessage::StateUpdate(StateUpdate::Snapshot {
+                    running: state.running,
+                    paused: state.paused,
+                    brightness: state.brightness,
+                    device_count: state.device_count,
+                    effect: state.effect.map(|effect| EffectInfo {
                         id: effect.id,
                         name: effect.name,
-                    }));
-            }
-            return;
+                    }),
+                }));
+            return Ok(());
         }
 
         if msg.msg_type != "event" {
-            return;
+            return Ok(());
+        }
+
+        if msg.requires_full_resync() {
+            let state = self.fetch_initial_state().await?;
+            let _ = self.tx.send(DaemonMessage::Connected(state));
+            return Ok(());
         }
 
         let update = match msg.event.as_str() {
@@ -327,7 +342,7 @@ impl DaemonClient {
                 let id = effect_data["id"].as_str().unwrap_or_default().to_owned();
                 let name = effect_data["name"].as_str().unwrap_or_default().to_owned();
                 if id.is_empty() && name.is_empty() {
-                    return;
+                    return Ok(());
                 }
                 Some(StateUpdate::EffectChanged { id, name })
             }
@@ -346,6 +361,7 @@ impl DaemonClient {
         if let Some(update) = update {
             let _ = self.tx.send(DaemonMessage::StateUpdate(update));
         }
+        Ok(())
     }
 
     /// Handle a command from the tray UI thread.
@@ -398,8 +414,19 @@ impl DaemonClient {
                 }
                 false
             }
-            TrayCommand::TogglePause => {
-                warn!("Pause/resume toggle not yet implemented in daemon API");
+            TrayCommand::SetPaused(paused) => {
+                let url = format!("{}/api/v1/output/power", self.base_url);
+                let state = if paused { "paused" } else { "running" };
+                let body = serde_json::json!({ "state": state });
+                if let Err(error) = self
+                    .send_command(
+                        self.auth_request(self.http.put(&url)).json(&body),
+                        "set output power",
+                    )
+                    .await
+                {
+                    error!("Failed to set output power to {state}: {error}");
+                }
                 false
             }
             TrayCommand::OpenWebUi => {

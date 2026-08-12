@@ -165,7 +165,7 @@ impl MetricsSample {
 pub fn DashboardPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let preview_telemetry = expect_context::<PreviewTelemetryContext>();
-    let status_resource = LocalResource::new(api::fetch_status);
+    let status_resource = api::daemon_resource(api::fetch_status);
     let fullscreenchange_listener: StoredValue<Option<EventHandle>, LocalStorage> =
         StoredValue::new_local(None);
 

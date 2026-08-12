@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, SegmentRange,
+    DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, OutputCadence, SegmentRange,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -41,6 +41,7 @@ struct SlowRecordingBackend {
     writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
     write_count: Arc<AtomicUsize>,
     target_fps: Option<u32>,
+    max_frame_silence: Option<Duration>,
     write_times: Option<Arc<Mutex<Vec<Instant>>>>,
 }
 
@@ -130,12 +131,18 @@ impl SlowRecordingBackend {
             writes,
             write_count,
             target_fps: None,
+            max_frame_silence: None,
             write_times: None,
         }
     }
 
     fn with_target_fps(mut self, target_fps: u32) -> Self {
         self.target_fps = Some(target_fps);
+        self
+    }
+
+    fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
+        self.max_frame_silence = Some(max_frame_silence);
         self
     }
 
@@ -204,6 +211,15 @@ impl DeviceBackend for SlowRecordingBackend {
         } else {
             None
         }
+    }
+
+    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+        self.target_fps(id).map(|target_fps| {
+            let cadence = OutputCadence::from_fps(target_fps);
+            self.max_frame_silence.map_or(cadence, |max_frame_silence| {
+                cadence.with_max_frame_silence(max_frame_silence)
+            })
+        })
     }
 }
 
@@ -676,6 +692,7 @@ struct FailOnceRecordingBackend {
     expected_device_id: DeviceId,
     writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
     attempts: Arc<AtomicUsize>,
+    max_frame_silence: Option<Duration>,
 }
 
 impl FailOnceRecordingBackend {
@@ -688,7 +705,13 @@ impl FailOnceRecordingBackend {
             expected_device_id,
             writes,
             attempts,
+            max_frame_silence: None,
         }
+    }
+
+    fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
+        self.max_frame_silence = Some(max_frame_silence);
+        self
     }
 }
 
@@ -743,6 +766,15 @@ impl DeviceBackend for FailOnceRecordingBackend {
 
         self.writes.lock().await.push(colors.to_vec());
         Ok(())
+    }
+
+    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+        (*id == self.expected_device_id).then(|| {
+            let cadence = OutputCadence::from_fps(60);
+            self.max_frame_silence.map_or(cadence, |max_frame_silence| {
+                cadence.with_max_frame_silence(max_frame_silence)
+            })
+        })
     }
 }
 
@@ -4346,6 +4378,122 @@ async fn write_frame_suppresses_identical_payloads_after_successful_send() {
     assert_eq!(queue.frames_received, 1);
     assert_eq!(queue.frames_sent, 1);
     assert_eq!(queue.frames_dropped, 0);
+}
+
+#[tokio::test]
+async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let max_frame_silence = Duration::from_millis(40);
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(60)
+    .with_max_frame_silence(max_frame_silence);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("slow", device_id, "slow:reassert")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:reassert", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+    manager.write_frame(&frame, &layout).await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while manager.device_output_statistics()[0].frames_sent < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("cached payload should be resent when maximum frame silence elapses");
+
+    let expected = vec![expected_led_color([12, 34, 56]); 4];
+    let writes = writes.lock().await.clone();
+    assert!(writes.len() >= 2);
+    assert!(writes.iter().all(|write| write == &expected));
+
+    let cadence = manager
+        .cached_output_cadence("slow", device_id)
+        .expect("connected cadence should be cached");
+    assert_eq!(cadence.max_frame_silence(), Some(max_frame_silence));
+
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].max_frame_silence_ms, Some(40));
+    assert_eq!(stats[0].accepted, 1);
+    assert_eq!(stats[0].frames_received, 1);
+    assert!(stats[0].cached_payload_reassertions >= 1);
+    assert!(stats[0].frames_sent >= 2);
+    assert!(stats[0].last_transport_completed_sequence >= 2);
+
+    let debug = manager.debug_snapshot();
+    assert_eq!(debug.queues[0].max_frame_silence_ms, Some(40));
+}
+
+#[tokio::test]
+async fn cached_payload_reassertion_uses_normal_failure_and_ack_telemetry() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let backend =
+        FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts))
+            .with_max_frame_silence(Duration::from_millis(40));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("fail_once", device_id, "fail_once:reassert")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "fail_once:reassert", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[90, 45, 180]; 4],
+    }];
+    manager.write_frame(&frame, &layout).await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let stats = manager.device_output_statistics();
+            if stats
+                .first()
+                .is_some_and(|stats| stats.transport_failed >= 1 && stats.transport_completed >= 1)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("cached payload should retry through the normal delivery path");
+
+    assert!(attempts.load(Ordering::Relaxed) >= 2);
+    let expected = vec![expected_led_color([90, 45, 180]); 4];
+    assert!(writes.lock().await.iter().all(|write| write == &expected));
+
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].accepted, 1);
+    assert_eq!(stats[0].frames_received, 1);
+    assert!(stats[0].cached_payload_reassertions >= 1);
+    assert_eq!(stats[0].transport_failed, 1);
+    assert!(stats[0].transport_completed >= 1);
+    assert!(stats[0].last_transport_failed_sequence > 0);
+    assert!(stats[0].last_transport_completed_sequence > stats[0].last_transport_failed_sequence);
+    assert_eq!(stats[0].last_error, None);
 }
 
 #[tokio::test]

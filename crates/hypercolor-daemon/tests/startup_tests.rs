@@ -15,6 +15,8 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
+use hypercolor_core::engine::RenderLoopState;
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::api::{AppState, system::get_status};
 use hypercolor_daemon::daemon::{
     DaemonRunOptions, bind_api_listener, effective_bind_target, effective_bind_targets,
@@ -22,12 +24,13 @@ use hypercolor_daemon::daemon::{
     validate_network_bind_auth,
 };
 use hypercolor_daemon::discovery;
+use hypercolor_daemon::session::current_global_brightness;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
     default_config, install_signal_handlers, load_config, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
-use hypercolor_driver_api::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, OutputCadence};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
     CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, NetworkAccessMode, RenderAccelerationMode,
@@ -63,6 +66,47 @@ struct ShutdownCleanupBackend {
     expected_device_id: DeviceId,
     disconnects: Arc<AtomicUsize>,
     connected: bool,
+}
+
+struct StaticHoldRecordingBackend {
+    writes: Arc<AtomicUsize>,
+    write_notify: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for StaticHoldRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "static-hold-test".to_owned(),
+            name: "Static Hold Test Backend".to_owned(),
+            description: "Records paused late-connect output".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        if colors.iter().any(|color| *color != [0, 0, 0]) {
+            bail!("static hold emitted a non-black color");
+        }
+        self.writes.fetch_add(1, Ordering::Release);
+        self.write_notify.notify_waiters();
+        Ok(())
+    }
+
+    fn output_cadence(&self, _id: &DeviceId) -> Option<OutputCadence> {
+        Some(OutputCadence::from_fps(60).with_max_frame_silence(Duration::from_millis(20)))
+    }
 }
 
 impl ShutdownCleanupBackend {
@@ -1060,6 +1104,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             default_scene_groups: Vec::new(),
             active_layout_id: Some(restored_layout.id.clone()),
             global_brightness: 1.0,
+            manual_paused: false,
             driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
@@ -1082,6 +1127,38 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     };
     assert_eq!(active_layout.id, restored_layout.id);
     assert_eq!(active_layout.name, restored_layout.name);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_restores_manual_pause_before_rendering() {
+    let guard = TestDataDirGuard::new().await;
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            global_brightness: 0.42,
+            manual_paused: true,
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("runtime state should save");
+
+    let mut config = default_config();
+    config.daemon.start_profile = "default".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    state.start().await.expect("start should succeed");
+
+    assert!(state.power_state.borrow().manually_paused());
+    assert_eq!(current_global_brightness(&state.power_state), 1.0);
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Paused
+    );
 
     state.shutdown().await.expect("shutdown should succeed");
 }
@@ -1257,6 +1334,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
             default_scene_groups: vec![default_group.clone()],
             active_layout_id: None,
             global_brightness: 1.0,
+            manual_paused: false,
             driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
@@ -1338,6 +1416,7 @@ async fn default_scene_contents_restore_on_restart() {
             }],
             active_layout_id: None,
             global_brightness: 1.0,
+            manual_paused: false,
             driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
@@ -1359,6 +1438,126 @@ async fn default_scene_contents_restore_on_restart() {
     );
     assert_eq!(default_scene.groups[0].brightness, 0.75);
     drop(scenes);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
+    let guard = TestDataDirGuard::new().await;
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            global_brightness: 1.0,
+            manual_paused: true,
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("runtime state should save");
+
+    let mut config = default_config();
+    config.daemon.start_profile = "last".into();
+    config.discovery.background_enabled = false;
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+    state.start().await.expect("start should succeed");
+
+    let device_id = DeviceId::new();
+    let layout_device_id = device_id.to_string();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let write_notify = Arc::new(tokio::sync::Notify::new());
+    state
+        .device_registry
+        .add(DeviceInfo {
+            id: device_id,
+            name: "Late Paused Strip".to_owned(),
+            vendor: "TestVendor".to_owned(),
+            family: DeviceFamily::new_static("static-hold-test", "Static Hold Test"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native(
+                "static-hold-test",
+                "static-hold-test",
+                ConnectionType::Usb,
+            ),
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 30,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 30,
+                supports_direct: true,
+                max_fps: 60,
+                ..DeviceCapabilities::default()
+            },
+        })
+        .await;
+    assert!(
+        state
+            .device_registry
+            .set_state(&device_id, hypercolor_types::device::DeviceState::Connected,)
+            .await,
+        "late device should enter connected state"
+    );
+    *state.spatial_engine.write().await = SpatialEngine::try_new(SpatialLayout {
+        id: "late-paused-layout".to_owned(),
+        name: "Late Paused Layout".to_owned(),
+        description: None,
+        canvas_width: 32,
+        canvas_height: 18,
+        zones: vec![test_zone("late-paused-zone", &layout_device_id)],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    })
+    .expect("late-connect layout should be valid");
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Box::new(StaticHoldRecordingBackend {
+            writes: Arc::clone(&writes),
+            write_notify: Arc::clone(&write_notify),
+        }));
+        manager
+            .connect_device("static-hold-test", device_id, &layout_device_id)
+            .await
+            .expect("late device should connect while output is paused");
+    }
+
+    state.event_bus.publish(HypercolorEvent::DeviceConnected {
+        device_id: device_id.to_string(),
+        name: "Late Paused Strip".to_owned(),
+        origin: DeviceOrigin::native("static-hold-test", "static-hold-test", ConnectionType::Usb),
+        led_count: 30,
+        zones: Vec::new(),
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let notified = write_notify.notified();
+            if writes.load(Ordering::Acquire) >= 2 {
+                break;
+            }
+            notified.await;
+        }
+    })
+    .await
+    .expect("late-connected device should receive black and a repeated hold");
+    let scene_canvas = state.event_bus.scene_canvas_receiver();
+    let scene_canvas = scene_canvas.borrow();
+    assert!(scene_canvas.width > 0);
+    assert!(
+        scene_canvas
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| { pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255 })
+    );
 
     state.shutdown().await.expect("shutdown should succeed");
 }

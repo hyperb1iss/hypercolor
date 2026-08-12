@@ -36,6 +36,7 @@ use super::messages::{
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
     PerformanceMetrics, PreviewBinaryDecoder, PreviewBinaryMessage, PreviewFrameChannel,
     SceneEventHint, ScreenZonesFrame, handle_json_message, interactive_preview_supported,
+    is_resync_required,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
@@ -129,6 +130,7 @@ pub struct WsManager {
     pub set_device_metrics_consumers: WriteSignal<u32>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
+    pub output_paused: ReadSignal<bool>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
@@ -202,6 +204,7 @@ impl WsManager {
         let device_metrics_requested: StoredValue<bool> = StoredValue::new(false);
         let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
         let (active_effect, set_active_effect) = signal(None::<String>);
+        let (output_paused, set_output_paused) = signal(false);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
         let (last_extension_event, set_last_extension_event) = signal(None::<ExtensionEventHint>);
         let (last_input_source_status_event, set_last_input_source_status_event) =
@@ -365,6 +368,7 @@ impl WsManager {
             // onmessage — handle both JSON and binary frames
             let message_preview_decoder = Rc::clone(&preview_decoder);
             let message_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
+            let message_ws = ws.clone();
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
                 if let Some(buffer) = message_array_buffer(&event) {
@@ -458,6 +462,10 @@ impl WsManager {
                 if let Some(text) = event.data().as_string()
                     && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
                 {
+                    if is_resync_required(&msg) {
+                        let _ = message_ws.close();
+                        return;
+                    }
                     if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
                         message_preview_decoder
                             .borrow_mut()
@@ -482,6 +490,7 @@ impl WsManager {
                     handle_json_message(
                         &msg,
                         &set_active_effect,
+                        &set_output_paused,
                         metrics,
                         &set_metrics,
                         &set_device_metrics,
@@ -821,6 +830,7 @@ impl WsManager {
             set_device_metrics_consumers,
             backpressure_notice,
             active_effect,
+            output_paused,
             last_device_event,
             last_scene_event,
             last_effect_error,

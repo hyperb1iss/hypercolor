@@ -32,6 +32,9 @@ pub struct RuntimeSessionSnapshot {
     /// User-configured global output brightness.
     pub global_brightness: f32,
 
+    /// Explicit user pause state. Transient OS sleep is never persisted.
+    pub manual_paused: bool,
+
     /// Legacy driver cache retained only as a one-time inventory migration source.
     pub driver_runtime_cache: BTreeMap<String, BTreeMap<String, Value>>,
 }
@@ -81,6 +84,7 @@ pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnap
         default_scene_groups,
         active_layout_id: None,
         global_brightness: 1.0,
+        manual_paused: false,
         driver_runtime_cache: BTreeMap::new(),
     }
 }
@@ -161,6 +165,7 @@ mod tests {
             default_scene_groups: Vec::new(),
             active_layout_id: Some("layout_abc123".to_owned()),
             global_brightness: 0.42,
+            manual_paused: true,
             driver_runtime_cache: BTreeMap::from([(
                 "cache-driver".to_owned(),
                 BTreeMap::from([(
@@ -177,6 +182,7 @@ mod tests {
         assert_eq!(loaded.active_scene_id, expected.active_scene_id);
         assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
         assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
+        assert_eq!(loaded.manual_paused, expected.manual_paused);
         assert_eq!(loaded.driver_runtime_cache, expected.driver_runtime_cache);
     }
 
@@ -189,6 +195,30 @@ mod tests {
     }
 
     #[test]
+    fn older_snapshot_defaults_manual_pause_to_false() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "active_scene_id": null,
+                "default_scene_groups": [],
+                "active_layout_id": null,
+                "global_brightness": 1.0,
+                "driver_runtime_cache": {},
+            }))
+            .expect("snapshot should serialize"),
+        )
+        .expect("snapshot should be written");
+
+        let loaded = load(&path)
+            .expect("snapshot should load")
+            .expect("snapshot should exist");
+
+        assert!(!loaded.manual_paused);
+    }
+
+    #[test]
     fn concurrent_saves_share_path_without_colliding_temp_files() {
         let tempdir = TempDir::new().expect("tempdir");
         let path = Arc::new(tempdir.path().join("runtime-state.json"));
@@ -197,6 +227,7 @@ mod tests {
             default_scene_groups: Vec::new(),
             active_layout_id: None,
             global_brightness: 1.0,
+            manual_paused: false,
             driver_runtime_cache: BTreeMap::new(),
         });
 

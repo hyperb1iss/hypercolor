@@ -68,7 +68,7 @@ pub(crate) async fn maybe_sleep_throttle(
         return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
     }
 
-    if power_state.off_output_behavior == OffOutputBehavior::Release {
+    if power_state.effective_off_output_behavior() == OffOutputBehavior::Release {
         output_artifacts.clear_zones();
         let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
         let surface = output_artifacts.static_surface(
@@ -123,7 +123,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let surface = output_artifacts.static_surface(
         state.canvas_dims.width(),
         state.canvas_dims.height(),
-        power_state.off_output_color,
+        power_state.effective_off_output_color(),
     );
     let canvas = Canvas::from_published_surface(&surface);
     let sample_start = Instant::now();

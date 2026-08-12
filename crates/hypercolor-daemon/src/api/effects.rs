@@ -12,7 +12,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::effect::{
@@ -21,7 +21,7 @@ use hypercolor_core::effect::{
 };
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::scene::ControlsVersionMismatch;
-use hypercolor_core::session::parse_static_color;
+use hypercolor_types::api::output::OutputPowerMode;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 use hypercolor_types::effect::{
@@ -30,7 +30,7 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
-    ZoneChangeKind,
+    ZoneChangeKind, ZoneColors,
 };
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{Zone, ZoneId};
@@ -47,7 +47,7 @@ use crate::api::{
 use crate::discovery;
 use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
-use crate::session::OutputPowerState;
+use crate::session::set_output_stopped;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -67,7 +67,8 @@ pub use hypercolor_types::api::effects::{
     ApplyTransitionResponse, EffectCapabilitySet, EffectDetailResponse, EffectLayoutApplyResult,
     EffectListResponse, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
     EffectRefSummary, EffectSummary, InstalledEffectResponse, LayoutLinkSummary,
-    ResetControlsRequest, TransitionRequest, UpdateCurrentControlsRequest,
+    PauseEffectResponse, ResetControlsRequest, ResumeEffectResponse, TransitionRequest,
+    UpdateCurrentControlsRequest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -99,12 +100,6 @@ pub(crate) struct StopActiveEffectResult {
 }
 
 #[derive(Debug)]
-pub(crate) struct PauseActiveEffectResult {
-    pub effect: EffectRef,
-    pub off_output_color: [u8; 3],
-}
-
-#[derive(Debug)]
 pub(crate) enum StopActiveEffectError {
     NoActiveEffect,
     ActiveScene(ActiveSceneMutationError),
@@ -119,24 +114,12 @@ impl From<ActiveSceneMutationError> for StopActiveEffectError {
 }
 
 pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
-    let current = *state.power_state.borrow();
-    if !current.sleeping {
-        resume_paused_render_loop(state).await;
+    let output_sleeping = state.power_state.borrow().sleeping();
+    let render_paused = state.render_loop.read().await.state() == RenderLoopState::Paused;
+    if !output_sleeping && !render_paused {
         return;
     }
-
-    state.power_state.send_replace(OutputPowerState {
-        global_brightness: current.global_brightness,
-        session_brightness: 1.0,
-        sleeping: false,
-        off_output_behavior: current.off_output_behavior,
-        off_output_color: current.off_output_color,
-    });
-    resume_paused_render_loop(state).await;
-
-    if current.off_output_behavior == OffOutputBehavior::Release {
-        schedule_network_output_reconnect(state);
-    }
+    super::output::set_output_power(state, OutputPowerMode::Running).await;
 }
 
 pub(crate) async fn stop_active_effect_and_quiesce_output(
@@ -184,85 +167,46 @@ pub(crate) async fn stop_active_effect_and_quiesce_output(
     })
 }
 
-pub(crate) async fn pause_active_effect_output(
-    state: &AppState,
-) -> Result<PauseActiveEffectResult, StopActiveEffectError> {
-    let Some((_group, active_effect)) = active_primary_effect(state).await else {
-        return Err(StopActiveEffectError::NoActiveEffect);
-    };
-
-    let off_output_color = configured_static_off_color(state);
-    let current = *state.power_state.borrow();
-    state.power_state.send_replace(OutputPowerState {
-        global_brightness: current.global_brightness,
-        session_brightness: 0.0,
-        sleeping: true,
-        off_output_behavior: OffOutputBehavior::Static,
-        off_output_color,
-    });
-    publish_static_output_snapshot(state, off_output_color).await;
-    state.performance.write().await.clear_frame_timings();
-
-    {
-        let mut render_loop = state.render_loop.write().await;
-        render_loop.pause();
-    }
-    super::save_runtime_session_snapshot(state).await;
-
-    Ok(PauseActiveEffectResult {
-        effect: effect_ref(&active_effect),
-        off_output_color,
-    })
+pub(crate) fn schedule_network_output_reconnect(state: &AppState) {
+    schedule_output_reconnect(state, true);
 }
 
-pub(crate) async fn resume_active_effect_output(
-    state: &AppState,
-) -> Result<EffectRef, StopActiveEffectError> {
-    let Some((_group, active_effect)) = active_primary_effect(state).await else {
-        return Err(StopActiveEffectError::NoActiveEffect);
-    };
-
-    wake_output_for_effect_start(state).await;
-    super::save_runtime_session_snapshot(state).await;
-
-    Ok(effect_ref(&active_effect))
+pub(crate) fn schedule_all_output_reconnect(state: &AppState) {
+    schedule_output_reconnect(state, false);
 }
 
-async fn resume_paused_render_loop(state: &AppState) {
-    let mut render_loop = state.render_loop.write().await;
-    render_loop.resume();
-}
-
-fn schedule_network_output_reconnect(state: &AppState) {
+fn schedule_output_reconnect(state: &AppState, network_only: bool) {
     let Some(config_manager) = state.config_manager.as_ref() else {
         return;
     };
     let config_guard = config_manager.get();
     let config = Arc::clone(&*config_guard);
-    let target_ids = state
-        .driver_registry
-        .discovery_drivers()
-        .into_iter()
-        .filter_map(|driver| {
-            let descriptor = driver.module_descriptor();
-            let is_network_driver = descriptor.module_kind == DriverModuleKind::Network
-                || descriptor
-                    .transports
-                    .contains(&DriverTransportKind::Network);
-            is_network_driver.then_some(descriptor.id)
-        })
-        .collect::<Vec<_>>();
-    if target_ids.is_empty() {
+    let target_ids = network_only.then(|| {
+        state
+            .driver_registry
+            .discovery_drivers()
+            .into_iter()
+            .filter_map(|driver| {
+                let descriptor = driver.module_descriptor();
+                let is_network_driver = descriptor.module_kind == DriverModuleKind::Network
+                    || descriptor
+                        .transports
+                        .contains(&DriverTransportKind::Network);
+                is_network_driver.then_some(descriptor.id)
+            })
+            .collect::<Vec<_>>()
+    });
+    if target_ids.as_ref().is_some_and(Vec::is_empty) {
         return;
     }
     let targets = match discovery::resolve_targets(
-        Some(&target_ids),
+        target_ids.as_deref(),
         &config,
         state.driver_registry.as_ref(),
     ) {
         Ok(targets) => targets,
         Err(error) => {
-            warn!(%error, "Skipping network reconnect scan after output release");
+            warn!(%error, network_only, "Skipping reconnect scan after output release");
             return;
         }
     };
@@ -270,48 +214,24 @@ fn schedule_network_output_reconnect(state: &AppState) {
         return;
     }
 
-    let runtime = super::discovery_runtime(state);
-    let task_spawner = runtime.task_spawner.clone();
-    let driver_registry = Arc::clone(&state.driver_registry);
-    let driver_host = Arc::clone(&state.driver_host);
-    task_spawner.spawn(async move {
-        let Some(result) = discovery::execute_discovery_scan_if_idle(
-            runtime,
-            driver_registry,
-            driver_host,
-            config,
-            targets,
-            discovery::default_timeout(),
-        )
-        .await
-        else {
-            debug!("Skipping network reconnect scan because discovery is already running");
-            return;
-        };
-
-        debug!(
-            found = result.new_devices.len() + result.reappeared_devices.len(),
-            vanished = result.vanished_devices.len(),
-            duration_ms = result.duration_ms,
-            "Network reconnect scan finished"
-        );
-    });
+    discovery::schedule_discovery_scan(
+        super::discovery_runtime(state),
+        Arc::clone(&state.driver_registry),
+        Arc::clone(&state.driver_host),
+        config,
+        targets,
+        discovery::default_timeout(),
+    );
 }
 
 async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
+    let _transition_guard = state.output_power_transition.lock().await;
     {
         let mut render_loop = state.render_loop.write().await;
         render_loop.pause();
     }
 
-    let current = *state.power_state.borrow();
-    state.power_state.send_replace(OutputPowerState {
-        global_brightness: current.global_brightness,
-        session_brightness: 0.0,
-        sleeping: true,
-        off_output_behavior: OffOutputBehavior::Release,
-        off_output_color: [0, 0, 0],
-    });
+    set_output_stopped(&state.power_state, &state.event_bus);
 
     let runtime = super::discovery_runtime(state);
     let released_network_devices = discovery::release_renderable_network_devices(&runtime).await;
@@ -321,15 +241,8 @@ async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
     released_network_devices
 }
 
-fn configured_static_off_color(state: &AppState) -> [u8; 3] {
-    state.config_manager.as_ref().map_or([0, 0, 0], |manager| {
-        let config = manager.get();
-        parse_static_color(&config.session.off_output_color)
-    })
-}
-
-async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
-    let (layout, canvas, zones) = {
+pub(crate) async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
+    let (layout, canvas, mut zones) = {
         let spatial = state.spatial_engine.read().await;
         let layout = spatial.layout();
         let Ok(mut canvas) = Canvas::try_new(layout.canvas_width, layout.canvas_height).inspect_err(
@@ -352,7 +265,21 @@ async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
 
     let write_stats = {
         let mut backend_manager = state.backend_manager.lock().await;
-        backend_manager.write_frame(&zones, layout.as_ref()).await
+        let unassigned_outputs = backend_manager.unassigned_output_zones(layout.as_ref());
+        if unassigned_outputs.is_empty() {
+            backend_manager.write_frame(&zones, layout.as_ref()).await
+        } else {
+            zones.extend(unassigned_outputs.iter().map(|output| ZoneColors {
+                zone_id: output.id.clone(),
+                colors: vec![
+                    color;
+                    usize::try_from(output.topology.led_count()).unwrap_or_default()
+                ],
+            }));
+            let mut static_layout = layout.as_ref().clone();
+            static_layout.zones.extend(unassigned_outputs);
+            backend_manager.write_frame(&zones, &static_layout).await
+        }
     };
     if !write_stats.errors.is_empty() {
         warn!(
@@ -382,6 +309,19 @@ async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
     state
         .preview_runtime
         .record_canvas_publication(frame_number, elapsed_ms);
+}
+
+pub(crate) async fn reconcile_static_output_hold(state: &AppState) -> bool {
+    let _transition_guard = state.output_power_transition.lock().await;
+    let output_power = *state.power_state.borrow();
+    if !output_power.sleeping()
+        || output_power.effective_off_output_behavior() != OffOutputBehavior::Static
+    {
+        return false;
+    }
+
+    publish_static_output_snapshot(state, output_power.effective_off_output_color()).await;
+    true
 }
 
 fn next_black_frame_number(state: &AppState) -> u32 {
@@ -1036,12 +976,13 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         render_loop.state()
     };
     let power_state = *state.power_state.borrow();
-    let effect_state = if loop_state == RenderLoopState::Paused || power_state.sleeping {
+    let effect_state = if loop_state == RenderLoopState::Paused || power_state.sleeping() {
         "paused"
     } else {
         "running"
     };
     let controls_version = group.controls_version;
+    let active_preset_modified = active_preset_modified(state.as_ref(), &meta, &group).await;
     let response = ActiveEffectResponse {
         id: Some(meta.id.to_string()),
         name: Some(meta.name.clone()),
@@ -1049,6 +990,7 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         controls: controls_with_group_bindings(&meta, &group),
         control_values: resolved_control_values(&meta, &group),
         active_preset_id: group.preset_id.map(|preset| preset.to_string()),
+        active_preset_modified,
         render_group_id: Some(group.id.to_string()),
         controls_version: Some(controls_version),
         cover_image_url: effect_cover_image_url(&meta),
@@ -1083,49 +1025,56 @@ pub async fn get_effect_cover(
 }
 
 /// `POST /api/v1/effects/pause` — Pause output without clearing active effect state.
+#[utoipa::path(
+    post,
+    path = "/api/v1/effects/pause",
+    responses(
+        (status = 200, description = "Paused global output", body = crate::api::envelope::ApiResponse<PauseEffectResponse>)
+    ),
+    tag = "effects"
+)]
 pub async fn pause_effect(State(state): State<Arc<AppState>>) -> Response {
-    let pause_result = match pause_active_effect_output(state.as_ref()).await {
-        Ok(result) => result,
-        Err(StopActiveEffectError::NoActiveEffect | StopActiveEffectError::ActiveGroupMissing) => {
-            return ApiError::not_found("No effect is currently active");
+    super::output::set_output_power(state.as_ref(), OutputPowerMode::Paused).await;
+    let effect = active_primary_effect(state.as_ref())
+        .await
+        .map(|(_, metadata)| EffectRefSummary {
+            id: metadata.id.to_string(),
+            name: metadata.name,
+        });
+    let output_power = *state.power_state.borrow();
+    ApiResponse::ok(PauseEffectResponse {
+        paused: true,
+        effect,
+        off_output_behavior: match output_power.effective_off_output_behavior() {
+            OffOutputBehavior::Static => "static",
+            OffOutputBehavior::Release => "release",
         }
-        Err(StopActiveEffectError::ActiveScene(error)) => {
-            return error.api_response("pausing the active effect");
-        }
-        Err(StopActiveEffectError::Persistence(error)) => return ApiError::internal(error),
-    };
-
-    ApiResponse::ok(serde_json::json!({
-        "paused": true,
-        "effect": {
-            "id": pause_result.effect.id.clone(),
-            "name": pause_result.effect.name,
-        },
-        "off_output_behavior": "static",
-        "off_output_color": pause_result.off_output_color,
-    }))
+        .to_owned(),
+        off_output_color: output_power.effective_off_output_color(),
+    })
 }
 
 /// `POST /api/v1/effects/resume` — Resume output for the preserved active effect.
+#[utoipa::path(
+    post,
+    path = "/api/v1/effects/resume",
+    responses(
+        (status = 200, description = "Resumed global output", body = crate::api::envelope::ApiResponse<ResumeEffectResponse>)
+    ),
+    tag = "effects"
+)]
 pub async fn resume_effect(State(state): State<Arc<AppState>>) -> Response {
-    let effect = match resume_active_effect_output(state.as_ref()).await {
-        Ok(effect) => effect,
-        Err(StopActiveEffectError::NoActiveEffect | StopActiveEffectError::ActiveGroupMissing) => {
-            return ApiError::not_found("No effect is currently active");
-        }
-        Err(StopActiveEffectError::ActiveScene(error)) => {
-            return error.api_response("resuming the active effect");
-        }
-        Err(StopActiveEffectError::Persistence(error)) => return ApiError::internal(error),
-    };
-
-    ApiResponse::ok(serde_json::json!({
-        "resumed": true,
-        "effect": {
-            "id": effect.id.clone(),
-            "name": effect.name,
-        },
-    }))
+    super::output::set_output_power(state.as_ref(), OutputPowerMode::Running).await;
+    let effect = active_primary_effect(state.as_ref())
+        .await
+        .map(|(_, metadata)| EffectRefSummary {
+            id: metadata.id.to_string(),
+            name: metadata.name,
+        });
+    ApiResponse::ok(ResumeEffectResponse {
+        resumed: true,
+        effect,
+    })
 }
 
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.
@@ -1159,7 +1108,6 @@ pub async fn update_current_controls(
         .and_then(serde_json::Value::as_object)
         .cloned()
         .unwrap_or_default();
-
     if controls.is_empty() {
         return ApiError::bad_request("controls payload must include at least one key");
     }
@@ -1833,6 +1781,26 @@ async fn resolve_effect_preset(
             id: preset.id,
             controls: preset.controls.clone(),
         })
+}
+
+async fn active_preset_modified(state: &AppState, metadata: &EffectMetadata, group: &Zone) -> bool {
+    let Some(preset_id) = group.preset_id else {
+        return false;
+    };
+    let Some(preset) = resolve_effect_preset(state, metadata, &preset_id.to_string()).await else {
+        return true;
+    };
+    if !group.control_bindings.is_empty() {
+        return true;
+    }
+
+    let (preset_controls, rejected) = normalize_control_values(metadata, &preset.controls);
+    if !rejected.is_empty() {
+        return true;
+    }
+    let mut preset_baseline = default_control_values(metadata);
+    preset_baseline.extend(preset_controls);
+    preset_baseline != resolved_control_values(metadata, group)
 }
 
 fn publish_primary_control_changed_events<'a>(

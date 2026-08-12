@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -84,6 +84,7 @@ impl DiscoveryWorkerContext {
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.in_progress),
+            pending_scans: Arc::clone(&self.driver_host.discovery_runtime().pending_scans),
             scene_transactions: self.scene_transactions.clone(),
             task_spawner: tokio::runtime::Handle::current(),
         }
@@ -99,16 +100,7 @@ impl DiscoveryWorkerContext {
             return;
         }
 
-        if self
-            .in_progress
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            debug!("{busy_log}");
-            return;
-        }
-
-        let _ = discovery::execute_discovery_scan(
+        if discovery::execute_discovery_scan_or_enqueue(
             self.runtime(),
             Arc::clone(&self.driver_registry),
             Arc::clone(&self.driver_host),
@@ -116,7 +108,11 @@ impl DiscoveryWorkerContext {
             targets,
             discovery::default_timeout(),
         )
-        .await;
+        .await
+        .is_none()
+        {
+            debug!("{busy_log}");
+        }
     }
 
     pub(super) async fn run_periodic_scan(&self) {
@@ -136,7 +132,7 @@ impl DiscoveryWorkerContext {
         self.run_scan_if_idle(
             latest_config,
             targets,
-            "Skipping periodic discovery scan; scan already in progress",
+            "Queued periodic discovery scan behind active discovery",
         )
         .await;
     }
@@ -145,7 +141,7 @@ impl DiscoveryWorkerContext {
         self.run_scan_if_idle(
             Arc::clone(&self.config_manager.get()),
             vec![DiscoveryTarget::usb()],
-            "Skipping USB hotplug scan; discovery already in progress",
+            "Queued USB hotplug scan behind active discovery",
         )
         .await;
     }
@@ -189,7 +185,7 @@ impl DiscoveryWorkerContext {
             self.run_scan_if_idle(
                 Arc::clone(&latest_config),
                 targets,
-                "Skipping startup driver recovery scan; discovery already in progress",
+                "Queued startup driver recovery scan behind active discovery",
             )
             .await;
         }

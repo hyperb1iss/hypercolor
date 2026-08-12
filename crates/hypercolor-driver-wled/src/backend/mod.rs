@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, TransportScanner,
+    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence, TransportScanner,
 };
 use hypercolor_types::device::{DeviceColorFormat, DeviceId, DeviceInfo};
 
@@ -38,7 +38,7 @@ use health::{
     clear_device, enter_realtime_mode, exit_realtime_mode, prime_device, probe_device_reachable,
     validate_wled_receiver_config,
 };
-use protocol::encode_colors;
+use protocol::{KEEPALIVE_INTERVAL, encode_colors};
 
 use super::ddp::{DDP_PORT, DdpSequence};
 use super::e131::{E131_CHANNELS_PER_UNIVERSE, E131_PORT, E131SequenceTracker};
@@ -679,6 +679,12 @@ impl DeviceBackend for WledBackend {
                     .get(id)
                     .map(WledDeviceInfo::negotiated_target_fps)
             })
+    }
+
+    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+        self.target_fps(id).map(|target_fps| {
+            OutputCadence::from_fps(target_fps).with_max_frame_silence(KEEPALIVE_INTERVAL)
+        })
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

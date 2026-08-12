@@ -5,11 +5,11 @@ use leptos::prelude::*;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use std::collections::HashMap;
 
-use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
-use hypercolor_types::effect::ControlValue;
 use crate::api;
 use crate::control_value_json::controls_to_json;
 use crate::toasts;
+use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
+use hypercolor_types::effect::ControlValue;
 
 mod actions;
 
@@ -100,6 +100,9 @@ pub fn PresetToolbar(
     /// The active preset ID from the engine (restored on effect switch).
     #[prop(into, optional)]
     active_preset_id_signal: Option<Signal<Option<String>>>,
+    /// Whether live state has diverged from the selected preset.
+    #[prop(into)]
+    active_preset_modified_signal: Signal<bool>,
 ) -> impl IntoView {
     let (presets, set_presets) = signal(Vec::<api::EffectPresetSummary>::new());
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
@@ -156,11 +159,8 @@ pub fn PresetToolbar(
         presets.get().into_iter().find(|preset| preset.id == sid)
     });
 
-    let has_editable_selection = Memo::new(move |_| {
-        selected_preset
-            .get()
-            .is_some_and(|preset| preset.editable)
-    });
+    let has_editable_selection =
+        Memo::new(move |_| selected_preset.get().is_some_and(|preset| preset.editable));
 
     // Refresh helper
     let refresh_presets = move || {
@@ -270,25 +270,22 @@ pub fn PresetToolbar(
                 tags: None,
             };
             match api::create_preset(&req).await {
-                Ok(created) => match api::apply_effect_preset(
-                    &eid,
-                    &created.id,
-                    target_zone.as_deref(),
-                )
-                .await
-                {
-                    Ok(()) => {
-                        set_selected_id.set(Some(created.id));
-                        toasts::toast_success("Preset created");
-                        refresh();
+                Ok(created) => {
+                    match api::apply_effect_preset(&eid, &created.id, target_zone.as_deref()).await
+                    {
+                        Ok(()) => {
+                            set_selected_id.set(Some(created.id));
+                            toasts::toast_success("Preset created");
+                            refresh();
+                        }
+                        Err(error) => {
+                            toasts::toast_error(&format!(
+                                "Preset created but could not be selected: {error}"
+                            ));
+                            refresh();
+                        }
                     }
-                    Err(error) => {
-                        toasts::toast_error(&format!(
-                            "Preset created but could not be selected: {error}"
-                        ));
-                        refresh();
-                    }
-                },
+                }
                 Err(error) => {
                     toasts::toast_error(&format!("Failed to create preset: {error}"));
                 }
@@ -362,6 +359,7 @@ pub fn PresetToolbar(
                                 <PresetSelectorRow
                                     presets=presets
                                     selected_id=selected_id
+                                    active_preset_modified=active_preset_modified_signal
                                     has_editable_selection=has_editable_selection
                                     accent_rgb=accent_rgb
                                     on_select=Callback::new(on_select_value)
@@ -421,6 +419,7 @@ enum ToolbarMode {
 fn PresetSelectorRow(
     presets: ReadSignal<Vec<api::EffectPresetSummary>>,
     selected_id: ReadSignal<Option<String>>,
+    active_preset_modified: Signal<bool>,
     has_editable_selection: Memo<bool>,
     accent_rgb: Signal<String>,
     on_select: Callback<String>,
@@ -438,12 +437,12 @@ fn PresetSelectorRow(
             return "Default".to_string();
         };
 
-        presets
+        let name = presets
             .get()
             .iter()
             .find(|p| p.id == *sid)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "Default".to_string())
+            .map(|p| p.name.as_str().to_owned());
+        preset_display_label(Some(sid), name.as_deref(), active_preset_modified.get())
     });
 
     // The swatch the trigger shows — pulled from whichever preset is
@@ -760,6 +759,22 @@ fn PresetSelectorRow(
     }
 }
 
+fn preset_display_label(
+    selected_id: Option<&str>,
+    selected_name: Option<&str>,
+    modified: bool,
+) -> String {
+    let Some(_) = selected_id else {
+        return "Default".to_owned();
+    };
+    let label = selected_name.unwrap_or("Preset unavailable");
+    if modified {
+        format!("{label} (Modified)")
+    } else {
+        label.to_owned()
+    }
+}
+
 /// A single item in the custom dropdown. Painted with its preset's own
 /// swatch colour via the `--item-rgb` custom property on `.preset-option`.
 #[component]
@@ -839,4 +854,22 @@ fn install_dropdown_outside_handler(set_open: WriteSignal<bool>) {
 #[component]
 fn PresetDropdownDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
     install_dropdown_outside_handler(set_open);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preset_display_label;
+
+    #[test]
+    fn selected_preset_label_keeps_provenance_when_modified() {
+        assert_eq!(
+            preset_display_label(Some("preset-id"), Some("Night Drive"), true),
+            "Night Drive (Modified)"
+        );
+        assert_eq!(
+            preset_display_label(Some("missing-id"), None, true),
+            "Preset unavailable (Modified)"
+        );
+        assert_eq!(preset_display_label(None, None, false), "Default");
+    }
 }

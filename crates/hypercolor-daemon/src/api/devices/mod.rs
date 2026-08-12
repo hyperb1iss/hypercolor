@@ -507,21 +507,20 @@ pub async fn identify_device(
         "identify enabling direct control and issuing initial on-frame"
     );
 
-    if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
+    if let Err(response) = start_identify_output(
+        &state,
+        &direct_backend,
+        device_id,
+        &on_frame,
+        &tracked.info.name,
+    )
+    .await
+    {
         drop(direct_control);
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        warn!(
-            backend_id = %backend_id,
-            device_id = %device_id,
-            error = %error,
-            "identify initial write failed"
-        );
-        return ApiError::internal(format!(
-            "Failed to start identify flash for {}: {error}",
-            tracked.info.name
-        ));
+        return response;
     }
 
     tracing::info!(
@@ -537,6 +536,7 @@ pub async fn identify_device(
         "Identify flash started"
     );
     tokio::spawn(run_identify_flash(
+        Arc::clone(&state),
         direct_backend,
         backend_id,
         device_id,
@@ -618,22 +618,20 @@ pub async fn identify_zone(
             Err(response) => return response,
         };
 
-    if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
+    if let Err(response) = start_identify_output(
+        &state,
+        &direct_backend,
+        device_id,
+        &on_frame,
+        &tracked.info.name,
+    )
+    .await
+    {
         drop(direct_control);
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        warn!(
-            backend_id = %backend_id,
-            device_id = %device_id,
-            zone = %tracked.info.zones[zone_index].name,
-            error = %error,
-            "zone identify initial write failed"
-        );
-        return ApiError::internal(format!(
-            "Failed to start zone identify for {}: {error}",
-            tracked.info.name
-        ));
+        return response;
     }
 
     let zone_name = tracked.info.zones[zone_index].name.clone();
@@ -648,6 +646,7 @@ pub async fn identify_zone(
         "Zone identify flash started"
     );
     tokio::spawn(run_identify_flash(
+        Arc::clone(&state),
         direct_backend,
         backend_id,
         device_id,
@@ -751,22 +750,20 @@ pub async fn identify_attachment(
             Err(response) => return response,
         };
 
-    if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
+    if let Err(response) = start_identify_output(
+        &state,
+        &direct_backend,
+        device_id,
+        &on_frame,
+        &tracked.info.name,
+    )
+    .await
+    {
         drop(direct_control);
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        warn!(
-            backend_id = %backend_id,
-            device_id = %device_id,
-            slot_id = %slot_id,
-            error = %error,
-            "attachment identify initial write failed"
-        );
-        return ApiError::internal(format!(
-            "Failed to start attachment identify for {}: {error}",
-            tracked.info.name
-        ));
+        return response;
     }
 
     tracing::info!(
@@ -781,6 +778,7 @@ pub async fn identify_attachment(
         "Attachment identify flash started"
     );
     tokio::spawn(run_identify_flash(
+        Arc::clone(&state),
         direct_backend,
         backend_id,
         device_id,
@@ -1191,6 +1189,7 @@ fn parse_status_filter(raw: Option<&str>) -> Result<Option<String>, String> {
 }
 
 async fn run_identify_flash(
+    state: Arc<AppState>,
     direct_backend: BackendIo,
     backend_id: String,
     device_id: DeviceId,
@@ -1208,13 +1207,25 @@ async fn run_identify_flash(
     let mut show_on = false;
     let mut identify_failed = false;
     let mut phase_index = 0_u32;
+    let mut power_state = state.power_state.subscribe();
 
     loop {
+        if power_state.borrow().sleeping() {
+            break;
+        }
         if started_at.elapsed() >= duration {
             break;
         }
 
-        tokio::time::sleep(Duration::from_millis(IDENTIFY_FLASH_INTERVAL_MS)).await;
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(IDENTIFY_FLASH_INTERVAL_MS)) => {}
+            changed = power_state.changed() => {
+                if changed.is_err() || power_state.borrow().sleeping() {
+                    break;
+                }
+                continue;
+            }
+        }
 
         let frame = if show_on { &on_frame } else { &off_frame };
         let phase = if show_on { "on" } else { "off" };
@@ -1228,22 +1239,30 @@ async fn run_identify_flash(
             frame_leds = frame.len(),
             "identify issuing flash phase"
         );
-        let result = direct_backend.write_colors(device_id, frame).await;
+        let result =
+            write_identify_output_if_running(&state, &direct_backend, device_id, frame).await;
 
-        if let Err(error) = result {
-            warn!(
-                backend_id = %backend_id,
-                device_id = %device_id,
-                error = %error,
-                "identify write failed"
-            );
-            identify_failed = true;
-            break;
+        match result {
+            Ok(true) => {}
+            Ok(false) => {
+                break;
+            }
+            Err(error) => {
+                warn!(
+                    backend_id = %backend_id,
+                    device_id = %device_id,
+                    error = %error,
+                    "identify write failed"
+                );
+                identify_failed = true;
+                break;
+            }
         }
 
         show_on = !show_on;
     }
 
+    let _transition_guard = state.output_power_transition.lock().await;
     if !identify_failed {
         debug!(
             backend_id = %backend_id,
@@ -1263,6 +1282,15 @@ async fn run_identify_flash(
     }
 
     drop(direct_control);
+
+    let power = *state.power_state.borrow();
+    if power.sleeping() {
+        super::effects::publish_static_output_snapshot(
+            state.as_ref(),
+            power.effective_off_output_color(),
+        )
+        .await;
+    }
     debug!(
         backend_id = %backend_id,
         device_id = %device_id,
@@ -1297,6 +1325,45 @@ async fn run_identify_flash(
         backend = %backend_id,
         "Identify flash completed"
     );
+}
+
+async fn start_identify_output(
+    state: &AppState,
+    direct_backend: &BackendIo,
+    device_id: DeviceId,
+    colors: &[[u8; 3]],
+    device_name: &str,
+) -> Result<(), Response> {
+    match write_identify_output_if_running(state, direct_backend, device_id, colors).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ApiError::conflict(format!(
+            "Cannot identify {device_name} while global output is paused"
+        ))),
+        Err(error) => {
+            warn!(
+                device_id = %device_id,
+                error = %error,
+                "identify initial write failed"
+            );
+            Err(ApiError::internal(format!(
+                "Failed to start identify flash for {device_name}: {error}"
+            )))
+        }
+    }
+}
+
+async fn write_identify_output_if_running(
+    state: &AppState,
+    direct_backend: &BackendIo,
+    device_id: DeviceId,
+    colors: &[[u8; 3]],
+) -> anyhow::Result<bool> {
+    let _transition_guard = state.output_power_transition.lock().await;
+    if state.power_state.borrow().sleeping() {
+        return Ok(false);
+    }
+    direct_backend.write_colors(device_id, colors).await?;
+    Ok(true)
 }
 
 async fn prepare_identify_backend(

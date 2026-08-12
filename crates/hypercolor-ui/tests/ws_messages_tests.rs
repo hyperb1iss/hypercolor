@@ -4,8 +4,25 @@ use hypercolor_types::event::{LayerHealth, SceneLibraryChangeKind, ZoneChangeKin
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use hypercolor_ui::ws::messages::{
     PerformanceMetrics, extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
-    group_has_degraded_layer, layer_health_key, scene_event_affects_active_effect,
+    group_has_degraded_layer, is_resync_required, layer_health_key,
+    scene_event_affects_active_effect,
 };
+
+#[test]
+fn resync_required_is_only_recognized_as_an_event() {
+    assert!(is_resync_required(&serde_json::json!({
+        "type": "event",
+        "event": "resync_required",
+    })));
+    assert!(!is_resync_required(&serde_json::json!({
+        "type": "hello",
+        "event": "resync_required",
+    })));
+    assert!(!is_resync_required(&serde_json::json!({
+        "type": "event",
+        "event": "paused",
+    })));
+}
 
 #[test]
 fn extract_scene_event_hint_parses_active_scene_payload() {

@@ -59,6 +59,44 @@ impl AppState {
             active_server: None,
         }
     }
+
+    /// Apply an incremental or authoritative daemon state update.
+    pub fn apply_state_update(&mut self, update: StateUpdate) {
+        match update {
+            StateUpdate::EffectChanged { id, name } => {
+                self.current_effect = Some(EffectInfo { id, name });
+            }
+            StateUpdate::EffectStopped => {
+                self.current_effect = None;
+                self.paused = false;
+            }
+            StateUpdate::SceneChanged {
+                name,
+                snapshot_locked,
+            } => {
+                self.active_scene_name = name;
+                self.scene_snapshot_locked = snapshot_locked;
+            }
+            StateUpdate::BrightnessChanged(value) => self.brightness = value,
+            StateUpdate::Paused => self.paused = true,
+            StateUpdate::Resumed => self.paused = false,
+            StateUpdate::DeviceCountChanged(count) => self.device_count = count,
+            StateUpdate::EffectsRefreshed(effects) => self.effects = effects,
+            StateUpdate::Snapshot {
+                running,
+                paused,
+                brightness,
+                device_count,
+                effect,
+            } => {
+                self.running = running;
+                self.paused = paused;
+                self.brightness = brightness;
+                self.device_count = device_count;
+                self.current_effect = effect;
+            }
+        }
+    }
 }
 
 impl Default for AppState {
@@ -124,6 +162,14 @@ pub enum StateUpdate {
     DeviceCountChanged(usize),
     /// Effect list was updated (rescan).
     EffectsRefreshed(Vec<EffectInfo>),
+    /// Authoritative state snapshot from the WebSocket hello message.
+    Snapshot {
+        running: bool,
+        paused: bool,
+        brightness: u8,
+        device_count: usize,
+        effect: Option<EffectInfo>,
+    },
 }
 
 /// Commands from the tray UI thread to the async daemon client.
@@ -138,8 +184,8 @@ pub enum TrayCommand {
     StopEffect,
     /// Set global brightness (0-100).
     SetBrightness(u8),
-    /// Toggle pause/resume.
-    TogglePause,
+    /// Set the global output pause state.
+    SetPaused(bool),
     /// Open the web UI in the default browser.
     OpenWebUi,
     /// Switch the active daemon connection.
@@ -241,4 +287,76 @@ pub struct WsEventMessage {
     pub event: String,
     #[serde(default)]
     pub data: serde_json::Value,
+}
+
+impl WsEventMessage {
+    #[must_use]
+    pub fn requires_full_resync(&self) -> bool {
+        self.msg_type == "event" && self.event == "resync_required"
+    }
+}
+
+#[cfg(test)]
+mod app_state_tests {
+    use super::{AppState, EffectInfo, StateUpdate};
+
+    #[test]
+    fn websocket_snapshot_clears_stale_pause_and_effect_state() {
+        let mut state = AppState {
+            running: true,
+            paused: true,
+            current_effect: Some(EffectInfo {
+                id: "old".to_owned(),
+                name: "Old".to_owned(),
+            }),
+            ..AppState::default()
+        };
+
+        state.apply_state_update(StateUpdate::Snapshot {
+            running: true,
+            paused: false,
+            brightness: 64,
+            device_count: 3,
+            effect: None,
+        });
+
+        assert!(state.running);
+        assert!(!state.paused);
+        assert_eq!(state.brightness, 64);
+        assert_eq!(state.device_count, 3);
+        assert!(state.current_effect.is_none());
+    }
+
+    #[test]
+    fn effect_stop_clears_stale_pause_state() {
+        let mut state = AppState {
+            paused: true,
+            current_effect: Some(EffectInfo {
+                id: "old".to_owned(),
+                name: "Old".to_owned(),
+            }),
+            ..AppState::default()
+        };
+
+        state.apply_state_update(StateUpdate::EffectStopped);
+
+        assert!(!state.paused);
+        assert!(state.current_effect.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WsEventMessage;
+
+    #[test]
+    fn resync_required_event_requests_full_state_reconciliation() {
+        let message: WsEventMessage = serde_json::from_value(serde_json::json!({
+            "type": "event",
+            "event": "resync_required",
+        }))
+        .expect("should parse resync event");
+
+        assert!(message.requires_full_resync());
+    }
 }

@@ -96,7 +96,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Data structures
-uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
+uuid = { version = "1.11", features = ["v4", "v5", "v7", "serde"] }
 ulid = { version = "1.2.1", features = ["serde"] }
 sha2 = "0.10"
 arc-swap = "1.7"

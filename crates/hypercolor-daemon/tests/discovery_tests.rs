@@ -1,7 +1,7 @@
 //! Integration tests for daemon discovery scan scoping.
 
 use anyhow::{Result, bail};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
     DiscoveredDevice, UsbProtocolConfigStore,
@@ -19,27 +20,32 @@ use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
     DiscoveryRuntime, DiscoveryTarget, execute_discovery_scan, execute_discovery_scan_if_idle,
-    sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
+    schedule_discovery_scan, sync_active_layout_connectivity,
+    sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_api::{
+    CredentialStore, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DriverDescriptor, DriverHost, DriverModule,
+};
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    ZoneInfo,
+    DriverTransportKind, ZoneInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::time::timeout;
 
 struct TestDiscoveryRuntime {
     runtime: DiscoveryRuntime,
@@ -69,6 +75,77 @@ struct CachePrimingBackend {
     remember_count: Arc<std::sync::atomic::AtomicUsize>,
     discover_count: Arc<std::sync::atomic::AtomicUsize>,
     connect_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveryConfigObservation {
+    generation: u64,
+    mdns_enabled: bool,
+    timeout: Duration,
+}
+
+struct BlockingConfigDiscoveryDriver {
+    observations: Arc<StdMutex<Vec<DiscoveryConfigObservation>>>,
+    started: Arc<Semaphore>,
+    release_first: Arc<Semaphore>,
+}
+
+static BLOCKING_CONFIG_DISCOVERY_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "blocking_config_discovery",
+    "Blocking Config Discovery",
+    DriverTransportKind::Network,
+    true,
+    false,
+);
+
+impl DriverModule for BlockingConfigDiscoveryDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &BLOCKING_CONFIG_DISCOVERY_DRIVER
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscoveryCapability for BlockingConfigDiscoveryDriver {
+    async fn discover(
+        &self,
+        _host: &dyn DriverHost,
+        request: &DiscoveryRequest,
+        config: DriverConfigView<'_>,
+    ) -> Result<DiscoveryResult> {
+        let generation = config
+            .entry
+            .settings
+            .get("generation")
+            .and_then(serde_json::Value::as_u64)
+            .expect("test discovery generation should be configured");
+        let call_index = {
+            let mut observations = self
+                .observations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            observations.push(DiscoveryConfigObservation {
+                generation,
+                mdns_enabled: request.mdns_enabled,
+                timeout: request.timeout,
+            });
+            observations.len()
+        };
+        self.started.add_permits(1);
+
+        if call_index == 1 {
+            Arc::clone(&self.release_first)
+                .acquire_owned()
+                .await
+                .expect("first discovery release semaphore should stay open")
+                .forget();
+        }
+
+        Ok(DiscoveryResult::default())
+    }
 }
 
 #[derive(Clone)]
@@ -391,6 +468,24 @@ fn make_runtime(
     layouts_path: std::path::PathBuf,
     runtime_state_path: std::path::PathBuf,
 ) -> TestDiscoveryRuntime {
+    make_runtime_with_registry(
+        device_registry,
+        lifecycle_manager,
+        layouts_path,
+        runtime_state_path,
+        None,
+        None,
+    )
+}
+
+fn make_runtime_with_registry(
+    device_registry: DeviceRegistry,
+    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+    layouts_path: std::path::PathBuf,
+    runtime_state_path: std::path::PathBuf,
+    driver_registry: Option<DriverModuleRegistry>,
+    config_manager: Option<Arc<ConfigManager>>,
+) -> TestDiscoveryRuntime {
     let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
     let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
     let event_bus = Arc::new(HypercolorBus::new());
@@ -424,6 +519,13 @@ fn make_runtime(
     );
     let scene_transactions = SceneTransactionQueue::default();
     let scene_manager = Arc::new(RwLock::new(SceneManager::with_default()));
+    let driver_registry = Arc::new(driver_registry.unwrap_or_else(|| {
+        network::build_builtin_driver_module_registry(
+            &HypercolorConfig::default(),
+            Arc::clone(&credential_store),
+        )
+        .expect("test driver registry")
+    }));
     let runtime = DiscoveryRuntime {
         device_registry: device_registry.clone(),
         backend_manager: Arc::clone(&backend_manager),
@@ -444,15 +546,9 @@ fn make_runtime(
         usb_protocol_configs: usb_protocol_configs.clone(),
         credential_store: Arc::clone(&credential_store),
         in_progress: Arc::clone(&in_progress),
+        pending_scans: Arc::default(),
         task_spawner: tokio::runtime::Handle::current(),
     };
-    let driver_registry = Arc::new(
-        network::build_builtin_driver_module_registry(
-            &HypercolorConfig::default(),
-            Arc::clone(&runtime.credential_store),
-        )
-        .expect("test driver registry"),
-    );
     let driver_host = Arc::new(DaemonDriverHost::new(
         device_registry,
         backend_manager,
@@ -475,7 +571,7 @@ fn make_runtime(
         Arc::clone(&driver_registry),
         in_progress,
         scene_transactions,
-        None,
+        config_manager,
     ));
 
     TestDiscoveryRuntime {
@@ -483,6 +579,111 @@ fn make_runtime(
         driver_host,
         driver_registry,
     }
+}
+
+fn discovery_config(generation: u64, mdns_enabled: bool) -> HypercolorConfig {
+    let mut config = HypercolorConfig::default();
+    config.discovery.mdns_enabled = mdns_enabled;
+    config.drivers.insert(
+        BLOCKING_CONFIG_DISCOVERY_DRIVER.id.to_owned(),
+        DriverConfigEntry::enabled(BTreeMap::from([(
+            "generation".to_owned(),
+            serde_json::json!(generation),
+        )])),
+    );
+    config
+}
+
+#[tokio::test]
+async fn queued_scan_uses_newest_config_when_active_owner_finishes() {
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let config_manager = Arc::new(
+        ConfigManager::new(temp_dir.path().join("config.toml"))
+            .expect("test config manager should load"),
+    );
+    config_manager.update(discovery_config(1, false));
+
+    let observations = Arc::new(StdMutex::new(Vec::new()));
+    let started = Arc::new(Semaphore::new(0));
+    let release_first = Arc::new(Semaphore::new(0));
+    let mut driver_registry = DriverModuleRegistry::new();
+    driver_registry
+        .register(BlockingConfigDiscoveryDriver {
+            observations: Arc::clone(&observations),
+            started: Arc::clone(&started),
+            release_first: Arc::clone(&release_first),
+        })
+        .expect("test discovery driver should register");
+
+    let runtime = make_runtime_with_registry(
+        DeviceRegistry::new(),
+        Arc::new(Mutex::new(DeviceLifecycleManager::new())),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+        Some(driver_registry),
+        Some(Arc::clone(&config_manager)),
+    );
+    runtime.runtime.in_progress.store(false, Ordering::Release);
+    let target = DiscoveryTarget::driver(BLOCKING_CONFIG_DISCOVERY_DRIVER.id);
+    let initial_config = Arc::clone(&config_manager.get());
+
+    schedule_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::clone(&initial_config),
+        vec![target.clone()],
+        Duration::from_secs(2),
+    );
+    timeout(Duration::from_secs(1), started.acquire())
+        .await
+        .expect("first scan should start")
+        .expect("discovery start semaphore should stay open")
+        .forget();
+
+    schedule_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        initial_config,
+        vec![target.clone(), target],
+        Duration::from_millis(700),
+    );
+    config_manager.update(discovery_config(2, true));
+    release_first.add_permits(1);
+
+    timeout(Duration::from_secs(1), started.acquire())
+        .await
+        .expect("queued scan should start after ownership transfer")
+        .expect("discovery start semaphore should stay open")
+        .forget();
+    timeout(Duration::from_secs(1), async {
+        while runtime.runtime.in_progress.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("queued scan should complete and release discovery ownership");
+
+    let observations = observations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        observations,
+        vec![
+            DiscoveryConfigObservation {
+                generation: 1,
+                mdns_enabled: false,
+                timeout: Duration::from_secs(2),
+            },
+            DiscoveryConfigObservation {
+                generation: 2,
+                mdns_enabled: true,
+                timeout: Duration::from_millis(700),
+            },
+        ]
+    );
 }
 
 #[tokio::test]

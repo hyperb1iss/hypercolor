@@ -19,6 +19,7 @@ use super::traits::{
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
 const OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL: u64 = 60;
+const OUTPUT_REASSERTION_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 const WORKER_PHASE_IDLE: u8 = 0;
 const WORKER_PHASE_CADENCE: u8 = 1;
 const WORKER_PHASE_TRANSPORT: u8 = 2;
@@ -150,6 +151,9 @@ pub struct OutputQueueDebugSnapshot {
     /// Configured minimum output interval in milliseconds.
     pub target_interval_ms: Option<u64>,
 
+    /// Maximum transport silence before cached-payload replay, in milliseconds.
+    pub max_frame_silence_ms: Option<u64>,
+
     /// Whether this queue writes through a per-device hot-path frame sink.
     pub uses_frame_sink: bool,
 
@@ -164,6 +168,9 @@ pub struct OutputQueueDebugSnapshot {
 
     /// Total frames accepted from the render loop.
     pub accepted: u64,
+
+    /// Total cached payloads queued to restore transport liveness.
+    pub cached_payload_reassertions: u64,
 
     /// Total frames successfully written by the worker.
     pub frames_sent: u64,
@@ -256,6 +263,9 @@ pub struct DeviceOutputStatistics {
     /// Configured minimum output interval in milliseconds.
     pub target_interval_ms: Option<u64>,
 
+    /// Maximum transport silence before cached-payload replay, in milliseconds.
+    pub max_frame_silence_ms: Option<u64>,
+
     /// Whether this queue writes through a per-device hot-path frame sink.
     pub uses_frame_sink: bool,
 
@@ -270,6 +280,9 @@ pub struct DeviceOutputStatistics {
 
     /// Total frames accepted from the render loop.
     pub accepted: u64,
+
+    /// Total cached payloads queued to restore transport liveness.
+    pub cached_payload_reassertions: u64,
 
     /// Total frames successfully written by the worker.
     pub frames_sent: u64,
@@ -352,11 +365,13 @@ impl DeviceOutputStatistics {
             mapped_layout_ids: self.mapped_layout_ids,
             target_fps: self.target_fps,
             target_interval_ms: self.target_interval_ms,
+            max_frame_silence_ms: self.max_frame_silence_ms,
             uses_frame_sink: self.uses_frame_sink,
             worker_finished: self.worker_finished,
             worker_recoveries: self.worker_recoveries,
             frames_received: self.frames_received,
             accepted: self.accepted,
+            cached_payload_reassertions: self.cached_payload_reassertions,
             frames_sent: self.frames_sent,
             transport_started: self.transport_started,
             transport_completed: self.transport_completed,
@@ -401,6 +416,7 @@ struct OutputQueueMetrics {
     started_at: Instant,
     active_generation: AtomicU64,
     accepted: AtomicU64,
+    cached_payload_reassertions: AtomicU64,
     frames_received: AtomicU64,
     frames_sent: AtomicU64,
     frames_suppressed: AtomicU64,
@@ -431,6 +447,7 @@ impl OutputQueueMetrics {
             started_at,
             active_generation: AtomicU64::new(generation),
             accepted: AtomicU64::new(0),
+            cached_payload_reassertions: AtomicU64::new(0),
             frames_received: AtomicU64::new(0),
             frames_sent: AtomicU64::new(0),
             frames_suppressed: AtomicU64::new(0),
@@ -485,6 +502,15 @@ impl OutputQueueMetrics {
         if self.is_current(id) {
             self.frames_received.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    fn record_cached_payload_reassertion(&self, id: DeviceDeliveryId) {
+        if !self.is_current(id) {
+            return;
+        }
+        self.cached_payload_reassertions
+            .fetch_add(1, Ordering::Relaxed);
+        self.last_sequence.store(id.sequence, Ordering::Relaxed);
     }
 
     fn record_coalesced(&self, id: DeviceDeliveryId, phase: u8) {
@@ -675,11 +701,13 @@ impl OutputQueueMetrics {
             mapped_layout_ids,
             target_fps: cadence.target_fps(),
             target_interval_ms: cadence.interval_ms(),
+            max_frame_silence_ms: cadence.max_frame_silence_ms(),
             uses_frame_sink,
             worker_finished,
             worker_recoveries: self.worker_recoveries.load(Ordering::Relaxed),
             frames_received,
             accepted,
+            cached_payload_reassertions: self.cached_payload_reassertions.load(Ordering::Relaxed),
             frames_sent,
             transport_started,
             transport_completed: frames_sent,
@@ -734,6 +762,93 @@ struct FramePayload {
     id: DeviceDeliveryId,
     /// Timestamp when this payload was queued by the render loop.
     produced_at: Instant,
+    /// Whether the worker queued this payload from its liveness cache.
+    cached_reassertion: bool,
+}
+
+#[derive(Debug)]
+struct DeliverySequence {
+    generation: u64,
+    next_sequence: u64,
+}
+
+impl DeliverySequence {
+    const fn new(generation: u64, next_sequence: u64) -> Self {
+        Self {
+            generation,
+            next_sequence,
+        }
+    }
+
+    fn next(&mut self) -> (DeviceDeliveryId, bool) {
+        let generation_changed = if let Some(sequence) = self.next_sequence.checked_add(1) {
+            self.next_sequence = sequence;
+            false
+        } else {
+            self.generation = next_queue_generation();
+            self.next_sequence = 1;
+            true
+        };
+
+        (
+            DeviceDeliveryId {
+                queue_generation: self.generation,
+                sequence: self.next_sequence,
+            },
+            generation_changed,
+        )
+    }
+}
+
+fn requeue_cached_payload(
+    tx: &watch::Sender<Option<Arc<FramePayload>>>,
+    delivery_sequence: &StdMutex<DeliverySequence>,
+    metrics: &OutputQueueMetrics,
+) -> bool {
+    let mut delivery_sequence = delivery_sequence
+        .lock()
+        .expect("device delivery sequence lock should not be poisoned");
+    let current = tx.borrow();
+    let Some(payload) = current.as_ref() else {
+        return false;
+    };
+    let last_terminal_sequence = metrics
+        .last_handled_sequence
+        .load(Ordering::Relaxed)
+        .max(metrics.last_error_sequence.load(Ordering::Relaxed));
+    if payload.id.sequence > last_terminal_sequence {
+        return false;
+    }
+    drop(current);
+
+    let (id, generation_changed) = delivery_sequence.next();
+    if generation_changed {
+        metrics.activate_generation(id.queue_generation);
+    }
+    metrics.record_cached_payload_reassertion(id);
+
+    let produced_at = Instant::now();
+    tx.send_modify(|current| {
+        let Some(payload) = current else {
+            return;
+        };
+
+        if let Some(payload) = Arc::get_mut(payload) {
+            payload.id = id;
+            payload.produced_at = produced_at;
+            payload.cached_reassertion = true;
+            return;
+        }
+
+        let colors = Arc::clone(&payload.colors);
+        *payload = Arc::new(FramePayload {
+            colors,
+            id,
+            produced_at,
+            cached_reassertion: true,
+        });
+    });
+    true
 }
 
 #[derive(Debug, Default)]
@@ -798,10 +913,9 @@ pub(super) struct OutputQueue {
     cadence: OutputCadence,
     uses_frame_sink: bool,
     metrics: Arc<OutputQueueMetrics>,
-    generation: u64,
+    delivery_sequence: Arc<StdMutex<DeliverySequence>>,
     worker_phase: Arc<AtomicU8>,
     active_sequence: Arc<AtomicU64>,
-    next_sequence: u64,
 }
 
 impl OutputQueue {
@@ -838,9 +952,16 @@ impl OutputQueue {
                     sequence: payload.id.sequence,
                 },
                 produced_at: payload.produced_at,
+                cached_reassertion: payload.cached_reassertion,
             })
         });
         let (tx, mut rx) = watch::channel(initial_payload);
+        let delivery_sequence = Arc::new(StdMutex::new(DeliverySequence::new(
+            generation,
+            next_sequence,
+        )));
+        let delivery_sequence_for_task = Arc::clone(&delivery_sequence);
+        let tx_for_task = tx.clone();
         let metrics_for_task = Arc::clone(&metrics);
         let worker_phase = Arc::new(AtomicU8::new(WORKER_PHASE_IDLE));
         let phase_for_task = Arc::clone(&worker_phase);
@@ -849,18 +970,41 @@ impl OutputQueue {
         let uses_frame_sink = lane.uses_frame_sink();
         let io_task = tokio::spawn(async move {
             let send_interval = cadence.min_interval();
+            let max_frame_silence = cadence.max_frame_silence();
             let mut next_send_at = Instant::now();
+            let mut reassert_at = None::<Instant>;
             let mut pending = rx.borrow_and_update().clone();
             let mut last_logged_write_error = None::<String>;
             let mut repeated_write_failures_since_log = 0_u64;
 
             'worker: loop {
                 if pending.is_none() {
-                    // Sender dropped => manager shutdown or queue removed.
-                    if rx.changed().await.is_err() {
-                        break;
+                    if let Some(deadline) = reassert_at {
+                        tokio::select! {
+                            changed = rx.changed() => {
+                                if changed.is_err() {
+                                    break;
+                                }
+                                pending.clone_from(&rx.borrow_and_update());
+                            }
+                            () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                                if requeue_cached_payload(
+                                    &tx_for_task,
+                                    delivery_sequence_for_task.as_ref(),
+                                    metrics_for_task.as_ref(),
+                                ) {
+                                    pending.clone_from(&rx.borrow_and_update());
+                                }
+                                reassert_at = None;
+                            }
+                        }
+                    } else {
+                        // Sender dropped => manager shutdown or queue removed.
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        pending.clone_from(&rx.borrow_and_update());
                     }
-                    pending.clone_from(&rx.borrow_and_update());
                     continue;
                 }
 
@@ -954,6 +1098,24 @@ impl OutputQueue {
                     }
                 }
 
+                if let Some(max_frame_silence) = max_frame_silence {
+                    let next_interval = match ack.status {
+                        DeviceDeliveryStatus::Completed | DeviceDeliveryStatus::Failed => {
+                            max_frame_silence
+                        }
+                        DeviceDeliveryStatus::SuppressedDuplicate
+                        | DeviceDeliveryStatus::SuppressedCadence => send_interval
+                            .filter(|interval| !interval.is_zero())
+                            .unwrap_or(OUTPUT_REASSERTION_RETRY_INTERVAL)
+                            .min(max_frame_silence),
+                    };
+                    reassert_at = Some(advance_deadline(
+                        send_completed,
+                        next_interval,
+                        send_completed,
+                    ));
+                }
+
                 if let Some(interval) = send_interval {
                     next_send_at = advance_deadline(next_send_at, interval, Instant::now());
                 }
@@ -966,10 +1128,9 @@ impl OutputQueue {
             cadence,
             uses_frame_sink,
             metrics,
-            generation,
+            delivery_sequence,
             worker_phase,
             active_sequence,
-            next_sequence,
         }
     }
 
@@ -982,7 +1143,11 @@ impl OutputQueue {
     ) -> Self {
         let initial_payload = self.latest_unconfirmed_payload();
         let metrics = Arc::clone(&self.metrics);
-        let next_sequence = self.next_sequence;
+        let next_sequence = self
+            .delivery_sequence
+            .lock()
+            .expect("device delivery sequence lock should not be poisoned")
+            .next_sequence;
         let generation = next_queue_generation();
         metrics.record_worker_recovery();
         Self::spawn_with_state(
@@ -1013,7 +1178,15 @@ impl OutputQueue {
 
     /// Push the latest payload for this device.
     pub(super) fn push(&mut self, colors: Vec<[u8; 3]>) -> Option<Vec<[u8; 3]>> {
-        let id = self.next_delivery_id();
+        let mut delivery_sequence = self
+            .delivery_sequence
+            .lock()
+            .expect("device delivery sequence lock should not be poisoned");
+        let (id, generation_changed) = delivery_sequence.next();
+        if generation_changed {
+            self.metrics.activate_generation(id.queue_generation);
+            let _ = self.tx.send_replace(None);
+        }
         self.metrics.record_accepted(id);
 
         if self.should_suppress_duplicate(&colors) {
@@ -1034,7 +1207,8 @@ impl OutputQueue {
                     .last_handled_sequence
                     .load(Ordering::Relaxed)
                     .max(self.metrics.last_error_sequence.load(Ordering::Relaxed));
-                if previous.id.sequence != active_sequence
+                if !previous.cached_reassertion
+                    && previous.id.sequence != active_sequence
                     && previous.id.sequence > last_terminal_sequence
                 {
                     let phase = self.worker_phase.load(Ordering::Acquire);
@@ -1057,6 +1231,7 @@ impl OutputQueue {
                 recycled = Arc::try_unwrap(previous).ok();
                 payload.id = id;
                 payload.produced_at = produced_at;
+                payload.cached_reassertion = false;
             } else {
                 *current = Some(Arc::new(FramePayload {
                     colors: next_colors
@@ -1064,6 +1239,7 @@ impl OutputQueue {
                         .expect("pending colors should exist before allocation"),
                     id,
                     produced_at,
+                    cached_reassertion: false,
                 }));
             }
         });
@@ -1094,6 +1270,10 @@ impl OutputQueue {
     }
 
     pub(super) fn retry_latest_after_error(&mut self) -> Option<usize> {
+        let mut delivery_sequence = self
+            .delivery_sequence
+            .lock()
+            .expect("device delivery sequence lock should not be poisoned");
         let current = self.tx.borrow();
         let Some(payload) = current.as_ref() else {
             return None;
@@ -1108,11 +1288,20 @@ impl OutputQueue {
         }
 
         let led_count = payload.colors.len();
+        let cached_reassertion = payload.cached_reassertion;
         drop(current);
-        let id = self.next_delivery_id();
+        let (id, generation_changed) = delivery_sequence.next();
+        if generation_changed {
+            self.metrics.activate_generation(id.queue_generation);
+            let _ = self.tx.send_replace(None);
+        }
         let produced_at = Instant::now();
-        self.metrics.record_accepted(id);
-        self.metrics.record_received(id);
+        if cached_reassertion {
+            self.metrics.record_cached_payload_reassertion(id);
+        } else {
+            self.metrics.record_accepted(id);
+            self.metrics.record_received(id);
+        }
         self.tx.send_modify(|current| {
             let Some(payload) = current else {
                 return;
@@ -1125,28 +1314,15 @@ impl OutputQueue {
             }
 
             let colors = payload.colors.clone();
+            let cached_reassertion = payload.cached_reassertion;
             *current = Some(Arc::new(FramePayload {
                 colors,
                 id,
                 produced_at,
+                cached_reassertion,
             }));
         });
         Some(led_count)
-    }
-
-    fn next_delivery_id(&mut self) -> DeviceDeliveryId {
-        if let Some(sequence) = self.next_sequence.checked_add(1) {
-            self.next_sequence = sequence;
-        } else {
-            self.generation = next_queue_generation();
-            self.next_sequence = 1;
-            self.metrics.activate_generation(self.generation);
-            let _ = self.tx.send_replace(None);
-        }
-        DeviceDeliveryId {
-            queue_generation: self.generation,
-            sequence: self.next_sequence,
-        }
     }
 
     pub(super) fn statistics(

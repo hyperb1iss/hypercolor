@@ -103,6 +103,17 @@ fn parse_ws_event_effect_started() {
 }
 
 #[test]
+fn resync_required_event_requests_full_state_reconciliation() {
+    let message: WsEventMessage = serde_json::from_value(json!({
+        "type": "event",
+        "event": "resync_required",
+    }))
+    .expect("should parse resync event");
+
+    assert!(message.requires_full_resync());
+}
+
+#[test]
 fn parse_status_response() {
     let raw = json!({
         "data": {
@@ -218,6 +229,50 @@ fn state_update_applies_dynamic_tray_changes() {
         Some("aurora")
     );
     assert_eq!(state.effects[0].name, "Wave");
+}
+
+#[test]
+fn websocket_snapshot_clears_stale_pause_and_effect_state() {
+    let mut state = AppState {
+        running: true,
+        paused: true,
+        current_effect: Some(EffectInfo {
+            id: "old".to_owned(),
+            name: "Old".to_owned(),
+        }),
+        ..AppState::default()
+    };
+
+    state.apply_daemon_message(DaemonMessage::StateUpdate(StateUpdate::Snapshot {
+        running: true,
+        paused: false,
+        brightness: 64,
+        device_count: 3,
+        effect: None,
+    }));
+
+    assert!(state.running);
+    assert!(!state.paused);
+    assert_eq!(state.brightness, 64);
+    assert_eq!(state.device_count, 3);
+    assert!(state.current_effect.is_none());
+}
+
+#[test]
+fn effect_stop_clears_stale_pause_state() {
+    let mut state = AppState {
+        paused: true,
+        current_effect: Some(EffectInfo {
+            id: "old".to_owned(),
+            name: "Old".to_owned(),
+        }),
+        ..AppState::default()
+    };
+
+    state.apply_daemon_message(DaemonMessage::StateUpdate(StateUpdate::EffectStopped));
+
+    assert!(!state.paused);
+    assert!(state.current_effect.is_none());
 }
 
 #[test]

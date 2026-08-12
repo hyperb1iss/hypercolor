@@ -83,7 +83,7 @@ pub(super) fn RendererHardwarePanel(
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
     #[prop(into)] sensors: Signal<Option<SystemSnapshot>>,
 ) -> impl IntoView {
-    let status_resource = LocalResource::new(api::fetch_status);
+    let status_resource = api::daemon_resource(api::fetch_status);
     let status = Memo::new(move |_| status_resource.get().and_then(Result::ok));
 
     let compositor_badge = Memo::new(move |_| {

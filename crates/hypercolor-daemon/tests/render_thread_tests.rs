@@ -1484,7 +1484,7 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
     wait_for_audio_capture_transition(&transitions, true).await;
 
     power_tx.send_replace(OutputPowerState {
-        sleeping: true,
+        session_sleeping: true,
         session_brightness: 0.0,
         off_output_behavior: OffOutputBehavior::Release,
         ..OutputPowerState::default()
@@ -2775,6 +2775,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
             .expect("test credential store"),
         ),
         in_progress: Arc::new(AtomicBool::new(false)),
+        pending_scans: Arc::default(),
         task_spawner: tokio::runtime::Handle::current(),
     };
 
@@ -2971,6 +2972,7 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
             .expect("test credential store"),
         ),
         in_progress: Arc::new(AtomicBool::new(false)),
+        pending_scans: Arc::default(),
         task_spawner: tokio::runtime::Handle::current(),
     };
     state.discovery_runtime = Some(discovery_runtime.clone());
@@ -4530,7 +4532,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
     );
 
     power_tx.send_replace(OutputPowerState {
-        sleeping: true,
+        session_sleeping: true,
         session_brightness: 0.0,
         off_output_behavior: OffOutputBehavior::Release,
         ..OutputPowerState::default()

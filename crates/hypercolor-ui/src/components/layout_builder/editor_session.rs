@@ -50,7 +50,7 @@ pub(super) fn attachment_profiles_resource(
     layout: ReadSignal<Option<SpatialLayout>>,
     devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
 ) -> LocalResource<HashMap<String, api::DeviceComponentsResponse>> {
-    LocalResource::new(move || {
+    api::daemon_resource(move || {
         let current_layout = layout.get();
         let devices = devices_resource
             .get()

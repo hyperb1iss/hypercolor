@@ -3740,7 +3740,7 @@ async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
 
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let (_power_tx, power_state) = watch::channel(OutputPowerState {
-        sleeping: true,
+        session_sleeping: true,
         ..OutputPowerState::default()
     });
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
@@ -4368,7 +4368,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let _ = wait_for_display_write_count(&display_writes, 1).await;
 
     power_tx.send_replace(OutputPowerState {
-        sleeping: true,
+        session_sleeping: true,
         off_output_behavior: OffOutputBehavior::Static,
         ..OutputPowerState::default()
     });

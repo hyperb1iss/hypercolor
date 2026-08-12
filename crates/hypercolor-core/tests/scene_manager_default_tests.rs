@@ -10,6 +10,7 @@ use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
     SceneLayerId,
 };
+use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     DisplayFaceBlendMode, DisplayFaceTarget, SceneId, SceneKind, Zone, ZoneId, ZoneRole,
 };
@@ -721,6 +722,44 @@ fn patch_group_controls_missing_group_returns_none() {
             )
             .is_none()
     );
+}
+
+#[test]
+fn control_derivations_preserve_selected_preset_provenance() {
+    let mut manager = SceneManager::with_default();
+    let effect = sample_effect("Aurora");
+    let preset_id = PresetId::new();
+    let group_id = manager
+        .upsert_primary_group(
+            &effect,
+            HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]),
+            Some(preset_id),
+            sample_layout("zone_a"),
+        )
+        .expect("primary upsert should succeed")
+        .id;
+
+    let patched = manager
+        .patch_group_controls(
+            group_id,
+            HashMap::from([("speed".to_owned(), ControlValue::Float(0.9))]),
+        )
+        .expect("control patch should succeed");
+    assert_eq!(patched.preset_id, Some(preset_id));
+
+    let binding = ControlBinding {
+        sensor: "cpu_temp".to_owned(),
+        sensor_min: 30.0,
+        sensor_max: 100.0,
+        target_min: 0.0,
+        target_max: 1.0,
+        deadband: 0.0,
+        smoothing: 0.5,
+    };
+    let bound = manager
+        .set_group_control_binding(group_id, "speed".to_owned(), binding)
+        .expect("binding should succeed");
+    assert_eq!(bound.preset_id, Some(preset_id));
 }
 
 #[test]

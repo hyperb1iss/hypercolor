@@ -100,7 +100,7 @@ describe('face render loop', () => {
         const originalRaf = Reflect.get(globalThis, 'requestAnimationFrame')
         const originalWindow = Reflect.get(globalThis, 'window')
         let rafCalls = 0
-        const host = { performance: { now: () => 1234 } }
+        const host = { engine: { time: 4.25 }, performance: { now: () => 1234 } }
 
         Reflect.set(globalThis, '__hypercolorCaptureMode', true)
         Reflect.set(globalThis, '__hypercolorHostDrivenAnimation', true)
@@ -114,13 +114,16 @@ describe('face render loop', () => {
             __testing.startFaceLoop(testContext(calls), () => (time) => calls.push(`update:${time.toFixed(3)}`), [], [])
 
             expect(rafCalls).toBe(0)
-            expect(calls).toEqual(['clear', 'update:1.234'])
+            expect(calls).toEqual(['clear', 'update:4.250'])
 
             const renderHostFrame = Reflect.get(host, '__hypercolorRenderHostFrame')
             expect(typeof renderHostFrame).toBe('function')
             const renderHostFrameFn = renderHostFrame as () => void
             renderHostFrameFn()
-            expect(calls).toEqual(['clear', 'update:1.234', 'clear', 'update:1.234'])
+            expect(calls).toEqual(['clear', 'update:4.250', 'clear', 'update:4.250'])
+            host.engine.time = 4.5
+            renderHostFrameFn()
+            expect(calls).toEqual(['clear', 'update:4.250', 'clear', 'update:4.250', 'clear', 'update:4.500'])
         } finally {
             restoreGlobal('__hypercolorCaptureMode', originalCaptureMode)
             restoreGlobal('__hypercolorHostDrivenAnimation', originalHostDriven)

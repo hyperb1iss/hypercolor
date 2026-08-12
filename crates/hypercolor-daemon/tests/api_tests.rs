@@ -53,7 +53,7 @@ use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{
-    OutputPowerState, current_global_brightness, set_global_brightness,
+    OutputOverride, OutputPowerState, current_global_brightness, set_global_brightness,
 };
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, SimulatedDisplayStore};
@@ -837,6 +837,76 @@ struct DisconnectRecordingBackend {
     expected_device_id: DeviceId,
     disconnects: Arc<AtomicUsize>,
     connected: bool,
+}
+
+struct StaticOutputRecordingBackend {
+    writes: Arc<StdMutex<Vec<(DeviceId, Vec<[u8; 3]>)>>>,
+}
+
+struct IdentifyRecordingBackend {
+    writes: Arc<StdMutex<Vec<Vec<[u8; 3]>>>>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for StaticOutputRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "static-output".to_owned(),
+            name: "Static Output Recording Backend".to_owned(),
+            description: "Records global static output frames".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        self.writes
+            .lock()
+            .expect("static output writes lock")
+            .push((*id, colors.to_vec()));
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for IdentifyRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "wled".to_owned(),
+            name: "Identify Recording Backend".to_owned(),
+            description: "Records identify and held output frames".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        self.writes
+            .lock()
+            .expect("identify output writes lock")
+            .push(colors.to_vec());
+        Ok(())
+    }
 }
 
 impl DisconnectRecordingBackend {
@@ -5670,10 +5740,27 @@ async fn stop_effect_returns_not_found_when_none() {
 }
 
 #[tokio::test]
-async fn pause_effect_returns_not_found_when_none() {
-    let app = test_app();
+async fn pause_effect_succeeds_without_an_active_primary_effect() {
+    let state = Arc::new(isolated_state());
+    let group_id = hypercolor_types::scene::ZoneId::new();
+    state.event_bus.upsert_display_group_target(
+        group_id,
+        DisplayGroupTarget {
+            device_id: DeviceId::new(),
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 1.0,
+            finalized: false,
+        },
+    );
+    let group_sender = state.event_bus.group_canvas_sender(group_id);
+    let mut red_canvas = Canvas::new(2, 2);
+    red_canvas.fill(Rgba::new(255, 0, 0, 255));
+    group_sender.send_replace(display_group_frame(&red_canvas, 7, 7));
+    let group_receiver = group_sender.subscribe();
+    let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -5684,7 +5771,149 @@ async fn pause_effect_returns_not_found_when_none() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_json = body_json(response).await;
+    assert_eq!(response_json["data"]["paused"], true);
+    assert!(response_json["data"].get("effect").is_none());
+    assert_eq!(response_json["data"]["off_output_behavior"], "static");
+    assert_eq!(
+        response_json["data"]["off_output_color"],
+        serde_json::json!([0, 0, 0])
+    );
+    assert!(state.power_state.borrow().manually_paused());
+    assert_display_group_frame_black(&group_receiver.borrow());
+    let snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("pause should persist runtime state");
+    assert!(snapshot.manual_paused);
+
+    let resume_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/resume")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resume_response.status(), StatusCode::OK);
+    let resume_json = body_json(resume_response).await;
+    assert_eq!(resume_json["data"]["resumed"], true);
+    assert!(resume_json["data"].get("effect").is_none());
+}
+
+#[tokio::test]
+async fn pause_blacks_connected_device_outside_active_layout() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Unassigned Strip").await;
+    let device_info = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("test device should exist")
+        .info;
+    let layout_device_id = format!("unassigned:{device_id}");
+    let writes = Arc::new(StdMutex::new(Vec::new()));
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Box::new(StaticOutputRecordingBackend {
+            writes: Arc::clone(&writes),
+        }));
+        manager
+            .connect_device("static-output", device_id, &layout_device_id)
+            .await
+            .expect("test device should connect");
+        assert!(manager.set_device_zone_segments(&layout_device_id, &device_info));
+    }
+    assert!(
+        state
+            .spatial_engine
+            .read()
+            .await
+            .layout()
+            .zones
+            .iter()
+            .all(|zone| zone.device_id != layout_device_id)
+    );
+
+    let response = test_app_with_state(Arc::clone(&state))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/pause")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (written_device_id, colors) = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let latest = writes
+                .lock()
+                .expect("static output writes lock")
+                .last()
+                .cloned();
+            if latest.is_some() {
+                break latest;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pause should write the unassigned device")
+    .expect("pause should record a static output frame");
+    assert_eq!(written_device_id, device_id);
+    assert_eq!(colors.len(), 60);
+    assert!(colors.iter().all(|color| *color == [0, 0, 0]));
+}
+
+#[tokio::test]
+async fn output_power_put_is_idempotent_and_publishes_effective_transitions_once() {
+    let state = Arc::new(isolated_state());
+    state.render_loop.write().await.start();
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    for requested in ["paused", "paused", "running", "running"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/output/power")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"state":"{requested}"}}"#)))
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["data"]["state"], requested);
+    }
+
+    assert!(matches!(
+        events.try_recv().expect("pause event").event,
+        HypercolorEvent::Paused
+    ));
+    assert!(matches!(
+        events.try_recv().expect("resume event").event,
+        HypercolorEvent::Resumed
+    ));
+    assert!(events.try_recv().is_err());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/output/power")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(body_json(response).await["data"]["state"], "running");
 }
 
 #[tokio::test]
@@ -5705,7 +5934,6 @@ async fn stop_current_clears_primary_effect_id_but_keeps_scene() {
         .await
         .expect("failed to execute request");
     assert_eq!(apply_response.status(), StatusCode::OK);
-
     let stop_response = app
         .clone()
         .oneshot(
@@ -5764,6 +5992,26 @@ async fn pause_resume_preserves_effect_state_and_holds_static_output() {
         .await
         .expect("failed to execute request");
     assert_eq!(apply_response.status(), StatusCode::OK);
+    let (primary_id, preset_id, group_before_pause) = {
+        let mut manager = state.scene_manager.write().await;
+        let primary_id = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .expect("primary group should exist")
+            .id;
+        let preset_id = PresetId::new();
+        manager.set_group_preset_id(primary_id, Some(preset_id));
+        let group = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .expect("primary group should remain")
+            .clone();
+        (primary_id, preset_id, group)
+    };
+    let effect_id = group_before_pause
+        .effect_id
+        .expect("primary group should retain its effect")
+        .to_string();
 
     let pause_response = app
         .clone()
@@ -5777,15 +6025,28 @@ async fn pause_resume_preserves_effect_state_and_holds_static_output() {
         .await
         .expect("failed to execute request");
     assert_eq!(pause_response.status(), StatusCode::OK);
+    let pause_json = body_json(pause_response).await;
+    assert_eq!(pause_json["data"]["paused"], true);
+    assert_eq!(pause_json["data"]["effect"]["id"], effect_id);
+    assert_eq!(pause_json["data"]["effect"]["name"], "solid_color");
+    assert_eq!(pause_json["data"]["off_output_behavior"], "static");
+    assert_eq!(
+        pause_json["data"]["off_output_color"],
+        serde_json::json!([0, 0, 0])
+    );
 
     assert_eq!(
         state.render_loop.read().await.state(),
         RenderLoopState::Paused
     );
     let power_state = *state.power_state.borrow();
-    assert!(power_state.sleeping);
-    assert_eq!(power_state.session_brightness, 0.0);
-    assert_eq!(power_state.off_output_behavior, OffOutputBehavior::Static);
+    assert!(power_state.sleeping());
+    assert!(power_state.manually_paused());
+    assert_eq!(power_state.session_brightness, 1.0);
+    assert_eq!(
+        power_state.effective_off_output_behavior(),
+        OffOutputBehavior::Static
+    );
     assert_canvas_frame_black(&state.event_bus.canvas_receiver().borrow());
     assert_display_group_frame_black(&group_receiver.borrow());
 
@@ -5819,14 +6080,33 @@ async fn pause_resume_preserves_effect_state_and_holds_static_output() {
         .await
         .expect("failed to execute request");
     assert_eq!(resume_response.status(), StatusCode::OK);
+    let resume_json = body_json(resume_response).await;
+    assert_eq!(resume_json["data"]["resumed"], true);
+    assert_eq!(resume_json["data"]["effect"]["id"], effect_id);
+    assert_eq!(resume_json["data"]["effect"]["name"], "solid_color");
 
     assert_eq!(
         state.render_loop.read().await.state(),
         RenderLoopState::Running
     );
     let power_state = *state.power_state.borrow();
-    assert!(!power_state.sleeping);
+    assert!(!power_state.sleeping());
     assert_eq!(power_state.session_brightness, 1.0);
+    let group_after_resume = state
+        .scene_manager
+        .read()
+        .await
+        .active_scene()
+        .and_then(Scene::primary_group)
+        .expect("primary group should remain after resume")
+        .clone();
+    assert_eq!(group_after_resume.id, primary_id);
+    assert_eq!(group_after_resume.preset_id, Some(preset_id));
+    assert_eq!(group_after_resume, group_before_pause);
+    let snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("resume should persist runtime state");
+    assert!(!snapshot.manual_paused);
     let active_resumed_response = app
         .oneshot(
             Request::builder()
@@ -5899,9 +6179,23 @@ async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
         RenderLoopState::Paused
     );
     let power_state = *state.power_state.borrow();
-    assert!(power_state.sleeping);
-    assert_eq!(power_state.session_brightness, 0.0);
-    assert_eq!(power_state.off_output_behavior, OffOutputBehavior::Release);
+    assert!(power_state.sleeping());
+    assert_eq!(power_state.output_override, OutputOverride::Stopped);
+    assert_eq!(
+        power_state.effective_off_output_behavior(),
+        OffOutputBehavior::Release
+    );
+    let power_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/output/power")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute output power request");
+    assert_eq!(body_json(power_response).await["data"]["state"], "stopped");
     let canvas_receiver = state.event_bus.canvas_receiver();
     let canvas_frame = canvas_receiver.borrow().clone();
     assert_canvas_frame_black(&canvas_frame);
@@ -5927,7 +6221,7 @@ async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
         RenderLoopState::Running
     );
     let power_state = *state.power_state.borrow();
-    assert!(!power_state.sleeping);
+    assert!(!power_state.sleeping());
     assert_eq!(power_state.session_brightness, 1.0);
 }
 
@@ -5964,11 +6258,11 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         render_loop.pause();
     }
     state.power_state.send_replace(OutputPowerState {
-        global_brightness: 1.0,
+        output_override: OutputOverride::Stopped,
         session_brightness: 0.0,
-        sleeping: true,
         off_output_behavior: OffOutputBehavior::Release,
         off_output_color: [0, 0, 0],
+        ..OutputPowerState::default()
     });
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -5992,7 +6286,7 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         RenderLoopState::Running
     );
     let power_state = *state.power_state.borrow();
-    assert!(!power_state.sleeping);
+    assert!(!power_state.sleeping());
     assert_eq!(power_state.session_brightness, 1.0);
     tokio::time::timeout(Duration::from_secs(1), async {
         while discoveries.load(Ordering::Relaxed) == 0 {
@@ -6526,6 +6820,20 @@ async fn effect_preset_stack_lists_and_applies_both_origins() {
             .expect("failed to execute request");
         assert_eq!(response.status(), StatusCode::OK);
 
+        let active_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/effects/active")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        let active_json = body_json(active_response).await;
+        assert_eq!(active_json["data"]["active_preset_id"], preset_id);
+        assert_eq!(active_json["data"]["active_preset_modified"], false);
+
         {
             let manager = state.scene_manager.read().await;
             let primary = manager
@@ -6578,10 +6886,9 @@ async fn effect_preset_stack_lists_and_applies_both_origins() {
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(
-        body_json(modified_response).await["data"]["active_preset_id"],
-        serde_json::Value::Null
-    );
+    let modified_json = body_json(modified_response).await;
+    assert_eq!(modified_json["data"]["active_preset_id"], saved_id);
+    assert_eq!(modified_json["data"]["active_preset_modified"], true);
 }
 
 #[tokio::test]
@@ -13958,6 +14265,100 @@ async fn identify_device_temporarily_connects_known_network_device() {
             .lock()
             .await
             .is_direct_control_active("wled", device_id)
+    );
+}
+
+#[tokio::test]
+async fn pause_preempts_identify_and_holds_black_output() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Identify Strip").await;
+    let device_info = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("test device should exist")
+        .info;
+    let layout_device_id = format!("identify:{device_id}");
+    let writes = Arc::new(StdMutex::new(Vec::new()));
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Box::new(IdentifyRecordingBackend {
+            writes: Arc::clone(&writes),
+        }));
+        manager
+            .connect_device("wled", device_id, &layout_device_id)
+            .await
+            .expect("test device should connect");
+        assert!(manager.set_device_zone_segments(&layout_device_id, &device_info));
+    }
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let identify_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/identify"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"duration_ms":10000}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute identify request");
+    assert_eq!(identify_response.status(), StatusCode::OK);
+    assert!(
+        writes
+            .lock()
+            .expect("identify output writes lock")
+            .iter()
+            .any(|frame| frame.iter().any(|color| *color != [0, 0, 0]))
+    );
+
+    let pause_response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/output/power")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"state":"paused"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute pause request");
+    assert_eq!(pause_response.status(), StatusCode::OK);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let direct_control_active = state
+                .backend_manager
+                .lock()
+                .await
+                .is_direct_control_active("wled", device_id);
+            let black_held = writes
+                .lock()
+                .expect("identify output writes lock")
+                .last()
+                .is_some_and(|frame| frame.iter().all(|color| *color == [0, 0, 0]));
+            if !direct_control_active && black_held {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pause should preempt identify and hold black promptly");
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        writes
+            .lock()
+            .expect("identify output writes lock")
+            .last()
+            .is_some_and(|frame| frame.iter().all(|color| *color == [0, 0, 0]))
     );
 }
 

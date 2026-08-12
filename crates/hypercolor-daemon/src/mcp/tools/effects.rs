@@ -104,7 +104,7 @@ pub(super) fn build_stop_effect() -> ToolDefinition {
     ToolDefinition {
         name: "stop_effect".into(),
         title: "Stop Current Effect".into(),
-        description: "Stop the currently running lighting effect. All LEDs will go dark unless a fallback is configured.".into(),
+        description: "Destructively stop the current effect, clear its live controls and preset provenance, and release network-device ownership. Use set_output_power with state 'paused' for a reversible blackout.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

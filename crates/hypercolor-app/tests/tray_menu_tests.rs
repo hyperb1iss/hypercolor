@@ -99,7 +99,8 @@ fn connected_menu_contains_dynamic_entries() {
     assert_item(brightness, "brightness:75", "  75%", true);
     // 100% is enabled (it's not the current value).
     assert_item(brightness, "brightness:100", "  100%", true);
-    assert_no_item(&entries, ids::PAUSE_RESUME);
+    assert_no_item(&entries, ids::PAUSE_OUTPUT);
+    assert_item(&entries, ids::RESUME_OUTPUT, "Resume", true);
     assert_item(&entries, ids::STOP_EFFECT, "Stop Effect", true);
 
     let effects = find_submenu(&entries, "Effects");
@@ -132,6 +133,17 @@ fn connected_menu_hides_stop_effect_without_current_effect() {
 }
 
 #[test]
+fn running_connected_menu_offers_reversible_pause() {
+    let mut state = connected_state();
+    state.paused = false;
+
+    let entries = menu_model(&state);
+
+    assert_item(&entries, ids::PAUSE_OUTPUT, "Pause", true);
+    assert_no_item(&entries, ids::RESUME_OUTPUT);
+}
+
+#[test]
 fn menu_ids_map_to_app_actions() {
     assert_eq!(
         action_for_menu_id(ids::SHOW_WINDOW),
@@ -154,6 +166,14 @@ fn menu_ids_map_to_app_actions() {
         Some(MenuAction::Settings)
     );
     assert_eq!(action_for_menu_id(ids::QUIT), Some(MenuAction::Quit));
+    assert_eq!(
+        action_for_menu_id(ids::PAUSE_OUTPUT),
+        Some(MenuAction::SetPaused(true))
+    );
+    assert_eq!(
+        action_for_menu_id(ids::RESUME_OUTPUT),
+        Some(MenuAction::SetPaused(false))
+    );
     assert_eq!(
         action_for_menu_id("effect:aurora"),
         Some(MenuAction::ApplyEffect("aurora".to_owned()))

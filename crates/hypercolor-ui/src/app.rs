@@ -51,7 +51,7 @@ mod effect_state;
 use effect_state::{
     apply_active_effect_snapshot, apply_active_scene_snapshot, apply_effect_to_current_led_zones,
     capture_active_effect_state, clear_active_scene_state, effect_error_toast_message,
-    restore_active_effect_state,
+    preferences_restore_inline, restore_active_effect_state,
 };
 
 /// Global WebSocket state provided via Leptos context.
@@ -92,6 +92,7 @@ pub struct WsContext {
     pub set_device_metrics_consumers: WriteSignal<u32>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
+    pub output_paused: ReadSignal<bool>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
@@ -170,6 +171,8 @@ pub struct EffectsContext {
     pub set_active_control_values: WriteSignal<HashMap<String, ControlValue>>,
     pub active_preset_id: ReadSignal<Option<String>>,
     pub set_active_preset_id: WriteSignal<Option<String>>,
+    pub active_preset_modified: ReadSignal<bool>,
+    pub set_active_preset_modified: WriteSignal<bool>,
     pub active_scene_name: ReadSignal<Option<String>>,
     pub set_active_scene_name: WriteSignal<Option<String>>,
     pub active_scene_kind: ReadSignal<Option<SceneKind>>,
@@ -248,6 +251,7 @@ impl EffectsContext {
                         active.controls,
                         active.control_values,
                         active.active_preset_id,
+                        active.active_preset_modified,
                         is_playing,
                     );
                 }
@@ -271,6 +275,7 @@ impl EffectsContext {
     pub fn apply_effect(&self, id: String) {
         let apply_target = self.apply_target.get_untracked();
         let stored_prefs = self.preferences.get(&id);
+        let restores_inline = preferences_restore_inline(stored_prefs.as_ref());
         if apply_target == ApplyTarget::AllZones {
             let ctx = *self;
             leptos::task::spawn_local(async move {
@@ -286,7 +291,9 @@ impl EffectsContext {
             (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectBody {
                 preset_id: stored_prefs
                     .as_ref()
-                    .and_then(|prefs| prefs.preset_id.clone()),
+                    .and_then(|prefs| prefs.preset_id.as_deref())
+                    .filter(|preset_id| uuid::Uuid::parse_str(preset_id).is_ok())
+                    .map(ToOwned::to_owned),
                 controls: stored_prefs.as_ref().and_then(|prefs| {
                     (!prefs.control_values.is_empty())
                         .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
@@ -314,14 +321,10 @@ impl EffectsContext {
             return;
         }
 
-        // If we're sending prefs with the initial apply, mark the effect
-        // as already-restored so the first snapshot falls through to the
-        // save branch instead of triggering a second restore round-trip.
-        // If no prefs exist, drop the flag so the snapshot's restore
-        // check runs (covers the case where prefs landed since the last
-        // time we looked).
+        // Legacy bundled IDs require the asynchronous migration path, even
+        // though their control snapshot can be sent with the initial apply.
         self.restored_effects.update_value(|set| {
-            if stored_prefs.is_some() {
+            if restores_inline {
                 set.insert(id.clone());
             } else {
                 set.remove(&id);
@@ -416,19 +419,17 @@ impl EffectsContext {
 
     /// Resume the previously paused effect.
     pub fn resume_effect(&self) {
-        if self.active_effect_id.get_untracked().is_some() {
-            self.set_is_playing.set(true);
-            self.set_last_effect_error.set(None);
-            let ctx = *self;
-            leptos::task::spawn_local(async move {
-                if api::resume_effect().await.is_ok() {
-                    ctx.refresh_active_effect();
-                } else {
-                    ctx.set_is_playing.set(false);
-                    ctx.refresh_active_effect();
-                }
-            });
-        }
+        self.set_is_playing.set(true);
+        self.set_last_effect_error.set(None);
+        let ctx = *self;
+        leptos::task::spawn_local(async move {
+            if api::resume_effect().await.is_ok() {
+                ctx.refresh_active_effect();
+            } else {
+                ctx.set_is_playing.set(false);
+                ctx.refresh_active_effect();
+            }
+        });
     }
 }
 
@@ -520,6 +521,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_device_metrics_consumers: ws.set_device_metrics_consumers,
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,
+        output_paused: ws.output_paused,
         last_device_event: ws.last_device_event,
         last_scene_event: ws.last_scene_event,
         last_effect_error: ws.last_effect_error,
@@ -552,7 +554,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     // Daemon capability advertisement (§9.6). Fetched once — the set is
     // fixed per daemon build — and exposed as a context so multi-zone
     // Studio affordances can gate on it without each re-querying status.
-    let status_resource = LocalResource::new(api::fetch_status);
+    let status_resource = api::daemon_resource(api::fetch_status);
     let capabilities = Memo::new(move |_| {
         status_resource
             .get()
@@ -581,7 +583,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
 
     // Global effects state — shared between sidebar player + effects page
-    let effects_resource = LocalResource::new(api::fetch_effects);
+    let effects_resource = api::daemon_resource(api::fetch_effects);
     let effects_index: Memo<Vec<IndexedEffect>> = Memo::new(move |_| {
         effects_resource
             .get()
@@ -634,8 +636,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         })
     });
 
-    let active_resource = LocalResource::new(api::fetch_active_effect);
-    let favorites_resource = LocalResource::new(api::fetch_favorites);
+    let active_resource = api::daemon_resource(api::fetch_active_effect);
+    let favorites_resource = api::daemon_resource(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
     let (active_effect_name, set_active_effect_name) = signal(None::<String>);
     let (active_effect_category, set_active_effect_category) = signal(String::new());
@@ -643,6 +645,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     let (active_control_values, set_active_control_values) =
         signal(HashMap::<String, ControlValue>::new());
     let (active_preset_id, set_active_preset_id) = signal(None::<String>);
+    let (active_preset_modified, set_active_preset_modified) = signal(false);
     let (active_scene_name, set_active_scene_name) = signal(None::<String>);
     let (active_scene_kind, set_active_scene_kind) = signal(None::<SceneKind>);
     let (active_scene_mutation_mode, set_active_scene_mutation_mode) =
@@ -675,6 +678,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_active_control_values,
         active_preset_id,
         set_active_preset_id,
+        active_preset_modified,
+        set_active_preset_modified,
         active_scene_name,
         set_active_scene_name,
         active_scene_kind,
@@ -723,9 +728,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
 
     // Global devices + layouts state
-    let devices_resource = LocalResource::new(api::fetch_devices);
-    let layouts_resource = LocalResource::new(api::fetch_layouts);
-    let displays_resource = LocalResource::new(api::fetch_displays);
+    let devices_resource = api::daemon_resource(api::fetch_devices);
+    let layouts_resource = api::daemon_resource(api::fetch_layouts);
+    let displays_resource = api::daemon_resource(api::fetch_displays);
     provide_context(DevicesContext {
         devices_resource,
         layouts_resource,
@@ -774,11 +779,19 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 active.controls,
                 active.control_values,
                 active.active_preset_id,
+                active.active_preset_modified,
                 is_playing,
             );
         } else if let Some(Ok(None)) = active_resource.get() {
             effects_ctx.set_is_playing.set(false);
         }
+    });
+
+    Effect::new(move |_| {
+        let has_active_effect = effects_ctx.active_effect_id.get().is_some();
+        effects_ctx
+            .set_is_playing
+            .set(has_active_effect && !ws_ctx.output_paused.get());
     });
 
     Effect::new(move |_| {

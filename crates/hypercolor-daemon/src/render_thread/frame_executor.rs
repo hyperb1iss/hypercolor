@@ -171,7 +171,7 @@ pub(crate) async fn service_scene_transactions(
                         &unassigned_behavior,
                     );
                     let (mut prepared_resize, sampling_preparation) = if needs_resize {
-                        let off_color = state.power_state.borrow().off_output_color;
+                        let off_color = state.power_state.borrow().effective_off_output_color();
                         (
                             Some(render.prepare_canvas_resize(
                                 width,
@@ -342,14 +342,14 @@ pub(crate) async fn execute_frame(
         render.sparkleflinger.release_native_screen_caches();
     }
     let scene_snapshot_done_us = micros_u32(frame_start.elapsed());
-    if output_power.sleeping {
-        if output_power.off_output_behavior == OffOutputBehavior::Static
+    if output_power.sleeping() {
+        if output_power.effective_off_output_behavior() == OffOutputBehavior::Static
             && !frame_loop.throttle.sleep_black_pushed()
         {
             force_static_sleep_snapshot(
                 state,
                 &scene_snapshot,
-                output_power.off_output_color,
+                output_power.effective_off_output_color(),
                 None,
             )
             .await;
@@ -528,7 +528,7 @@ pub(crate) async fn execute_frame(
             force_static_sleep_snapshot(
                 state,
                 &scene_snapshot,
-                latest_output_power.off_output_color,
+                latest_output_power.effective_off_output_color(),
                 Some(&mut *manager),
             )
             .await;
@@ -708,7 +708,7 @@ pub(crate) async fn execute_frame(
         force_static_sleep_snapshot(
             state,
             &scene_snapshot,
-            latest_output_power.off_output_color,
+            latest_output_power.effective_off_output_color(),
             None,
         )
         .await;
@@ -919,7 +919,7 @@ fn should_switch_to_late_sleep_frame(
     frame_output_power: crate::session::OutputPowerState,
     latest_output_power: crate::session::OutputPowerState,
 ) -> bool {
-    !frame_output_power.sleeping && latest_output_power.sleeping
+    !frame_output_power.sleeping() && latest_output_power.sleeping()
 }
 
 const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourceKind {
@@ -1032,7 +1032,7 @@ mod tests {
     fn late_sleep_frame_takes_over_admitted_running_frame() {
         let running = OutputPowerState::default();
         let sleeping = OutputPowerState {
-            sleeping: true,
+            session_sleeping: true,
             session_brightness: 0.0,
             off_output_behavior: OffOutputBehavior::Static,
             off_output_color: [0, 0, 0],

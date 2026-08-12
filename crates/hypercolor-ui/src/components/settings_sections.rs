@@ -147,7 +147,7 @@ pub fn CaptureSection(
     // Monitor picker data. Empty means the platform's backend owns source
     // selection (the XDG portal on Linux), so the portal button renders
     // instead of a dropdown.
-    let monitors_resource = LocalResource::new(crate::api::fetch_capture_monitors);
+    let monitors_resource = crate::api::daemon_resource(crate::api::fetch_capture_monitors);
     let monitors = Signal::derive(move || {
         monitors_resource
             .get()

@@ -25,7 +25,7 @@ use tray_icon::TrayIconBuilder;
 use crate::daemon::DaemonClient;
 use crate::icons::{IconState, build_icon};
 use crate::menu::build_menu;
-use crate::state::{AppState, DaemonMessage, EffectInfo, StateUpdate, TrayCommand};
+use crate::state::{AppState, DaemonMessage, TrayCommand};
 
 /// Initialize the macOS `NSApplication` and set it to accessory mode (no dock icon).
 ///
@@ -193,7 +193,7 @@ fn run_tray_app() -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(WindowsTrayEvent::Menu(event))
-                if handle_menu_event(&event, &app_state, &cmd_tx) =>
+                if handle_menu_event(&event, &cmd_tx) =>
             {
                 *control_flow = ControlFlow::Exit;
             }
@@ -257,7 +257,7 @@ fn run_tray_app() -> anyhow::Result<()> {
 
         // Process menu click events.
         while let Ok(event) = menu_channel.try_recv() {
-            if handle_menu_event(&event, &app_state, &cmd_tx) {
+            if handle_menu_event(&event, &cmd_tx) {
                 running = false;
             }
         }
@@ -334,7 +334,7 @@ fn apply_daemon_message(app_state: &mut AppState, message: DaemonMessage) {
             sync_active_server(app_state);
         }
         DaemonMessage::StateUpdate(update) => {
-            apply_state_update(app_state, update);
+            app_state.apply_state_update(update);
         }
     }
 }
@@ -349,40 +349,6 @@ fn handle_tray_icon_event(
     } = event
     {
         let _ = cmd_tx.send(TrayCommand::OpenWebUi);
-    }
-}
-
-/// Apply an incremental state update to the app state.
-fn apply_state_update(state: &mut AppState, update: StateUpdate) {
-    match update {
-        StateUpdate::EffectChanged { id, name } => {
-            state.current_effect = Some(EffectInfo { id, name });
-        }
-        StateUpdate::EffectStopped => {
-            state.current_effect = None;
-        }
-        StateUpdate::SceneChanged {
-            name,
-            snapshot_locked,
-        } => {
-            state.active_scene_name = name;
-            state.scene_snapshot_locked = snapshot_locked;
-        }
-        StateUpdate::BrightnessChanged(value) => {
-            state.brightness = value;
-        }
-        StateUpdate::Paused => {
-            state.paused = true;
-        }
-        StateUpdate::Resumed => {
-            state.paused = false;
-        }
-        StateUpdate::DeviceCountChanged(count) => {
-            state.device_count = count;
-        }
-        StateUpdate::EffectsRefreshed(effects) => {
-            state.effects = effects;
-        }
     }
 }
 
@@ -459,17 +425,18 @@ fn update_tray(tray_icon: &tray_icon::TrayIcon, state: &AppState) {
 /// Handle a menu item click event. Returns `true` if the applet should quit.
 fn handle_menu_event(
     event: &tray_icon::menu::MenuEvent,
-    _state: &AppState,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<TrayCommand>,
 ) -> bool {
     let id = event.id().as_ref();
 
+    if let Some(paused) = menu::output_pause_for_menu_id(id) {
+        let _ = cmd_tx.send(TrayCommand::SetPaused(paused));
+        return false;
+    }
+
     match id {
         menu::ids::OPEN_WEB_UI => {
             let _ = cmd_tx.send(TrayCommand::OpenWebUi);
-        }
-        menu::ids::PAUSE_RESUME => {
-            let _ = cmd_tx.send(TrayCommand::TogglePause);
         }
         menu::ids::REFRESH_SERVERS => {
             let _ = cmd_tx.send(TrayCommand::RefreshServers);
