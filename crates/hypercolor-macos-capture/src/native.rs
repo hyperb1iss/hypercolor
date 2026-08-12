@@ -32,6 +32,7 @@ use objc2_core_video::{
     kCVImageBufferYCbCrMatrix_ITU_R_2020, kCVImageBufferYCbCrMatrixKey,
 };
 use objc2_foundation::{NSArray, NSError, NSNumber, NSObject, NSObjectProtocol, NSString, NSValue};
+use objc2_io_surface::IOSurfaceRef;
 use objc2_screen_capture_kit::{
     SCCaptureResolutionType, SCContentFilter, SCContentSharingPicker,
     SCContentSharingPickerConfiguration, SCContentSharingPickerMode,
@@ -53,6 +54,15 @@ use crate::{
     MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
     MacosScale, MacosStreamRequest, MacosTransferFunction, MacosYuvMatrix,
 };
+
+type PoolBackingLifetime = Arc<dyn Send + Sync>;
+type PoolObservation =
+    Arc<dyn Fn(u32, u64) -> Result<PoolBackingLifetime, MacosCaptureError> + Send + Sync>;
+type PoolReservationFactory =
+    Arc<dyn Fn(u64, u64) -> Result<PoolObservation, MacosCaptureError> + Send + Sync>;
+
+const MACOS_IOSURFACE_ROW_ALIGNMENT: u64 = 256;
+const MACOS_IOSURFACE_ALLOCATION_ALIGNMENT: u64 = 16 * 1024;
 
 #[derive(Debug)]
 struct SessionShared {
@@ -172,10 +182,10 @@ impl SessionShared {
     }
 }
 
-#[derive(Debug)]
 struct RetainedNativeSample {
     attachments: MacosRawFrameAttachments,
     pixel_buffer: Option<CFRetained<CVPixelBuffer>>,
+    admission_lifetime: Option<PoolBackingLifetime>,
     cursor_composed: bool,
 }
 
@@ -186,6 +196,7 @@ unsafe impl Send for RetainedNativeSample {}
 fn retain_sample(
     sample: &CMSampleBuffer,
     cursor_composed: bool,
+    pool: &PoolObservation,
 ) -> Result<RetainedNativeSample, MacosCaptureError> {
     // SAFETY: ScreenCaptureKit supplied a live CMSampleBuffer reference for
     // the duration of this callback.
@@ -197,14 +208,94 @@ fn retain_sample(
         return Err(MacosCaptureError::SampleDataNotReady);
     }
     let attachments = FrameAttachments::from_sample(sample)?.decode();
-    // SAFETY: The valid, ready sample remains live while Core Media returns a
-    // retained image-buffer owner. Lifecycle samples may have no image buffer.
-    let pixel_buffer = unsafe { sample.image_buffer() };
+    let status = match attachments.status.clone() {
+        MacosAttachment::Value(status) => MacosFrameStatus::try_from(status)?,
+        MacosAttachment::Missing => return Err(MacosCaptureError::MissingAttachment("status")),
+        MacosAttachment::Malformed => {
+            return Err(MacosCaptureError::MalformedAttachment("status"));
+        }
+    };
+    let (pixel_buffer, admission_lifetime) = if status == MacosFrameStatus::Complete {
+        let pixel_buffer = borrowed_pixel_buffer(sample)?;
+        let storage_extent = extent(
+            CVPixelBufferGetWidth(pixel_buffer),
+            CVPixelBufferGetHeight(pixel_buffer),
+        )?;
+        let pixel_format_fourcc = CVPixelBufferGetPixelFormatType(pixel_buffer);
+        let pixel_format = MacosCapturePixelFormat::from_fourcc(pixel_format_fourcc)?;
+        let planes = planes(pixel_buffer, storage_extent)?;
+        let (iosurface_id, allocation_bytes) = borrowed_surface_identity(pixel_buffer)?;
+        crate::frame::validate_capture_planes(
+            storage_extent,
+            pixel_format,
+            planes,
+            allocation_bytes,
+        )?;
+        with_admitted_surface(pool, iosurface_id, allocation_bytes, |admission_lifetime| {
+            // SAFETY: admission succeeded while the callback still owns the
+            // borrowed image buffer, so this takes the retained owner handed off.
+            let pixel_buffer = unsafe { CFRetained::retain(NonNull::from(pixel_buffer)) };
+            (Some(pixel_buffer), Some(admission_lifetime))
+        })?
+    } else {
+        (None, None)
+    };
     Ok(RetainedNativeSample {
         attachments,
         pixel_buffer,
+        admission_lifetime,
         cursor_composed,
     })
+}
+
+fn with_admitted_surface<T>(
+    pool: &PoolObservation,
+    iosurface_id: u32,
+    allocation_bytes: u64,
+    retain: impl FnOnce(PoolBackingLifetime) -> T,
+) -> Result<T, MacosCaptureError> {
+    let admission_lifetime = pool(iosurface_id, allocation_bytes)?;
+    Ok(retain(admission_lifetime))
+}
+
+fn borrowed_pixel_buffer(sample: &CMSampleBuffer) -> Result<&CVPixelBuffer, MacosCaptureError> {
+    #[link(name = "CoreMedia", kind = "framework")]
+    unsafe extern "C-unwind" {
+        #[link_name = "CMSampleBufferGetImageBuffer"]
+        fn sample_buffer_get_image_buffer(
+            sample: &CMSampleBuffer,
+        ) -> Option<NonNull<CVPixelBuffer>>;
+    }
+
+    // SAFETY: the sample is valid and ready, and ScreenCaptureKit keeps the
+    // borrowed image buffer alive for this callback invocation.
+    unsafe { sample_buffer_get_image_buffer(sample).map(|pixel_buffer| pixel_buffer.as_ref()) }
+        .ok_or(MacosCaptureError::MissingFramePayload)
+}
+
+fn borrowed_surface_identity(
+    pixel_buffer: &CVPixelBuffer,
+) -> Result<(u32, u64), MacosCaptureError> {
+    #[link(name = "CoreVideo", kind = "framework")]
+    unsafe extern "C-unwind" {
+        #[link_name = "CVPixelBufferGetIOSurface"]
+        fn pixel_buffer_get_io_surface(
+            pixel_buffer: Option<&CVPixelBuffer>,
+        ) -> Option<NonNull<IOSurfaceRef>>;
+    }
+
+    // SAFETY: the borrowed pixel buffer remains live for this callback, and
+    // Core Video returns its non-owning IOSurface reference.
+    let surface =
+        unsafe { pixel_buffer_get_io_surface(Some(pixel_buffer)).map(|surface| surface.as_ref()) }
+            .ok_or(MacosCaptureError::MissingIoSurface)?;
+    let iosurface_id = surface.id();
+    let allocation_bytes =
+        u64::try_from(surface.alloc_size()).map_err(|_| MacosCaptureError::ArithmeticOverflow)?;
+    if iosurface_id == 0 || allocation_bytes == 0 {
+        return Err(MacosCaptureError::InvalidSurface);
+    }
+    Ok((iosurface_id, allocation_bytes))
 }
 
 fn publish_decoded_result(
@@ -229,9 +320,9 @@ fn publish_decoded_result(
     }
 }
 
-#[derive(Debug)]
 struct CaptureOutputIvars {
     samples: LatestSampleInput<Result<RetainedNativeSample, MacosCaptureError>>,
+    pool: PoolObservation,
     shared: Arc<SessionShared>,
     streams: Weak<StreamSlot>,
     epoch: u64,
@@ -266,9 +357,25 @@ define_class!(
                 return;
             }
             let sample = if output_type == SCStreamOutputType::Screen {
-                retain_sample(sample_buffer, self.ivars().cursor_composed)
+                retain_sample(
+                    sample_buffer,
+                    self.ivars().cursor_composed,
+                    &self.ivars().pool,
+                )
             } else {
                 Err(MacosCaptureError::UnexpectedStreamOutputType(output_type.0))
+            };
+            let sample = match sample {
+                Err(error @ MacosCaptureError::ScreenResourceExhausted { .. }) => {
+                    handle_pool_admission_error(
+                        &self.ivars().streams,
+                        self.ivars().epoch,
+                        Arc::clone(&self.ivars().shared),
+                        error,
+                    );
+                    return;
+                }
+                sample => sample,
             };
             if self.ivars().samples.publish(sample) == SamplePublishOutcome::Superseded {
                 self.ivars()
@@ -321,6 +428,7 @@ impl CaptureOutput {
     fn new(
         epoch: u64,
         samples: LatestSampleInput<Result<RetainedNativeSample, MacosCaptureError>>,
+        pool: PoolObservation,
         shared: Arc<SessionShared>,
         streams: Weak<StreamSlot>,
         cursor_composed: bool,
@@ -328,6 +436,7 @@ impl CaptureOutput {
     ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(CaptureOutputIvars {
             samples,
+            pool,
             shared,
             streams,
             epoch,
@@ -368,8 +477,12 @@ impl NativeStream {
         epoch: u64,
         shared: Arc<SessionShared>,
         streams: Weak<StreamSlot>,
+        reserve_pool: &PoolReservationFactory,
     ) -> Result<Self, MacosCaptureError> {
-        let (configuration, display_filter) = stream_configuration(filter, request)?;
+        let (configuration, display_filter, extent, pixel_format) =
+            stream_configuration(filter, request)?;
+        let quote = conservative_pool_quote(extent, pixel_format)?;
+        let pool = reserve_pool(quote.per_surface_bytes, quote.stream_metadata_bytes)?;
         let selection = selection_from_filter(filter)?;
         // SAFETY: The picker callback supplies a live filter. Retaining it
         // preserves the immutable selection through stream retirement.
@@ -394,6 +507,7 @@ impl NativeStream {
         let output = CaptureOutput::new(
             epoch,
             samples,
+            pool,
             shared,
             streams,
             request.cursor_composed,
@@ -517,6 +631,7 @@ impl StreamSlot {
         self: &Arc<Self>,
         filter: &SCContentFilter,
         request: MacosStreamRequest,
+        reserve_pool: &PoolReservationFactory,
         epoch: u64,
     ) -> Result<(), MacosCaptureError> {
         let candidate = NativeStream::prepare(
@@ -525,6 +640,7 @@ impl StreamSlot {
             epoch,
             Arc::clone(&self.shared),
             Arc::downgrade(self),
+            reserve_pool,
         )?;
         let stream = candidate.stream.clone();
         let replaced = lock(&self.state).candidate.replace(candidate);
@@ -711,10 +827,48 @@ fn handle_stream_error(
     }
 }
 
+fn handle_pool_admission_error(
+    streams: &Weak<StreamSlot>,
+    epoch: u64,
+    shared: Arc<SessionShared>,
+    error: MacosCaptureError,
+) {
+    shared.counters.record_drop(&error);
+    let Some(streams) = streams.upgrade() else {
+        return;
+    };
+    let (role, retired) = streams.remove(epoch);
+    let preserve_current = role == StreamRole::Candidate && streams.has_current();
+    if preserve_current {
+        shared.set_status(MacosProtectedSourceState::Live);
+        shared.publish_recoverable_error(error);
+    } else if role != StreamRole::Stale {
+        shared.set_status(MacosProtectedSourceState::Failed);
+        shared.publish_error(error);
+    }
+    let Some(retired) = retired else {
+        return;
+    };
+    let stop_shared = Arc::clone(&shared);
+    if let Err(spawn_error) = std::thread::Builder::new()
+        .name("hypercolor-macos-screen-resource-stop".to_owned())
+        .spawn(move || {
+            if let Err(error) = retired.stop() {
+                stop_shared.publish_recoverable_error(error);
+            }
+        })
+    {
+        shared.publish_recoverable_error(MacosCaptureError::CaptureWorkerStartFailed(
+            spawn_error.to_string(),
+        ));
+    }
+}
+
 struct PickerObserverIvars {
     shared: Arc<SessionShared>,
     streams: Arc<StreamSlot>,
     request: MacosStreamRequest,
+    reserve_pool: PoolReservationFactory,
 }
 
 define_class!(
@@ -757,6 +911,7 @@ define_class!(
                 &self.ivars().streams,
                 &self.ivars().shared,
                 self.ivars().request,
+                &self.ivars().reserve_pool,
                 filter,
             );
         }
@@ -790,12 +945,14 @@ impl PickerObserver {
         mtm: MainThreadMarker,
         request: MacosStreamRequest,
         shared: Arc<SessionShared>,
+        reserve_pool: PoolReservationFactory,
     ) -> Retained<Self> {
         let streams = StreamSlot::new(Arc::clone(&shared));
         let this = mtm.alloc::<Self>().set_ivars(PickerObserverIvars {
             shared,
             streams,
             request,
+            reserve_pool,
         });
         // SAFETY: NSObject has no additional initialization requirements for
         // this main-thread observer subclass.
@@ -807,6 +964,7 @@ impl PickerObserver {
             &self.ivars().streams,
             &self.ivars().shared,
             self.ivars().request,
+            &self.ivars().reserve_pool,
             filter,
         );
     }
@@ -856,10 +1014,11 @@ fn accept_filter(
     streams: &Arc<StreamSlot>,
     shared: &Arc<SessionShared>,
     request: MacosStreamRequest,
+    reserve_pool: &PoolReservationFactory,
     filter: &SCContentFilter,
 ) {
     if shared.capture_active() {
-        stage_filter(streams, shared, request, filter);
+        stage_filter(streams, shared, request, reserve_pool, filter);
     } else if let Err(error) = streams.store_selection(filter) {
         handle_filter_error(streams, shared, error);
     } else {
@@ -871,11 +1030,12 @@ fn stage_filter(
     streams: &Arc<StreamSlot>,
     shared: &Arc<SessionShared>,
     request: MacosStreamRequest,
+    reserve_pool: &PoolReservationFactory,
     filter: &SCContentFilter,
 ) {
     let result = streams
         .allocate_epoch()
-        .and_then(|epoch| streams.stage_candidate(filter, request, epoch));
+        .and_then(|epoch| streams.stage_candidate(filter, request, reserve_pool, epoch));
     if let Err(error) = result {
         handle_filter_error(streams, shared, error);
     }
@@ -918,13 +1078,32 @@ impl MacosScreenCaptureSession {
         request: MacosStreamRequest,
         selector: MacosCaptureSelector,
     ) -> Result<Self, MacosCaptureError> {
+        Self::new_with_pool_admission(request, selector, |_, _| {
+            Ok(|_, _| Ok(Arc::new(()) as PoolBackingLifetime))
+        })
+    }
+
+    pub fn new_with_pool_admission<F, A>(
+        request: MacosStreamRequest,
+        selector: MacosCaptureSelector,
+        reserve_pool: F,
+    ) -> Result<Self, MacosCaptureError>
+    where
+        F: Fn(u64, u64) -> Result<A, MacosCaptureError> + Send + Sync + 'static,
+        A: Fn(u32, u64) -> Result<Arc<dyn Send + Sync>, MacosCaptureError> + Send + Sync + 'static,
+    {
         request.cadence.timescale()?;
-        dispatch2::run_on_main(move |mtm| Self::new_on_main(request, selector, mtm))
+        let reserve_pool = Arc::new(move |surface_bytes, metadata_bytes| {
+            let observer = reserve_pool(surface_bytes, metadata_bytes)?;
+            Ok(Arc::new(observer) as PoolObservation)
+        }) as PoolReservationFactory;
+        dispatch2::run_on_main(move |mtm| Self::new_on_main(request, selector, reserve_pool, mtm))
     }
 
     fn new_on_main(
         request: MacosStreamRequest,
         selector: MacosCaptureSelector,
+        reserve_pool: PoolReservationFactory,
         mtm: MainThreadMarker,
     ) -> Result<Self, MacosCaptureError> {
         let authorized = CGPreflightScreenCaptureAccess();
@@ -934,7 +1113,7 @@ impl MacosScreenCaptureSession {
             MacosProtectedSourceState::NeedsUserAction
         };
         let shared = Arc::new(SessionShared::new(status, selector));
-        let observer = PickerObserver::new(mtm, request, Arc::clone(&shared));
+        let observer = PickerObserver::new(mtm, request, Arc::clone(&shared), reserve_pool);
         let streams = Arc::clone(&observer.ivars().streams);
         // SAFETY: These are main-thread ScreenCaptureKit setup calls. The
         // observer remains retained by this session until it is removed.
@@ -1047,6 +1226,8 @@ impl MacosScreenCaptureSession {
             Arc::clone(&self.streams),
             Arc::clone(&self.shared),
             self.request,
+            self.main
+                .get_on_main(|main| Arc::clone(&main.observer.ivars().reserve_pool)),
             selector,
         )
     }
@@ -1056,6 +1237,7 @@ fn resolve_display_selector(
     streams: Arc<StreamSlot>,
     shared: Arc<SessionShared>,
     request: MacosStreamRequest,
+    reserve_pool: PoolReservationFactory,
     selector: MacosCaptureSelector,
 ) -> Result<(), MacosCaptureError> {
     let resolution_epoch = shared.begin_resolution()?;
@@ -1081,7 +1263,9 @@ fn resolve_display_selector(
                 return;
             }
             match result {
-                Ok(filter) => accept_filter(&streams, &shared, request, &filter),
+                Ok(filter) => {
+                    accept_filter(&streams, &shared, request, &reserve_pool, &filter);
+                }
                 Err(error) => handle_filter_error(&streams, &shared, error),
             }
         },
@@ -1220,7 +1404,15 @@ impl Drop for MainThreadSession {
 fn stream_configuration(
     filter: &SCContentFilter,
     request: MacosStreamRequest,
-) -> Result<(Retained<SCStreamConfiguration>, bool), MacosCaptureError> {
+) -> Result<
+    (
+        Retained<SCStreamConfiguration>,
+        bool,
+        MacosPixelExtent,
+        MacosCapturePixelFormat,
+    ),
+    MacosCaptureError,
+> {
     // SAFETY: Picker callbacks supply a live SCContentFilter for the duration
     // of configuration, and returned collection values are retained.
     let (content_rect, point_pixel_scale, display_filter) = unsafe {
@@ -1270,7 +1462,76 @@ fn stream_configuration(
         configuration.setPixelFormat(0x4247_5241);
         configuration
     };
-    Ok((configuration, display_filter))
+    Ok((
+        configuration,
+        display_filter,
+        extent,
+        MacosCapturePixelFormat::Bgra8,
+    ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MacosStreamPoolQuote {
+    per_surface_bytes: u64,
+    stream_metadata_bytes: u64,
+}
+
+fn conservative_pool_quote(
+    extent: MacosPixelExtent,
+    format: MacosCapturePixelFormat,
+) -> Result<MacosStreamPoolQuote, MacosCaptureError> {
+    let plane_bytes = match format {
+        MacosCapturePixelFormat::Bgra8 | MacosCapturePixelFormat::Argb2101010 => {
+            conservative_plane_bytes(extent, 4)?
+        }
+        MacosCapturePixelFormat::Rgba16Float => conservative_plane_bytes(extent, 8)?,
+        MacosCapturePixelFormat::Yuv420VideoRange | MacosCapturePixelFormat::Yuv420FullRange => {
+            let chroma = MacosPixelExtent {
+                width: extent.width.div_ceil(2),
+                height: extent.height.div_ceil(2),
+            };
+            conservative_plane_bytes(extent, 1)?
+                .checked_add(conservative_plane_bytes(chroma, 2)?)
+                .ok_or(MacosCaptureError::ArithmeticOverflow)?
+        }
+        MacosCapturePixelFormat::Yuv44410BiPlanar => conservative_plane_bytes(extent, 2)?
+            .checked_add(conservative_plane_bytes(extent, 4)?)
+            .ok_or(MacosCaptureError::ArithmeticOverflow)?,
+    };
+    let per_surface_bytes = align_up(plane_bytes, MACOS_IOSURFACE_ALLOCATION_ALIGNMENT)?;
+    let stream_metadata_bytes = [
+        std::mem::size_of::<NativeStream>(),
+        std::mem::size_of::<CaptureOutputIvars>(),
+        std::mem::size_of::<RetainedNativeSample>() * MACOS_STREAM_QUEUE_DEPTH,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |total, bytes| {
+        total.checked_add(u64::try_from(bytes).ok()?)
+    })
+    .ok_or(MacosCaptureError::ArithmeticOverflow)?;
+    Ok(MacosStreamPoolQuote {
+        per_surface_bytes,
+        stream_metadata_bytes,
+    })
+}
+
+fn conservative_plane_bytes(
+    extent: MacosPixelExtent,
+    bytes_per_pixel: u64,
+) -> Result<u64, MacosCaptureError> {
+    let row_bytes = u64::from(extent.width)
+        .checked_mul(bytes_per_pixel)
+        .ok_or(MacosCaptureError::ArithmeticOverflow)?;
+    align_up(row_bytes, MACOS_IOSURFACE_ROW_ALIGNMENT)?
+        .checked_mul(u64::from(extent.height))
+        .ok_or(MacosCaptureError::ArithmeticOverflow)
+}
+
+fn align_up(value: u64, alignment: u64) -> Result<u64, MacosCaptureError> {
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment * alignment)
+        .ok_or(MacosCaptureError::ArithmeticOverflow)
 }
 
 fn classify_stream_error(error: &NSError) -> MacosProtectedSourceState {
@@ -1327,7 +1588,11 @@ fn decode_sample(
     let pixel_buffer = sample
         .pixel_buffer
         .ok_or(MacosCaptureError::MissingFramePayload)?;
-    let frame = decode_complete_frame(pixel_buffer, sample.cursor_composed)?;
+    let frame = decode_complete_frame(
+        pixel_buffer,
+        sample.admission_lifetime,
+        sample.cursor_composed,
+    )?;
     decoder.decode(MacosRawCaptureSample {
         frame: Some(frame),
         attachments: sample.attachments,
@@ -1336,6 +1601,7 @@ fn decode_sample(
 
 fn decode_complete_frame(
     pixel_buffer: CFRetained<CVPixelBuffer>,
+    admission_lifetime: Option<PoolBackingLifetime>,
     cursor_composed: bool,
 ) -> Result<MacosRawCompleteFrame, MacosCaptureError> {
     let storage_extent = extent(
@@ -1346,7 +1612,7 @@ fn decode_complete_frame(
     let pixel_format = MacosCapturePixelFormat::from_fourcc(pixel_format_fourcc)?;
     let planes = planes(&pixel_buffer, storage_extent)?;
     let color = colorimetry(&pixel_buffer, pixel_format_fourcc, pixel_format)?;
-    let surface = MacosCaptureSurface::from_pixel_buffer(pixel_buffer)?;
+    let surface = MacosCaptureSurface::from_pixel_buffer(pixel_buffer, admission_lifetime)?;
 
     Ok(MacosRawCompleteFrame {
         storage_extent,
@@ -1691,4 +1957,42 @@ fn exact_u32(value: f64) -> Option<u32> {
         return None;
     }
     Some(value as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{
+        MacosCaptureError, MacosCapturePixelFormat, MacosPixelExtent, PoolBackingLifetime,
+        PoolObservation, conservative_pool_quote, with_admitted_surface,
+    };
+
+    #[test]
+    fn conservative_bgra_pool_quote_covers_aligned_native_storage() {
+        let extent = MacosPixelExtent::new(3_840, 2_160).expect("4K extent is valid");
+        let quote = conservative_pool_quote(extent, MacosCapturePixelFormat::Bgra8)
+            .expect("4K quote should fit");
+        assert!(quote.per_surface_bytes >= 3_840 * 2_160 * 4);
+        assert_eq!(quote.per_surface_bytes % (16 * 1024), 0);
+        assert!(quote.stream_metadata_bytes > 0);
+    }
+
+    #[test]
+    fn rejected_surface_never_reaches_the_retain_operation() {
+        let pool = Arc::new(|_, _| -> Result<PoolBackingLifetime, MacosCaptureError> {
+            Err(MacosCaptureError::ScreenResourceExhausted {
+                requested_bytes: 128,
+                available_bytes: 64,
+            })
+        }) as PoolObservation;
+        let retained = AtomicBool::new(false);
+
+        assert!(matches!(
+            with_admitted_surface(&pool, 7, 128, |_| retained.store(true, Ordering::Release)),
+            Err(MacosCaptureError::ScreenResourceExhausted { .. })
+        ));
+        assert!(!retained.load(Ordering::Acquire));
+    }
 }

@@ -110,7 +110,7 @@ impl MacosCapturePixelFormat {
         }
     }
 
-    fn plane_layout(self, storage: MacosPixelExtent) -> Vec<(MacosPixelExtent, u64)> {
+    pub(crate) fn plane_layout(self, storage: MacosPixelExtent) -> Vec<(MacosPixelExtent, u64)> {
         match self {
             Self::Bgra8 | Self::Argb2101010 => vec![(storage, 4)],
             Self::Rgba16Float => vec![(storage, 8)],
@@ -225,6 +225,7 @@ pub struct MacosCaptureSurface {
     pub iosurface_id: u32,
     pub allocation_bytes: u64,
     owner: Arc<MacosRetainedPixelBuffer>,
+    _admission_lifetime: Option<Arc<dyn Send + Sync>>,
 }
 
 /// Borrowed native handles for handing a retained capture surface to audited
@@ -328,7 +329,7 @@ impl MacosCaptureSurface {
         lock.unlock()?;
         let length_bytes = u64::try_from(CVPixelBufferGetDataSize(&pixel_buffer))
             .map_err(|_| MacosCaptureError::ArithmeticOverflow)?;
-        let surface = Self::from_pixel_buffer(pixel_buffer)?;
+        let surface = Self::from_pixel_buffer(pixel_buffer, None)?;
         Ok((
             surface,
             MacosCapturePlane {
@@ -356,6 +357,7 @@ impl MacosCaptureSurface {
                 fixture_id,
                 planes: None,
             }),
+            _admission_lifetime: None,
         })
     }
 
@@ -382,12 +384,14 @@ impl MacosCaptureSurface {
                 fixture_id,
                 planes: Some(planes.into()),
             }),
+            _admission_lifetime: None,
         })
     }
 
     #[cfg(target_os = "macos")]
     pub(crate) fn from_pixel_buffer(
         pixel_buffer: CFRetained<CVPixelBuffer>,
+        admission_lifetime: Option<Arc<dyn Send + Sync>>,
     ) -> Result<Self, MacosCaptureError> {
         let iosurface = CVPixelBufferGetIOSurface(Some(&pixel_buffer))
             .ok_or(MacosCaptureError::MissingIoSurface)?;
@@ -401,6 +405,7 @@ impl MacosCaptureSurface {
             iosurface_id,
             allocation_bytes,
             owner: Arc::new(MacosRetainedPixelBuffer::Native { pixel_buffer }),
+            _admission_lifetime: admission_lifetime,
         })
     }
 
@@ -852,6 +857,15 @@ fn validate_planes(
     Ok(planes)
 }
 
+pub(crate) fn validate_capture_planes(
+    storage: MacosPixelExtent,
+    format: MacosCapturePixelFormat,
+    raw_planes: Vec<MacosRawCapturePlane>,
+    allocation_bytes: u64,
+) -> Result<Vec<MacosCapturePlane>, MacosCaptureError> {
+    validate_planes(storage, format, raw_planes, allocation_bytes)
+}
+
 fn validate_geometry(
     storage: MacosPixelExtent,
     attachments: &MacosRawFrameAttachments,
@@ -1036,6 +1050,13 @@ pub enum MacosCaptureError {
     CpuDestinationTooSmall { required: usize, actual: usize },
     #[error("complete-frame sequence exhausted")]
     SequenceExhausted,
+    #[error(
+        "macOS screen resources need {requested_bytes} bytes; shared capacity has {available_bytes} bytes available"
+    )]
+    ScreenResourceExhausted {
+        requested_bytes: u64,
+        available_bytes: u64,
+    },
     #[error(transparent)]
     Geometry(#[from] MacosGeometryError),
 }

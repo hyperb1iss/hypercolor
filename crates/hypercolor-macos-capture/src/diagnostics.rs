@@ -13,10 +13,11 @@ pub enum MacosFrameDropReason {
     ColorMetadata = 5,
     Surface = 6,
     Validation = 7,
+    Resource = 8,
 }
 
 impl MacosFrameDropReason {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::InvalidSample,
         Self::DataNotReady,
         Self::UnexpectedOutput,
@@ -25,6 +26,7 @@ impl MacosFrameDropReason {
         Self::ColorMetadata,
         Self::Surface,
         Self::Validation,
+        Self::Resource,
     ];
 
     pub(crate) const fn from_error(error: &MacosCaptureError) -> Self {
@@ -78,6 +80,7 @@ impl MacosFrameDropReason {
             | MacosCaptureError::CpuDestinationTooSmall { .. }
             | MacosCaptureError::SequenceExhausted
             | MacosCaptureError::Geometry(_) => Self::Validation,
+            MacosCaptureError::ScreenResourceExhausted { .. } => Self::Resource,
         }
     }
 }
@@ -142,5 +145,21 @@ impl CallbackCounters {
                 .saturating_add(self.native_samples_superseded.load(Ordering::Relaxed)),
             dropped: std::array::from_fn(|index| self.dropped[index].load(Ordering::Relaxed)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MacosCaptureError, MacosFrameDropReason};
+
+    #[test]
+    fn resource_exhaustion_has_a_distinct_drop_reason() {
+        assert_eq!(
+            MacosFrameDropReason::from_error(&MacosCaptureError::ScreenResourceExhausted {
+                requested_bytes: 64,
+                available_bytes: 32,
+            }),
+            MacosFrameDropReason::Resource
+        );
     }
 }
