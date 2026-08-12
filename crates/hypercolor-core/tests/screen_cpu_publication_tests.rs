@@ -833,7 +833,9 @@ fn mixed_fanout_materializes_retained_and_added_branch_bindings() {
                 publication.worker_plan_generation(),
                 runtime_binding.plan_generation()
             ),
-            ScreenBranchPayload::GpuSurface(_) => panic!("CPU fanout cannot publish GPU storage"),
+            ScreenBranchPayload::GpuSurface(_) | ScreenBranchPayload::NativeWork(_) => {
+                panic!("CPU fanout cannot publish GPU storage")
+            }
         }
     }
     assert_ne!(initial_plan.generation(), mixed_plan.generation());

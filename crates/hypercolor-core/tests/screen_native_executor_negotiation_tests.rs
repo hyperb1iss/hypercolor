@@ -56,6 +56,20 @@ fn target(
     )
 }
 
+#[test]
+fn native_target_carries_its_exact_color_capabilities() {
+    let capabilities = ScreenColorTransformCapabilities::new(
+        true,
+        true,
+        true,
+        NonZeroU32::new(7).expect("test revision is nonzero"),
+    );
+    let target = target(1, PlatformGpuApi::Direct3d11, gpu_device(1), 16_384)
+        .with_color_capabilities(capabilities);
+
+    assert_eq!(target.color_capabilities(), capabilities);
+}
+
 struct CountingPreparer {
     calls: Arc<AtomicUsize>,
 }

@@ -27,18 +27,18 @@ use super::{
     CpuExactReductionWorkPlan, CpuReductionExecutor, LedToneMapCalibration, PixelExtent, PixelRect,
     PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
     PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity,
-    ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity,
-    ScreenBranchPayload, ScreenBranchPublisher, ScreenByteAdmissionCoordinator,
-    ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
-    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExecutorColorCapabilities,
-    ScreenGpuSurfacePayload, ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPreparedWorkerToken, ScreenPublicationColorimetry, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRequest,
-    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
+    ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
+    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
+    ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorCapabilities,
+    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativePreparationPayload,
+    ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPreparedWorkerToken,
+    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenRequiredResourceMinimum,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -1266,16 +1266,12 @@ fn resolve_macos_publication_branch(
             source.gpu_source(selector.clone(), target.physical_gpu_device().clone())
         && let Ok(resolved) = demand.resolve_with_executor_capabilities(
             &native_source,
-            ScreenExecutorColorCapabilities::new(
-                capabilities,
-                ScreenColorTransformCapabilities::NONE,
-            ),
+            ScreenExecutorColorCapabilities::new(capabilities, target.color_capabilities()),
         )
         && matches!(
             resolved.descriptor().executor(),
             ScreenPublicationExecutor::SourceNative(_)
         )
-        && macos_native_descriptor_is_identity(resolved.descriptor(), source)
         && MacosNativeTargetManifest::new(resolved.descriptor()).is_ok()
     {
         return Ok(Some(resolved));
@@ -1287,17 +1283,15 @@ fn resolve_macos_publication_branch(
     )?))
 }
 
-fn macos_native_descriptor_is_identity(
-    descriptor: &ResolvedScreenPublicationDescriptor,
-    source: &MacosPublicationSource,
-) -> bool {
-    source.geometry.crop().is_none()
-        && descriptor.geometry().output_extent() == source.geometry.storage_extent()
-        && descriptor.physical().reduction_extent() == source.geometry.storage_extent()
-        && descriptor.physical().target_pixel_format() == CapturePixelFormat::Bgra8
+fn macos_native_descriptor_is_identity(descriptor: &ResolvedScreenPublicationDescriptor) -> bool {
+    descriptor.source().geometry().crop().is_none()
+        && descriptor.geometry().output_extent() == descriptor.source().geometry().storage_extent()
+        && descriptor.physical().reduction_extent()
+            == descriptor.source().geometry().storage_extent()
+        && descriptor.physical().target_pixel_format() == descriptor.source_pixel_format()
         && matches!(
             descriptor.physical().color_pipeline().transform(),
-            ResolvedScreenColorTransform::PreserveEncodedSamples
+            super::ResolvedScreenColorTransform::PreserveEncodedSamples
         )
 }
 
@@ -1951,8 +1945,8 @@ fn publish_macos_native_exact(
         let surface = PlatformGpuSurface::new(
             PlatformGpuApi::Metal,
             u64::from(frame.surface.iosurface_id),
-            route.descriptor.geometry().output_extent(),
-            route.descriptor.physical().target_pixel_format(),
+            source.geometry.storage_extent(),
+            route.descriptor.source_pixel_format(),
             Arc::clone(frame),
         )?;
         let surface = route
@@ -1967,12 +1961,19 @@ fn publish_macos_native_exact(
             fresh_until,
             ScreenPublicationHealth::Healthy,
         )?;
-        let payload = ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(
-            ScreenPublicationColorimetry::new(
-                route.descriptor.physical().color_pipeline().output(),
-            ),
-            &surface,
-        ));
+        let payload = if macos_native_descriptor_is_identity(&route.descriptor) {
+            ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(
+                ScreenPublicationColorimetry::new(
+                    route.descriptor.physical().color_pipeline().output(),
+                ),
+                &surface,
+            ))
+        } else {
+            ScreenBranchPayload::NativeWork(ScreenNativeWorkPayload::new(
+                ScreenPublicationColorimetry::new(route.descriptor.source_colorimetry()),
+                &surface,
+            ))
+        };
         match hub.publish(publisher, payload, &metadata) {
             Ok(_) => {
                 route.last_accepted_sequence = Some(frame.sequence);
@@ -2380,12 +2381,13 @@ mod tests {
     use super::*;
     use crate::input::screen::{
         CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
-        ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenExtentRequest, ScreenHdrPolicy,
-        ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-        ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPlanBuilder,
-        ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
-        ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter,
-        ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenToneMapOperator, ScreenToneMapPolicy,
+        ResolvedScreenColorTransform, ScreenAdmissionCapacity, ScreenAspectPolicy,
+        ScreenBranchPublication, ScreenExtentRequest, ScreenHdrPolicy, ScreenInputGraphGeneration,
+        ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativeTargetPreparation,
+        ScreenNativeTargetPreparer, ScreenPlanBuilder, ScreenProcessingProfile,
+        ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationKind,
+        ScreenPublicationRequest, ScreenReductionFilter, ScreenSceneCutPolicy,
+        ScreenSmoothingPolicy, ScreenToneMapOperator, ScreenToneMapPolicy,
     };
     use hypercolor_macos_capture::{
         MacosAttachment, MacosCaptureColorimetry, MacosCaptureSurface, MacosColorRange,
@@ -3627,19 +3629,29 @@ mod tests {
         )
     }
 
-    #[test]
-    fn native_publication_commits_owner_backed_metal_surface() {
-        let frame = frame();
-        let source = source(&frame);
-        let demand = native_demand(&target());
-        let resolved = resolve_macos_publication_branch(&source, &demand)
-            .expect("native demand resolves")
-            .expect("configured macOS source owns native demand");
-        assert!(matches!(
-            resolved.descriptor().executor(),
-            ScreenPublicationExecutor::SourceNative(_)
-        ));
+    fn reduced_native_demand(target: &ScreenNativeExecutionTarget) -> RegisteredScreenBranchDemand {
+        RegisteredScreenBranchDemand::new(
+            ScreenPublicationRequest::new(
+                ScreenSourceSelector::Configured,
+                ScreenPublicationKind::Surface,
+                ScreenPublicationExecutorRequest::SourceNative(target.clone()),
+                ScreenExtentRequest::bounded(
+                    NonZeroU32::new(2),
+                    NonZeroU32::new(1),
+                    super::super::ScreenUpscalePolicy::Never,
+                ),
+                ScreenAspectPolicy::Contain,
+                Arc::new(ScreenProcessingProfile::default()),
+            ),
+            NonZeroU32::new(60).expect("nonzero cadence"),
+        )
+    }
 
+    fn publish_native_fixture(
+        frame: &Arc<MacosCaptureFrame>,
+        source: &MacosPublicationSource,
+        resolved: ResolvedScreenBranchDemand,
+    ) -> Arc<ScreenBranchPublication> {
         let exact = MacosExactPublicationShared::default();
         exact.replace_source(Some(source.clone()));
         let mut builder = ScreenPlanBuilder::new();
@@ -3658,7 +3670,7 @@ mod tests {
         let ticket = preparing
             .worker_ticket(&source.epoch.source_id)
             .expect("macOS source owns its worker ticket");
-        let (token, runtime) = prepare_macos_exact_runtime(ticket, Some(&source), &exact)
+        let (token, runtime) = prepare_macos_exact_runtime(ticket, Some(source), &exact)
             .expect("native runtime prepares");
         let (runtime, owned_source) = runtime.expect("native branch owns a runtime");
         exact.register_owned_source(owned_source);
@@ -3679,28 +3691,46 @@ mod tests {
 
         let now = Instant::now();
         publish_macos_native_exact(
-            &frame,
+            frame,
             now,
             now + Duration::from_secs(1),
-            &source,
+            source,
             &exact,
             &mut runtimes,
         )
         .expect("native frame publishes");
         let hub = exact.hub().expect("test hub remains installed");
         let (_, lease) = hub.observe_matching_lease(|_| true);
-        let publication = lease
+        lease
             .expect("committed native branch has a lease")
             .read()
-            .expect("native branch has a publication");
+            .expect("native branch has a publication")
+    }
+
+    #[test]
+    fn native_publication_commits_owner_backed_metal_surface() {
+        let frame = frame();
+        let source = source(&frame);
+        let demand = native_demand(&target());
+        let resolved = resolve_macos_publication_branch(&source, &demand)
+            .expect("native demand resolves")
+            .expect("configured macOS source owns native demand");
+        assert!(matches!(
+            resolved.descriptor().executor(),
+            ScreenPublicationExecutor::SourceNative(_)
+        ));
+
+        let publication = publish_native_fixture(&frame, &source, resolved);
         assert_eq!(publication.native_sequence(), NonZeroU64::MIN);
         let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
-            panic!("macOS native branch publishes a GPU surface");
+            panic!("identity macOS native branch publishes its GPU surface");
         };
         let surface = payload.surface();
         assert_eq!(surface.api(), &PlatformGpuApi::Metal);
         assert_eq!(surface.handle_id(), 7);
         assert_eq!(surface.format(), CapturePixelFormat::Bgra8);
+        assert_eq!(surface.extent(), source.geometry.storage_extent());
+        assert_eq!(payload.colorimetry().value(), source.colorimetry);
         assert!(surface.owner::<MacosCaptureFrame>().is_some());
         assert!(surface.retained_owner::<TestPreparedTarget>().is_some());
         assert!(surface.resource_lifetime().is_some());
@@ -3711,21 +3741,7 @@ mod tests {
     fn reduced_rgba_demand_falls_back_until_native_reducer_exists() {
         let frame = frame();
         let source = source(&frame);
-        let demand = RegisteredScreenBranchDemand::new(
-            ScreenPublicationRequest::new(
-                ScreenSourceSelector::Configured,
-                ScreenPublicationKind::Surface,
-                ScreenPublicationExecutorRequest::SourceNative(target()),
-                ScreenExtentRequest::bounded(
-                    NonZeroU32::new(2),
-                    NonZeroU32::new(1),
-                    super::super::ScreenUpscalePolicy::Never,
-                ),
-                ScreenAspectPolicy::Contain,
-                Arc::new(ScreenProcessingProfile::default()),
-            ),
-            NonZeroU32::new(60).expect("nonzero cadence"),
-        );
+        let demand = reduced_native_demand(&target());
         let resolved = resolve_macos_publication_branch(&source, &demand)
             .expect("reduced demand resolves")
             .expect("configured macOS source owns reduced demand");
@@ -3733,6 +3749,27 @@ mod tests {
             resolved.descriptor().executor(),
             ScreenPublicationExecutor::Cpu
         ));
+
+        let capable_target =
+            target().with_color_capabilities(CpuReductionExecutor::supported_color_capabilities());
+        let capable =
+            resolve_macos_publication_branch(&source, &reduced_native_demand(&capable_target))
+                .expect("capable reduced demand resolves")
+                .expect("configured macOS source owns capable demand");
+        assert!(matches!(
+            capable.descriptor().executor(),
+            ScreenPublicationExecutor::SourceNative(_)
+        ));
+        assert!(!macos_native_descriptor_is_identity(capable.descriptor()));
+        let output_extent = capable.descriptor().geometry().output_extent();
+        let publication = publish_native_fixture(&frame, &source, capable);
+        let ScreenBranchPayload::NativeWork(payload) = publication.payload() else {
+            panic!("reduced macOS native branch publishes deferred GPU work");
+        };
+        assert_eq!(payload.source().extent(), source.geometry.storage_extent());
+        assert_ne!(payload.source().extent(), output_extent);
+        assert_eq!(payload.source().format(), CapturePixelFormat::Bgra8);
+        assert_eq!(payload.source_colorimetry().value(), source.colorimetry);
     }
 
     #[test]

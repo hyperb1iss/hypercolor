@@ -879,6 +879,7 @@ pub struct ScreenNativeExecutionTarget {
     accepted_api: PlatformGpuApi,
     physical_gpu_device: ScreenPhysicalGpuDeviceIdentity,
     max_texture_dimension: NonZeroU32,
+    color_capabilities: ScreenColorTransformCapabilities,
     preparer: Arc<dyn ScreenNativeTargetPreparer>,
 }
 
@@ -897,8 +898,19 @@ impl ScreenNativeExecutionTarget {
             accepted_api,
             physical_gpu_device,
             max_texture_dimension,
+            color_capabilities: ScreenColorTransformCapabilities::NONE,
             preparer,
         }
+    }
+
+    /// Attach the exact byte-changing color operations implemented by this target.
+    #[must_use]
+    pub const fn with_color_capabilities(
+        mut self,
+        color_capabilities: ScreenColorTransformCapabilities,
+    ) -> Self {
+        self.color_capabilities = color_capabilities;
+        self
     }
 
     /// Process-local renderer context identity.
@@ -923,6 +935,12 @@ impl ScreenNativeExecutionTarget {
     #[must_use]
     pub const fn max_texture_dimension(&self) -> NonZeroU32 {
         self.max_texture_dimension
+    }
+
+    /// Exact source-native color operations implemented end to end.
+    #[must_use]
+    pub const fn color_capabilities(&self) -> ScreenColorTransformCapabilities {
+        self.color_capabilities
     }
 
     fn validate_preparation_request(
@@ -1016,6 +1034,7 @@ impl fmt::Debug for ScreenNativeExecutionTarget {
             .field("accepted_api", &self.accepted_api)
             .field("physical_gpu_device", &self.physical_gpu_device)
             .field("max_texture_dimension", &self.max_texture_dimension)
+            .field("color_capabilities", &self.color_capabilities)
             .finish_non_exhaustive()
     }
 }
@@ -1026,6 +1045,7 @@ impl PartialEq for ScreenNativeExecutionTarget {
             && self.accepted_api == other.accepted_api
             && self.physical_gpu_device == other.physical_gpu_device
             && self.max_texture_dimension == other.max_texture_dimension
+            && self.color_capabilities == other.color_capabilities
     }
 }
 
@@ -1038,6 +1058,7 @@ impl Ord for ScreenNativeExecutionTarget {
             .then_with(|| platform_gpu_api_cmp(&self.accepted_api, &other.accepted_api))
             .then_with(|| self.physical_gpu_device.cmp(&other.physical_gpu_device))
             .then_with(|| self.max_texture_dimension.cmp(&other.max_texture_dimension))
+            .then_with(|| self.color_capabilities.cmp(&other.color_capabilities))
     }
 }
 

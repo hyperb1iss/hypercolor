@@ -84,11 +84,11 @@ pub use hub::{
     ScreenBranchLease, ScreenBranchPayload, ScreenBranchPublication, ScreenBranchPublisher,
     ScreenCommittedState, ScreenContinuityActivationFailure, ScreenContinuityError,
     ScreenContinuityLease, ScreenContinuityStageFailure, ScreenGpuSurfacePayload,
-    ScreenLiveBranchReceipt, ScreenPayloadKind, ScreenPublicationColorimetry,
-    ScreenPublicationFreshness, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRetirement,
-    ScreenPublicationSlotPolicy, ScreenSurfacePayload, ScreenTwoPlanContinuityLease,
-    ScreenZonesPayload,
+    ScreenLiveBranchReceipt, ScreenNativeWorkPayload, ScreenPayloadKind,
+    ScreenPublicationColorimetry, ScreenPublicationFreshness, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationMetadata,
+    ScreenPublicationRetirement, ScreenPublicationSlotPolicy, ScreenSurfacePayload,
+    ScreenTwoPlanContinuityLease, ScreenZonesPayload,
 };
 pub use ledger::{
     ScreenWorkerExactLedger, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError,

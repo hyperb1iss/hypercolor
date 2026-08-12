@@ -551,6 +551,14 @@ impl ScreenNativeResourceBindingKey {
     pub(crate) const fn target_id(&self) -> NonZeroU64 {
         self.target_id
     }
+
+    pub(crate) fn matches(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> bool {
+        self.target_id == target_id && self.descriptor.as_ref() == descriptor
+    }
 }
 
 impl ScreenExactResource {
@@ -656,6 +664,7 @@ struct ScreenResourceLifetimeInner {
     transaction_id: ScreenPlanTransactionId,
     worker_nonce: NonZeroU64,
     allocation_nonce: NonZeroU64,
+    finalization: Arc<Mutex<()>>,
     resource: ScreenExactResource,
     retirement_charge: Arc<ScreenRetirementCharge>,
     admission_lease: OnceLock<ScreenByteLease>,
@@ -708,6 +717,27 @@ impl ScreenResourceLifetime {
             && self.inner.demand_revision == other.inner.demand_revision
             && self.inner.transaction_id == other.inner.transaction_id
             && self.inner.worker_nonce == other.inner.worker_nonce
+            && Arc::ptr_eq(&self.inner.finalization, &other.inner.finalization)
+    }
+
+    pub(crate) fn belongs_to_binding(&self, binding: &ScreenWorkerBinding) -> bool {
+        self.inner.source_id == *binding.source_id()
+            && self.inner.plan_generation == binding.plan_generation()
+            && self.inner.demand_revision == binding.demand_revision()
+            && self.inner.transaction_id == binding.transaction_id()
+            && self.inner.worker_nonce == binding.worker_nonce()
+            && Arc::ptr_eq(&self.inner.finalization, &binding.inner.finalization)
+    }
+
+    pub(crate) fn matches_native_target(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> bool {
+        self.inner
+            .resource
+            .native_binding()
+            .is_some_and(|binding| binding.matches(target_id, descriptor))
     }
 
     pub(crate) fn is_final_owner(&self) -> bool {
@@ -1123,6 +1153,7 @@ impl ScreenWorkerPreparationTicket {
                 transaction_id: self.transaction_id,
                 worker_nonce: self.worker_nonce,
                 allocation_nonce,
+                finalization: Arc::clone(&self.finalization),
                 resource: resource.clone(),
                 retirement_charge: Arc::new(ScreenRetirementCharge::new(
                     Arc::clone(&self.pending_retired_bytes),

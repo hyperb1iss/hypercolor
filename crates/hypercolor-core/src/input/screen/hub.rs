@@ -17,8 +17,8 @@ use super::plan::{
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat, CaptureSourceId,
     CaptureTransferFunction, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
-    ResolvedScreenPublicationDescriptor, ScreenByteLease, ScreenPublicationKind,
-    ScreenPublicationResidency,
+    ResolvedScreenPublicationDescriptor, ScreenByteLease, ScreenPublicationExecutor,
+    ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const SURFACE_PIXEL_BYTES: u64 = 4;
@@ -221,6 +221,39 @@ impl<'a> ScreenGpuSurfacePayload<'a> {
     }
 }
 
+/// Renderer work carrying one truthful source-native GPU surface.
+#[derive(Clone, Copy, Debug)]
+pub struct ScreenNativeWorkPayload<'a> {
+    source_colorimetry: ScreenPublicationColorimetry,
+    source: &'a PlatformGpuSurface,
+}
+
+impl<'a> ScreenNativeWorkPayload<'a> {
+    /// Construct deferred native work from the exact source storage contract.
+    #[must_use]
+    pub const fn new(
+        source_colorimetry: ScreenPublicationColorimetry,
+        source: &'a PlatformGpuSurface,
+    ) -> Self {
+        Self {
+            source_colorimetry,
+            source,
+        }
+    }
+
+    /// Exact source primaries and transfer contract.
+    #[must_use]
+    pub const fn source_colorimetry(self) -> ScreenPublicationColorimetry {
+        self.source_colorimetry
+    }
+
+    /// Raw source surface retained until renderer execution completes.
+    #[must_use]
+    pub const fn source(self) -> &'a PlatformGpuSurface {
+        self.source
+    }
+}
+
 /// Typed zone publication input borrowed only for the publish call.
 #[derive(Clone, Copy, Debug)]
 pub struct ScreenZonesPayload<'a> {
@@ -289,6 +322,8 @@ pub enum ScreenBranchPayload<'a> {
     Surface(ScreenSurfacePayload<'a>),
     /// Logical four-channel platform GPU surface.
     GpuSurface(ScreenGpuSurfacePayload<'a>),
+    /// Raw source-native GPU work awaiting renderer-owned execution.
+    NativeWork(ScreenNativeWorkPayload<'a>),
     /// Logical RGB zone grid.
     Zones(ScreenZonesPayload<'a>),
 }
@@ -298,7 +333,9 @@ impl ScreenBranchPayload<'_> {
     #[must_use]
     pub const fn kind(self) -> ScreenPayloadKind {
         match self {
-            Self::Surface(_) | Self::GpuSurface(_) => ScreenPayloadKind::Surface,
+            Self::Surface(_) | Self::GpuSurface(_) | Self::NativeWork(_) => {
+                ScreenPayloadKind::Surface
+            }
             Self::Zones(_) => ScreenPayloadKind::Zones,
         }
     }
@@ -310,6 +347,9 @@ impl ScreenBranchPayload<'_> {
             Self::Surface(_) | Self::Zones(_) => ScreenPublicationResidency::Cpu,
             Self::GpuSurface(payload) => {
                 ScreenPublicationResidency::PlatformGpu(payload.surface().api().clone())
+            }
+            Self::NativeWork(payload) => {
+                ScreenPublicationResidency::PlatformGpu(payload.source().api().clone())
             }
         }
     }
@@ -523,6 +563,12 @@ impl ScreenPublicationMetadata {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScreenStoredGpuPayloadKind {
+    OutputSurface,
+    NativeWork,
+}
+
 #[derive(Debug)]
 enum ScreenPublicationStorage {
     CpuSurface {
@@ -534,6 +580,7 @@ enum ScreenPublicationStorage {
     GpuSurface {
         api: PlatformGpuApi,
         colorimetry: ScreenPublicationColorimetry,
+        payload_kind: ScreenStoredGpuPayloadKind,
         surface: Option<PlatformGpuSurface>,
     },
     Zones {
@@ -571,6 +618,7 @@ impl ScreenPublicationStorage {
                 Ok(Self::GpuSurface {
                     api,
                     colorimetry: descriptor_colorimetry(descriptor),
+                    payload_kind: ScreenStoredGpuPayloadKind::OutputSurface,
                     surface: None,
                 })
             }
@@ -592,8 +640,31 @@ impl ScreenPublicationStorage {
             (Self::CpuSurface { pixels, .. }, ScreenBranchPayload::Surface(payload)) => {
                 pixels.copy_from_slice(payload.pixels());
             }
-            (Self::GpuSurface { surface, .. }, ScreenBranchPayload::GpuSurface(payload)) => {
+            (
+                Self::GpuSurface {
+                    colorimetry,
+                    payload_kind,
+                    surface,
+                    ..
+                },
+                ScreenBranchPayload::GpuSurface(payload),
+            ) => {
+                *colorimetry = payload.colorimetry();
+                *payload_kind = ScreenStoredGpuPayloadKind::OutputSurface;
                 *surface = Some(payload.surface().clone());
+            }
+            (
+                Self::GpuSurface {
+                    colorimetry,
+                    payload_kind,
+                    surface,
+                    ..
+                },
+                ScreenBranchPayload::NativeWork(payload),
+            ) => {
+                *colorimetry = payload.source_colorimetry();
+                *payload_kind = ScreenStoredGpuPayloadKind::NativeWork;
+                *surface = Some(payload.source().clone());
             }
             (
                 Self::Zones {
@@ -701,14 +772,28 @@ impl ScreenPublicationStorage {
             }),
             Self::GpuSurface {
                 colorimetry,
+                payload_kind,
                 surface,
                 ..
-            } => ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload {
-                colorimetry: *colorimetry,
-                surface: surface
+            } => {
+                let surface = surface
                     .as_ref()
-                    .expect("published GPU slots always contain a surface"),
-            }),
+                    .expect("published GPU slots always contain a surface");
+                match payload_kind {
+                    ScreenStoredGpuPayloadKind::OutputSurface => {
+                        ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload {
+                            colorimetry: *colorimetry,
+                            surface,
+                        })
+                    }
+                    ScreenStoredGpuPayloadKind::NativeWork => {
+                        ScreenBranchPayload::NativeWork(ScreenNativeWorkPayload {
+                            source_colorimetry: *colorimetry,
+                            source: surface,
+                        })
+                    }
+                }
+            }
             Self::Zones {
                 columns,
                 rows,
@@ -1765,7 +1850,7 @@ impl ScreenPublicationHub {
         payload: ScreenBranchPayload<'_>,
         metadata: &ScreenPublicationMetadata,
     ) -> Result<PreparedScreenPublication, ScreenPublicationHubError> {
-        validate_payload(&publisher.branch.descriptor, payload)?;
+        validate_payload(&publisher.branch.descriptor, &publisher.binding, payload)?;
         validate_metadata(&publisher.branch, &publisher.binding, metadata)?;
         let mut prepared = self.reserve_publication(publisher, metadata)?;
         let publication_storage = prepared.publication_mut()?;
@@ -2690,7 +2775,7 @@ pub enum ScreenPublicationHubError {
         /// Submitted format.
         observed: CapturePixelFormat,
     },
-    /// Submitted primaries or transfer differ from the descriptor target.
+    /// Submitted primaries or transfer differ from the required contract.
     #[error("publication colorimetry mismatch: expected {expected:?}, observed {observed:?}")]
     ColorimetryMismatch {
         /// Descriptor target colorimetry.
@@ -2698,6 +2783,31 @@ pub enum ScreenPublicationHubError {
         /// Submitted colorimetry.
         observed: ScreenPublicationColorimetry,
     },
+    /// Deferred native work was submitted for a non-native descriptor.
+    #[error("native GPU work requires a source-native publication descriptor")]
+    NativeWorkExecutorMismatch,
+    /// Deferred native work does not expose the exact source storage extent.
+    #[error("native work source extent mismatch: expected {expected:?}, observed {observed:?}")]
+    NativeWorkSourceExtentMismatch {
+        /// Exact source storage extent.
+        expected: PixelExtent,
+        /// Submitted raw storage extent.
+        observed: PixelExtent,
+    },
+    /// Deferred native work does not expose the exact source pixel format.
+    #[error("native work source format mismatch: expected {expected:?}, observed {observed:?}")]
+    NativeWorkSourcePixelFormatMismatch {
+        /// Exact native source format.
+        expected: CapturePixelFormat,
+        /// Submitted raw storage format.
+        observed: CapturePixelFormat,
+    },
+    /// A source-native surface lacks its exact renderer-target lifetime.
+    #[error("native GPU surface has no lifetime for its exact renderer target and descriptor")]
+    NativeTargetLifetimeMismatch,
+    /// A source-native surface lacks its exact capture-worker lifetime.
+    #[error("native GPU surface has no lifetime for its exact capture worker")]
+    NativeCaptureLifetimeMismatch,
     /// Zone grid shape differs from the committed descriptor.
     #[error(
         "zone shape mismatch: expected {expected_columns}x{expected_rows}, observed {observed_columns}x{observed_rows}"
@@ -2797,6 +2907,7 @@ pub enum ScreenPublicationHubError {
 
 fn validate_payload(
     descriptor: &ResolvedScreenPublicationDescriptor,
+    binding: &ScreenWorkerBinding,
     payload: ScreenBranchPayload<'_>,
 ) -> Result<(), ScreenPublicationHubError> {
     let expected_residency = descriptor.required_residency();
@@ -2841,6 +2952,37 @@ fn validate_payload(
                 });
             }
             validate_colorimetry(descriptor, surface.colorimetry())?;
+            validate_native_surface_lifetimes(descriptor, binding, surface.surface())?;
+        }
+        (ScreenPublicationKind::Surface, ScreenBranchPayload::NativeWork(work)) => {
+            if !matches!(
+                descriptor.executor(),
+                ScreenPublicationExecutor::SourceNative(_)
+            ) {
+                return Err(ScreenPublicationHubError::NativeWorkExecutorMismatch);
+            }
+            let source = work.source();
+            let expected_extent = descriptor.source().geometry().storage_extent();
+            if source.extent() != expected_extent {
+                return Err(ScreenPublicationHubError::NativeWorkSourceExtentMismatch {
+                    expected: expected_extent,
+                    observed: source.extent(),
+                });
+            }
+            let expected_format = descriptor.source_pixel_format();
+            if source.format() != expected_format {
+                return Err(
+                    ScreenPublicationHubError::NativeWorkSourcePixelFormatMismatch {
+                        expected: expected_format,
+                        observed: source.format(),
+                    },
+                );
+            }
+            validate_expected_colorimetry(
+                ScreenPublicationColorimetry::new(descriptor.source_colorimetry()),
+                work.source_colorimetry(),
+            )?;
+            validate_native_surface_lifetimes(descriptor, binding, source)?;
         }
         (ScreenPublicationKind::Zones { columns, rows }, ScreenBranchPayload::Zones(zones)) => {
             if zones.columns() != columns || zones.rows() != rows {
@@ -2866,6 +3008,28 @@ fn validate_payload(
             });
         }
     }
+    Ok(())
+}
+
+fn validate_native_surface_lifetimes(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+    binding: &ScreenWorkerBinding,
+    surface: &PlatformGpuSurface,
+) -> Result<(), ScreenPublicationHubError> {
+    let ScreenPublicationExecutor::SourceNative(target) = descriptor.executor() else {
+        return Ok(());
+    };
+    let target_lifetime = surface
+        .resource_lifetime()
+        .filter(|lifetime| lifetime.belongs_to_binding(binding))
+        .filter(|lifetime| lifetime.matches_native_target(target.id().get(), descriptor))
+        .ok_or(ScreenPublicationHubError::NativeTargetLifetimeMismatch)?;
+    let capture_lifetime = surface
+        .capture_resource_lifetime()
+        .filter(|lifetime| lifetime.belongs_to_binding(binding))
+        .filter(|lifetime| target_lifetime.belongs_to_same_worker(lifetime))
+        .ok_or(ScreenPublicationHubError::NativeCaptureLifetimeMismatch)?;
+    debug_assert!(capture_lifetime.belongs_to_same_worker(target_lifetime));
     Ok(())
 }
 
@@ -2927,7 +3091,13 @@ fn validate_colorimetry(
     descriptor: &ResolvedScreenPublicationDescriptor,
     observed: ScreenPublicationColorimetry,
 ) -> Result<(), ScreenPublicationHubError> {
-    let expected = descriptor_colorimetry(descriptor);
+    validate_expected_colorimetry(descriptor_colorimetry(descriptor), observed)
+}
+
+fn validate_expected_colorimetry(
+    expected: ScreenPublicationColorimetry,
+    observed: ScreenPublicationColorimetry,
+) -> Result<(), ScreenPublicationHubError> {
     if observed == expected {
         Ok(())
     } else {

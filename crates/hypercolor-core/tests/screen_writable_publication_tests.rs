@@ -13,13 +13,14 @@ use hypercolor_core::input::screen::{
     ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExactResource,
     ScreenExactResourceLedger, ScreenExecutorColorCapabilities, ScreenExtentRequest,
     ScreenGpuSurfacePayload, ScreenInputGraphGeneration, ScreenLiveBranchReceipt,
-    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenPayloadKind,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
-    ScreenPublicationColorimetry, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
-    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationResidency,
-    ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenSurfacePayload, ScreenWorkerBinding, SourceScale,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativeWorkPayload,
+    ScreenPayloadKind, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError,
+    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationExecutorRequest,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenResourceApi,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenSurfacePayload,
+    ScreenWorkerBinding, SourceScale,
 };
 
 #[path = "support/native_target.rs"]
@@ -410,7 +411,7 @@ fn writable_surface_slots_preserve_last_good_and_reuse_exact_bytes() {
 }
 
 #[test]
-fn gpu_surface_publications_retain_native_ownership_and_reject_cpu_substitution() {
+fn native_gpu_surface_rejects_unbound_ownership_and_cpu_substitution() {
     let source = gpu_source(2, 2);
     let resolved = demand(&source, ScreenPublicationKind::Surface, 60);
     let descriptor = resolved.descriptor().clone();
@@ -442,34 +443,33 @@ fn gpu_surface_publications_retain_native_ownership_and_reject_cpu_substitution(
         ScreenPublicationHealth::Healthy,
     )
     .expect("test timeline is valid");
-    hub.publish(
-        &publisher,
-        ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(colorimetry, &surface)),
-        &metadata,
-    )
-    .expect("native GPU surface publishes without readback");
+    assert!(matches!(
+        hub.publish(
+            &publisher,
+            ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(colorimetry, &surface)),
+            &metadata,
+        ),
+        Err(ScreenPublicationHubError::NativeTargetLifetimeMismatch)
+    ));
 
-    let publication = hub
-        .lease(&descriptor)
-        .expect("GPU branch remains committed")
-        .read()
-        .expect("GPU branch has a last-good publication");
-    assert_eq!(
-        publication.residency(),
-        ScreenPublicationResidency::PlatformGpu(PlatformGpuApi::Direct3d11)
-    );
-    let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
-        panic!("GPU source Surface branches retain opaque GPU payloads");
-    };
-    assert_eq!(payload.surface().handle_id(), 41);
-    assert_eq!(
-        payload
-            .surface()
-            .owner::<String>()
-            .expect("native owner type remains recoverable")
-            .as_str(),
-        "shared-d3d11-texture"
-    );
+    let second_metadata = ScreenPublicationMetadata::try_new(
+        descriptor.source_epoch().clone(),
+        binding.plan_generation(),
+        NonZeroU64::new(2).expect("test sequence is nonzero"),
+        now,
+        now,
+        now + Duration::from_secs(1),
+        ScreenPublicationHealth::Healthy,
+    )
+    .expect("test timeline is valid");
+    assert!(matches!(
+        hub.publish(
+            &publisher,
+            ScreenBranchPayload::NativeWork(ScreenNativeWorkPayload::new(colorimetry, &surface)),
+            &second_metadata,
+        ),
+        Err(ScreenPublicationHubError::NativeTargetLifetimeMismatch)
+    ));
 
     assert!(matches!(
         hub.prepare_writable_publication(
@@ -509,13 +509,11 @@ fn gpu_surface_publications_retain_native_ownership_and_reject_cpu_substitution(
         ),
         Err(ScreenPublicationHubError::ResidencyMismatch { .. })
     ));
-    assert_eq!(
+    assert!(
         hub.lease(&descriptor)
             .expect("GPU branch remains committed")
             .read()
-            .expect("rejected CPU substitution preserves last-good")
-            .native_sequence(),
-        NonZeroU64::MIN
+            .is_none()
     );
 }
 

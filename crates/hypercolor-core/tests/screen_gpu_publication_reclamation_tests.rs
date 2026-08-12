@@ -15,13 +15,13 @@ use hypercolor_core::input::screen::{
     ScreenExtentRequest, ScreenGpuSurfacePayload, ScreenInputGraphGeneration,
     ScreenLiveBranchReceipt, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
     ScreenNativePreparationPayload, ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
-    ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
-    ScreenPublicationRequest, ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceKind,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
-    ScreenWorkerExactLedgerBuilder, SourceScale,
+    ScreenNativeTargetResourceError, ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPlanBuilder, ScreenProcessingProfile, ScreenPublicationColorimetry,
+    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
+    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationSlotPolicy,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerExactLedgerBuilder, SourceScale,
 };
 
 #[path = "support/native_target.rs"]
@@ -375,6 +375,7 @@ fn publish_gpu(
     sequence: u64,
 ) -> (Weak<()>, ScreenLiveBranchReceipt) {
     let (surface, owner) = gpu_surface(sequence);
+    let surface = fixture.bind_native_surface(surface);
     let receipt = fixture
         .hub
         .publish(
@@ -427,6 +428,20 @@ impl Fixture {
 
     fn colorimetry(&self) -> ScreenPublicationColorimetry {
         ScreenPublicationColorimetry::new(self.descriptor.physical().color_pipeline().output())
+    }
+
+    fn bind_native_surface(&self, surface: PlatformGpuSurface) -> PlatformGpuSurface {
+        self.target_preparation
+            .as_ref()
+            .expect("fixture retains its admitted native target")
+            .retain_on_surface_with_capture_allocation(
+                surface,
+                self.capture_lifetime
+                    .as_ref()
+                    .expect("fixture retains capture-plan accounting")
+                    .clone(),
+            )
+            .expect("capture and target allocations belong to one worker")
     }
 }
 
@@ -485,7 +500,7 @@ fn gpu_owner_drop_can_reenter_while_other_publishers_take_the_runtime_lock() {
         release: Arc::clone(&release),
     });
     let weak_owner = Arc::downgrade(&owner);
-    let surface = gpu_surface_with_owner(1, owner);
+    let surface = fixture.bind_native_surface(gpu_surface_with_owner(1, owner));
     let receipt = fixture
         .hub
         .publish(
@@ -582,6 +597,7 @@ fn reader_held_gpu_payload_defers_reaping_and_pool_capacity_recovers() {
     assert_eq!(publisher.reap_releasable_gpu_payloads(), 0);
     assert!(first_owner.upgrade().is_some());
     let (pressured_surface, pressured_owner) = gpu_surface(3);
+    let pressured_surface = fixture.bind_native_surface(pressured_surface);
     let pressured = fixture.hub.publish(
         &publisher,
         ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(
@@ -612,6 +628,7 @@ fn abandoned_and_rejected_gpu_staging_releases_native_owners() {
     let fixture = Fixture::new(ScreenPublicationSlotPolicy::default());
     let publisher = fixture.publisher();
     let (abandoned_surface, abandoned_owner) = gpu_surface(1);
+    let abandoned_surface = fixture.bind_native_surface(abandoned_surface);
     let abandoned = fixture
         .hub
         .prepare_publication(
@@ -631,6 +648,7 @@ fn abandoned_and_rejected_gpu_staging_releases_native_owners() {
     let (latest_owner, latest_receipt) = publish_gpu(&fixture, &publisher, 1);
     drop(latest_receipt);
     let (rejected_surface, rejected_owner) = gpu_surface(2);
+    let rejected_surface = fixture.bind_native_surface(rejected_surface);
     let rejected = fixture
         .hub
         .prepare_publication(
@@ -876,6 +894,74 @@ fn reader_held_gpu_surface_retains_capture_and_renderer_bytes_after_plan_retirem
     assert_eq!(fixture.hub.pending_retired_bytes(), 0);
     assert!(owner.upgrade().is_none());
     assert!(renderer_payload_weak.upgrade().is_none());
+}
+
+#[test]
+fn native_publications_reject_missing_capture_and_substituted_worker_lifetimes() {
+    let mut fixture = Fixture::new(ScreenPublicationSlotPolicy::default());
+    let publisher = fixture.publisher();
+    let target = fixture
+        .target_preparation
+        .take()
+        .expect("fixture retains its admitted native target");
+    let (surface, _) = gpu_surface(1);
+    let target_only = target.retain_on_surface(surface);
+    let metadata = metadata(&fixture.descriptor, &publisher, 1);
+    assert!(matches!(
+        fixture.hub.publish(
+            &publisher,
+            ScreenBranchPayload::NativeWork(ScreenNativeWorkPayload::new(
+                fixture.colorimetry(),
+                &target_only,
+            )),
+            &metadata,
+        ),
+        Err(ScreenPublicationHubError::NativeCaptureLifetimeMismatch)
+    ));
+    assert!(
+        fixture
+            .hub
+            .lease(&fixture.descriptor)
+            .expect("native branch remains committed")
+            .read()
+            .is_none()
+    );
+
+    let mut substitute = Fixture::new(ScreenPublicationSlotPolicy::default());
+    let substitute_target = substitute
+        .target_preparation
+        .take()
+        .expect("substitute fixture retains its admitted target");
+    let (surface, _) = gpu_surface(2);
+    let substituted = substitute_target
+        .retain_on_surface_with_capture_allocation(
+            surface,
+            substitute
+                .capture_lifetime
+                .as_ref()
+                .expect("substitute fixture retains capture accounting")
+                .clone(),
+        )
+        .expect("substitute target and capture belong together");
+    assert!(matches!(
+        fixture.hub.publish(
+            &publisher,
+            ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload::new(
+                fixture.colorimetry(),
+                &substituted,
+            )),
+            &metadata,
+        ),
+        Err(ScreenPublicationHubError::NativeTargetLifetimeMismatch)
+    ));
+    assert!(
+        fixture
+            .hub
+            .lease(&fixture.descriptor)
+            .expect("native branch remains committed")
+            .read()
+            .is_none()
+    );
 }
 
 #[test]
