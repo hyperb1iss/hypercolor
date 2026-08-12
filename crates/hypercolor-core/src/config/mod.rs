@@ -641,6 +641,7 @@ impl ConfigManager {
     }
 }
 
+#[cfg_attr(target_os = "windows", allow(clippy::unnecessary_wraps))]
 fn sync_parent_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
