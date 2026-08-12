@@ -115,12 +115,18 @@ pub enum ImportedMacosScreenPlaneFormat {
     Wgpu(ImportedFrameFormat),
     /// ScreenCaptureKit `l10r` represented by Metal BGR10A2 semantics.
     Bgr10A2Unorm,
+    /// ScreenCaptureKit `xf44` luma represented by native Metal R16 semantics.
+    R16Unorm,
+    /// ScreenCaptureKit `xf44` chroma represented by native Metal RG16 semantics.
+    Rg16Unorm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum CapturePlaneImportDescriptor {
     Wgpu(MacosIosurfaceImportDescriptor),
     Bgr10A2Unorm { width: u32, height: u32 },
+    R16Unorm { width: u32, height: u32 },
+    Rg16Unorm { width: u32, height: u32 },
 }
 
 impl CapturePlaneImportDescriptor {
@@ -143,6 +149,14 @@ impl CapturePlaneImportDescriptor {
                 }
                 Ok(Self::Bgr10A2Unorm { width, height })
             }
+            ImportedMacosScreenPlaneFormat::R16Unorm => {
+                validate_native_dimensions(width, height, 2)?;
+                Ok(Self::R16Unorm { width, height })
+            }
+            ImportedMacosScreenPlaneFormat::Rg16Unorm => {
+                validate_native_dimensions(width, height, 4)?;
+                Ok(Self::Rg16Unorm { width, height })
+            }
         }
     }
 
@@ -150,8 +164,25 @@ impl CapturePlaneImportDescriptor {
         match self {
             Self::Wgpu(descriptor) => descriptor.width * descriptor.format.bytes_per_texel(),
             Self::Bgr10A2Unorm { width, .. } => width * 4,
+            Self::R16Unorm { width, .. } => width * 2,
+            Self::Rg16Unorm { width, .. } => width * 4,
         }
     }
+}
+
+fn validate_native_dimensions(
+    width: u32,
+    height: u32,
+    bytes_per_texel: u32,
+) -> Result<(), MacosScreenBridgeError> {
+    if width == 0
+        || height == 0
+        || width > i32::MAX as u32 / bytes_per_texel
+        || height > i32::MAX as u32
+    {
+        return Err(MacosGpuInteropError::InvalidDimensions { width, height }.into());
+    }
+    Ok(())
 }
 
 impl ImportedMacosScreenFrame {
@@ -498,8 +529,11 @@ impl MacosScreenBridge {
                         core_video_wrapper: None,
                     }
                 }
-                CapturePlaneImportDescriptor::Bgr10A2Unorm { width, height } => self
+                CapturePlaneImportDescriptor::Bgr10A2Unorm { width, height }
+                | CapturePlaneImportDescriptor::R16Unorm { width, height }
+                | CapturePlaneImportDescriptor::Rg16Unorm { width, height } => self
                     .native_wrapper_or_insert(storage_identity, || {
+                        let (format, metal_format) = native_plane_format(*descriptor);
                         let texture = import_iosurface_metal_texture_plane(
                             device,
                             iosurface,
@@ -507,12 +541,12 @@ impl MacosScreenBridge {
                             *height,
                             plane_index,
                             source_pixel_format,
-                            MTLPixelFormat::BGR10A2Unorm,
+                            metal_format,
                             self.storage_mode,
                         )?;
                         Ok(ImportedMacosScreenPlane {
                             storage_identity,
-                            format: ImportedMacosScreenPlaneFormat::Bgr10A2Unorm,
+                            format,
                             storage: ImportedMacosScreenPlaneStorage::NativeMetal(
                                 RetainedMetalTexture(texture),
                             ),
@@ -578,20 +612,23 @@ impl MacosScreenBridge {
                         core_video_wrapper: Some(RetainedCoreVideoTexture { _wrapper: wrapper }),
                     }
                 }
-                CapturePlaneImportDescriptor::Bgr10A2Unorm { width, height } => {
+                CapturePlaneImportDescriptor::Bgr10A2Unorm { width, height }
+                | CapturePlaneImportDescriptor::R16Unorm { width, height }
+                | CapturePlaneImportDescriptor::Rg16Unorm { width, height } => {
+                    let (format, metal_format) = native_plane_format(*descriptor);
                     let (texture, wrapper, _) = import_core_video_metal_texture_plane(
                         cache.cache(),
                         pixel_buffer,
                         *width,
                         *height,
                         plane_index,
-                        MTLPixelFormat::BGR10A2Unorm,
+                        metal_format,
                         frame.surface.iosurface_id,
                         self.storage_mode,
                     )?;
                     ImportedMacosScreenPlane {
                         storage_identity,
-                        format: ImportedMacosScreenPlaneFormat::Bgr10A2Unorm,
+                        format,
                         storage: ImportedMacosScreenPlaneStorage::NativeMetal(
                             RetainedMetalTexture(texture),
                         ),
@@ -832,8 +869,8 @@ fn capture_plane_formats(
         ImportedMacosScreenPlaneFormat::Wgpu(ImportedFrameFormat::Rg8Unorm),
     ];
     const YUV44410: &[ImportedMacosScreenPlaneFormat] = &[
-        ImportedMacosScreenPlaneFormat::Wgpu(ImportedFrameFormat::R16Unorm),
-        ImportedMacosScreenPlaneFormat::Wgpu(ImportedFrameFormat::Rg16Unorm),
+        ImportedMacosScreenPlaneFormat::R16Unorm,
+        ImportedMacosScreenPlaneFormat::Rg16Unorm,
     ];
 
     match pixel_format {
@@ -844,6 +881,28 @@ fn capture_plane_formats(
         }
         MacosCapturePixelFormat::Yuv44410BiPlanar => Ok(YUV44410),
         MacosCapturePixelFormat::Argb2101010 => Ok(RGB10),
+    }
+}
+
+fn native_plane_format(
+    descriptor: CapturePlaneImportDescriptor,
+) -> (ImportedMacosScreenPlaneFormat, MTLPixelFormat) {
+    match descriptor {
+        CapturePlaneImportDescriptor::Bgr10A2Unorm { .. } => (
+            ImportedMacosScreenPlaneFormat::Bgr10A2Unorm,
+            MTLPixelFormat::BGR10A2Unorm,
+        ),
+        CapturePlaneImportDescriptor::R16Unorm { .. } => (
+            ImportedMacosScreenPlaneFormat::R16Unorm,
+            MTLPixelFormat::R16Unorm,
+        ),
+        CapturePlaneImportDescriptor::Rg16Unorm { .. } => (
+            ImportedMacosScreenPlaneFormat::Rg16Unorm,
+            MTLPixelFormat::RG16Unorm,
+        ),
+        CapturePlaneImportDescriptor::Wgpu(_) => {
+            unreachable!("wgpu planes never enter native format selection")
+        }
     }
 }
 
@@ -951,8 +1010,8 @@ mod tests {
             capture_plane_formats(MacosCapturePixelFormat::Yuv44410BiPlanar)
                 .expect("10-bit YUV should import directly"),
             &[
-                ImportedMacosScreenPlaneFormat::Wgpu(ImportedFrameFormat::R16Unorm),
-                ImportedMacosScreenPlaneFormat::Wgpu(ImportedFrameFormat::Rg16Unorm)
+                ImportedMacosScreenPlaneFormat::R16Unorm,
+                ImportedMacosScreenPlaneFormat::Rg16Unorm
             ]
         );
         assert_eq!(

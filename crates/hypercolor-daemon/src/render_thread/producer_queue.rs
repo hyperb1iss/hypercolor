@@ -79,6 +79,8 @@ pub(crate) struct MacosScreenTextureLease {
         crate::render_thread::sparkleflinger::gpu::PreparedMacosScreenTarget,
     >,
     _target_lifetime: ScreenResourceLifetime,
+    _shared_target_lifetime: Option<ScreenResourceLifetime>,
+    _capture_lifetime: ScreenResourceLifetime,
 }
 
 #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
@@ -90,12 +92,16 @@ impl MacosScreenTextureLease {
             crate::render_thread::sparkleflinger::gpu::PreparedMacosScreenTarget,
         >,
         target_lifetime: ScreenResourceLifetime,
+        shared_target_lifetime: Option<ScreenResourceLifetime>,
+        capture_lifetime: ScreenResourceLifetime,
     ) -> Self {
         Self {
             _imported: imported,
             _capture_owner: capture_owner,
             _target_owner: target_owner,
             _target_lifetime: target_lifetime,
+            _shared_target_lifetime: shared_target_lifetime,
+            _capture_lifetime: capture_lifetime,
         }
     }
 }

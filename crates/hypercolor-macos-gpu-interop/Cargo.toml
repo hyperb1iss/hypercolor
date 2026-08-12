@@ -52,7 +52,22 @@ objc2-core-video = { workspace = true, optional = true, features = [
   "objc2-metal",
 ] }
 objc2-io-surface = { workspace = true, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation", "libc", "bitflags"] }
-objc2-metal = { workspace = true, features = ["std", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "objc2-io-surface"] }
+objc2-metal = { workspace = true, features = [
+  "std",
+  "MTLAllocation",
+  "MTLCommandBuffer",
+  "MTLCommandEncoder",
+  "MTLComputeCommandEncoder",
+  "MTLComputePipeline",
+  "MTLDevice",
+  "MTLLibrary",
+  "MTLPixelFormat",
+  "MTLResource",
+  "MTLTexture",
+  "MTLTypes",
+  "objc2-io-surface",
+] }
+objc2-foundation = { workspace = true, features = ["std", "NSError", "NSString"] }
 paint_api = { workspace = true, optional = true }
 surfman = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }

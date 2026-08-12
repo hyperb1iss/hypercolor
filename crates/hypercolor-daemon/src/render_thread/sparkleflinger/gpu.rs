@@ -41,11 +41,14 @@ use hypercolor_core::input::screen::{
 };
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use hypercolor_core::input::screen::{
-    MacosNativeTargetManifest, PlatformGpuApi, ResolvedScreenPublicationDescriptor,
-    ScreenBranchPayload, ScreenBranchPublication, ScreenCaptureBackend,
+    CapturePixelFormat, CaptureRotation, CaptureTransferFunction, LED_TONE_MAP_ALGORITHM_REVISION,
+    MacosNativeTargetManifest, PlatformGpuApi, PreparedLedToneMap, ResolvedScreenColorTransform,
+    ResolvedScreenPublicationDescriptor, ScreenBranchPayload, ScreenBranchPublication,
+    ScreenCaptureBackend, ScreenColorTransformCapabilities, ScreenLetterboxFill,
     ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
-    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPublicationKind, ScreenResourceApi,
+    ScreenNativeRetentionQuote, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPhysicalReductionDescriptor, ScreenPlanGeneration,
+    ScreenPublicationKind, ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection,
 };
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{
@@ -55,8 +58,10 @@ use hypercolor_core::types::canvas::{
 use hypercolor_macos_capture::MacosCaptureFrame;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use hypercolor_macos_gpu_interop::{
-    ImportedMacosScreenFrame, MacosScreenBridge as MacosInteropScreenBridge,
-    MacosScreenStorageIdentity,
+    ImportedMacosScreenFrame, MacosNativeColorTransform, MacosNativeLetterboxFill,
+    MacosNativeOutputTransfer, MacosNativeReducer, MacosNativeReductionDescriptor,
+    MacosNativeReductionFilter, MacosNativeReductionTarget, MacosNativeTargetFormat,
+    MacosScreenBridge as MacosInteropScreenBridge, MacosScreenStorageIdentity,
 };
 use hypercolor_types::scene::ZoneId;
 #[cfg(target_os = "windows")]
@@ -376,20 +381,60 @@ struct PreparedWindowsScreenTarget {
 
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 struct MacosScreenBridge {
+    device: wgpu::Device,
     interop: MacosInteropScreenBridge,
+    reducer: MacosNativeReducer,
     storage_ids: Mutex<HashMap<MacosScreenStorageIdentity, u64>>,
-    lifetime: Arc<()>,
+    physical_targets: Mutex<
+        Vec<(
+            ScreenPlanGeneration,
+            ScreenPhysicalReductionDescriptor,
+            Weak<PreparedMacosPhysicalTarget>,
+        )>,
+    >,
 }
 
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 struct MacosScreenTargetPreparer {
-    bridge_lifetime: Weak<()>,
+    bridge: Weak<MacosScreenBridge>,
 }
 
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-#[derive(Clone)]
+#[derive(Debug)]
+struct PreparedMacosPhysicalTarget {
+    target: MacosNativeReductionTarget,
+    storage_id: u64,
+    content_sequence: Mutex<Option<u64>>,
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+#[derive(Debug)]
 pub(crate) struct PreparedMacosScreenTarget {
     resource_generation: u64,
+    descriptor: Arc<ResolvedScreenPublicationDescriptor>,
+    physical: Option<Arc<PreparedMacosPhysicalTarget>>,
+    logical_target: Option<MacosNativeReductionTarget>,
+    logical_storage_id: Option<u64>,
+    logical_content_sequence: Mutex<Option<u64>>,
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+impl Clone for PreparedMacosScreenTarget {
+    fn clone(&self) -> Self {
+        Self {
+            resource_generation: self.resource_generation,
+            descriptor: Arc::clone(&self.descriptor),
+            physical: self.physical.clone(),
+            logical_target: self.logical_target.clone(),
+            logical_storage_id: self.logical_storage_id,
+            logical_content_sequence: Mutex::new(
+                *self
+                    .logical_content_sequence
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ),
+        }
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
@@ -402,7 +447,7 @@ impl MacosScreenBridge {
     ) -> Result<(ImportedMacosScreenFrame, u64)> {
         let imported = self
             .interop
-            .import_bgra_frame(device, resource_generation, frame)
+            .import_frame(device, resource_generation, frame)
             .context("failed to import the native macOS screen publication")?;
         let identity = imported.storage_identity();
         let mut storage_ids = self
@@ -418,6 +463,82 @@ impl MacosScreenBridge {
             }
         };
         Ok((imported, storage_id))
+    }
+
+    fn prepare_target(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        plan_generation: ScreenPlanGeneration,
+    ) -> Result<PreparedMacosScreenTarget> {
+        macos_native_color_transform(descriptor)?;
+        let physical = if macos_descriptor_requires_native_work(descriptor) {
+            let mut targets = self
+                .physical_targets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            targets.retain(|(_, _, target)| target.strong_count() > 0);
+            if let Some(target) = targets.iter().find_map(|(plan, candidate, target)| {
+                (*plan == plan_generation && candidate == descriptor.physical())
+                    .then(|| target.upgrade())
+                    .flatten()
+            }) {
+                Some(target)
+            } else {
+                let extent = descriptor.physical().reduction_extent();
+                let format =
+                    macos_native_target_format(descriptor.physical().target_pixel_format())?;
+                let target = Arc::new(PreparedMacosPhysicalTarget {
+                    target: self.reducer.create_target(
+                        self.interop_device(),
+                        extent.width(),
+                        extent.height(),
+                        format,
+                    )?,
+                    storage_id: next_gpu_texture_storage_id()?,
+                    content_sequence: Mutex::new(None),
+                });
+                targets.push((
+                    plan_generation,
+                    descriptor.physical().clone(),
+                    Arc::downgrade(&target),
+                ));
+                Some(target)
+            }
+        } else {
+            None
+        };
+        let geometry = descriptor.geometry();
+        let needs_materialization = physical.is_some() && !geometry.content_fills_output();
+        if needs_materialization {
+            macos_native_letterbox_fill(descriptor)?;
+        }
+        let logical_target = if needs_materialization {
+            let extent = geometry.output_extent();
+            Some(self.reducer.create_target(
+                self.interop_device(),
+                extent.width(),
+                extent.height(),
+                macos_native_target_format(descriptor.physical().target_pixel_format())?,
+            )?)
+        } else {
+            None
+        };
+        let logical_storage_id = logical_target
+            .as_ref()
+            .map(|_| next_gpu_texture_storage_id())
+            .transpose()?;
+        Ok(PreparedMacosScreenTarget {
+            resource_generation: descriptor.source().resources().resource_generation(),
+            descriptor: Arc::new(descriptor.clone()),
+            physical,
+            logical_target,
+            logical_storage_id,
+            logical_content_sequence: Mutex::new(None),
+        })
+    }
+
+    fn interop_device(&self) -> &wgpu::Device {
+        &self.device
     }
 
     fn clear_storage_ids(&self) {
@@ -447,6 +568,184 @@ fn prepared_macos_screen_target_metadata_bytes() -> Result<u64> {
 }
 
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn prepared_macos_screen_target_exclusive_bytes(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> Result<u64> {
+    let mut bytes = prepared_macos_screen_target_metadata_bytes()?;
+    if !macos_descriptor_requires_native_work(descriptor) {
+        return Ok(bytes);
+    }
+    if !descriptor.geometry().content_fills_output() {
+        let logical_texture_bytes =
+            macos_target_texture_bytes(descriptor.geometry().output_extent())
+                .context("macOS logical target texture accounting overflow")?;
+        bytes = bytes
+            .checked_add(logical_texture_bytes)
+            .context("macOS logical target accounting overflow")?;
+    }
+    Ok(bytes)
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn prepared_macos_screen_target_shared_bytes(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> Result<u64> {
+    if !macos_descriptor_requires_native_work(descriptor) {
+        return Ok(0);
+    }
+    let physical_texture_bytes =
+        macos_target_texture_bytes(descriptor.physical().reduction_extent())
+            .context("macOS physical target texture accounting overflow")?;
+    checked_macos_arc_allocation_bytes::<PreparedMacosPhysicalTarget>()?
+        .checked_add(physical_texture_bytes)
+        .context("macOS physical target accounting overflow")
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn prepared_macos_screen_target_retention(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> Result<ScreenNativeRetentionQuote> {
+    Ok(ScreenNativeRetentionQuote::split(
+        prepared_macos_screen_target_exclusive_bytes(descriptor)?,
+        prepared_macos_screen_target_shared_bytes(descriptor)?,
+    ))
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn macos_target_texture_bytes(extent: hypercolor_core::input::screen::PixelExtent) -> Option<u64> {
+    u64::from(extent.width())
+        .checked_mul(u64::from(extent.height()))
+        .and_then(|pixels| pixels.checked_mul(4))
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn macos_descriptor_requires_native_work(descriptor: &ResolvedScreenPublicationDescriptor) -> bool {
+    let source = descriptor.source();
+    descriptor.source_pixel_format() != CapturePixelFormat::Bgra8
+        || source.geometry().crop().is_some()
+        || descriptor.geometry().output_extent() != source.geometry().storage_extent()
+        || descriptor.physical().reduction_extent() != source.geometry().storage_extent()
+        || descriptor.physical().target_pixel_format() != descriptor.source_pixel_format()
+        || !matches!(
+            descriptor.physical().color_pipeline().transform(),
+            ResolvedScreenColorTransform::PreserveEncodedSamples
+        )
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+#[error("unsupported macOS native reduction target format: {0:?}")]
+struct UnsupportedMacosNativeTargetFormat(CapturePixelFormat);
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn macos_native_target_format(
+    format: CapturePixelFormat,
+) -> std::result::Result<MacosNativeTargetFormat, UnsupportedMacosNativeTargetFormat> {
+    match format {
+        CapturePixelFormat::Rgba8 => Ok(MacosNativeTargetFormat::Rgba8),
+        CapturePixelFormat::Bgra8 => Ok(MacosNativeTargetFormat::Bgra8),
+        unsupported => Err(UnsupportedMacosNativeTargetFormat(unsupported)),
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn macos_reduction_descriptor(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> Result<MacosNativeReductionDescriptor> {
+    let source = descriptor.source();
+    let geometry = source.geometry();
+    anyhow::ensure!(
+        geometry.rotation() == CaptureRotation::Identity
+            && source.reflection() == ScreenSourceReflection::None
+            && geometry.native_extent() == geometry.storage_extent()
+            && geometry.source_scale().numerator() == geometry.source_scale().denominator(),
+        "macOS native reduction received unsupported pending source geometry"
+    );
+    let crop = geometry.crop();
+    let crop_x = crop.map_or(0, hypercolor_core::input::screen::PixelRect::x);
+    let crop_y = crop.map_or(0, hypercolor_core::input::screen::PixelRect::y);
+    let region = descriptor.physical().source_region();
+    let rational = |value: hypercolor_core::input::screen::ScreenRational| {
+        value.numerator() as f32 / value.denominator().get() as f32
+    };
+    let source_rect = [
+        crop_x as f32 + rational(region.x()),
+        crop_y as f32 + rational(region.y()),
+        rational(region.width()),
+        rational(region.height()),
+    ];
+    let output = descriptor.physical().reduction_extent();
+    let filter = match descriptor.physical().reduction_filter() {
+        ScreenReductionFilter::Nearest => MacosNativeReductionFilter::Nearest,
+        ScreenReductionFilter::Bilinear => MacosNativeReductionFilter::Bilinear,
+        ScreenReductionFilter::Area => MacosNativeReductionFilter::Area,
+    };
+    MacosNativeReductionDescriptor::new(
+        [output.width(), output.height()],
+        [0, 0, output.width(), output.height()],
+        source_rect,
+        filter,
+        macos_native_color_transform(descriptor)?,
+    )
+    .map_err(anyhow::Error::from)
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn macos_native_color_transform(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> Result<Option<(MacosNativeOutputTransfer, MacosNativeColorTransform)>> {
+    let pipeline = descriptor.physical().color_pipeline();
+    if pipeline.transform() == ResolvedScreenColorTransform::PreserveEncodedSamples {
+        return Ok(None);
+    }
+    let source = pipeline
+        .effective_source()
+        .context("managed macOS native reduction has no effective source colorimetry")?;
+    let output = pipeline
+        .output()
+        .try_known()
+        .context("managed macOS native reduction has no known output colorimetry")?;
+    let calibration = pipeline
+        .calibration()
+        .context("managed macOS native reduction has no calibration")?;
+    let prepared = PreparedLedToneMap::prepare(source, output, calibration)
+        .context("failed to prepare shared macOS native color constants")?;
+    let output_transfer = match output.transfer_function() {
+        CaptureTransferFunction::Srgb => MacosNativeOutputTransfer::Srgb,
+        CaptureTransferFunction::Linear => MacosNativeOutputTransfer::Linear,
+        CaptureTransferFunction::Rec709 => MacosNativeOutputTransfer::Rec709,
+        CaptureTransferFunction::Rec2020 => MacosNativeOutputTransfer::Rec2020,
+        unsupported => {
+            anyhow::bail!("unsupported macOS native output transfer function: {unsupported:?}")
+        }
+    };
+    let constants = prepared.constants();
+    Ok(Some((
+        output_transfer,
+        MacosNativeColorTransform::new(
+            constants.source_to_target,
+            constants.source_luminance_and_exposure,
+            constants.curve,
+        ),
+    )))
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+fn macos_native_letterbox_fill(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+) -> Result<MacosNativeLetterboxFill> {
+    match descriptor.processing_profile().letterbox_fill() {
+        ScreenLetterboxFill::Transparent => Ok(MacosNativeLetterboxFill::Transparent),
+        ScreenLetterboxFill::Solid(color) => Ok(MacosNativeLetterboxFill::Solid(
+            color.map(|channel| f32::from(channel) / f32::from(u8::MAX)),
+        )),
+        ScreenLetterboxFill::EdgeExtend => {
+            anyhow::bail!("macOS native reduction does not support edge-extended letterbox fill")
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
 fn checked_macos_arc_allocation_bytes<T>() -> Result<u64> {
     let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
         .extend(Layout::new::<T>())
@@ -465,10 +764,19 @@ impl ScreenNativeTargetPreparer for MacosScreenTargetPreparer {
             .downcast_ref::<MacosNativeTargetManifest>()
             .context("macOS screen target received an unknown preparation manifest")?;
         validate_macos_target_manifest(descriptor, manifest)?;
-        self.bridge_lifetime
+        self.bridge
             .upgrade()
             .context("macOS screen renderer was retired during target admission")?;
-        prepared_macos_screen_target_metadata_bytes()
+        prepared_macos_screen_target_exclusive_bytes(descriptor)
+    }
+
+    fn quote_retention(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> Result<ScreenNativeRetentionQuote> {
+        self.quote_retained_bytes(descriptor, platform)?;
+        prepared_macos_screen_target_retention(descriptor)
     }
 
     fn prepare(
@@ -480,18 +788,18 @@ impl ScreenNativeTargetPreparer for MacosScreenTargetPreparer {
             .downcast_ref::<MacosNativeTargetManifest>()
             .context("macOS screen target received an unknown preparation manifest")?;
         validate_macos_target_manifest(descriptor, manifest)?;
-        self.bridge_lifetime
+        let bridge = self
+            .bridge
             .upgrade()
             .context("macOS screen renderer was retired during target preparation")?;
-        Ok(ScreenNativeTargetPreparation::new(
+        let prepared = bridge.prepare_target(descriptor, platform.plan_generation())?;
+        Ok(ScreenNativeTargetPreparation::with_retention(
             ScreenNativePreparationPayload::new(
                 descriptor,
                 platform.plan_generation(),
-                Arc::new(PreparedMacosScreenTarget {
-                    resource_generation: manifest.resource_generation(),
-                }),
+                Arc::new(prepared),
             ),
-            prepared_macos_screen_target_metadata_bytes()?,
+            prepared_macos_screen_target_retention(descriptor)?,
         ))
     }
 }
@@ -872,10 +1180,19 @@ fn create_screen_bridge(
             return (None, None);
         }
     };
+    let reducer = match MacosNativeReducer::new(device) {
+        Ok(reducer) => reducer,
+        Err(error) => {
+            tracing::debug!(%error, "renderer does not expose a native Metal screen reducer");
+            return (None, None);
+        }
+    };
     let bridge = Arc::new(MacosScreenBridge {
+        device: device.clone(),
         interop,
+        reducer,
         storage_ids: Mutex::new(HashMap::new()),
-        lifetime: Arc::new(()),
+        physical_targets: Mutex::new(Vec::new()),
     });
     let target = create_screen_target(&bridge, max_texture_dimension);
     (Some(bridge), target)
@@ -894,18 +1211,26 @@ fn create_screen_target(
         tracing::warn!("screen target identity space is exhausted");
         return None;
     };
-    Some(ScreenNativeExecutionTarget::new(
-        ScreenNativeExecutionTargetId::new(
-            NonZeroU64::new(target_id).expect("screen target identities start at one"),
-        ),
-        PlatformGpuApi::Metal,
-        ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(bridge.interop.metal_registry_id()),
-        NonZeroU32::new(max_texture_dimension)
-            .expect("wgpu devices expose a non-zero texture dimension limit"),
-        Arc::new(MacosScreenTargetPreparer {
-            bridge_lifetime: Arc::downgrade(&bridge.lifetime),
-        }),
-    ))
+    Some(
+        ScreenNativeExecutionTarget::new(
+            ScreenNativeExecutionTargetId::new(
+                NonZeroU64::new(target_id).expect("screen target identities start at one"),
+            ),
+            PlatformGpuApi::Metal,
+            ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(bridge.interop.metal_registry_id()),
+            NonZeroU32::new(max_texture_dimension)
+                .expect("wgpu devices expose a non-zero texture dimension limit"),
+            Arc::new(MacosScreenTargetPreparer {
+                bridge: Arc::downgrade(bridge),
+            }),
+        )
+        .with_color_capabilities(ScreenColorTransformCapabilities::new(
+            true,
+            true,
+            true,
+            LED_TONE_MAP_ALGORITHM_REVISION,
+        )),
+    )
 }
 
 pub(crate) struct GpuSparkleFlinger {
@@ -1766,10 +2091,11 @@ impl GpuSparkleFlinger {
         let Some(bridge) = self.screen_bridge.clone() else {
             return Ok(None);
         };
-        let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
-            return Ok(None);
+        let (surface, requires_work) = match publication.payload() {
+            ScreenBranchPayload::GpuSurface(payload) => (payload.surface(), false),
+            ScreenBranchPayload::NativeWork(payload) => (payload.source(), true),
+            ScreenBranchPayload::Surface(_) | ScreenBranchPayload::Zones(_) => return Ok(None),
         };
-        let surface = payload.surface();
         let capture_owner = surface
             .owner::<MacosCaptureFrame>()
             .context("native macOS screen publication has an unknown capture owner")?;
@@ -1780,35 +2106,118 @@ impl GpuSparkleFlinger {
             .resource_lifetime()
             .cloned()
             .context("native macOS screen publication has no renderer allocation lifetime")?;
-        anyhow::ensure!(
-            surface.capture_resource_lifetime().is_some(),
-            "native macOS screen publication has no capture allocation lifetime"
-        );
+        let shared_target_lifetime = surface.shared_resource_lifetime().cloned();
+        let capture_lifetime = surface
+            .capture_resource_lifetime()
+            .cloned()
+            .context("native macOS screen publication has no capture allocation lifetime")?;
         let capture = capture_owner
             .downgrade()
             .upgrade()
             .context("native macOS capture owner retired before import")?;
         let (imported, storage_id) =
             bridge.import_frame(&self.device, target_owner.resource_generation, capture)?;
-        let extent = surface.extent();
         anyhow::ensure!(
-            imported.capture().storage_extent.width == extent.width()
-                && imported.capture().storage_extent.height == extent.height(),
+            imported.capture().storage_extent.width == surface.extent().width()
+                && imported.capture().storage_extent.height == surface.extent().height(),
             "native macOS imported extent does not match the published surface"
         );
-        let width = extent.width();
-        let height = extent.height();
         let content_generation = imported.content_sequence();
-        let texture = imported
-            .texture()
-            .context("native macOS publication has no wgpu texture")?
-            .as_ref()
-            .clone();
-        let view = imported
-            .view()
-            .context("native macOS publication has no wgpu texture view")?
-            .as_ref()
-            .clone();
+        let descriptor = &target_owner.descriptor;
+        let (width, height, storage_id, texture, view) = if requires_work {
+            self.flush_pending_output_submission()?;
+            let physical = target_owner
+                .physical
+                .as_ref()
+                .context("native macOS work has no prepared physical target")?;
+            let mut physical_sequence = physical
+                .content_sequence
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *physical_sequence != Some(content_generation) {
+                let mut encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("SparkleFlinger macOS native screen reduction"),
+                        });
+                bridge.reducer.encode(
+                    &imported,
+                    &physical.target,
+                    macos_reduction_descriptor(descriptor)?,
+                    &mut encoder,
+                )?;
+                let _ = self.queue.submit(Some(encoder.finish()));
+                *physical_sequence = Some(content_generation);
+            }
+            drop(physical_sequence);
+
+            if let Some(logical_target) = target_owner.logical_target.as_ref() {
+                let mut logical_sequence = target_owner
+                    .logical_content_sequence
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *logical_sequence != Some(content_generation) {
+                    let geometry = descriptor.geometry();
+                    let mut encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("SparkleFlinger macOS native screen materialization"),
+                            });
+                    bridge.reducer.encode_materialization(
+                        &physical.target,
+                        logical_target,
+                        [
+                            geometry.content_x(),
+                            geometry.content_y(),
+                            geometry.content_extent().width(),
+                            geometry.content_extent().height(),
+                        ],
+                        macos_native_letterbox_fill(descriptor)?,
+                        &mut encoder,
+                    )?;
+                    let _ = self.queue.submit(Some(encoder.finish()));
+                    *logical_sequence = Some(content_generation);
+                }
+                (
+                    logical_target.width(),
+                    logical_target.height(),
+                    target_owner
+                        .logical_storage_id
+                        .context("logical macOS target has no storage identity")?,
+                    logical_target.texture().clone(),
+                    logical_target.view().clone(),
+                )
+            } else {
+                (
+                    physical.target.width(),
+                    physical.target.height(),
+                    physical.storage_id,
+                    physical.target.texture().clone(),
+                    physical.target.view().clone(),
+                )
+            }
+        } else {
+            let extent = descriptor.geometry().output_extent();
+            anyhow::ensure!(
+                surface.extent() == extent,
+                "native macOS identity surface extent does not match its target"
+            );
+            (
+                extent.width(),
+                extent.height(),
+                storage_id,
+                imported
+                    .texture()
+                    .context("native macOS identity publication has no wgpu texture")?
+                    .as_ref()
+                    .clone(),
+                imported
+                    .view()
+                    .context("native macOS identity publication has no wgpu texture view")?
+                    .as_ref()
+                    .clone(),
+            )
+        };
         Ok(Some(GpuTextureFrame {
             width,
             height,
@@ -1823,6 +2232,8 @@ impl GpuSparkleFlinger {
                 capture_owner,
                 target_owner,
                 target_lifetime,
+                shared_target_lifetime,
+                capture_lifetime,
             )),
         }))
     }

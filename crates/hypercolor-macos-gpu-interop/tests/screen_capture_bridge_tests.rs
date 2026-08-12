@@ -4,10 +4,15 @@ use std::sync::{Arc, mpsc};
 
 use hypercolor_macos_capture::{
     MacosCaptureColorimetry, MacosCaptureFrame, MacosCaptureGeometry, MacosCapturePixelFormat,
-    MacosCaptureSurface, MacosColorPrimaries, MacosColorRange, MacosPixelExtent, MacosPixelRect,
-    MacosPointRect, MacosScale, MacosTransferFunction,
+    MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries, MacosColorRange,
+    MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosScale, MacosTransferFunction,
+    MacosYuvMatrix,
 };
-use hypercolor_macos_gpu_interop::{MacosMetalStorageMode, MacosScreenBridge};
+use hypercolor_macos_gpu_interop::{
+    MacosMetalStorageMode, MacosNativeLetterboxFill, MacosNativeReducer,
+    MacosNativeReductionDescriptor, MacosNativeReductionError, MacosNativeReductionFilter,
+    MacosNativeTargetFormat, MacosScreenBridge,
+};
 
 const WIDTH: u32 = 4;
 const HEIGHT: u32 = 3;
@@ -91,6 +96,216 @@ fn bridge_imports_and_caches_complete_capture_storage_identity() -> Result<(), S
     Ok(())
 }
 
+#[test]
+fn native_reducer_compiles_and_reads_back_spatially_reduced_rgba() -> Result<(), String> {
+    let wgpu = WgpuFixture::new()?;
+    let bridge = MacosScreenBridge::new(&wgpu.device).map_err(|error| error.to_string())?;
+    let reducer = MacosNativeReducer::new(&wgpu.device).map_err(|error| error.to_string())?;
+    let gradient_row = [
+        0_u8, 0, 0, 255, 20, 40, 60, 255, 40, 80, 120, 255, 60, 120, 180, 255,
+    ];
+    let gradient = gradient_row.repeat(HEIGHT as usize);
+    let extent = MacosPixelExtent::new(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
+    let color = MacosCaptureColorimetry {
+        primaries: MacosColorPrimaries::Srgb,
+        transfer: MacosTransferFunction::Srgb,
+        matrix: None,
+        range: MacosColorRange::Full,
+        chroma_location: None,
+    };
+    let imported = bridge
+        .import_frame(
+            &wgpu.device,
+            11,
+            Arc::new(native_capture_frame(
+                extent,
+                MacosCapturePixelFormat::Bgra8,
+                color,
+                &[gradient],
+                1,
+            )?),
+        )
+        .map_err(|error| error.to_string())?;
+    let target = reducer
+        .create_target(&wgpu.device, 2, 1, MacosNativeTargetFormat::Rgba8)
+        .map_err(|error| error.to_string())?;
+    let descriptor = MacosNativeReductionDescriptor::new(
+        [2, 1],
+        [0, 0, 2, 1],
+        [0.0, 0.0, WIDTH as f32, HEIGHT as f32],
+        MacosNativeReductionFilter::Area,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut encoder = wgpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hypercolor macOS native reduction fixture"),
+        });
+    reducer
+        .encode(&imported, &target, descriptor, &mut encoder)
+        .map_err(|error| error.to_string())?;
+    let _ = wgpu.queue.submit(Some(encoder.finish()));
+
+    assert_eq!(
+        read_texture_pixels(&wgpu.device, &wgpu.queue, target.texture(), 2, 1)?,
+        [30, 20, 10, 255, 150, 100, 50, 255]
+    );
+
+    let transparent = reducer
+        .create_target(&wgpu.device, 4, 3, MacosNativeTargetFormat::Rgba8)
+        .map_err(|error| error.to_string())?;
+    let solid = reducer
+        .create_target(&wgpu.device, 4, 3, MacosNativeTargetFormat::Rgba8)
+        .map_err(|error| error.to_string())?;
+    let mut encoder = wgpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hypercolor macOS native materialization fixture"),
+        });
+    reducer
+        .encode_materialization(
+            &target,
+            &transparent,
+            [1, 1, 2, 1],
+            MacosNativeLetterboxFill::Transparent,
+            &mut encoder,
+        )
+        .map_err(|error| error.to_string())?;
+    reducer
+        .encode_materialization(
+            &target,
+            &solid,
+            [1, 1, 2, 1],
+            MacosNativeLetterboxFill::Solid([
+                7.0 / 255.0,
+                11.0 / 255.0,
+                13.0 / 255.0,
+                17.0 / 255.0,
+            ]),
+            &mut encoder,
+        )
+        .map_err(|error| error.to_string())?;
+    let _ = wgpu.queue.submit(Some(encoder.finish()));
+    let mut transparent_expected = vec![0; 4 * 3 * 4];
+    transparent_expected[20..28].copy_from_slice(&[30, 20, 10, 255, 150, 100, 50, 255]);
+    assert_eq!(
+        read_texture_pixels(&wgpu.device, &wgpu.queue, transparent.texture(), 4, 3,)?,
+        transparent_expected
+    );
+    let mut solid_expected = [7, 11, 13, 17].repeat(12);
+    solid_expected[20..28].copy_from_slice(&[30, 20, 10, 255, 150, 100, 50, 255]);
+    assert_eq!(
+        read_texture_pixels(&wgpu.device, &wgpu.queue, solid.texture(), 4, 3)?,
+        solid_expected
+    );
+    Ok(())
+}
+
+#[test]
+fn every_native_format_matches_the_scalar_source_oracle() -> Result<(), String> {
+    let wgpu = WgpuFixture::new()?;
+    let bridge = MacosScreenBridge::new(&wgpu.device).map_err(|error| error.to_string())?;
+    let reducer = MacosNativeReducer::new(&wgpu.device).map_err(|error| error.to_string())?;
+    let extent = MacosPixelExtent::new(3, 3).map_err(|error| error.to_string())?;
+    let fixtures = native_format_vectors();
+
+    for (index, (format, color, planes)) in fixtures.into_iter().enumerate() {
+        let frame = Arc::new(native_capture_frame(
+            extent,
+            format,
+            color,
+            &planes,
+            u64::try_from(index + 1).map_err(|error| error.to_string())?,
+        )?);
+        let expected = scalar_rgba8(&frame)?;
+        let imported = bridge
+            .import_frame(&wgpu.device, 17, frame)
+            .map_err(|error| error.to_string())?;
+        let target = reducer
+            .create_target(
+                &wgpu.device,
+                extent.width,
+                extent.height,
+                MacosNativeTargetFormat::Rgba8,
+            )
+            .map_err(|error| error.to_string())?;
+        let descriptor = MacosNativeReductionDescriptor::new(
+            [extent.width, extent.height],
+            [0, 0, extent.width, extent.height],
+            [0.0, 0.0, extent.width as f32, extent.height as f32],
+            MacosNativeReductionFilter::Nearest,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+        let mut encoder = wgpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hypercolor macOS native format parity fixture"),
+            });
+        reducer
+            .encode(&imported, &target, descriptor, &mut encoder)
+            .map_err(|error| error.to_string())?;
+        let _ = wgpu.queue.submit(Some(encoder.finish()));
+        let actual = read_texture_pixels(
+            &wgpu.device,
+            &wgpu.queue,
+            target.texture(),
+            extent.width,
+            extent.height,
+        )?;
+        assert_eq!(actual, expected, "{format:?} scalar parity");
+    }
+    Ok(())
+}
+
+#[test]
+fn native_reducer_rejects_missing_yuv_color_metadata() -> Result<(), String> {
+    let wgpu = WgpuFixture::new()?;
+    let bridge = MacosScreenBridge::new(&wgpu.device).map_err(|error| error.to_string())?;
+    let reducer = MacosNativeReducer::new(&wgpu.device).map_err(|error| error.to_string())?;
+    let extent = MacosPixelExtent::new(1, 1).map_err(|error| error.to_string())?;
+    let valid_color = MacosCaptureColorimetry {
+        primaries: MacosColorPrimaries::Rec2020,
+        transfer: MacosTransferFunction::Pq,
+        matrix: Some(MacosYuvMatrix::Bt2020),
+        range: MacosColorRange::Video,
+        chroma_location: Some(MacosChromaLocation::Center),
+    };
+    let mut frame = native_capture_frame(
+        extent,
+        MacosCapturePixelFormat::Yuv420VideoRange,
+        valid_color,
+        &[vec![128], vec![64, 192]],
+        1,
+    )?;
+    frame.color.matrix = None;
+    let imported = bridge
+        .import_frame(&wgpu.device, 31, Arc::new(frame))
+        .map_err(|error| error.to_string())?;
+    let target = reducer
+        .create_target(&wgpu.device, 1, 1, MacosNativeTargetFormat::Rgba8)
+        .map_err(|error| error.to_string())?;
+    let descriptor = MacosNativeReductionDescriptor::new(
+        [1, 1],
+        [0, 0, 1, 1],
+        [0.0, 0.0, 1.0, 1.0],
+        MacosNativeReductionFilter::Nearest,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut encoder = wgpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hypercolor invalid YUV metadata fixture"),
+        });
+    assert!(matches!(
+        reducer.encode(&imported, &target, descriptor, &mut encoder),
+        Err(MacosNativeReductionError::InvalidPlanes(_))
+    ));
+    Ok(())
+}
+
 fn capture_frame() -> Result<MacosCaptureFrame, String> {
     let extent = MacosPixelExtent::new(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
     let pixels = fixture_pixels();
@@ -125,6 +340,179 @@ fn capture_frame() -> Result<MacosCaptureFrame, String> {
         cursor_composed: true,
         surface,
     })
+}
+
+fn native_capture_frame(
+    extent: MacosPixelExtent,
+    format: MacosCapturePixelFormat,
+    color: MacosCaptureColorimetry,
+    planes: &[Vec<u8>],
+    sequence: u64,
+) -> Result<MacosCaptureFrame, String> {
+    let borrowed = planes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let (surface, planes) =
+        MacosCaptureSurface::new_native_fixture(extent, format, color, &borrowed)
+            .map_err(|error| error.to_string())?;
+    Ok(MacosCaptureFrame {
+        epoch: 5,
+        sequence,
+        display_time: 13 + sequence,
+        storage_extent: extent,
+        planes: Arc::from(planes),
+        pixel_format: format,
+        color,
+        geometry: MacosCaptureGeometry {
+            display_scale_factor: MacosScale::display(1.0).map_err(|error| error.to_string())?,
+            content_scale: MacosScale::new(1.0).map_err(|error| error.to_string())?,
+            content_rect_points: MacosPointRect::new(
+                0.0,
+                0.0,
+                extent.width.into(),
+                extent.height.into(),
+            )
+            .map_err(|error| error.to_string())?,
+            content_rect_pixels: MacosPixelRect::new(0, 0, extent.width, extent.height)
+                .map_err(|error| error.to_string())?,
+            screen_rect_points: None,
+            bounding_rect_points: None,
+            bounding_rect_pixels: None,
+        },
+        damage: Arc::from([]),
+        cursor_composed: false,
+        surface,
+    })
+}
+
+fn native_format_vectors() -> Vec<(
+    MacosCapturePixelFormat,
+    MacosCaptureColorimetry,
+    Vec<Vec<u8>>,
+)> {
+    let rgb = MacosCaptureColorimetry {
+        primaries: MacosColorPrimaries::Srgb,
+        transfer: MacosTransferFunction::Srgb,
+        matrix: None,
+        range: MacosColorRange::Full,
+        chroma_location: None,
+    };
+    let linear = MacosCaptureColorimetry {
+        transfer: MacosTransferFunction::Linear,
+        ..rgb
+    };
+    let yuv = |range, matrix, chroma_location| MacosCaptureColorimetry {
+        primaries: MacosColorPrimaries::Rec2020,
+        transfer: MacosTransferFunction::Pq,
+        matrix: Some(matrix),
+        range,
+        chroma_location: Some(chroma_location),
+    };
+    let bgra = (0..9_u8)
+        .flat_map(|value| [value * 17, 255 - value * 13, value * 23, 255])
+        .collect();
+    let l10r: Vec<u8> = [
+        (0_u32, 0_u32, 0_u32, 3_u32),
+        (1_023, 0, 0, 3),
+        (0, 1_023, 0, 3),
+        (0, 0, 1_023, 3),
+        (512, 256, 768, 2),
+        (128, 900, 64, 1),
+        (900, 128, 512, 3),
+        (1023, 1023, 1023, 3),
+        (64, 32, 16, 0),
+    ]
+    .into_iter()
+    .flat_map(|(r, g, b, a): (u32, u32, u32, u32)| {
+        ((a << 30) | (r << 20) | (g << 10) | b).to_le_bytes()
+    })
+    .collect();
+    let rgha = [
+        [0x0000, 0x0000, 0x0000, 0x3c00],
+        [0x3c00, 0x0000, 0x0000, 0x3c00],
+        [0x0000, 0x3c00, 0x0000, 0x3c00],
+        [0x0000, 0x0000, 0x3c00, 0x3c00],
+        [0x4000, 0x3800, 0xbc00, 0x3800],
+        [0x3400, 0x3a00, 0x3e00, 0x3c00],
+        [0x3b00, 0x3900, 0x3700, 0x3c00],
+        [0x3c00, 0x3c00, 0x3c00, 0x3c00],
+        [0x2c00, 0x3000, 0x3400, 0x0000],
+    ]
+    .into_iter()
+    .flatten()
+    .flat_map(u16::to_le_bytes)
+    .collect();
+    let luma_video = vec![16, 64, 128, 192, 235, 96, 32, 160, 224];
+    let luma_full = vec![0, 31, 63, 95, 127, 159, 191, 223, 255];
+    let chroma = vec![16, 240, 128, 128, 240, 16, 64, 192];
+    let xf_luma = [0_u16, 64, 256, 512, 768, 876, 940, 1023, 128]
+        .into_iter()
+        .flat_map(|code| (code << 6).to_le_bytes())
+        .collect();
+    let xf_chroma: Vec<u8> = [
+        (512_u16, 512_u16),
+        (64, 960),
+        (960, 64),
+        (256, 768),
+        (768, 256),
+        (512, 960),
+        (960, 512),
+        (128, 128),
+        (896, 896),
+    ]
+    .into_iter()
+    .flat_map(|(cb, cr): (u16, u16)| [(cb << 6).to_le_bytes(), (cr << 6).to_le_bytes()])
+    .flatten()
+    .collect();
+    vec![
+        (MacosCapturePixelFormat::Bgra8, rgb, vec![bgra]),
+        (MacosCapturePixelFormat::Argb2101010, linear, vec![l10r]),
+        (MacosCapturePixelFormat::Rgba16Float, linear, vec![rgha]),
+        (
+            MacosCapturePixelFormat::Yuv420VideoRange,
+            yuv(
+                MacosColorRange::Video,
+                MacosYuvMatrix::Bt709,
+                MacosChromaLocation::Left,
+            ),
+            vec![luma_video, chroma.clone()],
+        ),
+        (
+            MacosCapturePixelFormat::Yuv420FullRange,
+            yuv(
+                MacosColorRange::Full,
+                MacosYuvMatrix::Bt2020,
+                MacosChromaLocation::TopLeft,
+            ),
+            vec![luma_full, chroma],
+        ),
+        (
+            MacosCapturePixelFormat::Yuv44410BiPlanar,
+            yuv(
+                MacosColorRange::Video,
+                MacosYuvMatrix::Bt601,
+                MacosChromaLocation::Center,
+            ),
+            vec![xf_luma, xf_chroma],
+        ),
+    ]
+}
+
+fn scalar_rgba8(frame: &MacosCaptureFrame) -> Result<Vec<u8>, String> {
+    frame
+        .with_cpu_source(|source| {
+            let mut output = Vec::new();
+            for y in 0..source.extent().height {
+                for x in 0..source.extent().width {
+                    let pixel = source
+                        .sample_rgba32f(x, y)
+                        .map_err(|error| error.to_string())?;
+                    output.extend(
+                        pixel.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8),
+                    );
+                }
+            }
+            Ok(output)
+        })
+        .map_err(|error| error.to_string())?
 }
 
 struct WgpuFixture {
