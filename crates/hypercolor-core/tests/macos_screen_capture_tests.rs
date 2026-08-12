@@ -9,16 +9,19 @@ use hypercolor_core::input::screen::{
     ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
 };
 use hypercolor_core::input::{
-    InputData, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
-    MacosDaemonOwnerConflict, MacosProtectedSourceState as CoreProtectedSourceState,
-    MacosSelectionState, SourcePlatformStatus,
+    InputData, InputManager, InputSource, MacosArchitecture, MacosAuthorizationState,
+    MacosCapabilityOwner, MacosDaemonOwnerConflict,
+    MacosProtectedSourceState as CoreProtectedSourceState, MacosSelectionState,
+    SourcePlatformStatus,
 };
 use hypercolor_macos_capture::{
-    MacosAttachment, MacosCaptureColorimetry, MacosCaptureError, MacosCaptureFrame,
-    MacosCapturePixelFormat, MacosCaptureSelection, MacosCaptureSurface, MacosColorPrimaries,
-    MacosColorRange, MacosFrameDecoder, MacosFrameEvent, MacosPixelExtent, MacosPointRect,
-    MacosProtectedSourceState, MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame,
-    MacosRawFrameAttachments, MacosTahoeSelectionCapabilities, MacosTransferFunction,
+    MacosAttachment, MacosCaptureCapabilities, MacosCaptureColorimetry, MacosCaptureError,
+    MacosCaptureFrame, MacosCapturePixelFormat, MacosCaptureSelection, MacosCaptureSurface,
+    MacosColorPrimaries, MacosColorRange, MacosFrameDecoder, MacosFrameEvent,
+    MacosHostArchitecture, MacosPixelExtent, MacosPointRect, MacosProtectedSourceState,
+    MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
+    MacosRuntimeCapability, MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilities,
+    MacosTransferFunction,
 };
 
 const BGRA8: u32 = 0x4247_5241;
@@ -123,6 +126,16 @@ fn fixture_capture_activates_only_for_live_demand() {
         ..CaptureConfig::default()
     };
     let (mut source, fixture) = fixture_source(config);
+    fixture.set_host_capabilities(MacosCaptureCapabilities::from_runtime(
+        MacosHostArchitecture::Intel,
+        false,
+        MacosTahoeRuntimeProbes {
+            content_tone_mapping_info_symbol: MacosRuntimeCapability::Absent,
+            screenshot_configuration_class: MacosRuntimeCapability::Present,
+            screenshot_dynamic_range_selector: MacosRuntimeCapability::Present,
+            screenshot_capture_selector: MacosRuntimeCapability::Present,
+        },
+    ));
 
     assert_eq!(source.name(), "macos_screen_capture");
     assert_eq!(
@@ -139,6 +152,9 @@ fn fixture_capture_activates_only_for_live_demand() {
             }),
         )
         .expect("fixture owner status updates");
+    source
+        .set_macos_metal4_capability(true)
+        .expect("fixture Metal 4 status updates");
     source
         .source_status_reporter()
         .expect("macOS fixture exposes status reporting")
@@ -162,6 +178,10 @@ fn fixture_capture_activates_only_for_live_demand() {
         })
     );
     assert_eq!(platform.selection, MacosSelectionState::None);
+    assert_eq!(platform.tahoe.host_architecture, MacosArchitecture::Intel);
+    assert!(!platform.tahoe.translated_process);
+    assert!(!platform.tahoe.content_tone_mapping_info);
+    assert!(platform.tahoe.metal4);
     assert!(!fixture.is_active());
     source.start().expect("fixture source starts idle");
     assert!(matches!(source.sample(), Ok(InputData::None)));
@@ -330,4 +350,37 @@ fn authorization_and_picker_actions_run_outside_graph_ownership() {
     };
     assert_eq!(platform.tcc, MacosAuthorizationState::Authorized);
     assert_eq!(platform.state, CoreProtectedSourceState::NeedsSelection);
+}
+
+#[test]
+fn late_macos_capture_source_inherits_process_capabilities() {
+    let (source, _) = fixture_source(CaptureConfig::default());
+    let status = source
+        .source_status_handle()
+        .expect("macOS fixture exposes status");
+    let conflict = MacosDaemonOwnerConflict {
+        active: MacosCapabilityOwner::HomebrewService,
+        contender: MacosCapabilityOwner::AppSidecar,
+        observed_at_ms: 42,
+    };
+    let mut manager = InputManager::new();
+    manager
+        .set_macos_daemon_ownership(
+            MacosCapabilityOwner::HomebrewService,
+            Some(conflict.clone()),
+        )
+        .expect("manager retains ownership before source registration");
+    manager
+        .set_macos_metal4_capability(true)
+        .expect("manager retains Metal 4 before source registration");
+
+    manager.add_source(Box::new(source));
+
+    let snapshot = status.snapshot();
+    let Some(SourcePlatformStatus::MacosScreen(platform)) = snapshot.platform.as_deref() else {
+        panic!("expected macOS screen platform status");
+    };
+    assert_eq!(platform.owner, MacosCapabilityOwner::HomebrewService);
+    assert_eq!(platform.owner_conflict.as_deref(), Some(&conflict));
+    assert!(platform.tahoe.metal4);
 }

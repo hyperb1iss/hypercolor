@@ -249,6 +249,8 @@ pub struct MacosScreenPlatformStatus {
     pub owner: MacosCapabilityOwner,
     /// Current system-picker selection.
     pub selection: MacosSelectionState,
+    /// Process-stable Tahoe host and active Metal-device capabilities.
+    pub tahoe: MacosTahoeCapabilities,
     /// Tahoe capabilities for the active selected stream.
     pub tahoe_selection: Option<MacosTahoeSelectionCapabilities>,
     /// Latest daemon-owner conflict, when one exists.

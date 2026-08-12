@@ -901,6 +901,11 @@ pub trait InputSource: Send {
         Ok(())
     }
 
+    /// Publish whether the active renderer device exposes required Metal 4 facilities.
+    fn set_macos_metal4_capability(&mut self, _metal4: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Discard any persisted source selection and prompt the user to pick again.
     ///
     /// # Errors

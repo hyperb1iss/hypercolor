@@ -62,6 +62,7 @@ use hypercolor_macos_gpu_interop::{
     MacosNativeOutputTransfer, MacosNativeReducer, MacosNativeReductionDescriptor,
     MacosNativeReductionFilter, MacosNativeReductionTarget, MacosNativeTargetFormat,
     MacosScreenBridge as MacosInteropScreenBridge, MacosScreenStorageIdentity,
+    probe_macos_metal4_capabilities,
 };
 use hypercolor_types::scene::ZoneId;
 #[cfg(target_os = "windows")]
@@ -1274,6 +1275,8 @@ pub(crate) struct GpuSparkleFlinger {
     screen_bridge: Option<Arc<MacosScreenBridge>>,
     #[cfg(all(target_os = "macos", feature = "screen-capture"))]
     screen_target: Option<ScreenNativeExecutionTarget>,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    metal4_capable: bool,
     #[cfg(test)]
     superseded_frame_count: usize,
     #[cfg(test)]
@@ -1637,6 +1640,8 @@ impl GpuSparkleFlinger {
         #[cfg(all(target_os = "macos", feature = "screen-capture"))]
         let (screen_bridge, screen_target) =
             create_screen_bridge(&device, probe.max_texture_dimension_2d);
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        let metal4_capable = probe_macos_metal4_capabilities(&device)?.all_required_facilities();
 
         Ok(Self {
             _render_device: render_device,
@@ -1679,6 +1684,8 @@ impl GpuSparkleFlinger {
             screen_bridge,
             #[cfg(all(target_os = "macos", feature = "screen-capture"))]
             screen_target,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            metal4_capable,
             #[cfg(test)]
             superseded_frame_count: 0,
             #[cfg(test)]
@@ -1702,6 +1709,11 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             fail_next_projected_scene_preparation: Cell::new(false),
         })
+    }
+
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    pub(crate) const fn macos_metal4_capability(&self) -> bool {
+        self.metal4_capable
     }
 
     fn take_sampling_readback_failure_injection(&mut self) -> bool {

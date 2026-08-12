@@ -16,11 +16,12 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
-    InputManager, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
-    MacosProtectedSourceState, MacosScreenPlatformStatus, MacosSelectionState, MediaSource,
-    NetSource, ScreenData, ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind,
-    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
-    SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
+    InputManager, InputSource, MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner,
+    MacosDaemonOwnerConflict, MacosProtectedSourceState, MacosScreenPlatformStatus,
+    MacosSelectionState, MacosTahoeCapabilities, MediaSource, NetSource, ScreenData,
+    ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind, SourcePlatformStatus,
+    SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
+    SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
     SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
@@ -44,6 +45,57 @@ struct StatusAwareScreenSource {
     running: bool,
     status: SourceStatusReporter,
     session_sink: Arc<Mutex<Option<SourceSessionWriter>>>,
+}
+
+#[derive(Debug, PartialEq)]
+struct RetainedMacosState {
+    owner: MacosCapabilityOwner,
+    conflict: Option<MacosDaemonOwnerConflict>,
+    metal4: bool,
+}
+
+struct MacosStateAwareSource {
+    state: Arc<Mutex<RetainedMacosState>>,
+    running: bool,
+}
+
+impl InputSource for MacosStateAwareSource {
+    fn name(&self) -> &'static str {
+        "MacosStateAware"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn set_macos_daemon_ownership(
+        &mut self,
+        owner: MacosCapabilityOwner,
+        conflict: Option<MacosDaemonOwnerConflict>,
+    ) -> anyhow::Result<()> {
+        let mut state = self.state.lock().expect("macOS state lock");
+        state.owner = owner;
+        state.conflict = conflict;
+        Ok(())
+    }
+
+    fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
+        self.state.lock().expect("macOS state lock").metal4 = metal4;
+        Ok(())
+    }
 }
 
 impl StatusAwareScreenSource {
@@ -990,6 +1042,41 @@ fn screen_source_produces_zone_colors() {
         }
         _ => panic!("expected InputData::Screen"),
     }
+}
+
+#[test]
+fn late_source_inherits_retained_macos_process_state() {
+    let conflict = MacosDaemonOwnerConflict {
+        active: MacosCapabilityOwner::LaunchdService,
+        contender: MacosCapabilityOwner::AppSidecar,
+        observed_at_ms: 73,
+    };
+    let state = Arc::new(Mutex::new(RetainedMacosState {
+        owner: MacosCapabilityOwner::Standalone,
+        conflict: None,
+        metal4: false,
+    }));
+    let mut manager = InputManager::new();
+    manager
+        .set_macos_daemon_ownership(MacosCapabilityOwner::LaunchdService, Some(conflict.clone()))
+        .expect("manager retains macOS ownership before registration");
+    manager
+        .set_macos_metal4_capability(true)
+        .expect("manager retains Metal 4 before registration");
+
+    manager.add_source(Box::new(MacosStateAwareSource {
+        state: Arc::clone(&state),
+        running: false,
+    }));
+
+    assert_eq!(
+        *state.lock().expect("macOS state lock"),
+        RetainedMacosState {
+            owner: MacosCapabilityOwner::LaunchdService,
+            conflict: Some(conflict),
+            metal4: true,
+        }
+    );
 }
 
 #[test]
@@ -3278,6 +3365,12 @@ fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
         tcc: MacosAuthorizationState::Authorized,
         owner: MacosCapabilityOwner::AppSidecar,
         selection: MacosSelectionState::None,
+        tahoe: MacosTahoeCapabilities {
+            host_architecture: MacosArchitecture::AppleSilicon,
+            translated_process: false,
+            content_tone_mapping_info: true,
+            metal4: false,
+        },
         tahoe_selection: None,
         owner_conflict: None,
     });

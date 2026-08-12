@@ -756,6 +756,7 @@ mod macos_capture_tests {
                         tcc: Some("authorized".to_owned()),
                         owner: Some("launchd_service".to_owned()),
                         selection: None,
+                        tahoe: None,
                         tahoe_selection: None,
                         owner_conflict: None,
                     }),

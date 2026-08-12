@@ -21,6 +21,9 @@ if TYPE_CHECKING:
     from ..models.macos_selection_state_api_type_0 import MacosSelectionStateApiType0
     from ..models.macos_selection_state_api_type_1 import MacosSelectionStateApiType1
     from ..models.macos_selection_state_api_type_2 import MacosSelectionStateApiType2
+    from ..models.macos_tahoe_capabilities_api_status import (
+        MacosTahoeCapabilitiesApiStatus,
+    )
     from ..models.macos_tahoe_selection_capabilities_api_status import (
         MacosTahoeSelectionCapabilitiesApiStatus,
     )
@@ -36,6 +39,7 @@ class InputSourcePlatformStatusType1:
         owner (MacosCapabilityOwnerApi):
         selection (MacosSelectionStateApiType0 | MacosSelectionStateApiType1 | MacosSelectionStateApiType2):
         state (MacosProtectedSourceStateApi):
+        tahoe (MacosTahoeCapabilitiesApiStatus):
         tcc (MacosAuthorizationStateApi):
         type_ (InputSourcePlatformStatusType1Type):
         owner_conflict (MacosDaemonOwnerConflictApiStatus | None | Unset):
@@ -49,6 +53,7 @@ class InputSourcePlatformStatusType1:
         | MacosSelectionStateApiType2
     )
     state: MacosProtectedSourceStateApi
+    tahoe: MacosTahoeCapabilitiesApiStatus
     tcc: MacosAuthorizationStateApi
     type_: InputSourcePlatformStatusType1Type
     owner_conflict: MacosDaemonOwnerConflictApiStatus | None | Unset = UNSET
@@ -81,6 +86,8 @@ class InputSourcePlatformStatusType1:
 
         state = self.state.value
 
+        tahoe = self.tahoe.to_dict()
+
         tcc = self.tcc.value
 
         type_ = self.type_.value
@@ -108,6 +115,7 @@ class InputSourcePlatformStatusType1:
                 "owner": owner,
                 "selection": selection,
                 "state": state,
+                "tahoe": tahoe,
                 "tcc": tcc,
                 "type": type_,
             }
@@ -132,6 +140,9 @@ class InputSourcePlatformStatusType1:
         )
         from ..models.macos_selection_state_api_type_2 import (
             MacosSelectionStateApiType2,
+        )
+        from ..models.macos_tahoe_capabilities_api_status import (
+            MacosTahoeCapabilitiesApiStatus,
         )
         from ..models.macos_tahoe_selection_capabilities_api_status import (
             MacosTahoeSelectionCapabilitiesApiStatus,
@@ -178,6 +189,8 @@ class InputSourcePlatformStatusType1:
         selection = _parse_selection(d.pop("selection"))
 
         state = MacosProtectedSourceStateApi(d.pop("state"))
+
+        tahoe = MacosTahoeCapabilitiesApiStatus.from_dict(d.pop("tahoe"))
 
         tcc = MacosAuthorizationStateApi(d.pop("tcc"))
 
@@ -229,6 +242,7 @@ class InputSourcePlatformStatusType1:
             owner=owner,
             selection=selection,
             state=state,
+            tahoe=tahoe,
             tcc=tcc,
             type_=type_,
             owner_conflict=owner_conflict,

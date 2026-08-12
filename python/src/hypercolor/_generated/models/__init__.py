@@ -270,6 +270,7 @@ from .led_topology_type_5 import LedTopologyType5
 from .led_topology_type_5_type import LedTopologyType5Type
 from .led_topology_type_6 import LedTopologyType6
 from .led_topology_type_6_type import LedTopologyType6Type
+from .macos_architecture_api import MacosArchitectureApi
 from .macos_authorization_state_api import MacosAuthorizationStateApi
 from .macos_capability_owner_api import MacosCapabilityOwnerApi
 from .macos_daemon_handover_phase_api import MacosDaemonHandoverPhaseApi
@@ -285,6 +286,7 @@ from .macos_selection_state_api_type_1 import MacosSelectionStateApiType1
 from .macos_selection_state_api_type_1_type import MacosSelectionStateApiType1Type
 from .macos_selection_state_api_type_2 import MacosSelectionStateApiType2
 from .macos_selection_state_api_type_2_type import MacosSelectionStateApiType2Type
+from .macos_tahoe_capabilities_api_status import MacosTahoeCapabilitiesApiStatus
 from .macos_tahoe_selection_capabilities_api_status import (
     MacosTahoeSelectionCapabilitiesApiStatus,
 )
@@ -601,6 +603,7 @@ __all__ = (
     "LedTopologyType5Type",
     "LedTopologyType6",
     "LedTopologyType6Type",
+    "MacosArchitectureApi",
     "MacosAuthorizationStateApi",
     "MacosCapabilityOwnerApi",
     "MacosDaemonHandoverPhaseApi",
@@ -614,6 +617,7 @@ __all__ = (
     "MacosSelectionStateApiType1Type",
     "MacosSelectionStateApiType2",
     "MacosSelectionStateApiType2Type",
+    "MacosTahoeCapabilitiesApiStatus",
     "MacosTahoeSelectionCapabilitiesApiStatus",
     "Meta",
     "NormalizedPosition",

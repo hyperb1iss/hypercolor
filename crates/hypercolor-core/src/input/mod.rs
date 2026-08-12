@@ -313,6 +313,9 @@ pub struct InputManager {
     source_status_registry: SourceStatusRegistry,
     event_scratch: Vec<TimedInputEvent>,
     audio_capture_active: Option<bool>,
+    macos_capability_owner: MacosCapabilityOwner,
+    macos_owner_conflict: Option<MacosDaemonOwnerConflict>,
+    macos_metal4: bool,
     screen_capture_demand: Option<ScreenCaptureDemand>,
     screen_publication_demand: Option<ScreenPublicationDemandSnapshot>,
     screen_publication_source_snapshot: Vec<(u64, u64)>,
@@ -568,6 +571,9 @@ impl InputManager {
             source_status_registry: SourceStatusRegistry::new(),
             event_scratch: Vec::with_capacity(INPUT_EVENT_RING_CAPACITY),
             audio_capture_active: None,
+            macos_capability_owner: MacosCapabilityOwner::Standalone,
+            macos_owner_conflict: None,
+            macos_metal4: false,
             screen_capture_demand: None,
             screen_publication_demand: None,
             screen_publication_source_snapshot: Vec::new(),
@@ -1950,8 +1956,24 @@ impl InputManager {
         owner: MacosCapabilityOwner,
         conflict: Option<MacosDaemonOwnerConflict>,
     ) -> anyhow::Result<()> {
+        self.macos_capability_owner = owner;
+        self.macos_owner_conflict.clone_from(&conflict);
         for source in &mut self.sources {
             source.set_macos_daemon_ownership(owner, conflict.clone())?;
+        }
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
+    /// Publish the active renderer device's Metal 4 capability into macOS source status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a source can no longer publish status.
+    pub fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
+        self.macos_metal4 = metal4;
+        for source in &mut self.sources {
+            source.set_macos_metal4_capability(metal4)?;
         }
         self.publish_source_status_registry();
         Ok(())
@@ -2031,9 +2053,18 @@ impl InputManager {
 
     fn create_managed_source(
         &mut self,
-        source: Box<dyn InputSource>,
+        mut source: Box<dyn InputSource>,
         source_graph_generation: u64,
     ) -> ManagedInputSource {
+        source
+            .set_macos_daemon_ownership(
+                self.macos_capability_owner,
+                self.macos_owner_conflict.clone(),
+            )
+            .expect("new source accepts retained macOS ownership status");
+        source
+            .set_macos_metal4_capability(self.macos_metal4)
+            .expect("new source accepts retained macOS Metal 4 status");
         let id = self.next_source_slot_id;
         self.next_source_slot_id = self
             .next_source_slot_id

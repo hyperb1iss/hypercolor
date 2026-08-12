@@ -2097,7 +2097,7 @@ impl PipelineRuntime {
         input_demands: InputPublicationDemandHandle,
     ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.read().await.clone();
-        Self::new_with_gpu_device(
+        let pipeline = Self::new_with_gpu_device(
             state.canvas_dims.width(),
             state.canvas_dims.height(),
             initial_spatial_engine,
@@ -2110,7 +2110,16 @@ impl PipelineRuntime {
             input_reader,
             input_demands,
             state.interaction_routing.clone(),
-        )
+        )?;
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        state
+            .input_manager
+            .lock()
+            .await
+            .set_macos_metal4_capability(
+                pipeline.render.sparkleflinger.macos_metal4_capability(),
+            )?;
+        Ok(pipeline)
     }
 
     #[cfg(test)]

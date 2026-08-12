@@ -682,6 +682,14 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn macos_metal4_capability(&self) -> bool {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => false,
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.macos_metal4_capability(),
+        }
+    }
+
     #[cfg_attr(not(feature = "wgpu"), allow(unused_variables))]
     pub(crate) fn prepare_zone_sampling_plan(
         &mut self,

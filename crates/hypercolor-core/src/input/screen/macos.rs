@@ -6,12 +6,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use hypercolor_macos_capture::{
-    MacosCaptureContentStyle, MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat,
-    MacosCaptureSelection, MacosColorPrimaries, MacosCpuSourceView, MacosDisplayClock,
-    MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
+    MacosCaptureCapabilities as NativeCaptureCapabilities, MacosCaptureContentStyle,
+    MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat, MacosCaptureSelection,
+    MacosColorPrimaries, MacosCpuSourceView, MacosDisplayClock, MacosFrameEvent, MacosFrameMailbox,
+    MacosFrameStatus, MacosHostArchitecture as NativeHostArchitecture,
     MacosProtectedSourceState as NativeProtectedSourceState,
     MacosTahoeSelectionCapabilities as NativeTahoeSelectionCapabilities, MacosTransferFunction,
 };
+#[cfg(feature = "macos-capture-fixtures")]
+use hypercolor_macos_capture::{MacosRuntimeCapability, MacosTahoeRuntimeProbes};
 use tokio::sync::oneshot;
 
 #[cfg(target_os = "macos")]
@@ -50,9 +53,10 @@ use crate::input::traits::{
     InputData, InputSource, ProtectedSourceAuthorizationAction, ScreenSourcePickerAction,
 };
 use crate::input::{
-    MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
-    MacosScreenPlatformStatus, MacosSelectionState, MacosTahoeSelectionCapabilities, SourceKind,
-    SourcePlatformStatus, SourceStatusHandle, SourceStatusReporter,
+    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
+    MacosScreenPlatformStatus, MacosSelectionState, MacosTahoeCapabilities,
+    MacosTahoeSelectionCapabilities, SourceKind, SourcePlatformStatus, SourceStatusHandle,
+    SourceStatusReporter,
 };
 
 const WORKER_WAIT: Duration = Duration::from_millis(100);
@@ -279,6 +283,7 @@ trait MacosCaptureControl: Send + Sync {
     fn status(&self) -> NativeProtectedSourceState;
     fn selection(&self) -> MacosCaptureSelection;
     fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities>;
+    fn host_capabilities(&self) -> NativeCaptureCapabilities;
     fn authorization(&self) -> MacosAuthorizationState;
     fn captured_at(&self, display_time: u64) -> anyhow::Result<Instant>;
 }
@@ -287,6 +292,7 @@ trait MacosCaptureControl: Send + Sync {
 struct NativeCaptureControl {
     session: MacosScreenCaptureSession,
     clock: MacosDisplayClock,
+    host_capabilities: NativeCaptureCapabilities,
 }
 
 #[cfg(target_os = "macos")]
@@ -317,6 +323,10 @@ impl MacosCaptureControl for NativeCaptureControl {
 
     fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities> {
         self.session.tahoe_selection_capabilities()
+    }
+
+    fn host_capabilities(&self) -> NativeCaptureCapabilities {
+        self.host_capabilities
     }
 
     fn authorization(&self) -> MacosAuthorizationState {
@@ -641,6 +651,7 @@ pub struct MacosScreenCaptureInput {
     status_session: SourceSessionSlot,
     owner: MacosCapabilityOwner,
     owner_conflict: Option<Arc<crate::input::MacosDaemonOwnerConflict>>,
+    metal4: bool,
 }
 
 impl MacosScreenCaptureInput {
@@ -654,6 +665,7 @@ impl MacosScreenCaptureInput {
             false,
         )?;
         let selector = MacosCaptureSelector::parse(&config.source)?;
+        let host_capabilities = MacosScreenCaptureSession::capabilities()?;
         let pool_coordinator = admission.clone();
         let session = MacosScreenCaptureSession::new_with_pool_admission(
             request,
@@ -674,7 +686,11 @@ impl MacosScreenCaptureInput {
         Ok(Self::with_control(
             config,
             admission,
-            Arc::new(NativeCaptureControl { session, clock }),
+            Arc::new(NativeCaptureControl {
+                session,
+                clock,
+                host_capabilities,
+            }),
         ))
     }
 
@@ -705,6 +721,7 @@ impl MacosScreenCaptureInput {
             status_session: SourceSessionSlot::new(),
             owner: MacosCapabilityOwner::Standalone,
             owner_conflict: None,
+            metal4: false,
         };
         source
             .refresh_platform_status()
@@ -743,6 +760,7 @@ impl MacosScreenCaptureInput {
                     tcc: self.control.authorization(),
                     owner: self.owner,
                     selection: map_selection(self.control.selection()),
+                    tahoe: map_tahoe_capabilities(self.control.host_capabilities(), self.metal4),
                     tahoe_selection: self
                         .control
                         .tahoe_selection_capabilities()
@@ -895,6 +913,11 @@ impl InputSource for MacosScreenCaptureInput {
     ) -> anyhow::Result<()> {
         self.owner = owner;
         self.owner_conflict = conflict.map(Arc::new);
+        self.refresh_platform_status()
+    }
+
+    fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
+        self.metal4 = metal4;
         self.refresh_platform_status()
     }
 
@@ -2408,6 +2431,21 @@ fn map_tahoe_selection_capabilities(
     }
 }
 
+fn map_tahoe_capabilities(
+    capabilities: NativeCaptureCapabilities,
+    metal4: bool,
+) -> MacosTahoeCapabilities {
+    MacosTahoeCapabilities {
+        host_architecture: match capabilities.host_architecture {
+            NativeHostArchitecture::AppleSilicon => MacosArchitecture::AppleSilicon,
+            NativeHostArchitecture::Intel => MacosArchitecture::Intel,
+        },
+        translated_process: capabilities.translated_process,
+        content_tone_mapping_info: capabilities.tahoe.content_tone_mapping_info.is_present(),
+        metal4,
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -2422,6 +2460,7 @@ struct FixtureControl {
     status: Mutex<NativeProtectedSourceState>,
     selection: Mutex<MacosCaptureSelection>,
     tahoe_selection: Mutex<Option<NativeTahoeSelectionCapabilities>>,
+    host_capabilities: Mutex<NativeCaptureCapabilities>,
     captured_at: Mutex<Option<Instant>>,
 }
 
@@ -2435,6 +2474,16 @@ impl Default for FixtureControl {
             status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
             selection: Mutex::new(MacosCaptureSelection::None),
             tahoe_selection: Mutex::new(None),
+            host_capabilities: Mutex::new(NativeCaptureCapabilities::from_runtime(
+                NativeHostArchitecture::AppleSilicon,
+                true,
+                MacosTahoeRuntimeProbes {
+                    content_tone_mapping_info_symbol: MacosRuntimeCapability::Present,
+                    screenshot_configuration_class: MacosRuntimeCapability::Present,
+                    screenshot_dynamic_range_selector: MacosRuntimeCapability::Present,
+                    screenshot_capture_selector: MacosRuntimeCapability::Present,
+                },
+            )),
             captured_at: Mutex::new(None),
         }
     }
@@ -2478,6 +2527,10 @@ impl MacosCaptureControl for FixtureControl {
 
     fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities> {
         lock(&self.tahoe_selection).clone()
+    }
+
+    fn host_capabilities(&self) -> NativeCaptureCapabilities {
+        *lock(&self.host_capabilities)
     }
 
     fn authorization(&self) -> MacosAuthorizationState {
@@ -2547,6 +2600,10 @@ impl MacosScreenCaptureFixture {
         capabilities: Option<NativeTahoeSelectionCapabilities>,
     ) {
         *lock(&self.control.tahoe_selection) = capabilities;
+    }
+
+    pub fn set_host_capabilities(&self, capabilities: NativeCaptureCapabilities) {
+        *lock(&self.control.host_capabilities) = capabilities;
     }
 }
 

@@ -128,6 +128,16 @@ pub struct MacosTahoeSelectionStatus {
     pub dual_range_screenshots: Option<bool>,
 }
 
+/// Process-stable Tahoe host and active Metal-device capabilities.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MacosTahoeStatus {
+    pub host_architecture: Option<String>,
+    pub translated_process: Option<bool>,
+    pub content_tone_mapping_info: Option<bool>,
+    pub metal4: Option<bool>,
+}
+
 /// Platform-specific source state carried by the daemon status endpoint.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -155,6 +165,8 @@ pub enum InputSourcePlatformStatus {
         owner: Option<String>,
         #[serde(default)]
         selection: Option<MacosSelectionStatus>,
+        #[serde(default)]
+        tahoe: Option<MacosTahoeStatus>,
         #[serde(default)]
         tahoe_selection: Option<MacosTahoeSelectionStatus>,
         #[serde(default)]
@@ -249,7 +261,7 @@ mod tests {
     use super::{
         InputSourcePlatformStatus, InputSourceStatus, MacosDaemonOwnerConflictStatus,
         MacosDaemonOwnerRecoveryRequiredStatus, MacosDaemonOwnershipStatus, MacosSelectionStatus,
-        MacosTahoeSelectionStatus,
+        MacosTahoeSelectionStatus, MacosTahoeStatus,
     };
 
     #[test]
@@ -373,6 +385,13 @@ mod tests {
                     "content_style": "multiple_windows",
                     "future_selection_field": "ignored"
                 },
+                "tahoe": {
+                    "host_architecture": "apple_silicon",
+                    "translated_process": true,
+                    "content_tone_mapping_info": true,
+                    "metal4": false,
+                    "future_host_field": "ignored"
+                },
                 "tahoe_selection": {
                     "source_id": "session:23",
                     "capture_session_generation": 29,
@@ -396,6 +415,7 @@ mod tests {
             tcc,
             owner,
             selection,
+            tahoe,
             tahoe_selection,
             owner_conflict,
         }) = status.platform
@@ -406,6 +426,15 @@ mod tests {
         assert_eq!(state.as_deref(), Some("interrupted"));
         assert_eq!(tcc.as_deref(), Some("denied"));
         assert_eq!(owner.as_deref(), Some("standalone"));
+        assert_eq!(
+            tahoe,
+            Some(MacosTahoeStatus {
+                host_architecture: Some("apple_silicon".to_owned()),
+                translated_process: Some(true),
+                content_tone_mapping_info: Some(true),
+                metal4: Some(false),
+            })
+        );
         assert_eq!(
             selection,
             Some(MacosSelectionStatus::SessionScoped {

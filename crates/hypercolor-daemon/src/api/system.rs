@@ -14,10 +14,10 @@ use hypercolor_core::input::screen::{
     PixelExtent, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan,
 };
 use hypercolor_core::input::{
-    MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
+    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
     MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosSelectionState, MacosTahoeSelectionCapabilities, SourceFreshness, SourceIssue, SourceKind,
-    SourcePlatformStatus, SourceState, SourceStatus,
+    MacosSelectionState, MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, SourceFreshness,
+    SourceIssue, SourceKind, SourcePlatformStatus, SourceState, SourceStatus,
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -281,6 +281,21 @@ pub struct MacosTahoeSelectionCapabilitiesApiStatus {
     pub dual_range_screenshots: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosArchitectureApi {
+    AppleSilicon,
+    Intel,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosTahoeCapabilitiesApiStatus {
+    pub host_architecture: MacosArchitectureApi,
+    pub translated_process: bool,
+    pub content_tone_mapping_info: bool,
+    pub metal4: bool,
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputSourcePlatformStatus {
@@ -298,6 +313,7 @@ pub enum InputSourcePlatformStatus {
         tcc: MacosAuthorizationStateApi,
         owner: MacosCapabilityOwnerApi,
         selection: MacosSelectionStateApi,
+        tahoe: MacosTahoeCapabilitiesApiStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tahoe_selection: Option<MacosTahoeSelectionCapabilitiesApiStatus>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -770,6 +786,7 @@ fn macos_screen_platform_status(status: &MacosScreenPlatformStatus) -> InputSour
         tcc: macos_authorization_state(status.tcc),
         owner: macos_capability_owner(status.owner),
         selection: macos_selection_state(&status.selection),
+        tahoe: macos_tahoe_capabilities(&status.tahoe),
         tahoe_selection: status
             .tahoe_selection
             .as_ref()
@@ -932,6 +949,20 @@ fn macos_tahoe_selection_capabilities(
         capture_session_generation: capabilities.capture_session_generation,
         hdr_capture: capabilities.hdr_capture,
         dual_range_screenshots: capabilities.dual_range_screenshots,
+    }
+}
+
+fn macos_tahoe_capabilities(
+    capabilities: &MacosTahoeCapabilities,
+) -> MacosTahoeCapabilitiesApiStatus {
+    MacosTahoeCapabilitiesApiStatus {
+        host_architecture: match capabilities.host_architecture {
+            MacosArchitecture::AppleSilicon => MacosArchitectureApi::AppleSilicon,
+            MacosArchitecture::Intel => MacosArchitectureApi::Intel,
+        },
+        translated_process: capabilities.translated_process,
+        content_tone_mapping_info: capabilities.content_tone_mapping_info,
+        metal4: capabilities.metal4,
     }
 }
 
@@ -1930,10 +1961,10 @@ mod tests {
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::input::screen::ScreenAdmissionCapacity;
     use hypercolor_core::input::{
-        MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
+        MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
         MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
-        MacosSelectionState, MacosTahoeSelectionCapabilities, SourceFreshness, SourceKind,
-        SourcePlatformStatus, SourceState, SourceStatus,
+        MacosSelectionState, MacosTahoeCapabilities, MacosTahoeSelectionCapabilities,
+        SourceFreshness, SourceKind, SourcePlatformStatus, SourceState, SourceStatus,
     };
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
@@ -2049,6 +2080,12 @@ mod tests {
             selection: MacosSelectionState::SessionScoped {
                 content_style: Arc::from("multiple_windows"),
             },
+            tahoe: MacosTahoeCapabilities {
+                host_architecture: MacosArchitecture::AppleSilicon,
+                translated_process: true,
+                content_tone_mapping_info: true,
+                metal4: false,
+            },
             tahoe_selection: Some(MacosTahoeSelectionCapabilities {
                 source_id: Arc::from("session:23"),
                 capture_session_generation: 29,
@@ -2075,6 +2112,12 @@ mod tests {
                 "selection": {
                     "type": "session_scoped",
                     "content_style": "multiple_windows"
+                },
+                "tahoe": {
+                    "host_architecture": "apple_silicon",
+                    "translated_process": true,
+                    "content_tone_mapping_info": true,
+                    "metal4": false
                 },
                 "tahoe_selection": {
                     "source_id": "session:23",
@@ -2161,6 +2204,8 @@ mod tests {
         assert!(schemas.contains_key("MacosDaemonOwnerRecoveryRequiredApiStatus"));
         assert!(schemas.contains_key("MacosDaemonHandoverPhaseApi"));
         assert!(schemas.contains_key("MacosSelectionStateApi"));
+        assert!(schemas.contains_key("MacosArchitectureApi"));
+        assert!(schemas.contains_key("MacosTahoeCapabilitiesApiStatus"));
         assert!(schemas.contains_key("MacosTahoeSelectionCapabilitiesApiStatus"));
         let platform_schema = &schemas["InputSourcePlatformStatus"];
         let encoded = serde_json::to_string(platform_schema).expect("schema should encode");

@@ -349,6 +349,7 @@ pub(super) fn platform_status_view(platform: InputSourcePlatformStatus) -> impl 
             tcc,
             owner,
             selection,
+            tahoe,
             tahoe_selection,
             owner_conflict,
         } => {
@@ -362,6 +363,7 @@ pub(super) fn platform_status_view(platform: InputSourcePlatformStatus) -> impl 
                     "Dynamic range pending",
                     |hdr| if hdr { "HDR" } else { "SDR" },
                 );
+            let host = tahoe.as_ref().map(tahoe_host_label);
             view! {
                 <div class="mt-2 border-t border-edge-subtle/40 pt-2 text-[11px] text-fg-secondary">
                     <div>{format!(
@@ -371,6 +373,9 @@ pub(super) fn platform_status_view(platform: InputSourcePlatformStatus) -> impl 
                         humanize_optional(owner.as_deref()),
                     )}</div>
                     <div class="mt-0.5 text-fg-tertiary">{format!("{selection} · {range}")}</div>
+                    {host.map(|host| view! {
+                        <div class="mt-0.5 text-fg-tertiary">{host}</div>
+                    })}
                     {owner_conflict.map(|conflict| view! {
                         <div class="mt-1 text-status-warning">
                             {format!(
@@ -414,6 +419,32 @@ fn screen_selection_label(selection: &crate::api::MacosSelectionStatus) -> Strin
 
 fn humanize_optional(value: Option<&str>) -> String {
     value.map_or_else(|| "unknown".to_owned(), humanize)
+}
+
+const fn capability_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "available",
+        Some(false) => "unavailable",
+        None => "unknown",
+    }
+}
+
+const fn boolean_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+fn tahoe_host_label(capabilities: &crate::api::MacosTahoeStatus) -> String {
+    format!(
+        "Host {} · Rosetta translated {} · Core Graphics tone mapping {} · Metal 4 {}",
+        humanize_optional(capabilities.host_architecture.as_deref()),
+        boolean_label(capabilities.translated_process),
+        capability_label(capabilities.content_tone_mapping_info),
+        capability_label(capabilities.metal4),
+    )
 }
 
 pub(super) fn macos_keyboard_needs_authorization(status: &InputStatus) -> bool {
@@ -490,10 +521,12 @@ pub(super) fn humanize(value: &str) -> String {
 mod tests {
     use crate::api::{
         InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosDaemonOwnershipStatus,
-        SystemStatus,
+        MacosTahoeStatus, SystemStatus,
     };
 
-    use super::{macos_keyboard_needs_authorization, macos_keyboard_restart_coordinates};
+    use super::{
+        macos_keyboard_needs_authorization, macos_keyboard_restart_coordinates, tahoe_host_label,
+    };
 
     fn system_status(
         input: InputStatus,
@@ -561,6 +594,7 @@ mod tests {
                     tcc: Some("denied".to_owned()),
                     owner: Some("app_sidecar".to_owned()),
                     selection: None,
+                    tahoe: None,
                     tahoe_selection: None,
                     owner_conflict: None,
                 }),
@@ -579,10 +613,26 @@ mod tests {
             tcc: Some("authorized".to_owned()),
             owner: Some("app_sidecar".to_owned()),
             selection: None,
+            tahoe: None,
             tahoe_selection: None,
             owner_conflict: None,
         });
         assert!(!super::super::macos_screen_needs_authorization(&status));
+    }
+
+    #[test]
+    fn tahoe_host_label_reports_current_rosetta_translation_state() {
+        let capabilities = MacosTahoeStatus {
+            host_architecture: Some("apple_silicon".to_owned()),
+            translated_process: Some(false),
+            content_tone_mapping_info: Some(true),
+            metal4: Some(false),
+        };
+
+        assert_eq!(
+            tahoe_host_label(&capabilities),
+            "Host Apple silicon · Rosetta translated no · Core Graphics tone mapping available · Metal 4 unavailable"
+        );
     }
 
     #[test]
