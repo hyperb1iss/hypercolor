@@ -43,5 +43,5 @@ pub use stream_contract::{
     MacosDeliveredFrameMetadata, MacosHostArchitecture, MacosRuntimeCapability,
     MacosStreamDeliveryRejection, MacosStreamDeliveryState, MacosStreamDeliveryValidator,
     MacosStreamPreset, MacosTahoeCapabilities, MacosTahoeRuntimeProbes,
-    MacosValidatedStreamDelivery,
+    MacosTahoeSelectionCapabilities, MacosValidatedStreamDelivery,
 };

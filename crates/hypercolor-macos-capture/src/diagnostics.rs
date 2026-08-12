@@ -82,6 +82,7 @@ impl MacosFrameDropReason {
             | MacosCaptureError::CpuDestinationTooSmall { .. }
             | MacosCaptureError::SequenceExhausted
             | MacosCaptureError::StreamDeliveryRejected(_)
+            | MacosCaptureError::FrameDeliveryDropped(_)
             | MacosCaptureError::CapabilityProbeFailed(_)
             | MacosCaptureError::Geometry(_) => Self::Validation,
             MacosCaptureError::ScreenResourceExhausted { .. } => Self::Resource,
@@ -154,7 +155,9 @@ impl CallbackCounters {
 
 #[cfg(test)]
 mod tests {
-    use super::{MacosCaptureError, MacosFrameDropReason};
+    use crate::MacosStreamDeliveryRejection;
+
+    use super::{CallbackCounters, MacosCaptureError, MacosFrameDropReason};
 
     #[test]
     fn resource_exhaustion_has_a_distinct_drop_reason() {
@@ -165,5 +168,17 @@ mod tests {
             }),
             MacosFrameDropReason::Resource
         );
+    }
+
+    #[test]
+    fn dropped_delivery_metadata_increments_the_validation_counter() {
+        let counters = CallbackCounters::default();
+        counters.record_drop(&MacosCaptureError::FrameDeliveryDropped(
+            MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("colorimetry"),
+        ));
+
+        let diagnostics = counters.snapshot(0);
+        assert_eq!(diagnostics.total_dropped(), 1);
+        assert_eq!(diagnostics.dropped(MacosFrameDropReason::Validation), 1);
     }
 }

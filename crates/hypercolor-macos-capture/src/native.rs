@@ -50,6 +50,7 @@ use objc2_screen_capture_kit::{
 };
 
 use crate::diagnostics::CallbackCounters;
+use crate::stream_contract::MacosTahoeSelectionCapabilityState;
 use crate::worker::{LatestSampleInput, LatestSampleWorker, SamplePublishOutcome};
 use crate::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCallbackDiagnostics,
@@ -61,8 +62,9 @@ use crate::{
     MacosPixelRect, MacosPointRect, MacosProtectedSourceState, MacosRawCapturePlane,
     MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments, MacosRuntimeCapability,
     MacosScale, MacosStreamDeliveryRejection, MacosStreamDeliveryState,
-    MacosStreamDeliveryValidator, MacosStreamPreset, MacosStreamRequest, MacosTahoeRuntimeProbes,
-    MacosTransferFunction, MacosYuvMatrix,
+    MacosStreamDeliveryValidator, MacosStreamPreset, MacosStreamRequest, MacosTahoeCapabilities,
+    MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilities, MacosTransferFunction,
+    MacosValidatedStreamDelivery, MacosYuvMatrix,
 };
 
 type PoolBackingLifetime = Arc<dyn Send + Sync>;
@@ -78,21 +80,33 @@ const MACOS_IOSURFACE_ALLOCATION_ALIGNMENT: u64 = 16 * 1024;
 struct SessionShared {
     mailbox: MacosFrameMailbox,
     status: Mutex<MacosProtectedSourceState>,
-    selection: Mutex<MacosCaptureSelection>,
+    selection: Mutex<SessionSelectionState>,
     selector: Mutex<MacosCaptureSelector>,
+    tahoe: MacosTahoeCapabilities,
     counters: CallbackCounters,
     capture_active: AtomicBool,
     current_epoch: AtomicU64,
     resolution_epoch: AtomicU64,
 }
 
+#[derive(Debug, Default)]
+struct SessionSelectionState {
+    selection: MacosCaptureSelection,
+    tahoe: MacosTahoeSelectionCapabilityState,
+}
+
 impl SessionShared {
-    fn new(status: MacosProtectedSourceState, selector: MacosCaptureSelector) -> Self {
+    fn new(
+        status: MacosProtectedSourceState,
+        selector: MacosCaptureSelector,
+        tahoe: MacosTahoeCapabilities,
+    ) -> Self {
         Self {
             mailbox: MacosFrameMailbox::new(),
             status: Mutex::new(status),
-            selection: Mutex::new(MacosCaptureSelection::None),
+            selection: Mutex::new(SessionSelectionState::default()),
             selector: Mutex::new(selector),
+            tahoe,
             counters: CallbackCounters::default(),
             capture_active: AtomicBool::new(false),
             current_epoch: AtomicU64::new(0),
@@ -109,11 +123,37 @@ impl SessionShared {
     }
 
     fn selection(&self) -> MacosCaptureSelection {
-        lock(&self.selection).clone()
+        lock(&self.selection).selection.clone()
     }
 
-    fn set_selection(&self, selection: MacosCaptureSelection) {
-        *lock(&self.selection) = selection;
+    fn set_unconfirmed_selection(&self, selection: MacosCaptureSelection) {
+        let mut state = lock(&self.selection);
+        state.selection = selection;
+        state.tahoe.clear();
+    }
+
+    fn confirm_selection(
+        &self,
+        selection: MacosCaptureSelection,
+        source_id: Arc<str>,
+        epoch: u64,
+        delivery: MacosValidatedStreamDelivery,
+    ) {
+        let mut state = lock(&self.selection);
+        state.selection = selection;
+        state.tahoe.confirm(source_id, epoch, delivery, self.tahoe);
+    }
+
+    fn clear_tahoe_selection(&self) {
+        lock(&self.selection).tahoe.clear();
+    }
+
+    fn tahoe_selection_for(
+        &self,
+        source_id: &str,
+        epoch: u64,
+    ) -> Option<MacosTahoeSelectionCapabilities> {
+        lock(&self.selection).tahoe.current_for(source_id, epoch)
     }
 
     fn selector(&self) -> MacosCaptureSelector {
@@ -197,6 +237,11 @@ struct RetainedNativeSample {
     pixel_buffer: Option<CFRetained<CVPixelBuffer>>,
     admission_lifetime: Option<PoolBackingLifetime>,
     cursor_composed: bool,
+}
+
+struct DecodedSample {
+    event: MacosFrameEvent,
+    confirmed_delivery: Option<MacosValidatedStreamDelivery>,
 }
 
 // SAFETY: The retained Core Video pixel buffer is reference-counted and the
@@ -309,22 +354,27 @@ fn borrowed_surface_identity(
 }
 
 fn publish_decoded_result(
-    result: Result<MacosFrameEvent, MacosCaptureError>,
+    result: Result<DecodedSample, MacosCaptureError>,
     epoch: u64,
     streams: &Weak<StreamSlot>,
     shared: &Arc<SessionShared>,
 ) {
     match result {
-        Ok(MacosFrameEvent::Frame(frame)) => {
+        Ok(DecodedSample {
+            event: MacosFrameEvent::Frame(frame),
+            confirmed_delivery,
+        }) => {
             let active = shared.current_epoch() == epoch
                 || streams
                     .upgrade()
-                    .is_some_and(|streams| streams.activate(epoch));
+                    .is_some_and(|streams| streams.activate(epoch, confirmed_delivery));
             if active {
                 shared.publish(MacosFrameEvent::Frame(frame));
             }
         }
-        Ok(event) if shared.current_epoch() == epoch => shared.publish(event),
+        Ok(DecodedSample { event, .. }) if shared.current_epoch() == epoch => {
+            shared.publish(event);
+        }
         Ok(_) => {}
         Err(error @ MacosCaptureError::StreamDeliveryRejected(_)) => {
             handle_fatal_stream_error(streams, epoch, Arc::clone(shared), error);
@@ -473,6 +523,7 @@ struct NativeStream {
     stream: Retained<SCStream>,
     filter: NativeFilter,
     selection: MacosCaptureSelection,
+    source_id: Arc<str>,
     worker: LatestSampleWorker<Result<RetainedNativeSample, MacosCaptureError>>,
     _output: Retained<CaptureOutput>,
     _queue: DispatchRetained<DispatchQueue>,
@@ -497,6 +548,7 @@ impl NativeStream {
         let quote = conservative_pool_quote(extent, configured_stream.configured_pixel_format)?;
         let pool = reserve_pool(quote.per_surface_bytes, quote.stream_metadata_bytes)?;
         let selection = selection_from_filter(filter)?;
+        let source_id = selection_source_id(filter, &selection);
         // SAFETY: The picker callback supplies a live filter. Retaining it
         // preserves the immutable selection through stream retirement.
         let retained_filter = unsafe {
@@ -512,7 +564,7 @@ impl NativeStream {
             "hypercolor-macos-screen-capture",
             move |sample: Result<RetainedNativeSample, MacosCaptureError>| match sample {
                 Ok(sample) => decode_sample(&mut decoder, &mut delivery_validator, sample),
-                Err(error) => Err(reject_first_delivery(&mut delivery_validator, error)),
+                Err(error) => Err(classify_delivery_error(&mut delivery_validator, error)),
             },
             move |result| {
                 publish_decoded_result(result, epoch, &worker_streams, &worker_shared);
@@ -560,6 +612,7 @@ impl NativeStream {
             stream,
             filter: NativeFilter(retained_filter),
             selection,
+            source_id,
             worker,
             _output: output,
             _queue: queue,
@@ -673,7 +726,11 @@ impl StreamSlot {
         Ok(())
     }
 
-    fn activate(&self, epoch: u64) -> bool {
+    fn activate(
+        &self,
+        epoch: u64,
+        confirmed_delivery: Option<MacosValidatedStreamDelivery>,
+    ) -> bool {
         let previous = {
             let mut state = lock(&self.state);
             let Some(candidate) = state
@@ -682,10 +739,19 @@ impl StreamSlot {
             else {
                 return false;
             };
+            let Some(confirmed_delivery) = confirmed_delivery else {
+                state.candidate = Some(candidate);
+                return false;
+            };
             let previous = state.current.replace(candidate);
             state.selected_filter = state.current.as_ref().map(|current| current.filter.clone());
             if let Some(current) = &state.current {
-                self.shared.set_selection(current.selection.clone());
+                self.shared.confirm_selection(
+                    current.selection.clone(),
+                    Arc::clone(&current.source_id),
+                    epoch,
+                    confirmed_delivery,
+                );
             }
             self.shared.activate_epoch(epoch);
             previous
@@ -712,6 +778,7 @@ impl StreamSlot {
         {
             let current = state.current.take();
             self.shared.activate_epoch(0);
+            self.shared.clear_tahoe_selection();
             return (StreamRole::Current, current);
         }
         (StreamRole::Stale, None)
@@ -733,6 +800,13 @@ impl StreamSlot {
         lock(&self.state).current.is_some()
     }
 
+    fn active_identity(&self) -> Option<(Arc<str>, u64)> {
+        lock(&self.state)
+            .current
+            .as_ref()
+            .map(|current| (Arc::clone(&current.source_id), current.epoch()))
+    }
+
     fn has_selection(&self) -> bool {
         lock(&self.state).selected_filter.is_some()
     }
@@ -746,7 +820,7 @@ impl StreamSlot {
                 .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
         };
         lock(&self.state).selected_filter = Some(NativeFilter(filter));
-        self.shared.set_selection(selection);
+        self.shared.set_unconfirmed_selection(selection);
         Ok(())
     }
 
@@ -773,6 +847,7 @@ impl StreamSlot {
             (state.current.take(), state.candidate.take())
         };
         self.shared.activate_epoch(0);
+        self.shared.clear_tahoe_selection();
         if let Some(candidate) = candidate {
             self.stop_stream(candidate);
         }
@@ -1113,17 +1188,21 @@ impl MacosScreenCaptureSession {
         A: Fn(u32, u64) -> Result<Arc<dyn Send + Sync>, MacosCaptureError> + Send + Sync + 'static,
     {
         request.cadence.timescale()?;
-        native_capture_capabilities()?.validate_dynamic_range(request.dynamic_range)?;
+        let capabilities = native_capture_capabilities()?;
+        capabilities.validate_dynamic_range(request.dynamic_range)?;
         let reserve_pool = Arc::new(move |surface_bytes, metadata_bytes| {
             let observer = reserve_pool(surface_bytes, metadata_bytes)?;
             Ok(Arc::new(observer) as PoolObservation)
         }) as PoolReservationFactory;
-        dispatch2::run_on_main(move |mtm| Self::new_on_main(request, selector, reserve_pool, mtm))
+        dispatch2::run_on_main(move |mtm| {
+            Self::new_on_main(request, selector, capabilities.tahoe, reserve_pool, mtm)
+        })
     }
 
     fn new_on_main(
         request: MacosStreamRequest,
         selector: MacosCaptureSelector,
+        tahoe: MacosTahoeCapabilities,
         reserve_pool: PoolReservationFactory,
         mtm: MainThreadMarker,
     ) -> Result<Self, MacosCaptureError> {
@@ -1133,7 +1212,7 @@ impl MacosScreenCaptureSession {
         } else {
             MacosProtectedSourceState::NeedsUserAction
         };
-        let shared = Arc::new(SessionShared::new(status, selector));
+        let shared = Arc::new(SessionShared::new(status, selector, tahoe));
         let observer = PickerObserver::new(mtm, request, Arc::clone(&shared), reserve_pool);
         let streams = Arc::clone(&observer.ivars().streams);
         // SAFETY: These are main-thread ScreenCaptureKit setup calls. The
@@ -1206,6 +1285,11 @@ impl MacosScreenCaptureSession {
 
     pub fn selection(&self) -> MacosCaptureSelection {
         self.shared.selection()
+    }
+
+    pub fn tahoe_selection_capabilities(&self) -> Option<MacosTahoeSelectionCapabilities> {
+        let (source_id, epoch) = self.streams.active_identity()?;
+        self.shared.tahoe_selection_for(&source_id, epoch)
     }
 
     pub fn mailbox(&self) -> MacosFrameMailbox {
@@ -1379,6 +1463,63 @@ fn selection_from_filter(
     }
 }
 
+fn selection_source_id(filter: &SCContentFilter, selection: &MacosCaptureSelection) -> Arc<str> {
+    match selection {
+        MacosCaptureSelection::Display { source_id } => Arc::clone(source_id),
+        MacosCaptureSelection::SessionScoped { content_style } => {
+            // SAFETY: The retained filter owns immutable selected-content
+            // arrays and their members for the duration of this query.
+            let (window_ids, application_ids) = unsafe {
+                (
+                    filter
+                        .includedWindows()
+                        .to_vec()
+                        .into_iter()
+                        .map(|window| window.windowID())
+                        .collect::<Vec<_>>(),
+                    filter
+                        .includedApplications()
+                        .to_vec()
+                        .into_iter()
+                        .map(|application| application.bundleIdentifier().to_string())
+                        .collect::<Vec<_>>(),
+                )
+            };
+            session_selection_source_id(*content_style, window_ids, application_ids)
+        }
+        MacosCaptureSelection::None => Arc::from("macos:session"),
+    }
+}
+
+fn session_selection_source_id(
+    content_style: MacosCaptureContentStyle,
+    mut window_ids: Vec<u32>,
+    mut application_ids: Vec<String>,
+) -> Arc<str> {
+    window_ids.sort_unstable();
+    window_ids.dedup();
+    application_ids.sort_unstable();
+    application_ids.dedup();
+    let mut source_id = format!("macos:session:{}", content_style_name(content_style));
+    for window_id in window_ids {
+        source_id.push_str(&format!(":w{window_id}"));
+    }
+    for application_id in application_ids {
+        source_id.push_str(&format!(":a{}:{application_id}", application_id.len()));
+    }
+    Arc::from(source_id)
+}
+
+const fn content_style_name(content_style: MacosCaptureContentStyle) -> &'static str {
+    match content_style {
+        MacosCaptureContentStyle::Window => "window",
+        MacosCaptureContentStyle::MultipleWindows => "multiple-windows",
+        MacosCaptureContentStyle::Application => "application",
+        MacosCaptureContentStyle::MultipleApplications => "multiple-applications",
+        MacosCaptureContentStyle::Mixed => "mixed",
+    }
+}
+
 fn display_source_id(display_id: CGDirectDisplayID) -> Result<String, MacosCaptureError> {
     let uuid =
         display_uuid(display_id).ok_or(MacosCaptureError::DisplayUuidUnavailable(display_id))?;
@@ -1423,16 +1564,6 @@ impl Drop for MainThreadSession {
 }
 
 fn native_capture_capabilities() -> Result<MacosCaptureCapabilities, MacosCaptureError> {
-    let host_architecture = match sysctl_i32(c"hw.optional.arm64")? {
-        Some(1) => MacosHostArchitecture::AppleSilicon,
-        Some(_) => MacosHostArchitecture::Intel,
-        None => {
-            return Err(MacosCaptureError::CapabilityProbeFailed(
-                "hw.optional.arm64",
-            ));
-        }
-    };
-    let translated_process = sysctl_i32(c"sysctl.proc_translated")?.is_some_and(|value| value == 1);
     let screenshot_configuration = AnyClass::get(c"SCScreenshotConfiguration");
     let screenshot_manager = AnyClass::get(c"SCScreenshotManager");
     let probes = MacosTahoeRuntimeProbes {
@@ -1449,11 +1580,11 @@ fn native_capture_capabilities() -> Result<MacosCaptureCapabilities, MacosCaptur
             ))
         })),
     };
-    Ok(MacosCaptureCapabilities::from_runtime(
-        host_architecture,
-        translated_process,
+    capture_capabilities_from_probes(
+        sysctl_i32(c"hw.optional.arm64", "hw.optional.arm64"),
+        sysctl_i32(c"sysctl.proc_translated", "sysctl.proc_translated"),
         probes,
-    ))
+    )
 }
 
 const fn capability(present: bool) -> MacosRuntimeCapability {
@@ -1464,7 +1595,32 @@ const fn capability(present: bool) -> MacosRuntimeCapability {
     }
 }
 
-fn sysctl_i32(name: &CStr) -> Result<Option<i32>, MacosCaptureError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SysctlI32Value {
+    Present(i32),
+    Missing,
+}
+
+fn capture_capabilities_from_probes(
+    arm64: Result<SysctlI32Value, MacosCaptureError>,
+    translated: Result<SysctlI32Value, MacosCaptureError>,
+    tahoe: MacosTahoeRuntimeProbes,
+) -> Result<MacosCaptureCapabilities, MacosCaptureError> {
+    let arm64 = arm64?;
+    let translated_process = matches!(translated?, SysctlI32Value::Present(1));
+    let host_architecture = if matches!(arm64, SysctlI32Value::Present(1)) || translated_process {
+        MacosHostArchitecture::AppleSilicon
+    } else {
+        MacosHostArchitecture::Intel
+    };
+    Ok(MacosCaptureCapabilities::from_runtime(
+        host_architecture,
+        translated_process,
+        tahoe,
+    ))
+}
+
+fn sysctl_i32(name: &CStr, failure: &'static str) -> Result<SysctlI32Value, MacosCaptureError> {
     #[link(name = "System", kind = "dylib")]
     unsafe extern "C-unwind" {
         fn sysctlbyname(
@@ -1490,9 +1646,13 @@ fn sysctl_i32(name: &CStr) -> Result<Option<i32>, MacosCaptureError> {
         )
     };
     if status == 0 && length == std::mem::size_of::<i32>() {
-        Ok(Some(value))
+        Ok(SysctlI32Value::Present(value))
     } else if status != 0 {
-        Ok(None)
+        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
+            Ok(SysctlI32Value::Missing)
+        } else {
+            Err(MacosCaptureError::CapabilityProbeFailed(failure))
+        }
     } else {
         Err(MacosCaptureError::CapabilityProbeFailed("sysctl size"))
     }
@@ -1720,7 +1880,7 @@ fn decode_sample(
     decoder: &mut MacosFrameDecoder,
     delivery_validator: &mut MacosStreamDeliveryValidator,
     sample: RetainedNativeSample,
-) -> Result<MacosFrameEvent, MacosCaptureError> {
+) -> Result<DecodedSample, MacosCaptureError> {
     let status = match sample.attachments.status {
         MacosAttachment::Value(status) => MacosFrameStatus::try_from(status)?,
         MacosAttachment::Missing => return Err(MacosCaptureError::MissingAttachment("status")),
@@ -1729,32 +1889,74 @@ fn decode_sample(
         }
     };
     if status != MacosFrameStatus::Complete {
-        return decoder.decode(MacosRawCaptureSample {
-            frame: None,
-            attachments: sample.attachments,
-        });
+        return decoder
+            .decode(MacosRawCaptureSample {
+                frame: None,
+                attachments: sample.attachments,
+            })
+            .map(|event| DecodedSample {
+                event,
+                confirmed_delivery: None,
+            });
     }
 
+    let awaiting_first_delivery = matches!(
+        delivery_validator.state(),
+        MacosStreamDeliveryState::AwaitingFirstCompleteFrame(_)
+    );
     let pixel_buffer = sample
         .pixel_buffer
         .ok_or(MacosCaptureError::MissingFramePayload)
-        .map_err(|error| reject_first_delivery(delivery_validator, error))?;
+        .map_err(|error| classify_delivery_error(delivery_validator, error))?;
     let frame = decode_complete_frame(
         pixel_buffer,
         sample.admission_lifetime,
         sample.cursor_composed,
     )
-    .map_err(|error| reject_first_delivery(delivery_validator, error))?;
+    .map_err(|error| classify_delivery_error(delivery_validator, error))?;
+    let event = decoder
+        .decode(MacosRawCaptureSample {
+            frame: Some(frame),
+            attachments: sample.attachments,
+        })
+        .map_err(|error| classify_delivery_error(delivery_validator, error))?;
+    let confirmed_delivery = if awaiting_first_delivery {
+        let MacosFrameEvent::Frame(frame) = &event else {
+            return Err(classify_delivery_error(
+                delivery_validator,
+                MacosCaptureError::MissingFramePayload,
+            ));
+        };
+        Some(
+            delivery_validator
+                .observe_first_complete(frame.surface.delivery_metadata())
+                .map_err(MacosCaptureError::StreamDeliveryRejected)?,
+        )
+    } else {
+        None
+    };
+    Ok(DecodedSample {
+        event,
+        confirmed_delivery,
+    })
+}
+
+fn classify_delivery_error(
+    validator: &mut MacosStreamDeliveryValidator,
+    error: MacosCaptureError,
+) -> MacosCaptureError {
     if matches!(
-        delivery_validator.state(),
+        validator.state(),
         MacosStreamDeliveryState::AwaitingFirstCompleteFrame(_)
     ) {
-        delivery_validator.observe_first_complete(frame.surface.delivery_metadata())?;
+        return reject_first_delivery(validator, error);
     }
-    decoder.decode(MacosRawCaptureSample {
-        frame: Some(frame),
-        attachments: sample.attachments,
-    })
+    match error {
+        MacosCaptureError::StreamDeliveryRejected(rejection) => {
+            MacosCaptureError::FrameDeliveryDropped(rejection)
+        }
+        error => error,
+    }
 }
 
 fn reject_first_delivery(
@@ -1782,6 +1984,7 @@ fn reject_first_delivery(
         MacosCaptureError::ColorMetadataMismatch | MacosCaptureError::MissingYuvColorMetadata => {
             Some(MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("colorimetry"))
         }
+        MacosCaptureError::StreamDeliveryRejected(rejection) => Some(*rejection),
         _ => None,
     };
     rejection.map_or(error, |rejection| {
@@ -2243,12 +2446,261 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        MacosCaptureDynamicRange, MacosCaptureError, MacosCapturePixelFormat,
-        MacosConfiguredStream, MacosPixelExtent, MacosStreamPreset, PoolBackingLifetime,
-        PoolObservation, SCCaptureDynamicRange, SCStreamConfiguration, SCStreamConfigurationPreset,
-        capture_dynamic_range, color_range_from_fourcc, conservative_pool_quote,
+        MacosCaptureColorimetry, MacosCaptureDynamicRange, MacosCaptureError,
+        MacosCapturePixelFormat, MacosColorPrimaries, MacosColorRange, MacosConfiguredStream,
+        MacosDeliveredFrameMetadata, MacosHostArchitecture, MacosPixelExtent,
+        MacosProtectedSourceState, MacosRuntimeCapability, MacosStreamDeliveryRejection,
+        MacosStreamDeliveryState, MacosStreamDeliveryValidator, MacosStreamPreset,
+        MacosTahoeCapabilities, MacosTahoeRuntimeProbes, MacosTransferFunction,
+        MacosValidatedStreamDelivery, PoolBackingLifetime, PoolObservation, SCCaptureDynamicRange,
+        SCStreamConfiguration, SCStreamConfigurationPreset, SessionShared, SysctlI32Value,
+        capture_capabilities_from_probes, capture_dynamic_range, classify_delivery_error,
+        color_range_from_fourcc, conservative_pool_quote, session_selection_source_id,
         with_admitted_surface,
     };
+
+    const ABSENT_TAHOE_PROBES: MacosTahoeRuntimeProbes = MacosTahoeRuntimeProbes {
+        content_tone_mapping_info_symbol: MacosRuntimeCapability::Absent,
+        screenshot_configuration_class: MacosRuntimeCapability::Absent,
+        screenshot_dynamic_range_selector: MacosRuntimeCapability::Absent,
+        screenshot_capture_selector: MacosRuntimeCapability::Absent,
+    };
+
+    #[test]
+    fn missing_arm64_and_translation_sysctls_resolve_native_intel_sdr() {
+        let capabilities = capture_capabilities_from_probes(
+            Ok(SysctlI32Value::Missing),
+            Ok(SysctlI32Value::Missing),
+            ABSENT_TAHOE_PROBES,
+        )
+        .expect("missing Apple Silicon sysctls identify a native Intel host");
+
+        assert_eq!(capabilities.host_architecture, MacosHostArchitecture::Intel);
+        assert!(!capabilities.translated_process);
+        assert_eq!(
+            capabilities.validate_dynamic_range(MacosCaptureDynamicRange::Sdr),
+            Ok(())
+        );
+        assert_eq!(
+            capabilities.validate_dynamic_range(MacosCaptureDynamicRange::Hdr),
+            Err(MacosStreamDeliveryRejection::UnsupportedIntelHdr)
+        );
+    }
+
+    #[test]
+    fn translated_process_resolves_the_native_apple_silicon_host() {
+        let capabilities = capture_capabilities_from_probes(
+            Ok(SysctlI32Value::Missing),
+            Ok(SysctlI32Value::Present(1)),
+            ABSENT_TAHOE_PROBES,
+        )
+        .expect("translation is direct evidence of an Apple Silicon host");
+
+        assert_eq!(
+            capabilities.host_architecture,
+            MacosHostArchitecture::AppleSilicon
+        );
+        assert!(capabilities.translated_process);
+        assert_eq!(
+            capabilities.validate_dynamic_range(MacosCaptureDynamicRange::Hdr),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn nonmissing_sysctl_failures_remain_typed() {
+        assert_eq!(
+            capture_capabilities_from_probes(
+                Err(MacosCaptureError::CapabilityProbeFailed(
+                    "hw.optional.arm64"
+                )),
+                Ok(SysctlI32Value::Missing),
+                ABSENT_TAHOE_PROBES,
+            ),
+            Err(MacosCaptureError::CapabilityProbeFailed(
+                "hw.optional.arm64"
+            ))
+        );
+    }
+
+    #[test]
+    fn partial_tahoe_runtime_surfaces_fail_closed_per_capability() {
+        let screenshot_only = MacosTahoeRuntimeProbes {
+            screenshot_configuration_class: MacosRuntimeCapability::Present,
+            screenshot_dynamic_range_selector: MacosRuntimeCapability::Present,
+            screenshot_capture_selector: MacosRuntimeCapability::Present,
+            ..ABSENT_TAHOE_PROBES
+        };
+        let capabilities = capture_capabilities_from_probes(
+            Ok(SysctlI32Value::Present(1)),
+            Ok(SysctlI32Value::Missing),
+            screenshot_only,
+        )
+        .expect("independent Tahoe capability probes should not disable capture");
+
+        assert_eq!(
+            capabilities.tahoe.content_tone_mapping_info,
+            MacosRuntimeCapability::Absent
+        );
+        assert_eq!(
+            capabilities.tahoe.screenshot_api,
+            MacosRuntimeCapability::Present
+        );
+
+        let incomplete_screenshot = MacosTahoeRuntimeProbes {
+            screenshot_configuration_class: MacosRuntimeCapability::Present,
+            ..ABSENT_TAHOE_PROBES
+        };
+        let capabilities = capture_capabilities_from_probes(
+            Ok(SysctlI32Value::Present(1)),
+            Ok(SysctlI32Value::Missing),
+            incomplete_screenshot,
+        )
+        .expect("an incomplete diagnostic surface should not disable streaming");
+        assert_eq!(
+            capabilities.tahoe.screenshot_api,
+            MacosRuntimeCapability::Absent
+        );
+    }
+
+    #[test]
+    fn malformed_delivery_metadata_is_fatal_only_before_confirmation() {
+        let configured = MacosConfiguredStream {
+            requested_dynamic_range: MacosCaptureDynamicRange::Sdr,
+            requested_preset: MacosStreamPreset::SdrDefault,
+            configured_dynamic_range: MacosCaptureDynamicRange::Sdr,
+            configured_pixel_format: MacosCapturePixelFormat::Bgra8,
+            configured_color_range: MacosColorRange::Full,
+        };
+        let rejection =
+            MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("dynamic_range");
+        let mut awaiting = MacosStreamDeliveryValidator::new(configured);
+        assert_eq!(
+            classify_delivery_error(
+                &mut awaiting,
+                MacosCaptureError::StreamDeliveryRejected(rejection),
+            ),
+            MacosCaptureError::StreamDeliveryRejected(rejection)
+        );
+        assert_eq!(
+            awaiting.state(),
+            &MacosStreamDeliveryState::Rejected(rejection)
+        );
+
+        let delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Bgra8,
+            MacosCaptureColorimetry {
+                primaries: MacosColorPrimaries::Srgb,
+                transfer: MacosTransferFunction::Srgb,
+                matrix: None,
+                range: MacosColorRange::Full,
+                chroma_location: None,
+            },
+            None,
+            None,
+        )
+        .expect("valid SDR delivery");
+        let mut confirmed = MacosStreamDeliveryValidator::new(configured);
+        confirmed
+            .observe_first_complete(Some(delivered))
+            .expect("matching delivery should confirm the stream");
+
+        assert_eq!(
+            classify_delivery_error(
+                &mut confirmed,
+                MacosCaptureError::StreamDeliveryRejected(rejection),
+            ),
+            MacosCaptureError::FrameDeliveryDropped(rejection)
+        );
+        assert!(matches!(
+            confirmed.state(),
+            MacosStreamDeliveryState::Confirmed(_)
+        ));
+    }
+
+    #[test]
+    fn session_selection_identity_is_canonical_and_membership_exact() {
+        let window_ids = vec![41, 7, 41];
+        let application_ids = vec![
+            "tech.hyperbliss.zeta".to_owned(),
+            "tech.hyperbliss.alpha".to_owned(),
+            "tech.hyperbliss.zeta".to_owned(),
+        ];
+
+        assert_eq!(
+            session_selection_source_id(
+                super::MacosCaptureContentStyle::Mixed,
+                window_ids,
+                application_ids,
+            )
+            .as_ref(),
+            "macos:session:mixed:w7:w41:a21:tech.hyperbliss.alpha:a20:tech.hyperbliss.zeta"
+        );
+    }
+
+    #[test]
+    fn repick_preserves_the_live_record_until_replacement_confirms() {
+        let tahoe = MacosTahoeCapabilities {
+            content_tone_mapping_info: MacosRuntimeCapability::Present,
+            screenshot_api: MacosRuntimeCapability::Present,
+        };
+        let shared = SessionShared::new(
+            MacosProtectedSourceState::Live,
+            super::MacosCaptureSelector::Auto,
+            tahoe,
+        );
+        let configured = MacosConfiguredStream {
+            requested_dynamic_range: MacosCaptureDynamicRange::Sdr,
+            requested_preset: MacosStreamPreset::SdrDefault,
+            configured_dynamic_range: MacosCaptureDynamicRange::Sdr,
+            configured_pixel_format: MacosCapturePixelFormat::Bgra8,
+            configured_color_range: MacosColorRange::Full,
+        };
+        let delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Bgra8,
+            MacosCaptureColorimetry {
+                primaries: MacosColorPrimaries::Srgb,
+                transfer: MacosTransferFunction::Srgb,
+                matrix: None,
+                range: MacosColorRange::Full,
+                chroma_location: None,
+            },
+            None,
+            None,
+        )
+        .expect("valid SDR delivery");
+        let delivery = MacosValidatedStreamDelivery {
+            configured,
+            delivered,
+        };
+        shared.confirm_selection(
+            super::MacosCaptureSelection::Display {
+                source_id: Arc::from("display:a"),
+            },
+            Arc::from("display:a"),
+            1,
+            delivery,
+        );
+
+        shared
+            .begin_resolution()
+            .expect("repick resolution should begin");
+        assert!(shared.tahoe_selection_for("display:a", 1).is_some());
+
+        shared.confirm_selection(
+            super::MacosCaptureSelection::Display {
+                source_id: Arc::from("display:b"),
+            },
+            Arc::from("display:b"),
+            2,
+            delivery,
+        );
+        assert_eq!(shared.tahoe_selection_for("display:a", 1), None);
+        assert!(shared.tahoe_selection_for("display:b", 2).is_some());
+
+        shared.clear_tahoe_selection();
+        assert_eq!(shared.tahoe_selection_for("display:b", 2), None);
+    }
 
     #[test]
     fn canonical_hdr_preset_resolves_to_a_valid_hdr_configuration() {

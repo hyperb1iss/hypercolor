@@ -16,7 +16,7 @@ use hypercolor_macos_capture::{
 use std::time::{Duration, Instant};
 
 const BGRA8: u32 = 0x4247_5241;
-const ARGB2101010: u32 = 0x5231_306b;
+const ARGB2101010: u32 = u32::from_be_bytes(*b"l10r");
 const RGBA16_FLOAT: u32 = 0x5247_6841;
 const YUV420_VIDEO_RANGE: u32 = 0x3432_3076;
 const YUV420_FULL_RANGE: u32 = 0x3432_3066;
@@ -147,6 +147,43 @@ fn hdr_preset_is_only_requested_evidence_until_rgba16f_arrives() {
         .with_delivery_metadata(delivered)
         .expect("fixture metadata");
     assert_eq!(surface.delivery_metadata(), Some(delivered));
+}
+
+#[test]
+fn argb2101010_uses_the_screen_capture_kit_l10r_fourcc() {
+    assert_eq!(ARGB2101010.to_be_bytes(), *b"l10r");
+    assert_eq!(
+        MacosCapturePixelFormat::from_fourcc(ARGB2101010),
+        Ok(MacosCapturePixelFormat::Argb2101010)
+    );
+    assert_eq!(
+        MacosCapturePixelFormat::Argb2101010.fourcc(MacosColorRange::Full),
+        Ok(ARGB2101010)
+    );
+
+    let delivered = hdr_rgb_metadata(MacosCapturePixelFormat::Argb2101010);
+    let mut validator =
+        MacosStreamDeliveryValidator::new(configured_hdr(MacosCapturePixelFormat::Argb2101010));
+    assert_eq!(
+        validator
+            .observe_first_complete(Some(delivered))
+            .expect("l10r delivery should confirm canonical HDR")
+            .delivered,
+        delivered
+    );
+}
+
+#[test]
+fn fixture_delivery_metadata_rejects_an_inconsistent_dynamic_range() {
+    let mut inconsistent = hdr_rgb_metadata(MacosCapturePixelFormat::Argb2101010);
+    inconsistent.dynamic_range = MacosCaptureDynamicRange::Sdr;
+
+    assert!(matches!(
+        MacosCaptureSurface::new_fixture(1, 64, 1)
+            .expect("fixture surface")
+            .with_delivery_metadata(inconsistent),
+        Err(MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("dynamic_range"))
+    ));
 }
 
 #[test]
@@ -342,7 +379,7 @@ fn tahoe_capabilities_require_callable_runtime_surface() {
         MacosRuntimeCapability::Present
     );
     assert_eq!(
-        present.tahoe.dual_range_screenshots,
+        present.tahoe.screenshot_api,
         MacosRuntimeCapability::Present
     );
 
@@ -359,7 +396,7 @@ fn tahoe_capabilities_require_callable_runtime_surface() {
         MacosRuntimeCapability::Absent
     );
     assert_eq!(
-        missing_selector.tahoe.dual_range_screenshots,
+        missing_selector.tahoe.screenshot_api,
         MacosRuntimeCapability::Absent
     );
 }

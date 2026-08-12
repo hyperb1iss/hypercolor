@@ -27,7 +27,7 @@ use crate::{MacosDeliveredFrameMetadata, MacosStreamDeliveryRejection};
 pub const MACOS_STREAM_QUEUE_DEPTH: usize = 8;
 
 const BGRA8: u32 = 0x4247_5241;
-const ARGB2101010: u32 = 0x5231_306b;
+const ARGB2101010: u32 = u32::from_be_bytes(*b"l10r");
 const RGBA16_FLOAT: u32 = 0x5247_6841;
 const YUV420_VIDEO_RANGE: u32 = 0x3432_3076;
 const YUV420_FULL_RANGE: u32 = 0x3432_3066;
@@ -397,13 +397,18 @@ impl MacosCaptureSurface {
         mut self,
         delivery_metadata: MacosDeliveredFrameMetadata,
     ) -> Result<Self, MacosStreamDeliveryRejection> {
-        MacosDeliveredFrameMetadata::new(
+        let validated = MacosDeliveredFrameMetadata::new(
             delivery_metadata.pixel_format,
             delivery_metadata.color,
             delivery_metadata.source_reference_white_nits,
             delivery_metadata.content_headroom,
         )?;
-        self.delivery_metadata = Some(delivery_metadata);
+        if validated.dynamic_range != delivery_metadata.dynamic_range {
+            return Err(
+                MacosStreamDeliveryRejection::MissingOrInvalidDeliveryMetadata("dynamic_range"),
+            );
+        }
+        self.delivery_metadata = Some(validated);
         Ok(self)
     }
 
@@ -1035,6 +1040,8 @@ pub enum MacosCaptureError {
     ColorMetadataMismatch,
     #[error(transparent)]
     StreamDeliveryRejected(#[from] MacosStreamDeliveryRejection),
+    #[error("capture frame delivery metadata was rejected: {0}")]
+    FrameDeliveryDropped(MacosStreamDeliveryRejection),
     #[error("macOS capture capability probe failed: {0}")]
     CapabilityProbeFailed(&'static str),
     #[error("malformed HDR luminance attachment: {0}")]

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use thiserror::Error;
 
 use crate::{
@@ -46,13 +48,13 @@ pub struct MacosTahoeRuntimeProbes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MacosTahoeCapabilities {
     pub content_tone_mapping_info: MacosRuntimeCapability,
-    pub dual_range_screenshots: MacosRuntimeCapability,
+    pub screenshot_api: MacosRuntimeCapability,
 }
 
 impl MacosTahoeCapabilities {
     #[must_use]
     pub const fn from_probes(probes: MacosTahoeRuntimeProbes) -> Self {
-        let dual_range_screenshots = if probes.screenshot_configuration_class.is_present()
+        let screenshot_api = if probes.screenshot_configuration_class.is_present()
             && probes.screenshot_dynamic_range_selector.is_present()
             && probes.screenshot_capture_selector.is_present()
         {
@@ -62,8 +64,64 @@ impl MacosTahoeCapabilities {
         };
         Self {
             content_tone_mapping_info: probes.content_tone_mapping_info_symbol,
-            dual_range_screenshots,
+            screenshot_api,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MacosTahoeSelectionCapabilities {
+    pub source_id: Arc<str>,
+    pub capture_session_generation: u64,
+    pub hdr_capture: bool,
+    pub dual_range_screenshots: bool,
+}
+
+impl MacosTahoeSelectionCapabilities {
+    #[must_use]
+    pub fn matches_active_stream(&self, source_id: &str, capture_session_generation: u64) -> bool {
+        self.source_id.as_ref() == source_id
+            && self.capture_session_generation == capture_session_generation
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MacosTahoeSelectionCapabilityState {
+    current: Option<MacosTahoeSelectionCapabilities>,
+}
+
+impl MacosTahoeSelectionCapabilityState {
+    pub(crate) fn confirm(
+        &mut self,
+        source_id: Arc<str>,
+        capture_session_generation: u64,
+        delivery: MacosValidatedStreamDelivery,
+        host: MacosTahoeCapabilities,
+    ) {
+        let hdr_capture = delivery.delivered.dynamic_range == MacosCaptureDynamicRange::Hdr;
+        self.current = Some(MacosTahoeSelectionCapabilities {
+            source_id,
+            capture_session_generation,
+            hdr_capture,
+            dual_range_screenshots: hdr_capture && host.screenshot_api.is_present(),
+        });
+    }
+
+    pub(crate) fn current_for(
+        &self,
+        source_id: &str,
+        capture_session_generation: u64,
+    ) -> Option<MacosTahoeSelectionCapabilities> {
+        self.current
+            .as_ref()
+            .filter(|capabilities| {
+                capabilities.matches_active_stream(source_id, capture_session_generation)
+            })
+            .cloned()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.current = None;
     }
 }
 
@@ -420,5 +478,134 @@ fn validate_color_range(
                 "configured_color_range",
             ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::MacosColorPrimaries;
+
+    use super::{
+        MacosCaptureCapabilities, MacosCaptureColorimetry, MacosCaptureDynamicRange,
+        MacosCapturePixelFormat, MacosColorRange, MacosConfiguredStream,
+        MacosDeliveredFrameMetadata, MacosHostArchitecture, MacosRuntimeCapability,
+        MacosStreamPreset, MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilityState,
+        MacosTransferFunction, MacosValidatedStreamDelivery,
+    };
+
+    const PRESENT_TAHOE_PROBES: MacosTahoeRuntimeProbes = MacosTahoeRuntimeProbes {
+        content_tone_mapping_info_symbol: MacosRuntimeCapability::Present,
+        screenshot_configuration_class: MacosRuntimeCapability::Present,
+        screenshot_dynamic_range_selector: MacosRuntimeCapability::Present,
+        screenshot_capture_selector: MacosRuntimeCapability::Present,
+    };
+
+    #[test]
+    fn tahoe_selection_capabilities_are_absent_until_confirmed_and_fenced_by_source_and_epoch() {
+        let host = MacosCaptureCapabilities::from_runtime(
+            MacosHostArchitecture::AppleSilicon,
+            false,
+            PRESENT_TAHOE_PROBES,
+        )
+        .tahoe;
+        let delivery = hdr_delivery();
+        let mut state = MacosTahoeSelectionCapabilityState::default();
+
+        assert_eq!(state.current_for("display:a", 7), None);
+        state.confirm(Arc::from("display:a"), 7, delivery, host);
+
+        let current = state
+            .current_for("display:a", 7)
+            .expect("the exact confirmed selection should resolve");
+        assert!(current.hdr_capture);
+        assert!(current.dual_range_screenshots);
+        assert_eq!(state.current_for("display:b", 7), None);
+        assert_eq!(state.current_for("display:a", 8), None);
+
+        state.clear();
+        assert_eq!(state.current_for("display:a", 7), None);
+
+        state.confirm(Arc::from("display:b"), 8, delivery, host);
+        assert_eq!(state.current_for("display:a", 7), None);
+        assert!(state.current_for("display:b", 8).is_some());
+
+        state.clear();
+        assert_eq!(state.current_for("display:b", 8), None);
+    }
+
+    #[test]
+    fn sdr_selection_never_advertises_paired_range_screenshots() {
+        let host = MacosCaptureCapabilities::from_runtime(
+            MacosHostArchitecture::Intel,
+            false,
+            PRESENT_TAHOE_PROBES,
+        )
+        .tahoe;
+        let configured = MacosConfiguredStream {
+            requested_dynamic_range: MacosCaptureDynamicRange::Sdr,
+            requested_preset: MacosStreamPreset::SdrDefault,
+            configured_dynamic_range: MacosCaptureDynamicRange::Sdr,
+            configured_pixel_format: MacosCapturePixelFormat::Bgra8,
+            configured_color_range: MacosColorRange::Full,
+        };
+        let delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Bgra8,
+            MacosCaptureColorimetry {
+                primaries: MacosColorPrimaries::Srgb,
+                transfer: MacosTransferFunction::Srgb,
+                matrix: None,
+                range: MacosColorRange::Full,
+                chroma_location: None,
+            },
+            None,
+            None,
+        )
+        .expect("valid SDR delivery");
+        let mut state = MacosTahoeSelectionCapabilityState::default();
+
+        state.confirm(
+            Arc::from("display:intel"),
+            11,
+            MacosValidatedStreamDelivery {
+                configured,
+                delivered,
+            },
+            host,
+        );
+
+        let current = state
+            .current_for("display:intel", 11)
+            .expect("confirmed SDR selection should resolve");
+        assert!(!current.hdr_capture);
+        assert!(!current.dual_range_screenshots);
+    }
+
+    fn hdr_delivery() -> MacosValidatedStreamDelivery {
+        let configured = MacosConfiguredStream {
+            requested_dynamic_range: MacosCaptureDynamicRange::Hdr,
+            requested_preset: MacosStreamPreset::CaptureHdrStreamCanonicalDisplay,
+            configured_dynamic_range: MacosCaptureDynamicRange::Hdr,
+            configured_pixel_format: MacosCapturePixelFormat::Rgba16Float,
+            configured_color_range: MacosColorRange::Full,
+        };
+        let delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Rgba16Float,
+            MacosCaptureColorimetry {
+                primaries: MacosColorPrimaries::DisplayP3,
+                transfer: MacosTransferFunction::Linear,
+                matrix: None,
+                range: MacosColorRange::Full,
+                chroma_location: None,
+            },
+            Some(203.0),
+            Some(4.0),
+        )
+        .expect("valid HDR delivery");
+        MacosValidatedStreamDelivery {
+            configured,
+            delivered,
+        }
     }
 }
