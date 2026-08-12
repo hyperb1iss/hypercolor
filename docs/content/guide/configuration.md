@@ -218,7 +218,14 @@ Audio config changes applied via `config set --live` or the REST API take effect
 
 ## `[capture]`
 
-Screen capture for ambient lighting effects. On Windows it is on by default: DXGI Desktop Duplication asks for no permission, shows no picker, and draws no capture indicator, so an ambient effect works immediately. On Linux it is opt-in: Wayland capture goes through the XDG desktop portal and PipeWire, which opens a picker, and answering it on your behalf at daemon start would be an ambush. X11 sessions have no capture path. macOS has no screen capture at all, and setting `capture.enabled = true` there is rejected by config validation.
+Screen capture for ambient lighting effects. On Windows it is on by default:
+DXGI Desktop Duplication asks for no permission, shows no picker, and draws no
+capture indicator, so an ambient effect works immediately. On Linux it is
+opt-in: Wayland capture goes through the XDG desktop portal and PipeWire, which
+opens a picker, and answering it on your behalf at daemon start would be an
+ambush. X11 sessions have no capture path. On macOS, ScreenCaptureKit uses
+Apple's system picker and Screen Recording permission. Hypercolor presents the
+picker only after an explicit action.
 
 ```toml
 [capture]
@@ -234,12 +241,35 @@ letterbox_threshold    = 0.02     # Luminance threshold for bar detection
 saturation             = 1.0      # Saturation boost applied to zone colors
 brightness             = 1.0      # Brightness multiplier applied to zone colors
 gamma                  = 1.0      # Gamma shaping (1.0 = neutral, >1 darkens midtones)
+target_led_white_x     = 0.3127   # LED white point in CIE xy space
+target_led_white_y     = 0.3290
+target_led_reference_white_nits = 203.0
+target_led_peak_nits   = 406.0
+exposure_ev            = 0.0      # HDR exposure adjustment in stops (-8 to 8)
 # publication_memory_bytes        # Optional byte budget; unset snapshots host memory at startup
 ```
 
 **`enabled`** grants permission and nothing more. The capture backend opens on demand and stays closed until a screen-reactive effect actually asks for pixels.
 
-**`source`** must be `"auto"` on Linux: the XDG desktop portal owns the selection, and the chosen source is persisted in `restore_token` (written automatically) so it survives daemon restarts without re-prompting. On Windows the value addresses a display directly, either `"auto"` for the primary output or a monitor selector such as `monitor:<stable-id>`. A bare number or `display:<n>` is accepted as a legacy output index and rewritten to its stable form once resolved.
+**`source`** must be `"auto"` on Linux: the XDG desktop portal owns the
+selection, and the chosen source is persisted in `restore_token` (written
+automatically) so it survives daemon restarts without re-prompting. On Windows
+the value addresses a display directly, either `"auto"` for the primary output
+or a monitor selector such as `monitor:<stable-id>`. A bare number or
+`display:<n>` is accepted as a legacy output index and rewritten to its stable
+form once resolved.
+
+On macOS, use `"auto"`, `"primary_display"`, or
+`"display:<canonical-display-uuid>"`. A window, application, or multi-window
+choice is stored as `"session_scoped"` and requires a new picker choice after
+the owning process relaunches. A missing display UUID enters a needs-selection
+state instead of silently capturing another display.
+
+The LED white point, reference white, peak luminance, and exposure values form
+one calibrated HDR tone-mapping profile. The white point must lie inside the
+CIE xy triangle, reference white must be from 1 to 5000 nits, peak must be from
+1 to 10000 nits and above reference white, and exposure accepts -8 to 8 stops.
+Calibration changes take effect together at a frame boundary.
 
 **`letterbox`** is off by default. Ambient lighting almost always mirrors a desktop rather than a letterboxed film, and dark desktop content trips the bar detector into cropping real picture away. Turn it on when you are mirroring video that genuinely has bars.
 

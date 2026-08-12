@@ -9,9 +9,9 @@ Not every install path is right for every person. This page routes you to the co
 {% callout(type="info") %}
 Linux, Windows, and macOS are all supported install platforms. Linux
 additionally gets udev, systemd, and session integration (idle dim, lock and
-suspend behavior). Platform limits to know up front: macOS has no screen
-capture and no SMBus motherboard/DRAM RGB, and session integration is
-Linux-only today.
+suspend behavior). macOS supports screen capture and native host input, but it
+has no SMBus motherboard/DRAM RGB path. Session integration is Linux-only
+today.
 {% end %}
 
 ## Decide in 30 seconds
@@ -96,13 +96,16 @@ USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue,
 
 Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg`
 (Intel) from the [download page](@/download.md), drag the app into
-`/Applications`, and launch. Minimum macOS 11 (Big Sur).
+`/Applications`, and launch. Minimum macOS 15.2 (Sequoia).
 
 {% callout(type="warning") %}
 Current builds are ad-hoc signed but not notarized, so Gatekeeper will block the app on first launch. Right-click the app and choose **Open** to confirm.
 {% end %}
 
-macOS supports audio-reactive effects (see [Audio setup](@/guide/audio-setup.md) for the loopback-device requirement) but has no screen capture, so screen-reactive effects are unavailable there.
+macOS supports screen-reactive effects through ScreenCaptureKit and Apple's
+system picker. Screen Recording permission is requested only after an explicit
+capture action. Audio-reactive effects also work; system audio needs a loopback
+device as described in [Audio setup](@/guide/audio-setup.md).
 
 ### Homebrew {#homebrew}
 

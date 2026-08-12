@@ -195,10 +195,11 @@ Events are history. High-frequency data streams are latest value.
 All three platforms ship installers: Linux gets a tarball, a `.deb`, an AUR
 package, and a Homebrew formula; Windows gets a per-machine NSIS installer;
 macOS gets DMGs for both architectures plus a Homebrew cask. CI gates Linux
-and Windows on every push, while macOS compiles only on release tags.
-Linux-specific runtime integration (udev rules, PipeWire portal capture,
-systemd user services, logind session events) has no Windows or macOS
-equivalent yet, and macOS has no screen capture or SMBus support.
+and Windows on every push. Pull requests also compile, lint, and exercise
+platform fixtures on Apple Silicon and Intel macOS runners. Linux-specific
+runtime integration (udev rules, PipeWire portal capture, systemd user
+services, logind session events) has native counterparts where required.
+macOS screen capture uses ScreenCaptureKit; SMBus remains unsupported there.
 
 Application, driver, and domain crates inherit `unsafe_code = "forbid"`. The
 current opt-outs are the audited platform crates plus the app shell:
