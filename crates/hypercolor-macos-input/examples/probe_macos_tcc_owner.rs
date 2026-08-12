@@ -25,7 +25,6 @@ enum Topology {
     DirectLaunchd,
     Homebrew,
     Standalone,
-    CaptureBroker,
 }
 
 impl Topology {
@@ -36,7 +35,6 @@ impl Topology {
             Self::DirectLaunchd => "direct_launchd",
             Self::Homebrew => "homebrew",
             Self::Standalone => "standalone",
-            Self::CaptureBroker => "capture_broker",
         }
     }
 }
@@ -403,9 +401,8 @@ fn parse_topology(value: &str) -> Result<Topology, String> {
         "direct-launchd" => Ok(Topology::DirectLaunchd),
         "homebrew" => Ok(Topology::Homebrew),
         "standalone" => Ok(Topology::Standalone),
-        "capture-broker" => Ok(Topology::CaptureBroker),
         _ => Err(format!(
-            "unknown topology {value:?}; expected app-sidecar, direct-launchd, homebrew, standalone, or capture-broker"
+            "unknown topology {value:?}; expected app-sidecar, direct-launchd, homebrew, or standalone"
         )),
     }
 }
@@ -420,8 +417,8 @@ fn print_help() {
          notarization, and TCC evidence. No prompt appears unless an explicit\n\
          --authorize-input or --authorize-screen flag is present.\n\
          \n\
-         TOPOLOGY is app-sidecar, direct-launchd, homebrew, standalone, or\n\
-         capture-broker. --output creates a new file and never overwrites."
+         TOPOLOGY is app-sidecar, direct-launchd, homebrew, or standalone.\n\
+         --output creates a new file and never overwrites."
     );
 }
 
@@ -433,6 +430,7 @@ mod tests {
     fn topology_is_required_and_closed() {
         assert!(parse_args([]).is_err());
         assert!(parse_args(["--topology".to_owned(), "future".to_owned()]).is_err());
+        assert!(parse_args(["--topology".to_owned(), "capture-broker".to_owned()]).is_err());
         assert_eq!(
             parse_args(["--topology".to_owned(), "app-sidecar".to_owned()])
                 .expect("arguments should parse")
