@@ -318,6 +318,7 @@ pub struct InputSourceStatus {
     pub configured: bool,
     pub consented: bool,
     pub demanded: bool,
+    pub active_consumer_count: usize,
     pub state: String,
     pub freshness: String,
     pub source_graph_generation: u64,
@@ -715,6 +716,7 @@ fn input_source_status(source: &SourceStatus, now: Instant) -> InputSourceStatus
         configured: source.configured,
         consented: source.consented,
         demanded: source.demanded,
+        active_consumer_count: source.active_consumer_count,
         state: source_state_name(source.state).to_owned(),
         freshness: source_freshness_name(source.freshness).to_owned(),
         source_graph_generation: source.source_graph_generation,
@@ -1949,6 +1951,7 @@ mod tests {
             configured: true,
             consented: true,
             demanded: true,
+            active_consumer_count: 2,
             state: SourceState::Live,
             freshness: SourceFreshness::NotApplicable,
             source_graph_generation: 7,
@@ -2061,6 +2064,7 @@ mod tests {
         let status = input_source_status(&source_status_fixture(Some(platform)), Instant::now());
         let value = serde_json::to_value(status).expect("screen status should serialize");
 
+        assert_eq!(value["active_consumer_count"], 2);
         assert_eq!(
             value["platform"],
             json!({

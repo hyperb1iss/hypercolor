@@ -174,6 +174,7 @@ pub struct InputSourceStatus {
     pub configured: bool,
     pub consented: bool,
     pub demanded: bool,
+    pub active_consumer_count: usize,
     pub state: String,
     pub freshness: String,
     pub source_graph_generation: u64,
@@ -361,6 +362,7 @@ mod tests {
     #[test]
     fn input_source_status_decodes_macos_screen_platform_tolerantly() {
         let status: InputSourceStatus = serde_json::from_value(json!({
+            "active_consumer_count": 3,
             "platform": {
                 "type": "macos_screen",
                 "state": "interrupted",
@@ -387,6 +389,7 @@ mod tests {
             }
         }))
         .expect("macOS screen status should decode");
+        assert_eq!(status.active_consumer_count, 3);
 
         let Some(InputSourcePlatformStatus::MacosScreen {
             state,
@@ -437,6 +440,7 @@ mod tests {
         .expect("status without platform should decode");
 
         assert_eq!(status.source_id, "linux:host-input");
+        assert_eq!(status.active_consumer_count, 0);
         assert_eq!(status.platform, None);
     }
 

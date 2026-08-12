@@ -1093,6 +1093,7 @@ async fn input_status_events_are_content_safe_coalesced_and_generation_aware() {
     assert_eq!(payload["source_id"], "host-interaction");
     assert_eq!(payload["kind"], "interaction");
     assert_eq!(payload["backend"], "raw_input");
+    assert_eq!(payload["active_consumer_count"], 0);
     assert_eq!(
         payload["session_generation"],
         first_session.session_generation()

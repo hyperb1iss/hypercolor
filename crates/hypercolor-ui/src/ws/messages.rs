@@ -476,6 +476,7 @@ pub struct InputSourceStatusEventHint {
     pub configured: bool,
     pub consented: bool,
     pub demanded: bool,
+    pub active_consumer_count: usize,
     pub state: String,
     pub freshness: String,
     pub source_graph_generation: u64,
@@ -1259,4 +1260,27 @@ fn extract_device_event_hint(
         device_id,
         found_count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::extract_input_source_status_event_hint;
+
+    #[test]
+    fn input_status_hint_decodes_exact_and_legacy_consumer_counts() {
+        let current = extract_input_source_status_event_hint(&json!({
+            "source_id": "macos:session",
+            "active_consumer_count": 4
+        }))
+        .expect("current input status event should decode");
+        let legacy = extract_input_source_status_event_hint(&json!({
+            "source_id": "macos:session"
+        }))
+        .expect("additive field should preserve legacy event decoding");
+
+        assert_eq!(current.active_consumer_count, 4);
+        assert_eq!(legacy.active_consumer_count, 0);
+    }
 }

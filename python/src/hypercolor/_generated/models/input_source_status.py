@@ -26,6 +26,7 @@ class InputSourceStatus:
     """Lock-free lifecycle and freshness status for one input source.
 
     Attributes:
+        active_consumer_count (int):
         backend (str):
         configured (bool):
         consented (bool):
@@ -47,6 +48,7 @@ class InputSourceStatus:
         platform (InputSourcePlatformStatusType0 | InputSourcePlatformStatusType1 | None | Unset):
     """
 
+    active_consumer_count: int
     backend: str
     configured: bool
     consented: bool
@@ -78,6 +80,8 @@ class InputSourceStatus:
         from ..models.input_source_platform_status_type_1 import (
             InputSourcePlatformStatusType1,
         )
+
+        active_consumer_count = self.active_consumer_count
 
         backend = self.backend
 
@@ -155,6 +159,7 @@ class InputSourceStatus:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "active_consumer_count": active_consumer_count,
                 "backend": backend,
                 "configured": configured,
                 "consented": consented,
@@ -196,6 +201,8 @@ class InputSourceStatus:
         )
 
         d = dict(src_dict)
+        active_consumer_count = d.pop("active_consumer_count")
+
         backend = d.pop("backend")
 
         configured = d.pop("configured")
@@ -342,6 +349,7 @@ class InputSourceStatus:
         platform = _parse_platform(d.pop("platform", UNSET))
 
         input_source_status = cls(
+            active_consumer_count=active_consumer_count,
             backend=backend,
             configured=configured,
             consented=consented,

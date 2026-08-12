@@ -196,6 +196,7 @@
         "configured",
         "consented",
         "demanded",
+        "active_consumer_count",
         "state",
         "freshness",
         "source_graph_generation",

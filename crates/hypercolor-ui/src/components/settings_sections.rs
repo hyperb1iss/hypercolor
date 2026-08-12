@@ -672,18 +672,14 @@ fn screen_source_view(source: InputSourceStatus) -> impl IntoView {
     };
     let issue_message = issue.map(|issue| issue.message.clone());
     let source_remediation = issue.and_then(|issue| issue.remediation.clone());
-    let demand = if source.demanded {
-        "active demand"
-    } else {
-        "no active consumers"
-    };
+    let consumer_summary = screen_consumer_summary(source.active_consumer_count);
 
     view! {
         <div class="rounded-lg border border-edge-subtle/60 bg-surface-overlay/30 px-3 py-2.5">
             <div class="flex flex-wrap items-center justify-between gap-2">
                 <div class="min-w-0">
                     <div class="truncate text-xs font-medium text-fg-primary">{source.source_id}</div>
-                    <div class="text-[11px] text-fg-tertiary">{format!("{} · {demand}", source.backend)}</div>
+                    <div class="text-[11px] text-fg-tertiary">{format!("{} · {consumer_summary}", source.backend)}</div>
                 </div>
                 <span class=format!("text-[11px] font-medium {state_class}")>
                     {input::humanize(&source.state)}
@@ -700,6 +696,14 @@ fn screen_source_view(source: InputSourceStatus) -> impl IntoView {
     }
 }
 
+fn screen_consumer_summary(active_consumer_count: usize) -> String {
+    match active_consumer_count {
+        0 => "no active consumers".to_owned(),
+        1 => "1 active consumer".to_owned(),
+        count => format!("{count} active consumers"),
+    }
+}
+
 #[cfg(test)]
 mod macos_capture_tests {
     use crate::api::{
@@ -707,7 +711,16 @@ mod macos_capture_tests {
         SystemStatus,
     };
 
-    use super::{macos_screen_restart_coordinates, validate_macos_restart_owner};
+    use super::{
+        macos_screen_restart_coordinates, screen_consumer_summary, validate_macos_restart_owner,
+    };
+
+    #[test]
+    fn screen_consumer_summary_reports_exact_committed_count() {
+        assert_eq!(screen_consumer_summary(0), "no active consumers");
+        assert_eq!(screen_consumer_summary(1), "1 active consumer");
+        assert_eq!(screen_consumer_summary(3), "3 active consumers");
+    }
 
     fn system_status(
         input: InputStatus,

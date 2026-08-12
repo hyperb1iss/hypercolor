@@ -2551,6 +2551,7 @@ fn event_message_parts_exposes_input_status_as_a_dedicated_safe_event() {
         kind: hypercolor_core::bus::INPUT_STATUS_EVENT_KIND.to_owned(),
         payload: serde_json::json!({
             "source_id": "host-interaction",
+            "active_consumer_count": 3,
             "state": "failed",
             "session_generation": 9,
         }),
@@ -2559,6 +2560,7 @@ fn event_message_parts_exposes_input_status_as_a_dedicated_safe_event() {
     let (event_name, event_data) = event_message_parts(&event);
     assert_eq!(event_name, "input_source_status_changed");
     assert_eq!(event_data["source_id"], "host-interaction");
+    assert_eq!(event_data["active_consumer_count"], 3);
     assert_eq!(event_data["state"], "failed");
     assert_eq!(event_data["session_generation"], 9);
 }
