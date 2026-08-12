@@ -491,6 +491,38 @@ fn mailbox_wait_returns_a_ready_delivery_without_polling() {
 }
 
 #[test]
+fn mailbox_wake_releases_a_stopped_waiter_without_a_delivery() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+
+    let mailbox = MacosFrameMailbox::new();
+    let waiting = Arc::new(AtomicBool::new(true));
+    let worker_waiting = Arc::clone(&waiting);
+    let worker_mailbox = mailbox.clone();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        ready_tx.send(()).expect("waiter should announce readiness");
+        let delivery = worker_mailbox.wait_latest_while(Duration::from_secs(5), || {
+            worker_waiting.load(Ordering::Acquire)
+        });
+        done_tx
+            .send(delivery.is_none())
+            .expect("waiter should exit");
+    });
+
+    ready_rx.recv().expect("waiter should start");
+    waiting.store(false, Ordering::Release);
+    mailbox.wake();
+    assert!(
+        done_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("wake should release the waiter")
+    );
+    worker.join().expect("waiter should join");
+}
+
+#[test]
 fn callback_diagnostics_start_with_every_drop_reason_at_zero() {
     let diagnostics = MacosCaptureCallbackDiagnostics::default();
     assert_eq!(diagnostics.frames_received, 0);

@@ -50,14 +50,28 @@ impl MacosFrameMailbox {
         &self,
         timeout: Duration,
     ) -> Option<Result<MacosFrameEvent, MacosCaptureError>> {
+        self.wait_latest_while(timeout, || true)
+    }
+
+    pub fn wait_latest_while(
+        &self,
+        timeout: Duration,
+        keep_waiting: impl Fn() -> bool,
+    ) -> Option<Result<MacosFrameEvent, MacosCaptureError>> {
         let state = self.lock();
         let mut state = self
             .inner
             .ready
-            .wait_timeout_while(state, timeout, |state| state.latest.is_none())
+            .wait_timeout_while(state, timeout, |state| {
+                state.latest.is_none() && keep_waiting()
+            })
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .0;
         state.latest.take()
+    }
+
+    pub fn wake(&self) {
+        self.inner.ready.notify_all();
     }
 
     fn lock(&self) -> MutexGuard<'_, MailboxState> {

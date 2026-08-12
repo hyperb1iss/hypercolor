@@ -107,6 +107,7 @@ struct PreparedWorker {
 
 struct CaptureWorker {
     stop: Arc<AtomicBool>,
+    mailbox: MacosFrameMailbox,
     exit_rx: mpsc::Receiver<anyhow::Result<()>>,
     join: Option<thread::JoinHandle<()>>,
 }
@@ -245,6 +246,7 @@ impl MacosScreenCaptureInput {
             .checked_add(1)
             .ok_or_else(|| anyhow!("macOS capture worker generation exhausted"))?;
         let mailbox = self.control.mailbox();
+        let worker_mailbox = mailbox.clone();
         let control = Arc::clone(&self.control);
         let publication = Arc::clone(&self.publication);
         let status_session = self.status_session.clone();
@@ -286,6 +288,7 @@ impl MacosScreenCaptureInput {
         }
         self.worker = Some(CaptureWorker {
             stop,
+            mailbox: worker_mailbox,
             exit_rx,
             join: Some(join),
         });
@@ -304,6 +307,7 @@ impl MacosScreenCaptureInput {
             return;
         };
         worker.stop.store(true, Ordering::Release);
+        worker.mailbox.wake();
         if let Some(join) = worker.join.take() {
             let _ = join.join();
         }
@@ -553,7 +557,9 @@ fn run_worker(
     let source_id = CaptureSourceId::new(Arc::<str>::from("macos:session"))?;
     let mut topology = TopologyState::default();
     while !stop.load(Ordering::Acquire) {
-        let Some(delivery) = mailbox.wait_latest(WORKER_WAIT) else {
+        let Some(delivery) =
+            mailbox.wait_latest_while(WORKER_WAIT, || !stop.load(Ordering::Acquire))
+        else {
             continue;
         };
         match delivery {
