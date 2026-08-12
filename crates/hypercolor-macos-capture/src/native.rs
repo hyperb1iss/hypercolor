@@ -793,7 +793,14 @@ impl MacosScreenCaptureSession {
         selector: MacosCaptureSelector,
     ) -> Result<Self, MacosCaptureError> {
         request.cadence.timescale()?;
-        let mtm = MainThreadMarker::new().ok_or(MacosCaptureError::NotMainThread)?;
+        dispatch2::run_on_main(move |mtm| Self::new_on_main(request, selector, mtm))
+    }
+
+    fn new_on_main(
+        request: MacosStreamRequest,
+        selector: MacosCaptureSelector,
+        mtm: MainThreadMarker,
+    ) -> Result<Self, MacosCaptureError> {
         let authorized = CGPreflightScreenCaptureAccess();
         let status = if authorized {
             MacosProtectedSourceState::NeedsSelection

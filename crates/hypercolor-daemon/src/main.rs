@@ -125,11 +125,55 @@ fn main() -> Result<()> {
         return windows_service::run(args.into_run_options());
     }
 
+    run_daemon(args.into_run_options())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_daemon(options: DaemonRunOptions) -> Result<()> {
     let runtime = daemon::build_main_runtime()?;
     runtime.block_on(async move {
         let shutdown_rx = install_signal_handlers();
-        daemon::run(args.into_run_options(), shutdown_rx).await
+        daemon::run(options, shutdown_rx).await
     })
+}
+
+#[cfg(target_os = "macos")]
+fn run_daemon(options: DaemonRunOptions) -> Result<()> {
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    let runtime_thread = std::thread::Builder::new()
+        .name("hypercolor-daemon-runtime".to_owned())
+        .spawn(move || {
+            let _run_loop_stop = MainRunLoopStop;
+            let result = daemon::build_main_runtime().and_then(|runtime| {
+                runtime.block_on(async move {
+                    let shutdown_rx = install_signal_handlers();
+                    daemon::run(options, shutdown_rx).await
+                })
+            });
+            let _ = result_tx.send(result);
+        })
+        .context("failed to spawn the macOS daemon runtime thread")?;
+
+    objc2_core_foundation::CFRunLoop::run();
+    let result = result_rx.recv();
+    runtime_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("macOS daemon runtime thread panicked"))?;
+    result.context("macOS daemon runtime exited without a result")?
+}
+
+#[cfg(target_os = "macos")]
+struct MainRunLoopStop;
+
+#[cfg(target_os = "macos")]
+impl Drop for MainRunLoopStop {
+    fn drop(&mut self) {
+        dispatch2::run_on_main(|_mtm| {
+            if let Some(run_loop) = objc2_core_foundation::CFRunLoop::main() {
+                run_loop.stop();
+            }
+        });
+    }
 }
 
 fn daemon_instance_name() -> String {

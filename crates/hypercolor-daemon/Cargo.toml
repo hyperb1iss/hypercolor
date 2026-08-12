@@ -84,6 +84,8 @@ sd-notify = "0.4"
 sysinfo = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3.1"
+objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }
 sysinfo = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
