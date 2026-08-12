@@ -1641,9 +1641,10 @@ Three properties drove the design:
 
 ### macOS
 
-Unimplemented. ScreenCaptureKit is the intended backend, and unlike Windows it
-does have a consent surface (the TCC Screen Recording prompt), so it will need
-a demand-driven request flow rather than a default-on config.
+Implemented by the native ScreenCaptureKit source defined in
+[Spec 76](76-macos-screen-capture-and-host-input.md). That authority owns the
+demand-driven TCC consent flow, system picker, exact CPU and Metal publication,
+HDR color processing, diagnostics, and release acceptance for macOS.
 
 ### Conditional Compilation
 
