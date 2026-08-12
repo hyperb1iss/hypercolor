@@ -118,6 +118,7 @@ jobs:
           filters: |
             rust:
               - 'crates/**'
+              - 'e2e/**'
               - 'protocol/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
