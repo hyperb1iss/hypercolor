@@ -159,7 +159,16 @@ build_tauri_bundle() {
     args+=(--no-sign)
   fi
   step "Build Tauri macOS bundle"
-  (cd "${ROOT_DIR}/crates/hypercolor-app" && cargo "${args[@]}")
+  (
+    cd "${ROOT_DIR}/crates/hypercolor-app"
+    HYPERCOLOR_FORCE_SCCACHE=1 "${CARGO_CACHE_BUILD}" cargo "${args[@]}"
+  )
+}
+
+build_ui_bundle() {
+  cd "${ROOT_DIR}/crates/hypercolor-ui"
+  HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR \
+    "${CARGO_CACHE_BUILD}" trunk build --release --locked
 }
 
 resolve_target_dir() {
@@ -231,8 +240,9 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
 fi
 
 if [[ "${SKIP_UI}" -ne 1 ]]; then
-  run_step "Install UI dependencies" bun install --cwd "${ROOT_DIR}/crates/hypercolor-ui"
-  run_step "Build production UI" bash -c "cd '${ROOT_DIR}/crates/hypercolor-ui' && trunk build --release"
+  run_step "Install UI dependencies" bun install --frozen-lockfile \
+    --cwd "${ROOT_DIR}/crates/hypercolor-ui"
+  run_step "Build production UI" build_ui_bundle
 fi
 
 if [[ "${SKIP_EFFECTS}" -ne 1 ]]; then

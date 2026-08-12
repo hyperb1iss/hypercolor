@@ -150,7 +150,8 @@ build_ui() {
   info "building web UI"
   (
     cd "${ROOT_DIR}/crates/hypercolor-ui"
-    env -u NO_COLOR trunk build --release
+    HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR \
+      "${ROOT_DIR}/scripts/cargo-cache-build.sh" trunk build --release --locked
   )
 }
 

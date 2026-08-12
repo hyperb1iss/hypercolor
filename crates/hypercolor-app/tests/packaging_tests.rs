@@ -2,6 +2,9 @@ const HOMEBREW_CASK: &str = include_str!("../../../packaging/homebrew/hypercolor
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const JUSTFILE: &str = include_str!("../../../justfile");
 const WINDOWS_INSTALLER_SCRIPT: &str = include_str!("../../../scripts/build-windows-installer.ps1");
+const DIST_SH: &str = include_str!("../../../scripts/dist.sh");
+const INSTALL_SH: &str = include_str!("../../../scripts/install.sh");
+const BUILD_MAC_INSTALLER_SH: &str = include_str!("../../../scripts/build-mac-installer.sh");
 const CARGO_CACHE_BUILD_SH: &str = include_str!("../../../scripts/cargo-cache-build.sh");
 const CARGO_CACHE_BUILD_PS1: &str = include_str!("../../../scripts/cargo-cache-build.ps1");
 const CARGO_TARGET_GC_SH: &str = include_str!("../../../scripts/cargo-target-gc.sh");
@@ -282,6 +285,13 @@ fn ui_cargo_builds_use_the_shared_cache_policy() {
 fn unix_app_bundles_use_the_shared_cache_policy() {
     assert!(JUSTFILE.contains(
         r#"HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build"#
+    ));
+    for script in [DIST_SH, INSTALL_SH, BUILD_MAC_INSTALLER_SH] {
+        assert!(script.contains("cargo-cache-build.sh"));
+        assert!(script.contains("trunk build --release --locked"));
+    }
+    assert!(BUILD_MAC_INSTALLER_SH.contains(
+        r#"HYPERCOLOR_FORCE_SCCACHE=1 "${CARGO_CACHE_BUILD}" cargo"#
     ));
 }
 
