@@ -3,7 +3,9 @@ use hypercolor_ui::input_access::{
     InputAccessRemedy, InputPipelineState, input_access_remedy, input_pipeline_state,
     input_status_epoch, input_status_remediation, primary_input_source_issue,
 };
-use hypercolor_ui::ws::messages::extract_input_source_status_event_hint;
+use hypercolor_ui::ws::messages::{
+    extract_input_source_status_event_hint, extract_macos_daemon_ownership_event_hint,
+};
 
 fn input(enabled: bool, opened: usize, denied: usize) -> InputStatus {
     InputStatus {
@@ -149,6 +151,36 @@ fn input_source_status_event_decodes_as_a_refetch_hint() {
     assert_eq!(hint.state, "failed");
     assert_eq!(hint.session_generation, 3);
     assert_eq!(hint.lifecycle_issue_code.as_deref(), Some("worker_exited"));
+}
+
+#[test]
+fn macos_daemon_ownership_event_decodes_as_a_refetch_hint() {
+    let hint = extract_macos_daemon_ownership_event_hint(&serde_json::json!({
+        "active_owner": "app_sidecar",
+        "owner_epoch": 17,
+        "conflict": null,
+        "recovery_required": {
+            "requested_owner": "homebrew_service",
+            "prior_owner": "app_sidecar",
+            "phase": "requested_owner_started"
+        },
+        "future_field": true
+    }))
+    .expect("ownership event should decode");
+
+    assert_eq!(hint.active_owner.as_deref(), Some("app_sidecar"));
+    assert_eq!(hint.owner_epoch, Some(17));
+    assert!(hint.recovery_required.is_some());
+}
+
+#[test]
+fn macos_daemon_ownership_event_requires_identity() {
+    assert!(
+        extract_macos_daemon_ownership_event_hint(&serde_json::json!({
+            "owner_epoch": 17
+        }))
+        .is_none()
+    );
 }
 
 #[test]

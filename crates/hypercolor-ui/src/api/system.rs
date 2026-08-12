@@ -89,6 +89,16 @@ pub struct MacosDaemonOwnershipStatus {
     pub active_owner: Option<String>,
     pub owner_epoch: Option<u64>,
     pub conflict: Option<MacosDaemonOwnerConflictStatus>,
+    pub recovery_required: Option<MacosDaemonOwnerRecoveryRequiredStatus>,
+}
+
+/// Path-free recovery state for an interrupted local owner handover.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MacosDaemonOwnerRecoveryRequiredStatus {
+    pub requested_owner: Option<String>,
+    pub prior_owner: Option<String>,
+    pub phase: Option<String>,
 }
 
 /// Persistability and redacted content style of a macOS screen selection.
@@ -237,7 +247,8 @@ mod tests {
 
     use super::{
         InputSourcePlatformStatus, InputSourceStatus, MacosDaemonOwnerConflictStatus,
-        MacosDaemonOwnershipStatus, MacosSelectionStatus, MacosTahoeSelectionStatus,
+        MacosDaemonOwnerRecoveryRequiredStatus, MacosDaemonOwnershipStatus, MacosSelectionStatus,
+        MacosTahoeSelectionStatus,
     };
 
     #[test]
@@ -251,6 +262,12 @@ mod tests {
                 "observed_at_ms": 1_725_000_000_789_u64,
                 "future_conflict_field": true
             },
+            "recovery_required": {
+                "requested_owner": "homebrew_service",
+                "prior_owner": "app_sidecar",
+                "phase": "requested_owner_started",
+                "future_recovery_field": true
+            },
             "future_owner_field": { "available": true }
         }))
         .expect("macOS daemon ownership should decode");
@@ -263,6 +280,14 @@ mod tests {
                 active: Some("launchd_service".to_owned()),
                 contender: Some("homebrew_service".to_owned()),
                 observed_at_ms: Some(1_725_000_000_789),
+            })
+        );
+        assert_eq!(
+            ownership.recovery_required,
+            Some(MacosDaemonOwnerRecoveryRequiredStatus {
+                requested_owner: Some("homebrew_service".to_owned()),
+                prior_owner: Some("app_sidecar".to_owned()),
+                phase: Some("requested_owner_started".to_owned()),
             })
         );
 

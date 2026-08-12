@@ -156,14 +156,12 @@ pub fn SettingsPage() -> impl IntoView {
                     .lock()
                     .expect("config apply tracker lock poisoned")
                     .finish_if_current(&key, generation);
-                if is_current {
-                    if let Some(previous) = previous {
-                        set_config.update(|cfg| {
-                            if let Some(cfg) = cfg {
-                                apply_config_key(cfg, &key, &previous);
-                            }
-                        });
-                    }
+                if is_current && let Some(previous) = previous {
+                    set_config.update(|cfg| {
+                        if let Some(cfg) = cfg {
+                            apply_config_key(cfg, &key, &previous);
+                        }
+                    });
                 }
             } else {
                 config_applies

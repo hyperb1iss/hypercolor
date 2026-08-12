@@ -16,6 +16,6 @@ pub use interactive_preview::{InteractivePreviewLifecycle, InteractivePreviewReq
 pub use messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, CanvasPixelFormat, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
-    PerformanceMetrics, SceneEventHint, ScreenZonesFrame,
+    MacosDaemonOwnershipEventHint, PerformanceMetrics, SceneEventHint, ScreenZonesFrame,
 };
 pub use preview::DEFAULT_PREVIEW_FPS_CAP;

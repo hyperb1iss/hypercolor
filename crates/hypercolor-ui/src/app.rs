@@ -42,8 +42,8 @@ use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
-    InteractivePreviewLifecycle, InteractivePreviewRequest, PerformanceMetrics, SceneEventHint,
-    ScreenZonesFrame, WsManager,
+    InteractivePreviewLifecycle, InteractivePreviewRequest, MacosDaemonOwnershipEventHint,
+    PerformanceMetrics, SceneEventHint, ScreenZonesFrame, WsManager,
 };
 
 mod effect_state;
@@ -103,6 +103,8 @@ pub struct WsContext {
     /// Latest safe source-health transition, used only to invalidate the
     /// canonical REST status snapshot.
     pub last_input_source_status_event: ReadSignal<Option<InputSourceStatusEventHint>>,
+    /// Latest daemon-owner transition, used to invalidate canonical status.
+    pub last_macos_daemon_ownership_event: ReadSignal<Option<MacosDaemonOwnershipEventHint>>,
     /// Increments each time the daemon socket (re)opens. Fold into fetcher
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
@@ -528,6 +530,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         last_control_surface_event: ws.last_control_surface_event,
         last_extension_event: ws.last_extension_event,
         last_input_source_status_event: ws.last_input_source_status_event,
+        last_macos_daemon_ownership_event: ws.last_macos_daemon_ownership_event,
         connection_generation: ws.connection_generation,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,

@@ -92,6 +92,99 @@ pub struct WindowsDaemonServiceStatus {
     pub reuse_recommended: bool,
 }
 
+/// Local macOS daemon topology selectable through the native app coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosDaemonOwnerChoice {
+    AppSidecar,
+    DirectLaunchd,
+    Homebrew,
+    Standalone,
+}
+
+impl MacosDaemonOwnerChoice {
+    #[cfg(target_arch = "wasm32")]
+    const fn invoke_value(self) -> &'static str {
+        match self {
+            Self::AppSidecar => "app_sidecar",
+            Self::DirectLaunchd => "direct_launchd",
+            Self::Homebrew => "homebrew",
+            Self::Standalone => "standalone",
+        }
+    }
+}
+
+/// Topology-specific local action attached to an owner-coordinator outcome.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MacosOwnerRemedy {
+    StopStandaloneOwner {
+        pid: u32,
+    },
+    StartAppSidecar,
+    StartLaunchdService,
+    StartHomebrewService,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Synchronous result from the native daemon-owner coordinator.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MacosOwnerCoordinatorOutcome {
+    Active {
+        owner: String,
+        owner_epoch: u64,
+    },
+    PendingStandalone {
+        requested_owner: String,
+        remedy: MacosOwnerRemedy,
+    },
+    RolledBack {
+        prior_owner: String,
+        failure: String,
+    },
+    RecoveryRequired {
+        requested_owner: String,
+        prior_owner: String,
+        phase: String,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+/// Native app status for a selected external daemon that is offline.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct MacosDaemonOwnerOfflineStatus {
+    pub code: String,
+    pub selected_owner: String,
+    pub remedy: MacosOwnerRemedy,
+}
+
+/// Successful execution of a selected external owner's local start remedy.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct MacosDaemonOwnerOfflineRemedyOutcome {
+    pub status: String,
+    pub owner: String,
+}
+
+/// Result from explicitly restarting the active macOS protected-source owner.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MacosCaptureOwnerRestartOutcome {
+    Restarted {
+        owner: String,
+        previous_owner_epoch: u64,
+        owner_epoch: u64,
+    },
+    UserActionRequired {
+        owner: String,
+        owner_epoch: u64,
+        remedy: MacosOwnerRemedy,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
 /// Returns true when the UI is running inside a Tauri WebView.
 #[must_use]
 #[cfg(target_arch = "wasm32")]
@@ -160,6 +253,120 @@ pub async fn detect_windows_daemon_service() -> Result<Option<WindowsDaemonServi
 
     let value = invoke_command(&invoke, "detect_windows_daemon_service", None).await?;
     serde_json_from_js_value(value).map(Some)
+}
+
+/// Select the active macOS daemon topology through the local app coordinator.
+///
+/// `Ok(None)` means the UI is running in a browser and must not mutate local
+/// process or autostart state.
+///
+/// # Errors
+///
+/// Returns an error when the native coordinator rejects the handover or its
+/// result cannot be decoded.
+#[cfg(target_arch = "wasm32")]
+pub async fn choose_macos_daemon_owner(
+    owner: MacosDaemonOwnerChoice,
+) -> Result<Option<MacosOwnerCoordinatorOutcome>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+
+    let args = string_arg_to_js("requestedOwner", owner.invoke_value())?;
+    let value = invoke_command(&invoke, "choose_daemon_owner", Some(args)).await?;
+    serde_json_from_js_value(value).map(Some)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn choose_macos_daemon_owner(
+    _owner: MacosDaemonOwnerChoice,
+) -> Result<Option<MacosOwnerCoordinatorOutcome>, String> {
+    Ok(None)
+}
+
+/// Read app-local status for a selected external macOS daemon that is offline.
+///
+/// # Errors
+///
+/// Returns an error when the native command rejects or returns malformed data.
+#[cfg(target_arch = "wasm32")]
+pub async fn macos_daemon_owner_offline_status()
+-> Result<Option<MacosDaemonOwnerOfflineStatus>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+
+    let value = invoke_command(&invoke, "macos_daemon_owner_offline_status", None).await?;
+    serde_json_from_js_value(value)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn macos_daemon_owner_offline_status()
+-> Result<Option<MacosDaemonOwnerOfflineStatus>, String> {
+    Ok(None)
+}
+
+/// Execute the exact app-local start remedy published for an offline owner.
+///
+/// `Ok(None)` means the browser UI has no local process authority.
+///
+/// # Errors
+///
+/// Returns an error when the remedy is stale, mismatched, unsupported, or the
+/// selected service cannot be started.
+#[cfg(target_arch = "wasm32")]
+pub async fn execute_macos_daemon_owner_offline_remedy(
+    remedy: &MacosOwnerRemedy,
+) -> Result<Option<MacosDaemonOwnerOfflineRemedyOutcome>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+
+    let args = macos_owner_remedy_to_js(remedy)?;
+    let value = invoke_command(
+        &invoke,
+        "execute_macos_daemon_owner_offline_remedy",
+        Some(args),
+    )
+    .await?;
+    serde_json_from_js_value(value).map(Some)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn execute_macos_daemon_owner_offline_remedy(
+    _remedy: &MacosOwnerRemedy,
+) -> Result<Option<MacosDaemonOwnerOfflineRemedyOutcome>, String> {
+    Ok(None)
+}
+
+/// Restart the exact active macOS owner after a positive grant requires it.
+///
+/// `Ok(None)` means the browser UI has no local process authority.
+///
+/// # Errors
+///
+/// Returns an error when owner identity changed, the epoch is stale, or the
+/// managed owner cannot complete the restart.
+#[cfg(target_arch = "wasm32")]
+pub async fn restart_macos_capture_owner(
+    active_owner: &str,
+    owner_epoch: u64,
+) -> Result<Option<MacosCaptureOwnerRestartOutcome>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+
+    let args = macos_capture_owner_restart_to_js(active_owner, owner_epoch)?;
+    let value = invoke_command(&invoke, "restart_macos_capture_owner", Some(args)).await?;
+    serde_json_from_js_value(value).map(Some)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn restart_macos_capture_owner(
+    _active_owner: &str,
+    _owner_epoch: u64,
+) -> Result<Option<MacosCaptureOwnerRestartOutcome>, String> {
+    Ok(None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -380,6 +587,46 @@ fn pawnio_helper_options_to_js(options: PawnIoHelperOptions) -> Result<JsValue, 
 }
 
 #[cfg(target_arch = "wasm32")]
+fn macos_owner_remedy_to_js(remedy: &MacosOwnerRemedy) -> Result<JsValue, String> {
+    let kind = match remedy {
+        MacosOwnerRemedy::StartLaunchdService => "start_launchd_service",
+        MacosOwnerRemedy::StartHomebrewService => "start_homebrew_service",
+        MacosOwnerRemedy::StopStandaloneOwner { .. }
+        | MacosOwnerRemedy::StartAppSidecar
+        | MacosOwnerRemedy::Unknown => {
+            return Err("offline owner remedy cannot be executed by this action".to_owned());
+        }
+    };
+    let root = js_sys::Object::new();
+    let inner = js_sys::Object::new();
+    js_sys::Reflect::set(&inner, &JsValue::from_str("kind"), &JsValue::from_str(kind))
+        .map_err(js_error_string)?;
+    js_sys::Reflect::set(&root, &JsValue::from_str("remedy"), &inner).map_err(js_error_string)?;
+    Ok(root.into())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn macos_capture_owner_restart_to_js(
+    active_owner: &str,
+    owner_epoch: u64,
+) -> Result<JsValue, String> {
+    let root = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &root,
+        &JsValue::from_str("activeOwner"),
+        &JsValue::from_str(active_owner),
+    )
+    .map_err(js_error_string)?;
+    js_sys::Reflect::set(
+        &root,
+        &JsValue::from_str("ownerEpoch"),
+        &JsValue::from_f64(owner_epoch as f64),
+    )
+    .map_err(js_error_string)?;
+    Ok(root.into())
+}
+
+#[cfg(target_arch = "wasm32")]
 fn set_bool(target: &js_sys::Object, key: &str, value: bool) -> Result<(), String> {
     js_sys::Reflect::set(target, &JsValue::from_str(key), &JsValue::from_bool(value))
         .map_err(js_error_string)?;
@@ -411,8 +658,9 @@ fn js_error_string(value: JsValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        PawnIoModuleStatus, PawnIoSupportStatus, ServiceSupportStatus, bundled_payload_ready,
-        smbus_support_ready, windows_daemon_service_conflict,
+        MacosOwnerCoordinatorOutcome, MacosOwnerRemedy, PawnIoModuleStatus, PawnIoSupportStatus,
+        ServiceSupportStatus, bundled_payload_ready, smbus_support_ready,
+        windows_daemon_service_conflict,
     };
 
     #[test]
@@ -456,6 +704,40 @@ mod tests {
         status.reuse_recommended = true;
         status.platform_supported = false;
         assert!(!windows_daemon_service_conflict(&status));
+    }
+
+    #[test]
+    fn macos_owner_outcomes_decode_closed_native_shapes() {
+        let active: MacosOwnerCoordinatorOutcome = serde_json::from_value(serde_json::json!({
+            "status": "active",
+            "owner": "homebrew",
+            "owner_epoch": 9
+        }))
+        .expect("active owner outcome should decode");
+        assert_eq!(
+            active,
+            MacosOwnerCoordinatorOutcome::Active {
+                owner: "homebrew".to_owned(),
+                owner_epoch: 9,
+            }
+        );
+
+        let pending: MacosOwnerCoordinatorOutcome = serde_json::from_value(serde_json::json!({
+            "status": "pending_standalone",
+            "requested_owner": "app_sidecar",
+            "remedy": {
+                "kind": "stop_standalone_owner",
+                "pid": 412
+            }
+        }))
+        .expect("pending standalone outcome should decode");
+        assert!(matches!(
+            pending,
+            MacosOwnerCoordinatorOutcome::PendingStandalone {
+                remedy: MacosOwnerRemedy::StopStandaloneOwner { pid: 412 },
+                ..
+            }
+        ));
     }
 
     fn status() -> PawnIoSupportStatus {
