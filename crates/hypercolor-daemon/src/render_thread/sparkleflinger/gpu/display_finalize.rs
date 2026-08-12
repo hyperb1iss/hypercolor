@@ -386,6 +386,8 @@ impl GpuSparkleFlinger {
         });
 
         let scene_gpu = gpu_source_frame(scene);
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        let mut native_screen_leases = Vec::new();
         prepare_display_source_texture(
             device,
             queue,
@@ -396,6 +398,8 @@ impl GpuSparkleFlinger {
             scene,
             scene_gpu.as_ref(),
             "SparkleFlinger Display Scene Source",
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            &mut native_screen_leases,
             #[cfg(test)]
             &mut surfaces.scene_upload_count,
         );
@@ -410,9 +414,22 @@ impl GpuSparkleFlinger {
             face,
             face_gpu.as_ref(),
             "SparkleFlinger Display Face Source",
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            &mut native_screen_leases,
             #[cfg(test)]
             &mut surfaces.face_upload_count,
         );
+
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        for frame in [&scene_gpu, &face_gpu]
+            .into_iter()
+            .flatten()
+            .filter(|frame| !frame.needs_display_source_copy())
+        {
+            if let Some(lease) = frame.macos_screen_lease() {
+                native_screen_leases.push(lease);
+            }
+        }
 
         let scene_view = scene_gpu
             .as_ref()
@@ -540,10 +557,12 @@ impl GpuSparkleFlinger {
             surfaces.yuv_layout,
             used_bytes,
             mapped_bytes,
-            submission_index,
+            submission_index.clone(),
             readback_buffer,
             readback_slot,
         ));
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        self.retire_native_screen_leases(submission_index, native_screen_leases);
         self.release_retired_uniform_slots();
         Ok(GpuDisplayFinalizeDispatch::Pending(pending))
     }

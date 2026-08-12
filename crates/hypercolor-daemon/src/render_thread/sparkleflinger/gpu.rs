@@ -86,13 +86,13 @@ use super::{
 use crate::render_thread::gpu_device::{
     GpuBackendPreference, GpuRenderDevice, texture_format_name,
 };
-#[cfg(all(target_os = "macos", feature = "screen-capture"))]
-use crate::render_thread::producer_queue::MacosScreenTextureLease;
 #[cfg(target_os = "windows")]
 use crate::render_thread::producer_queue::WindowsScreenTextureLease;
 use crate::render_thread::producer_queue::{
     GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin, ProducerFrame,
 };
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use crate::render_thread::producer_queue::{MacosScreenTextureLease, SubmissionRetirementQueue};
 use crate::render_thread::sparkleflinger::gpu_sampling::{
     GpuSampleSource, GpuSamplingPlan, GpuSamplingPreparation, GpuSpatialSampler,
 };
@@ -1280,6 +1280,9 @@ pub(crate) struct GpuSparkleFlinger {
     screen_target: Option<ScreenNativeExecutionTarget>,
     #[cfg(all(target_os = "macos", feature = "screen-capture"))]
     metal4_capable: bool,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    native_screen_lease_retirements:
+        SubmissionRetirementQueue<wgpu::SubmissionIndex, MacosScreenTextureLease>,
     #[cfg(test)]
     superseded_frame_count: usize,
     #[cfg(test)]
@@ -1308,6 +1311,14 @@ struct FrameInFlight {
     generation: u64,
     encoder: EncoderStage,
     readbacks: Vec<StagedReadback>,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    native_screen_leases: Vec<MacosScreenTextureLease>,
+}
+
+pub(super) struct StashedFrame {
+    pub(super) encoder: wgpu::CommandEncoder,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    pub(super) native_screen_leases: Vec<MacosScreenTextureLease>,
 }
 
 enum EncoderStage {
@@ -1333,6 +1344,9 @@ impl FrameInFlight {
         generation: u64,
         encoder: wgpu::CommandEncoder,
         preview_readback: Option<PendingPreviewReadback>,
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: Vec<
+            MacosScreenTextureLease,
+        >,
     ) -> Self {
         let readbacks = preview_readback.map_or_else(Vec::new, |readback| {
             vec![StagedReadback::Preview {
@@ -1344,6 +1358,8 @@ impl FrameInFlight {
             generation,
             encoder: EncoderStage::Building(Some(encoder)),
             readbacks,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_leases,
         }
     }
 
@@ -1359,6 +1375,8 @@ impl FrameInFlight {
                 readback: preview_readback,
                 stage: ReadbackStage::Submitted(submission_index),
             }],
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_leases: Vec::new(),
         }
     }
 
@@ -1434,7 +1452,7 @@ impl FrameInFlight {
         Some(submission_index)
     }
 
-    fn supersede(mut self, reason: &'static str) -> Option<wgpu::CommandEncoder> {
+    fn supersede(mut self, reason: &'static str) -> Option<StashedFrame> {
         let encoder = self.take_encoder_for_chaining();
         self.encoder = EncoderStage::Superseded;
         self.readbacks.clear();
@@ -1443,7 +1461,16 @@ impl FrameInFlight {
             reason,
             "superseding deferred GPU frame"
         );
-        encoder
+        encoder.map(|encoder| StashedFrame {
+            encoder,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_leases: std::mem::take(&mut self.native_screen_leases),
+        })
+    }
+
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    fn take_native_screen_leases(&mut self) -> Vec<MacosScreenTextureLease> {
+        std::mem::take(&mut self.native_screen_leases)
     }
 
     #[cfg(test)]
@@ -1463,6 +1490,8 @@ impl FrameInFlight {
                 },
                 stage: ReadbackStage::Encoded,
             }],
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_leases: Vec::new(),
         }
     }
 }
@@ -1689,6 +1718,8 @@ impl GpuSparkleFlinger {
             screen_target,
             #[cfg(all(target_os = "macos", feature = "screen-capture"))]
             metal4_capable,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_lease_retirements: SubmissionRetirementQueue::default(),
             #[cfg(test)]
             superseded_frame_count: 0,
             #[cfg(test)]
@@ -2013,6 +2044,8 @@ impl GpuSparkleFlinger {
         {
             self.screen_storage_id = None;
         }
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        self.release_completed_native_screen_leases();
     }
 
     #[cfg(target_os = "windows")]
@@ -2143,6 +2176,14 @@ impl GpuSparkleFlinger {
         );
         let content_generation = imported.content_sequence();
         let descriptor = &target_owner.descriptor;
+        let native_screen_submission_lease = MacosScreenTextureLease::new(
+            imported.clone(),
+            capture_owner.clone(),
+            target_owner.clone(),
+            target_lifetime.clone(),
+            shared_target_lifetime.clone(),
+            capture_lifetime.clone(),
+        );
         let (width, height, storage_id, texture, view) = if requires_work {
             self.flush_pending_output_submission()?;
             let reduction_started = Instant::now();
@@ -2167,7 +2208,11 @@ impl GpuSparkleFlinger {
                     macos_reduction_descriptor(descriptor)?,
                     &mut encoder,
                 )?;
-                let _ = self.queue.submit(Some(encoder.finish()));
+                let submission_index = self.queue.submit(Some(encoder.finish()));
+                self.retire_native_screen_leases(
+                    submission_index,
+                    vec![native_screen_submission_lease.clone()],
+                );
                 submitted_native_reduction = true;
                 *physical_sequence = Some(content_generation);
             }
@@ -2197,7 +2242,11 @@ impl GpuSparkleFlinger {
                         macos_native_letterbox_fill(descriptor)?,
                         &mut encoder,
                     )?;
-                    let _ = self.queue.submit(Some(encoder.finish()));
+                    let submission_index = self.queue.submit(Some(encoder.finish()));
+                    self.retire_native_screen_leases(
+                        submission_index,
+                        vec![native_screen_submission_lease.clone()],
+                    );
                     submitted_native_reduction = true;
                     *logical_sequence = Some(content_generation);
                 }
@@ -2348,6 +2397,13 @@ impl GpuSparkleFlinger {
                 &mut zones,
                 None,
             )?;
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            if let Some(submission_index) = dispatch.submission_index.clone() {
+                self.retire_native_screen_leases(
+                    submission_index,
+                    frame.macos_screen_lease.clone().into_iter().collect(),
+                );
+            }
             if dispatch.queue_saturated || !dispatch.sampled {
                 if let Some(pending) = dispatch.pending_readback {
                     self.spatial_sampler.discard_pending_readback(pending);
@@ -3035,7 +3091,12 @@ impl GpuSparkleFlinger {
             let submission_index = frame.submit(&self.queue);
             debug_assert!(submission_index.is_some());
             if let Some(submission_index) = submission_index {
-                self.finish_pending_uploads(submission_index);
+                self.finish_pending_uploads(submission_index.clone());
+                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+                self.retire_native_screen_leases(
+                    submission_index,
+                    frame.take_native_screen_leases(),
+                );
             }
             self.release_retired_uniform_slots();
         }
@@ -3045,7 +3106,7 @@ impl GpuSparkleFlinger {
     pub(super) fn supersede_frame_in_flight(
         &mut self,
         reason: &'static str,
-    ) -> Option<wgpu::CommandEncoder> {
+    ) -> Option<StashedFrame> {
         let frame = self.frame_in_flight.take()?;
         let encoder = frame.supersede(reason);
         #[cfg(test)]
@@ -3060,6 +3121,29 @@ impl GpuSparkleFlinger {
         encoder: wgpu::CommandEncoder,
         preview_readback: Option<PendingPreviewReadback>,
     ) {
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        self.stage_frame_in_flight_with_native_screen_leases(encoder, preview_readback, Vec::new());
+        #[cfg(not(all(target_os = "macos", feature = "screen-capture")))]
+        {
+            debug_assert!(
+                self.frame_in_flight.is_none(),
+                "deferred GPU frame must be submitted or superseded before replacement"
+            );
+            self.frame_in_flight = Some(FrameInFlight::building(
+                self.output_generation,
+                encoder,
+                preview_readback,
+            ));
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    fn stage_frame_in_flight_with_native_screen_leases(
+        &mut self,
+        encoder: wgpu::CommandEncoder,
+        preview_readback: Option<PendingPreviewReadback>,
+        native_screen_leases: Vec<MacosScreenTextureLease>,
+    ) {
         debug_assert!(
             self.frame_in_flight.is_none(),
             "deferred GPU frame must be submitted or superseded before replacement"
@@ -3068,7 +3152,58 @@ impl GpuSparkleFlinger {
             self.output_generation,
             encoder,
             preview_readback,
+            native_screen_leases,
         ));
+    }
+
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    fn retire_native_screen_leases(
+        &mut self,
+        submission_index: wgpu::SubmissionIndex,
+        leases: Vec<MacosScreenTextureLease>,
+    ) {
+        self.native_screen_lease_retirements
+            .retire(submission_index, leases);
+        self.release_completed_native_screen_leases();
+    }
+
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    fn release_completed_native_screen_leases(&mut self) {
+        let device = &self.device;
+        self.native_screen_lease_retirements
+            .release_completed(|submission_index| {
+                match device.poll(wgpu::PollType::Wait {
+                    submission_index: Some(submission_index.clone()),
+                    timeout: Some(std::time::Duration::ZERO),
+                }) {
+                    Ok(_) => true,
+                    Err(wgpu::PollError::Timeout) => false,
+                    Err(error) => {
+                        tracing::debug!(%error, "GPU native screen lease retirement poll failed");
+                        false
+                    }
+                }
+            });
+    }
+
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    fn wait_for_native_screen_lease_retirements(&mut self) {
+        while let Some(submission_index) = self
+            .native_screen_lease_retirements
+            .front_submission()
+            .cloned()
+        {
+            match self.device.poll(wgpu::PollType::Wait {
+                submission_index: Some(submission_index),
+                timeout: None,
+            }) {
+                Ok(_) => self.native_screen_lease_retirements.release_front(),
+                Err(error) => {
+                    tracing::debug!(%error, "GPU stopped before native screen lease retirement");
+                    self.native_screen_lease_retirements.release_front();
+                }
+            }
+        }
     }
 
     fn pending_preview_readback(&self) -> Option<&PendingPreviewReadback> {
@@ -3139,6 +3274,13 @@ impl fmt::Debug for GpuSparkleFlinger {
             .field("probe", &self.probe)
             .field("surface_snapshot", &self.surface_snapshot())
             .finish()
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+impl Drop for GpuSparkleFlinger {
+    fn drop(&mut self) {
+        self.wait_for_native_screen_lease_retirements();
     }
 }
 

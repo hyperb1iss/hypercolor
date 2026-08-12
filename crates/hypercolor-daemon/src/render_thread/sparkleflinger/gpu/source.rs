@@ -12,6 +12,8 @@ use super::{
     GpuCompositorSurfaceSet, GpuCompositorTexture, GpuDisplaySourceTexture, PendingUploadBuffers,
     SOURCE_COPY_PARAM_BYTES, texture_extent,
 };
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use crate::render_thread::producer_queue::MacosScreenTextureLease;
 #[cfg(any(
     target_os = "windows",
     all(target_os = "macos", feature = "screen-capture")
@@ -130,6 +132,9 @@ pub(super) fn prepare_display_source_texture(
     frame: &ProducerFrame,
     gpu_frame: Option<&GpuSourceFrame<'_>>,
     label: &'static str,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: &mut Vec<
+        MacosScreenTextureLease,
+    >,
     #[cfg(test)] upload_count: &mut usize,
 ) {
     let Some(gpu_frame) = gpu_frame else {
@@ -171,6 +176,8 @@ pub(super) fn prepare_display_source_texture(
         &mut source.bind_group_cache,
         gpu_frame,
         &source.texture,
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        native_screen_leases,
     );
     source.cached_upload = None;
     source.cached_gpu_copy = Some(next_copy);
@@ -319,6 +326,15 @@ impl GpuSourceFrame<'_> {
             Self::Texture(frame) => frame.native_screen_cache_lease(),
         }
     }
+
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    pub(super) fn macos_screen_lease(&self) -> Option<MacosScreenTextureLease> {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(_) => None,
+            Self::Texture(frame) => frame.macos_screen_lease.clone(),
+        }
+    }
 }
 
 pub(super) fn gpu_source_frame(frame: &ProducerFrame) -> Option<GpuSourceFrame<'_>> {
@@ -342,6 +358,9 @@ pub(super) fn copy_frame_into_output_texture(
     bind_group_cache: &mut SourceCopyBindGroupCache,
     encoder: &mut wgpu::CommandEncoder,
     frame: &ProducerFrame,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: &mut Vec<
+        MacosScreenTextureLease,
+    >,
     #[cfg(test)] upload_count: &mut usize,
 ) {
     if let Some(frame) = gpu_source_frame(frame) {
@@ -355,6 +374,8 @@ pub(super) fn copy_frame_into_output_texture(
             bind_group_cache,
             &frame,
             output,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            native_screen_leases,
         );
         *cached_upload = None;
         return;
@@ -379,7 +400,14 @@ pub(super) fn copy_gpu_source_frame_into_texture(
     bind_group_cache: &mut SourceCopyBindGroupCache,
     frame: &GpuSourceFrame<'_>,
     output: &GpuCompositorTexture,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: &mut Vec<
+        MacosScreenTextureLease,
+    >,
 ) {
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    if let Some(lease) = frame.macos_screen_lease() {
+        native_screen_leases.push(lease);
+    }
     if frame.requires_shader_copy_to(&output.texture) {
         let params_offset = encode_source_copy_params_upload(
             device,

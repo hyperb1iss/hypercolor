@@ -20,8 +20,61 @@ use hypercolor_macos_capture::MacosCaptureFrame;
 use hypercolor_macos_gpu_interop::ImportedMacosScreenFrame;
 #[cfg(all(feature = "wgpu", target_os = "windows"))]
 use hypercolor_windows_gpu_interop::ScreenTextureCopy;
+#[cfg(feature = "wgpu")]
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Values that must outlive the GPU submission that references them.
+///
+/// The compositor retires entries in queue order because wgpu submissions on
+/// one queue complete in that same order.
+#[cfg(feature = "wgpu")]
+#[derive(Debug)]
+pub(crate) struct SubmissionRetirementQueue<K, T> {
+    entries: VecDeque<(K, Vec<T>)>,
+}
+
+#[cfg(feature = "wgpu")]
+impl<K, T> Default for SubmissionRetirementQueue<K, T> {
+    fn default() -> Self {
+        Self {
+            entries: VecDeque::new(),
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl<K, T> SubmissionRetirementQueue<K, T> {
+    pub(crate) fn retire(&mut self, submission: K, values: Vec<T>) {
+        if !values.is_empty() {
+            self.entries.push_back((submission, values));
+        }
+    }
+
+    pub(crate) fn release_completed(&mut self, mut is_complete: impl FnMut(&K) -> bool) {
+        while self
+            .entries
+            .front()
+            .is_some_and(|(submission, _)| is_complete(submission))
+        {
+            self.entries.pop_front();
+        }
+    }
+
+    pub(crate) fn front_submission(&self) -> Option<&K> {
+        self.entries.front().map(|(submission, _)| submission)
+    }
+
+    pub(crate) fn release_front(&mut self) {
+        self.entries.pop_front();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 
 #[cfg(feature = "wgpu")]
 #[derive(Debug, Clone)]
@@ -523,9 +576,54 @@ impl ProducerFrameState {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 
-    use super::{ProducerFrame, ProducerFrameState, ProducerQueue};
+    use super::{ProducerFrame, ProducerFrameState, ProducerQueue, SubmissionRetirementQueue};
+
+    struct LeaseDropProbe(Arc<AtomicUsize>);
+
+    impl Drop for LeaseDropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn submission_retirement_queue_keeps_evicted_leases_until_completion() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut retirements = SubmissionRetirementQueue::default();
+        retirements.retire(17_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+
+        // Cache eviction only removes its own entry. The submission queue keeps
+        // the native owner alive until the device reports this submission done.
+        retirements.release_completed(|_| false);
+        assert_eq!(retirements.len(), 1);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        retirements.release_completed(|submission| *submission == 17);
+        assert_eq!(retirements.len(), 0);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn submission_retirement_queue_never_releases_past_an_incomplete_submission() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut retirements = SubmissionRetirementQueue::default();
+        retirements.retire(17_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+        retirements.retire(18_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+
+        retirements.release_completed(|submission| *submission == 18);
+
+        assert_eq!(retirements.len(), 2);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        retirements.release_completed(|_| true);
+        assert_eq!(retirements.len(), 0);
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn producer_queue_latches_fresh_then_retains() {
