@@ -10,7 +10,8 @@ AI-generated notes, and registry publishes.
 2. Enter the version without the leading `v` (e.g. `0.3.0` or `0.3.0-rc.1`).
 3. Leave **dry run** checked for the first pass. Review the
    `release-preview-v<version>` artifact (release notes + changelog).
-4. Re-run with dry run unchecked to ship.
+4. Complete the signed macOS acceptance checkpoint below.
+5. Re-run with dry run unchecked to ship.
 
 What the Release workflow does, in order:
 
@@ -42,6 +43,33 @@ Release with the committed notes, publishes `hypercolor` +
 `create-hypercolor` to npm (with provenance; prereleases go to the `next`
 dist-tag), publishes the Python client to PyPI (stable only), and updates
 the Homebrew tap and AUR metadata (stable only).
+
+## Signed macOS acceptance checkpoint
+
+Spec 76 acceptance is a manual release checkpoint until the physical-hardware
+harness is automated. Before shipping a release that includes macOS screen
+capture or host input changes, run the signed packaged release candidate on
+the required Apple Silicon and Intel hardware and retain one acceptance bundle
+covering:
+
+- the signed TCC owner matrix and selected capability topology, including the
+  broker decision;
+- keyboard, pointer, SDR, HDR, picker, lifecycle, and teardown acceptance for
+  the rows supported by each machine;
+- the Section 19 latency, cadence, zero-copy, byte-reconciliation, and
+  30-minute results, plus the Section 18.5 four-hour combined soak; and
+- one Metal 4 qualification and adoption artifact for every active device that
+  exposes the required facilities.
+
+Record the immutable artifact location and checksum in the release checklist.
+CI fixtures, unsigned local runs, and a successful build do not replace this
+evidence. If the signed bundle does not exist or any required row fails, stop
+after the dry run. The repository does not currently contain a completed
+physical-acceptance bundle.
+
+The native and standalone artifact jobs also wait for the Python OpenAPI and
+WebSocket drift checks. GitHub Release creation cannot run unless both checks
+and both artifact lanes succeed.
 
 ## Required configuration
 

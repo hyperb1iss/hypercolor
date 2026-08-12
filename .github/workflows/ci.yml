@@ -316,6 +316,22 @@ jobs:
             --test macos_screen_capture_tests \
             -- -D warnings
 
+      - name: Clippy macOS host input and ownership
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-macos-input --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-macos-owner --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-daemon --no-default-features \
+            --bin hypercolor-daemon --test macos_owner_tests \
+            -- -D warnings
+
       - name: Run macOS interop fixtures
         run: >-
           ./scripts/cargo-cache-build.sh
@@ -1269,7 +1285,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     strategy:
       fail-fast: false
       matrix:
@@ -1616,7 +1632,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     strategy:
       fail-fast: false
       matrix:
@@ -1860,7 +1876,7 @@ jobs:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app]
+    needs: [build-release, build-native-app, python, python-generated]
     runs-on: ubuntu-latest
     permissions:
       contents: write

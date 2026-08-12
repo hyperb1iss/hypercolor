@@ -882,11 +882,12 @@ bootstrapper). Unsigned for early alpha; signed for v1.
   "targets": ["dmg", "app"],
   "macOS": {
     "frameworks": [],
-    "minimumSystemVersion": "11.0",
+    "minimumSystemVersion": "15.2",
     "exceptionDomain": "",
     "signingIdentity": "Developer ID Application: Stefanie Jane (TEAMID)",
     "providerShortName": "TEAMID",
     "entitlements": "entitlements.plist",
+    "infoPlist": "Info.plist",
     "dmg": {
       "background": "icons/dmg-background.png",
       "windowSize": { "width": 660, "height": 400 },
@@ -914,19 +915,30 @@ bootstrapper). Unsigned for early alpha; signed for v1.
     <true/>
     <key>com.apple.security.device.usb</key>
     <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Hypercolor uses your microphone for audio-reactive lighting effects.</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>Hypercolor uses input events for keyboard-reactive lighting effects.</string>
 </dict>
 </plist>
 ```
 
-> Screen recording permission has no Info.plist key — TCC-managed, prompted at first
-> capture attempt. Walk users through it in [§12.3](#123-macos-permissions).
+Privacy purpose strings belong in `Info.plist`, not the entitlement profile:
+
+```xml
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Hypercolor uses your microphone for audio-reactive lighting effects.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Hypercolor captures your screen to create screen-reactive lighting effects.</string>
+</dict>
+</plist>
+```
+
+The bundle must not declare `NSAppleEventsUsageDescription`. Native keyboard
+and pointer capture uses Input Monitoring rather than Apple Events. Walk users
+through the TCC permissions in [§12.3](#123-macos-permissions).
 
 **Output**: `Hypercolor-0.1.0-arm64.dmg` (Apple Silicon) and
-`Hypercolor-0.1.0-x86_64.dmg` (Intel, courtesy build).
+`Hypercolor-0.1.0-x86_64.dmg` (Intel). Both architectures are first-class
+release targets under the macOS 15.2 support floor.
 
 **Homebrew Cask** (separate from existing CLI Homebrew formula):
 
@@ -1146,8 +1158,8 @@ Walk the user through each permission with deep links:
 | Permission | When needed | Deep link |
 |---|---|---|
 | Microphone | Audio-reactive effects | Triggered automatically on first capture; no deep link needed |
-| Screen Recording | Screen capture effects | `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` |
-| Accessibility | Keyboard-reactive effects | `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` |
+| Screen Recording | Screen capture effects | `x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture` |
+| Input Monitoring | Keyboard-reactive effects | `x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent` |
 | LaunchAgent (autostart) | Login | Automatic, no permission |
 | USB device access | HID devices | Automatic for HID; no deep link |
 
@@ -1212,10 +1224,10 @@ Add Tauri build deps to CI runners:
 **Per-OS bundle artifacts** uploaded on release tag:
 
 ```yaml
-# .github/workflows/release.yml additions
+# .github/workflows/ci.yml release jobs
 - ubuntu-latest: hypercolor-app-x86_64.AppImage (v1.1)
-- macos-14:      Hypercolor-arm64.dmg
-- macos-13:      Hypercolor-x86_64.dmg  (Intel courtesy)
+- macos-26:      Hypercolor-arm64.dmg
+- macos-26-intel: Hypercolor-x86_64.dmg
 - windows-latest: Hypercolor_x64-setup.exe (NSIS)
 ```
 
