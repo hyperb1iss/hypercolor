@@ -276,12 +276,13 @@ impl MacosScreenCaptureInput {
                 };
                 let _ = exit_tx.send(result);
             })?;
+        let previous_latest = lock(&self.publication).latest.clone();
         self.stop_worker();
         self.worker_generation = worker_generation;
         {
             let mut publication = lock(&self.publication);
             publication.worker_generation = worker_generation;
-            publication.latest = None;
+            publication.latest = previous_latest;
         }
         self.worker = Some(CaptureWorker {
             stop,
@@ -574,6 +575,7 @@ fn run_worker(
             ))
             | Err(_) => lock(&publication).latest = None,
             Ok(MacosFrameEvent::Lifecycle(_)) => {}
+            Ok(MacosFrameEvent::RecoverableError(_)) => {}
         }
     }
     prepared.analyzer.stop();
@@ -901,6 +903,12 @@ impl MacosScreenCaptureFixture {
     pub fn publish_at(&self, frame: MacosCaptureFrame, captured_at: Instant) {
         *lock(&self.control.captured_at) = Some(captured_at);
         self.publish(frame);
+    }
+
+    pub fn publish_recoverable_error(&self, error: hypercolor_macos_capture::MacosCaptureError) {
+        self.control
+            .mailbox
+            .publish(Ok(MacosFrameEvent::RecoverableError(Box::new(error))));
     }
 
     pub fn is_active(&self) -> bool {

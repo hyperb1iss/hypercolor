@@ -117,6 +117,7 @@ impl SessionShared {
                 self.counters.record_lifecycle();
                 MacosProtectedSourceState::Live
             }
+            MacosFrameEvent::RecoverableError(_) => self.status(),
         };
         self.set_status(status);
         self.mailbox.publish(Ok(event));
@@ -128,6 +129,11 @@ impl SessionShared {
 
     fn publish_error(&self, error: MacosCaptureError) {
         self.mailbox.publish(Err(error));
+    }
+
+    fn publish_recoverable_error(&self, error: MacosCaptureError) {
+        self.mailbox
+            .publish(Ok(MacosFrameEvent::RecoverableError(Box::new(error))));
     }
 }
 
@@ -512,20 +518,27 @@ fn handle_stream_error(
     let role = streams
         .upgrade()
         .map_or(StreamRole::Stale, |streams| streams.remove(epoch));
-    match role {
+    let preserve_current = match role {
         StreamRole::Candidate
             if streams
                 .upgrade()
                 .is_some_and(|streams| streams.has_current()) =>
         {
             shared.set_status(MacosProtectedSourceState::Live);
+            true
         }
         StreamRole::Candidate | StreamRole::Current => {
             shared.set_status(classify_stream_error(error));
+            false
         }
         StreamRole::Stale => return,
+    };
+    let error = native_error("ScreenCaptureKit stream", error);
+    if preserve_current {
+        shared.publish_recoverable_error(error);
+    } else {
+        shared.publish_error(error);
     }
-    shared.publish_error(native_error("ScreenCaptureKit stream", error));
 }
 
 struct PickerObserverIvars {
@@ -571,10 +584,17 @@ define_class!(
             if self.ivars().active.get() {
                 self.install_filter(filter);
             } else if let Err(error) = self.ivars().streams.store_selection(filter) {
-                self.ivars()
-                    .shared
-                    .set_status(MacosProtectedSourceState::Failed);
-                self.ivars().shared.publish_error(error);
+                if self.ivars().streams.has_selection() {
+                    self.ivars()
+                        .shared
+                        .set_status(MacosProtectedSourceState::ReadyIdle);
+                    self.ivars().shared.publish_recoverable_error(error);
+                } else {
+                    self.ivars()
+                        .shared
+                        .set_status(MacosProtectedSourceState::Failed);
+                    self.ivars().shared.publish_error(error);
+                }
             } else {
                 self.ivars()
                     .shared
@@ -585,14 +605,23 @@ define_class!(
         #[allow(non_snake_case)]
         #[unsafe(method(contentSharingPickerStartDidFailWithError:))]
         fn contentSharingPickerStartDidFailWithError(&self, error: &NSError) {
-            if !self.ivars().streams.has_current() {
+            let preserve_current = self.ivars().streams.has_current();
+            let preserve_selection = self.ivars().streams.has_selection();
+            if !preserve_current && !preserve_selection {
                 self.ivars()
                     .shared
                     .set_status(MacosProtectedSourceState::Failed);
+            } else if !preserve_current {
+                self.ivars()
+                    .shared
+                    .set_status(MacosProtectedSourceState::ReadyIdle);
             }
-            self.ivars()
-                .shared
-                .publish_error(native_error("ScreenCaptureKit picker", error));
+            let error = native_error("ScreenCaptureKit picker", error);
+            if preserve_current || preserve_selection {
+                self.ivars().shared.publish_recoverable_error(error);
+            } else {
+                self.ivars().shared.publish_error(error);
+            }
         }
     }
 );
@@ -628,13 +657,18 @@ impl PickerObserver {
                     .stage_candidate(filter, self.ivars().request, epoch)
             });
         if let Err(error) = result {
-            let status = if self.ivars().streams.has_current() {
+            let preserve_current = self.ivars().streams.has_current();
+            let status = if preserve_current {
                 MacosProtectedSourceState::Live
             } else {
                 MacosProtectedSourceState::Failed
             };
             self.ivars().shared.set_status(status);
-            self.ivars().shared.publish_error(error);
+            if preserve_current {
+                self.ivars().shared.publish_recoverable_error(error);
+            } else {
+                self.ivars().shared.publish_error(error);
+            }
         }
     }
 

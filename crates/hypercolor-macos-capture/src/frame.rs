@@ -510,6 +510,7 @@ pub struct MacosRawCaptureSample {
 pub enum MacosFrameEvent {
     Frame(Box<MacosCaptureFrame>),
     Lifecycle(MacosFrameStatus),
+    RecoverableError(Box<MacosCaptureError>),
 }
 
 #[derive(Debug, Clone)]

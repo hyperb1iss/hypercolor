@@ -14,9 +14,9 @@ use hypercolor_core::input::{
     SourcePlatformStatus,
 };
 use hypercolor_macos_capture::{
-    MacosAttachment, MacosCaptureColorimetry, MacosCaptureFrame, MacosCapturePixelFormat,
-    MacosCaptureSelection, MacosCaptureSurface, MacosColorPrimaries, MacosColorRange,
-    MacosFrameDecoder, MacosFrameEvent, MacosPixelExtent, MacosPointRect,
+    MacosAttachment, MacosCaptureColorimetry, MacosCaptureError, MacosCaptureFrame,
+    MacosCapturePixelFormat, MacosCaptureSelection, MacosCaptureSurface, MacosColorPrimaries,
+    MacosColorRange, MacosFrameDecoder, MacosFrameEvent, MacosPixelExtent, MacosPointRect,
     MacosProtectedSourceState, MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame,
     MacosRawFrameAttachments, MacosTransferFunction,
 };
@@ -89,6 +89,25 @@ fn wait_for_screen(source: &mut impl InputSource) -> hypercolor_core::input::Scr
             InputData::Screen(data) => return data,
             InputData::None if Instant::now() < deadline => thread::yield_now(),
             InputData::None => panic!("fixture worker did not publish before the deadline"),
+            _ => panic!("macOS fixture published the wrong input kind"),
+        }
+    }
+}
+
+fn wait_for_grid_width(
+    source: &mut impl InputSource,
+    grid_width: u32,
+) -> hypercolor_core::input::ScreenData {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match source.sample().expect("fixture sample succeeds") {
+            InputData::Screen(data) if data.grid_width == grid_width => return data,
+            InputData::Screen(_) | InputData::None if Instant::now() < deadline => {
+                thread::yield_now();
+            }
+            InputData::Screen(_) | InputData::None => {
+                panic!("fixture worker did not publish the expected grid before the deadline");
+            }
             _ => panic!("macOS fixture published the wrong input kind"),
         }
     }
@@ -198,10 +217,22 @@ fn reconfiguration_fences_the_previous_worker_generation() {
             ..config
         })
         .expect("fixture worker reconfigures");
-    assert!(matches!(source.sample(), Ok(InputData::None)));
+    let retained = source.sample().expect("last-good frame remains readable");
+    let InputData::Screen(retained) = retained else {
+        panic!("expected retained screen data during reconfiguration");
+    };
+    assert_eq!(retained.grid_width, 2);
+    fixture.publish_recoverable_error(MacosCaptureError::DisplayUuidUnavailable(7));
+    let retained = source
+        .sample()
+        .expect("recoverable repick error preserves last-good data");
+    let InputData::Screen(retained) = retained else {
+        panic!("expected retained screen data after recoverable repick error");
+    };
+    assert_eq!(retained.grid_width, 2);
 
     fixture.publish(fixture_frame(2, [0, 255, 0, 255]));
-    let data = wait_for_screen(&mut source);
+    let data = wait_for_grid_width(&mut source, 1);
     assert_eq!(data.grid_width, 1);
     assert_eq!(data.grid_height, 1);
     assert_eq!(data.zone_colors.len(), 1);

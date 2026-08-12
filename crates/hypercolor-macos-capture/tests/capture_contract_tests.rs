@@ -565,6 +565,9 @@ fn decode_frame(
     match decoder.decode(sample).expect("sample should decode") {
         MacosFrameEvent::Frame(frame) => *frame,
         MacosFrameEvent::Lifecycle(status) => panic!("expected frame, got {status:?}"),
+        MacosFrameEvent::RecoverableError(error) => {
+            panic!("expected frame, got recoverable error: {error}")
+        }
     }
 }
 
