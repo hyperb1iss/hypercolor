@@ -19,7 +19,8 @@ use tokio::sync::oneshot;
 
 #[cfg(target_os = "macos")]
 use hypercolor_macos_capture::{
-    MacosCaptureCadence, MacosCaptureSelector, MacosScreenCaptureSession, MacosStreamRequest,
+    MacosCaptureCadence, MacosCaptureSelector, MacosScreenCaptureSession,
+    MacosScreenshotReferenceCapture, MacosStreamRequest,
 };
 
 use super::{
@@ -49,6 +50,8 @@ use super::{
 #[cfg(target_os = "macos")]
 use super::{ScreenByteAdmissionError, ScreenByteLease};
 use crate::input::status::SourceSessionSlot;
+#[cfg(target_os = "macos")]
+use crate::input::traits::MacosScreenshotReferenceAction;
 use crate::input::traits::{
     InputData, InputSource, ProtectedSourceAuthorizationAction, ScreenSourcePickerAction,
 };
@@ -286,6 +289,17 @@ trait MacosCaptureControl: Send + Sync {
     fn host_capabilities(&self) -> NativeCaptureCapabilities;
     fn authorization(&self) -> MacosAuthorizationState;
     fn captured_at(&self, display_time: u64) -> anyhow::Result<Instant>;
+
+    #[cfg(target_os = "macos")]
+    fn capture_screenshot_reference(
+        &self,
+    ) -> anyhow::Result<
+        mpsc::Receiver<
+            Result<MacosScreenshotReferenceCapture, hypercolor_macos_capture::MacosCaptureError>,
+        >,
+    > {
+        anyhow::bail!("macOS screenshot references are unavailable for this capture control")
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -343,6 +357,21 @@ impl MacosCaptureControl for NativeCaptureControl {
         self.clock
             .timestamp(display_time)
             .map_err(anyhow::Error::from)
+    }
+
+    fn capture_screenshot_reference(
+        &self,
+    ) -> anyhow::Result<
+        mpsc::Receiver<
+            Result<MacosScreenshotReferenceCapture, hypercolor_macos_capture::MacosCaptureError>,
+        >,
+    > {
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        self.session
+            .capture_screenshot_reference_with_identity(move |result| {
+                let _ = result_tx.send(result);
+            })?;
+        Ok(result_rx)
     }
 }
 
@@ -1255,6 +1284,12 @@ impl InputSource for MacosScreenCaptureInput {
     fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
         let control = Arc::clone(&self.control);
         Some(Arc::new(move || control.present_picker()))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
+        let control = Arc::clone(&self.control);
+        Some(Arc::new(move || control.capture_screenshot_reference()))
     }
 }
 

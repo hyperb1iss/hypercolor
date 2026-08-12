@@ -23,7 +23,8 @@ pub use native::MacosScreenCaptureSession;
 pub use screenshot::{
     MAX_MACOS_SCREENSHOT_REFERENCE_BYTES, MacosScreenshotPixelCopy,
     MacosScreenshotPreferredDynamicRange, MacosScreenshotReferenceCapability,
-    MacosScreenshotReferenceImage, MacosScreenshotReferenceMetadata, MacosScreenshotReferenceSet,
+    MacosScreenshotReferenceCapture, MacosScreenshotReferenceImage,
+    MacosScreenshotReferenceMetadata, MacosScreenshotReferenceSet,
 };
 
 pub use clock::{MacosDisplayClock, MacosDisplayClockError};

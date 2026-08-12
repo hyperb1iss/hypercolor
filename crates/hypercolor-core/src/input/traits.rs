@@ -20,6 +20,19 @@ pub type ProtectedSourceAuthorizationAction = Arc<dyn Fn() -> anyhow::Result<boo
 /// Explicit native source-picker presentation detached from input-graph locks.
 pub type ScreenSourcePickerAction = Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>;
 
+#[cfg(target_os = "macos")]
+pub type MacosScreenshotReferenceAction = Arc<
+    dyn Fn() -> anyhow::Result<
+            std::sync::mpsc::Receiver<
+                Result<
+                    hypercolor_macos_capture::MacosScreenshotReferenceCapture,
+                    hypercolor_macos_capture::MacosCaptureError,
+                >,
+            >,
+        > + Send
+        + Sync,
+>;
+
 // ── InputData ──────────────────────────────────────────────────────────────
 
 /// A single sample from an input source.
@@ -927,6 +940,11 @@ pub trait InputSource: Send {
 
     /// Return the system source-picker action owned by this source.
     fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
         None
     }
 }

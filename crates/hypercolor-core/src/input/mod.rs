@@ -53,6 +53,8 @@ pub use status::{
     SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
     classify_source_resource_scan,
 };
+#[cfg(target_os = "macos")]
+pub use traits::MacosScreenshotReferenceAction;
 pub use traits::{
     InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
     InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode,
@@ -2004,6 +2006,14 @@ impl InputManager {
         self.sources
             .iter()
             .find_map(|source| source.screen_source_picker_action())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
+        self.sources
+            .iter()
+            .find_map(|source| source.macos_screenshot_reference_action())
     }
 
     /// Ask screen sources to discard their persisted selection and re-prompt.

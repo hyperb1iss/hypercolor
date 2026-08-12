@@ -61,11 +61,11 @@ use crate::{
     MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosHostArchitecture, MacosPixelExtent,
     MacosPixelRect, MacosPointRect, MacosProtectedSourceState, MacosRawCapturePlane,
     MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments, MacosRuntimeCapability,
-    MacosScale, MacosScreenshotReferenceCapability, MacosScreenshotReferenceImage,
-    MacosScreenshotReferenceSet, MacosStreamDeliveryRejection, MacosStreamDeliveryState,
-    MacosStreamDeliveryValidator, MacosStreamPreset, MacosStreamRequest, MacosTahoeCapabilities,
-    MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilities, MacosTransferFunction,
-    MacosValidatedStreamDelivery, MacosYuvMatrix,
+    MacosScale, MacosScreenshotReferenceCapability, MacosScreenshotReferenceCapture,
+    MacosScreenshotReferenceImage, MacosScreenshotReferenceSet, MacosStreamDeliveryRejection,
+    MacosStreamDeliveryState, MacosStreamDeliveryValidator, MacosStreamPreset, MacosStreamRequest,
+    MacosTahoeCapabilities, MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilities,
+    MacosTransferFunction, MacosValidatedStreamDelivery, MacosYuvMatrix,
 };
 
 type PoolBackingLifetime = Arc<dyn Send + Sync>;
@@ -1658,13 +1658,31 @@ impl MacosScreenCaptureSession {
     where
         F: FnOnce(Result<MacosScreenshotReferenceSet, MacosCaptureError>) + Send + 'static,
     {
+        self.capture_screenshot_reference_with_identity(move |result| {
+            completion(result.map(MacosScreenshotReferenceCapture::into_references));
+        })
+    }
+
+    pub fn capture_screenshot_reference_with_identity<F>(
+        &self,
+        completion: F,
+    ) -> Result<(), MacosCaptureError>
+    where
+        F: FnOnce(Result<MacosScreenshotReferenceCapture, MacosCaptureError>) + Send + 'static,
+    {
         let snapshot = self.streams.screenshot_snapshot()?;
+        let source_id = Arc::clone(&snapshot.source_id);
+        let generation = snapshot.generation;
         execute_screenshot_transaction(
             snapshot,
             Arc::clone(&self.streams) as Arc<dyn ScreenshotIdentityFence>,
             Arc::new(NativeScreenshotCaptureBackend),
             self.request.cursor_composed,
-            Box::new(completion),
+            Box::new(move |result| {
+                completion(result.map(|references| {
+                    MacosScreenshotReferenceCapture::new(source_id, generation, references)
+                }));
+            }),
         )
     }
 

@@ -282,6 +282,47 @@ pub enum MacosScreenshotReferenceSet {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct MacosScreenshotReferenceCapture {
+    source_id: Arc<str>,
+    capture_session_generation: u64,
+    references: MacosScreenshotReferenceSet,
+}
+
+impl MacosScreenshotReferenceCapture {
+    pub(crate) fn new(
+        source_id: Arc<str>,
+        capture_session_generation: u64,
+        references: MacosScreenshotReferenceSet,
+    ) -> Self {
+        Self {
+            source_id,
+            capture_session_generation,
+            references,
+        }
+    }
+
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    #[must_use]
+    pub const fn capture_session_generation(&self) -> u64 {
+        self.capture_session_generation
+    }
+
+    #[must_use]
+    pub const fn references(&self) -> &MacosScreenshotReferenceSet {
+        &self.references
+    }
+
+    #[must_use]
+    pub fn into_references(self) -> MacosScreenshotReferenceSet {
+        self.references
+    }
+}
+
 type SetContentToneMappingInfo = unsafe extern "C-unwind" fn(&CGContext, CGContentToneMappingInfo);
 type GetContentAverageLightLevel = unsafe extern "C-unwind" fn(Option<&CGImage>) -> f32;
 
@@ -591,5 +632,30 @@ mod tests {
         assert_eq!(output.extent, MacosPixelExtent::new(1, 1).expect("extent"));
         assert_eq!(output.bytes_per_row, 4);
         assert_eq!(output.rgba8.len(), 4);
+    }
+
+    #[test]
+    fn reference_capture_carries_the_fenced_source_identity() {
+        let capture = MacosScreenshotReferenceCapture::new(
+            Arc::from("display:main"),
+            17,
+            MacosScreenshotReferenceSet::Sdr {
+                image: MacosScreenshotReferenceImage::new_fixture(
+                    MacosCaptureDynamicRange::Sdr,
+                    0x80,
+                ),
+            },
+        );
+
+        assert_eq!(capture.source_id(), "display:main");
+        assert_eq!(capture.capture_session_generation(), 17);
+        assert!(matches!(
+            capture.references(),
+            MacosScreenshotReferenceSet::Sdr { .. }
+        ));
+        assert!(matches!(
+            capture.into_references(),
+            MacosScreenshotReferenceSet::Sdr { .. }
+        ));
     }
 }
