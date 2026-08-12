@@ -102,22 +102,18 @@ Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg`
 Current builds are ad-hoc signed but not notarized, so Gatekeeper will block the app on first launch. Right-click the app and choose **Open** to confirm.
 {% end %}
 
-macOS supports screen-reactive effects through ScreenCaptureKit and Apple's
-system picker. Screen Recording permission is requested only after an explicit
-capture action. Audio-reactive effects also work; system audio needs a loopback
-device as described in [Audio setup](@/guide/audio-setup.md).
+The native ScreenCaptureKit, host-input, HDR, and multi-owner implementations
+are present, but they are not release-qualified until the signed macOS physical
+acceptance matrix ships with the release provenance. Development builds do not
+establish durable TCC grants or hardware support claims. Screen Recording is
+requested only after an explicit local capture action. Audio-reactive effects
+still need the loopback setup described in [Audio setup](@/guide/audio-setup.md).
 
-Apple Silicon supports the native HDR screen pipeline. Intel Macs use the SDR
-pipeline; HDR capture is reported as unsupported instead of silently falling
-back. On macOS 26 Tahoe, a compatible selection can provide paired SDR and HDR
-reference diagnostics. Other selections use the single SDR reference path.
-
-The desktop app normally owns the daemon as an app sidecar. Direct launchd,
-Homebrew service, and standalone daemon topologies are also supported, but only
-one can own the per-user daemon guard at a time. Use the Settings session panel
-or `hypercolor service choose-owner` to switch the persistent owner. Hypercolor
-reports an owner conflict or an offline selected service with the exact local
-remedy instead of starting a second daemon.
+The pending qualification matrix covers the app sidecar, direct launchd,
+Homebrew service, and standalone daemon as distinct TCC identities. It also
+covers Apple Silicon HDR, Intel SDR, and Tahoe paired-reference diagnostics.
+Until those signed receipts pass, use the packaged app sidecar for protected
+macOS sources and treat the other topologies as experimental.
 
 ### Homebrew {#homebrew}
 
@@ -131,7 +127,7 @@ brew install --cask hyperb1iss/tap/hypercolor-app
 brew install hyperb1iss/tap/hypercolor
 ```
 
-The formula covers macOS arm64 plus Linux amd64 and arm64; the cask is the full desktop app for either Mac architecture.
+The formula covers macOS arm64 and x86_64 plus Linux amd64 and arm64; the cask is the full desktop app for either Mac architecture.
 
 The formula selects the Homebrew service topology when managed with
 `brew services`. Install the cask when protected macOS permissions or the

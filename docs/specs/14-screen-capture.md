@@ -60,7 +60,7 @@ pub trait InputSource: Send + Sync {
 
 ```rust
 pub struct ScreenCaptureInput {
-    /// Active capture backend (PipeWire, XShm, or xcap).
+    /// Active platform-native capture backend.
     backend: Box<dyn CaptureBackendTrait>,
 
     /// Translates screen geometry into LED sampling regions.
@@ -89,7 +89,7 @@ impl InputSource for ScreenCaptureInput {
     fn name(&self) -> &str { "screen_capture" }
 
     fn sample(&mut self) -> Result<InputData> {
-        // 1. Capture frame (backend-specific: DMA-BUF, XShm, or xcap)
+        // 1. Capture frame from the platform-native backend
         let frame = self.backend.capture_frame(&mut self.staging)?;
 
         // 2. Detect letterboxing (updates internal state over N frames)
@@ -127,8 +127,8 @@ impl InputSource for ScreenCaptureInput {
 
 | Event                  | Behavior                                                                                     |
 | ---------------------- | -------------------------------------------------------------------------------------------- |
-| **Construction**       | Auto-detect backend, request portal permissions (Wayland), allocate staging buffer           |
-| **First sample**       | PipeWire: blocks until first frame arrives or 5s timeout. XShm/xcap: immediate               |
+| **Construction**       | Register the platform-native backend and allocate its admitted buffers                       |
+| **First sample**       | The native stream waits for a validated frame or returns a bounded startup error             |
 | **Steady state**       | Non-blocking reads from backend's frame buffer (double/triple buffered)                      |
 | **Monitor disconnect** | Backend emits `CaptureError::MonitorLost`, input source signals the render loop to fall back |
 | **Drop**               | Release PipeWire stream, detach XShm segment, close portal session                           |
@@ -151,8 +151,7 @@ pub trait CaptureBackendTrait: Send {
     fn capture_frame(&mut self, staging: &mut Vec<u8>) -> Result<CapturedFrame>;
 
     /// Apply a quality adjustment (resolution/fps change) from the adaptive
-    /// quality controller. PipeWire renegotiates stream params; xcap changes
-    /// its downsample factor.
+    /// quality controller. Streaming backends renegotiate their native request.
     fn apply_quality_adjustment(&mut self, adj: QualityAdjustment) -> Result<()>;
 
     /// Backend identifier for logging/diagnostics.
@@ -286,115 +285,37 @@ pub struct XShmCapture {
 
 **Multi-monitor:** X11 captures the root window, which spans all monitors. The region mapper uses `XRRGetScreenResources` / `XRRGetCrtcInfo` to determine per-monitor geometry and maps virtual canvas coordinates accordingly.
 
-### 2.4 xcap Crate Fallback
+### 2.4 Platform-Native Backends
 
-**Feature gate:** Always available (pure Rust, cross-platform)
+Hypercolor does not use a universal screenshot fallback. Each supported
+platform owns a streaming backend with explicit resource lifetimes and native
+failure semantics:
 
-The `xcap` crate provides a universal fallback. On Linux it uses XShm internally for X11 and PipeWire for Wayland. On Windows and macOS it uses native APIs (DXGI/WGC and SCKit respectively). This is the only backend available on non-Linux platforms.
+- Linux uses the XDG Desktop Portal and PipeWire.
+- Windows uses DXGI Desktop Duplication through
+  `hypercolor-windows-capture`.
+- macOS uses ScreenCaptureKit through `hypercolor-macos-capture` and publishes
+  retained IOSurfaces for exact CPU or Metal processing.
 
-```rust
-pub struct XcapCapture {
-    /// Cached monitor handle. Refreshed on hot-plug events.
-    monitor: xcap::Monitor,
+An unavailable native backend leaves the source unavailable. Hypercolor never
+silently substitutes a weaker screenshot path because doing so would change
+permission, color, cadence, and memory contracts.
 
-    /// Target capture size — xcap captures at native res,
-    /// we downsample immediately to avoid holding large buffers.
-    target_size: (u32, u32),
-}
+### 2.5 Backend Registration
 
-impl CaptureBackendTrait for XcapCapture {
-    fn capture_frame(&mut self, staging: &mut Vec<u8>) -> Result<CapturedFrame> {
-        // xcap returns image::RgbaImage at native resolution
-        let screenshot = self.monitor.capture_image()
-            .map_err(|e| CaptureError::BackendFailed(e.to_string()))?;
+The daemon registers exactly one platform implementation at compile time.
+Runtime configuration selects a source exposed by that implementation, not a
+different backend family. Linux portal selection, Windows monitor identifiers,
+and macOS picker or stable display selections therefore retain their native
+meaning without a cross-platform backend override.
 
-        // Downsample immediately — don't hold a 4K RGBA buffer around
-        let small = image::imageops::resize(
-            &screenshot,
-            self.target_size.0,
-            self.target_size.1,
-            image::imageops::Triangle, // bilinear — fast, good enough
-        );
+### 2.6 Crate Matrix
 
-        // Copy into staging buffer (RGBA8 row-major)
-        staging.clear();
-        staging.extend_from_slice(small.as_raw());
-
-        Ok(CapturedFrame {
-            data: staging.as_ptr(),
-            width: self.target_size.0,
-            height: self.target_size.1,
-            stride: self.target_size.0 * 4,
-            pixel_format: PixelFormat::Rgba8,
-            timestamp: Instant::now(),
-            capture_duration: /* measured */, // wall-clock time of capture_image + resize
-        })
-    }
-
-    fn backend_name(&self) -> &str { "xcap" }
-}
-```
-
-**Trade-offs:** No streaming mode — each call is a discrete screenshot. Higher latency than PipeWire streaming. But it works everywhere and has zero setup complexity.
-
-### 2.5 Backend Auto-Detection
-
-```rust
-pub fn auto_detect_backend(config: &CaptureConfig) -> Result<Box<dyn CaptureBackendTrait>> {
-    // 1. User-specified override in config
-    if let Some(ref forced) = config.forced_backend {
-        return match forced.as_str() {
-            "pipewire" => Ok(Box::new(PipeWireCapture::new(config)?)),
-            "xshm"     => Ok(Box::new(XShmCapture::new(config)?)),
-            "xcap"     => Ok(Box::new(XcapCapture::new(config)?)),
-            other      => Err(CaptureError::UnknownBackend(other.into())),
-        };
-    }
-
-    // 2. Auto-detect from environment
-    #[cfg(target_os = "linux")]
-    {
-        if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            match PipeWireCapture::new(config) {
-                Ok(pw) => return Ok(Box::new(pw)),
-                Err(e) => {
-                    tracing::warn!("PipeWire unavailable ({e}), falling back to xcap");
-                }
-            }
-        }
-
-        if std::env::var("DISPLAY").is_ok() {
-            match XShmCapture::new(config) {
-                Ok(xshm) => return Ok(Box::new(xshm)),
-                Err(e) => {
-                    tracing::warn!("XShm unavailable ({e}), falling back to xcap");
-                }
-            }
-        }
-    }
-
-    // 3. Universal fallback
-    Ok(Box::new(XcapCapture::new(config)?))
-}
-```
-
-### 2.6 Feature Flag Matrix
-
-| Feature Flag      | Platforms  | Dependencies                                | What it enables                         |
-| ----------------- | ---------- | ------------------------------------------- | --------------------------------------- |
-| `screen-pipewire` | Linux only | `libpipewire-0.3`, `zbus`, `wayland-client` | `PipeWireCapture` with DMA-BUF + portal |
-| `screen-x11`      | Linux only | `x11`, `xcb` (XShm extension)               | `XShmCapture` shared memory capture     |
-| _(default)_       | All        | `xcap`, `image`                             | `XcapCapture` universal fallback        |
-
-```toml
-# Cargo.toml feature definitions
-[features]
-default = ["screen-capture"]
-screen-capture = ["dep:xcap", "dep:image"]
-screen-pipewire = ["screen-capture", "dep:pipewire", "dep:zbus"]
-screen-x11 = ["screen-capture", "dep:x11"]
-screen-full = ["screen-pipewire", "screen-x11"]
-```
+| Platform | Capture implementation           | Native transport                 |
+| -------- | -------------------------------- | -------------------------------- |
+| Linux    | `core::input::screen::wayland` | XDG Portal plus PipeWire         |
+| Windows  | `hypercolor-windows-capture`   | DXGI Desktop Duplication         |
+| macOS    | `hypercolor-macos-capture`     | ScreenCaptureKit plus IOSurface  |
 
 ---
 
@@ -404,10 +325,6 @@ Runtime configuration for the capture pipeline. Loaded from TOML config, overrid
 
 ```rust
 pub struct CaptureConfig {
-    // ── Backend selection ──────────────────────────────────────
-    /// "auto", "pipewire", "xshm", "xcap". Default: "auto".
-    pub forced_backend: Option<String>,
-
     // ── Monitor targeting ─────────────────────────────────────
     /// Which display(s) to capture.
     pub monitor: MonitorSelect,
@@ -935,8 +852,8 @@ The capture pipeline reduces data volume in three stages:
 Stage 1: Backend resolution negotiation
   Native (e.g., 2560x1440) → Requested (640x360)
   Reduction: ~16x
-  Who: Compositor GPU scaler (PipeWire) or CPU resize (xcap)
-  Cost: Near-zero for PipeWire, ~0.5ms for xcap
+  Who: Native compositor negotiation or admitted CPU/GPU reduction
+  Cost: Measured per backend and reported through capture diagnostics
 
 Stage 2: Sector grid computation
   640x360 (230,400 px) → 64x36 (2,304 sectors)
@@ -1422,10 +1339,10 @@ The screen capture pipeline must not visibly affect system performance, especial
 
 | Stage                               | Target      | Hard Limit | Notes                                    |
 | ----------------------------------- | ----------- | ---------- | ---------------------------------------- |
-| Frame capture (PipeWire DMA-BUF)    | ~0.1ms      | 1.0ms      | Zero-copy — just a pointer swap          |
+| Frame capture (PipeWire DMA-BUF)    | ~0.1ms      | 1.0ms      | Zero-copy, just a pointer swap            |
 | Frame capture (PipeWire MemPtr)     | ~0.5ms      | 2.0ms      | Shared memory read                       |
 | Frame capture (XShm, 640x360)       | ~0.5ms      | 2.0ms      | Shared memory blit at reduced resolution |
-| Frame capture (xcap, 1080p→640x360) | ~2.0ms      | 4.0ms      | Full capture + CPU resize                |
+| Frame capture (DXGI or SCKit)       | Measured    | Admitted   | Native retained resource publication     |
 | Sector grid computation (GPU)       | ~0.2ms      | 0.5ms      | Compute shader, 9KB readback             |
 | Sector grid computation (CPU)       | ~0.3ms      | 1.0ms      | Box filter over 230K pixels              |
 | Region mapping                      | ~0.05ms     | 0.1ms      | Trivial arithmetic over ~200 zones       |
@@ -1433,7 +1350,7 @@ The screen capture pipeline must not visibly affect system performance, especial
 | Temporal smoothing                  | ~0.02ms     | 0.05ms     | EMA over ~200 color values               |
 | **Total (PipeWire + GPU)**          | **~0.42ms** | **1.85ms** | **<0.5% CPU at 30fps**                   |
 | **Total (XShm + CPU)**              | **~0.92ms** | **3.35ms** | **<3% CPU at 30fps**                     |
-| **Total (xcap + CPU)**              | **~2.42ms** | **6.35ms** | **<5% CPU at 30fps**                     |
+| **Native CPU or GPU route**         | Measured    | Admitted   | Must satisfy the platform acceptance gate |
 
 ### 8.2 Memory Budget
 
@@ -1594,8 +1511,9 @@ At every tier, the ambient lighting quality remains perceptually good. The human
 
 ## 10. Cross-Platform Strategy
 
-Hypercolor is a Linux-first project. Windows capture shipped as a first-class
-backend; macOS is still unimplemented.
+Hypercolor has first-class Wayland, Windows, and native macOS capture backends.
+The macOS design, physical acceptance gates, and release claims are governed by
+[Spec 76](76-macos-screen-capture-and-host-input.md).
 
 The `xcap` fallback this section originally specified was never built. Windows
 uses a purpose-built DXGI Desktop Duplication backend instead, in the
@@ -1607,12 +1525,12 @@ and it lets the readback subsample during the copy rather than after it.
 
 | Capability            | Linux (Wayland)               | Linux (X11)           | Windows                        | macOS           |
 | --------------------- | ----------------------------- | --------------------- | ------------------------------ | --------------- |
-| **Primary backend**   | PipeWire + Portal             | XShm (unimplemented)  | DXGI Desktop Duplication       | Unimplemented   |
-| **DMA-BUF zero-copy** | Yes                           | No                    | No (staging readback)          | n/a             |
-| **Streaming mode**    | Yes (PipeWire)                | No                    | Yes (duplication is a stream)  | n/a             |
-| **Permission model**  | Portal dialog + restore token | None (open access)    | None required                  | Screen Recording|
-| **Multi-monitor**     | Portal multi-select           | Root window spans all | `capture.source = "monitor:N"` | n/a             |
-| **Enabled by default**| No (portal picker is consent) | No                    | Yes (nothing to consent to)    | No (TCC prompt) |
+| **Primary backend**   | PipeWire + Portal             | XShm (unimplemented)  | DXGI Desktop Duplication       | ScreenCaptureKit |
+| **DMA-BUF zero-copy** | Yes                           | No                    | No (staging readback)          | IOSurface import |
+| **Streaming mode**    | Yes (PipeWire)                | No                    | Yes (duplication is a stream)  | Yes (SCStream)   |
+| **Permission model**  | Portal dialog + restore token | None (open access)    | None required                  | Screen Recording |
+| **Multi-monitor**     | Portal multi-select           | Root window spans all | `capture.source = "monitor:N"` | System picker    |
+| **Enabled by default**| No (portal picker is consent) | No                    | Yes (nothing to consent to)    | No (TCC consent) |
 
 ### Windows
 
@@ -1654,6 +1572,8 @@ HDR color processing, diagnostics, and release acceptance for macOS.
 pub mod wayland;
 #[cfg(target_os = "windows")]
 pub mod windows;
+#[cfg(target_os = "macos")]
+pub mod macos;
 ```
 
 Registration lives in the daemon's `build_input_manager`, which adds the
@@ -1667,9 +1587,8 @@ matching source when `capture.enabled` is set.
 pipewire = { version = "0.8", optional = true }
 x11 = { version = "2.21", optional = true }
 
-# All platforms — universal fallback
+# Shared CPU image processing
 [dependencies]
-xcap = "0.0.13"
 image = "0.25"
 
 # Dev profile: minimal dependencies for fast iteration
@@ -1685,10 +1604,6 @@ opt-level = 2  # Optimize deps even in debug (image processing is slow at -O0)
 pub enum CaptureError {
     /// No suitable backend found for the current environment.
     NoBackendAvailable,
-    /// User-specified backend not compiled in (missing feature flag).
-    BackendNotCompiled(String),
-    /// Unknown backend name in config.
-    UnknownBackend(String),
     /// PipeWire portal denied screen access.
     PortalDenied,
     /// PipeWire portal timed out waiting for user approval.

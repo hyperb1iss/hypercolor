@@ -133,14 +133,15 @@ support). Both update automatically on every tagged release.
 ### macOS screen capture support
 
 Screen capture is off until an explicit authorization or source-selection
-action. Hypercolor uses Input Monitoring for keyboard and pointer capture and
-Screen Recording for ScreenCaptureKit. The settings page links directly to the
-matching System Settings privacy pane when manual remediation is needed.
+action. Keyboard capture uses Input Monitoring. Passive pointer capture does
+not use a TCC service. ScreenCaptureKit uses Screen Recording. The settings
+page links directly to the matching System Settings privacy pane when manual
+remediation is needed.
 
-Apple Silicon supports the native HDR screen pipeline. Intel Macs use SDR and
-report HDR as unsupported. On macOS 26 Tahoe, compatible selections can expose
-paired SDR and HDR reference diagnostics. An SDR-only selection uses one SDR
-reference image and is never relabeled as paired HDR.
+The native Apple Silicon HDR, Intel SDR, and Tahoe paired-reference paths are
+implemented but remain release-gated by the signed physical acceptance matrix.
+Development builds can exercise pure fixtures and native mechanics, but they
+do not establish durable TCC or hardware qualification.
 
 The CLI exposes the same explicit actions when the active process topology can
 perform them:
