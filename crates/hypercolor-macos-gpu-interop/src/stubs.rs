@@ -62,7 +62,7 @@ impl ImportedFrameFormat {
 }
 
 /// Description of a macOS IOSurface import.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MacosIosurfaceImportDescriptor {
     /// Frame width in pixels.
     pub width: u32,

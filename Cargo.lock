@@ -5343,6 +5343,7 @@ dependencies = [
  "euclid",
  "gleam",
  "glow",
+ "hypercolor-macos-capture",
  "image",
  "libc",
  "objc2 0.6.4",

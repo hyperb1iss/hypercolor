@@ -236,7 +236,7 @@ impl ImportedFrameFormat {
 }
 
 /// Description of a macOS IOSurface import.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MacosIosurfaceImportDescriptor {
     /// Frame width in pixels.
     pub width: u32,
@@ -303,6 +303,8 @@ struct CachedIosurfaceWrap {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct IosurfaceWrapKey {
+    capture_session_generation: u64,
+    resource_generation: u64,
     surface_id: u32,
     plane: usize,
     width: u32,
@@ -377,6 +379,17 @@ impl MacosIosurfaceImporter {
         iosurface: &IOSurfaceRef,
         content_generation: u64,
     ) -> Result<ImportedEffectFrame> {
+        self.import_iosurface_scoped(device, iosurface, content_generation, 0, 0)
+    }
+
+    pub(crate) fn import_iosurface_scoped(
+        &mut self,
+        device: &wgpu::Device,
+        iosurface: &IOSurfaceRef,
+        content_generation: u64,
+        capture_session_generation: u64,
+        resource_generation: u64,
+    ) -> Result<ImportedEffectFrame> {
         validate_iosurface_shape(self.descriptor, iosurface)?;
         validate_iosurface_format(self.descriptor, iosurface)?;
         let (actual_registry_id, _) = metal_device_import_contract(device)?;
@@ -390,6 +403,8 @@ impl MacosIosurfaceImporter {
         let total_start = Instant::now();
         let surface_id = iosurface.id();
         let cache_key = IosurfaceWrapKey {
+            capture_session_generation,
+            resource_generation,
             surface_id,
             plane: 0,
             width: self.descriptor.width,
@@ -691,7 +706,9 @@ fn validate_metal_texture(
     Ok(())
 }
 
-fn metal_device_import_contract(device: &wgpu::Device) -> Result<(u64, MacosMetalStorageMode)> {
+pub(crate) fn metal_device_import_contract(
+    device: &wgpu::Device,
+) -> Result<(u64, MacosMetalStorageMode)> {
     let hal_device = require_metal_device(device)?;
     let raw_device = hal_device.raw_device();
     let storage_mode = if raw_device.supportsFamily(MTLGPUFamily::Apple1) {

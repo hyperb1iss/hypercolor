@@ -66,6 +66,8 @@ impl MacosFrameDropReason {
             | MacosCaptureError::CpuPlaneLayoutMismatch
             | MacosCaptureError::PixelBufferLockFailed(_)
             | MacosCaptureError::PixelBufferUnlockFailed(_)
+            | MacosCaptureError::FixturePixelLength { .. }
+            | MacosCaptureError::PixelBufferFixtureCreateFailed(_)
             | MacosCaptureError::MissingCpuPlaneAddress(_)
             | MacosCaptureError::UnsupportedCpuPixelFormat(_)
             | MacosCaptureError::UnsupportedCpuTransferFunction(_)

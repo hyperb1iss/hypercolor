@@ -10,6 +10,7 @@ description = "macOS IOSurface/Metal texture import boundary for Hypercolor"
 
 [features]
 default = []
+screen-capture = ["dep:hypercolor-macos-capture"]
 servo-context = [
   "dep:cgl",
   "dep:dpi",
@@ -24,6 +25,7 @@ servo-context = [
 ]
 
 [dependencies]
+hypercolor-macos-capture = { workspace = true, optional = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
 
@@ -46,12 +48,18 @@ webrender_api = { workspace = true, optional = true }
 wgpu-hal = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
+hypercolor-macos-capture = { workspace = true, features = ["capture-fixtures"] }
 pollster = { workspace = true }
 
 [[test]]
 name = "servo_context_tests"
 path = "tests/servo_context_tests.rs"
 required-features = ["servo-context"]
+
+[[test]]
+name = "screen_capture_bridge_tests"
+path = "tests/screen_capture_bridge_tests.rs"
+required-features = ["screen-capture"]
 
 [lints.rust]
 unsafe_code = "allow"

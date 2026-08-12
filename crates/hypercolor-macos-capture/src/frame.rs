@@ -3,11 +3,18 @@ use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::CFRetained;
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
+use objc2_core_foundation::{CFDictionary, CFString};
 #[cfg(target_os = "macos")]
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane,
     CVPixelBufferGetIOSurface, CVPixelBufferGetPlaneCount, CVPixelBufferLockBaseAddress,
     CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVReturnSuccess,
+};
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
+use objc2_core_video::{
+    CVPixelBufferCreate, CVPixelBufferGetBytesPerRow, CVPixelBufferGetDataSize,
+    kCVPixelBufferIOSurfacePropertiesKey,
 };
 use thiserror::Error;
 
@@ -253,6 +260,86 @@ impl MacosNativeSurfaceLease<'_> {
 }
 
 impl MacosCaptureSurface {
+    /// Creates an IOSurface-backed packed BGRA fixture and its exact plane.
+    #[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
+    pub fn new_native_bgra_fixture(
+        extent: MacosPixelExtent,
+        pixels: &[u8],
+    ) -> Result<(Self, MacosCapturePlane), MacosCaptureError> {
+        let packed_stride = usize::try_from(extent.width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or(MacosCaptureError::ArithmeticOverflow)?;
+        let expected_len = packed_stride
+            .checked_mul(extent.height as usize)
+            .ok_or(MacosCaptureError::ArithmeticOverflow)?;
+        if pixels.len() != expected_len {
+            return Err(MacosCaptureError::FixturePixelLength {
+                expected: expected_len,
+                actual: pixels.len(),
+            });
+        }
+
+        let empty = CFDictionary::<CFString, CFString>::from_slices(&[], &[]);
+        // SAFETY: this is a framework-provided constant CFString reference.
+        let iosurface_key = unsafe { kCVPixelBufferIOSurfacePropertiesKey };
+        let attributes = CFDictionary::<CFString, CFDictionary>::from_slices(
+            &[iosurface_key],
+            &[empty.as_opaque()],
+        );
+        let mut raw_pixel_buffer = std::ptr::null_mut();
+        // SAFETY: the output pointer is valid, the attribute dictionary owns
+        // valid Core Foundation types, and the dimensions were validated.
+        let code = unsafe {
+            CVPixelBufferCreate(
+                None,
+                extent.width as usize,
+                extent.height as usize,
+                BGRA8,
+                Some(attributes.as_opaque()),
+                std::ptr::NonNull::from(&mut raw_pixel_buffer),
+            )
+        };
+        if code != kCVReturnSuccess {
+            return Err(MacosCaptureError::PixelBufferFixtureCreateFailed(code));
+        }
+        let raw_pixel_buffer = std::ptr::NonNull::new(raw_pixel_buffer)
+            .ok_or(MacosCaptureError::PixelBufferFixtureCreateFailed(code))?;
+        // SAFETY: a successful create call returned ownership at +1.
+        let pixel_buffer = unsafe { CFRetained::from_raw(raw_pixel_buffer) };
+
+        let lock = PixelBufferWriteLock::acquire(&pixel_buffer)?;
+        let bytes_per_row = CVPixelBufferGetBytesPerRow(&pixel_buffer);
+        let base_address = CVPixelBufferGetBaseAddress(&pixel_buffer).cast::<u8>();
+        if base_address.is_null() || bytes_per_row < packed_stride {
+            return Err(MacosCaptureError::MissingCpuPlaneAddress(0));
+        }
+        for (row_index, source) in pixels.chunks_exact(packed_stride).enumerate() {
+            // SAFETY: the pixel buffer is locked, each destination row has at
+            // least packed_stride bytes, and source rows have that exact size.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    source.as_ptr(),
+                    base_address.add(row_index * bytes_per_row),
+                    packed_stride,
+                );
+            }
+        }
+        lock.unlock()?;
+        let length_bytes = u64::try_from(CVPixelBufferGetDataSize(&pixel_buffer))
+            .map_err(|_| MacosCaptureError::ArithmeticOverflow)?;
+        let surface = Self::from_pixel_buffer(pixel_buffer)?;
+        Ok((
+            surface,
+            MacosCapturePlane {
+                index: 0,
+                extent,
+                bytes_per_row,
+                length_bytes,
+            },
+        ))
+    }
+
     #[cfg(feature = "capture-fixtures")]
     pub fn new_fixture(
         iosurface_id: u32,
@@ -436,6 +523,56 @@ unsafe impl Sync for MacosRetainedPixelBuffer {}
 struct PixelBufferReadLock<'a> {
     pixel_buffer: &'a CVPixelBuffer,
     locked: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
+struct PixelBufferWriteLock<'a> {
+    pixel_buffer: &'a CVPixelBuffer,
+    locked: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
+impl<'a> PixelBufferWriteLock<'a> {
+    fn acquire(pixel_buffer: &'a CVPixelBuffer) -> Result<Self, MacosCaptureError> {
+        // SAFETY: the retained fixture pixel buffer remains live through this
+        // guard, and the empty flags are used symmetrically on unlock.
+        let code =
+            unsafe { CVPixelBufferLockBaseAddress(pixel_buffer, CVPixelBufferLockFlags::empty()) };
+        if code != kCVReturnSuccess {
+            return Err(MacosCaptureError::PixelBufferLockFailed(code));
+        }
+        Ok(Self {
+            pixel_buffer,
+            locked: true,
+        })
+    }
+
+    fn unlock(mut self) -> Result<(), MacosCaptureError> {
+        // SAFETY: this guard owns the successful matching write lock and marks
+        // it released before Drop can run.
+        let code = unsafe {
+            CVPixelBufferUnlockBaseAddress(self.pixel_buffer, CVPixelBufferLockFlags::empty())
+        };
+        self.locked = false;
+        if code == kCVReturnSuccess {
+            Ok(())
+        } else {
+            Err(MacosCaptureError::PixelBufferUnlockFailed(code))
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
+impl Drop for PixelBufferWriteLock<'_> {
+    fn drop(&mut self) {
+        if self.locked {
+            // SAFETY: Drop runs only while the successful write lock is still
+            // owned, including unwinding from fixture population.
+            let _ = unsafe {
+                CVPixelBufferUnlockBaseAddress(self.pixel_buffer, CVPixelBufferLockFlags::empty())
+            };
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -861,6 +998,10 @@ pub enum MacosCaptureError {
     MissingIoSurface,
     #[error("capture surface has no native pixel buffer")]
     NativeSurfaceUnavailable,
+    #[error("native BGRA fixture expects {expected} bytes, got {actual}")]
+    FixturePixelLength { expected: usize, actual: usize },
+    #[error("Core Video fixture pixel-buffer creation failed with code {0}")]
+    PixelBufferFixtureCreateFailed(i32),
     #[error("ScreenCaptureKit filter retention failed")]
     RetainNativeFilterFailed,
     #[error("display {0} has no canonical Core Graphics UUID")]
