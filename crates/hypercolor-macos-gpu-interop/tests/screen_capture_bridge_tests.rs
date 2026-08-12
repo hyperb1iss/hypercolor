@@ -31,7 +31,7 @@ fn bridge_imports_and_caches_complete_capture_storage_identity() -> Result<(), S
         .import_bgra_frame(&wgpu.device, 11, Arc::clone(&frame))
         .map_err(|error| error.to_string())?;
 
-    assert_eq!(first.content_sequence(), 7);
+    assert_eq!(first.content_sequence(), 0);
     assert_eq!(first.storage_identity().capture_session_generation, 5);
     assert_eq!(first.storage_identity().resource_generation, 11);
     assert_eq!(
@@ -70,7 +70,7 @@ fn capture_frame() -> Result<MacosCaptureFrame, String> {
         .map_err(|error| error.to_string())?;
     Ok(MacosCaptureFrame {
         epoch: 5,
-        sequence: 7,
+        sequence: 0,
         display_time: 13,
         storage_extent: extent,
         planes: Arc::from([plane]),

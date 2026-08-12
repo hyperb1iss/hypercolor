@@ -212,7 +212,7 @@ fn validate_bgra_frame(
     frame: &MacosCaptureFrame,
     resource_generation: u64,
 ) -> Result<(), MacosScreenBridgeError> {
-    if frame.epoch == 0 || frame.sequence == 0 || resource_generation == 0 {
+    if frame.epoch == 0 || resource_generation == 0 {
         return Err(MacosScreenBridgeError::InvalidFrame(
             "capture and resource generations must be nonzero",
         ));
