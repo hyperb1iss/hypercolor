@@ -11,7 +11,17 @@ AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:tru
 # Keep the shared repo config portable. Release artifacts are built from this
 # config in CI, so host-specific CPU tuning must stay opt-in outside the repo.
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+rustflags = [
+    "-C",
+    "link-arg=-fuse-ld=lld",
+    "-C",
+    "link-arg=-Wl,--compress-debug-sections=zstd",
+]
 
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+rustflags = [
+    "-C",
+    "link-arg=-fuse-ld=lld",
+    "-C",
+    "link-arg=-Wl,--compress-debug-sections=zstd",
+]

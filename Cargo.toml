@@ -241,14 +241,14 @@ strip = true
 # completely unoptimized Servo/canvas streaming in debug builds.
 [profile.dev]
 opt-level = 1
-debug = 1
+debug = "line-tables-only"
 
 # Keep Hypercolor crates debuggable, but treat third-party dependencies more
 # like "runtime" code: optimize them, trim debug payload, and drop expensive
 # safety instrumentation that mostly hurts hot render paths.
 [profile.dev.package."*"]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 debug-assertions = false
 overflow-checks = false
 
@@ -325,9 +325,18 @@ overflow-checks = false
 
 [profile.preview.package."*"]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 debug-assertions = false
 overflow-checks = false
+
+# Preserve full symbols as an explicit opt-in without making every local test
+# executable carry them by default.
+[profile.debugging]
+inherits = "dev"
+debug = "full"
+
+[profile.debugging.package."*"]
+debug = "full"
 
 [profile.preview.package.hypercolor-core]
 opt-level = 2

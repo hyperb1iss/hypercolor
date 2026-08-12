@@ -83,7 +83,17 @@ web-sys = { version = "0.3", features = [
 # The standalone crate does not inherit the root dev profile. Full debug info
 # pushes its native Windows test archive past the COFF 4 GiB limit.
 [profile.dev]
-debug = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = "full"
+
+[profile.debugging.package."*"]
+debug = "full"
 
 [profile.release]
 opt-level = "z"
