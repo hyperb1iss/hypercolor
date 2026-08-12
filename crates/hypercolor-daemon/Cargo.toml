@@ -83,6 +83,9 @@ pollster = { workspace = true, optional = true }
 sd-notify = "0.4"
 sysinfo = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+sysinfo = { workspace = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 hypercolor-windows-capture = { workspace = true, optional = true }
 hypercolor-windows-gpu-interop = { workspace = true, features = ["screen-capture"], optional = true }
