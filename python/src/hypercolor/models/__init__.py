@@ -41,6 +41,8 @@ from .effect import (
     ControlUpdateResult,
     Effect,
     EffectCoverImage,
+    EffectPreset,
+    EffectPresetOrigin,
     EffectSummary,
 )
 from .layout import Layout, LayoutSummary
@@ -93,6 +95,8 @@ __all__ = [
     "DriverProtocolDescriptor",
     "Effect",
     "EffectCoverImage",
+    "EffectPreset",
+    "EffectPresetOrigin",
     "EffectSummary",
     "Favorite",
     "FrequencyRange",

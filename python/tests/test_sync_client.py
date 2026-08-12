@@ -7,6 +7,7 @@ import json
 import httpx
 import msgspec
 
+from hypercolor.models.effect import EffectPresetOrigin
 from hypercolor.sync_client import SyncHypercolorClient
 
 
@@ -135,3 +136,61 @@ def test_sync_client_delegates_control_values() -> None:
 
     assert result.revision == 2
     assert result.values["enabled"] is True
+
+
+def test_sync_client_delegates_effect_preset_stack() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            assert request.url.raw_path == b"/api/v1/effects/aurora%2Fmain/presets"
+            data: object = {
+                "items": [
+                    {
+                        "id": "saved-bright",
+                        "name": "Bright",
+                        "description": None,
+                        "effect_id": "aurora/main",
+                        "controls": {},
+                        "tags": [],
+                        "origin": "saved",
+                        "editable": True,
+                    }
+                ],
+                "pagination": {"offset": 0, "limit": 1, "total": 1, "has_more": False},
+            }
+        else:
+            assert request.url.raw_path == (
+                b"/api/v1/effects/aurora%2Fmain/presets/saved-bright/apply"
+            )
+            assert json.loads(request.content) == {"render_group": "zone-left"}
+            data = {
+                "effect": {"id": "aurora/main", "name": "Aurora"},
+                "applied_controls": {},
+                "transition": {"type": "cut", "duration_ms": 0},
+            }
+        return httpx.Response(
+            200,
+            content=msgspec.json.encode(
+                {
+                    "data": data,
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_123",
+                        "timestamp": "2026-03-08T00:00:00Z",
+                    },
+                }
+            ),
+        )
+
+    client = SyncHypercolorClient(transport=httpx.MockTransport(handler))
+    try:
+        presets = client.get_effect_presets("aurora/main")
+        result = client.apply_effect_preset(
+            "aurora/main",
+            "saved-bright",
+            render_group="zone-left",
+        )
+    finally:
+        client.close()
+
+    assert presets[0].origin is EffectPresetOrigin.SAVED
+    assert result.effect.id == "aurora/main"

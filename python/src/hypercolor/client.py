@@ -99,6 +99,7 @@ from .models.effect import (
     ControlUpdateResult,
     Effect,
     EffectCoverImage,
+    EffectPreset,
     EffectSummary,
 )
 from .models.layout import Layout, LayoutSummary
@@ -336,6 +337,14 @@ class HypercolorClient:
             Effect,
         )
 
+    async def get_effect_presets(self, effect_id: str) -> list[EffectPreset]:
+        """List bundled and saved presets for one effect."""
+        return await self._request_items(
+            "GET",
+            f"/effects/{_quote_path(effect_id)}/presets",
+            EffectPreset,
+        )
+
     async def get_active_effect(self) -> ActiveEffect | None:
         """Return the currently active effect if one exists."""
         try:
@@ -403,6 +412,22 @@ class HypercolorClient:
         return await self._generated_model(
             kwargs,
             ApplyEffectResult,
+        )
+
+    async def apply_effect_preset(
+        self,
+        effect_id: str,
+        preset_id: str,
+        *,
+        render_group: str | None = None,
+    ) -> ApplyEffectResult:
+        """Apply a bundled or saved preset to an effect and optional zone."""
+        body = _drop_none({"render_group": render_group})
+        return await self._request_model(
+            "POST",
+            f"/effects/{_quote_path(effect_id)}/presets/{_quote_path(preset_id)}/apply",
+            ApplyEffectResult,
+            body=body or None,
         )
 
     async def upload_effect(
