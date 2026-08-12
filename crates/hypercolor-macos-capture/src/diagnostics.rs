@@ -51,6 +51,9 @@ impl MacosFrameDropReason {
             | MacosCaptureError::InvalidSourceSelector(_)
             | MacosCaptureError::NativeOperation { .. }
             | MacosCaptureError::RetainNativeFilterFailed
+            | MacosCaptureError::CaptureWorkerStartFailed(_)
+            | MacosCaptureError::CaptureWorkerPanicked
+            | MacosCaptureError::StreamStopCompletionLost
             | MacosCaptureError::DisplayUuidUnavailable(_)
             | MacosCaptureError::DisplaySourceUnavailable(_)
             | MacosCaptureError::MissingShareableContent
@@ -103,6 +106,7 @@ pub(crate) struct CallbackCounters {
     frames_received: AtomicU64,
     frames_published: AtomicU64,
     lifecycle_events: AtomicU64,
+    native_samples_superseded: AtomicU64,
     dropped: [AtomicU64; MacosFrameDropReason::ALL.len()],
 }
 
@@ -119,6 +123,11 @@ impl CallbackCounters {
         self.lifecycle_events.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_native_sample_superseded(&self) {
+        self.native_samples_superseded
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_drop(&self, error: &MacosCaptureError) {
         self.dropped[MacosFrameDropReason::from_error(error) as usize]
             .fetch_add(1, Ordering::Relaxed);
@@ -129,7 +138,8 @@ impl CallbackCounters {
             frames_received: self.frames_received.load(Ordering::Relaxed),
             frames_published: self.frames_published.load(Ordering::Relaxed),
             lifecycle_events: self.lifecycle_events.load(Ordering::Relaxed),
-            superseded_deliveries,
+            superseded_deliveries: superseded_deliveries
+                .saturating_add(self.native_samples_superseded.load(Ordering::Relaxed)),
             dropped: std::array::from_fn(|index| self.dropped[index].load(Ordering::Relaxed)),
         }
     }

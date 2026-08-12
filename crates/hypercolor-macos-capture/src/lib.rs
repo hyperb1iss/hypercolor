@@ -12,6 +12,7 @@ mod mailbox;
 #[cfg(target_os = "macos")]
 mod native;
 mod session;
+mod worker;
 
 #[cfg(target_os = "macos")]
 pub use native::MacosScreenCaptureSession;

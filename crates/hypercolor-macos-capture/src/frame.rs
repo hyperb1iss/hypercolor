@@ -1004,6 +1004,12 @@ pub enum MacosCaptureError {
     PixelBufferFixtureCreateFailed(i32),
     #[error("ScreenCaptureKit filter retention failed")]
     RetainNativeFilterFailed,
+    #[error("failed to start the macOS capture worker: {0}")]
+    CaptureWorkerStartFailed(String),
+    #[error("the macOS capture worker panicked")]
+    CaptureWorkerPanicked,
+    #[error("ScreenCaptureKit dropped its stop completion")]
+    StreamStopCompletionLost,
     #[error("display {0} has no canonical Core Graphics UUID")]
     DisplayUuidUnavailable(u32),
     #[error("configured display source is unavailable: {0}")]

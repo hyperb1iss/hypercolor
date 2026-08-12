@@ -43,6 +43,7 @@ use objc2_screen_capture_kit::{
 };
 
 use crate::diagnostics::CallbackCounters;
+use crate::worker::{LatestSampleInput, LatestSampleWorker, SamplePublishOutcome};
 use crate::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCallbackDiagnostics,
     MacosCaptureColorimetry, MacosCaptureContentStyle, MacosCaptureError, MacosCapturePixelFormat,
@@ -172,8 +173,65 @@ impl SessionShared {
 }
 
 #[derive(Debug)]
+struct RetainedNativeSample {
+    attachments: MacosRawFrameAttachments,
+    pixel_buffer: Option<CFRetained<CVPixelBuffer>>,
+    cursor_composed: bool,
+}
+
+// SAFETY: The retained Core Video pixel buffer is reference-counted and the
+// decode worker only reads its immutable descriptor metadata.
+unsafe impl Send for RetainedNativeSample {}
+
+fn retain_sample(
+    sample: &CMSampleBuffer,
+    cursor_composed: bool,
+) -> Result<RetainedNativeSample, MacosCaptureError> {
+    // SAFETY: ScreenCaptureKit supplied a live CMSampleBuffer reference for
+    // the duration of this callback.
+    if !unsafe { sample.is_valid() } {
+        return Err(MacosCaptureError::InvalidSampleBuffer);
+    }
+    // SAFETY: The same callback lifetime makes the sample reference valid.
+    if !unsafe { sample.data_is_ready() } {
+        return Err(MacosCaptureError::SampleDataNotReady);
+    }
+    let attachments = FrameAttachments::from_sample(sample)?.decode();
+    // SAFETY: The valid, ready sample remains live while Core Media returns a
+    // retained image-buffer owner. Lifecycle samples may have no image buffer.
+    let pixel_buffer = unsafe { sample.image_buffer() };
+    Ok(RetainedNativeSample {
+        attachments,
+        pixel_buffer,
+        cursor_composed,
+    })
+}
+
+fn publish_decoded_result(
+    result: Result<MacosFrameEvent, MacosCaptureError>,
+    epoch: u64,
+    streams: &Weak<StreamSlot>,
+    shared: &SessionShared,
+) {
+    match result {
+        Ok(MacosFrameEvent::Frame(frame)) => {
+            let active = shared.current_epoch() == epoch
+                || streams
+                    .upgrade()
+                    .is_some_and(|streams| streams.activate(epoch));
+            if active {
+                shared.publish(MacosFrameEvent::Frame(frame));
+            }
+        }
+        Ok(event) if shared.current_epoch() == epoch => shared.publish(event),
+        Ok(_) => {}
+        Err(error) => shared.counters.record_drop(&error),
+    }
+}
+
+#[derive(Debug)]
 struct CaptureOutputIvars {
-    decoder: Mutex<MacosFrameDecoder>,
+    samples: LatestSampleInput<Result<RetainedNativeSample, MacosCaptureError>>,
     shared: Arc<SessionShared>,
     streams: Weak<StreamSlot>,
     epoch: u64,
@@ -199,29 +257,24 @@ define_class!(
             output_type: SCStreamOutputType,
         ) {
             self.ivars().shared.counters.record_received();
-            let result = if output_type == SCStreamOutputType::Screen {
-                let mut decoder = lock(&self.ivars().decoder);
-                decode_sample(&mut decoder, sample_buffer, self.ivars().cursor_composed)
+            if self
+                .ivars()
+                .streams
+                .upgrade()
+                .is_none_or(|streams| !streams.accepts_epoch(self.ivars().epoch))
+            {
+                return;
+            }
+            let sample = if output_type == SCStreamOutputType::Screen {
+                retain_sample(sample_buffer, self.ivars().cursor_composed)
             } else {
                 Err(MacosCaptureError::UnexpectedStreamOutputType(output_type.0))
             };
-            match result {
-                Ok(MacosFrameEvent::Frame(frame)) => {
-                    let active = self.ivars().shared.current_epoch() == self.ivars().epoch
-                        || self
-                            .ivars()
-                            .streams
-                            .upgrade()
-                            .is_some_and(|streams| streams.activate(self.ivars().epoch));
-                    if active {
-                        self.ivars().shared.publish(MacosFrameEvent::Frame(frame));
-                    }
-                }
-                Ok(event) if self.ivars().shared.current_epoch() == self.ivars().epoch => {
-                    self.ivars().shared.publish(event);
-                }
-                Ok(_) => {}
-                Err(error) => self.ivars().shared.counters.record_drop(&error),
+            if self.ivars().samples.publish(sample) == SamplePublishOutcome::Superseded {
+                self.ivars()
+                    .shared
+                    .counters
+                    .record_native_sample_superseded();
             }
         }
     }
@@ -267,13 +320,14 @@ define_class!(
 impl CaptureOutput {
     fn new(
         epoch: u64,
+        samples: LatestSampleInput<Result<RetainedNativeSample, MacosCaptureError>>,
         shared: Arc<SessionShared>,
         streams: Weak<StreamSlot>,
         cursor_composed: bool,
         display_filter: bool,
     ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(CaptureOutputIvars {
-            decoder: Mutex::new(MacosFrameDecoder::new(epoch)),
+            samples,
             shared,
             streams,
             epoch,
@@ -297,6 +351,7 @@ struct NativeStream {
     stream: Retained<SCStream>,
     filter: NativeFilter,
     selection: MacosCaptureSelection,
+    worker: LatestSampleWorker<Result<RetainedNativeSample, MacosCaptureError>>,
     _output: Retained<CaptureOutput>,
     _queue: DispatchRetained<DispatchQueue>,
 }
@@ -322,8 +377,23 @@ impl NativeStream {
             Retained::retain(ptr::from_ref(filter).cast_mut())
                 .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
         };
+        let mut decoder = MacosFrameDecoder::new(epoch);
+        let worker_shared = Arc::clone(&shared);
+        let worker_streams = streams.clone();
+        let worker = LatestSampleWorker::spawn(
+            "hypercolor-macos-screen-capture",
+            move |sample: Result<RetainedNativeSample, MacosCaptureError>| {
+                sample.and_then(|sample| decode_sample(&mut decoder, sample))
+            },
+            move |result| {
+                publish_decoded_result(result, epoch, &worker_streams, &worker_shared);
+            },
+        )
+        .map_err(|error| MacosCaptureError::CaptureWorkerStartFailed(error.to_string()))?;
+        let samples = worker.input();
         let output = CaptureOutput::new(
             epoch,
+            samples,
             shared,
             streams,
             request.cursor_composed,
@@ -360,15 +430,49 @@ impl NativeStream {
             stream,
             filter: NativeFilter(retained_filter),
             selection,
+            worker,
             _output: output,
             _queue: queue,
         })
     }
 
-    fn stop(&self) {
-        // SAFETY: Stopping an owned SCStream without a completion callback is
-        // valid and retains no borrowed Rust state.
-        unsafe { self.stream.stopCaptureWithCompletionHandler(None) };
+    fn epoch(&self) -> u64 {
+        self._output.ivars().epoch
+    }
+
+    fn stop(mut self) -> Result<(), MacosCaptureError> {
+        self.worker.close();
+        let worker_result = self
+            .worker
+            .join()
+            .map_err(|_| MacosCaptureError::CaptureWorkerPanicked);
+        let (completion_tx, completion_rx) = std::sync::mpsc::sync_channel(1);
+        let completion = RcBlock::new(move |error: *mut NSError| {
+            // SAFETY: ScreenCaptureKit supplies either null or a live NSError
+            // for the duration of this completion invocation.
+            let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| {
+                Err(native_error("stop ScreenCaptureKit stream", error))
+            });
+            let _ = completion_tx.send(result);
+        });
+        // SAFETY: ScreenCaptureKit copies the completion block and the stream
+        // remains retained until the completion result is received.
+        unsafe {
+            self.stream
+                .stopCaptureWithCompletionHandler(Some(&completion));
+        }
+        let stop_result = completion_rx
+            .recv()
+            .map_err(|_| MacosCaptureError::StreamStopCompletionLost)
+            .and_then(std::convert::identity);
+        stop_result.and(worker_result)
+    }
+
+    fn retire_after_native_stop(mut self) -> Result<(), MacosCaptureError> {
+        self.worker.close();
+        self.worker
+            .join()
+            .map_err(|_| MacosCaptureError::CaptureWorkerPanicked)
     }
 }
 
@@ -425,7 +529,7 @@ impl StreamSlot {
         let stream = candidate.stream.clone();
         let replaced = lock(&self.state).candidate.replace(candidate);
         if let Some(replaced) = replaced {
-            replaced.stop();
+            self.stop_stream(replaced);
         }
         self.shared.set_status(MacosProtectedSourceState::Starting);
         start_stream(
@@ -442,7 +546,7 @@ impl StreamSlot {
             let mut state = lock(&self.state);
             let Some(candidate) = state
                 .candidate
-                .take_if(|candidate| candidate._output.ivars().epoch == epoch)
+                .take_if(|candidate| candidate.epoch() == epoch)
             else {
                 return false;
             };
@@ -455,31 +559,42 @@ impl StreamSlot {
             previous
         };
         if let Some(previous) = previous {
-            previous.stop();
+            self.stop_stream(previous);
         }
         true
     }
 
-    fn remove(&self, epoch: u64) -> StreamRole {
+    fn remove(&self, epoch: u64) -> (StreamRole, Option<NativeStream>) {
         let mut state = lock(&self.state);
         if state
             .candidate
             .as_ref()
-            .is_some_and(|candidate| candidate._output.ivars().epoch == epoch)
+            .is_some_and(|candidate| candidate.epoch() == epoch)
         {
-            state.candidate.take();
-            return StreamRole::Candidate;
+            return (StreamRole::Candidate, state.candidate.take());
         }
         if state
             .current
             .as_ref()
-            .is_some_and(|current| current._output.ivars().epoch == epoch)
+            .is_some_and(|current| current.epoch() == epoch)
         {
-            state.current.take();
+            let current = state.current.take();
             self.shared.activate_epoch(0);
-            return StreamRole::Current;
+            return (StreamRole::Current, current);
         }
-        StreamRole::Stale
+        (StreamRole::Stale, None)
+    }
+
+    fn accepts_epoch(&self, epoch: u64) -> bool {
+        let state = lock(&self.state);
+        state
+            .current
+            .as_ref()
+            .is_some_and(|stream| stream.epoch() == epoch)
+            || state
+                .candidate
+                .as_ref()
+                .is_some_and(|stream| stream.epoch() == epoch)
     }
 
     fn has_current(&self) -> bool {
@@ -527,10 +642,16 @@ impl StreamSlot {
         };
         self.shared.activate_epoch(0);
         if let Some(candidate) = candidate {
-            candidate.stop();
+            self.stop_stream(candidate);
         }
         if let Some(current) = current {
-            current.stop();
+            self.stop_stream(current);
+        }
+    }
+
+    fn stop_stream(&self, stream: NativeStream) {
+        if let Err(error) = stream.stop() {
+            self.shared.publish_recoverable_error(error);
         }
     }
 }
@@ -559,9 +680,14 @@ fn handle_stream_error(
     shared: &SessionShared,
     error: &NSError,
 ) {
-    let role = streams
+    let (role, retired) = streams
         .upgrade()
-        .map_or(StreamRole::Stale, |streams| streams.remove(epoch));
+        .map_or((StreamRole::Stale, None), |streams| streams.remove(epoch));
+    if let Some(retired) = retired
+        && let Err(worker_error) = retired.retire_after_native_stop()
+    {
+        shared.counters.record_drop(&worker_error);
+    }
     let preserve_current = match role {
         StreamRole::Candidate
             if streams
@@ -1179,24 +1305,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-pub(crate) fn decode_sample(
+fn decode_sample(
     decoder: &mut MacosFrameDecoder,
-    sample: &CMSampleBuffer,
-    cursor_composed: bool,
+    sample: RetainedNativeSample,
 ) -> Result<MacosFrameEvent, MacosCaptureError> {
-    // SAFETY: ScreenCaptureKit supplied a live CMSampleBuffer reference for
-    // the duration of this callback.
-    if !unsafe { sample.is_valid() } {
-        return Err(MacosCaptureError::InvalidSampleBuffer);
-    }
-    // SAFETY: The same callback lifetime makes the sample reference valid.
-    if !unsafe { sample.data_is_ready() } {
-        return Err(MacosCaptureError::SampleDataNotReady);
-    }
-
-    let attachments = FrameAttachments::from_sample(sample)?;
-    let raw_attachments = attachments.decode();
-    let status = match raw_attachments.status {
+    let status = match sample.attachments.status {
         MacosAttachment::Value(status) => MacosFrameStatus::try_from(status)?,
         MacosAttachment::Missing => return Err(MacosCaptureError::MissingAttachment("status")),
         MacosAttachment::Malformed => {
@@ -1206,18 +1319,17 @@ pub(crate) fn decode_sample(
     if status != MacosFrameStatus::Complete {
         return decoder.decode(MacosRawCaptureSample {
             frame: None,
-            attachments: raw_attachments,
+            attachments: sample.attachments,
         });
     }
 
-    // SAFETY: The valid, ready sample is retained by the callback while Core
-    // Media returns a retained image-buffer owner.
-    let pixel_buffer =
-        unsafe { sample.image_buffer() }.ok_or(MacosCaptureError::MissingFramePayload)?;
-    let frame = decode_complete_frame(pixel_buffer, cursor_composed)?;
+    let pixel_buffer = sample
+        .pixel_buffer
+        .ok_or(MacosCaptureError::MissingFramePayload)?;
+    let frame = decode_complete_frame(pixel_buffer, sample.cursor_composed)?;
     decoder.decode(MacosRawCaptureSample {
         frame: Some(frame),
-        attachments: raw_attachments,
+        attachments: sample.attachments,
     })
 }
 
