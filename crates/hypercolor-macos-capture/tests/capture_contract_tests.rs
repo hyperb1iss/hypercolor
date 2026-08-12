@@ -434,6 +434,21 @@ fn mailbox_replaces_stale_deliveries_without_growing() {
 }
 
 #[test]
+fn mailbox_wait_returns_a_ready_delivery_without_polling() {
+    let mailbox = MacosFrameMailbox::new();
+    mailbox.publish(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started)));
+    assert!(matches!(
+        mailbox.wait_latest(std::time::Duration::from_secs(1)),
+        Some(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started)))
+    ));
+    assert!(
+        mailbox
+            .wait_latest(std::time::Duration::from_millis(0))
+            .is_none()
+    );
+}
+
+#[test]
 fn callback_diagnostics_start_with_every_drop_reason_at_zero() {
     let diagnostics = MacosCaptureCallbackDiagnostics::default();
     assert_eq!(diagnostics.frames_received, 0);
