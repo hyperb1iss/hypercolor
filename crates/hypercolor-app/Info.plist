@@ -4,7 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Hypercolor uses your microphone for audio-reactive lighting effects.</string>
-  <key>NSAppleEventsUsageDescription</key>
-  <string>Hypercolor uses input events for keyboard-reactive lighting effects.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Hypercolor captures your screen to create screen-reactive lighting effects.</string>
 </dict>
 </plist>

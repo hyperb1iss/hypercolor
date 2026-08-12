@@ -4,6 +4,7 @@
 //! and carries the metadata the Tauri runtime expects at startup. They do
 //! not spawn a Tauri app; they only read the file from the manifest dir.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,20 @@ fn default_capability() -> serde_json::Value {
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn plist_string_entries(plist: &str) -> BTreeMap<&str, &str> {
+    let lines: Vec<_> = plist.lines().map(str::trim).collect();
+    lines
+        .windows(2)
+        .filter_map(|pair| {
+            let key = pair[0].strip_prefix("<key>")?.strip_suffix("</key>")?;
+            let value = pair[1]
+                .strip_prefix("<string>")?
+                .strip_suffix("</string>")?;
+            Some((key, value))
+        })
+        .collect()
 }
 
 #[test]
@@ -207,12 +222,25 @@ fn macos_bundle_plists_declare_required_permissions() {
         );
     }
 
-    for key in [
-        "NSMicrophoneUsageDescription",
-        "NSAppleEventsUsageDescription",
-    ] {
-        assert!(info_plist.contains(key), "Info.plist should declare {key}");
-    }
+    let expected_privacy_entries = BTreeMap::from([
+        (
+            "NSMicrophoneUsageDescription",
+            "Hypercolor uses your microphone for audio-reactive lighting effects.",
+        ),
+        (
+            "NSScreenCaptureUsageDescription",
+            "Hypercolor captures your screen to create screen-reactive lighting effects.",
+        ),
+    ]);
+    assert_eq!(
+        plist_string_entries(&info_plist),
+        expected_privacy_entries,
+        "Info.plist should declare only the required privacy purpose strings"
+    );
+    assert!(
+        !info_plist.contains("NSAppleEventsUsageDescription"),
+        "Info.plist should not request unrelated Apple Events permission"
+    );
 }
 
 #[test]
