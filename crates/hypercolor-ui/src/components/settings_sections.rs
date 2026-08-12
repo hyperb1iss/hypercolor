@@ -5,6 +5,7 @@ use std::net::IpAddr;
 use hypercolor_types::config::{HypercolorConfig, NetworkAccessMode, NetworkClientScope};
 use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::components::settings_controls::*;
 use crate::icons::*;
@@ -143,6 +144,25 @@ pub fn CaptureSection(
     let brightness =
         Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.brightness)));
     let gamma = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.gamma)));
+    let target_led_white_x = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.capture.target_led_white_x))
+    });
+    let target_led_white_y = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.capture.target_led_white_y))
+    });
+    let target_led_reference_white_nits = Signal::derive(move || {
+        read_config(config, |cfg| {
+            f64::from(cfg.capture.target_led_reference_white_nits)
+        })
+    });
+    let target_led_peak_nits = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.capture.target_led_peak_nits))
+    });
+    let exposure_ev =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.exposure_ev)));
+    let reset_calibration = Callback::new(move |()| {
+        on_reset.run("capture.calibration".to_owned());
+    });
 
     // Monitor picker data. Empty means the platform's backend owns source
     // selection (the XDG portal on Linux), so the portal button renders
@@ -271,6 +291,62 @@ pub fn CaptureSection(
                     on_change=on_change
                     min=0.4 max=2.5 step=0.05
                 />
+                <div class="mt-3 border-t border-edge-subtle/40 pt-3">
+                    <div class="text-sm font-medium text-fg-primary">"LED tone mapping"</div>
+                    <div class="mt-0.5 text-xs text-fg-tertiary/70">
+                        "Calibrate HDR white, output headroom, and exposure"
+                    </div>
+                </div>
+                <SettingNumberInput
+                    label="White point x"
+                    description="CIE xy x coordinate. D65 is 0.3127"
+                    key="capture.target_led_white_x"
+                    value=target_led_white_x
+                    on_change=on_change
+                    min={f64::from(f32::MIN_POSITIVE)} max=0.9999999403953552 step=0.0001
+                    integer=false
+                />
+                <SettingNumberInput
+                    label="White point y"
+                    description="CIE xy y coordinate. D65 is 0.3290"
+                    key="capture.target_led_white_y"
+                    value=target_led_white_y
+                    on_change=on_change
+                    min={f64::from(f32::MIN_POSITIVE)} max=0.9999999403953552 step=0.0001
+                    integer=false
+                />
+                <SettingNumberInput
+                    label="Reference white"
+                    description="Nominal LED reference white in nits"
+                    key="capture.target_led_reference_white_nits"
+                    value=target_led_reference_white_nits
+                    on_change=on_change
+                    min=1.0 max=5000.0 step=1.0
+                />
+                <SettingNumberInput
+                    label="Peak luminance"
+                    description="Calibrated LED peak in nits. Must exceed reference white"
+                    key="capture.target_led_peak_nits"
+                    value=target_led_peak_nits
+                    on_change=on_change
+                    min=1.0 max=10000.0 step=1.0
+                />
+                <SettingNumberInput
+                    label="Exposure"
+                    description="Tone-mapping exposure in EV stops"
+                    key="capture.exposure_ev"
+                    value=exposure_ev
+                    on_change=on_change
+                    min=-8.0 max=8.0 step=0.1
+                    integer=false
+                />
+                <button
+                    class="glow-ring mt-1 inline-flex items-center gap-1.5 rounded-md border border-edge-subtle px-2.5 py-1.5 text-xs text-fg-tertiary transition-colors hover:border-accent-muted hover:text-accent"
+                    on:click=move |_| reset_calibration.run(())
+                >
+                    <Icon icon=LuUndo2 width="12px" height="12px" />
+                    "Reset calibration"
+                </button>
                 <SettingSlider
                     label="Sampling columns"
                     description="Ambient color regions across the screen. Layouts reference these zones \u{2014} changing this remaps them"

@@ -43,6 +43,14 @@ pub struct ResetConfigRequest {
     pub live: Option<bool>,
 }
 
+const CAPTURE_CALIBRATION_RESET_KEY: &str = "capture.calibration";
+const CAPTURE_CALIBRATION_FIELDS: [&str; 4] = [
+    "capture.target_led_white_x",
+    "capture.target_led_white_y",
+    "capture.target_led_reference_white_nits",
+    "capture.target_led_peak_nits",
+];
+
 /// `GET /api/v1/config` — Show full effective config.
 pub async fn show_config(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(config_snapshot(&state))
@@ -269,15 +277,11 @@ pub async fn reset_config_value(
 
     let normalized_key = body.key.as_deref().map(normalize_config_key);
     if let Some(key) = normalized_key.as_deref() {
-        let Some(default_value) = get_json_path(&defaults, key) else {
+        if !reset_json_scope(&mut current, &defaults, key) {
             return ApiError::not_found(format!(
                 "Unknown config key: {}",
                 body.key.as_deref().unwrap_or(key)
             ));
-        };
-
-        if !set_json_path(&mut current, key, default_value.clone()) {
-            return ApiError::validation(format!("Invalid config key path: {key}"));
         }
     } else {
         current = defaults;
@@ -397,6 +401,24 @@ pub async fn reset_config_value(
         "live": live_applied,
         "path": manager.path().display().to_string(),
     }))
+}
+
+fn reset_json_scope(
+    current: &mut serde_json::Value,
+    defaults: &serde_json::Value,
+    key: &str,
+) -> bool {
+    if key == CAPTURE_CALIBRATION_RESET_KEY {
+        return CAPTURE_CALIBRATION_FIELDS.iter().all(|field| {
+            get_json_path(defaults, field)
+                .cloned()
+                .is_some_and(|value| set_json_path(current, field, value))
+        });
+    }
+
+    get_json_path(defaults, key)
+        .cloned()
+        .is_some_and(|value| set_json_path(current, key, value))
 }
 
 fn config_snapshot(state: &AppState) -> HypercolorConfig {
@@ -1225,9 +1247,10 @@ mod tests {
     use hypercolor_types::config::InteractionRoutePolicy;
 
     use super::{
-        CaptureConfigTransactionError, SetConfigRequest, apply_capture_config_transaction,
-        canvas_dimensions_differ, capture_statuses_match, maybe_apply_input_config_change,
-        set_config_value, validate_prepared_capture_status,
+        CAPTURE_CALIBRATION_RESET_KEY, CaptureConfigTransactionError, ResetConfigRequest,
+        SetConfigRequest, apply_capture_config_transaction, canvas_dimensions_differ,
+        capture_statuses_match, maybe_apply_input_config_change, reset_config_value,
+        reset_json_scope, set_config_value, validate_prepared_capture_status,
     };
     use crate::api::AppState;
 
@@ -1448,6 +1471,98 @@ mod tests {
 
         assert!(manager.capture_runtime_matches(&applied));
         assert!(!manager.capture_runtime_matches(&divergent));
+    }
+
+    #[test]
+    fn calibration_reset_restores_only_calibrated_target_fields() {
+        let mut config = hypercolor_types::config::HypercolorConfig::default();
+        config.capture.target_led_white_x = 0.2;
+        config.capture.target_led_white_y = 0.3;
+        config.capture.target_led_reference_white_nits = 100.0;
+        config.capture.target_led_peak_nits = 1_000.0;
+        config.capture.exposure_ev = 2.5;
+        let mut current = serde_json::to_value(config).expect("config serializes");
+        let defaults = serde_json::to_value(hypercolor_types::config::HypercolorConfig::default())
+            .expect("default config serializes");
+
+        assert!(reset_json_scope(
+            &mut current,
+            &defaults,
+            CAPTURE_CALIBRATION_RESET_KEY
+        ));
+
+        let reset: hypercolor_types::config::HypercolorConfig =
+            serde_json::from_value(current).expect("reset config deserializes");
+        assert_eq!(
+            reset.capture.target_led_white_x,
+            hypercolor_types::config::CaptureConfig::default().target_led_white_x
+        );
+        assert_eq!(
+            reset.capture.target_led_white_y,
+            hypercolor_types::config::CaptureConfig::default().target_led_white_y
+        );
+        assert_eq!(
+            reset.capture.target_led_reference_white_nits,
+            hypercolor_types::config::CaptureConfig::default().target_led_reference_white_nits
+        );
+        assert_eq!(
+            reset.capture.target_led_peak_nits,
+            hypercolor_types::config::CaptureConfig::default().target_led_peak_nits
+        );
+        assert!((reset.capture.exposure_ev - 2.5).abs() < f32::EPSILON);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[tokio::test]
+    async fn calibration_reset_endpoint_commits_one_valid_capture_config() {
+        let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+        let manager = Arc::new(
+            ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+                .expect("test config manager should initialize"),
+        );
+        manager.modify(|config| {
+            config.capture.enabled = false;
+            config.capture.target_led_white_x = 0.2;
+            config.capture.target_led_white_y = 0.3;
+            config.capture.target_led_reference_white_nits = 100.0;
+            config.capture.target_led_peak_nits = 1_000.0;
+            config.capture.exposure_ev = 2.5;
+        });
+        let mut state = AppState::new();
+        state.config_manager = Some(Arc::clone(&manager));
+        let state = Arc::new(state);
+        state
+            .input_manager
+            .lock()
+            .await
+            .set_screen_capacity_plan(
+                ScreenAdmissionCapacity::new(40_000, 40_000),
+                ScreenAdmissionCapacity::new(30_000, 40_000),
+                ScreenAdmissionCapacity::new(20_000, 40_000),
+            )
+            .expect("empty manager should accept test capacity");
+
+        let response = reset_config_value(
+            axum::extract::State(Arc::clone(&state)),
+            axum::Json(ResetConfigRequest {
+                key: Some(CAPTURE_CALIBRATION_RESET_KEY.to_owned()),
+                live: Some(true),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let capture = &manager.get().capture;
+        let defaults = hypercolor_types::config::CaptureConfig::default();
+        assert_eq!(capture.target_led_white_x, defaults.target_led_white_x);
+        assert_eq!(capture.target_led_white_y, defaults.target_led_white_y);
+        assert_eq!(
+            capture.target_led_reference_white_nits,
+            defaults.target_led_reference_white_nits
+        );
+        assert_eq!(capture.target_led_peak_nits, defaults.target_led_peak_nits);
+        assert!((capture.exposure_ev - 2.5).abs() < f32::EPSILON);
+        assert!(manager.capture_runtime_matches(capture));
     }
 
     #[test]
