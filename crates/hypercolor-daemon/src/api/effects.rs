@@ -32,6 +32,7 @@ use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
     ZoneChangeKind,
 };
+use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{Zone, ZoneId};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::SpatialLayout;
@@ -62,8 +63,9 @@ pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
-    ActiveEffectResponse, ApplyEffectRequest, ApplyEffectResponse, ApplyTransitionResponse,
-    EffectCapabilitySet, EffectDetailResponse, EffectLayoutApplyResult, EffectListResponse,
+    ActiveEffectResponse, ApplyEffectPresetRequest, ApplyEffectRequest, ApplyEffectResponse,
+    ApplyTransitionResponse, EffectCapabilitySet, EffectDetailResponse, EffectLayoutApplyResult,
+    EffectListResponse, EffectPresetListResponse, EffectPresetOrigin, EffectPresetSummary,
     EffectRefSummary, EffectSummary, InstalledEffectResponse, LayoutLinkSummary,
     ResetControlsRequest, TransitionRequest, UpdateCurrentControlsRequest,
 };
@@ -72,6 +74,11 @@ pub use hypercolor_types::api::effects::{
 struct AppliedTransition {
     transition_type: &'static str,
     duration_ms: u64,
+}
+
+struct ResolvedEffectPreset {
+    id: PresetId,
+    controls: HashMap<String, ControlValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -512,6 +519,95 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     })
 }
 
+/// `GET /api/v1/effects/:id/presets` lists bundled and saved presets.
+#[utoipa::path(
+    get,
+    path = "/api/v1/effects/{id}/presets",
+    params(("id" = String, Path, description = "Effect id or name")),
+    responses(
+        (
+            status = 200,
+            description = "Unified effect preset stack",
+            body = crate::api::envelope::ApiResponse<EffectPresetListResponse>
+        ),
+        (
+            status = 404,
+            description = "Effect was not found",
+            body = crate::api::envelope::ApiErrorResponse
+        )
+    ),
+    tag = "effects"
+)]
+pub async fn list_effect_presets(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        let Some(metadata) = resolve_effect_metadata(&registry, &id) else {
+            return ApiError::not_found(format!("Effect not found: {id}"));
+        };
+        metadata
+    };
+    let items = effect_preset_stack(state.as_ref(), &metadata).await;
+    let total = items.len();
+
+    ApiResponse::ok(EffectPresetListResponse {
+        items,
+        pagination: super::devices::Pagination {
+            offset: 0,
+            limit: total,
+            total,
+            has_more: false,
+        },
+    })
+}
+
+/// `POST /api/v1/effects/:id/presets/:preset_id/apply` applies one preset.
+#[utoipa::path(
+    post,
+    path = "/api/v1/effects/{id}/presets/{preset_id}/apply",
+    params(
+        ("id" = String, Path, description = "Effect id or name"),
+        ("preset_id" = String, Path, description = "Canonical preset id")
+    ),
+    request_body = Option<ApplyEffectPresetRequest>,
+    responses(
+        (
+            status = 200,
+            description = "Effect preset applied",
+            body = crate::api::envelope::ApiResponse<ApplyEffectResponse>
+        ),
+        (
+            status = 404,
+            description = "Effect or preset was not found",
+            body = crate::api::envelope::ApiErrorResponse
+        ),
+        (
+            status = 422,
+            description = "Preset belongs to another effect",
+            body = crate::api::envelope::ApiErrorResponse
+        )
+    ),
+    tag = "effects"
+)]
+pub async fn apply_effect_preset(
+    State(state): State<Arc<AppState>>,
+    Path((id, preset_id)): Path<(String, String)>,
+    body: Option<Json<ApplyEffectPresetRequest>>,
+) -> Response {
+    apply_effect(
+        State(state),
+        Path(id),
+        Some(Json(ApplyEffectRequest {
+            preset_id: Some(preset_id),
+            render_group: body.and_then(|Json(body)| body.render_group),
+            ..ApplyEffectRequest::default()
+        })),
+    )
+    .await
+}
+
 /// `GET /api/v1/effects/:id/layout` — Get the layout associated with an effect.
 pub async fn get_effect_layout(
     State(state): State<Arc<AppState>>,
@@ -732,26 +828,31 @@ pub async fn apply_effect(
         Err(error) => return ApiError::bad_request(error),
     };
 
-    // Resolve optional preset up front — both to validate before we touch
-    // the scene, and because if the caller didn't supply explicit controls
-    // we fall back to the preset's controls (matches `apply_preset`'s
-    // same-effect branch).
+    // Resolve the optional preset before changing the scene. Both bundled
+    // and saved presets use the same effect-scoped reference here.
     let resolved_preset = match body.as_ref().and_then(|body| body.preset_id.as_deref()) {
         None => None,
         Some(preset_ref) => {
-            let Some(preset_id) = crate::api::library::resolve_preset_id(&state, preset_ref).await
+            let Some(preset) = resolve_effect_preset(state.as_ref(), &metadata, preset_ref).await
             else {
+                if let Some(saved) =
+                    state
+                        .library_store
+                        .list_presets()
+                        .await
+                        .into_iter()
+                        .find(|saved| {
+                            saved.id.to_string() == preset_ref
+                                || saved.name.eq_ignore_ascii_case(preset_ref)
+                        })
+                {
+                    return ApiError::validation(format!(
+                        "Preset '{}' targets effect '{}', not '{}'",
+                        saved.name, saved.effect_id, metadata.id
+                    ));
+                }
                 return ApiError::not_found(format!("Preset not found: {preset_ref}"));
             };
-            let Some(preset) = state.library_store.get_preset(preset_id).await else {
-                return ApiError::not_found(format!("Preset not found: {preset_ref}"));
-            };
-            if preset.effect_id != metadata.id {
-                return ApiError::validation(format!(
-                    "Preset '{}' targets effect '{}', not '{}'",
-                    preset.name, preset.effect_id, metadata.id
-                ));
-            }
             Some(preset)
         }
     };
@@ -1646,6 +1747,92 @@ pub(crate) fn resolve_effect_metadata(
         .iter()
         .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
         .map(|(_, entry)| entry.metadata.clone())
+}
+
+async fn effect_preset_stack(
+    state: &AppState,
+    metadata: &EffectMetadata,
+) -> Vec<EffectPresetSummary> {
+    let mut items = metadata
+        .presets
+        .iter()
+        .map(|preset| EffectPresetSummary {
+            id: preset.id.to_string(),
+            name: preset.name.clone(),
+            description: preset.description.clone(),
+            effect_id: metadata.id.to_string(),
+            controls: preset.controls.clone(),
+            tags: Vec::new(),
+            origin: EffectPresetOrigin::Bundled,
+            editable: false,
+        })
+        .collect::<Vec<_>>();
+
+    let mut saved = state
+        .library_store
+        .list_presets()
+        .await
+        .into_iter()
+        .filter(|preset| preset.effect_id == metadata.id)
+        .map(|preset| EffectPresetSummary {
+            id: preset.id.to_string(),
+            name: preset.name,
+            description: preset.description,
+            effect_id: preset.effect_id.to_string(),
+            controls: preset.controls,
+            tags: preset.tags,
+            origin: EffectPresetOrigin::Saved,
+            editable: true,
+        })
+        .collect::<Vec<_>>();
+    saved.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    items.extend(saved);
+    items
+}
+
+async fn resolve_effect_preset(
+    state: &AppState,
+    metadata: &EffectMetadata,
+    id_or_name: &str,
+) -> Option<ResolvedEffectPreset> {
+    let saved = state.library_store.list_presets().await;
+    if let Ok(id) = id_or_name.parse::<PresetId>() {
+        if let Some(preset) = metadata.presets.iter().find(|preset| preset.id == id) {
+            return Some(ResolvedEffectPreset {
+                id: preset.id,
+                controls: preset.controls.clone(),
+            });
+        }
+        return saved
+            .into_iter()
+            .find(|preset| preset.id == id && preset.effect_id == metadata.id)
+            .map(|preset| ResolvedEffectPreset {
+                id: preset.id,
+                controls: preset.controls,
+            });
+    }
+
+    if let Some(preset) = saved.into_iter().find(|preset| {
+        preset.effect_id == metadata.id && preset.name.eq_ignore_ascii_case(id_or_name)
+    }) {
+        return Some(ResolvedEffectPreset {
+            id: preset.id,
+            controls: preset.controls,
+        });
+    }
+    metadata
+        .presets
+        .iter()
+        .find(|preset| preset.name.eq_ignore_ascii_case(id_or_name))
+        .map(|preset| ResolvedEffectPreset {
+            id: preset.id,
+            controls: preset.controls.clone(),
+        })
 }
 
 fn publish_primary_control_changed_events<'a>(

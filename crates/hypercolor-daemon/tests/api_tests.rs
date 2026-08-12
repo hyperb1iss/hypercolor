@@ -74,7 +74,7 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource, EffectState,
+    EffectId, EffectMetadata, EffectSource, EffectState, PresetTemplate,
 };
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
@@ -2499,6 +2499,14 @@ async fn preview_page_returns_html() {
 }
 
 async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
+    let _ = insert_test_effect_with_presets(state, name, Vec::new()).await;
+}
+
+async fn insert_test_effect_with_presets(
+    state: &Arc<AppState>,
+    name: &str,
+    presets: Vec<PresetTemplate>,
+) -> EffectMetadata {
     let mut registry = state.effect_registry.write().await;
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
@@ -2524,7 +2532,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
             preview_source: None,
             binding: None,
         }],
-        presets: Vec::new(),
+        presets,
         audio_reactive: false,
         screen_reactive: false,
         input_reactive: false,
@@ -2534,12 +2542,13 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
         license: None,
     };
     let entry = EffectEntry {
-        metadata,
+        metadata: metadata.clone(),
         source_path: format!("/tmp/{name}.html").into(),
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
     let _ = registry.register(entry);
+    metadata
 }
 
 fn test_html_effect_metadata(name: &str) -> EffectMetadata {
@@ -6383,6 +6392,142 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
         speed,
         hypercolor_types::effect::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
     ));
+}
+
+#[tokio::test]
+async fn effect_preset_stack_lists_and_applies_both_origins() {
+    let state = Arc::new(isolated_state());
+    let bundled_id = PresetId::stable("calm");
+    insert_test_effect_with_presets(
+        &state,
+        "solid_color",
+        vec![PresetTemplate {
+            id: bundled_id,
+            name: "Calm".to_owned(),
+            description: Some("Bundled calm state".to_owned()),
+            controls: HashMap::from([("speed".to_owned(), ControlValue::Float(2.5))]),
+        }],
+    )
+    .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Fast",
+                        "effect":"solid_color",
+                        "controls":{"speed":8.5},
+                        "tags":["custom"]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let saved_id = body_json(create_response).await["data"]["id"]
+        .as_str()
+        .expect("saved preset id should be a string")
+        .to_owned();
+
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/solid_color/presets")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["items"][0]["id"], bundled_id.to_string());
+    assert_eq!(list_json["data"]["items"][0]["origin"], "bundled");
+    assert_eq!(list_json["data"]["items"][0]["editable"], false);
+    assert_eq!(list_json["data"]["items"][1]["id"], saved_id);
+    assert_eq!(list_json["data"]["items"][1]["origin"], "saved");
+    assert_eq!(list_json["data"]["items"][1]["editable"], true);
+
+    for (preset_id, expected_speed) in [
+        (bundled_id.to_string(), 2.5_f32),
+        (saved_id.clone(), 8.5_f32),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/v1/effects/solid_color/presets/{preset_id}/apply"
+                    ))
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let manager = state.scene_manager.read().await;
+        let primary = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .expect("primary group should exist after preset apply");
+        assert_eq!(primary.preset_id.map(|id| id.to_string()), Some(preset_id));
+        assert!(matches!(
+            primary.controls.get("speed"),
+            Some(ControlValue::Float(value)) if (*value - expected_speed).abs() < 0.01
+        ));
+    }
+
+    let active_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(
+        body_json(active_response).await["data"]["active_preset_id"],
+        saved_id
+    );
+
+    let control_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/current/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":4.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(control_response.status(), StatusCode::OK);
+
+    let modified_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(
+        body_json(modified_response).await["data"]["active_preset_id"],
+        serde_json::Value::Null
+    );
 }
 
 #[tokio::test]
