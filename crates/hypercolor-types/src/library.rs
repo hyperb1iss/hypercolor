@@ -15,7 +15,7 @@ use crate::effect::{ControlValue, EffectId};
 
 // ── Strong IDs ─────────────────────────────────────────────────────────────
 
-/// Opaque identifier for a saved effect preset.
+/// Opaque identifier for an effect preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PresetId(pub Uuid);
 
@@ -24,6 +24,21 @@ impl PresetId {
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::now_v7())
+    }
+
+    /// Derive a stable identifier for an effect-authored preset.
+    #[must_use]
+    pub fn stable(key: &str) -> Self {
+        let mut hash: u128 = 0x52a2_4f6d_0959_4929_82b3_c28ad44a_a910;
+        for byte in b"hypercolor:preset:".iter().chain(key.as_bytes()) {
+            hash ^= u128::from(*byte);
+            hash = hash.wrapping_mul(0x1000_0000_01b3);
+        }
+
+        let mut bytes = hash.to_be_bytes();
+        bytes[6] = (bytes[6] & 0x0f) | 0x80;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Self(Uuid::from_bytes(bytes))
     }
 }
 

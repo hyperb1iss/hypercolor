@@ -16,6 +16,16 @@ fn preset_id_round_trips_from_string() {
 }
 
 #[test]
+fn authored_preset_id_is_stable_and_keyed() {
+    let first = PresetId::stable("deep-ocean");
+    let second = PresetId::stable("deep-ocean");
+
+    assert_eq!(first, second);
+    assert_ne!(first, PresetId::stable("northern-lights"));
+    assert_eq!(PresetId::from_str(&first.to_string()), Ok(first));
+}
+
+#[test]
 fn playlist_id_round_trips_from_string() {
     let id = PlaylistId::new();
     let parsed = PlaylistId::from_str(&id.to_string()).expect("playlist id should parse");

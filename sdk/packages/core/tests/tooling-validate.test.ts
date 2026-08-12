@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { HYPERCOLOR_FORMAT_VERSION, validateHtmlArtifact } from '../src/tooling'
+import { HYPERCOLOR_FORMAT_VERSION, parseHtmlArtifact, validateHtmlArtifact } from '../src/tooling'
 
 const VALID_EFFECT = `<!DOCTYPE html>
 <html>
@@ -12,7 +12,7 @@ const VALID_EFFECT = `<!DOCTYPE html>
     <meta publisher="Hypercolor" />
     <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" />
     <meta property="palette" label="Palette" type="combobox" values="Aurora,Fire" default="Aurora" />
-    <meta preset="Calm" preset-controls='{"speed":"2","palette":"Aurora"}' />
+    <meta preset="Calm" preset-id="calm" preset-controls='{"speed":"2","palette":"Aurora"}' />
   </head>
   <body>
     <canvas id="exCanvas"></canvas>
@@ -29,6 +29,7 @@ describe('tooling validate', () => {
         expect(result.warnings).toHaveLength(0)
         expect(result.metadata.controls).toBe(2)
         expect(result.metadata.presets).toBe(1)
+        expect(parseHtmlArtifact(VALID_EFFECT).presets[0]?.id).toBe('calm')
     })
 
     test('flags duplicate controls and invalid preset JSON', () => {

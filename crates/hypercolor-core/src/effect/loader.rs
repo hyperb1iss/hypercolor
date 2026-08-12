@@ -603,6 +603,9 @@ fn preset_template_from_html(
     }
 
     Some(PresetTemplate {
+        id: hypercolor_types::library::PresetId::stable(
+            raw.id.as_deref().unwrap_or(raw.name.as_str()),
+        ),
         name: raw.name.clone(),
         description: raw.description.clone(),
         controls,

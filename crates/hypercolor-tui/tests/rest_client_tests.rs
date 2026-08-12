@@ -110,6 +110,7 @@ async fn get_effects_enriches_summaries_with_detail_controls() {
                     }),
                 }];
                 let presets = vec![PresetTemplate {
+                    id: hypercolor_types::library::PresetId::stable("Soft"),
                     name: "Soft".to_string(),
                     description: Some("Low energy".to_string()),
                     controls: HashMap::from([("speed".to_string(), ControlValue::Float(0.4))]),

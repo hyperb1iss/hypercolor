@@ -179,6 +179,7 @@ pub struct ControlDefinition {
 /// An effect-defined preset snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresetTemplate {
+    pub id: String,
     pub name: String,
     pub description: Option<String>,
     #[serde(default)]

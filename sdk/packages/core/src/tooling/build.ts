@@ -89,6 +89,7 @@ function controlToMeta(control: BuildControlDef): string {
 
 function presetToMeta(preset: PresetDef): string {
     const attrs = [`preset="${escapeAttr(preset.name)}"`]
+    if (preset.id) attrs.push(`preset-id="${escapeAttr(preset.id)}"`)
     if (preset.description) attrs.push(`preset-description="${escapeAttr(preset.description)}"`)
     attrs.push(`preset-controls='${JSON.stringify(preset.controls)}'`)
     return `  <meta ${attrs.join(' ')} />`

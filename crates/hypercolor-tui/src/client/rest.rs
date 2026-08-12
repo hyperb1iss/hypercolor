@@ -640,6 +640,7 @@ fn map_control_value(value: &ApiControlValue) -> ControlValue {
 
 fn map_preset_template(template: &ApiPresetTemplate) -> PresetTemplate {
     PresetTemplate {
+        id: template.id.to_string(),
         name: template.name.clone(),
         description: template.description.clone(),
         controls: template

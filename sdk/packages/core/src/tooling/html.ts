@@ -66,6 +66,7 @@ function parsePreset(attrs: Map<string, string>): HtmlPresetMetadata | undefined
     if (!rawControls) {
         return {
             controls: {},
+            id: attr(attrs, 'preset-id'),
             name,
             parseError: 'Missing preset-controls attribute',
         }
@@ -80,12 +81,14 @@ function parsePreset(attrs: Map<string, string>): HtmlPresetMetadata | undefined
         return {
             controls,
             description: attr(attrs, 'preset-description'),
+            id: attr(attrs, 'preset-id'),
             name,
         }
     } catch (error) {
         return {
             controls: {},
             description: attr(attrs, 'preset-description'),
+            id: attr(attrs, 'preset-id'),
             name,
             parseError: error instanceof Error ? error.message : String(error),
         }

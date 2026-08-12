@@ -194,6 +194,7 @@ pub(super) fn rect_control(
 
 pub(super) fn preset(name: &str, controls: &[(&str, ControlValue)]) -> PresetTemplate {
     PresetTemplate {
+        id: hypercolor_types::library::PresetId::stable(name),
         name: name.to_owned(),
         description: None,
         controls: controls
@@ -209,6 +210,7 @@ pub(super) fn preset_with_desc(
     controls: &[(&str, ControlValue)],
 ) -> PresetTemplate {
     PresetTemplate {
+        id: hypercolor_types::library::PresetId::stable(name),
         name: name.to_owned(),
         description: Some(description.to_owned()),
         controls: controls
