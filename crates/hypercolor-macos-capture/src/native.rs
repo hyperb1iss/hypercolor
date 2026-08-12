@@ -791,6 +791,8 @@ struct NativeStream {
     filter: NativeFilter,
     selection: MacosCaptureSelection,
     source_id: Arc<str>,
+    request: MacosStreamRequest,
+    reserve_pool: PoolReservationFactory,
     worker: LatestSampleWorker<Result<RetainedNativeSample, MacosCaptureError>>,
     _output: Retained<CaptureOutput>,
     _queue: DispatchRetained<DispatchQueue>,
@@ -884,6 +886,8 @@ impl NativeStream {
             filter: NativeFilter(retained_filter),
             selection,
             source_id,
+            request,
+            reserve_pool: Arc::clone(reserve_pool),
             worker,
             _output: output,
             _queue: queue,
@@ -928,6 +932,19 @@ impl NativeStream {
             .join()
             .map_err(|_| MacosCaptureError::CaptureWorkerPanicked)
     }
+
+    fn discard_unstarted(self) -> Result<(), MacosCaptureError> {
+        self.retire_after_native_stop()
+    }
+
+    fn interruption_restage(&self, selection_revision: u64) -> InterruptedRestagePlan {
+        InterruptedRestagePlan {
+            recovery: InterruptedRestage::interrupted(self.epoch(), selection_revision),
+            filter: self.filter.clone(),
+            request: self.request,
+            reserve_pool: Arc::clone(&self.reserve_pool),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -937,12 +954,126 @@ enum StreamRole {
     Stale,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InterruptionRecoveryPhase {
+    Interrupted,
+    Starting { epoch: u64 },
+    Live { epoch: u64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InterruptedRestage {
+    interrupted_epoch: u64,
+    selection_revision: u64,
+    restage_epoch: Option<u64>,
+}
+
+impl InterruptedRestage {
+    const fn interrupted(interrupted_epoch: u64, selection_revision: u64) -> Self {
+        Self {
+            interrupted_epoch,
+            selection_revision,
+            restage_epoch: None,
+        }
+    }
+
+    #[cfg(test)]
+    const fn phase(self) -> InterruptionRecoveryPhase {
+        match self.restage_epoch {
+            Some(epoch) => InterruptionRecoveryPhase::Starting { epoch },
+            None => InterruptionRecoveryPhase::Interrupted,
+        }
+    }
+
+    const fn can_schedule(
+        self,
+        capture_active: bool,
+        active_epoch: u64,
+        selection_revision: u64,
+    ) -> bool {
+        self.restage_epoch.is_none()
+            && capture_active
+            && active_epoch == 0
+            && self.selection_revision == selection_revision
+    }
+
+    fn can_begin(self, state: &StreamState, shared: &SessionShared) -> bool {
+        self.can_schedule(
+            shared.capture_active(),
+            shared.current_epoch(),
+            state.selection_revision,
+        ) && state.current.is_none()
+            && state.candidate.is_none()
+            && state.staging_epoch.is_none()
+    }
+
+    const fn schedule(mut self, epoch: u64) -> Option<Self> {
+        if self.restage_epoch.is_some() || epoch <= self.interrupted_epoch {
+            return None;
+        }
+        self.restage_epoch = Some(epoch);
+        Some(self)
+    }
+
+    fn matches(self, epoch: u64) -> bool {
+        self.restage_epoch == Some(epoch)
+    }
+
+    #[cfg(test)]
+    fn complete(self, epoch: u64) -> Option<InterruptionRecoveryPhase> {
+        self.matches(epoch)
+            .then_some(InterruptionRecoveryPhase::Live { epoch })
+    }
+}
+
+#[derive(Clone)]
+struct InterruptedRestagePlan {
+    recovery: InterruptedRestage,
+    filter: NativeFilter,
+    request: MacosStreamRequest,
+    reserve_pool: PoolReservationFactory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CandidateStage {
+    epoch: u64,
+    selection_revision: u64,
+    recovery_current_epoch: Option<u64>,
+    recovery: Option<InterruptedRestage>,
+}
+
+impl CandidateStage {
+    fn is_current(self, state: &StreamState, shared: &SessionShared) -> bool {
+        shared.capture_active()
+            && state.staging_epoch == Some(self.epoch)
+            && state.selection_revision == self.selection_revision
+            && state.candidate.is_none()
+            && self
+                .recovery_current_epoch
+                .is_none_or(|current_epoch| shared.current_epoch() == current_epoch)
+            && self.recovery.is_none_or(|recovery| {
+                state.current.is_none()
+                    && state.pending_interruption == Some(recovery)
+                    && recovery.matches(self.epoch)
+            })
+    }
+}
+
+struct StreamRemoval {
+    role: StreamRole,
+    stream: Option<NativeStream>,
+    selection_revision: u64,
+}
+
 #[derive(Default)]
 struct StreamState {
     current: Option<NativeStream>,
     candidate: Option<NativeStream>,
     selected_filter: Option<NativeFilter>,
     selection_revision: u64,
+    pending_interruption: Option<InterruptedRestage>,
+    staging_epoch: Option<u64>,
 }
 
 struct StreamSlot {
@@ -974,35 +1105,117 @@ impl StreamSlot {
         request: MacosStreamRequest,
         reserve_pool: &PoolReservationFactory,
         epoch: u64,
-    ) -> Result<(), MacosCaptureError> {
-        let candidate = NativeStream::prepare(
+        recovery: Option<InterruptedRestage>,
+    ) -> Result<bool, MacosCaptureError> {
+        let Some((stage, replaced)) = self.reserve_candidate_stage(epoch, recovery)? else {
+            return Ok(false);
+        };
+        if let Some(replaced) = replaced {
+            self.stop_stream(replaced);
+        }
+        let candidate = match NativeStream::prepare(
             filter,
             request,
             epoch,
             Arc::clone(&self.shared),
             Arc::downgrade(self),
             reserve_pool,
-        )?;
-        let stream = candidate.stream.clone();
-        let replaced = {
-            let mut state = lock(&self.state);
-            state.selection_revision = state
-                .selection_revision
-                .checked_add(1)
-                .ok_or(MacosCaptureError::SequenceExhausted)?;
-            state.candidate.replace(candidate)
+        ) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                self.cancel_candidate_stage(stage);
+                return Err(error);
+            }
         };
-        if let Some(replaced) = replaced {
-            self.stop_stream(replaced);
+        self.start_candidate_stage(candidate, stage)
+    }
+
+    fn reserve_candidate_stage(
+        &self,
+        epoch: u64,
+        recovery: Option<InterruptedRestage>,
+    ) -> Result<Option<(CandidateStage, Option<NativeStream>)>, MacosCaptureError> {
+        let mut state = lock(&self.state);
+        if !self.shared.capture_active() {
+            return Ok(None);
         }
-        self.shared.set_status(MacosProtectedSourceState::Starting);
-        start_stream(
-            &stream,
+        let current_epoch = self.shared.current_epoch();
+        let recovery = match recovery {
+            Some(recovery) => {
+                if !recovery.can_begin(&state, &self.shared) {
+                    return Ok(None);
+                }
+                let recovery = recovery
+                    .schedule(epoch)
+                    .expect("interrupted recovery schedules exactly one later epoch");
+                state.pending_interruption = Some(recovery);
+                self.shared
+                    .set_status(MacosProtectedSourceState::Interrupted);
+                Some(recovery)
+            }
+            None => {
+                state.selection_revision = state
+                    .selection_revision
+                    .checked_add(1)
+                    .ok_or(MacosCaptureError::SequenceExhausted)?;
+                state.pending_interruption = None;
+                None
+            }
+        };
+        let stage = CandidateStage {
             epoch,
-            Arc::downgrade(self),
-            Arc::clone(&self.shared),
-        );
-        Ok(())
+            selection_revision: state.selection_revision,
+            recovery_current_epoch: recovery.map(|_| current_epoch),
+            recovery,
+        };
+        state.staging_epoch = Some(epoch);
+        Ok(Some((stage, state.candidate.take())))
+    }
+
+    fn cancel_candidate_stage(&self, stage: CandidateStage) {
+        let mut state = lock(&self.state);
+        if state.staging_epoch == Some(stage.epoch) {
+            state.staging_epoch = None;
+        }
+        if stage
+            .recovery
+            .is_some_and(|recovery| state.pending_interruption == Some(recovery))
+        {
+            state.pending_interruption = None;
+        }
+    }
+
+    fn start_candidate_stage(
+        self: &Arc<Self>,
+        candidate: NativeStream,
+        stage: CandidateStage,
+    ) -> Result<bool, MacosCaptureError> {
+        let stream = candidate.stream.clone();
+        let mut candidate = Some(candidate);
+        let discarded = {
+            let mut state = lock(&self.state);
+            if !stage.is_current(&state, &self.shared) {
+                true
+            } else {
+                state.candidate = candidate.take();
+                state.staging_epoch = None;
+                self.shared.set_status(MacosProtectedSourceState::Starting);
+                start_stream(
+                    &stream,
+                    stage.epoch,
+                    Arc::downgrade(self),
+                    Arc::clone(&self.shared),
+                );
+                false
+            }
+        };
+        if discarded {
+            candidate
+                .expect("uninstalled candidate remains owned")
+                .discard_unstarted()?;
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     fn activate(
@@ -1023,6 +1236,10 @@ impl StreamSlot {
                 return false;
             };
             let previous = state.current.replace(candidate);
+            let recovered = state
+                .pending_interruption
+                .take_if(|recovery| recovery.matches(epoch))
+                .is_some();
             state.selected_filter = state.current.as_ref().map(|current| current.filter.clone());
             if let Some(current) = &state.current {
                 self.shared.confirm_selection(
@@ -1033,6 +1250,9 @@ impl StreamSlot {
                 );
             }
             self.shared.activate_epoch(epoch);
+            if recovered {
+                self.shared.set_status(MacosProtectedSourceState::Live);
+            }
             previous
         };
         if let Some(previous) = previous {
@@ -1041,14 +1261,24 @@ impl StreamSlot {
         true
     }
 
-    fn remove(&self, epoch: u64) -> (StreamRole, Option<NativeStream>) {
+    fn remove(&self, epoch: u64) -> StreamRemoval {
         let mut state = lock(&self.state);
         if state
             .candidate
             .as_ref()
             .is_some_and(|candidate| candidate.epoch() == epoch)
         {
-            return (StreamRole::Candidate, state.candidate.take());
+            if state
+                .pending_interruption
+                .is_some_and(|recovery| recovery.matches(epoch))
+            {
+                state.pending_interruption = None;
+            }
+            return StreamRemoval {
+                role: StreamRole::Candidate,
+                stream: state.candidate.take(),
+                selection_revision: state.selection_revision,
+            };
         }
         if state
             .current
@@ -1058,9 +1288,17 @@ impl StreamSlot {
             let current = state.current.take();
             self.shared.activate_epoch(0);
             self.shared.clear_tahoe_selection();
-            return (StreamRole::Current, current);
+            return StreamRemoval {
+                role: StreamRole::Current,
+                stream: current,
+                selection_revision: state.selection_revision,
+            };
         }
-        (StreamRole::Stale, None)
+        StreamRemoval {
+            role: StreamRole::Stale,
+            stream: None,
+            selection_revision: state.selection_revision,
+        }
     }
 
     fn accepts_epoch(&self, epoch: u64) -> bool {
@@ -1077,6 +1315,14 @@ impl StreamSlot {
 
     fn has_current(&self) -> bool {
         lock(&self.state).current.is_some()
+    }
+
+    fn has_newer_lifecycle(&self, selection_revision: u64) -> bool {
+        let state = lock(&self.state);
+        state.selection_revision != selection_revision
+            || state.current.is_some()
+            || state.candidate.is_some()
+            || state.staging_epoch.is_some()
     }
 
     fn active_identity(&self) -> Option<(Arc<str>, u64)> {
@@ -1103,6 +1349,8 @@ impl StreamSlot {
             .selection_revision
             .checked_add(1)
             .ok_or(MacosCaptureError::SequenceExhausted)?;
+        state.pending_interruption = None;
+        state.staging_epoch = None;
         state.selected_filter = Some(NativeFilter(filter));
         drop(state);
         self.shared.set_unconfirmed_selection(selection);
@@ -1183,10 +1431,32 @@ impl StreamSlot {
             .map(|current| current.stream.clone())
     }
 
-    fn stop(&self) {
+    fn stage_interrupted_recovery(
+        self: &Arc<Self>,
+        plan: InterruptedRestagePlan,
+    ) -> Result<bool, MacosCaptureError> {
+        let epoch = self.allocate_epoch()?;
+        self.stage_candidate(
+            &plan.filter.0,
+            plan.request,
+            &plan.reserve_pool,
+            epoch,
+            Some(plan.recovery),
+        )
+    }
+
+    fn set_capture_active(&self, active: bool) -> bool {
         let (current, candidate) = {
             let mut state = lock(&self.state);
+            if self.shared.set_capture_active(active) == active {
+                return false;
+            }
+            if active {
+                return true;
+            }
             state.selection_revision = state.selection_revision.saturating_add(1);
+            state.pending_interruption = None;
+            state.staging_epoch = None;
             if state.current.is_none()
                 && state.selected_filter.is_none()
                 && let Some(candidate) = state.candidate.as_ref()
@@ -1203,6 +1473,7 @@ impl StreamSlot {
         if let Some(current) = current {
             self.stop_stream(current);
         }
+        true
     }
 
     fn stop_stream(&self, stream: NativeStream) {
@@ -1250,25 +1521,55 @@ fn handle_stream_error(
     shared: &SessionShared,
     error: &NSError,
 ) {
-    let (role, retired) = streams
-        .upgrade()
-        .map_or((StreamRole::Stale, None), |streams| streams.remove(epoch));
-    if let Some(retired) = retired
+    let Some(streams) = streams.upgrade() else {
+        return;
+    };
+    let removal = streams.remove(epoch);
+    let state = classify_stream_error(error);
+    let role = removal.role;
+    let selection_revision = removal.selection_revision;
+    let recovery = (removal.role == StreamRole::Current
+        && state == MacosProtectedSourceState::Interrupted)
+        .then(|| {
+            removal
+                .stream
+                .as_ref()
+                .map(|stream| stream.interruption_restage(removal.selection_revision))
+        })
+        .flatten();
+    if let Some(retired) = removal.stream
         && let Err(worker_error) = retired.retire_after_native_stop()
     {
         shared.counters.record_drop(&worker_error);
     }
+    if let Some(recovery) = recovery {
+        let stream_error = native_error("ScreenCaptureKit stream", error);
+        match streams.stage_interrupted_recovery(recovery) {
+            Ok(true) => shared.publish_recoverable_error(stream_error),
+            Ok(false) => {
+                if !shared.capture_active() || streams.has_newer_lifecycle(selection_revision) {
+                    shared.publish_recoverable_error(stream_error);
+                }
+            }
+            Err(stage_error) => {
+                shared.publish_recoverable_error(stream_error);
+                handle_filter_error(&streams, shared, stage_error);
+            }
+        }
+        return;
+    }
     let preserve_current = match role {
-        StreamRole::Candidate
-            if streams
-                .upgrade()
-                .is_some_and(|streams| streams.has_current()) =>
-        {
+        StreamRole::Candidate if streams.has_current() => {
             shared.set_status(MacosProtectedSourceState::Live);
             true
         }
+        StreamRole::Current
+            if !shared.capture_active() || streams.has_newer_lifecycle(selection_revision) =>
+        {
+            true
+        }
         StreamRole::Candidate | StreamRole::Current => {
-            shared.set_status(classify_stream_error(error));
+            shared.set_status(state);
             false
         }
         StreamRole::Stale => return,
@@ -1291,16 +1592,20 @@ fn handle_fatal_stream_error(
     let Some(streams) = streams.upgrade() else {
         return;
     };
-    let (role, retired) = streams.remove(epoch);
-    let preserve_current = role == StreamRole::Candidate && streams.has_current();
+    let removal = streams.remove(epoch);
+    let preserve_current = removal.role == StreamRole::Candidate && streams.has_current();
+    let superseded_current = removal.role == StreamRole::Current
+        && (!shared.capture_active() || streams.has_newer_lifecycle(removal.selection_revision));
     if preserve_current {
         shared.set_status(MacosProtectedSourceState::Live);
         shared.publish_recoverable_error(error);
-    } else if role != StreamRole::Stale {
+    } else if superseded_current {
+        shared.publish_recoverable_error(error);
+    } else if removal.role != StreamRole::Stale {
         shared.set_status(MacosProtectedSourceState::Failed);
         shared.publish_error(error);
     }
-    let Some(retired) = retired else {
+    let Some(retired) = removal.stream else {
         return;
     };
     let stop_shared = Arc::clone(&shared);
@@ -1436,11 +1741,10 @@ impl PickerObserver {
     }
 
     fn set_active(&self, active: bool) {
-        if self.ivars().shared.set_capture_active(active) == active {
+        if !self.ivars().streams.set_capture_active(active) {
             return;
         }
         if !active {
-            self.ivars().streams.stop();
             let status = if self.ivars().streams.has_selection() {
                 MacosProtectedSourceState::ReadyIdle
             } else {
@@ -1459,8 +1763,7 @@ impl PickerObserver {
     }
 
     fn stop(&self) {
-        self.ivars().shared.set_capture_active(false);
-        self.ivars().streams.stop();
+        self.ivars().streams.set_capture_active(false);
     }
 }
 
@@ -1489,7 +1792,7 @@ fn stage_filter(
 ) {
     let result = streams
         .allocate_epoch()
-        .and_then(|epoch| streams.stage_candidate(filter, request, reserve_pool, epoch));
+        .and_then(|epoch| streams.stage_candidate(filter, request, reserve_pool, epoch, None));
     if let Err(error) = result {
         handle_filter_error(streams, shared, error);
     }
@@ -2837,16 +3140,16 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        MacosCaptureColorimetry, MacosCaptureDynamicRange, MacosCaptureError,
-        MacosCapturePixelFormat, MacosColorPrimaries, MacosColorRange, MacosConfiguredStream,
-        MacosDeliveredFrameMetadata, MacosHostArchitecture, MacosPixelExtent,
-        MacosProtectedSourceState, MacosRuntimeCapability, MacosStreamDeliveryRejection,
-        MacosStreamDeliveryState, MacosStreamDeliveryValidator, MacosStreamPreset,
-        MacosTahoeCapabilities, MacosTahoeRuntimeProbes, MacosTransferFunction,
+        CandidateStage, InterruptedRestage, InterruptionRecoveryPhase, MacosCaptureColorimetry,
+        MacosCaptureDynamicRange, MacosCaptureError, MacosCapturePixelFormat, MacosColorPrimaries,
+        MacosColorRange, MacosConfiguredStream, MacosDeliveredFrameMetadata, MacosHostArchitecture,
+        MacosPixelExtent, MacosProtectedSourceState, MacosRuntimeCapability,
+        MacosStreamDeliveryRejection, MacosStreamDeliveryState, MacosStreamDeliveryValidator,
+        MacosStreamPreset, MacosTahoeCapabilities, MacosTahoeRuntimeProbes, MacosTransferFunction,
         MacosValidatedStreamDelivery, PoolBackingLifetime, PoolObservation, SCCaptureDynamicRange,
         SCStreamConfiguration, SCStreamConfigurationPreset, ScreenshotCaptureBackend,
         ScreenshotFilterHandle, ScreenshotIdentityFence, ScreenshotImageCompletion,
-        ScreenshotTransactionSnapshot, SessionShared, SysctlI32Value,
+        ScreenshotTransactionSnapshot, SessionShared, StreamState, SysctlI32Value,
         capture_capabilities_from_probes, capture_dynamic_range, classify_delivery_error,
         color_range_from_fourcc, conservative_pool_quote, execute_screenshot_transaction,
         session_selection_source_id, with_admitted_surface,
@@ -2954,6 +3257,144 @@ mod tests {
         screenshot_dynamic_range_selector: MacosRuntimeCapability::Absent,
         screenshot_capture_selector: MacosRuntimeCapability::Absent,
     };
+
+    struct StreamSlotStartFixture {
+        shared: SessionShared,
+        state: StreamState,
+        started: Vec<u64>,
+        discarded: Vec<u64>,
+    }
+
+    impl StreamSlotStartFixture {
+        fn new(current_epoch: u64, selection_revision: u64) -> Self {
+            let shared = SessionShared::new(
+                MacosProtectedSourceState::Live,
+                super::MacosCaptureSelector::Auto,
+                MacosTahoeCapabilities {
+                    content_tone_mapping_info: MacosRuntimeCapability::Absent,
+                    screenshot_api: MacosRuntimeCapability::Absent,
+                },
+            );
+            shared.set_capture_active(true);
+            shared.activate_epoch(current_epoch);
+            Self {
+                shared,
+                state: StreamState {
+                    selection_revision,
+                    ..StreamState::default()
+                },
+                started: Vec::new(),
+                discarded: Vec::new(),
+            }
+        }
+
+        fn reserve_regular(&mut self, epoch: u64) -> CandidateStage {
+            self.state.selection_revision += 1;
+            self.state.pending_interruption = None;
+            self.state.staging_epoch = Some(epoch);
+            CandidateStage {
+                epoch,
+                selection_revision: self.state.selection_revision,
+                recovery_current_epoch: None,
+                recovery: None,
+            }
+        }
+
+        fn stop_demand(&mut self) {
+            self.shared.set_capture_active(false);
+            self.shared.activate_epoch(0);
+            self.state.selection_revision += 1;
+            self.state.pending_interruption = None;
+            self.state.staging_epoch = None;
+        }
+
+        fn activate_newer_session(&mut self, epoch: u64) {
+            self.shared.activate_epoch(epoch);
+            self.state.staging_epoch = None;
+        }
+
+        fn try_start(&mut self, stage: CandidateStage) -> bool {
+            if !stage.is_current(&self.state, &self.shared) {
+                self.discarded.push(stage.epoch);
+                return false;
+            }
+            self.state.staging_epoch = None;
+            self.started.push(stage.epoch);
+            true
+        }
+    }
+
+    #[test]
+    fn interrupted_restage_transitions_once_from_interrupted_to_live() {
+        let recovery = InterruptedRestage::interrupted(41, 9);
+        assert_eq!(recovery.phase(), InterruptionRecoveryPhase::Interrupted);
+        assert!(recovery.can_schedule(true, 0, 9));
+
+        let recovery = recovery
+            .schedule(42)
+            .expect("the next session epoch should schedule one recovery restage");
+        assert_eq!(
+            recovery.phase(),
+            InterruptionRecoveryPhase::Starting { epoch: 42 }
+        );
+        assert_eq!(
+            recovery.complete(42),
+            Some(InterruptionRecoveryPhase::Live { epoch: 42 })
+        );
+        assert_eq!(recovery.complete(43), None);
+        assert_eq!(recovery.schedule(43), None);
+    }
+
+    #[test]
+    fn interrupted_restage_cancels_when_capture_demand_reaches_zero() {
+        let recovery = InterruptedRestage::interrupted(41, 9);
+
+        assert!(!recovery.can_schedule(false, 0, 9));
+    }
+
+    #[test]
+    fn interrupted_restage_rejects_newer_selection_and_session_epochs() {
+        let recovery = InterruptedRestage::interrupted(41, 9);
+
+        assert!(!recovery.can_schedule(true, 0, 10));
+        assert!(!recovery.can_schedule(true, 42, 9));
+    }
+
+    #[test]
+    fn stream_slot_start_fixture_discards_a_candidate_after_demand_stops() {
+        let mut fixture = StreamSlotStartFixture::new(41, 9);
+        let stage = fixture.reserve_regular(42);
+
+        fixture.stop_demand();
+
+        assert!(!fixture.try_start(stage));
+        assert!(fixture.started.is_empty());
+        assert_eq!(fixture.discarded, vec![42]);
+    }
+
+    #[test]
+    fn stream_slot_start_fixture_rejects_a_repick_before_the_old_start_runs() {
+        let mut fixture = StreamSlotStartFixture::new(41, 9);
+        let stale = fixture.reserve_regular(42);
+        let current = fixture.reserve_regular(43);
+
+        assert!(!fixture.try_start(stale));
+        assert!(fixture.try_start(current));
+        assert_eq!(fixture.started, vec![43]);
+        assert_eq!(fixture.discarded, vec![42]);
+    }
+
+    #[test]
+    fn stream_slot_start_fixture_never_regresses_a_newer_live_session_to_interrupted() {
+        let mut fixture = StreamSlotStartFixture::new(0, 9);
+        let recovery = InterruptedRestage::interrupted(41, 9);
+
+        assert!(recovery.can_begin(&fixture.state, &fixture.shared));
+        fixture.activate_newer_session(43);
+
+        assert!(!recovery.can_begin(&fixture.state, &fixture.shared));
+        assert_eq!(fixture.shared.status(), MacosProtectedSourceState::Live);
+    }
 
     #[test]
     fn missing_arm64_and_translation_sysctls_resolve_native_intel_sdr() {
