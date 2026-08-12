@@ -96,6 +96,12 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
+      # True for anything that is not a pull request, which is deliberately
+      # broad: it gates the expensive Servo clippy and test steps so pull
+      # requests get the light pass and main and tags get the heavy one. It is
+      # NOT a stand-in for "release build", and it must not gate whole jobs —
+      # the per-domain outputs below already force true for tags and non-smoke
+      # dispatch, so they cover release on their own.
       full: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.release_artifacts != 'smoke')) }}
       rust: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.rust }}
       python: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.python }}
@@ -601,9 +607,10 @@ jobs:
   compat:
     name: Compatibility Matrix
     needs: changes
-    if: >-
-      needs.changes.outputs.full == 'true' ||
-      needs.changes.outputs.compat == 'true'
+    # `compat` is already forced true for tags and non-smoke dispatch, so it
+    # covers release builds on its own. Adding `full` here only meant "every
+    # push to main", which rebuilt this on docs-only merges.
+    if: needs.changes.outputs.compat == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -757,9 +764,7 @@ jobs:
   sdk:
     name: SDK
     needs: changes
-    if: >-
-      needs.changes.outputs.full == 'true' ||
-      needs.changes.outputs.sdk == 'true'
+    if: needs.changes.outputs.sdk == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -782,7 +787,6 @@ jobs:
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' ||
-      needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     defaults:
