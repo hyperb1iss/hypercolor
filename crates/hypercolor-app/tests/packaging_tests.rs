@@ -290,9 +290,10 @@ fn unix_app_bundles_use_the_shared_cache_policy() {
         assert!(script.contains("cargo-cache-build.sh"));
         assert!(script.contains("trunk build --release --locked"));
     }
-    assert!(BUILD_MAC_INSTALLER_SH.contains(
-        r#"HYPERCOLOR_FORCE_SCCACHE=1 "${CARGO_CACHE_BUILD}" cargo"#
-    ));
+    assert!(
+        BUILD_MAC_INSTALLER_SH
+            .contains(r#"HYPERCOLOR_FORCE_SCCACHE=1 "${CARGO_CACHE_BUILD}" cargo"#)
+    );
 }
 
 #[test]
