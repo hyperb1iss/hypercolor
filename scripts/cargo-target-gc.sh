@@ -185,6 +185,21 @@ profile_activity() {
   printf '%s\n' "$latest"
 }
 
+target_process_group_active() {
+  local root="$1"
+  local lease
+  local process_group=""
+  for lease in "$root"/.cargo-build-pgid.*; do
+    [ -f "$lease" ] || continue
+    IFS= read -r process_group <"$lease" || true
+    if [[ "$process_group" =~ ^[1-9][0-9]*$ ]] \
+      && kill -0 -- "-$process_group" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 human_bytes() {
   numfmt --to=iec-i --suffix=B "$1"
 }
@@ -249,6 +264,9 @@ acquire_target_locks() {
   local root="$1"
   local index profile sentinel fd
   TARGET_LOCK_FDS=()
+  if target_process_group_active "$root"; then
+    return 1
+  fi
   for index in "${!PROFILE_PATHS[@]}"; do
     [ "${PROFILE_ROOTS[index]}" = "$root" ] || continue
     profile="${PROFILE_PATHS[index]}"
@@ -351,6 +369,9 @@ acquire_profile_locks() {
   local root="$2"
   local sentinel fd
   PROFILE_LOCK_FDS=()
+  if target_process_group_active "$root"; then
+    return 1
+  fi
   for sentinel in \
     "$profile/.cargo-lock" \
     "$profile/.cargo-build-lock" \

@@ -127,6 +127,30 @@ test -d "$locked_profile"
 kill "$locker_pid"
 wait "$locker_pid" 2>/dev/null || true
 
+lease_target="$SANDBOX/lease/target"
+lease_profile="$lease_target/debug"
+make_profile "$lease_profile" '30 days ago'
+: >"$lease_target/.cargo-build-lock"
+lease_ready="$SANDBOX/lease.ready"
+# Expansion belongs to the child shell.
+# shellcheck disable=SC2016
+setsid bash -c 'printf "%s\n" "$$" >"$1"; exec sleep 30' _ \
+  "$lease_ready" &
+lease_pid=$!
+for _ in {1..50}; do
+  [ -s "$lease_ready" ] && break
+  sleep 0.02
+done
+lease_process_group="$(<"$lease_ready")"
+printf '%s\n' "$lease_process_group" >"$lease_target/.cargo-build-pgid.test"
+touch -d '30 days ago' "$lease_target/.cargo-build-pgid.test"
+HYPERCOLOR_GC_TARGETS="$lease_target" HYPERCOLOR_GC_MIN_AGE_DAYS=0 \
+  run_gc --apply >"$SANDBOX/lease.log"
+grep -Fq "keeping locked profile" "$SANDBOX/lease.log"
+test -e "$lease_profile/deps/artifact"
+kill -TERM -- "-$lease_process_group"
+wait "$lease_pid" 2>/dev/null || true
+
 repo="$SANDBOX/repo"
 mkdir -p "$repo"
 git -C "$repo" init -q

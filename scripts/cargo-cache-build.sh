@@ -91,12 +91,6 @@ fi
 mkdir -p "$TARGET_DIR"
 TARGET_DIR="$(cd "$TARGET_DIR" && pwd -P)"
 
-if command -v flock >/dev/null 2>&1; then
-  exec 7<>"$TARGET_DIR/.cargo-build-lock"
-  flock -s 7
-  touch "$TARGET_DIR/.cargo-build-lock"
-fi
-
 # Servo builds spawn hundreds of parallel rustc+sccache clients; source hashing
 # trips EMFILE on macOS launchd's default soft limit (256).
 current_nofile="$(ulimit -Sn)"
@@ -110,6 +104,121 @@ TOOLCHAIN_DIR="$CACHE_ROOT/toolchain"
 
 mkdir -p "$MOZBUILD_STATE_PATH" "$TOOLCHAIN_DIR"
 
+portable_lock_helper() {
+  local source="$SCRIPT_DIR/cargo-cache-lock.rs"
+  local version helper_dir helper temp
+  version="$(cksum "$source" | awk '{print $1 "-" $2}')"
+  helper_dir="$TOOLCHAIN_DIR/portable-lock-$version"
+  helper="$helper_dir/cargo-cache-lock"
+  if [ ! -x "$helper" ]; then
+    mkdir -p "$helper_dir"
+    temp="$helper.$$"
+    rustc --edition=2024 -O "$source" -o "$temp"
+    chmod +x "$temp"
+    mv "$temp" "$helper"
+  fi
+  printf '%s\n' "$helper"
+}
+
+TARGET_BUILD_LOCK_PID=""
+TARGET_BUILD_LOCK_CHANNEL_DIR=""
+SCCACHE_CONFIG_LOCK_KIND=""
+SCCACHE_CONFIG_LOCK_PID=""
+SCCACHE_CONFIG_LOCK_CHANNEL_DIR=""
+
+acquire_target_build_lock() {
+  local helper release_fifo ready_fifo ready
+  helper="$(portable_lock_helper)"
+  TARGET_BUILD_LOCK_CHANNEL_DIR="$(mktemp -d "$CACHE_ROOT/target-lock.XXXXXX")"
+  release_fifo="$TARGET_BUILD_LOCK_CHANNEL_DIR/release"
+  ready_fifo="$TARGET_BUILD_LOCK_CHANNEL_DIR/ready"
+  mkfifo "$release_fifo" "$ready_fifo"
+  "$helper" shared "$TARGET_DIR/.cargo-build-lock" \
+    <"$release_fifo" >"$ready_fifo" &
+  TARGET_BUILD_LOCK_PID="$!"
+  exec 6>"$release_fifo"
+  exec 8<"$ready_fifo"
+  if ! IFS= read -r ready <&8 || [ "$ready" != "locked" ]; then
+    exec 6>&-
+    exec 8<&-
+    wait "$TARGET_BUILD_LOCK_PID" || true
+    rm -f "$release_fifo" "$ready_fifo"
+    rmdir "$TARGET_BUILD_LOCK_CHANNEL_DIR" 2>/dev/null || true
+    return 1
+  fi
+}
+
+release_target_build_lock() {
+  [ -n "$TARGET_BUILD_LOCK_PID" ] || return 0
+  printf 'release\n' >&6 || true
+  exec 6>&-
+  exec 8<&-
+  wait "$TARGET_BUILD_LOCK_PID" || true
+  rm -f \
+    "$TARGET_BUILD_LOCK_CHANNEL_DIR/release" \
+    "$TARGET_BUILD_LOCK_CHANNEL_DIR/ready"
+  rmdir "$TARGET_BUILD_LOCK_CHANNEL_DIR" 2>/dev/null || true
+  TARGET_BUILD_LOCK_PID=""
+  TARGET_BUILD_LOCK_CHANNEL_DIR=""
+}
+
+acquire_sccache_config_lock() {
+  local lock_file="$1"
+  local helper ready release_fifo ready_fifo
+  if command -v flock >/dev/null 2>&1 \
+    && [ "${HYPERCOLOR_FORCE_PORTABLE_LOCK:-0}" != "1" ]; then
+    exec 9>"$lock_file"
+    flock 9
+    SCCACHE_CONFIG_LOCK_KIND="flock"
+    return 0
+  fi
+
+  helper="$(portable_lock_helper)"
+  SCCACHE_CONFIG_LOCK_CHANNEL_DIR="$(mktemp -d "$CACHE_ROOT/sccache-lock.XXXXXX")"
+  release_fifo="$SCCACHE_CONFIG_LOCK_CHANNEL_DIR/release"
+  ready_fifo="$SCCACHE_CONFIG_LOCK_CHANNEL_DIR/ready"
+  mkfifo "$release_fifo" "$ready_fifo"
+  "$helper" exclusive "$lock_file" <"$release_fifo" >"$ready_fifo" &
+  SCCACHE_CONFIG_LOCK_PID="$!"
+  exec 5>"$release_fifo"
+  exec 4<"$ready_fifo"
+  if ! IFS= read -r ready <&4 || [ "$ready" != "locked" ]; then
+    exec 5>&-
+    exec 4<&-
+    wait "$SCCACHE_CONFIG_LOCK_PID" || true
+    rm -f "$release_fifo" "$ready_fifo"
+    rmdir "$SCCACHE_CONFIG_LOCK_CHANNEL_DIR" 2>/dev/null || true
+    return 1
+  fi
+  SCCACHE_CONFIG_LOCK_KIND="helper"
+}
+
+release_sccache_config_lock() {
+  case "$SCCACHE_CONFIG_LOCK_KIND" in
+    flock)
+      exec 9>&-
+      ;;
+    helper)
+      printf 'release\n' >&5 || true
+      exec 5>&-
+      exec 4<&-
+      wait "$SCCACHE_CONFIG_LOCK_PID" || true
+      rm -f \
+        "$SCCACHE_CONFIG_LOCK_CHANNEL_DIR/release" \
+        "$SCCACHE_CONFIG_LOCK_CHANNEL_DIR/ready"
+      rmdir "$SCCACHE_CONFIG_LOCK_CHANNEL_DIR" 2>/dev/null || true
+      ;;
+  esac
+  SCCACHE_CONFIG_LOCK_KIND=""
+  SCCACHE_CONFIG_LOCK_PID=""
+  SCCACHE_CONFIG_LOCK_CHANNEL_DIR=""
+}
+
+cleanup_locks() {
+  release_sccache_config_lock
+  release_target_build_lock
+}
+
 prune_stale_turbojpeg_cmake_cache() {
   [ -d "$TARGET_DIR" ] || return 0
 
@@ -122,8 +231,6 @@ prune_stale_turbojpeg_cmake_cache() {
     fi
   done < <(find "$TARGET_DIR" -path '*/build/turbojpeg-sys-*/out/build/CMakeCache.txt' -print0)
 }
-
-prune_stale_turbojpeg_cmake_cache
 
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 
@@ -146,6 +253,10 @@ if [ "$HOST_TRIPLE" = "x86_64-pc-windows-msvc" ]; then
   fi
   exec powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_WRAPPER" "$@"
 fi
+
+acquire_target_build_lock
+trap 'cleanup_locks' EXIT
+prune_stale_turbojpeg_cmake_cache
 
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"
@@ -229,9 +340,16 @@ if [ "$TOP_LEVEL_COMMAND" = "trunk" ] || [ "$TOP_LEVEL_COMMAND" = "trunk.exe" ];
     echo "[cargo-cache] cargo not found for Trunk build" >&2
     exit 127
   fi
-  cargo_shim_dir="$TOOLCHAIN_DIR/cargo-shim"
+  shim_source="$SCRIPT_DIR/cargo-cache-cargo-shim.sh"
+  shim_version="$(cksum "$shim_source" | awk '{print $1 "-" $2}')"
+  cargo_shim_dir="$TARGET_DIR/.hypercolor-toolchain/cargo-shim-$shim_version"
   mkdir -p "$cargo_shim_dir"
-  ln -sfn "$SCRIPT_DIR/cargo-cache-cargo-shim.sh" "$cargo_shim_dir/cargo"
+  if [ ! -e "$cargo_shim_dir/cargo" ]; then
+    shim_temp="$cargo_shim_dir/cargo.$$"
+    cp "$shim_source" "$shim_temp"
+    chmod +x "$shim_temp"
+    mv "$shim_temp" "$cargo_shim_dir/cargo"
+  fi
   export HYPERCOLOR_REAL_CARGO="$real_cargo"
   export HYPERCOLOR_NESTED_CARGO_TARGET_DIR="$TARGET_DIR"
   export PATH="$cargo_shim_dir:$PATH"
@@ -326,35 +444,33 @@ hypercolor_sccache_clients_are_active() {
 refresh_sccache_server_config() {
   local state_file="$CACHE_ROOT/sccache-server-config"
   local lock_file="$CACHE_ROOT/sccache-config.lock"
-  local lock_held=0
   local desired
   local current=""
   desired="$("$SCCACHE_BIN" --version)|$SCCACHE_CACHE_SIZE|$SCCACHE_BASEDIRS"
   [ ! -f "$state_file" ] || current="$(<"$state_file")"
   [ "$current" = "$desired" ] && return 0
 
-  if command -v flock >/dev/null 2>&1; then
-    exec 9>"$lock_file"
-    flock 9
-    lock_held=1
-  fi
+  acquire_sccache_config_lock "$lock_file"
 
   [ ! -f "$state_file" ] || current="$(<"$state_file")"
   if [ "$current" = "$desired" ]; then
-    [ "$lock_held" -eq 0 ] || exec 9>&-
+    release_sccache_config_lock
     return 0
   fi
   if hypercolor_sccache_clients_are_active; then
     echo "[cargo-cache] active Hypercolor compiles deferred sccache normalization refresh"
-    [ "$lock_held" -eq 0 ] || exec 9>&-
+    release_sccache_config_lock
     return 0
   fi
 
   "$SCCACHE_BIN" --stop-server >/dev/null 2>&1 || true
-  "$SCCACHE_BIN" --start-server >/dev/null
+  if ! "$SCCACHE_BIN" --start-server 4>&- 5>&- 6>&- 8>&- 9>&- >/dev/null; then
+    release_sccache_config_lock
+    return 1
+  fi
   printf '%s\n' "$desired" >"$state_file.tmp.$$"
   mv "$state_file.tmp.$$" "$state_file"
-  [ "$lock_held" -eq 0 ] || exec 9>&-
+  release_sccache_config_lock
   echo "[cargo-cache] refreshed checkout path normalization"
 }
 
@@ -492,4 +608,8 @@ echo "[cargo-cache] target directory=$TARGET_DIR"
 echo "[cargo-cache] MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH"
 
 echo "[cargo-cache] running: $*"
-exec "$@"
+release_sccache_config_lock
+lock_helper="$(portable_lock_helper)"
+exec "$lock_helper" run-shared \
+  "$TARGET_DIR/.cargo-build-lock" "$TARGET_DIR/.cargo-build-pgid.$$" \
+  "$TARGET_BUILD_LOCK_PID" "$@" 4>&- 5>&- 7>&- 9>&-
