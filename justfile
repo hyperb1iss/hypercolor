@@ -29,7 +29,7 @@ alias py := python-verify
 # ─── Core ─────────────────────────────────────────────────
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict build-wrapper-test fmt-check lint test alloc-contracts
+verify: oss-boundary-check-strict build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
 
 # Verify target isolation and Cargo argument normalization
@@ -40,6 +40,19 @@ build-wrapper-test:
 [windows]
 build-wrapper-test:
     @echo 'Build wrapper contract is covered by the Rust packaging tests on Windows'
+
+# Prove stale, recent, locked, and dirty target profiles are handled safely
+[linux]
+cargo-gc-test:
+    ./scripts/tests/cargo-target-gc-tests.sh
+
+[macos]
+cargo-gc-test:
+    @echo 'Cargo target GC is installed only on Linux hosts'
+
+[windows]
+cargo-gc-test:
+    @echo 'Cargo target GC is installed only on Linux hosts'
 
 # Check OSS/internal boundary guard scaffolding without strict enforcement
 oss-boundary-check:
@@ -876,24 +889,31 @@ disk:
     @if [ -d "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}" ]; then du -sh "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"/* 2>/dev/null | sort -rh || true; else echo '(no cache dir)'; fi
     @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache.sock}" SCCACHE_DIR="${SCCACHE_DIR:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache}" sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi
 
-# Sweep stale build artifacts (orphaned toolchains, then >14 days old) from this checkout
+# Preview pressure-triggered collection across public and proprietary worktrees
+[linux]
 gc:
-    @command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
-    cargo sweep --installed
-    cargo sweep --time 14
-    @echo '🧹 stale artifacts swept'
+    ./scripts/cargo-target-gc.sh --dry-run
 
-# Sweep every worktree of this repo (run after merges or when disk runs hot)
-gc-worktrees:
-    @command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
-    git worktree prune
-    git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do [ -d "$wt/target" ] || continue; echo "── sweeping $wt"; cargo sweep --installed "$wt" || true; cargo sweep --time 14 "$wt" || true; done
-    @echo '🧹 all worktree lanes swept'
+# Apply pressure-triggered collection across public and proprietary worktrees
+[linux]
+gc-apply:
+    ./scripts/cargo-target-gc.sh --apply
 
-# Deep clean: sweep, then drop incremental state and the CPU-smoke lane
-gc-deep: gc
-    rm -rf "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/*/incremental "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/cpu-smoke"
-    @echo '🧹 incremental state and cpu-smoke lane dropped'
+# Reclaim pressure immediately while preserving dirty and Cargo-locked profiles
+[linux]
+gc-reclaim:
+    ./scripts/cargo-target-gc.sh --reclaim-now
+
+# Install and enable the daily user timer
+[linux]
+gc-install *args='':
+    ./scripts/install-cargo-target-gc.sh {{ args }}
+
+# Show the next scheduled collection and the previous service result
+[linux]
+gc-status:
+    systemctl --user list-timers hypercolor-cargo-target-gc.timer --no-pager
+    systemctl --user show hypercolor-cargo-target-gc.service --property=Result,ExecMainStatus
 
 # Show workspace dependency tree
 deps:

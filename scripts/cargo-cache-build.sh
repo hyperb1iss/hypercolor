@@ -228,7 +228,7 @@ collect_sccache_basedirs() {
   if [ -n "${SCCACHE_BASEDIRS:-}" ]; then
     while IFS= read -r configured; do
       [ -z "$configured" ] || add_sccache_basedir "$configured"
-    done < <(printf '%s' "$SCCACHE_BASEDIRS" | tr ':' '\n')
+    done < <(printf '%s\n' "$SCCACHE_BASEDIRS" | tr ':' '\n')
   fi
 
   local i j swap
@@ -262,12 +262,14 @@ hypercolor_sccache_clients_are_active() {
 }
 
 refresh_sccache_server_config() {
-  local state_file="$CACHE_ROOT/sccache-basedirs"
+  local state_file="$CACHE_ROOT/sccache-server-config"
   local lock_file="$CACHE_ROOT/sccache-config.lock"
   local lock_held=0
+  local desired
   local current=""
+  desired="$("$SCCACHE_BIN" --version)|$SCCACHE_CACHE_SIZE|$SCCACHE_BASEDIRS"
   [ ! -f "$state_file" ] || current="$(<"$state_file")"
-  [ "$current" = "$SCCACHE_BASEDIRS" ] && return 0
+  [ "$current" = "$desired" ] && return 0
 
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$lock_file"
@@ -280,7 +282,7 @@ refresh_sccache_server_config() {
   fi
 
   [ ! -f "$state_file" ] || current="$(<"$state_file")"
-  if [ "$current" = "$SCCACHE_BASEDIRS" ]; then
+  if [ "$current" = "$desired" ]; then
     [ "$lock_held" -eq 0 ] || exec 9>&-
     return 0
   fi
@@ -291,7 +293,7 @@ refresh_sccache_server_config() {
   fi
 
   "$SCCACHE_BIN" --stop-server >/dev/null 2>&1 || true
-  printf '%s\n' "$SCCACHE_BASEDIRS" >"$state_file.tmp.$$"
+  printf '%s\n' "$desired" >"$state_file.tmp.$$"
   mv "$state_file.tmp.$$" "$state_file"
   [ "$lock_held" -eq 0 ] || exec 9>&-
   echo "[cargo-cache] refreshed checkout path normalization"
