@@ -295,10 +295,40 @@ jobs:
           cargo clippy --locked -p hypercolor-macos-gpu-interop --all-targets
           -- -D warnings
 
+      - name: Clippy macOS capture fixtures
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-macos-capture --features capture-fixtures --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
+            -p hypercolor-core --features macos-capture-fixtures \
+            --test macos_screen_capture_tests \
+            -- -D warnings
+
       - name: Run macOS interop fixtures
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked -p hypercolor-macos-gpu-interop
+
+      - name: Run macOS capture fixtures
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-macos-capture --features capture-fixtures \
+            --test capture_contract_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-core --features macos-capture-fixtures \
+            --test macos_screen_capture_tests
+
+      - name: Run macOS status API fixtures
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked
+          -p hypercolor-daemon --no-default-features --features wgpu
+          -E 'test(/api::system::tests::(input_source_status|macos_)/)'
 
       - name: Build deployment target fixture
         run: >-
