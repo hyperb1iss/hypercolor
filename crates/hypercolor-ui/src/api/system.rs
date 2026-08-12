@@ -36,6 +36,10 @@ pub struct SystemStatus {
     /// open/denied counts. Defaults tolerate daemons predating the field.
     #[serde(default)]
     pub input: InputStatus,
+    /// Authoritative local daemon topology on macOS. Absent on other hosts
+    /// and on daemons predating the ownership arbiter.
+    #[serde(default)]
+    pub macos_daemon_ownership: Option<MacosDaemonOwnershipStatus>,
 }
 
 /// Host keyboard/mouse capture health from the daemon status payload.
@@ -76,6 +80,15 @@ pub struct MacosDaemonOwnerConflictStatus {
     pub active: Option<String>,
     pub contender: Option<String>,
     pub observed_at_ms: Option<u64>,
+}
+
+/// Authoritative daemon-owner snapshot published independently of sources.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MacosDaemonOwnershipStatus {
+    pub active_owner: Option<String>,
+    pub owner_epoch: Option<u64>,
+    pub conflict: Option<MacosDaemonOwnerConflictStatus>,
 }
 
 /// Persistability and redacted content style of a macOS screen selection.
@@ -224,8 +237,39 @@ mod tests {
 
     use super::{
         InputSourcePlatformStatus, InputSourceStatus, MacosDaemonOwnerConflictStatus,
-        MacosSelectionStatus, MacosTahoeSelectionStatus,
+        MacosDaemonOwnershipStatus, MacosSelectionStatus, MacosTahoeSelectionStatus,
     };
+
+    #[test]
+    fn macos_daemon_ownership_decodes_tolerantly() {
+        let ownership: MacosDaemonOwnershipStatus = serde_json::from_value(json!({
+            "active_owner": "launchd_service",
+            "owner_epoch": 42,
+            "conflict": {
+                "active": "launchd_service",
+                "contender": "homebrew_service",
+                "observed_at_ms": 1_725_000_000_789_u64,
+                "future_conflict_field": true
+            },
+            "future_owner_field": { "available": true }
+        }))
+        .expect("macOS daemon ownership should decode");
+
+        assert_eq!(ownership.active_owner.as_deref(), Some("launchd_service"));
+        assert_eq!(ownership.owner_epoch, Some(42));
+        assert_eq!(
+            ownership.conflict,
+            Some(MacosDaemonOwnerConflictStatus {
+                active: Some("launchd_service".to_owned()),
+                contender: Some("homebrew_service".to_owned()),
+                observed_at_ms: Some(1_725_000_000_789),
+            })
+        );
+
+        let partial: MacosDaemonOwnershipStatus = serde_json::from_value(json!({}))
+            .expect("partial macOS daemon ownership should decode");
+        assert_eq!(partial, MacosDaemonOwnershipStatus::default());
+    }
 
     #[test]
     fn input_source_status_decodes_macos_input_platform_tolerantly() {
