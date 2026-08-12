@@ -798,6 +798,8 @@ pub enum MacosCaptureError {
     InvalidSurface,
     #[error("complete frame has no IOSurface-backed pixel buffer")]
     MissingIoSurface,
+    #[error("ScreenCaptureKit filter retention failed")]
+    RetainNativeFilterFailed,
     #[error("capture surface has no CPU-mappable fixture or pixel buffer")]
     CpuMappingUnavailable,
     #[error("mapped CPU planes do not match the validated frame layout")]

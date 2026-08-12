@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -236,8 +236,16 @@ impl CaptureOutput {
     }
 }
 
+#[derive(Clone)]
+struct NativeFilter(Retained<SCContentFilter>);
+
+// SAFETY: SCContentFilter is immutable after picker delivery and remains in
+// the process that owns every consuming SCStream. Rust never mutates it.
+unsafe impl Send for NativeFilter {}
+
 struct NativeStream {
     stream: Retained<SCStream>,
+    filter: NativeFilter,
     _output: Retained<CaptureOutput>,
     _queue: DispatchRetained<DispatchQueue>,
 }
@@ -256,6 +264,12 @@ impl NativeStream {
         streams: Weak<StreamSlot>,
     ) -> Result<Self, MacosCaptureError> {
         let (configuration, display_filter) = stream_configuration(filter, request)?;
+        // SAFETY: The picker callback supplies a live filter. Retaining it
+        // preserves the immutable selection through stream retirement.
+        let retained_filter = unsafe {
+            Retained::retain(ptr::from_ref(filter).cast_mut())
+                .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
+        };
         let output = CaptureOutput::new(
             epoch,
             shared,
@@ -292,6 +306,7 @@ impl NativeStream {
         }
         Ok(Self {
             stream,
+            filter: NativeFilter(retained_filter),
             _output: output,
             _queue: queue,
         })
@@ -315,6 +330,7 @@ enum StreamRole {
 struct StreamState {
     current: Option<NativeStream>,
     candidate: Option<NativeStream>,
+    selected_filter: Option<NativeFilter>,
 }
 
 struct StreamSlot {
@@ -368,6 +384,7 @@ impl StreamSlot {
                 return false;
             };
             let previous = state.current.replace(candidate);
+            state.selected_filter = state.current.as_ref().map(|current| current.filter.clone());
             self.shared.activate_epoch(epoch);
             previous
         };
@@ -403,6 +420,25 @@ impl StreamSlot {
         lock(&self.state).current.is_some()
     }
 
+    fn has_selection(&self) -> bool {
+        lock(&self.state).selected_filter.is_some()
+    }
+
+    fn store_selection(&self, filter: &SCContentFilter) -> Result<(), MacosCaptureError> {
+        // SAFETY: The picker callback supplies a live immutable filter. The
+        // retained owner remains process-local and is never serialized.
+        let filter = unsafe {
+            Retained::retain(ptr::from_ref(filter).cast_mut())
+                .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
+        };
+        lock(&self.state).selected_filter = Some(NativeFilter(filter));
+        Ok(())
+    }
+
+    fn selected_filter(&self) -> Option<NativeFilter> {
+        lock(&self.state).selected_filter.clone()
+    }
+
     fn current_stream(&self) -> Option<Retained<SCStream>> {
         lock(&self.state)
             .current
@@ -413,6 +449,12 @@ impl StreamSlot {
     fn stop(&self) {
         let (current, candidate) = {
             let mut state = lock(&self.state);
+            if state.current.is_none()
+                && state.selected_filter.is_none()
+                && let Some(candidate) = state.candidate.as_ref()
+            {
+                state.selected_filter = Some(candidate.filter.clone());
+            }
             (state.current.take(), state.candidate.take())
         };
         self.shared.activate_epoch(0);
@@ -473,6 +515,7 @@ struct PickerObserverIvars {
     streams: Arc<StreamSlot>,
     request: MacosStreamRequest,
     next_epoch: RefCell<u64>,
+    active: Cell<bool>,
 }
 
 define_class!(
@@ -492,7 +535,7 @@ define_class!(
             _picker: &SCContentSharingPicker,
             _stream: Option<&SCStream>,
         ) {
-            if !self.ivars().streams.has_current() {
+            if !self.ivars().streams.has_selection() {
                 self.ivars()
                     .shared
                     .set_status(MacosProtectedSourceState::NeedsSelection);
@@ -507,7 +550,18 @@ define_class!(
             filter: &SCContentFilter,
             _stream: Option<&SCStream>,
         ) {
-            self.install_filter(filter);
+            if self.ivars().active.get() {
+                self.install_filter(filter);
+            } else if let Err(error) = self.ivars().streams.store_selection(filter) {
+                self.ivars()
+                    .shared
+                    .set_status(MacosProtectedSourceState::Failed);
+                self.ivars().shared.publish_error(error);
+            } else {
+                self.ivars()
+                    .shared
+                    .set_status(MacosProtectedSourceState::ReadyIdle);
+            }
         }
 
         #[allow(non_snake_case)]
@@ -537,6 +591,7 @@ impl PickerObserver {
             streams,
             request,
             next_epoch: RefCell::new(1),
+            active: Cell::new(false),
         });
         // SAFETY: NSObject has no additional initialization requirements for
         // this main-thread observer subclass.
@@ -577,7 +632,31 @@ impl PickerObserver {
         }
     }
 
+    fn set_active(&self, active: bool) {
+        if self.ivars().active.replace(active) == active {
+            return;
+        }
+        if !active {
+            self.ivars().streams.stop();
+            let status = if self.ivars().streams.has_selection() {
+                MacosProtectedSourceState::ReadyIdle
+            } else {
+                MacosProtectedSourceState::NeedsSelection
+            };
+            self.ivars().shared.set_status(status);
+            return;
+        }
+        let Some(filter) = self.ivars().streams.selected_filter() else {
+            self.ivars()
+                .shared
+                .set_status(MacosProtectedSourceState::NeedsSelection);
+            return;
+        };
+        self.install_filter(&filter.0);
+    }
+
     fn stop(&self) {
+        self.ivars().active.set(false);
         self.ivars().streams.stop();
     }
 }
@@ -669,8 +748,12 @@ impl MacosScreenCaptureSession {
     }
 
     pub fn stop(&self) {
-        self.main.get_on_main(|main| main.observer.stop());
-        self.shared.set_status(MacosProtectedSourceState::ReadyIdle);
+        self.set_capture_active(false);
+    }
+
+    pub fn set_capture_active(&self, active: bool) {
+        self.main
+            .get_on_main(|main| main.observer.set_active(active));
     }
 }
 

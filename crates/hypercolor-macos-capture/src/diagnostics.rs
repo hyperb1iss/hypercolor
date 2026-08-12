@@ -48,6 +48,7 @@ impl MacosFrameDropReason {
             | MacosCaptureError::NotMainThread
             | MacosCaptureError::ScreenCapturePermissionRequired
             | MacosCaptureError::NativeOperation { .. }
+            | MacosCaptureError::RetainNativeFilterFailed
             | MacosCaptureError::PlaneCount { .. }
             | MacosCaptureError::InvalidPlaneIndex { .. }
             | MacosCaptureError::InvalidPlaneExtent { .. }
