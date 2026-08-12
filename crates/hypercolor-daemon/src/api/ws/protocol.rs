@@ -579,7 +579,7 @@ pub(super) struct InteractivePreviewConfig {
 }
 
 /// Hard transport ceiling for one complete WebSocket message or frame.
-pub(super) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum decoded surface bytes admitted for one preview publication.
 pub(super) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES;

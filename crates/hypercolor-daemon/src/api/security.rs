@@ -51,6 +51,9 @@ pub(crate) struct RequestAuthContext {
     granted_tier: Option<AccessTier>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TrustedLocalControl;
+
 impl RequestAuthContext {
     #[must_use]
     pub(crate) const fn unsecured() -> Self {
@@ -518,6 +521,17 @@ pub async fn enforce_security(
 ) -> Response {
     let mut request = request;
 
+    if request
+        .extensions_mut()
+        .remove::<TrustedLocalControl>()
+        .is_some()
+    {
+        request
+            .extensions_mut()
+            .insert(RequestAuthContext::authenticated(AccessTier::Control));
+        return next.run(request).await;
+    }
+
     if let Some(response) = state.network.reject_request(&request) {
         return response;
     }
@@ -623,6 +637,14 @@ pub async fn enforce_security(
     let mut response = next.run(request).await;
     apply_rate_headers(&mut response, &decision);
     response
+}
+
+pub(crate) fn mark_trusted_local_control(request: &mut Request<Body>) {
+    request.extensions_mut().insert(TrustedLocalControl);
+}
+
+pub(crate) const fn trusted_local_control_context() -> RequestAuthContext {
+    RequestAuthContext::authenticated(AccessTier::Control)
 }
 
 fn is_exempt_path(path: &str) -> bool {

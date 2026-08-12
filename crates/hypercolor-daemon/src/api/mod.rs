@@ -20,6 +20,7 @@ pub mod envelope;
 pub mod layers;
 pub mod layouts;
 pub mod library;
+pub mod local;
 pub mod openapi;
 pub mod output;
 pub mod preview;
