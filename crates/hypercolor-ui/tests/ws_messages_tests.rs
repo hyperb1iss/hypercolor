@@ -105,6 +105,13 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "dropped": 1
         },
         "frame_time": { "avg_ms": 8.1, "p95_ms": 12.4, "p99_ms": 15.9, "max_ms": 18.2 },
+        "input_latency": {
+            "sample_count": 600,
+            "avg_ms": 0.31,
+            "p95_ms": 0.72,
+            "p99_ms": 0.91,
+            "max_ms": 1.08
+        },
         "stages": {
             "producer_effect_rendering_ms": 2.1,
             "producer_preview_compose_ms": 3.4,
@@ -179,7 +186,10 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "full_frame_count": 2,
             "full_frame_kb": 2400.0,
             "producer_reason": "readback",
-            "publication_reason": "canvas"
+            "publication_reason": "canvas",
+            "session_full_frame_count": 7,
+            "session_full_frame_frames": 4,
+            "session_full_frame_bytes": 9830400
         },
         "memory": { "daemon_rss_mb": 100.0, "canvas_buffer_kb": 1200 },
         "devices": { "connected": 2, "total_leds": 300, "output_errors": 0 },
@@ -190,6 +200,8 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
     assert_eq!(metrics.fps.ceiling, 60);
     assert_eq!(metrics.fps.capacity, 60.0);
     assert_eq!(metrics.fps.delivered_or_legacy(), 58.4);
+    assert_eq!(metrics.input_latency.sample_count, 600);
+    assert_eq!(metrics.input_latency.p99_ms, 0.91);
     assert_eq!(metrics.stages.producer_scene_compose_ms, 3.4);
     assert_eq!(metrics.effect_health.servo_render_gpu_frames_total, 120);
     assert_eq!(
@@ -217,6 +229,9 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
     assert_eq!(metrics.render_surfaces.scene_pool_saturation_reallocs, 7);
     assert_eq!(metrics.display_output.write_failures_total, 3);
     assert_eq!(metrics.copies.producer_reason.as_deref(), Some("readback"));
+    assert_eq!(metrics.copies.session_full_frame_count, 7);
+    assert_eq!(metrics.copies.session_full_frame_frames, 4);
+    assert_eq!(metrics.copies.session_full_frame_bytes, 9_830_400);
 }
 
 #[test]

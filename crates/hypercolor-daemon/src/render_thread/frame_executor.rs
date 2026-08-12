@@ -326,15 +326,6 @@ pub(crate) async fn execute_frame(
         state,
         render.sparkleflinger.screen_native_execution_target(),
     );
-    let screen_plan_generation = frame_loop.inputs.observe_screen_plan(
-        state,
-        render.sparkleflinger.screen_native_execution_target(),
-    );
-    super::frame_composer::synchronize_screen_plan_generation(
-        &mut render.sparkleflinger,
-        &mut render.screen_queue,
-        screen_plan_generation.get(),
-    );
     let mut screen_input_active = frame_loop.has_screen_input_demand();
     scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
     if !screen_input_active {
@@ -416,6 +407,10 @@ pub(crate) async fn execute_frame(
     }
 
     let input_start = Instant::now();
+    let screen_plan_generation = frame_loop.inputs.observe_screen_plan(
+        state,
+        render.sparkleflinger.screen_native_execution_target(),
+    );
     let inputs = frame_loop
         .inputs
         .inputs_for_frame(state, skip_decision, delta_secs);
@@ -431,6 +426,14 @@ pub(crate) async fn execute_frame(
             &registry,
         ))
     };
+    let input_snapshot_done_at = Instant::now();
+    let input_us = micros_between(input_start, input_snapshot_done_at);
+    let input_done_us = micros_between(frame_start, input_snapshot_done_at);
+    super::frame_composer::synchronize_screen_plan_generation(
+        &mut render.sparkleflinger,
+        &mut render.screen_queue,
+        screen_plan_generation.get(),
+    );
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
     if let Some(render_device) = state.render_gpu_device.as_ref() {
         render.service_macos_screen_parity(
@@ -440,9 +443,7 @@ pub(crate) async fn execute_frame(
             &scene_snapshot.spatial_engine,
         );
     }
-    let input_done_at = Instant::now();
-    let input_us = micros_between(input_start, input_done_at);
-    let input_done_us = micros_between(frame_start, input_done_at);
+    let deferred_sample_start = Instant::now();
     let PendingSamplingWork {
         completed: completed_deferred_sampling,
         stale: stale_deferred_sampling,
@@ -453,7 +454,8 @@ pub(crate) async fn execute_frame(
             "Deferred GPU spatial sampling finalize failed; dropping deferred sample result",
         )
     };
-    let deferred_sample_us = micros_between(input_done_at, Instant::now());
+    let deferred_sample_done_at = Instant::now();
+    let deferred_sample_us = micros_between(deferred_sample_start, deferred_sample_done_at);
     let canvas_preview_due = frame_loop.publication_cadence.canvas_preview_due(
         scene_snapshot.elapsed_ms,
         state.preview_canvas_receiver_count(),
@@ -475,6 +477,8 @@ pub(crate) async fn execute_frame(
     .await;
     scene_snapshot.effect_demand.screen_capture_active = screen_input_active;
 
+    let render_started_at = Instant::now();
+    let render_started_us = micros_between(frame_start, render_started_at);
     let mut render_stage = compose_frame(ComposeRequest {
         state,
         compose: render.compose_runtime(),
@@ -750,6 +754,7 @@ pub(crate) async fn execute_frame(
         producer_full_frame_copy: render_stage.producer_full_frame_copy,
         input_us,
         deferred_sample_us,
+        render_started_us,
         producer_us: render_stage.producer_us,
         producer_render_us: render_stage.producer_render_us,
         producer_scene_compose_us: render_stage.producer_scene_compose_us,

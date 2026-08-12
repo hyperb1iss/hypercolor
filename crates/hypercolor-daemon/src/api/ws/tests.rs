@@ -568,6 +568,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
         performance.record_effect_fallback_applied();
         performance.record_frame(&LatestFrameMetrics {
             timestamp_ms: 1234,
+            input_sampled: true,
             input_us: 200,
             deferred_sample_us: 60,
             producer_us: 900,
@@ -720,6 +721,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["gpu_readback_failed"], true);
     assert_eq!(json["timeline"]["budget_ms"], 16.67);
     assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
+    assert_eq!(json["input_latency"]["sample_count"], 1);
+    assert_eq!(json["input_latency"]["p95_ms"], 0.2);
+    assert_eq!(json["input_latency"]["p99_ms"], 0.2);
     assert_eq!(json["pacing"]["push_avg_ms"], 0.25);
     assert_eq!(json["pacing"]["push_p95_ms"], 0.25);
     assert_eq!(json["pacing"]["publish_avg_ms"], 0.18);
@@ -742,6 +746,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["output_published_frame"], 1);
     assert_eq!(json["pacing"]["output_routed_reuse"], 0);
     assert_eq!(json["pacing"]["output_reused_published_frame"], 1);
+    assert_eq!(json["copies"]["session_full_frame_count"], 2);
+    assert_eq!(json["copies"]["session_full_frame_frames"], 1);
+    assert_eq!(json["copies"]["session_full_frame_bytes"], 2_048);
     assert_eq!(json["render_surfaces"]["scene_pool_slot_count"], 10);
     assert_eq!(json["render_surfaces"]["scene_pool_max_slots"], 12);
     assert_eq!(json["render_surfaces"]["direct_pool_slot_count"], 6);

@@ -1266,6 +1266,7 @@ pub(super) struct SceneRef {
 pub(super) struct MetricsPayload {
     pub(super) fps: MetricsFps,
     pub(super) frame_time: MetricsFrameTime,
+    pub(super) input_latency: MetricsSessionLatency,
     pub(super) stages: MetricsStages,
     pub(super) pacing: MetricsPacing,
     pub(super) effect_health: MetricsEffectHealth,
@@ -1295,6 +1296,15 @@ pub(super) struct MetricsFps {
     reason = "JSON keys mirror protocol field names from the WebSocket spec"
 )]
 pub(super) struct MetricsFrameTime {
+    pub(super) avg_ms: f64,
+    pub(super) p95_ms: f64,
+    pub(super) p99_ms: f64,
+    pub(super) max_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MetricsSessionLatency {
+    pub(super) sample_count: u64,
     pub(super) avg_ms: f64,
     pub(super) p95_ms: f64,
     pub(super) p99_ms: f64,
@@ -1531,6 +1541,9 @@ pub(super) struct MetricsCopies {
     pub(super) publication_full_frame_count: u32,
     pub(super) publication_full_frame_kb: f64,
     pub(super) publication_reason: Option<&'static str>,
+    pub(super) session_full_frame_count: u64,
+    pub(super) session_full_frame_frames: u64,
+    pub(super) session_full_frame_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]

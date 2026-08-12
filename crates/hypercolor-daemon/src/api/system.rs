@@ -72,11 +72,34 @@ pub struct SystemStatus {
     pub macos_daemon_ownership: Option<MacosDaemonOwnershipApiStatus>,
     pub compositor_acceleration: RenderAccelerationStatus,
     pub render_loop: RenderLoopStatus,
+    pub session_performance: SessionPerformanceStatus,
     pub latest_frame: Option<LatestFrameStatus>,
     pub effect_health: EffectHealthStatus,
     pub preview_runtime: PreviewRuntimeStatus,
     pub event_bus_subscribers: usize,
     pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SessionPerformanceStatus {
+    pub input_stage: LatencyPercentilesStatus,
+    pub full_frame_cpu_copies: FullFrameCopySessionStatus,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LatencyPercentilesStatus {
+    pub sample_count: u64,
+    pub avg_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub max_ms: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FullFrameCopySessionStatus {
+    pub count: u64,
+    pub frames: u64,
+    pub bytes: u64,
 }
 
 /// Installed byte fences for transactional screen publication admission.
@@ -1330,6 +1353,20 @@ async fn get_status_with_privacy(
     } else {
         None
     };
+    let session_performance = SessionPerformanceStatus {
+        input_stage: LatencyPercentilesStatus {
+            sample_count: performance.input_time_sample_count,
+            avg_ms: round_2(performance.input_time.avg_ms),
+            p95_ms: round_2(performance.input_time.p95_ms),
+            p99_ms: round_2(performance.input_time.p99_ms),
+            max_ms: round_2(performance.input_time.max_ms),
+        },
+        full_frame_cpu_copies: FullFrameCopySessionStatus {
+            count: performance.full_frame_copy_count_total,
+            frames: performance.full_frame_copy_frames_total,
+            bytes: performance.full_frame_copy_bytes_total,
+        },
+    };
     let servo_health = servo_effect_health_counts();
     let pipeline_health = render_pipeline_health_counts();
     let effect_health = EffectHealthStatus {
@@ -1514,6 +1551,7 @@ async fn get_status_with_privacy(
         macos_daemon_ownership,
         compositor_acceleration: render_acceleration_status(&state.render_acceleration),
         render_loop: render_loop_status,
+        session_performance,
         latest_frame,
         effect_health,
         preview_runtime,
@@ -2232,7 +2270,7 @@ mod tests {
     }
 
     impl InputSource for TestStatusSource {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "test-screen"
         }
 
@@ -2836,6 +2874,30 @@ mod tests {
         assert!(delivered_fps > 0.0);
         assert!(delivered_fps < 60.0);
         assert_eq!(json["data"]["render_loop"]["actual_fps"], 60.0);
+        assert_eq!(
+            json["data"]["session_performance"]["input_stage"]["sample_count"],
+            2
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["input_stage"]["p95_ms"],
+            0.1
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["input_stage"]["p99_ms"],
+            0.1
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["full_frame_cpu_copies"]["count"],
+            4
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["full_frame_cpu_copies"]["frames"],
+            2
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["full_frame_cpu_copies"]["bytes"],
+            512_000
+        );
         assert_eq!(
             json["data"]["compositor_acceleration"]["requested_mode"],
             "cpu"

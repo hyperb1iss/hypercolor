@@ -75,6 +75,7 @@ pub const LAYER_HEALTH_EVENTS: &[&str] = &["layer_health_changed"];
 pub struct PerformanceMetrics {
     pub fps: MetricsFps,
     pub frame_time: MetricsFrameTime,
+    pub input_latency: MetricsSessionLatency,
     pub stages: MetricsStages,
     pub pacing: MetricsPacing,
     pub effect_health: MetricsEffectHealth,
@@ -86,6 +87,16 @@ pub struct PerformanceMetrics {
     pub memory: MetricsMemory,
     pub devices: MetricsDevices,
     pub websocket: MetricsWebsocket,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsSessionLatency {
+    pub sample_count: u64,
+    pub avg_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub max_ms: f64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -384,6 +395,9 @@ pub struct MetricsCopies {
     pub publication_full_frame_count: u32,
     pub publication_full_frame_kb: f64,
     pub publication_reason: Option<String>,
+    pub session_full_frame_count: u64,
+    pub session_full_frame_frames: u64,
+    pub session_full_frame_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

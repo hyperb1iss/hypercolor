@@ -255,6 +255,7 @@ from .effect_ref_summary import EffectRefSummary
 from .effect_summary import EffectSummary
 from .error_body import ErrorBody
 from .error_code import ErrorCode
+from .full_frame_copy_session_status import FullFrameCopySessionStatus
 from .gpu_compositor_probe_status import GpuCompositorProbeStatus
 from .gradient_stop import GradientStop
 from .health_checks import HealthChecks
@@ -268,6 +269,7 @@ from .input_source_platform_status_type_1_type import InputSourcePlatformStatusT
 from .input_source_status import InputSourceStatus
 from .input_status import InputStatus
 from .invoke_control_action_request import InvokeControlActionRequest
+from .latency_percentiles_status import LatencyPercentilesStatus
 from .latest_frame_status import LatestFrameStatus
 from .layer_order_request import LayerOrderRequest
 from .layer_stack_response import LayerStackResponse
@@ -354,6 +356,7 @@ from .sampling_mode_type_3_type import SamplingModeType3Type
 from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
+from .session_performance_status import SessionPerformanceStatus
 from .set_brightness_request import SetBrightnessRequest
 from .set_config_request import SetConfigRequest
 from .set_output_power_request import SetOutputPowerRequest
@@ -601,6 +604,7 @@ __all__ = (
     "EffectSummary",
     "ErrorBody",
     "ErrorCode",
+    "FullFrameCopySessionStatus",
     "GpuCompositorProbeStatus",
     "GradientStop",
     "HealthChecks",
@@ -614,6 +618,7 @@ __all__ = (
     "InputSourceStatus",
     "InputStatus",
     "InvokeControlActionRequest",
+    "LatencyPercentilesStatus",
     "LatestFrameStatus",
     "LayerOrderRequest",
     "LayerStackResponse",
@@ -696,6 +701,7 @@ __all__ = (
     "ScreenCaptureCapacityStatus",
     "ServerIdentity",
     "ServerInfo",
+    "SessionPerformanceStatus",
     "SetBrightnessRequest",
     "SetConfigRequest",
     "SetOutputPowerRequest",

@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 const FRAME_HISTORY_CAPACITY: usize = 120;
+const LATENCY_BUCKET_WIDTH_US: u32 = 100;
+const LATENCY_BUCKET_COUNT: usize = 4096;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum CompositorBackendKind {
@@ -93,6 +95,7 @@ pub(crate) struct FrameTimeline {
 )]
 pub(crate) struct LatestFrameMetrics {
     pub timestamp_ms: u32,
+    pub input_sampled: bool,
     pub input_us: u32,
     /// Time finalizing the *previous* frame's deferred GPU zone readback,
     /// which runs before composition starts. Reported separately because it
@@ -271,9 +274,85 @@ pub(crate) struct PerformanceSnapshot {
     pub latest_frame: Option<LatestFrameMetrics>,
     pub frame_count: u32,
     pub frame_time: FrameTimeSummary,
+    pub input_time: FrameTimeSummary,
+    pub input_time_sample_count: u64,
     pub delivered_fps: f64,
     pub pacing: PacingSummary,
     pub effect_health: EffectHealthSummary,
+    pub full_frame_copy_count_total: u64,
+    pub full_frame_copy_frames_total: u64,
+    pub full_frame_copy_bytes_total: u64,
+}
+
+#[derive(Debug)]
+struct LatencyHistogram {
+    buckets: Box<[u64]>,
+    samples: u64,
+    total_us: u64,
+    max_us: u32,
+}
+
+impl Default for LatencyHistogram {
+    fn default() -> Self {
+        Self {
+            buckets: vec![0; LATENCY_BUCKET_COUNT + 1].into_boxed_slice(),
+            samples: 0,
+            total_us: 0,
+            max_us: 0,
+        }
+    }
+}
+
+impl LatencyHistogram {
+    fn record(&mut self, sample_us: u32) {
+        let bucket_upper_bound = if sample_us == 0 {
+            0
+        } else {
+            sample_us
+                .saturating_sub(1)
+                .checked_div(LATENCY_BUCKET_WIDTH_US)
+                .unwrap_or_default()
+                .saturating_add(1)
+        };
+        let bucket = usize::try_from(bucket_upper_bound)
+            .unwrap_or(usize::MAX)
+            .min(LATENCY_BUCKET_COUNT);
+        self.buckets[bucket] = self.buckets[bucket].saturating_add(1);
+        self.samples = self.samples.saturating_add(1);
+        self.total_us = self.total_us.saturating_add(u64::from(sample_us));
+        self.max_us = self.max_us.max(sample_us);
+    }
+
+    fn summary(&self) -> FrameTimeSummary {
+        if self.samples == 0 {
+            return FrameTimeSummary::default();
+        }
+        let average_us = self.total_us.saturating_add(self.samples / 2) / self.samples;
+        FrameTimeSummary {
+            avg_ms: micros_to_ms(average_us),
+            p95_ms: micros_to_ms(u64::from(self.percentile_upper_bound_us(95))),
+            p99_ms: micros_to_ms(u64::from(self.percentile_upper_bound_us(99))),
+            max_ms: micros_to_ms(u64::from(self.max_us)),
+        }
+    }
+
+    fn percentile_upper_bound_us(&self, percentile: u64) -> u32 {
+        let rank = self.samples.saturating_mul(percentile).saturating_add(99) / 100;
+        let mut observed = 0_u64;
+        for (index, count) in self.buckets.iter().copied().enumerate() {
+            observed = observed.saturating_add(count);
+            if observed >= rank {
+                if index == LATENCY_BUCKET_COUNT {
+                    return self.max_us;
+                }
+                return u32::try_from(index)
+                    .unwrap_or(u32::MAX)
+                    .saturating_mul(LATENCY_BUCKET_WIDTH_US)
+                    .min(self.max_us);
+            }
+        }
+        self.max_us
+    }
 }
 
 /// Rolling performance tracker updated by the render thread.
@@ -287,8 +366,12 @@ pub struct PerformanceTracker {
     wake_delay_us: VecDeque<u32>,
     push_us: VecDeque<u32>,
     publish_us: VecDeque<u32>,
+    input_time: LatencyHistogram,
     pacing_history: VecDeque<FramePacingSample>,
     effect_health: EffectHealthSummary,
+    full_frame_copy_count_total: u64,
+    full_frame_copy_frames_total: u64,
+    full_frame_copy_bytes_total: u64,
 }
 
 impl PerformanceTracker {
@@ -306,6 +389,9 @@ impl PerformanceTracker {
         self.wake_delay_us.push_back(metrics.wake_late_us);
         self.push_us.push_back(metrics.push_us);
         self.publish_us.push_back(metrics.publish_us);
+        if metrics.input_sampled {
+            self.input_time.record(metrics.input_us);
+        }
         self.pacing_history.push_back(FramePacingSample {
             inputs: metrics.reused_inputs,
             canvas: metrics.reused_canvas,
@@ -333,6 +419,15 @@ impl PerformanceTracker {
                 .producer_gpu_readback_failures_total
                 .saturating_add(1);
         }
+        if metrics.full_frame_copy_count > 0 {
+            self.full_frame_copy_frames_total = self.full_frame_copy_frames_total.saturating_add(1);
+        }
+        self.full_frame_copy_count_total = self
+            .full_frame_copy_count_total
+            .saturating_add(u64::from(metrics.full_frame_copy_count));
+        self.full_frame_copy_bytes_total = self
+            .full_frame_copy_bytes_total
+            .saturating_add(u64::from(metrics.full_frame_copy_bytes));
 
         if self.frame_times_us.len() > FRAME_HISTORY_CAPACITY {
             let _ = self.frame_times_us.pop_front();
@@ -377,6 +472,8 @@ impl PerformanceTracker {
             latest_frame: self.latest_frame,
             frame_count: u32::try_from(self.frame_times_us.len()).unwrap_or(u32::MAX),
             frame_time: summarize_frame_times(&self.frame_times_us),
+            input_time: self.input_time.summary(),
+            input_time_sample_count: self.input_time.samples,
             delivered_fps: delivered_fps(
                 &self.frame_intervals_us,
                 self.last_frame_recorded_at
@@ -390,6 +487,9 @@ impl PerformanceTracker {
                 &self.pacing_history,
             ),
             effect_health: self.effect_health,
+            full_frame_copy_count_total: self.full_frame_copy_count_total,
+            full_frame_copy_frames_total: self.full_frame_copy_frames_total,
+            full_frame_copy_bytes_total: self.full_frame_copy_bytes_total,
         }
     }
 
@@ -709,4 +809,62 @@ fn delivered_fps(
 
 fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LatencyHistogram, LatestFrameMetrics, PerformanceTracker};
+
+    #[test]
+    fn input_latency_histogram_reports_session_percentiles() {
+        let mut histogram = LatencyHistogram::default();
+        for sample in 1..=100_u32 {
+            histogram.record(sample.saturating_mul(100));
+        }
+
+        let summary = histogram.summary();
+        assert_eq!(summary.avg_ms, 5.05);
+        assert_eq!(summary.p95_ms, 9.5);
+        assert_eq!(summary.p99_ms, 9.9);
+        assert_eq!(summary.max_ms, 10.0);
+    }
+
+    #[test]
+    fn input_latency_percentiles_never_exceed_the_observed_maximum() {
+        let mut histogram = LatencyHistogram::default();
+        histogram.record(1);
+
+        let summary = histogram.summary();
+        assert_eq!(summary.p95_ms, 0.001);
+        assert_eq!(summary.p99_ms, 0.001);
+        assert_eq!(summary.max_ms, 0.001);
+    }
+
+    #[test]
+    fn performance_snapshot_retains_input_and_full_frame_copy_contracts() {
+        let mut tracker = PerformanceTracker::default();
+        tracker.record_frame(&LatestFrameMetrics {
+            input_sampled: true,
+            input_us: 740,
+            full_frame_copy_count: 2,
+            full_frame_copy_bytes: 4096,
+            ..LatestFrameMetrics::default()
+        });
+        tracker.record_frame(&LatestFrameMetrics {
+            input_sampled: true,
+            input_us: 980,
+            ..LatestFrameMetrics::default()
+        });
+        tracker.record_frame(&LatestFrameMetrics::default());
+        tracker.clear_frame_timings();
+
+        let snapshot = tracker.snapshot();
+        assert_eq!(snapshot.frame_count, 0);
+        assert_eq!(snapshot.input_time.p95_ms, 0.98);
+        assert_eq!(snapshot.input_time.p99_ms, 0.98);
+        assert_eq!(snapshot.input_time_sample_count, 2);
+        assert_eq!(snapshot.full_frame_copy_count_total, 2);
+        assert_eq!(snapshot.full_frame_copy_frames_total, 1);
+        assert_eq!(snapshot.full_frame_copy_bytes_total, 4096);
+    }
 }
