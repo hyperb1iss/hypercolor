@@ -220,6 +220,38 @@ pub struct MacosCaptureSurface {
     owner: Arc<MacosRetainedPixelBuffer>,
 }
 
+/// Borrowed native handles for handing a retained capture surface to audited
+/// macOS interop code without exposing Objective-C framework types.
+#[cfg(target_os = "macos")]
+pub struct MacosNativeSurfaceLease<'a> {
+    iosurface: std::ptr::NonNull<std::ffi::c_void>,
+    pixel_buffer: std::ptr::NonNull<std::ffi::c_void>,
+    _owner: std::marker::PhantomData<&'a MacosCaptureSurface>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosNativeSurfaceLease<'_> {
+    /// Returns the borrowed native IOSurface pointer.
+    ///
+    /// The pointer is valid only during the closure passed to
+    /// [`MacosCaptureSurface::with_native_surface`]. Dereferencing or retaining
+    /// it requires the platform framework's ownership contract.
+    #[must_use]
+    pub const fn iosurface_ptr(&self) -> std::ptr::NonNull<std::ffi::c_void> {
+        self.iosurface
+    }
+
+    /// Returns the borrowed native Core Video pixel-buffer pointer.
+    ///
+    /// The pointer is valid only during the closure passed to
+    /// [`MacosCaptureSurface::with_native_surface`]. Dereferencing or retaining
+    /// it requires the platform framework's ownership contract.
+    #[must_use]
+    pub const fn pixel_buffer_ptr(&self) -> std::ptr::NonNull<std::ffi::c_void> {
+        self.pixel_buffer
+    }
+}
+
 impl MacosCaptureSurface {
     #[cfg(feature = "capture-fixtures")]
     pub fn new_fixture(
@@ -287,6 +319,32 @@ impl MacosCaptureSurface {
 
     pub fn retained_owner_count(&self) -> usize {
         Arc::strong_count(&self.owner)
+    }
+
+    /// Hands borrowed native surface handles to audited macOS interop code.
+    ///
+    /// The retained pixel buffer owned by this surface remains alive for the
+    /// entire operation. Fixture surfaces do not have native handles.
+    #[cfg(target_os = "macos")]
+    pub fn with_native_surface<R>(
+        &self,
+        operation: impl FnOnce(MacosNativeSurfaceLease<'_>) -> R,
+    ) -> Result<R, MacosCaptureError> {
+        match &*self.owner {
+            MacosRetainedPixelBuffer::Native { pixel_buffer } => {
+                let iosurface = CVPixelBufferGetIOSurface(Some(pixel_buffer))
+                    .ok_or(MacosCaptureError::MissingIoSurface)?;
+                Ok(operation(MacosNativeSurfaceLease {
+                    iosurface: std::ptr::NonNull::from(&*iosurface).cast(),
+                    pixel_buffer: std::ptr::NonNull::from(&**pixel_buffer).cast(),
+                    _owner: std::marker::PhantomData,
+                }))
+            }
+            #[cfg(feature = "capture-fixtures")]
+            MacosRetainedPixelBuffer::Fixture { .. } => {
+                Err(MacosCaptureError::NativeSurfaceUnavailable)
+            }
+        }
     }
 
     #[cfg(feature = "capture-fixtures")]
@@ -801,6 +859,8 @@ pub enum MacosCaptureError {
     InvalidSurface,
     #[error("complete frame has no IOSurface-backed pixel buffer")]
     MissingIoSurface,
+    #[error("capture surface has no native pixel buffer")]
+    NativeSurfaceUnavailable,
     #[error("ScreenCaptureKit filter retention failed")]
     RetainNativeFilterFailed,
     #[error("display {0} has no canonical Core Graphics UUID")]

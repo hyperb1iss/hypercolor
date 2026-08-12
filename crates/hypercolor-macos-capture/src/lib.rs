@@ -18,6 +18,8 @@ pub use native::MacosScreenCaptureSession;
 
 pub use clock::{MacosDisplayClock, MacosDisplayClockError};
 pub use diagnostics::{MacosCaptureCallbackDiagnostics, MacosFrameDropReason};
+#[cfg(target_os = "macos")]
+pub use frame::MacosNativeSurfaceLease;
 pub use frame::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureColorimetry, MacosCaptureError,
     MacosCaptureFrame, MacosCapturePixelFormat, MacosCapturePlane, MacosCaptureSurface,

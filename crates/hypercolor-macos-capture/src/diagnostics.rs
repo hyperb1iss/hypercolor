@@ -43,7 +43,8 @@ impl MacosFrameDropReason {
             | MacosCaptureError::UnsupportedColorAttachment(_) => Self::ColorMetadata,
             MacosCaptureError::MissingFramePayload
             | MacosCaptureError::InvalidSurface
-            | MacosCaptureError::MissingIoSurface => Self::Surface,
+            | MacosCaptureError::MissingIoSurface
+            | MacosCaptureError::NativeSurfaceUnavailable => Self::Surface,
             MacosCaptureError::InvalidCadence(_)
             | MacosCaptureError::NotMainThread
             | MacosCaptureError::ScreenCapturePermissionRequired
