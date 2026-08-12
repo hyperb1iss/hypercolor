@@ -3,6 +3,7 @@ Description=Prune inactive Hypercolor Cargo target profiles under disk pressure
 
 [Service]
 Type=oneshot
+TimeoutStartSec=45min
 ExecStart=%h/.local/share/hypercolor/libexec/cargo-target-gc --apply
 Nice=19
 IOSchedulingClass=idle

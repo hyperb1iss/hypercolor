@@ -67,6 +67,15 @@ oss-boundary-check-strict:
 build *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} {{ args }}
 
+# Build with full symbols for debugger sessions
+[unix]
+debug-build *args='':
+    ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --profile debugging {{ args }}
+
+[windows]
+debug-build *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build {{ workspace_args }} --profile debugging {{ args }}
+
 [windows]
 build *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build {{ workspace_args }} {{ args }}
@@ -445,7 +454,7 @@ app-bundle-assets *args='':
 # Build native Tauri bundles for the unified desktop app
 [unix]
 app-bundle *args='': app-assets
-    cd crates/hypercolor-app && cargo tauri build --config tauri.bundle.conf.json {{ args }}
+    cd crates/hypercolor-app && HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
 
 [windows]
 app-bundle *args='': app-assets
@@ -620,13 +629,16 @@ tui-dev *args='':
 
 # ─── UI ──────────────────────────────────────────────────
 
+ui-deps:
+    cd crates/hypercolor-ui && bun install --frozen-lockfile
+
 [private]
 prepare-dev-assets:
     cd sdk && bun scripts/build-effect.ts --all
 
 # Run Servo daemon + UI dev server together (daemon bind from config, UI on :9430)
 [unix]
-dev *args='':
+dev *args='': ui-deps
     #!/usr/bin/env bash
     set -euo pipefail
     daemon_pid=""
@@ -690,7 +702,7 @@ dev *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
     daemon_pid=$!
     sleep 2
-    (cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk serve --dist .dist-dev) &
+    (cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev) &
     trunk_pid=$!
     wait_for_first_exit
 
@@ -702,12 +714,12 @@ dev *args='':
 # port and optionally a bind address to run beside another stack:
 # `just ui-dev 9431`, or `just ui-dev 9431 0.0.0.0` to reach it from a
 # phone on the LAN. The API proxy target (:9420) is unaffected.
-ui-dev port='9430' host='127.0.0.1':
-    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
+ui-dev port='9430' host='127.0.0.1': ui-deps
+    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
 
 # Build the UI for production
-ui-build:
-    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk build --release
+ui-build: ui-deps
+    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk build --release --locked
 
 # Build UI and copy dist for daemon embedding
 ui-dist: ui-build
@@ -914,6 +926,7 @@ gc-install *args='':
 gc-status:
     systemctl --user list-timers hypercolor-cargo-target-gc.timer --no-pager
     systemctl --user show hypercolor-cargo-target-gc.service --property=Result,ExecMainStatus
+    @if [ -f "$HOME/.local/share/hypercolor/libexec/cargo-target-gc" ]; then sha256sum scripts/cargo-target-gc.sh "$HOME/.local/share/hypercolor/libexec/cargo-target-gc"; else echo '(collector is not installed)'; fi
 
 # Show workspace dependency tree
 deps:

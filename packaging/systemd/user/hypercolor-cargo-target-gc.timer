@@ -6,7 +6,6 @@ OnStartupSec=30min
 OnUnitActiveSec=1d
 RandomizedDelaySec=1h
 AccuracySec=15min
-Persistent=true
 Unit=hypercolor-cargo-target-gc.service
 
 [Install]

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "$(uname -s)" != Linux ]; then
+  echo "cargo-target-gc supports Linux only" >&2
+  exit 2
+fi
+
 MODE=dry-run
 RECLAIM_NOW=0
 case "${1:-}" in
@@ -28,9 +33,9 @@ CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
 HIGH_WATER="${HYPERCOLOR_GC_HIGH_WATER_BYTES:-$((300 * 1024 * 1024 * 1024))}"
 LOW_WATER="${HYPERCOLOR_GC_LOW_WATER_BYTES:-$((240 * 1024 * 1024 * 1024))}"
 MIN_AGE_DAYS="${HYPERCOLOR_GC_MIN_AGE_DAYS:-14}"
-[ "$RECLAIM_NOW" -eq 0 ] || MIN_AGE_DAYS=0
+RECLAIM_MIN_AGE_SECONDS="${HYPERCOLOR_GC_RECLAIM_MIN_AGE_SECONDS:-900}"
 
-for value in "$HIGH_WATER" "$LOW_WATER" "$MIN_AGE_DAYS"; do
+for value in "$HIGH_WATER" "$LOW_WATER" "$MIN_AGE_DAYS" "$RECLAIM_MIN_AGE_SECONDS"; do
   [[ "$value" =~ ^[0-9]+$ ]] || {
     echo "GC thresholds must be non-negative integers" >&2
     exit 2
@@ -132,7 +137,11 @@ add_profile() {
       return 0
       ;;
   esac
-  [ -f "$canonical/.cargo-lock" ] || return 0
+  if [ ! -f "$canonical/.cargo-lock" ] \
+    && [ ! -f "$canonical/.cargo-build-lock" ] \
+    && [ ! -f "$canonical/.cargo-artifact-lock" ]; then
+    return 0
+  fi
   for existing in "${!PROFILE_PATHS[@]}"; do
     if [ "${PROFILE_PATHS[existing]}" = "$canonical" ]; then
       if [ "$dirty" -eq 1 ]; then
@@ -150,19 +159,24 @@ add_profile() {
 for index in "${!TARGET_ROOTS[@]}"; do
   root="${TARGET_ROOTS[index]}"
   while IFS= read -r -d '' lock_file; do
-    add_profile "${lock_file%/.cargo-lock}" "$root" \
+    add_profile "${lock_file%/*}" "$root" \
       "${TARGET_OWNERS[index]}" "${TARGET_DIRTY[index]}"
-  done < <(find "$root" -mindepth 2 -maxdepth 3 -type f -name .cargo-lock -print0)
+  done < <(find "$root" -mindepth 2 -maxdepth 3 -type f \
+    \( -name .cargo-lock -o -name .cargo-build-lock -o -name .cargo-artifact-lock \) \
+    -print0)
 done
 
 profile_activity() {
   local profile="$1"
-  local owner="$2"
+  local root="$2"
+  local owner="$3"
   local latest=0
   local timestamp
   while IFS= read -r timestamp; do
     [ "$timestamp" -le "$latest" ] || latest="$timestamp"
   done < <(stat -c '%Y' "$profile" "$profile/.cargo-lock" \
+    "$profile/.cargo-build-lock" "$profile/.cargo-artifact-lock" \
+    "$root/.cargo-build-lock" "$root/.cargo-artifact-lock" \
     "$profile/deps" "$profile/build" "$profile/incremental" 2>/dev/null || true)
   if [ -n "$owner" ]; then
     timestamp="$(git -C "$owner" show -s --format=%ct HEAD 2>/dev/null || echo 0)"
@@ -187,7 +201,7 @@ scan_profiles() {
       echo "[cargo-gc] target inventory changed during measurement; deferring collection: $profile" >&2
       exit 0
     fi
-    activity="$(profile_activity "$profile" "${PROFILE_OWNERS[index]}")"
+    activity="$(profile_activity "$profile" "${PROFILE_ROOTS[index]}" "${PROFILE_OWNERS[index]}")"
     TOTAL_BYTES=$((TOTAL_BYTES + size))
     CANDIDATE_ROWS+=("$activity"$'\t'"$size"$'\t'"$index")
   done
@@ -233,6 +247,16 @@ acquire_target_locks() {
       fi
       TARGET_LOCK_FDS+=("$fd")
     done
+  done
+  for sentinel in "$root/.cargo-build-lock" "$root/.cargo-artifact-lock"; do
+    [ -e "$sentinel" ] || continue
+    exec {fd}<>"$sentinel"
+    if ! flock -n "$fd"; then
+      eval "exec ${fd}>&-"
+      release_target_locks
+      return 1
+    fi
+    TARGET_LOCK_FDS+=("$fd")
   done
 }
 
@@ -319,9 +343,23 @@ acquire_profile_locks() {
     fi
     PROFILE_LOCK_FDS+=("$fd")
   done
+  [ "${#PROFILE_LOCK_FDS[@]}" -gt 0 ]
 }
 
-cutoff=$(( $(date +%s) - MIN_AGE_DAYS * 86400 ))
+clear_profile_preserving_locks() {
+  local profile="$1"
+  find "$profile" -xdev -mindepth 1 -depth \
+    ! -path "$profile/.cargo-lock" \
+    ! -path "$profile/.cargo-build-lock" \
+    ! -path "$profile/.cargo-artifact-lock" \
+    -delete
+}
+
+if [ "$RECLAIM_NOW" -eq 1 ]; then
+  cutoff=$(( $(date +%s) - RECLAIM_MIN_AGE_SECONDS ))
+else
+  cutoff=$(( $(date +%s) - MIN_AGE_DAYS * 86400 ))
+fi
 remaining="$TOTAL_BYTES"
 removed=0
 while IFS=$'\t' read -r activity size index; do
@@ -353,21 +391,30 @@ while IFS=$'\t' read -r activity size index; do
     echo "[cargo-gc] keeping locked profile: $profile"
     continue
   fi
-  activity="$(profile_activity "$profile" "$owner")"
+  activity="$(profile_activity "$profile" "$root" "$owner")"
   if [ "$activity" -gt "$cutoff" ]; then
     release_profile_locks
     continue
   fi
 
   if [ "$MODE" = dry-run ]; then
-    printf '[cargo-gc] would remove %s: %s\n' "$(human_bytes "$size")" "$profile"
+    printf '[cargo-gc] would clear %s: %s\n' "$(human_bytes "$size")" "$profile"
+    reclaimed="$size"
   else
-    printf '[cargo-gc] removing %s: %s\n' "$(human_bytes "$size")" "$profile"
-    find "$profile" -xdev -depth -delete
+    printf '[cargo-gc] clearing %s: %s\n' "$(human_bytes "$size")" "$profile"
+    clear_failed=0
+    if ! clear_profile_preserving_locks "$profile"; then
+      clear_failed=1
+      echo "[cargo-gc] profile changed while clearing; retained remainder: $profile" >&2
+    fi
+    retained_size="$(du -sb "$profile" 2>/dev/null | awk 'END {print $1}' || true)"
+    [[ "$retained_size" =~ ^[0-9]+$ ]] || retained_size=0
+    reclaimed=$((size - retained_size))
   fi
   release_profile_locks
-  remaining=$((remaining - size))
-  removed=$((removed + size))
+  remaining=$((remaining - reclaimed))
+  removed=$((removed + reclaimed))
+  [ "${clear_failed:-0}" -eq 0 ] || continue
 done < <(printf '%s\n' "${CANDIDATE_ROWS[@]:-}" | sort -n -k1,1)
 
 if [ "$remaining" -le "$LOW_WATER" ]; then

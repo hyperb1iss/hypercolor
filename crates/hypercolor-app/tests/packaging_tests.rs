@@ -270,10 +270,18 @@ fn local_build_wrappers_default_to_workspace_target_dir() {
 #[test]
 fn ui_cargo_builds_use_the_shared_cache_policy() {
     assert!(JUSTFILE.contains(
-        r#"HYPERCOLOR_ITERATE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk serve"#
+        r#"HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve"#
     ));
     assert!(JUSTFILE.contains(
-        r#"HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh env -u NO_COLOR trunk build"#
+        r#"HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk build"#
+    ));
+    assert!(CARGO_CACHE_BUILD_SH.contains("HYPERCOLOR_NESTED_CARGO_TARGET_DIR"));
+}
+
+#[test]
+fn unix_app_bundles_use_the_shared_cache_policy() {
+    assert!(JUSTFILE.contains(
+        r#"HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build"#
     ));
 }
 
@@ -283,10 +291,11 @@ fn cargo_target_gc_is_pressure_triggered_and_lock_aware() {
         "HYPERCOLOR_GC_HIGH_WATER_BYTES",
         "HYPERCOLOR_GC_LOW_WATER_BYTES",
         "HYPERCOLOR_GC_MIN_AGE_DAYS",
+        "HYPERCOLOR_GC_RECLAIM_MIN_AGE_SECONDS",
         "status --porcelain=v1",
         ".cargo-lock",
         "flock -n",
-        "find \"$profile\" -xdev -depth -delete",
+        "clear_profile_preserving_locks",
     ] {
         assert!(
             CARGO_TARGET_GC_SH.contains(required),
@@ -295,9 +304,10 @@ fn cargo_target_gc_is_pressure_triggered_and_lock_aware() {
     }
     assert!(CARGO_TARGET_GC_SERVICE.contains("Nice=19"));
     assert!(CARGO_TARGET_GC_SERVICE.contains("IOSchedulingClass=idle"));
+    assert!(CARGO_TARGET_GC_SERVICE.contains("TimeoutStartSec=45min"));
     assert!(CARGO_TARGET_GC_TIMER.contains("OnStartupSec=30min"));
     assert!(CARGO_TARGET_GC_TIMER.contains("OnUnitActiveSec=1d"));
-    assert!(CARGO_TARGET_GC_TIMER.contains("Persistent=true"));
+    assert!(!CARGO_TARGET_GC_TIMER.contains("Persistent=true"));
 }
 
 #[test]

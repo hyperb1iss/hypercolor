@@ -56,7 +56,8 @@ just e2e-build-cpu
 
 The shared wrapper configures:
 
-- `CARGO_TARGET_DIR=<repo>/target` (unless already set)
+- an isolated target directory passed through Cargo's command line or config
+  layer, never exported into rustc's cache key
 - `MOZBUILD_STATE_PATH=$HOME/.cache/hypercolor/mozbuild` (unless already set)
 - `sccache` as `RUSTC_WRAPPER` for whole-tree codegen commands
   (`cargo build`, `test`, `bench`, and anything release/bench-profiled)
@@ -125,9 +126,15 @@ Collection starts only when aggregate Cargo profiles exceed 300 GiB. It
 uses cargo-sweep under every available Cargo profile lock, then removes the
 oldest whole profiles until usage reaches 240 GiB. The daily path preserves
 profiles younger than 14 days plus every dirty or Cargo-locked worktree.
-The explicit `just gc-reclaim` command waives only the age floor. Set
+The explicit `just gc-reclaim` command shortens the age floor to 15 minutes,
+which protects multi-command build workflows between Cargo invocations. Set
 `HYPERCOLOR_GC_HIGH_WATER_BYTES`, `HYPERCOLOR_GC_LOW_WATER_BYTES`, and
-`HYPERCOLOR_GC_MIN_AGE_DAYS` to tune those bounds.
+`HYPERCOLOR_GC_MIN_AGE_DAYS` to tune the daily bounds. Set
+`HYPERCOLOR_GC_RECLAIM_MIN_AGE_SECONDS` to tune the explicit reclaim grace.
+
+The default dev profile keeps readable backtraces with line tables and trims
+third-party symbols. Use `just debug-build` when a debugger needs full locals
+and type information.
 
 `sccache` trims itself to `SCCACHE_CACHE_SIZE`. The wrapper owns a dedicated
 Hypercolor server and restarts it safely when its size or checkout map changes.

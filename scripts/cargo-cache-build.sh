@@ -10,13 +10,60 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CALLER_DIR="$PWD"
 
+# Default the bare invocation before command detection so it routes like an
+# explicit `cargo build --workspace` instead of falling through to
+# incremental mode.
+if [ "$#" -eq 0 ]; then
+  set -- cargo build --workspace
+fi
+
+CARGO_SUBCOMMAND=""
+CARGO_SUBCOMMAND_INDEX=0
+if [ "$#" -gt 1 ]; then
+  case "$(basename "$1")" in
+    cargo | cargo.exe)
+      i=2
+      while [ "$i" -le "$#" ]; do
+        arg="${!i}"
+        case "$arg" in
+          --color | --config | -Z)
+            i=$((i + 2))
+            continue
+            ;;
+          -* | +*)
+            i=$((i + 1))
+            continue
+            ;;
+          *)
+            CARGO_SUBCOMMAND="$arg"
+            CARGO_SUBCOMMAND_INDEX="$i"
+            break
+            ;;
+        esac
+      done
+      ;;
+  esac
+fi
+
+TAURI_SUBCOMMAND=""
+if [ "$CARGO_SUBCOMMAND" = "tauri" ]; then
+  tauri_subcommand_index=$((CARGO_SUBCOMMAND_INDEX + 1))
+  if [ "$tauri_subcommand_index" -le "$#" ]; then
+    TAURI_SUBCOMMAND="${!tauri_subcommand_index}"
+  fi
+fi
+
+TOP_LEVEL_COMMAND="$(basename "$1")"
+
 TARGET_DIR_ARG=""
 TARGET_DIR_IS_EXPLICIT=0
 for ((i = 1; i <= $#; i++)); do
   arg="${!i}"
   case "$arg" in
     --)
-      break
+      if [ "$CARGO_SUBCOMMAND" != "tauri" ] || [ "$TAURI_SUBCOMMAND" != "build" ]; then
+        break
+      fi
       ;;
     --target-dir)
       next_index=$((i + 1))
@@ -43,6 +90,12 @@ else
 fi
 mkdir -p "$TARGET_DIR"
 TARGET_DIR="$(cd "$TARGET_DIR" && pwd -P)"
+
+if command -v flock >/dev/null 2>&1; then
+  exec 7<>"$TARGET_DIR/.cargo-build-lock"
+  flock -s 7
+  touch "$TARGET_DIR/.cargo-build-lock"
+fi
 
 # Servo builds spawn hundreds of parallel rustc+sccache clients; source hashing
 # trips EMFILE on macOS launchd's default soft limit (256).
@@ -74,6 +127,17 @@ prune_stale_turbojpeg_cmake_cache
 
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 
+if ld.lld --help 2>/dev/null | grep -Fq -- '--compress-debug-sections=[none,zlib,zstd]'; then
+  case "$HOST_TRIPLE" in
+    x86_64-unknown-linux-gnu)
+      export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:--C link-arg=-fuse-ld=lld -C link-arg=-Wl,--compress-debug-sections=zstd}"
+      ;;
+    aarch64-unknown-linux-gnu)
+      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:--C link-arg=-fuse-ld=lld -C link-arg=-Wl,--compress-debug-sections=zstd}"
+      ;;
+  esac
+fi
+
 if [ "$HOST_TRIPLE" = "x86_64-pc-windows-msvc" ]; then
   export CARGO_TARGET_DIR="$TARGET_DIR"
   PS_WRAPPER="$SCRIPT_DIR/cargo-cache-build.ps1"
@@ -81,13 +145,6 @@ if [ "$HOST_TRIPLE" = "x86_64-pc-windows-msvc" ]; then
     PS_WRAPPER="$(cygpath -w "$PS_WRAPPER")"
   fi
   exec powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_WRAPPER" "$@"
-fi
-
-# Default the bare invocation before mode detection so it routes like an
-# explicit `cargo build --workspace` instead of falling through to
-# incremental mode.
-if [ "$#" -eq 0 ]; then
-  set -- cargo build --workspace
 fi
 
 SCCACHE_BIN="$(command -v sccache || true)"
@@ -126,40 +183,15 @@ done
 # per command: codegen-heavy tree ops go through sccache; metadata-only ops
 # (check/clippy) keep incremental because sccache cannot cache
 # --emit=metadata units at all.
-CARGO_SUBCOMMAND=""
-CARGO_SUBCOMMAND_INDEX=0
-if [ "$#" -gt 1 ]; then
-  case "$(basename "$1")" in
-    cargo | cargo.exe)
-      i=2
-      while [ "$i" -le "$#" ]; do
-        arg="${!i}"
-        case "$arg" in
-          --color | --config | -Z)
-            i=$((i + 2))
-            continue
-            ;;
-          -* | +*)
-            i=$((i + 1))
-            continue
-            ;;
-          *)
-            CARGO_SUBCOMMAND="$arg"
-            CARGO_SUBCOMMAND_INDEX="$i"
-            break
-            ;;
-        esac
-      done
-      ;;
-  esac
-fi
-
 USES_TARGET_DIR=0
 case "$CARGO_SUBCOMMAND" in
   build | check | test | bench | clippy | doc | run | clean | nextest)
     USES_TARGET_DIR=1
     ;;
 esac
+if [ "$CARGO_SUBCOMMAND" = "tauri" ] && [ "$TAURI_SUBCOMMAND" = "build" ]; then
+  USES_TARGET_DIR=1
+fi
 
 # Cargo hashes an exported CARGO_TARGET_DIR into compiler invocations, which
 # prevents a clean target from reusing otherwise identical Rust objects.
@@ -168,11 +200,41 @@ esac
 if [ "$USES_TARGET_DIR" -eq 1 ]; then
   if [ "$TARGET_DIR_IS_EXPLICIT" -eq 0 ]; then
     cargo_args=("$@")
-    set -- \
-      "${cargo_args[@]:0:CARGO_SUBCOMMAND_INDEX}" \
-      --target-dir "$TARGET_DIR" \
-      "${cargo_args[@]:CARGO_SUBCOMMAND_INDEX}"
+    if [ "$CARGO_SUBCOMMAND" = "tauri" ]; then
+      has_forwarding_delimiter=0
+      for arg in "${cargo_args[@]:CARGO_SUBCOMMAND_INDEX}"; do
+        if [ "$arg" = "--" ]; then
+          has_forwarding_delimiter=1
+          break
+        fi
+      done
+      if [ "$has_forwarding_delimiter" -eq 1 ]; then
+        set -- "${cargo_args[@]}" --target-dir "$TARGET_DIR"
+      else
+        set -- "${cargo_args[@]}" -- --target-dir "$TARGET_DIR"
+      fi
+    else
+      set -- \
+        "${cargo_args[@]:0:CARGO_SUBCOMMAND_INDEX}" \
+        --target-dir "$TARGET_DIR" \
+        "${cargo_args[@]:CARGO_SUBCOMMAND_INDEX}"
+    fi
   fi
+  unset CARGO_TARGET_DIR
+fi
+
+if [ "$TOP_LEVEL_COMMAND" = "trunk" ] || [ "$TOP_LEVEL_COMMAND" = "trunk.exe" ]; then
+  real_cargo="$(command -v cargo || true)"
+  if [ -z "$real_cargo" ]; then
+    echo "[cargo-cache] cargo not found for Trunk build" >&2
+    exit 127
+  fi
+  cargo_shim_dir="$TOOLCHAIN_DIR/cargo-shim"
+  mkdir -p "$cargo_shim_dir"
+  ln -sfn "$SCRIPT_DIR/cargo-cache-cargo-shim.sh" "$cargo_shim_dir/cargo"
+  export HYPERCOLOR_REAL_CARGO="$real_cargo"
+  export HYPERCOLOR_NESTED_CARGO_TARGET_DIR="$TARGET_DIR"
+  export PATH="$cargo_shim_dir:$PATH"
   unset CARGO_TARGET_DIR
 fi
 
@@ -273,11 +335,7 @@ refresh_sccache_server_config() {
 
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$lock_file"
-    if ! flock -n 9; then
-      echo "[cargo-cache] sccache normalization refresh already in progress"
-      exec 9>&-
-      return 0
-    fi
+    flock 9
     lock_held=1
   fi
 
@@ -293,6 +351,7 @@ refresh_sccache_server_config() {
   fi
 
   "$SCCACHE_BIN" --stop-server >/dev/null 2>&1 || true
+  "$SCCACHE_BIN" --start-server >/dev/null
   printf '%s\n' "$desired" >"$state_file.tmp.$$"
   mv "$state_file.tmp.$$" "$state_file"
   [ "$lock_held" -eq 0 ] || exec 9>&-
