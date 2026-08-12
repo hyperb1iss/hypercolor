@@ -178,6 +178,7 @@
     font-weight: 400;
     color: var(--text-tertiary);
     opacity: 0;
+
     // H1 paints its text with a clipped gradient; the anchor must opt out of
     // both that and the .doc link underline-grow.
     background: none;

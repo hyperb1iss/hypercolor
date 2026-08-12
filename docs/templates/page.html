@@ -10,7 +10,6 @@
 
 {% block content %}
 <div class="site-layout">
-  {% set current_path = page.path %}
   {% set current_section = page.ancestors | last %}
   {# Top-level pages (download) ancestor straight to the root section, whose
      subsections are every section on the site. Treat that as no section so the

@@ -133,11 +133,14 @@ ${sec}<div class="search-result__snippet">${snippet(body || '', terms)}</div></a
       resetResults();
       input.setAttribute('aria-expanded', 'false');
       activeIdx = -1;
+      // Every close path lands here, so focus cannot be left inside the hidden
+      // dialog after a backdrop click.
+      trigger?.focus();
     };
 
     document.addEventListener('keydown', (e) => {
       if ((isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); open(); }
-      if (e.key === 'Escape' && isOpen()) { e.preventDefault(); close(); trigger?.focus(); }
+      if (e.key === 'Escape' && isOpen()) { e.preventDefault(); close(); }
     });
 
     trigger?.addEventListener('click', open);
