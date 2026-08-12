@@ -10,31 +10,48 @@ description = "macOS IOSurface/Metal texture import boundary for Hypercolor"
 
 [features]
 default = []
+servo-context = [
+  "dep:cgl",
+  "dep:dpi",
+  "dep:euclid",
+  "dep:gleam",
+  "dep:glow",
+  "dep:image",
+  "dep:paint_api",
+  "dep:surfman",
+  "dep:tracing",
+  "dep:webrender_api",
+]
 
 [dependencies]
 thiserror = { workspace = true }
 wgpu = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cgl = "0.3.2"
-dpi = { workspace = true }
-euclid = "0.22"
-gleam = "0.15"
-glow = { workspace = true }
-image = { workspace = true }
+cgl = { version = "0.3.2", optional = true }
+dpi = { workspace = true, optional = true }
+euclid = { version = "0.22", optional = true }
+gleam = { version = "0.15", optional = true }
+glow = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 libc = { workspace = true }
 objc2 = { workspace = true, features = ["std"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
 objc2-io-surface = { workspace = true, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation", "libc", "bitflags"] }
 objc2-metal = { workspace = true, features = ["std", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "objc2-io-surface"] }
-paint_api = { workspace = true }
-surfman = { workspace = true }
-tracing = { workspace = true }
-webrender_api = { workspace = true }
+paint_api = { workspace = true, optional = true }
+surfman = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+webrender_api = { workspace = true, optional = true }
 wgpu-hal = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 pollster = { workspace = true }
+
+[[test]]
+name = "servo_context_tests"
+path = "tests/servo_context_tests.rs"
+required-features = ["servo-context"]
 
 [lints.rust]
 unsafe_code = "allow"
