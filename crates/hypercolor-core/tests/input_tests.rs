@@ -16,10 +16,12 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
-    InputManager, InputSource, MediaSource, NetSource, ScreenData, ScreenReconfigurationConflict,
-    SourceFreshness, SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot,
-    SourceSessionWriter, SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
-    SourceStatusWriter, SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
+    InputManager, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
+    MacosProtectedSourceState, MacosScreenPlatformStatus, MacosSelectionState, MediaSource,
+    NetSource, ScreenData, ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind,
+    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
+    SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
+    SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
@@ -3222,6 +3224,42 @@ fn source_backend_updates_preserve_lifecycle_and_deduplicate() {
         .set_backend("pipewire")
         .expect("same backend should be a no-op");
     assert!(Arc::ptr_eq(&updated, &handle.snapshot()));
+}
+
+#[test]
+fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
+    let (writer, handle) = test_status_writer();
+    let before = handle.snapshot();
+    let platform = SourcePlatformStatus::MacosScreen(MacosScreenPlatformStatus {
+        state: MacosProtectedSourceState::NeedsSelection,
+        tcc: MacosAuthorizationState::Authorized,
+        owner: MacosCapabilityOwner::AppSidecar,
+        selection: MacosSelectionState::None,
+        tahoe_selection: None,
+        owner_conflict: None,
+    });
+
+    writer
+        .set_platform(Some(platform.clone()))
+        .expect("platform update should succeed");
+    let updated = handle.snapshot();
+    assert_eq!(updated.platform.as_deref(), Some(&platform));
+    assert_eq!(updated.state, before.state);
+    assert_eq!(
+        updated.source_graph_generation,
+        before.source_graph_generation
+    );
+    assert_eq!(updated.session_generation, before.session_generation);
+
+    writer
+        .set_platform(Some(platform))
+        .expect("same platform status should be a no-op");
+    assert!(Arc::ptr_eq(&updated, &handle.snapshot()));
+
+    writer
+        .set_platform(None)
+        .expect("platform status should clear");
+    assert!(handle.snapshot().platform.is_none());
 }
 
 #[test]

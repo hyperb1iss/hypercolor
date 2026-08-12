@@ -101,6 +101,170 @@ impl SourceIssue {
     }
 }
 
+/// Precise lifecycle state for one protected macOS capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MacosProtectedSourceState {
+    /// Configuration disables the capability.
+    Disabled,
+    /// The next transition requires an explicit local authorization action.
+    NeedsUserAction,
+    /// The user denied the requested authorization.
+    PermissionDenied,
+    /// Authorization is present but the owning process must restart.
+    NeedsProcessRestart,
+    /// Screen capture requires a source choice from Apple's system picker.
+    NeedsSelection,
+    /// The capability is authorized and selected but has no active demand.
+    ReadyIdle,
+    /// Native resources are being established.
+    Starting,
+    /// The capability is active and producing data.
+    Live,
+    /// Native delivery stopped transiently and recovery is pending.
+    Interrupted,
+    /// A previously usable authorization was revoked.
+    Revoked,
+    /// The current configuration failed terminally.
+    Failed,
+}
+
+/// TCC authorization evidence for one macOS protected resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MacosAuthorizationState {
+    /// The adapter has not queried authorization yet.
+    Unknown,
+    /// No positive grant or explicit denial has been observed.
+    NotDetermined,
+    /// The user explicitly denied the request.
+    Denied,
+    /// The current capability owner has positive grant evidence.
+    Authorized,
+}
+
+/// Process topology that owns a protected macOS capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MacosCapabilityOwner {
+    /// Daemon process embedded as an app sidecar.
+    AppSidecar,
+    /// Main application process.
+    App,
+    /// Direct user launchd service.
+    LaunchdService,
+    /// Homebrew-managed user service.
+    HomebrewService,
+    /// Authenticated app broker.
+    Broker,
+    /// Terminal-launched daemon.
+    Standalone,
+}
+
+/// Bounded record of two macOS daemon topologies contending for ownership.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MacosDaemonOwnerConflict {
+    /// Topology currently holding the process guard.
+    pub active: MacosCapabilityOwner,
+    /// Topology that attempted to start.
+    pub contender: MacosCapabilityOwner,
+    /// Unix timestamp of the observed conflict.
+    pub observed_at_ms: u64,
+}
+
+/// Native architecture of the active macOS host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MacosArchitecture {
+    /// Apple Silicon host.
+    AppleSilicon,
+    /// Intel host.
+    Intel,
+}
+
+/// Runtime Tahoe feature probes stable for one process and Metal device.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MacosTahoeCapabilities {
+    /// Native host architecture, independent of the running executable slice.
+    pub host_architecture: MacosArchitecture,
+    /// Whether this process runs under Rosetta translation.
+    pub translated_process: bool,
+    /// Whether the Tahoe Core Graphics tone-mapping API is callable.
+    pub content_tone_mapping_info: bool,
+    /// Whether the active Metal device exposes every required Metal 4 facility.
+    pub metal4: bool,
+}
+
+/// Tahoe capabilities resolved for one selected capture incarnation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MacosTahoeSelectionCapabilities {
+    /// Stable selected source identity.
+    pub source_id: Arc<str>,
+    /// Capture session generation that proved these capabilities.
+    pub capture_session_generation: u64,
+    /// Whether the selected stream delivered canonical HDR.
+    pub hdr_capture: bool,
+    /// Whether paired SDR and HDR diagnostic screenshots are available.
+    pub dual_range_screenshots: bool,
+}
+
+/// Persistability and content style of the current macOS screen selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MacosSelectionState {
+    /// No source is currently selected.
+    None,
+    /// A stable display source is selected.
+    Display {
+        /// Canonical display UUID source identity.
+        source_id: Arc<str>,
+    },
+    /// A window, application, or multi-window choice valid for this process.
+    SessionScoped {
+        /// Redacted content style suitable for diagnostics.
+        content_style: Arc<str>,
+    },
+}
+
+/// Platform detail for the macOS host-input adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MacosInputPlatformStatus {
+    /// Keyboard capture lifecycle.
+    pub keyboard: MacosProtectedSourceState,
+    /// Pointer capture lifecycle.
+    pub pointer: MacosProtectedSourceState,
+    /// Input Monitoring authorization evidence.
+    pub keyboard_tcc: MacosAuthorizationState,
+    /// Process topology owning keyboard capture.
+    pub keyboard_owner: MacosCapabilityOwner,
+    /// Process topology owning pointer capture.
+    pub pointer_owner: MacosCapabilityOwner,
+    /// Latest daemon-owner conflict, when one exists.
+    pub owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
+}
+
+/// Platform detail for the macOS screen-capture adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MacosScreenPlatformStatus {
+    /// Screen capture lifecycle.
+    pub state: MacosProtectedSourceState,
+    /// Screen Recording authorization evidence.
+    pub tcc: MacosAuthorizationState,
+    /// Process topology owning ScreenCaptureKit.
+    pub owner: MacosCapabilityOwner,
+    /// Current system-picker selection.
+    pub selection: MacosSelectionState,
+    /// Tahoe capabilities for the active selected stream.
+    pub tahoe_selection: Option<MacosTahoeSelectionCapabilities>,
+    /// Latest daemon-owner conflict, when one exists.
+    pub owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
+}
+
+/// Platform-specific detail attached to a generic input-source status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum SourcePlatformStatus {
+    /// macOS host-input state.
+    MacosInput(MacosInputPlatformStatus),
+    /// macOS screen-capture state.
+    MacosScreen(MacosScreenPlatformStatus),
+}
+
 /// Screen-capture reduction implementation reported by source diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScreenCaptureReductionPath {
@@ -315,6 +479,8 @@ pub struct SourceStatus {
     pub issue: Option<SourceIssue>,
     /// Structured freshness problem details.
     pub freshness_issue: Option<SourceIssue>,
+    /// Platform-specific state clients must not infer from generic health.
+    pub platform: Option<Arc<SourcePlatformStatus>>,
     /// Whether the source was permanently removed from its owning graph.
     pub retired: bool,
 }
@@ -345,6 +511,7 @@ impl SourceStatus {
             denied_resource_count: 0,
             issue: None,
             freshness_issue: None,
+            platform: None,
             retired: false,
         }
     }
@@ -919,6 +1086,30 @@ impl SourceStatusWriter {
         Ok(())
     }
 
+    /// Publish platform-specific state without disturbing generic lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceStatusError::Retired`] after source removal.
+    pub fn set_platform(
+        &self,
+        platform: Option<SourcePlatformStatus>,
+    ) -> Result<(), SourceStatusError> {
+        let platform = platform.map(Arc::new);
+        let _control = lock_control(&self.shared);
+        let current = self.shared.latest.load_full();
+        if current.retired {
+            return Err(SourceStatusError::Retired);
+        }
+        if current.platform == platform {
+            return Ok(());
+        }
+        let mut status = (*current).clone();
+        status.platform = platform;
+        publish_structural(&self.shared, status);
+        Ok(())
+    }
+
     /// Begin a source session with a strictly newer graph generation.
     ///
     /// # Errors
@@ -1200,6 +1391,14 @@ impl SourceStatusReporter {
     /// Publish the backend selected by a successfully committed configuration.
     pub fn set_backend(&mut self, backend: impl Into<Arc<str>>) -> Result<(), SourceStatusError> {
         self.writer.set_backend(backend)
+    }
+
+    /// Publish platform-specific state without disturbing generic lifecycle.
+    pub fn set_platform(
+        &mut self,
+        platform: Option<SourcePlatformStatus>,
+    ) -> Result<(), SourceStatusError> {
+        self.writer.set_platform(platform)
     }
 
     /// Stop and fence the current source session.

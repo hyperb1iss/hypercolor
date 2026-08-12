@@ -43,10 +43,13 @@ pub use screen::{ScreenCaptureDemand, ScreenPublicationDemandSnapshot};
 pub use scroll::{LegacyWheelProjector, Q16_16_SCALE, q16_16_to_f64};
 pub use sensor::SensorPoller;
 pub use status::{
+    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
+    MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
+    MacosSelectionState, MacosTahoeCapabilities, MacosTahoeSelectionCapabilities,
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
-    SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
-    SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError, SourceStatusHandle,
-    SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
+    SourceIssue, SourceKind, SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot,
+    SourceSessionWriter, SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError,
+    SourceStatusHandle, SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
     SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
     classify_source_resource_scan,
 };
