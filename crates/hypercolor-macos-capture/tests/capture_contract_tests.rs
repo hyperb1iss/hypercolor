@@ -406,6 +406,13 @@ fn callback_diagnostics_start_with_every_drop_reason_at_zero() {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn screen_capture_session_handle_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<hypercolor_macos_capture::MacosScreenCaptureSession>();
+}
+
 fn sample_with_status(status: i64) -> MacosRawCaptureSample {
     let mut sample = complete_sample();
     sample.attachments.status = MacosAttachment::Value(status);

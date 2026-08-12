@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use block2::RcBlock;
-use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
+use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained, MainThreadBound};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -582,9 +582,13 @@ impl PickerObserver {
     }
 }
 
-pub struct MacosScreenCaptureSession {
+struct MainThreadSession {
     picker: Retained<SCContentSharingPicker>,
     observer: Retained<PickerObserver>,
+}
+
+pub struct MacosScreenCaptureSession {
+    main: MainThreadBound<MainThreadSession>,
     shared: Arc<SessionShared>,
 }
 
@@ -622,8 +626,7 @@ impl MacosScreenCaptureSession {
             picker
         };
         Ok(Self {
-            picker,
-            observer,
+            main: MainThreadBound::new(MainThreadSession { picker, observer }, mtm),
             shared,
         })
     }
@@ -648,7 +651,8 @@ impl MacosScreenCaptureSession {
                 .set_status(MacosProtectedSourceState::NeedsUserAction);
             return Err(MacosCaptureError::ScreenCapturePermissionRequired);
         }
-        self.observer.present(&self.picker);
+        self.main
+            .get_on_main(|main| main.observer.present(&main.picker));
         Ok(())
     }
 
@@ -665,7 +669,7 @@ impl MacosScreenCaptureSession {
     }
 
     pub fn stop(&self) {
-        self.observer.stop();
+        self.main.get_on_main(|main| main.observer.stop());
         self.shared.set_status(MacosProtectedSourceState::ReadyIdle);
     }
 }
@@ -679,11 +683,11 @@ impl fmt::Debug for MacosScreenCaptureSession {
     }
 }
 
-impl Drop for MacosScreenCaptureSession {
+impl Drop for MainThreadSession {
     fn drop(&mut self) {
         self.observer.stop();
-        // SAFETY: MainThreadOnly ownership prevents this session from moving
-        // to another thread while registered with the picker.
+        // SAFETY: MainThreadBound runs this destructor on the main thread, and
+        // the observer remains retained through its removal.
         unsafe {
             let protocol: &ProtocolObject<dyn SCContentSharingPickerObserver> =
                 ProtocolObject::from_ref(&*self.observer);
