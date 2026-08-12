@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use super::plan::ScreenNativeResourceBindingKey;
+use super::plan::{ScreenNativeResourceBindingKey, ScreenNativeSharedResourceBindingKey};
 use super::tone_map::{LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration};
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
@@ -550,6 +550,45 @@ pub struct ScreenNativeTargetAllocation {
     lifetime: ScreenResourceLifetime,
 }
 
+/// Renderer retention split between branch-exclusive and shared physical storage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScreenNativeRetentionQuote {
+    exclusive_bytes: u64,
+    shared_physical_bytes: u64,
+}
+
+impl ScreenNativeRetentionQuote {
+    /// Quote bytes owned only by one logical native branch.
+    #[must_use]
+    pub const fn exclusive(exclusive_bytes: u64) -> Self {
+        Self {
+            exclusive_bytes,
+            shared_physical_bytes: 0,
+        }
+    }
+
+    /// Quote one branch allocation plus physical storage shared by equal work.
+    #[must_use]
+    pub const fn split(exclusive_bytes: u64, shared_physical_bytes: u64) -> Self {
+        Self {
+            exclusive_bytes,
+            shared_physical_bytes,
+        }
+    }
+
+    /// Bytes retained only by this branch.
+    #[must_use]
+    pub const fn exclusive_bytes(self) -> u64 {
+        self.exclusive_bytes
+    }
+
+    /// Physical bytes shared by equal descriptors in this candidate plan.
+    #[must_use]
+    pub const fn shared_physical_bytes(self) -> u64 {
+        self.shared_physical_bytes
+    }
+}
+
 impl ScreenNativeTargetAllocation {
     fn new(retained_bytes: u64, lifetime: ScreenResourceLifetime) -> Self {
         Self {
@@ -576,24 +615,42 @@ impl ScreenNativeTargetAllocation {
 pub struct ScreenNativeTargetPreparation {
     binding: Option<ScreenNativeResourceBindingKey>,
     platform: ScreenNativePreparationPayload,
-    retained_bytes: u64,
+    retention: ScreenNativeRetentionQuote,
 }
 
 impl ScreenNativeTargetPreparation {
     /// Pair renderer-specific prepared data with its exact retained byte count.
     #[must_use]
     pub fn new(platform: ScreenNativePreparationPayload, retained_bytes: u64) -> Self {
+        Self::with_retention(
+            platform,
+            ScreenNativeRetentionQuote::exclusive(retained_bytes),
+        )
+    }
+
+    /// Pair renderer-specific data with exclusive and shared retention.
+    #[must_use]
+    pub fn with_retention(
+        platform: ScreenNativePreparationPayload,
+        retention: ScreenNativeRetentionQuote,
+    ) -> Self {
         Self {
             binding: None,
             platform,
-            retained_bytes,
+            retention,
         }
     }
 
     /// Renderer bytes that must be reported before binding this preparation.
     #[must_use]
     pub const fn retained_bytes(&self) -> u64 {
-        self.retained_bytes
+        self.retention.exclusive_bytes
+    }
+
+    /// Exact split between branch-exclusive and shared physical retention.
+    #[must_use]
+    pub const fn retention(&self) -> ScreenNativeRetentionQuote {
+        self.retention
     }
 
     /// Construct the exact ledger entry that may bind this preparation.
@@ -614,7 +671,7 @@ impl ScreenNativeTargetPreparation {
         Ok(ScreenExactResource::try_new_native_target(
             name,
             accounting_scope,
-            self.retained_bytes,
+            self.retention.exclusive_bytes,
             binding,
         )?)
     }
@@ -629,14 +686,23 @@ impl ScreenNativeTargetPreparation {
         self,
         lifetime: ScreenResourceLifetime,
     ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
+        self.bind_with_shared(lifetime, None)
+    }
+
+    fn bind_with_shared(
+        self,
+        lifetime: ScreenResourceLifetime,
+        shared_lifetime: Option<ScreenResourceLifetime>,
+    ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
         let binding = self
             .binding
             .ok_or(ScreenNativeTargetBindingError::TargetIdentityMissing)?;
         BoundScreenNativeTargetPreparation::try_new(
             binding,
             self.platform,
-            self.retained_bytes,
+            self.retention,
             lifetime,
+            shared_lifetime,
         )
     }
 }
@@ -646,16 +712,22 @@ impl ScreenNativeTargetPreparation {
 pub struct AdmittedScreenNativeTargetPreparation {
     preparation: ScreenNativeTargetPreparation,
     admission_lease: ScreenByteLease,
+    shared_resource_name: Option<Arc<str>>,
+    shared_admission_lease: Option<ScreenByteLease>,
 }
 
 impl AdmittedScreenNativeTargetPreparation {
     pub(crate) fn new(
         preparation: ScreenNativeTargetPreparation,
         admission_lease: ScreenByteLease,
+        shared_resource_name: Option<Arc<str>>,
+        shared_admission_lease: Option<ScreenByteLease>,
     ) -> Self {
         Self {
             preparation,
             admission_lease,
+            shared_resource_name,
+            shared_admission_lease,
         }
     }
 
@@ -663,6 +735,12 @@ impl AdmittedScreenNativeTargetPreparation {
     #[must_use]
     pub const fn retained_bytes(&self) -> u64 {
         self.preparation.retained_bytes()
+    }
+
+    /// Exact shared physical resource name, when this branch uses one.
+    #[must_use]
+    pub const fn shared_resource_name(&self) -> Option<&Arc<str>> {
+        self.shared_resource_name.as_ref()
     }
 
     /// Bind after the exact ledger installs this preparation's byte lease.
@@ -674,10 +752,28 @@ impl AdmittedScreenNativeTargetPreparation {
         self,
         lifetime: ScreenResourceLifetime,
     ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
+        self.bind_with_shared(lifetime, None)
+    }
+
+    /// Bind branch-exclusive and optional plan-shared physical lifetimes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, substituted, or mismatched admission lifetimes.
+    pub fn bind_with_shared(
+        self,
+        lifetime: ScreenResourceLifetime,
+        shared_lifetime: Option<ScreenResourceLifetime>,
+    ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
         if !lifetime.has_admission_lease(&self.admission_lease) {
             return Err(ScreenNativeTargetBindingError::AdmissionLeaseMismatch);
         }
-        self.preparation.bind(lifetime)
+        match (&self.shared_admission_lease, &shared_lifetime) {
+            (Some(lease), Some(lifetime)) if lifetime.has_admission_lease(lease) => {}
+            (None, None) => {}
+            _ => return Err(ScreenNativeTargetBindingError::SharedAdmissionLeaseMismatch),
+        }
+        self.preparation.bind_with_shared(lifetime, shared_lifetime)
     }
 }
 
@@ -687,14 +783,16 @@ pub struct BoundScreenNativeTargetPreparation {
     target_id: ScreenNativeExecutionTargetId,
     platform: ScreenNativePreparationPayload,
     allocation: ScreenNativeTargetAllocation,
+    shared_physical_allocation: Option<ScreenNativeTargetAllocation>,
 }
 
 impl BoundScreenNativeTargetPreparation {
     fn try_new(
         binding: ScreenNativeResourceBindingKey,
         platform: ScreenNativePreparationPayload,
-        retained_bytes: u64,
+        retention: ScreenNativeRetentionQuote,
         lifetime: ScreenResourceLifetime,
+        shared_lifetime: Option<ScreenResourceLifetime>,
     ) -> Result<Self, ScreenNativeTargetBindingError> {
         let resource = lifetime.resource();
         if resource.resource() != ScreenResourceKind::WorkerAdditional {
@@ -702,9 +800,9 @@ impl BoundScreenNativeTargetPreparation {
                 observed: resource.resource(),
             });
         }
-        if resource.bytes() != retained_bytes {
+        if resource.bytes() != retention.exclusive_bytes {
             return Err(ScreenNativeTargetBindingError::RetainedBytesMismatch {
-                expected: retained_bytes,
+                expected: retention.exclusive_bytes,
                 observed: resource.bytes(),
             });
         }
@@ -714,10 +812,31 @@ impl BoundScreenNativeTargetPreparation {
         if lifetime.plan_generation() != platform.plan_generation() {
             return Err(ScreenNativeTargetBindingError::PlanGenerationMismatch);
         }
+        let shared_physical_allocation = match (retention.shared_physical_bytes, shared_lifetime) {
+            (0, None) => None,
+            (0, Some(_)) | (_, None) => {
+                return Err(ScreenNativeTargetBindingError::SharedLifetimeMismatch);
+            }
+            (expected, Some(shared)) => {
+                let shared_resource = shared.resource();
+                if shared_resource.resource() != ScreenResourceKind::WorkerAdditional
+                    || shared_resource.bytes() != expected
+                    || !shared.belongs_to_same_worker(&lifetime)
+                    || !shared.matches_native_shared_target(
+                        binding.target_id(),
+                        binding.descriptor().physical(),
+                    )
+                {
+                    return Err(ScreenNativeTargetBindingError::SharedLifetimeMismatch);
+                }
+                Some(ScreenNativeTargetAllocation::new(expected, shared))
+            }
+        };
         Ok(Self {
             target_id: ScreenNativeExecutionTargetId::new(binding.target_id()),
             platform,
-            allocation: ScreenNativeTargetAllocation::new(retained_bytes, lifetime),
+            allocation: ScreenNativeTargetAllocation::new(retention.exclusive_bytes, lifetime),
+            shared_physical_allocation,
         })
     }
 
@@ -733,12 +852,21 @@ impl BoundScreenNativeTargetPreparation {
         &self.allocation
     }
 
+    /// Plan-scoped physical allocation shared by equal native branches.
+    #[must_use]
+    pub const fn shared_physical_allocation(&self) -> Option<&ScreenNativeTargetAllocation> {
+        self.shared_physical_allocation.as_ref()
+    }
+
     /// Attach platform access and exact accounting lifetime to one surface.
     #[must_use]
     pub fn retain_on_surface(&self, surface: PlatformGpuSurface) -> PlatformGpuSurface {
         surface.with_native_target_owners(
             Arc::clone(&self.platform.inner),
             self.allocation.lifetime.clone(),
+            self.shared_physical_allocation
+                .as_ref()
+                .map(|allocation| allocation.lifetime.clone()),
             None,
         )
     }
@@ -763,6 +891,9 @@ impl BoundScreenNativeTargetPreparation {
         Ok(surface.with_native_target_owners(
             Arc::clone(&self.platform.inner),
             self.allocation.lifetime.clone(),
+            self.shared_physical_allocation
+                .as_ref()
+                .map(|allocation| allocation.lifetime.clone()),
             Some(capture_lifetime),
         ))
     }
@@ -785,6 +916,9 @@ pub enum ScreenNativeTargetBindingError {
     /// The exact ledger has not installed this preparation's dedicated lease.
     #[error("native target allocation is not bound to its admitted byte lease")]
     AdmissionLeaseMismatch,
+    /// The plan-shared allocation is not bound to its admitted byte lease.
+    #[error("native shared allocation is not bound to its admitted byte lease")]
+    SharedAdmissionLeaseMismatch,
     /// Only a live execution target can stamp preparation identity.
     #[error("native target preparation is missing execution-target identity")]
     TargetIdentityMissing,
@@ -803,6 +937,9 @@ pub enum ScreenNativeTargetBindingError {
     /// The target payload belongs to another candidate plan generation.
     #[error("native target preparation belongs to another candidate plan generation")]
     PlanGenerationMismatch,
+    /// The shared physical lifetime is absent, substituted, or mismatched.
+    #[error("native shared physical allocation lifetime is missing or mismatched")]
+    SharedLifetimeMismatch,
 }
 
 /// Failure to dispatch a resolved descriptor to a native target.
@@ -826,6 +963,9 @@ pub enum ScreenNativeTargetPreparationError {
     /// The renderer retained a different byte count than it quoted.
     #[error("native target retained {actual} bytes after quoting {quoted}")]
     PreparedRetainedBytesMismatch { quoted: u64, actual: u64 },
+    /// The renderer retained a different shared byte count than it quoted.
+    #[error("native target retained {actual} shared bytes after quoting {quoted}")]
+    PreparedSharedRetainedBytesMismatch { quoted: u64, actual: u64 },
 }
 
 /// Live renderer capability that prepares one exact source-native branch.
@@ -841,6 +981,19 @@ pub trait ScreenNativeTargetPreparer: Send + Sync {
         descriptor: &ResolvedScreenPublicationDescriptor,
         platform: &ScreenNativePreparationPayload,
     ) -> anyhow::Result<u64>;
+
+    /// Quote branch-exclusive and plan-shared physical retention.
+    ///
+    /// The default preserves existing targets as fully exclusive. Targets
+    /// that reuse equal physical work override this method with a split quote.
+    fn quote_retention(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeRetentionQuote> {
+        self.quote_retained_bytes(descriptor, platform)
+            .map(ScreenNativeRetentionQuote::exclusive)
+    }
 
     /// Prepare renderer-owned resources without changing active delivery.
     ///
@@ -861,14 +1014,19 @@ pub(super) struct ScreenNativeTargetPreparationQuote {
     target_id: ScreenNativeExecutionTargetId,
     descriptor: ResolvedScreenPublicationDescriptor,
     plan_generation: ScreenPlanGeneration,
-    retained_bytes: u64,
+    retention: ScreenNativeRetentionQuote,
 }
 
 impl ScreenNativeTargetPreparationQuote {
-    /// Renderer bytes admitted before target preparation begins.
-    #[must_use]
-    pub const fn retained_bytes(&self) -> u64 {
-        self.retained_bytes
+    pub(super) const fn retention(&self) -> ScreenNativeRetentionQuote {
+        self.retention
+    }
+
+    pub(super) fn shared_binding(&self) -> ScreenNativeSharedResourceBindingKey {
+        ScreenNativeSharedResourceBindingKey::new(
+            self.target_id.get(),
+            Arc::new(self.descriptor.physical().clone()),
+        )
     }
 }
 
@@ -975,12 +1133,12 @@ impl ScreenNativeExecutionTarget {
         platform: &ScreenNativePreparationPayload,
     ) -> anyhow::Result<ScreenNativeTargetPreparationQuote> {
         self.validate_preparation_request(descriptor, platform)?;
-        let retained_bytes = self.preparer.quote_retained_bytes(descriptor, platform)?;
+        let retention = self.preparer.quote_retention(descriptor, platform)?;
         Ok(ScreenNativeTargetPreparationQuote {
             target_id: self.id,
             descriptor: descriptor.clone(),
             plan_generation: platform.plan_generation(),
-            retained_bytes,
+            retention,
         })
     }
 
@@ -1004,11 +1162,20 @@ impl ScreenNativeExecutionTarget {
             return Err(ScreenNativeTargetPreparationError::QuoteMismatch.into());
         }
         let mut preparation = self.preparer.prepare(descriptor, platform)?;
-        if preparation.retained_bytes != quote.retained_bytes {
+        if preparation.retention.exclusive_bytes != quote.retention.exclusive_bytes {
             return Err(
                 ScreenNativeTargetPreparationError::PreparedRetainedBytesMismatch {
-                    quoted: quote.retained_bytes,
-                    actual: preparation.retained_bytes,
+                    quoted: quote.retention.exclusive_bytes,
+                    actual: preparation.retention.exclusive_bytes,
+                }
+                .into(),
+            );
+        }
+        if preparation.retention.shared_physical_bytes != quote.retention.shared_physical_bytes {
+            return Err(
+                ScreenNativeTargetPreparationError::PreparedSharedRetainedBytesMismatch {
+                    quoted: quote.retention.shared_physical_bytes,
+                    actual: preparation.retention.shared_physical_bytes,
                 }
                 .into(),
             );

@@ -1283,6 +1283,7 @@ pub struct PlatformGpuSurface {
     owner: Arc<dyn Any + Send + Sync>,
     retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     target_resource_lifetime: Option<ScreenResourceLifetime>,
+    shared_target_resource_lifetime: Option<ScreenResourceLifetime>,
     capture_resource_lifetime: Option<ScreenResourceLifetime>,
 }
 
@@ -1291,6 +1292,7 @@ pub struct PlatformGpuSurface {
 pub struct PlatformGpuSurfaceOwner<T> {
     owner: Arc<T>,
     _target_resource_lifetime: Option<ScreenResourceLifetime>,
+    _shared_target_resource_lifetime: Option<ScreenResourceLifetime>,
     _capture_resource_lifetime: Option<ScreenResourceLifetime>,
 }
 
@@ -1298,11 +1300,13 @@ impl<T> PlatformGpuSurfaceOwner<T> {
     fn new(
         owner: Arc<T>,
         target_resource_lifetime: Option<ScreenResourceLifetime>,
+        shared_target_resource_lifetime: Option<ScreenResourceLifetime>,
         capture_resource_lifetime: Option<ScreenResourceLifetime>,
     ) -> Self {
         Self {
             owner,
             _target_resource_lifetime: target_resource_lifetime,
+            _shared_target_resource_lifetime: shared_target_resource_lifetime,
             _capture_resource_lifetime: capture_resource_lifetime,
         }
     }
@@ -1350,6 +1354,7 @@ impl PlatformGpuSurface {
             owner,
             retained_owner: None,
             target_resource_lifetime: None,
+            shared_target_resource_lifetime: None,
             capture_resource_lifetime: None,
         })
     }
@@ -1358,10 +1363,12 @@ impl PlatformGpuSurface {
         mut self,
         retained_owner: Arc<dyn Any + Send + Sync>,
         target_resource_lifetime: ScreenResourceLifetime,
+        shared_target_resource_lifetime: Option<ScreenResourceLifetime>,
         capture_resource_lifetime: Option<ScreenResourceLifetime>,
     ) -> Self {
         self.retained_owner = Some(retained_owner);
         self.target_resource_lifetime = Some(target_resource_lifetime);
+        self.shared_target_resource_lifetime = shared_target_resource_lifetime;
         self.capture_resource_lifetime = capture_resource_lifetime;
         self
     }
@@ -1407,6 +1414,7 @@ impl PlatformGpuSurface {
             PlatformGpuSurfaceOwner::new(
                 owner,
                 self.target_resource_lifetime.clone(),
+                self.shared_target_resource_lifetime.clone(),
                 self.capture_resource_lifetime.clone(),
             )
         })
@@ -1425,6 +1433,7 @@ impl PlatformGpuSurface {
                 PlatformGpuSurfaceOwner::new(
                     owner,
                     self.target_resource_lifetime.clone(),
+                    self.shared_target_resource_lifetime.clone(),
                     self.capture_resource_lifetime.clone(),
                 )
             })
@@ -1434,6 +1443,12 @@ impl PlatformGpuSurface {
     #[must_use]
     pub const fn resource_lifetime(&self) -> Option<&ScreenResourceLifetime> {
         self.target_resource_lifetime.as_ref()
+    }
+
+    /// Exact plan-shared native physical allocation retained by this surface.
+    #[must_use]
+    pub const fn shared_resource_lifetime(&self) -> Option<&ScreenResourceLifetime> {
+        self.shared_target_resource_lifetime.as_ref()
     }
 
     /// Exact capture-plan allocation lifetime retained with this GPU surface.

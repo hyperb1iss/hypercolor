@@ -1537,6 +1537,7 @@ fn prepare_macos_exact_runtime(
     let mut native_routes = Vec::new();
     native_routes.try_reserve_exact(pending_native.len())?;
     for pending in pending_native {
+        let shared_resource_name = pending.target.shared_resource_name().cloned();
         let lifetime = lifetimes
             .iter()
             .find(|lifetime| lifetime.resource().name() == &pending.resource_name)
@@ -1547,9 +1548,19 @@ fn prepare_macos_exact_runtime(
             .find(|lifetime| lifetime.resource().name() == &pending.capture_resource_name)
             .cloned()
             .ok_or_else(|| anyhow!("macOS native capture lifetime is missing"))?;
+        let shared_lifetime = shared_resource_name
+            .as_ref()
+            .map(|resource_name| {
+                lifetimes
+                    .iter()
+                    .find(|lifetime| lifetime.resource().name() == resource_name)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("macOS native shared target lifetime is missing"))
+            })
+            .transpose()?;
         native_routes.push(MacosNativeRoute {
             descriptor: pending.descriptor,
-            target: pending.target.bind(lifetime)?,
+            target: pending.target.bind_with_shared(lifetime, shared_lifetime)?,
             capture_lifetime,
             pacer: CaptureCadence::new(pending.requested_hz.get())?.pacer(),
             next_publish_at: Instant::now(),
