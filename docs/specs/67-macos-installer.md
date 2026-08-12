@@ -25,7 +25,8 @@ Local and CI builds both produce per-arch DMG + `.app` artifacts via Tauri 2's b
 |---|---|---|
 | Tauri bundle config (icons, identifier, hardened runtime, DMG layout) | `crates/hypercolor-app/tauri.conf.json` | Live |
 | macOS entitlements (JIT, USB, network, audio-input) | `crates/hypercolor-app/entitlements.plist` | Live |
-| `Info.plist` with NSMicrophoneUsageDescription + NSAppleEventsUsageDescription | `crates/hypercolor-app/Info.plist` | Live |
+| `Info.plist` with microphone and screen-capture purpose strings; no Apple Events string | `crates/hypercolor-app/Info.plist` | Live |
+| Exact six-key daemon hardened-runtime entitlement profile | `packaging/macos/daemon.entitlements.plist` | Live |
 | Sidecar staging (daemon + CLI under `target/bundle-stage/binaries/`) | `scripts/stage-app-bundle-assets.sh` | Live |
 | Per-arch CI build matrix (`macos-arm64`, `macos-x64`) | `.github/workflows/ci.yml` § `build-native-app` | Live, currently `--no-sign` |
 | DMG artifact name normalization to `Hypercolor-<ver>-<arch>.dmg` | `.github/workflows/ci.yml` § Normalize macOS DMG | Live |
