@@ -25,7 +25,12 @@ function attr(attrs: Map<string, string>, name: string): string | undefined {
 }
 
 export function normalizePresetKey(value: string): string {
-    return value.trim().split(/[\s\u001c-\u001f]+/u).filter(Boolean).join(' ')
+    const normalized = Array.from(value, (character) => {
+        const codePoint = character.codePointAt(0) ?? 0
+        return codePoint >= 0x1c && codePoint <= 0x1f ? ' ' : character
+    }).join('')
+
+    return normalized.trim().split(/\s+/u).filter(Boolean).join(' ')
 }
 
 function extractTitle(html: string): string | undefined {

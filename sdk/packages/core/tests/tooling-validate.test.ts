@@ -91,9 +91,7 @@ describe('tooling validate', () => {
     })
 
     test('falls back to the preset name when the authored id normalizes empty', () => {
-        const parsed = parseHtmlArtifact(
-            VALID_EFFECT.replace('preset-id="calm"', 'preset-id="\uFEFF\u001c"'),
-        )
+        const parsed = parseHtmlArtifact(VALID_EFFECT.replace('preset-id="calm"', 'preset-id="\uFEFF\u001c"'))
 
         expect(parsed.presets[0]?.id).toBeUndefined()
     })
