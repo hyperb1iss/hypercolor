@@ -251,9 +251,12 @@ fn justfile_exposes_single_windows_installer_target() {
 #[test]
 fn local_build_wrappers_default_to_workspace_target_dir() {
     assert!(
-        CARGO_CACHE_BUILD_SH
-            .contains(r#"export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}""#)
+        CARGO_CACHE_BUILD_SH.contains(r#"TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}""#)
     );
+    assert!(CARGO_CACHE_BUILD_SH.contains("unset CARGO_TARGET_DIR"));
+    assert!(CARGO_CACHE_BUILD_SH.contains("--target-dir \"$TARGET_DIR\""));
+    assert!(CARGO_CACHE_BUILD_SH.contains("SCCACHE_SERVER_UDS"));
+    assert!(CARGO_CACHE_BUILD_SH.contains("collect_sccache_basedirs"));
     assert!(CARGO_CACHE_BUILD_PS1.contains("$env:CARGO_TARGET_DIR = Join-Path $RepoRoot 'target'"));
     assert!(STAGE_APP_BUNDLE_SH.contains(r#"STAGE_DIR="${ROOT_DIR}/target/bundle-stage""#));
     assert!(

@@ -29,8 +29,17 @@ alias py := python-verify
 # ─── Core ─────────────────────────────────────────────────
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict fmt-check lint test alloc-contracts
+verify: oss-boundary-check-strict build-wrapper-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
+
+# Verify target isolation and Cargo argument normalization
+[unix]
+build-wrapper-test:
+    ./scripts/tests/cargo-cache-build-tests.sh
+
+[windows]
+build-wrapper-test:
+    @echo 'Build wrapper contract is covered by the Rust packaging tests on Windows'
 
 # Check OSS/internal boundary guard scaffolding without strict enforcement
 oss-boundary-check:
@@ -865,7 +874,7 @@ disk:
     @if [ -d "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}" ]; then du -sh "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/* 2>/dev/null | sort -rh | head -15 || true; else echo '(no target dir)'; fi
     @echo "── shared caches (${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}) ──"
     @if [ -d "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}" ]; then du -sh "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"/* 2>/dev/null | sort -rh || true; else echo '(no cache dir)'; fi
-    @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi
+    @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache.sock}" SCCACHE_DIR="${SCCACHE_DIR:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache}" sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi
 
 # Sweep stale build artifacts (orphaned toolchains, then >14 days old) from this checkout
 gc:
