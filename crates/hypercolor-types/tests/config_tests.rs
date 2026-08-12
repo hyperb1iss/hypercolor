@@ -113,7 +113,27 @@ fn capture_defaults_match_spec() {
     assert!((c.saturation - 1.0).abs() < f32::EPSILON);
     assert!((c.brightness - 1.0).abs() < f32::EPSILON);
     assert!((c.gamma - 1.0).abs() < f32::EPSILON);
+    assert!((c.target_led_white_x - 0.3127).abs() < f32::EPSILON);
+    assert!((c.target_led_white_y - 0.3290).abs() < f32::EPSILON);
+    assert!((c.target_led_reference_white_nits - 203.0).abs() < f32::EPSILON);
+    assert!((c.target_led_peak_nits - 406.0).abs() < f32::EPSILON);
+    assert!(c.exposure_ev.abs() < f32::EPSILON);
     assert_eq!(c.restore_token, None);
+}
+
+#[test]
+fn capture_tone_mapping_fields_default_when_omitted() {
+    let parsed: CaptureConfig = toml::from_str("").expect("empty capture config parses");
+    let expected = CaptureConfig::default();
+
+    assert_eq!(parsed.target_led_white_x, expected.target_led_white_x);
+    assert_eq!(parsed.target_led_white_y, expected.target_led_white_y);
+    assert_eq!(
+        parsed.target_led_reference_white_nits,
+        expected.target_led_reference_white_nits
+    );
+    assert_eq!(parsed.target_led_peak_nits, expected.target_led_peak_nits);
+    assert_eq!(parsed.exposure_ev, expected.exposure_ev);
 }
 
 #[test]
@@ -217,6 +237,95 @@ fn capture_config_rejects_empty_grid_and_invalid_float_values() {
     assert!(matches!(
         config.validate_for_platform(platform),
         Err(CaptureConfigValidationError::FloatRange { field: "gamma", .. })
+    ));
+}
+
+#[test]
+fn capture_config_accepts_tone_mapping_boundaries() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let mut config = CaptureConfig {
+        target_led_white_x: 0.000_1,
+        target_led_white_y: 0.999_8,
+        target_led_reference_white_nits: 1.0,
+        target_led_peak_nits: 10_000.0,
+        exposure_ev: -8.0,
+        ..CaptureConfig::default()
+    };
+    config
+        .validate_for_platform(platform)
+        .expect("minimum tone-mapping boundaries should validate");
+
+    config.target_led_reference_white_nits = 5_000.0;
+    config.exposure_ev = 8.0;
+    config
+        .validate_for_platform(platform)
+        .expect("maximum tone-mapping boundaries should validate");
+}
+
+#[test]
+fn capture_config_rejects_invalid_target_white_point() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    for (x, y) in [
+        (f32::NAN, 0.3290),
+        (0.3127, f32::INFINITY),
+        (0.0, 0.3290),
+        (0.3127, 0.0),
+        (0.4, 0.6),
+    ] {
+        let config = CaptureConfig {
+            target_led_white_x: x,
+            target_led_white_y: y,
+            ..CaptureConfig::default()
+        };
+        assert!(matches!(
+            config.validate_for_platform(platform),
+            Err(CaptureConfigValidationError::WhitePointChromaticity { .. })
+        ));
+    }
+}
+
+#[test]
+fn capture_config_rejects_invalid_target_luminance_and_exposure() {
+    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let mut config = CaptureConfig {
+        target_led_reference_white_nits: 0.99,
+        ..CaptureConfig::default()
+    };
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "target_led_reference_white_nits",
+            ..
+        })
+    ));
+
+    config.target_led_reference_white_nits = 203.0;
+    config.target_led_peak_nits = 10_000.1;
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "target_led_peak_nits",
+            ..
+        })
+    ));
+
+    config.target_led_peak_nits = 203.0;
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::PeakNotAboveReference {
+            reference: 203.0,
+            peak: 203.0
+        })
+    ));
+
+    config.target_led_peak_nits = 406.0;
+    config.exposure_ev = 8.01;
+    assert!(matches!(
+        config.validate_for_platform(platform),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "exposure_ev",
+            ..
+        })
     ));
 }
 

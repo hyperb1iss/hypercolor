@@ -325,6 +325,21 @@ pub struct CaptureConfig {
     /// Color tuning applied to zone colors after smoothing.
     pub tuning: ColorTuning,
 
+    /// Target LED white-point x coordinate in CIE xy chromaticity space.
+    pub target_led_white_x: f32,
+
+    /// Target LED white-point y coordinate in CIE xy chromaticity space.
+    pub target_led_white_y: f32,
+
+    /// Target LED reference white in nits for HDR tone mapping.
+    pub target_led_reference_white_nits: f32,
+
+    /// Calibrated target LED peak in nits for HDR tone mapping.
+    pub target_led_peak_nits: f32,
+
+    /// User exposure adjustment in exposure-value stops.
+    pub exposure_ev: f32,
+
     /// XDG portal restore token from a previous session, if any.
     pub restore_token: Option<String>,
 
@@ -345,6 +360,11 @@ impl Default for CaptureConfig {
             letterbox_threshold: 0.02,
             letterbox_enabled: false,
             tuning: ColorTuning::default(),
+            target_led_white_x: 0.3127,
+            target_led_white_y: 0.3290,
+            target_led_reference_white_nits: 203.0,
+            target_led_peak_nits: 406.0,
+            exposure_ev: 0.0,
             restore_token: None,
             source: "auto".to_owned(),
         }

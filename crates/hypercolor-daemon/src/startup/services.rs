@@ -1315,6 +1315,11 @@ pub(crate) fn screen_capture_config_from(
             brightness: capture.brightness,
             gamma: capture.gamma,
         },
+        target_led_white_x: capture.target_led_white_x,
+        target_led_white_y: capture.target_led_white_y,
+        target_led_reference_white_nits: capture.target_led_reference_white_nits,
+        target_led_peak_nits: capture.target_led_peak_nits,
+        exposure_ev: capture.exposure_ev,
         restore_token: capture.restore_token.clone(),
         source: capture.source.clone(),
     })

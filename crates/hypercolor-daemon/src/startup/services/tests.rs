@@ -226,6 +226,11 @@ fn screen_capture_config_conversion_preserves_validated_values_exactly() {
         grid_rows: 1,
         smoothing: 1.0,
         gamma: 5.0,
+        target_led_white_x: 0.2,
+        target_led_white_y: 0.3,
+        target_led_reference_white_nits: 100.0,
+        target_led_peak_nits: 1_000.0,
+        exposure_ev: -2.0,
         ..hypercolor_types::config::CaptureConfig::default()
     };
 
@@ -240,6 +245,11 @@ fn screen_capture_config_conversion_preserves_validated_values_exactly() {
     assert_eq!(runtime.analysis_memory_bytes, u64::MAX);
     assert!((runtime.smoothing_alpha - 1.0).abs() < f32::EPSILON);
     assert!((runtime.tuning.gamma - 5.0).abs() < f32::EPSILON);
+    assert!((runtime.target_led_white_x - 0.2).abs() < f32::EPSILON);
+    assert!((runtime.target_led_white_y - 0.3).abs() < f32::EPSILON);
+    assert!((runtime.target_led_reference_white_nits - 100.0).abs() < f32::EPSILON);
+    assert!((runtime.target_led_peak_nits - 1_000.0).abs() < f32::EPSILON);
+    assert!((runtime.exposure_ev - -2.0).abs() < f32::EPSILON);
 }
 
 #[test]
