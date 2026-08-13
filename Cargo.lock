@@ -5007,6 +5007,7 @@ dependencies = [
  "hypercolor-linux-gpu-interop",
  "hypercolor-macos-capture",
  "hypercolor-macos-gpu-interop",
+ "hypercolor-macos-input",
  "hypercolor-platform-fs",
  "hypercolor-types",
  "hypercolor-windows-capture",
