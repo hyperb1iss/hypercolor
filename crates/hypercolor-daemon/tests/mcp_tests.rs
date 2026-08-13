@@ -296,7 +296,7 @@ async fn mcp_status_surfaces_report_effective_session_pause() {
     assert_eq!(resource["paused"], true);
 
     state.power_state.send_modify(|power| {
-        power.output_override = hypercolor_daemon::session::OutputOverride::Stopped
+        power.output_override = hypercolor_daemon::session::OutputOverride::Stopped;
     });
 
     let stopped_status = execute_tool_with_state("get_status", &json!({}), &state)
