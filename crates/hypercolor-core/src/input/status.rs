@@ -283,6 +283,8 @@ pub struct MacosScreenPlatformStatus {
     pub selection: MacosSelectionState,
     /// Privacy-safe bounded label for the selected content style.
     pub selection_diagnostic_label: Option<Arc<str>>,
+    /// Monotonic native selection lifecycle revision.
+    pub selection_revision: u64,
     /// Process-stable Tahoe host and active Metal-device capabilities.
     pub tahoe: MacosTahoeCapabilities,
     /// Tahoe capabilities for the active selected stream.

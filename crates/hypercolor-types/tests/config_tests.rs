@@ -1,12 +1,13 @@
 //! Tests for configuration types — defaults, serde roundtrips, partial deserialization.
 
 use hypercolor_types::config::{
-    AudioConfig, CaptureConfig, CaptureConfigValidationError, CapturePlatform, DaemonConfig,
-    DbusConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy,
-    FeatureFlags, GoveeConfig, HypercolorConfig, InputConfig, InteractionRoutePolicy, LogLevel,
-    McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
-    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
-    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
+    AudioConfig, CaptureCadenceMode, CaptureConfig, CaptureConfigValidationError, CapturePlatform,
+    DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig,
+    EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig, InputConfig,
+    InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig, NetworkAccessMode,
+    NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
+    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig,
+    default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -101,6 +102,7 @@ fn capture_defaults_match_spec() {
     let c = CaptureConfig::default();
     assert_eq!(c.source, "auto");
     assert_eq!(c.capture_fps, 30);
+    assert_eq!(c.cadence, CaptureCadenceMode::Fixed);
     assert_eq!(c.grid_cols, 8);
     assert_eq!(c.grid_rows, 6);
     assert_eq!(c.publication_memory_bytes, None);
@@ -119,6 +121,23 @@ fn capture_defaults_match_spec() {
     assert!((c.target_led_peak_nits - 406.0).abs() < f32::EPSILON);
     assert!(c.exposure_ev.abs() < f32::EPSILON);
     assert_eq!(c.restore_token, None);
+}
+
+#[test]
+fn capture_native_refresh_is_explicit_and_roundtrips_without_a_zero_sentinel() {
+    let config: CaptureConfig = toml::from_str("capture_fps = 30\ncadence = \"native_refresh\"\n")
+        .expect("native refresh capture config parses");
+    assert_eq!(config.capture_fps, 30);
+    assert_eq!(config.cadence, CaptureCadenceMode::NativeRefresh);
+    config
+        .validate_for_platform(CapturePlatform::MacosScreenCaptureKit)
+        .expect("native refresh retains a valid analysis cadence");
+
+    let serialized = toml::to_string(&config).expect("capture config serializes");
+    let roundtrip: CaptureConfig =
+        toml::from_str(&serialized).expect("serialized capture config parses");
+    assert_eq!(roundtrip.cadence, CaptureCadenceMode::NativeRefresh);
+    assert_eq!(roundtrip.capture_fps, 30);
 }
 
 #[test]

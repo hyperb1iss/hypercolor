@@ -4,14 +4,15 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use hypercolor_macos_capture::{
-    MacosCaptureCallbackDiagnostics, MacosCaptureCapabilities as NativeCaptureCapabilities,
-    MacosCaptureContentStyle, MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat,
-    MacosCaptureSelection, MacosColorPrimaries, MacosCpuSourceView, MacosDisplayClock,
-    MacosFrameDropReason, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
+    MacosCaptureCadence, MacosCaptureCallbackDiagnostics,
+    MacosCaptureCapabilities as NativeCaptureCapabilities, MacosCaptureContentStyle,
+    MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat, MacosCaptureSelection,
+    MacosColorPrimaries, MacosCpuSourceView, MacosDisplayClock, MacosFrameDropReason,
+    MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus,
     MacosHostArchitecture as NativeHostArchitecture,
-    MacosProtectedSourceState as NativeProtectedSourceState,
+    MacosProtectedSourceState as NativeProtectedSourceState, MacosStreamRequest,
     MacosTahoeSelectionCapabilities as NativeTahoeSelectionCapabilities, MacosTransferFunction,
 };
 #[cfg(feature = "macos-capture-fixtures")]
@@ -20,8 +21,7 @@ use tokio::sync::oneshot;
 
 #[cfg(target_os = "macos")]
 use hypercolor_macos_capture::{
-    MacosCaptureCadence, MacosCaptureSelector, MacosScreenCaptureSession,
-    MacosScreenshotReferenceCapture, MacosStreamRequest,
+    MacosCaptureSelector, MacosScreenCaptureSession, MacosScreenshotReferenceCapture,
 };
 
 use super::{
@@ -31,14 +31,15 @@ use super::{
     CaptureLuminanceContext, CapturePixelFormat, CapturePlanePool, CapturePositiveScalar,
     CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
     CpuExactReductionWorkPlan, CpuPublicationFanoutError, CpuReductionExecutor, CpuSamplingError,
-    CpuScalarSource, LedToneMapCalibration, PixelExtent, PixelRect, PlatformGpuApi,
-    PlatformGpuSurface, PlatformGpuSurfaceTimingSink, PreparedCpuPublicationFanout,
-    PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
-    ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
-    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
-    ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorCapabilities,
+    CpuScalarSource, KnownCaptureColorimetry, LedToneMapCalibration, PixelExtent, PixelRect,
+    PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink, PreparedCpuPublicationFanout,
+    PreparedCpuPublicationFanoutCandidate, PreparedLedToneMap, RawCaptureSurface,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity,
+    ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity,
+    ScreenBranchPayload, ScreenBranchPublisher, ScreenByteAdmissionCoordinator,
+    ScreenCaptureBackend, ScreenCaptureCadence, ScreenCaptureDemand, ScreenCaptureInput,
+    ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
     ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativePreparationPayload,
     ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPreparedWorkerToken,
     ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
@@ -429,6 +430,8 @@ trait MacosCaptureControl: Send + Sync {
     fn request_authorization(&self) -> NativeProtectedSourceState;
     fn status(&self) -> NativeProtectedSourceState;
     fn selection(&self) -> MacosCaptureSelection;
+    fn selection_revision(&self) -> u64;
+    fn begin_stream_request(&self, request: MacosStreamRequest) -> anyhow::Result<StreamRequest>;
     fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities>;
     fn host_capabilities(&self) -> NativeCaptureCapabilities;
     fn authorization(&self) -> MacosAuthorizationState;
@@ -444,6 +447,30 @@ trait MacosCaptureControl: Send + Sync {
         >,
     > {
         anyhow::bail!("macOS screenshot references are unavailable for this capture control")
+    }
+}
+
+struct StreamRequest {
+    generation: u64,
+    completion: Box<dyn FnOnce() -> anyhow::Result<()> + Send>,
+}
+
+impl StreamRequest {
+    #[cfg(feature = "macos-capture-fixtures")]
+    fn completed(generation: u64, result: anyhow::Result<()>) -> Self {
+        Self {
+            generation,
+            completion: Box::new(|| result),
+        }
+    }
+
+    fn wait(self) -> anyhow::Result<()> {
+        (self.completion)().with_context(|| {
+            format!(
+                "macOS stream request generation {} did not commit",
+                self.generation
+            )
+        })
     }
 }
 
@@ -478,6 +505,23 @@ impl MacosCaptureControl for NativeCaptureControl {
 
     fn selection(&self) -> MacosCaptureSelection {
         self.session.selection()
+    }
+
+    fn selection_revision(&self) -> u64 {
+        self.session.selection_revision()
+    }
+
+    fn begin_stream_request(&self, request: MacosStreamRequest) -> anyhow::Result<StreamRequest> {
+        let (generation, completion) = self.session.begin_stream_request(request)?;
+        Ok(StreamRequest {
+            generation,
+            completion: Box::new(move || {
+                completion
+                    .recv()
+                    .map_err(|_| anyhow!("native stream request generation was lost"))?
+                    .map_err(anyhow::Error::from)
+            }),
+        })
     }
 
     fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities> {
@@ -670,10 +714,18 @@ struct MacosExactPublicationShared {
     owned_sources: Mutex<Vec<MacosOwnedSource>>,
     hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
     cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
+    compute_capacity_policy: ScreenComputeCapacityPolicy,
     resolution_revision: AtomicU64,
 }
 
 impl MacosExactPublicationShared {
+    fn with_compute_capacity_policy(policy: ScreenComputeCapacityPolicy) -> Self {
+        Self {
+            compute_capacity_policy: policy,
+            ..Self::default()
+        }
+    }
+
     fn advance_resolution_revision(&self) {
         self.resolution_revision
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
@@ -801,6 +853,10 @@ enum WorkerCommand {
     ReapExact {
         completion: Option<oneshot::Sender<anyhow::Result<()>>>,
     },
+    ReconfigureProcessing {
+        calibration: LedToneMapCalibration,
+        completion: mpsc::SyncSender<anyhow::Result<()>>,
+    },
 }
 
 struct PreparedWorker {
@@ -817,10 +873,63 @@ struct CaptureWorker {
     join: Option<thread::JoinHandle<()>>,
 }
 
+struct StagedCaptureWorker {
+    generation: u64,
+    worker: Option<CaptureWorker>,
+    start: Arc<AtomicBool>,
+}
+
+impl StagedCaptureWorker {
+    fn commit(mut self) -> CaptureWorker {
+        self.worker
+            .take()
+            .expect("staged capture worker commits exactly once")
+    }
+}
+
+impl Drop for StagedCaptureWorker {
+    fn drop(&mut self) {
+        let Some(mut worker) = self.worker.take() else {
+            return;
+        };
+        worker.stop.store(true, Ordering::Release);
+        self.start.store(true, Ordering::Release);
+        if let Some(join) = worker.join.take() {
+            join.thread().unpark();
+            let _ = join.join();
+        }
+    }
+}
+
+fn production_stream_request(
+    config: &CaptureConfig,
+    demand: ScreenCaptureDemand,
+    capabilities: NativeCaptureCapabilities,
+) -> anyhow::Result<MacosStreamRequest> {
+    let cadence = demand
+        .cadence()
+        .unwrap_or(ScreenCaptureCadence::Configured)
+        .resolve(config.acquisition_cadence);
+    let cadence = match cadence {
+        ScreenCaptureCadence::Configured => MacosCaptureCadence::FramesPerSecond(config.target_fps),
+        ScreenCaptureCadence::NativeRefresh => MacosCaptureCadence::NativeRefresh,
+        ScreenCaptureCadence::FramesPerSecond(frames_per_second) => {
+            MacosCaptureCadence::FramesPerSecond(frames_per_second.get())
+        }
+    };
+    let cursor_composed = matches!(demand.cursor(), Some(ScreenCursorPolicy::Include));
+    Ok(MacosStreamRequest::for_capabilities(
+        cadence,
+        cursor_composed,
+        capabilities,
+    )?)
+}
+
 pub struct MacosScreenCaptureInput {
     config: CaptureConfig,
     control: Arc<dyn MacosCaptureControl>,
     admission: ScreenByteAdmissionCoordinator,
+    compute_capacity_policy: ScreenComputeCapacityPolicy,
     publication: Arc<Mutex<MacosPublication>>,
     exact: Arc<MacosExactPublicationShared>,
     telemetry: Arc<MacosScreenRuntimeTelemetry>,
@@ -844,12 +953,24 @@ impl MacosScreenCaptureInput {
         config: CaptureConfig,
         admission: ScreenByteAdmissionCoordinator,
     ) -> anyhow::Result<Self> {
-        let request = MacosStreamRequest::new(
-            MacosCaptureCadence::FramesPerSecond(config.target_fps),
-            false,
-        )?;
+        Self::with_admission_and_compute_capacity(
+            config,
+            admission,
+            ScreenComputeCapacityPolicy::UNBOUNDED,
+        )
+    }
+
+    /// Create a production source with shared memory and calibrated CPU fences.
+    #[cfg(target_os = "macos")]
+    pub fn with_admission_and_compute_capacity(
+        config: CaptureConfig,
+        admission: ScreenByteAdmissionCoordinator,
+        compute_capacity_policy: ScreenComputeCapacityPolicy,
+    ) -> anyhow::Result<Self> {
         let selector = MacosCaptureSelector::parse(&config.source)?;
         let host_capabilities = MacosScreenCaptureSession::capabilities()?;
+        let request =
+            production_stream_request(&config, ScreenCaptureDemand::Inactive, host_capabilities)?;
         let pool_coordinator = admission.clone();
         let telemetry = Arc::new(MacosScreenRuntimeTelemetry::default());
         let pool_telemetry = Arc::clone(&telemetry);
@@ -873,6 +994,7 @@ impl MacosScreenCaptureInput {
         Ok(Self::with_control_and_telemetry(
             config,
             admission,
+            compute_capacity_policy,
             Arc::new(NativeCaptureControl {
                 session,
                 clock,
@@ -882,23 +1004,10 @@ impl MacosScreenCaptureInput {
         ))
     }
 
-    #[cfg(feature = "macos-capture-fixtures")]
-    fn with_control(
-        config: CaptureConfig,
-        admission: ScreenByteAdmissionCoordinator,
-        control: Arc<dyn MacosCaptureControl>,
-    ) -> Self {
-        Self::with_control_and_telemetry(
-            config,
-            admission,
-            control,
-            Arc::new(MacosScreenRuntimeTelemetry::default()),
-        )
-    }
-
     fn with_control_and_telemetry(
         config: CaptureConfig,
         admission: ScreenByteAdmissionCoordinator,
+        compute_capacity_policy: ScreenComputeCapacityPolicy,
         control: Arc<dyn MacosCaptureControl>,
         telemetry: Arc<MacosScreenRuntimeTelemetry>,
     ) -> Self {
@@ -908,8 +1017,11 @@ impl MacosScreenCaptureInput {
             config,
             control,
             admission,
+            compute_capacity_policy,
             publication: Arc::new(Mutex::new(MacosPublication::default())),
-            exact: Arc::new(MacosExactPublicationShared::default()),
+            exact: Arc::new(MacosExactPublicationShared::with_compute_capacity_policy(
+                compute_capacity_policy,
+            )),
             telemetry,
             worker: None,
             worker_generation: 0,
@@ -978,6 +1090,7 @@ impl MacosScreenCaptureInput {
                     selection_diagnostic_label: selection_diagnostic_label(
                         self.control.selection(),
                     ),
+                    selection_revision: self.control.selection_revision(),
                     tahoe: map_tahoe_capabilities(self.control.host_capabilities(), self.metal4),
                     tahoe_selection: self
                         .control
@@ -1091,11 +1204,21 @@ impl MacosScreenCaptureInput {
     }
 
     fn prepare_worker(&self, extent: PixelExtent) -> anyhow::Result<PreparedWorker> {
-        let mut analyzer = ScreenCaptureInput::with_requested_extent_and_admission(
-            self.config.clone(),
-            extent,
-            self.admission.clone(),
-        )?;
+        let mut analyzer = match self.compute_capacity_policy.analysis() {
+            Some(capacity) => {
+                ScreenCaptureInput::with_requested_extent_admission_and_compute_capacity(
+                    self.config.clone(),
+                    extent,
+                    self.admission.clone(),
+                    capacity,
+                )?
+            }
+            None => ScreenCaptureInput::with_requested_extent_and_admission(
+                self.config.clone(),
+                extent,
+                self.admission.clone(),
+            )?,
+        };
         analyzer.start()?;
         Ok(PreparedWorker {
             analyzer,
@@ -1104,7 +1227,7 @@ impl MacosScreenCaptureInput {
         })
     }
 
-    fn install_worker(&mut self, prepared: PreparedWorker) -> anyhow::Result<()> {
+    fn stage_worker(&self, prepared: PreparedWorker) -> anyhow::Result<StagedCaptureWorker> {
         let worker_generation = self
             .worker_generation
             .checked_add(1)
@@ -1148,21 +1271,32 @@ impl MacosScreenCaptureInput {
                 };
                 let _ = exit_tx.send(result);
             })?;
+        Ok(StagedCaptureWorker {
+            generation: worker_generation,
+            worker: Some(CaptureWorker {
+                stop,
+                mailbox: worker_mailbox,
+                command_tx,
+                exit_rx,
+                join: Some(join),
+            }),
+            start,
+        })
+    }
+
+    fn install_worker(&mut self, staged: StagedCaptureWorker) {
+        let generation = staged.generation;
+        let start = Arc::clone(&staged.start);
+        let worker = staged.commit();
         let previous_latest = lock(&self.publication).latest.clone();
         self.stop_worker();
-        self.worker_generation = worker_generation;
+        self.worker_generation = generation;
         {
             let mut publication = lock(&self.publication);
-            publication.worker_generation = worker_generation;
+            publication.worker_generation = generation;
             publication.latest = previous_latest;
         }
-        self.worker = Some(CaptureWorker {
-            stop,
-            mailbox: worker_mailbox,
-            command_tx,
-            exit_rx,
-            join: Some(join),
-        });
+        self.worker = Some(worker);
         start.store(true, Ordering::Release);
         self.worker
             .as_ref()
@@ -1170,7 +1304,6 @@ impl MacosScreenCaptureInput {
             .expect("installed worker retains its thread handle")
             .thread()
             .unpark();
-        Ok(())
     }
 
     fn stop_worker(&mut self) {
@@ -1239,12 +1372,9 @@ impl InputSource for MacosScreenCaptureInput {
         }
         self.refresh_policy()?;
         if let Some(extent) = self.demand.requested_extent() {
-            let prepared = self.prepare_worker(extent)?;
+            let prepared = self.stage_worker(self.prepare_worker(extent)?)?;
             let session = self.status.begin_session()?;
-            if let Err(error) = self.install_worker(prepared) {
-                self.status.stop();
-                return Err(error);
-            }
+            self.install_worker(prepared);
             if let Some(session) = session {
                 self.status_session.store(session);
             }
@@ -1350,20 +1480,37 @@ impl InputSource for MacosScreenCaptureInput {
     }
 
     fn screen_analysis_compute_capacity(&self) -> Option<ScreenAnalysisComputeCapacity> {
-        None
+        self.compute_capacity_policy.analysis()
     }
 
     fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        let was_active = self.demand.is_active();
+        if !demand.is_active() {
+            self.refresh_policy_for(demand)?;
+            if self.running {
+                self.control.set_active(false);
+                self.status_session.clear();
+                self.stop_worker();
+            }
+            self.demand = demand;
+            self.refresh_platform_status()?;
+            return Ok(());
+        }
+        let request =
+            production_stream_request(&self.config, demand, self.control.host_capabilities())?;
         let prepared = demand
             .requested_extent()
             .map(|extent| self.prepare_worker(extent))
+            .transpose()?
+            .map(|prepared| self.stage_worker(prepared))
             .transpose()?;
-        let was_active = self.demand.is_active();
         if !self.running {
+            self.control.begin_stream_request(request)?.wait()?;
             self.refresh_policy_for(demand)?;
             self.demand = demand;
             return Ok(());
         }
+        let request = self.control.begin_stream_request(request)?;
         if let Some(prepared) = prepared {
             let session = if was_active {
                 None
@@ -1371,21 +1518,19 @@ impl InputSource for MacosScreenCaptureInput {
                 self.refresh_policy_for(demand)?;
                 self.status.begin_session()?
             };
-            if let Err(error) = self.install_worker(prepared) {
+            if let Err(error) = request.wait() {
                 if !was_active {
                     self.refresh_policy_for(self.demand)?;
                 }
                 return Err(error);
             }
+            self.install_worker(prepared);
             if let Some(session) = session {
                 self.status_session.store(session);
             }
             self.control.set_active(true);
         } else {
-            self.control.set_active(false);
-            self.status_session.clear();
-            self.stop_worker();
-            self.refresh_policy_for(demand)?;
+            request.wait()?;
         }
         self.demand = demand;
         self.refresh_platform_status()?;
@@ -1497,15 +1642,31 @@ impl InputSource for MacosScreenCaptureInput {
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
+        if !self.demand.is_active() {
+            self.config.clone_from(config);
+            return Ok(());
+        }
+        let request =
+            production_stream_request(config, self.demand, self.control.host_capabilities())?;
         let prepared = self
             .demand
             .requested_extent()
             .map(|extent| {
-                let mut analyzer = ScreenCaptureInput::with_requested_extent_and_admission(
-                    config.clone(),
-                    extent,
-                    self.admission.clone(),
-                )?;
+                let mut analyzer = match self.compute_capacity_policy.analysis() {
+                    Some(capacity) => {
+                        ScreenCaptureInput::with_requested_extent_admission_and_compute_capacity(
+                            config.clone(),
+                            extent,
+                            self.admission.clone(),
+                            capacity,
+                        )?
+                    }
+                    None => ScreenCaptureInput::with_requested_extent_and_admission(
+                        config.clone(),
+                        extent,
+                        self.admission.clone(),
+                    )?,
+                };
                 analyzer.start()?;
                 Ok::<_, anyhow::Error>(PreparedWorker {
                     analyzer,
@@ -1515,11 +1676,15 @@ impl InputSource for MacosScreenCaptureInput {
                     target_fps: config.target_fps,
                 })
             })
+            .transpose()?
+            .map(|prepared| self.stage_worker(prepared))
             .transpose()?;
+        let request = self.control.begin_stream_request(request)?;
+        request.wait()?;
         if self.running
             && let Some(prepared) = prepared
         {
-            self.install_worker(prepared)?;
+            self.install_worker(prepared);
         }
         self.config.clone_from(config);
         Ok(())
@@ -1543,11 +1708,25 @@ impl InputSource for MacosScreenCaptureInput {
         if current == next {
             return Ok(());
         }
-        self.config.target_led_white_x = config.target_led_white_x;
-        self.config.target_led_white_y = config.target_led_white_y;
-        self.config.target_led_reference_white_nits = config.target_led_reference_white_nits;
-        self.config.target_led_peak_nits = config.target_led_peak_nits;
-        self.config.exposure_ev = config.exposure_ev;
+        if let Some(worker) = self.worker.as_ref() {
+            let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+            worker
+                .command_tx
+                .send(WorkerCommand::ReconfigureProcessing {
+                    calibration: next,
+                    completion: completion_tx,
+                })
+                .map_err(|_| anyhow!("macOS capture worker rejected processing reconfiguration"))?;
+            worker.mailbox.wake();
+            completion_rx.recv().map_err(|_| {
+                anyhow!("macOS capture worker exited during processing reconfiguration")
+            })??;
+        }
+        self.config.target_led_white_x = next.target_white_x();
+        self.config.target_led_white_y = next.target_white_y();
+        self.config.target_led_reference_white_nits = next.target_reference_white_nits();
+        self.config.target_led_peak_nits = next.target_peak_nits();
+        self.config.exposure_ev = next.exposure_ev();
         self.exact.advance_resolution_revision();
         Ok(())
     }
@@ -1733,6 +1912,10 @@ fn prepare_macos_exact_runtime(
     let executor = exact.cpu_executor()?;
     let compute_plan =
         CpuExactReductionWorkPlan::try_for_source(&candidate, ticket.source_id(), |_| true)?;
+    let compute_plan = match exact.compute_capacity_policy.exact(executor.worker_count()) {
+        Some(capacity) => compute_plan.admit(capacity)?,
+        None => compute_plan,
+    };
     let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
     let mut processing_minimum_remaining = ledger
         .ticket()
@@ -2035,8 +2218,9 @@ fn bind_current_macos_exact_runtime<'a>(
         .then_some(&mut runtimes[current_index]))
 }
 
-fn handle_exact_commands(
+fn handle_worker_commands(
     command_rx: &mpsc::Receiver<WorkerCommand>,
+    prepared: &mut PreparedWorker,
     runtimes: &mut Vec<MacosExactRuntime>,
     exact: &MacosExactPublicationShared,
 ) {
@@ -2080,6 +2264,13 @@ fn handle_exact_commands(
                     let _ = completion.send(Ok(()));
                 }
             }
+            WorkerCommand::ReconfigureProcessing {
+                calibration,
+                completion,
+            } => {
+                prepared.analyzer.set_led_tone_map_calibration(calibration);
+                let _ = completion.send(Ok(()));
+            }
         }
     }
 }
@@ -2121,7 +2312,7 @@ fn run_worker(
     let mut resources = ResourceState::default();
     let mut exact_runtimes = Vec::new();
     while !stop.load(Ordering::Acquire) {
-        handle_exact_commands(&command_rx, &mut exact_runtimes, &exact);
+        handle_worker_commands(&command_rx, &mut prepared, &mut exact_runtimes, &exact);
         update_pinned_generations(&exact_runtimes, &telemetry);
         let Some(delivery) =
             mailbox.wait_latest_while(WORKER_WAIT, || !stop.load(Ordering::Acquire))
@@ -2178,7 +2369,6 @@ fn publish_frame(
     status_session: &SourceSessionSlot,
     control: &Arc<dyn MacosCaptureControl>,
 ) -> anyhow::Result<()> {
-    let extent = PixelExtent::new(frame.storage_extent.width, frame.storage_extent.height)?;
     let captured_at = control.captured_at(frame.display_time)?;
     let fresh_until = captured_at
         .checked_add(Duration::from_nanos(
@@ -2221,91 +2411,30 @@ fn publish_frame(
         publish_macos_scalar_exact(&frame, &capture, &source, exact, exact_runtimes, telemetry)?;
         telemetry.record_cpu_reduction(reduction_started.elapsed());
     }
-    if exact_delivery.native && !exact_delivery.cpu {
-        if lock(publication).worker_generation == worker_generation {
-            lock(publication).latest = None;
-        }
+    if !needs_legacy_cpu_publication(exact_delivery) {
         if let Some(status) = status_session.load() {
             status.record_sample(captured_at, fresh_until, 1)?;
         }
-        return Ok(());
-    }
-    if frame.pixel_format != MacosCapturePixelFormat::Bgra8 {
-        if lock(publication).worker_generation == worker_generation {
-            lock(publication).latest = None;
-        }
-        if let Some(status) = status_session.load() {
-            status.record_sample(captured_at, fresh_until, 1)?;
+        let mut publication = lock(publication);
+        if publication.worker_generation == worker_generation {
+            publication.latest = None;
         }
         return Ok(());
     }
-
-    let row_stride = usize::try_from(extent.width())
-        .ok()
-        .and_then(|width| width.checked_mul(4))
-        .ok_or_else(|| anyhow!("macOS capture row stride overflow"))?;
-    let byte_len = row_stride
-        .checked_mul(usize::try_from(extent.height())?)
-        .ok_or_else(|| anyhow!("macOS capture plane length overflow"))?;
-    let mut plane = prepared.plane_pool.try_acquire(byte_len)?;
-    plane.resize(byte_len, 0);
-    frame.copy_bgra8_to(&mut plane, row_stride)?;
-    let cursor = CaptureCursor {
-        visible: frame.cursor_composed,
-        position: None,
-        hotspot: None,
-        shape_extent: None,
-        shape_generation: None,
-        content: if frame.cursor_composed {
-            CaptureCursorContent::Composed
-        } else {
-            CaptureCursorContent::Hidden
-        },
-    };
-    let damage = CaptureDamage::new(
-        frame
-            .damage
-            .iter()
-            .map(|rect| {
-                Ok(PixelRect::new(
-                    u32::try_from(rect.x)?,
-                    u32::try_from(rect.y)?,
-                    rect.width,
-                    rect.height,
-                )?)
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?,
-        Vec::new(),
-    );
-    let sequence = frame
-        .sequence
-        .checked_add(1)
-        .ok_or_else(|| anyhow!("macOS capture sequence exhausted"))?;
-    let capture = CaptureFrame::<RawCaptureSurface>::new(
-        CaptureFrameMetadata {
-            source_id,
-            topology_generation,
-            session_generation: frame.epoch,
-            sequence,
-            captured_at,
-            fresh_until,
-            geometry: source.geometry,
-            colorimetry: source.colorimetry,
-            cursor,
-        },
-        CaptureStorage::Cpu(CpuCaptureStorage::from_owner(
-            plane.freeze(),
-            CapturePixelFormat::Bgra8,
-            i64::try_from(row_stride)?,
-            0,
-        )),
-        damage,
+    let capture = legacy_cpu_capture_frame(
+        prepared,
+        &frame,
+        captured_at,
+        fresh_until,
+        &source,
+        source_id,
+        topology_generation,
     )?;
     if Instant::now() > fresh_until {
         telemetry.stale_frames.fetch_add(1, Ordering::Relaxed);
         return Ok(());
     }
-    if !exact_delivery.cpu {
+    if frame.pixel_format == MacosCapturePixelFormat::Bgra8 {
         publish_macos_cpu_exact(&capture, &source, exact, exact_runtimes, telemetry)?;
     }
     let reduction_started = Instant::now();
@@ -2334,6 +2463,116 @@ fn publish_frame(
         publication.latest = Some(data);
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn legacy_cpu_capture_frame(
+    prepared: &mut PreparedWorker,
+    frame: &MacosCaptureFrame,
+    captured_at: Instant,
+    fresh_until: Instant,
+    source: &MacosPublicationSource,
+    source_id: CaptureSourceId,
+    topology_generation: u64,
+) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
+    let extent = source.geometry.storage_extent();
+    let row_stride = usize::try_from(extent.width())
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| anyhow!("macOS capture row stride overflow"))?;
+    let byte_len = row_stride
+        .checked_mul(usize::try_from(extent.height())?)
+        .ok_or_else(|| anyhow!("macOS capture plane length overflow"))?;
+    let mut plane = prepared.plane_pool.try_acquire(byte_len)?;
+    plane.resize(byte_len, 0);
+    let (pixel_format, colorimetry) = if frame.pixel_format == MacosCapturePixelFormat::Bgra8 {
+        frame.copy_bgra8_to(&mut plane, row_stride)?;
+        (CapturePixelFormat::Bgra8, source.colorimetry)
+    } else {
+        let calibration = LedToneMapCalibration::try_new(
+            prepared.analyzer.config().target_led_white_x,
+            prepared.analyzer.config().target_led_white_y,
+            prepared.analyzer.config().target_led_reference_white_nits,
+            prepared.analyzer.config().target_led_peak_nits,
+            prepared.analyzer.config().exposure_ev,
+        )?;
+        let tone_map = PreparedLedToneMap::prepare(
+            source.colorimetry.try_known()?,
+            KnownCaptureColorimetry::SRGB,
+            calibration,
+        )?;
+        frame.with_cpu_source(|samples| -> anyhow::Result<()> {
+            for y in 0..extent.height() {
+                let row_start = usize::try_from(y)?
+                    .checked_mul(row_stride)
+                    .ok_or_else(|| anyhow!("macOS legacy row offset overflow"))?;
+                for x in 0..extent.width() {
+                    let pixel_start = usize::try_from(x)?
+                        .checked_mul(4)
+                        .and_then(|offset| row_start.checked_add(offset))
+                        .ok_or_else(|| anyhow!("macOS legacy pixel offset overflow"))?;
+                    let pixel_end = pixel_start
+                        .checked_add(4)
+                        .ok_or_else(|| anyhow!("macOS legacy pixel end overflow"))?;
+                    let source_pixel = samples.sample_rgba32f(x, y)?;
+                    plane[pixel_start..pixel_end].copy_from_slice(
+                        &tone_map.encode(tone_map.decode_and_map_source(source_pixel)),
+                    );
+                }
+            }
+            Ok(())
+        })??;
+        (CapturePixelFormat::Rgba8, CaptureColorimetry::SRGB)
+    };
+    let sequence = frame
+        .sequence
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("macOS capture sequence exhausted"))?;
+    Ok(CaptureFrame::<RawCaptureSurface>::new(
+        CaptureFrameMetadata {
+            source_id,
+            topology_generation,
+            session_generation: frame.epoch,
+            sequence,
+            captured_at,
+            fresh_until,
+            geometry: source.geometry,
+            colorimetry,
+            cursor: CaptureCursor {
+                visible: frame.cursor_composed,
+                position: None,
+                hotspot: None,
+                shape_extent: None,
+                shape_generation: None,
+                content: if frame.cursor_composed {
+                    CaptureCursorContent::Composed
+                } else {
+                    CaptureCursorContent::Hidden
+                },
+            },
+        },
+        CaptureStorage::Cpu(CpuCaptureStorage::from_owner(
+            plane.freeze(),
+            pixel_format,
+            i64::try_from(row_stride)?,
+            0,
+        )),
+        CaptureDamage::new(
+            frame
+                .damage
+                .iter()
+                .map(|rect| {
+                    Ok(PixelRect::new(
+                        u32::try_from(rect.x)?,
+                        u32::try_from(rect.y)?,
+                        rect.width,
+                        rect.height,
+                    )?)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            Vec::new(),
+        ),
+    )?)
 }
 
 fn native_cpu_capture_frame(
@@ -2401,6 +2640,10 @@ struct MacosExactDelivery {
     native: bool,
     cpu: bool,
     stale: bool,
+}
+
+const fn needs_legacy_cpu_publication(delivery: MacosExactDelivery) -> bool {
+    !delivery.native && !delivery.cpu
 }
 
 #[cfg(all(test, feature = "macos-capture-fixtures"))]
@@ -2997,10 +3240,23 @@ struct FixtureControl {
     active_transitions: AtomicU64,
     status: Mutex<NativeProtectedSourceState>,
     selection: Mutex<MacosCaptureSelection>,
+    selection_revision: AtomicU64,
+    stream_request: Mutex<MacosStreamRequest>,
+    pending_stream_request: Mutex<Option<FixturePendingStreamRequest>>,
+    stream_request_transitions: AtomicU64,
+    reject_next_stream_request: AtomicBool,
+    defer_next_stream_request: AtomicBool,
     tahoe_selection: Mutex<Option<NativeTahoeSelectionCapabilities>>,
     host_capabilities: Mutex<NativeCaptureCapabilities>,
     captured_at: Mutex<Option<Instant>>,
     diagnostics: Mutex<MacosCaptureCallbackDiagnostics>,
+}
+
+#[cfg(feature = "macos-capture-fixtures")]
+struct FixturePendingStreamRequest {
+    generation: u64,
+    request: MacosStreamRequest,
+    completion: mpsc::SyncSender<anyhow::Result<()>>,
 }
 
 #[cfg(feature = "macos-capture-fixtures")]
@@ -3012,6 +3268,12 @@ impl Default for FixtureControl {
             active_transitions: AtomicU64::new(0),
             status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
             selection: Mutex::new(MacosCaptureSelection::None),
+            selection_revision: AtomicU64::new(0),
+            stream_request: Mutex::new(MacosStreamRequest::default()),
+            pending_stream_request: Mutex::new(None),
+            stream_request_transitions: AtomicU64::new(0),
+            reject_next_stream_request: AtomicBool::new(false),
+            defer_next_stream_request: AtomicBool::new(false),
             tahoe_selection: Mutex::new(None),
             host_capabilities: Mutex::new(NativeCaptureCapabilities::from_runtime(
                 NativeHostArchitecture::AppleSilicon,
@@ -3036,10 +3298,14 @@ impl MacosCaptureControl for FixtureControl {
     }
 
     fn set_active(&self, active: bool) {
+        let previous = self.active.swap(active, Ordering::AcqRel);
+        if previous == active {
+            return;
+        }
         self.active_transitions.fetch_add(1, Ordering::AcqRel);
-        self.active.store(active, Ordering::Release);
         if !active {
             *lock(&self.tahoe_selection) = None;
+            self.selection_revision.fetch_add(1, Ordering::AcqRel);
         }
         *lock(&self.status) = if active {
             NativeProtectedSourceState::Starting
@@ -3063,6 +3329,41 @@ impl MacosCaptureControl for FixtureControl {
 
     fn selection(&self) -> MacosCaptureSelection {
         lock(&self.selection).clone()
+    }
+
+    fn selection_revision(&self) -> u64 {
+        self.selection_revision.load(Ordering::Acquire)
+    }
+
+    fn begin_stream_request(&self, request: MacosStreamRequest) -> anyhow::Result<StreamRequest> {
+        if self
+            .reject_next_stream_request
+            .swap(false, Ordering::AcqRel)
+        {
+            anyhow::bail!("fixture rejected macOS stream request");
+        }
+        let generation = self
+            .stream_request_transitions
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        if self.defer_next_stream_request.swap(false, Ordering::AcqRel) {
+            let (completion, receiver) = mpsc::sync_channel(1);
+            *lock(&self.pending_stream_request) = Some(FixturePendingStreamRequest {
+                generation,
+                request,
+                completion,
+            });
+            return Ok(StreamRequest {
+                generation,
+                completion: Box::new(move || {
+                    receiver
+                        .recv()
+                        .map_err(|_| anyhow!("fixture stream request completion was lost"))?
+                }),
+            });
+        }
+        *lock(&self.stream_request) = request;
+        Ok(StreamRequest::completed(generation, Ok(())))
     }
 
     fn tahoe_selection_capabilities(&self) -> Option<NativeTahoeSelectionCapabilities> {
@@ -3104,11 +3405,29 @@ impl MacosScreenCaptureFixture {
         config: CaptureConfig,
         admission: ScreenByteAdmissionCoordinator,
     ) -> (MacosScreenCaptureInput, Self) {
+        Self::source_with_compute_capacity_policy(
+            config,
+            admission,
+            ScreenComputeCapacityPolicy::UNBOUNDED,
+        )
+    }
+
+    pub fn source_with_compute_capacity_policy(
+        config: CaptureConfig,
+        admission: ScreenByteAdmissionCoordinator,
+        compute_capacity_policy: ScreenComputeCapacityPolicy,
+    ) -> (MacosScreenCaptureInput, Self) {
         let control = Arc::new(FixtureControl {
             status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
             ..FixtureControl::default()
         });
-        let source = MacosScreenCaptureInput::with_control(config, admission, control.clone());
+        let source = MacosScreenCaptureInput::with_control_and_telemetry(
+            config,
+            admission,
+            compute_capacity_policy,
+            control.clone(),
+            Arc::new(MacosScreenRuntimeTelemetry::default()),
+        );
         (source, Self { control })
     }
 
@@ -3140,7 +3459,67 @@ impl MacosScreenCaptureFixture {
 
     pub fn set_selection(&self, selection: MacosCaptureSelection) {
         *lock(&self.control.tahoe_selection) = None;
-        *lock(&self.control.selection) = selection;
+        let mut current = lock(&self.control.selection);
+        if *current != selection {
+            *current = selection;
+            self.control
+                .selection_revision
+                .fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    pub fn selection_revision(&self) -> u64 {
+        self.control.selection_revision.load(Ordering::Acquire)
+    }
+
+    pub fn stream_request(&self) -> MacosStreamRequest {
+        *lock(&self.control.stream_request)
+    }
+
+    pub fn stream_request_transitions(&self) -> u64 {
+        self.control
+            .stream_request_transitions
+            .load(Ordering::Acquire)
+    }
+
+    pub fn active_transitions(&self) -> u64 {
+        self.control.active_transitions.load(Ordering::Acquire)
+    }
+
+    pub fn reject_next_stream_request(&self) {
+        self.control
+            .reject_next_stream_request
+            .store(true, Ordering::Release);
+    }
+
+    pub fn defer_next_stream_request(&self) {
+        self.control
+            .defer_next_stream_request
+            .store(true, Ordering::Release);
+    }
+
+    pub fn pending_stream_request(&self) -> Option<MacosStreamRequest> {
+        lock(&self.control.pending_stream_request)
+            .as_ref()
+            .map(|pending| pending.request)
+    }
+
+    pub fn commit_pending_stream_request(&self) {
+        let pending = lock(&self.control.pending_stream_request)
+            .take()
+            .expect("fixture stream request should be pending");
+        *lock(&self.control.stream_request) = pending.request;
+        let _ = pending.completion.send(Ok(()));
+    }
+
+    pub fn fail_pending_stream_request(&self) {
+        let pending = lock(&self.control.pending_stream_request)
+            .take()
+            .expect("fixture stream request should be pending");
+        let _ = pending.completion.send(Err(anyhow!(
+            "fixture stream request generation {} failed asynchronously",
+            pending.generation
+        )));
     }
 
     pub fn set_tahoe_selection_capabilities(
@@ -5166,6 +5545,21 @@ mod tests {
                     .expect("fixture calibration is valid")
             )
         );
+    }
+
+    #[test]
+    fn exact_delivery_never_materializes_a_legacy_full_frame() {
+        assert!(!needs_legacy_cpu_publication(MacosExactDelivery {
+            native: true,
+            cpu: false,
+            stale: false,
+        }));
+        assert!(!needs_legacy_cpu_publication(MacosExactDelivery {
+            native: false,
+            cpu: true,
+            stale: false,
+        }));
+        assert!(needs_legacy_cpu_publication(MacosExactDelivery::default()));
     }
 
     #[test]

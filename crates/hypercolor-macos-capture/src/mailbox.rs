@@ -1,5 +1,5 @@
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{MacosCaptureError, MacosFrameEvent};
 
@@ -18,6 +18,7 @@ struct MailboxInner {
 struct MailboxState {
     latest: Option<Result<MacosFrameEvent, MacosCaptureError>>,
     superseded: u64,
+    wake_generation: u64,
 }
 
 impl MacosFrameMailbox {
@@ -58,19 +59,41 @@ impl MacosFrameMailbox {
         timeout: Duration,
         keep_waiting: impl Fn() -> bool,
     ) -> Option<Result<MacosFrameEvent, MacosCaptureError>> {
-        let state = self.lock();
-        let mut state = self
-            .inner
-            .ready
-            .wait_timeout_while(state, timeout, |state| {
-                state.latest.is_none() && keep_waiting()
-            })
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0;
+        self.wait_latest_while_with_hook(timeout, keep_waiting, || {})
+    }
+
+    fn wait_latest_while_with_hook(
+        &self,
+        timeout: Duration,
+        keep_waiting: impl Fn() -> bool,
+        mut before_wait: impl FnMut(),
+    ) -> Option<Result<MacosFrameEvent, MacosCaptureError>> {
+        let started = Instant::now();
+        let mut state = self.lock();
+        let wake_generation = state.wake_generation;
+        while state.latest.is_none() && state.wake_generation == wake_generation && keep_waiting() {
+            before_wait();
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, timeout_result) = self
+                .inner
+                .ready
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if timeout_result.timed_out() {
+                break;
+            }
+        }
         state.latest.take()
     }
 
     pub fn wake(&self) {
+        let mut state = self.lock();
+        state.wake_generation = state.wake_generation.wrapping_add(1);
+        drop(state);
         self.inner.ready.notify_all();
     }
 
@@ -79,5 +102,70 @@ impl MacosFrameMailbox {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::MacosFrameMailbox;
+
+    #[test]
+    fn wake_generation_closes_the_post_predicate_wait_window() {
+        let mailbox = MacosFrameMailbox::new();
+        let worker_mailbox = mailbox.clone();
+        let (predicate_tx, predicate_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut paused = false;
+            let delivery = worker_mailbox.wait_latest_while_with_hook(
+                Duration::from_secs(5),
+                || true,
+                || {
+                    if !paused {
+                        paused = true;
+                        predicate_tx
+                            .send(())
+                            .expect("post-predicate pause should be observable");
+                        resume_rx
+                            .recv()
+                            .expect("condition wait setup should resume");
+                    }
+                },
+            );
+            done_tx
+                .send(delivery.is_none())
+                .expect("wait result should be observable");
+        });
+
+        predicate_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter should pause after its external predicate returns true");
+        let wake_mailbox = mailbox.clone();
+        let (wake_done_tx, wake_done_rx) = mpsc::channel();
+        let waker = std::thread::spawn(move || {
+            wake_mailbox.wake();
+            wake_done_tx.send(()).expect("wake should finish");
+        });
+        assert_eq!(
+            wake_done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        resume_tx
+            .send(())
+            .expect("condition wait setup should resume");
+        wake_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("wake should advance the generation after acquiring the mailbox lock");
+        assert!(
+            done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("generation change should release the waiter immediately")
+        );
+        waker.join().expect("waker should join");
+        worker.join().expect("waiter should join");
     }
 }

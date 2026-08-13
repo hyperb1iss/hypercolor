@@ -3,28 +3,36 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use std::{num::NonZeroU64, num::NonZeroUsize};
 
+use hypercolor_core::effect::builtin::ScreenCastRenderer;
+use hypercolor_core::effect::{EffectRenderer, FrameDataSources, FrameInput};
 use hypercolor_core::input::screen::{
     CaptureConfig, MacosScreenCaptureFixture, PixelExtent, ScreenAdmissionCapacity,
-    ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
+    ScreenAnalysisComputeCapacity, ScreenByteAdmissionCoordinator, ScreenCaptureCadence,
+    ScreenCaptureDemand, ScreenComputeCapacityPolicy, ScreenCursorPolicy,
 };
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, MacosArchitecture, MacosAuthorizationState,
-    MacosCapabilityOwner, MacosDaemonOwnerConflict,
+    InputData, InputManager, InputSource, InteractionData, MacosArchitecture,
+    MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
     MacosProtectedSourceState as CoreProtectedSourceState, MacosSelectionState,
     SourcePlatformStatus,
 };
 use hypercolor_macos_capture::{
-    MacosAttachment, MacosCaptureCapabilities, MacosCaptureColorimetry, MacosCaptureError,
-    MacosCaptureFrame, MacosCapturePixelFormat, MacosCaptureSelection, MacosCaptureSurface,
-    MacosColorPrimaries, MacosColorRange, MacosFrameDecoder, MacosFrameEvent,
-    MacosHostArchitecture, MacosPixelExtent, MacosPointRect, MacosProtectedSourceState,
-    MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
-    MacosRuntimeCapability, MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilities,
-    MacosTransferFunction,
+    MacosAttachment, MacosCaptureCadence, MacosCaptureCapabilities, MacosCaptureColorimetry,
+    MacosCaptureDynamicRange, MacosCaptureError, MacosCaptureFrame, MacosCapturePixelFormat,
+    MacosCaptureSelection, MacosCaptureSurface, MacosColorPrimaries, MacosColorRange,
+    MacosDeliveredFrameMetadata, MacosFrameDecoder, MacosFrameEvent, MacosHostArchitecture,
+    MacosPixelExtent, MacosPointRect, MacosProtectedSourceState, MacosRawCapturePlane,
+    MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments, MacosRuntimeCapability,
+    MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilities, MacosTransferFunction,
 };
+use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::Rgba;
+use hypercolor_types::sensor::SystemSnapshot;
 
 const BGRA8: u32 = 0x4247_5241;
+const RGBA16_FLOAT: u32 = 0x5247_6841;
 
 fn fixture_frame(epoch: u64, pixel: [u8; 4]) -> MacosCaptureFrame {
     let extent = MacosPixelExtent::new(4, 2).expect("fixture extent is valid");
@@ -74,6 +82,63 @@ fn fixture_frame(epoch: u64, pixel: [u8; 4]) -> MacosCaptureFrame {
     *frame
 }
 
+fn fixture_hdr_frame(epoch: u64, pixel: [u8; 8]) -> MacosCaptureFrame {
+    let extent = MacosPixelExtent::new(4, 2).expect("fixture extent is valid");
+    let bytes = Arc::<[u8]>::from(pixel.repeat(8));
+    let color = MacosCaptureColorimetry {
+        primaries: MacosColorPrimaries::DisplayP3,
+        transfer: MacosTransferFunction::Linear,
+        matrix: None,
+        range: MacosColorRange::Full,
+        chroma_location: None,
+    };
+    let delivered = MacosDeliveredFrameMetadata::new(
+        MacosCapturePixelFormat::Rgba16Float,
+        color,
+        Some(203.0),
+        Some(2.0),
+    )
+    .expect("fixture HDR delivery is valid");
+    let surface = MacosCaptureSurface::new_cpu_fixture(8, 64, epoch, vec![bytes])
+        .expect("fixture surface is valid")
+        .with_delivery_metadata(delivered)
+        .expect("fixture delivery matches its surface");
+    let sample = MacosRawCaptureSample {
+        frame: Some(MacosRawCompleteFrame {
+            storage_extent: extent,
+            planes: vec![MacosRawCapturePlane {
+                index: 0,
+                extent,
+                bytes_per_row: 32,
+                length_bytes: 64,
+            }],
+            pixel_format_fourcc: RGBA16_FLOAT,
+            color,
+            cursor_composed: true,
+            surface,
+        }),
+        attachments: MacosRawFrameAttachments {
+            status: MacosAttachment::Value(0),
+            display_time: MacosAttachment::Value(epoch * 1_000),
+            display_scale_factor: MacosAttachment::Value(1.0),
+            content_scale: MacosAttachment::Value(1.0),
+            content_rect: MacosAttachment::Value(
+                MacosPointRect::new(0.0, 0.0, 4.0, 2.0).expect("content rect is valid"),
+            ),
+            dirty_rects: MacosAttachment::Missing,
+            screen_rect: MacosAttachment::Missing,
+            bounding_rect: MacosAttachment::Missing,
+        },
+    };
+    let mut decoder = MacosFrameDecoder::new(epoch);
+    let MacosFrameEvent::Frame(frame) = decoder.decode(sample).expect("fixture frame decodes")
+    else {
+        panic!("complete sample must decode as a frame");
+    };
+    assert_eq!(frame.pixel_format, MacosCapturePixelFormat::Rgba16Float);
+    *frame
+}
+
 fn fixture_source(
     config: CaptureConfig,
 ) -> (
@@ -114,6 +179,107 @@ fn wait_for_grid_width(
             _ => panic!("macOS fixture published the wrong input kind"),
         }
     }
+}
+
+fn canvas_bytes(data: &hypercolor_core::input::ScreenData) -> Vec<u8> {
+    data.canvas_downscale
+        .as_ref()
+        .expect("fixture screen data has a compatibility surface")
+        .rgba_bytes()
+        .to_vec()
+}
+
+fn wait_for_canvas_change(
+    source: &mut impl InputSource,
+    previous: &[u8],
+) -> hypercolor_core::input::ScreenData {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match source.sample().expect("fixture sample succeeds") {
+            InputData::Screen(data) if canvas_bytes(&data) != previous => return data,
+            InputData::Screen(_) | InputData::None if Instant::now() < deadline => {
+                thread::yield_now();
+            }
+            InputData::Screen(_) | InputData::None => {
+                panic!("fixture worker did not publish changed compatibility bytes");
+            }
+            _ => panic!("macOS fixture published the wrong input kind"),
+        }
+    }
+}
+
+#[test]
+fn native_refresh_hdr_and_cursor_demand_reaches_capture_and_screen_cast() {
+    let config = CaptureConfig {
+        target_fps: 60,
+        grid_cols: 1,
+        grid_rows: 1,
+        smoothing_alpha: 1.0,
+        ..CaptureConfig::default()
+    };
+    let (mut source, fixture) = fixture_source(config);
+    source.start().expect("fixture source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active_with_policy(
+            PixelExtent::new(4, 2).expect("fixture demand is valid"),
+            ScreenCaptureCadence::NativeRefresh,
+            ScreenCursorPolicy::Include,
+        ))
+        .expect("native-refresh demand activates");
+    let request = fixture.stream_request();
+    assert_eq!(request.cadence, MacosCaptureCadence::NativeRefresh);
+    assert!(request.cursor_composed);
+    assert_eq!(request.dynamic_range, MacosCaptureDynamicRange::Hdr);
+
+    fixture.set_selection(MacosCaptureSelection::Display {
+        source_id: Arc::from("display:hdr-effect-fixture"),
+    });
+    fixture.publish(fixture_hdr_frame(1, [0x00, 0x3c, 0, 0, 0, 0, 0x00, 0x3c]));
+    let screen = wait_for_screen(&mut source);
+    assert!(screen.canvas_downscale.is_some());
+
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let mut renderer = ScreenCastRenderer::new();
+    let canvas = renderer
+        .tick(&FrameInput {
+            time_secs: 0.0,
+            delta_secs: 1.0 / 60.0,
+            frame_number: 0,
+            audio: &audio,
+            interaction: &interaction,
+            screen: Some(&screen),
+            sensors: &sensors,
+            sources: FrameDataSources::default(),
+            canvas_width: 4,
+            canvas_height: 2,
+        })
+        .expect("ScreenCast consumes the derived HDR compatibility surface");
+    let pixel = canvas.get_pixel(0, 0);
+    assert!(pixel.r > pixel.g && pixel.r > pixel.b);
+    assert_ne!(pixel, Rgba::BLACK);
+}
+
+#[test]
+fn macos_exposes_installed_compute_capacity_for_cpu_fallback() {
+    let analysis = ScreenAnalysisComputeCapacity::new(
+        NonZeroUsize::new(2).expect("fixture worker count is nonzero"),
+        NonZeroU64::new(1_000_000).expect("fixture throughput is nonzero"),
+    );
+    let policy = ScreenComputeCapacityPolicy::calibrated(
+        analysis,
+        NonZeroU64::new(2_000_000).expect("fixture exact throughput is nonzero"),
+    );
+    let admission =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let (source, _) = MacosScreenCaptureFixture::source_with_compute_capacity_policy(
+        CaptureConfig::default(),
+        admission,
+        policy,
+    );
+
+    assert_eq!(source.screen_analysis_compute_capacity(), Some(analysis));
 }
 
 #[test]
@@ -180,6 +346,7 @@ fn fixture_capture_activates_only_for_live_demand() {
     );
     assert_eq!(platform.selection, MacosSelectionState::None);
     assert_eq!(platform.selection_diagnostic_label, None);
+    assert_eq!(platform.selection_revision, 0);
     assert_eq!(platform.tahoe.host_architecture, MacosArchitecture::Intel);
     assert!(!platform.tahoe.translated_process);
     assert!(!platform.tahoe.content_tone_mapping_info);
@@ -207,6 +374,7 @@ fn fixture_capture_activates_only_for_live_demand() {
     let Some(SourcePlatformStatus::MacosScreen(platform)) = selected.platform.as_deref() else {
         panic!("expected selected macOS screen platform status");
     };
+    assert_eq!(platform.selection_revision, 1);
     assert_eq!(platform.tahoe_selection, None);
 
     fixture.set_tahoe_selection_capabilities(Some(MacosTahoeSelectionCapabilities {
@@ -269,6 +437,7 @@ fn fixture_capture_activates_only_for_live_demand() {
     let Some(SourcePlatformStatus::MacosScreen(platform)) = repicked.platform.as_deref() else {
         panic!("expected repicked macOS screen platform status");
     };
+    assert_eq!(platform.selection_revision, 2);
     assert_eq!(platform.tahoe_selection, None);
 
     fixture.set_tahoe_selection_capabilities(Some(MacosTahoeSelectionCapabilities {
@@ -302,6 +471,227 @@ fn fixture_capture_activates_only_for_live_demand() {
     };
     assert_eq!(platform.state, CoreProtectedSourceState::ReadyIdle);
     assert_eq!(platform.tahoe_selection, None);
+    assert_eq!(platform.selection_revision, 3);
+}
+
+#[test]
+fn inactive_demand_deactivates_without_reconfiguring_the_native_request() {
+    let (mut source, fixture) = fixture_source(CaptureConfig::default());
+    source.start().expect("fixture source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active(
+            PixelExtent::new(4, 2).expect("fixture demand is valid"),
+        ))
+        .expect("fixture demand activates");
+    let request = fixture.stream_request();
+    let request_transitions = fixture.stream_request_transitions();
+    let active_transitions = fixture.active_transitions();
+
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::Inactive)
+        .expect("inactive demand commits");
+
+    assert!(!fixture.is_active());
+    assert_eq!(fixture.stream_request(), request);
+    assert_eq!(fixture.stream_request_transitions(), request_transitions);
+    assert_eq!(fixture.active_transitions(), active_transitions + 1);
+}
+
+#[test]
+fn rejected_demand_request_preserves_the_committed_worker_and_demand() {
+    let config = CaptureConfig {
+        grid_cols: 2,
+        grid_rows: 1,
+        smoothing_alpha: 1.0,
+        ..CaptureConfig::default()
+    };
+    let (mut source, fixture) = fixture_source(config);
+    source.start().expect("fixture source starts idle");
+    let committed =
+        ScreenCaptureDemand::active(PixelExtent::new(4, 2).expect("fixture demand is valid"));
+    source
+        .set_screen_capture_demand(committed)
+        .expect("initial demand activates");
+    let request = fixture.stream_request();
+    fixture.reject_next_stream_request();
+
+    let error = source
+        .set_screen_capture_demand(ScreenCaptureDemand::active_with_policy(
+            PixelExtent::new(4, 2).expect("fixture demand is valid"),
+            ScreenCaptureCadence::NativeRefresh,
+            ScreenCursorPolicy::Include,
+        ))
+        .expect_err("native request failure rejects the demand transaction");
+
+    assert!(error.to_string().contains("fixture rejected"));
+    assert_eq!(source.screen_capture_demand(), committed);
+    assert_eq!(fixture.stream_request(), request);
+    assert!(fixture.is_active());
+    fixture.publish(fixture_frame(1, [0, 0, 255, 255]));
+    assert_eq!(wait_for_screen(&mut source).grid_width, 2);
+}
+
+#[test]
+fn rejected_reconfiguration_request_preserves_the_committed_worker_config() {
+    let config = CaptureConfig {
+        target_fps: 60,
+        grid_cols: 2,
+        grid_rows: 1,
+        smoothing_alpha: 1.0,
+        ..CaptureConfig::default()
+    };
+    let (mut source, fixture) = fixture_source(config.clone());
+    source.start().expect("fixture source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active(
+            PixelExtent::new(4, 2).expect("fixture demand is valid"),
+        ))
+        .expect("initial demand activates");
+    let request = fixture.stream_request();
+    fixture.reject_next_stream_request();
+
+    source
+        .reconfigure_screen_capture(&CaptureConfig {
+            target_fps: 30,
+            grid_cols: 1,
+            ..config
+        })
+        .expect_err("native request failure rejects worker reconfiguration");
+
+    assert_eq!(fixture.stream_request(), request);
+    assert!(fixture.is_active());
+    fixture.publish(fixture_frame(1, [0, 255, 0, 255]));
+    assert_eq!(wait_for_screen(&mut source).grid_width, 2);
+}
+
+#[test]
+fn asynchronous_demand_request_failure_preserves_the_committed_worker_and_demand() {
+    let config = CaptureConfig {
+        grid_cols: 2,
+        grid_rows: 1,
+        smoothing_alpha: 1.0,
+        ..CaptureConfig::default()
+    };
+    let (mut source, fixture) = fixture_source(config);
+    source.start().expect("fixture source starts idle");
+    let committed =
+        ScreenCaptureDemand::active(PixelExtent::new(4, 2).expect("fixture demand is valid"));
+    source
+        .set_screen_capture_demand(committed)
+        .expect("initial demand activates");
+    let request = fixture.stream_request();
+    fixture.defer_next_stream_request();
+
+    let thread = thread::scope(|scope| {
+        let update = scope.spawn(|| {
+            source.set_screen_capture_demand(ScreenCaptureDemand::active_with_policy(
+                PixelExtent::new(4, 2).expect("fixture demand is valid"),
+                ScreenCaptureCadence::NativeRefresh,
+                ScreenCursorPolicy::Include,
+            ))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while fixture.pending_stream_request().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "stream request never reached pending"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(fixture.stream_request(), request);
+        fixture.fail_pending_stream_request();
+        update.join().expect("demand update thread joins")
+    });
+
+    let error = thread.expect_err("async request failure rejects the transaction");
+    assert!(format!("{error:#}").contains("failed asynchronously"));
+    assert_eq!(source.screen_capture_demand(), committed);
+    assert_eq!(fixture.stream_request(), request);
+    fixture.publish(fixture_frame(1, [0, 0, 255, 255]));
+    assert_eq!(wait_for_screen(&mut source).grid_width, 2);
+}
+
+#[test]
+fn asynchronous_reconfiguration_commits_after_native_activation() {
+    let config = CaptureConfig {
+        target_fps: 60,
+        grid_cols: 2,
+        grid_rows: 1,
+        smoothing_alpha: 1.0,
+        ..CaptureConfig::default()
+    };
+    let (mut source, fixture) = fixture_source(config.clone());
+    source.start().expect("fixture source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active(
+            PixelExtent::new(4, 2).expect("fixture demand is valid"),
+        ))
+        .expect("initial demand activates");
+    let request = fixture.stream_request();
+    fixture.defer_next_stream_request();
+
+    thread::scope(|scope| {
+        let next = CaptureConfig {
+            target_fps: 30,
+            grid_cols: 1,
+            ..config
+        };
+        let source = &mut source;
+        let update = scope.spawn(move || source.reconfigure_screen_capture(&next));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while fixture.pending_stream_request().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "stream request never reached pending"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(fixture.stream_request(), request);
+        fixture.commit_pending_stream_request();
+        update
+            .join()
+            .expect("reconfiguration thread joins")
+            .expect("native activation commits reconfiguration");
+    });
+
+    fixture.publish(fixture_frame(1, [0, 255, 0, 255]));
+    assert_eq!(wait_for_screen(&mut source).grid_width, 1);
+}
+
+#[test]
+fn processing_reconfiguration_changes_legacy_hdr_bytes_at_a_frame_boundary() {
+    let config = CaptureConfig {
+        target_fps: 60,
+        grid_cols: 1,
+        grid_rows: 1,
+        smoothing_alpha: 1.0,
+        ..CaptureConfig::default()
+    };
+    let (mut source, fixture) = fixture_source(config.clone());
+    source.start().expect("fixture source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active(
+            PixelExtent::new(4, 2).expect("fixture demand is valid"),
+        ))
+        .expect("fixture demand activates");
+    let encoded = [0x00, 0x38, 0x00, 0x3c, 0x00, 0x40, 0x00, 0x3c];
+    fixture.publish(fixture_hdr_frame(1, encoded));
+    let before = canvas_bytes(&wait_for_screen(&mut source));
+
+    source
+        .reconfigure_screen_processing(&CaptureConfig {
+            exposure_ev: -2.0,
+            ..config
+        })
+        .expect("valid processing calibration commits on the worker");
+    fixture.publish(fixture_hdr_frame(2, encoded));
+    let after = canvas_bytes(&wait_for_canvas_change(&mut source, &before));
+
+    assert_ne!(&after[..4], &before[..4]);
+    assert!(after[0] < before[0]);
+    assert!(after[1] < before[1]);
+    assert!(after[2] < before[2]);
+    assert_eq!(after[3], 255);
 }
 
 #[test]

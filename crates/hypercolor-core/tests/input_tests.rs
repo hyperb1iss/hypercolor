@@ -11,8 +11,8 @@ use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
 use hypercolor_core::input::screen::{
-    PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan, ScreenCaptureDemand,
-    ScreenCaptureInput,
+    PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan, ScreenCaptureCadence,
+    ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorPolicy,
 };
 use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
@@ -180,6 +180,25 @@ fn screen_capture_demand_unions_each_axis_without_a_resolution_cap() {
     assert_eq!(portrait.union(ScreenCaptureDemand::Inactive), portrait);
     assert!(ScreenCaptureDemand::try_active(0, 720).is_err());
     assert!(ScreenCaptureDemand::try_active(1_280, 0).is_err());
+}
+
+#[test]
+fn screen_capture_demand_unions_native_cadence_and_cursor_policy() {
+    let fixed = ScreenCaptureDemand::active_with_policy(
+        PixelExtent::new(640, 480).expect("fixture extent is valid"),
+        ScreenCaptureCadence::frames_per_second(30).expect("fixture cadence is valid"),
+        ScreenCursorPolicy::Exclude,
+    );
+    let native = ScreenCaptureDemand::active_with_policy(
+        PixelExtent::new(1_280, 720).expect("fixture extent is valid"),
+        ScreenCaptureCadence::NativeRefresh,
+        ScreenCursorPolicy::Include,
+    );
+    let union = fixed.union(native);
+
+    assert_eq!(union.requested_extent(), PixelExtent::new(1_280, 720).ok());
+    assert_eq!(union.cadence(), Some(ScreenCaptureCadence::NativeRefresh));
+    assert_eq!(union.cursor(), Some(ScreenCursorPolicy::Include));
 }
 
 #[derive(Default)]
@@ -3410,6 +3429,7 @@ fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
         owner: MacosCapabilityOwner::AppSidecar,
         selection: MacosSelectionState::None,
         selection_diagnostic_label: None,
+        selection_revision: 0,
         tahoe: MacosTahoeCapabilities {
             host_architecture: MacosArchitecture::AppleSilicon,
             translated_process: false,

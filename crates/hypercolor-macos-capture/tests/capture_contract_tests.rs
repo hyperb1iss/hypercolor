@@ -108,6 +108,36 @@ fn stream_requests_preserve_native_refresh_and_reject_invalid_rates() {
 }
 
 #[test]
+fn production_requests_use_canonical_hdr_on_apple_silicon_and_sdr_on_intel() {
+    let probes = MacosTahoeRuntimeProbes {
+        content_tone_mapping_info_symbol: MacosRuntimeCapability::Present,
+        screenshot_configuration_class: MacosRuntimeCapability::Present,
+        screenshot_dynamic_range_selector: MacosRuntimeCapability::Present,
+        screenshot_capture_selector: MacosRuntimeCapability::Present,
+    };
+    let apple_silicon =
+        MacosCaptureCapabilities::from_runtime(MacosHostArchitecture::AppleSilicon, false, probes);
+    let apple_request = MacosStreamRequest::for_capabilities(
+        MacosCaptureCadence::NativeRefresh,
+        false,
+        apple_silicon,
+    )
+    .expect("Apple Silicon production request is representable");
+    assert_eq!(apple_request.dynamic_range, MacosCaptureDynamicRange::Hdr);
+    assert_eq!(
+        apple_request.preset(),
+        MacosStreamPreset::CaptureHdrStreamCanonicalDisplay
+    );
+
+    let intel = MacosCaptureCapabilities::from_runtime(MacosHostArchitecture::Intel, false, probes);
+    let intel_request =
+        MacosStreamRequest::for_capabilities(MacosCaptureCadence::FramesPerSecond(60), true, intel)
+            .expect("Intel production request is representable");
+    assert_eq!(intel_request.dynamic_range, MacosCaptureDynamicRange::Sdr);
+    assert_eq!(intel_request.preset(), MacosStreamPreset::SdrDefault);
+}
+
+#[test]
 fn hdr_preset_is_only_requested_evidence_until_rgba16f_arrives() {
     let configured = configured_hdr(MacosCapturePixelFormat::Rgba16Float);
     let mut validator = MacosStreamDeliveryValidator::new(configured);

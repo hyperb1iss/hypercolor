@@ -2,7 +2,7 @@ use std::ffi::{CStr, c_char, c_void};
 use std::fmt;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained, MainThreadBound};
@@ -76,6 +76,11 @@ type PoolReservationFactory =
 
 const MACOS_IOSURFACE_ROW_ALIGNMENT: u64 = 256;
 const MACOS_IOSURFACE_ALLOCATION_ALIGNMENT: u64 = 16 * 1024;
+const HYPERCOLOR_UI_BUNDLE_IDENTIFIER: &str = "tech.hyperbliss.hypercolor";
+
+fn is_hypercolor_ui_bundle_identifier(bundle_identifier: &str) -> bool {
+    bundle_identifier == HYPERCOLOR_UI_BUNDLE_IDENTIFIER
+}
 
 #[derive(Debug)]
 struct SessionShared {
@@ -86,8 +91,59 @@ struct SessionShared {
     tahoe: MacosTahoeCapabilities,
     counters: CallbackCounters,
     capture_active: AtomicBool,
+    picker_resolution: Mutex<Option<SourceResolution>>,
     current_epoch: AtomicU64,
     resolution_epoch: AtomicU64,
+    restart_diagnostic: Mutex<PostAuthorizationStreamDiagnosticState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PostAuthorizationStreamDiagnosticAttempt {
+    attempt_id: u64,
+    selection_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PostAuthorizationStreamDiagnosticResolution {
+    attempt: PostAuthorizationStreamDiagnosticAttempt,
+    resolution_epoch: u64,
+    selector: MacosCaptureSelector,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GeneralSourceResolution {
+    resolution_epoch: u64,
+    selector: MacosCaptureSelector,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SourceResolution {
+    General(GeneralSourceResolution),
+    Diagnostic(PostAuthorizationStreamDiagnosticResolution),
+}
+
+impl SourceResolution {
+    fn selector(&self) -> &MacosCaptureSelector {
+        match self {
+            Self::General(resolution) => &resolution.selector,
+            Self::Diagnostic(resolution) => &resolution.selector,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PostAuthorizationStreamDiagnostic {
+    attempt: PostAuthorizationStreamDiagnosticAttempt,
+    authorization_granted: bool,
+    resolution_epoch: Option<u64>,
+    stream_epoch: Option<u64>,
+    completion: mpsc::SyncSender<MacosProtectedSourceState>,
+}
+
+#[derive(Debug, Default)]
+struct PostAuthorizationStreamDiagnosticState {
+    next_attempt_id: u64,
+    active: Option<PostAuthorizationStreamDiagnostic>,
 }
 
 #[derive(Debug, Default)]
@@ -110,8 +166,10 @@ impl SessionShared {
             tahoe,
             counters: CallbackCounters::default(),
             capture_active: AtomicBool::new(false),
+            picker_resolution: Mutex::new(None),
             current_epoch: AtomicU64::new(0),
             resolution_epoch: AtomicU64::new(0),
+            restart_diagnostic: Mutex::new(PostAuthorizationStreamDiagnosticState::default()),
         }
     }
 
@@ -121,6 +179,173 @@ impl SessionShared {
 
     fn set_status(&self, status: MacosProtectedSourceState) {
         *lock(&self.status) = status;
+    }
+
+    fn begin_restart_diagnostic(
+        &self,
+        authorization_granted: bool,
+        selection_revision: u64,
+    ) -> Result<
+        (
+            PostAuthorizationStreamDiagnosticResolution,
+            mpsc::Receiver<MacosProtectedSourceState>,
+        ),
+        MacosCaptureError,
+    > {
+        let (completion, receiver) = mpsc::sync_channel(1);
+        let (attempt, superseded) = {
+            let mut state = lock(&self.restart_diagnostic);
+            let attempt_id = state
+                .next_attempt_id
+                .checked_add(1)
+                .ok_or(MacosCaptureError::SequenceExhausted)?;
+            state.next_attempt_id = attempt_id;
+            let attempt = PostAuthorizationStreamDiagnosticAttempt {
+                attempt_id,
+                selection_revision,
+            };
+            let resolution_epoch = self.allocate_resolution_epoch()?;
+            let superseded = state.active.replace(PostAuthorizationStreamDiagnostic {
+                attempt,
+                authorization_granted,
+                resolution_epoch: Some(resolution_epoch),
+                stream_epoch: None,
+                completion,
+            });
+            (
+                PostAuthorizationStreamDiagnosticResolution {
+                    attempt,
+                    resolution_epoch,
+                    selector: MacosCaptureSelector::PrimaryDisplay,
+                },
+                superseded,
+            )
+        };
+        if let Some(superseded) = superseded {
+            let _ = superseded
+                .completion
+                .send(MacosProtectedSourceState::Failed);
+        }
+        if !authorization_granted {
+            self.complete_restart_diagnostic_attempt(
+                attempt.attempt,
+                MacosProtectedSourceState::PermissionDenied,
+            );
+        }
+        Ok((attempt, receiver))
+    }
+
+    fn diagnostic_resolution_is_current(
+        &self,
+        resolution: &PostAuthorizationStreamDiagnosticResolution,
+    ) -> bool {
+        self.resolution_is_current(resolution.resolution_epoch)
+            && lock(&self.restart_diagnostic)
+                .active
+                .as_ref()
+                .is_some_and(|active| {
+                    active.attempt == resolution.attempt
+                        && active.resolution_epoch == Some(resolution.resolution_epoch)
+                })
+    }
+
+    fn record_filter_enumerated(
+        &self,
+        resolution: &PostAuthorizationStreamDiagnosticResolution,
+        stream_epoch: u64,
+    ) {
+        let mut state = lock(&self.restart_diagnostic);
+        if let Some(active) = state.active.as_mut()
+            && active.attempt == resolution.attempt
+            && active.authorization_granted
+            && active.resolution_epoch == Some(resolution.resolution_epoch)
+        {
+            active.stream_epoch = Some(stream_epoch);
+        }
+    }
+
+    fn record_non_stream_diagnostic_failure(
+        &self,
+        resolution: &PostAuthorizationStreamDiagnosticResolution,
+        state: MacosProtectedSourceState,
+    ) {
+        if self.diagnostic_resolution_is_current(resolution) {
+            self.complete_restart_diagnostic_attempt(
+                resolution.attempt,
+                if state == MacosProtectedSourceState::PermissionDenied {
+                    state
+                } else {
+                    MacosProtectedSourceState::Failed
+                },
+            );
+        }
+    }
+
+    fn fail_restart_diagnostic_attempt(&self, attempt: PostAuthorizationStreamDiagnosticAttempt) {
+        self.complete_restart_diagnostic_attempt(attempt, MacosProtectedSourceState::Failed);
+    }
+
+    fn take_restart_diagnostic_completion(
+        &self,
+    ) -> Option<mpsc::SyncSender<MacosProtectedSourceState>> {
+        lock(&self.restart_diagnostic)
+            .active
+            .take()
+            .map(|active| active.completion)
+    }
+
+    fn record_stream_diagnostic_result(
+        &self,
+        stream_epoch: u64,
+        state: MacosProtectedSourceState,
+    ) -> MacosProtectedSourceState {
+        let completion = {
+            let mut diagnostic = lock(&self.restart_diagnostic);
+            let Some(active) = diagnostic
+                .active
+                .as_ref()
+                .filter(|active| active.stream_epoch == Some(stream_epoch))
+            else {
+                return state;
+            };
+            let state = if active.authorization_granted
+                && state == MacosProtectedSourceState::PermissionDenied
+            {
+                MacosProtectedSourceState::NeedsProcessRestart
+            } else {
+                state
+            };
+            let completion = diagnostic.active.take().map(|active| active.completion);
+            completion.map(|completion| (completion, state))
+        };
+        if let Some((completion, state)) = completion {
+            let _ = completion.send(state);
+            state
+        } else {
+            state
+        }
+    }
+
+    fn complete_restart_diagnostic_attempt(
+        &self,
+        attempt: PostAuthorizationStreamDiagnosticAttempt,
+        outcome: MacosProtectedSourceState,
+    ) {
+        let completion = {
+            let mut diagnostic = lock(&self.restart_diagnostic);
+            if diagnostic
+                .active
+                .as_ref()
+                .is_some_and(|active| active.attempt == attempt)
+            {
+                diagnostic.active.take().map(|active| active.completion)
+            } else {
+                None
+            }
+        };
+        if let Some(completion) = completion {
+            let _ = completion.send(outcome);
+        }
     }
 
     fn selection(&self) -> MacosCaptureSelection {
@@ -169,11 +394,43 @@ impl SessionShared {
         self.capture_active.load(Ordering::Acquire)
     }
 
+    fn enable_picker_callbacks(&self, resolution: SourceResolution) {
+        *lock(&self.picker_resolution) = Some(resolution);
+    }
+
+    fn disable_picker_callbacks(&self) {
+        lock(&self.picker_resolution).take();
+    }
+
+    fn picker_resolution(&self) -> Option<SourceResolution> {
+        lock(&self.picker_resolution).clone()
+    }
+
+    fn consume_picker_resolution(&self, resolution: &SourceResolution) -> bool {
+        let mut picker = lock(&self.picker_resolution);
+        if picker.as_ref() == Some(resolution) {
+            picker.take();
+            true
+        } else {
+            false
+        }
+    }
+
     fn set_capture_active(&self, active: bool) -> bool {
         self.capture_active.swap(active, Ordering::AcqRel)
     }
 
     fn begin_resolution(&self) -> Result<u64, MacosCaptureError> {
+        let superseded = lock(&self.restart_diagnostic).active.take();
+        if let Some(superseded) = superseded {
+            let _ = superseded
+                .completion
+                .send(MacosProtectedSourceState::Failed);
+        }
+        self.allocate_resolution_epoch()
+    }
+
+    fn allocate_resolution_epoch(&self) -> Result<u64, MacosCaptureError> {
         self.resolution_epoch
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
@@ -184,6 +441,17 @@ impl SessionShared {
 
     fn resolution_is_current(&self, epoch: u64) -> bool {
         self.resolution_epoch.load(Ordering::Acquire) == epoch
+    }
+
+    fn source_resolution_is_current(&self, resolution: &SourceResolution) -> bool {
+        match resolution {
+            SourceResolution::General(resolution) => {
+                self.resolution_is_current(resolution.resolution_epoch)
+            }
+            SourceResolution::Diagnostic(resolution) => {
+                self.diagnostic_resolution_is_current(resolution)
+            }
+        }
     }
 
     fn current_epoch(&self) -> u64 {
@@ -362,22 +630,11 @@ fn publish_decoded_result(
 ) {
     let _timing = shared.counters.observe_publication();
     match result {
-        Ok(DecodedSample {
-            event: MacosFrameEvent::Frame(frame),
-            confirmed_delivery,
-        }) => {
-            let active = shared.current_epoch() == epoch
-                || streams
-                    .upgrade()
-                    .is_some_and(|streams| streams.activate(epoch, confirmed_delivery));
-            if active {
-                shared.publish(MacosFrameEvent::Frame(frame));
+        Ok(sample) => {
+            if let Some(streams) = streams.upgrade() {
+                streams.publish_decoded_sample(epoch, sample);
             }
         }
-        Ok(DecodedSample { event, .. }) if shared.current_epoch() == epoch => {
-            shared.publish(event);
-        }
-        Ok(_) => {}
         Err(error @ MacosCaptureError::StreamDeliveryRejected(_)) => {
             handle_fatal_stream_error(streams, epoch, Arc::clone(shared), error);
         }
@@ -468,24 +725,24 @@ define_class!(
         #[allow(non_snake_case)]
         #[unsafe(method(streamDidBecomeActive:))]
         fn streamDidBecomeActive(&self, _stream: &SCStream) {
-            if !self.ivars().display_filter
-                && self.ivars().shared.current_epoch() == self.ivars().epoch
-            {
-                self.ivars()
-                    .shared
-                    .set_status(MacosProtectedSourceState::Live);
+            if let Some(streams) = self.ivars().streams.upgrade() {
+                streams.record_stream_activity(
+                    self.ivars().epoch,
+                    true,
+                    self.ivars().display_filter,
+                );
             }
         }
 
         #[allow(non_snake_case)]
         #[unsafe(method(streamDidBecomeInactive:))]
         fn streamDidBecomeInactive(&self, _stream: &SCStream) {
-            if !self.ivars().display_filter
-                && self.ivars().shared.current_epoch() == self.ivars().epoch
-            {
-                self.ivars()
-                    .shared
-                    .set_status(MacosProtectedSourceState::NeedsSelection);
+            if let Some(streams) = self.ivars().streams.upgrade() {
+                streams.record_stream_activity(
+                    self.ivars().epoch,
+                    false,
+                    self.ivars().display_filter,
+                );
             }
         }
     }
@@ -517,11 +774,70 @@ impl CaptureOutput {
 }
 
 #[derive(Clone)]
-struct NativeFilter(Retained<SCContentFilter>);
+enum NativeFilter {
+    System(Retained<SCContentFilter>),
+    #[cfg(test)]
+    Fixture(u64),
+}
 
 // SAFETY: SCContentFilter is immutable after picker delivery and remains in
 // the process that owns every consuming SCStream. Rust never mutates it.
 unsafe impl Send for NativeFilter {}
+
+impl NativeFilter {
+    fn system(&self) -> &SCContentFilter {
+        match self {
+            Self::System(filter) => filter,
+            #[cfg(test)]
+            Self::Fixture(_) => panic!("fixture selection has no native filter"),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct NativeSelectionFilter {
+    filter: NativeFilter,
+    selection: MacosCaptureSelection,
+    source_id: Arc<str>,
+}
+
+impl NativeSelectionFilter {
+    fn retain(filter: &SCContentFilter) -> Result<Self, MacosCaptureError> {
+        let selection = selection_from_filter(filter)?;
+        let source_id = selection_source_id(filter, &selection);
+        // SAFETY: The picker or configured-source callback supplies a live
+        // immutable filter, and each owner stays process-local.
+        let filter = unsafe {
+            Retained::retain(ptr::from_ref(filter).cast_mut())
+                .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
+        };
+        Ok(Self {
+            filter: NativeFilter::System(filter),
+            selection,
+            source_id,
+        })
+    }
+
+    #[cfg(test)]
+    fn fixture(id: u64) -> Self {
+        let source_id: Arc<str> = Arc::from(format!("fixture:{id}"));
+        Self {
+            filter: NativeFilter::Fixture(id),
+            selection: MacosCaptureSelection::Display {
+                source_id: Arc::clone(&source_id),
+            },
+            source_id,
+        }
+    }
+
+    #[cfg(test)]
+    fn fixture_id(&self) -> u64 {
+        match &self.filter {
+            NativeFilter::Fixture(id) => *id,
+            NativeFilter::System(_) => panic!("native filter has no fixture identity"),
+        }
+    }
+}
 
 #[derive(Clone)]
 enum ScreenshotFilterHandle {
@@ -674,7 +990,7 @@ impl ScreenshotCaptureBackend for NativeScreenshotCaptureBackend {
         unsafe {
             let _: () = msg_send![
                 manager_class,
-                captureScreenshotWithFilter: &*filter.0,
+                captureScreenshotWithFilter: filter.system(),
                 configuration: &*configuration,
                 completionHandler: &*callback
             ];
@@ -805,25 +1121,18 @@ unsafe impl Send for NativeStream {}
 
 impl NativeStream {
     fn prepare(
-        filter: &SCContentFilter,
+        selection_filter: NativeSelectionFilter,
         request: MacosStreamRequest,
         epoch: u64,
         shared: Arc<SessionShared>,
         streams: Weak<StreamSlot>,
         reserve_pool: &PoolReservationFactory,
     ) -> Result<Self, MacosCaptureError> {
+        let filter = selection_filter.filter.system();
         let (configuration, display_filter, extent, configured_stream) =
             stream_configuration(filter, request)?;
         let quote = conservative_pool_quote(extent, configured_stream.configured_pixel_format)?;
         let pool = reserve_pool(quote.per_surface_bytes, quote.stream_metadata_bytes)?;
-        let selection = selection_from_filter(filter)?;
-        let source_id = selection_source_id(filter, &selection);
-        // SAFETY: The picker callback supplies a live filter. Retaining it
-        // preserves the immutable selection through stream retirement.
-        let retained_filter = unsafe {
-            Retained::retain(ptr::from_ref(filter).cast_mut())
-                .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
-        };
         let mut decoder = MacosFrameDecoder::new(epoch);
         let mut delivery_validator = MacosStreamDeliveryValidator::new(configured_stream);
         delivery_validator.validate_configuration()?;
@@ -854,6 +1163,7 @@ impl NativeStream {
             request.cursor_composed,
             display_filter,
         );
+        let setup_shared = Arc::clone(&output.ivars().shared);
         let delegate: &ProtocolObject<dyn SCStreamDelegate> = ProtocolObject::from_ref(&*output);
         // SAFETY: The filter, configuration, and delegate remain retained by
         // the returned stream and NativeStream owner.
@@ -879,13 +1189,17 @@ impl NativeStream {
                     SCStreamOutputType::Screen,
                     Some(&queue),
                 )
-                .map_err(|error| native_error("add ScreenCaptureKit output", &error))?;
+                .map_err(|error| {
+                    setup_shared
+                        .record_stream_diagnostic_result(epoch, classify_stream_error(&error));
+                    native_error("add ScreenCaptureKit output", &error)
+                })?;
         }
         Ok(Self {
             stream,
-            filter: NativeFilter(retained_filter),
-            selection,
-            source_id,
+            filter: selection_filter.filter,
+            selection: selection_filter.selection,
+            source_id: selection_filter.source_id,
             request,
             reserve_pool: Arc::clone(reserve_pool),
             worker,
@@ -940,7 +1254,11 @@ impl NativeStream {
     fn interruption_restage(&self, selection_revision: u64) -> InterruptedRestagePlan {
         InterruptedRestagePlan {
             recovery: InterruptedRestage::interrupted(self.epoch(), selection_revision),
-            filter: self.filter.clone(),
+            selection_filter: NativeSelectionFilter {
+                filter: self.filter.clone(),
+                selection: self.selection.clone(),
+                source_id: Arc::clone(&self.source_id),
+            },
             request: self.request,
             reserve_pool: Arc::clone(&self.reserve_pool),
         }
@@ -1004,7 +1322,7 @@ impl InterruptedRestage {
             shared.current_epoch(),
             state.selection_revision,
         ) && state.current.is_none()
-            && state.candidate.is_none()
+            && state.candidate_epoch.is_none()
             && state.staging_epoch.is_none()
     }
 
@@ -1030,25 +1348,54 @@ impl InterruptedRestage {
 #[derive(Clone)]
 struct InterruptedRestagePlan {
     recovery: InterruptedRestage,
-    filter: NativeFilter,
+    selection_filter: NativeSelectionFilter,
     request: MacosStreamRequest,
     reserve_pool: PoolReservationFactory,
+}
+
+#[derive(Clone)]
+struct PendingSelectionFilter {
+    epoch: u64,
+    selection_revision: u64,
+    selection_filter: NativeSelectionFilter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CandidateStage {
     epoch: u64,
     selection_revision: u64,
+    lifecycle_revision: u64,
+    predecessor_epoch: Option<u64>,
     recovery_current_epoch: Option<u64>,
     recovery: Option<InterruptedRestage>,
+    request: Option<PendingStreamRequestIdentity>,
 }
 
 impl CandidateStage {
+    const fn identity(self) -> CandidateStageIdentity {
+        CandidateStageIdentity {
+            epoch: self.epoch,
+            selection_revision: self.selection_revision,
+            lifecycle_revision: self.lifecycle_revision,
+            predecessor_epoch: self.predecessor_epoch,
+        }
+    }
+
     fn is_current(self, state: &StreamState, shared: &SessionShared) -> bool {
         shared.capture_active()
             && state.staging_epoch == Some(self.epoch)
             && state.selection_revision == self.selection_revision
-            && state.candidate.is_none()
+            && state.lifecycle_revision == self.lifecycle_revision
+            && state.candidate_epoch.is_none()
+            && state.pending_selection.as_ref().is_some_and(|pending| {
+                pending.epoch == self.epoch && pending.selection_revision == self.selection_revision
+            })
+            && self.request.is_none_or(|request| {
+                state
+                    .pending_request
+                    .as_ref()
+                    .is_some_and(|pending| pending.identity() == request)
+            })
             && self
                 .recovery_current_epoch
                 .is_none_or(|current_epoch| shared.current_epoch() == current_epoch)
@@ -1058,34 +1405,164 @@ impl CandidateStage {
                     && recovery.matches(self.epoch)
             })
     }
+
+    fn begin(self, state: &mut StreamState, shared: &SessionShared) -> bool {
+        if !self.is_current(state, shared) {
+            return false;
+        }
+        state.candidate_epoch = Some(self.epoch);
+        state.staging_epoch = None;
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CandidateStageIdentity {
+    epoch: u64,
+    selection_revision: u64,
+    lifecycle_revision: u64,
+    predecessor_epoch: Option<u64>,
+}
+
+struct CandidatePreparationFailure {
+    stage: CandidateStageIdentity,
+    error: MacosCaptureError,
+}
+
+impl CandidatePreparationFailure {
+    fn new(stage: CandidateStageIdentity, error: MacosCaptureError) -> Self {
+        Self { stage, error }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingStreamRequestIdentity {
+    epoch: u64,
+    request: MacosStreamRequest,
+}
+
+#[derive(Debug)]
+struct PendingStreamRequest {
+    epoch: u64,
+    request: MacosStreamRequest,
+    completion: mpsc::SyncSender<Result<(), MacosCaptureError>>,
+}
+
+struct StreamRequestTransaction {
+    generation: u64,
+    completion: mpsc::Receiver<Result<(), MacosCaptureError>>,
+}
+
+impl StreamRequestTransaction {
+    fn completed(generation: u64, result: Result<(), MacosCaptureError>) -> Self {
+        let (completion, receiver) = mpsc::sync_channel(1);
+        let _ = completion.send(result);
+        Self {
+            generation,
+            completion: receiver,
+        }
+    }
+
+    fn wait(self) -> Result<(), MacosCaptureError> {
+        self.completion.recv().unwrap_or_else(|_| {
+            Err(MacosCaptureError::CaptureWorkerStartFailed(format!(
+                "stream request transaction {} lost its completion",
+                self.generation
+            )))
+        })
+    }
+
+    fn into_parts(self) -> (u64, mpsc::Receiver<Result<(), MacosCaptureError>>) {
+        (self.generation, self.completion)
+    }
+}
+
+impl PendingStreamRequest {
+    const fn identity(&self) -> PendingStreamRequestIdentity {
+        PendingStreamRequestIdentity {
+            epoch: self.epoch,
+            request: self.request,
+        }
+    }
 }
 
 struct StreamRemoval {
     role: StreamRole,
     stream: Option<NativeStream>,
     selection_revision: u64,
+    request_completion: Option<mpsc::SyncSender<Result<(), MacosCaptureError>>>,
+}
+
+#[derive(Default)]
+struct PublicationSideEffects {
+    previous: Option<NativeStream>,
+    request_completion: Option<mpsc::SyncSender<Result<(), MacosCaptureError>>>,
+}
+
+type CandidateReservation = (CandidateStage, NativeSelectionFilter, Option<NativeStream>);
+
+enum FilterAcceptance {
+    Stale,
+    Stored(Option<NativeStream>),
+    Candidate {
+        reservation: CandidateReservation,
+        request: MacosStreamRequest,
+    },
+}
+
+enum CaptureActivation {
+    Unchanged,
+    NeedsSelection,
+    Candidate {
+        reservation: Box<CandidateReservation>,
+        request: MacosStreamRequest,
+    },
 }
 
 #[derive(Default)]
 struct StreamState {
     current: Option<NativeStream>,
     candidate: Option<NativeStream>,
-    selected_filter: Option<NativeFilter>,
+    candidate_epoch: Option<u64>,
+    selected_filter: Option<NativeSelectionFilter>,
+    pending_selection: Option<PendingSelectionFilter>,
     selection_revision: u64,
+    lifecycle_revision: u64,
     pending_interruption: Option<InterruptedRestage>,
     staging_epoch: Option<u64>,
+    request: MacosStreamRequest,
+    pending_request: Option<PendingStreamRequest>,
+    inactive_epochs: Vec<u64>,
+    #[cfg(test)]
+    fixture_current_epoch: Option<u64>,
+    #[cfg(test)]
+    fixture_candidate_epoch: Option<u64>,
 }
 
 struct StreamSlot {
+    // When more than one is required, lock lifecycle_start, rejected_epochs,
+    // then state. Native start runs with only the lifecycle gate retained.
+    lifecycle_start: Mutex<()>,
+    rejected_epochs: Mutex<Vec<u64>>,
     state: Mutex<StreamState>,
+    lifecycle_callbacks: DispatchRetained<DispatchQueue>,
     shared: Arc<SessionShared>,
     next_epoch: AtomicU64,
 }
 
 impl StreamSlot {
-    fn new(shared: Arc<SessionShared>) -> Arc<Self> {
+    fn new(shared: Arc<SessionShared>, request: MacosStreamRequest) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(StreamState::default()),
+            lifecycle_start: Mutex::new(()),
+            rejected_epochs: Mutex::new(Vec::new()),
+            state: Mutex::new(StreamState {
+                request,
+                ..StreamState::default()
+            }),
+            lifecycle_callbacks: DispatchQueue::new(
+                "tech.hyperbliss.hypercolor.screen-capture-lifecycle",
+                DispatchQueueAttr::SERIAL,
+            ),
             shared,
             next_epoch: AtomicU64::new(1),
         })
@@ -1099,32 +1576,548 @@ impl StreamSlot {
             .map_err(|_| MacosCaptureError::SequenceExhausted)
     }
 
-    fn stage_candidate(
+    fn begin_resolution(&self) -> Result<SourceResolution, MacosCaptureError> {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let resolution_epoch = self.shared.begin_resolution()?;
+        Ok(SourceResolution::General(GeneralSourceResolution {
+            resolution_epoch,
+            selector: self.shared.selector(),
+        }))
+    }
+
+    fn begin_picker_resolution(&self) -> Result<SourceResolution, MacosCaptureError> {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let resolution_epoch = self.shared.begin_resolution()?;
+        let resolution = SourceResolution::General(GeneralSourceResolution {
+            resolution_epoch,
+            selector: self.shared.selector(),
+        });
+        self.shared.enable_picker_callbacks(resolution.clone());
+        Ok(resolution)
+    }
+
+    fn set_selector(&self, selector: MacosCaptureSelector) {
+        let _lifecycle = lock(&self.lifecycle_start);
+        self.shared.set_selector(selector);
+    }
+
+    fn set_selector_and_begin_resolution(
+        &self,
+        selector: MacosCaptureSelector,
+    ) -> Result<SourceResolution, MacosCaptureError> {
+        let _lifecycle = lock(&self.lifecycle_start);
+        self.shared.set_selector(selector.clone());
+        let resolution_epoch = self.shared.begin_resolution()?;
+        Ok(SourceResolution::General(GeneralSourceResolution {
+            resolution_epoch,
+            selector,
+        }))
+    }
+
+    #[cfg(test)]
+    fn begin_restart_diagnostic(
+        &self,
+        authorization_granted: bool,
+        selection_revision: u64,
+    ) -> Result<
+        (
+            PostAuthorizationStreamDiagnosticResolution,
+            mpsc::Receiver<MacosProtectedSourceState>,
+        ),
+        MacosCaptureError,
+    > {
+        let _lifecycle = lock(&self.lifecycle_start);
+        self.shared
+            .set_selector(MacosCaptureSelector::PrimaryDisplay);
+        self.shared
+            .begin_restart_diagnostic(authorization_granted, selection_revision)
+    }
+
+    fn reset_for_restart_diagnostic_locked(
+        &self,
+        state: &mut StreamState,
+    ) -> Result<(Option<NativeStream>, Option<NativeStream>), MacosCaptureError> {
+        let selection_revision = state
+            .selection_revision
+            .checked_add(1)
+            .ok_or(MacosCaptureError::SequenceExhausted)?;
+        let lifecycle_revision = state
+            .lifecycle_revision
+            .checked_add(1)
+            .ok_or(MacosCaptureError::SequenceExhausted)?;
+        self.shared.set_capture_active(false);
+        let current = state.current.take();
+        let candidate = state.candidate.take();
+        #[cfg(test)]
+        {
+            state.fixture_current_epoch = None;
+            state.fixture_candidate_epoch = None;
+        }
+        state.selection_revision = selection_revision;
+        state.lifecycle_revision = lifecycle_revision;
+        state.selected_filter = None;
+        state.pending_selection = None;
+        state.pending_interruption = None;
+        state.pending_request = None;
+        state.staging_epoch = None;
+        state.candidate_epoch = None;
+        state.inactive_epochs.clear();
+        self.shared.activate_epoch(0);
+        self.shared.clear_tahoe_selection();
+        self.shared
+            .set_unconfirmed_selection(MacosCaptureSelection::None);
+        self.shared.set_capture_active(true);
+        Ok((current, candidate))
+    }
+
+    fn setup_restart_diagnostic(
+        &self,
+        authorization_granted: bool,
+    ) -> Result<
+        (
+            PostAuthorizationStreamDiagnosticResolution,
+            mpsc::Receiver<MacosProtectedSourceState>,
+        ),
+        MacosCaptureError,
+    > {
+        self.setup_restart_diagnostic_with(authorization_granted, || {})
+    }
+
+    fn setup_restart_diagnostic_with(
+        &self,
+        authorization_granted: bool,
+        setup_installed: impl FnOnce(),
+    ) -> Result<
+        (
+            PostAuthorizationStreamDiagnosticResolution,
+            mpsc::Receiver<MacosProtectedSourceState>,
+        ),
+        MacosCaptureError,
+    > {
+        let (diagnostic, current, candidate) = {
+            let _lifecycle = lock(&self.lifecycle_start);
+            self.shared.disable_picker_callbacks();
+            let mut state = lock(&self.state);
+            let (current, candidate) = self.reset_for_restart_diagnostic_locked(&mut state)?;
+            self.shared
+                .set_selector(MacosCaptureSelector::PrimaryDisplay);
+            let selection_revision = state.selection_revision;
+            let diagnostic = self
+                .shared
+                .begin_restart_diagnostic(authorization_granted, selection_revision);
+            if diagnostic.is_ok() {
+                self.shared.set_status(MacosProtectedSourceState::Starting);
+            }
+            drop(state);
+            setup_installed();
+            (diagnostic, current, candidate)
+        };
+        if let Some(candidate) = candidate {
+            self.stop_stream(candidate);
+        }
+        if let Some(current) = current {
+            self.stop_stream(current);
+        }
+        diagnostic
+    }
+
+    fn reserve_selection_candidate_locked(
+        &self,
+        state: &mut StreamState,
+        epoch: u64,
+        candidate_request: MacosStreamRequest,
+        selection_filter: NativeSelectionFilter,
+    ) -> Result<CandidateReservation, MacosCaptureError> {
+        let authoritative_request = state
+            .pending_request
+            .as_ref()
+            .map_or(state.request, |pending| pending.request);
+        if candidate_request != authoritative_request {
+            return Err(MacosCaptureError::CaptureWorkerStartFailed(
+                "candidate request snapshot does not match the authoritative stream request"
+                    .to_owned(),
+            ));
+        }
+        let selection_revision = state
+            .selection_revision
+            .checked_add(1)
+            .ok_or(MacosCaptureError::SequenceExhausted)?;
+        let lifecycle_revision = state
+            .lifecycle_revision
+            .checked_add(1)
+            .ok_or(MacosCaptureError::SequenceExhausted)?;
+        state.selection_revision = selection_revision;
+        state.lifecycle_revision = lifecycle_revision;
+        state.pending_interruption = None;
+        let request = state.pending_request.take().map(|mut pending| {
+            pending.epoch = epoch;
+            pending
+        });
+        let request_identity = request.as_ref().map(PendingStreamRequest::identity);
+        state.pending_request = request;
+        state.pending_selection = Some(PendingSelectionFilter {
+            epoch,
+            selection_revision: state.selection_revision,
+            selection_filter: selection_filter.clone(),
+        });
+        let stage = CandidateStage {
+            epoch,
+            selection_revision: state.selection_revision,
+            lifecycle_revision,
+            predecessor_epoch: Self::current_epoch(state),
+            recovery_current_epoch: None,
+            recovery: None,
+            request: request_identity,
+        };
+        state.staging_epoch = Some(epoch);
+        if let Some(replaced_epoch) = state.candidate_epoch {
+            state
+                .inactive_epochs
+                .retain(|inactive| *inactive != replaced_epoch);
+        }
+        state.candidate_epoch = None;
+        Ok((stage, selection_filter, state.candidate.take()))
+    }
+
+    fn accept_selection_filter_with(
+        &self,
+        selection_filter: NativeSelectionFilter,
+        candidate_request: MacosStreamRequest,
+        epoch: u64,
+        resolution: SourceResolution,
+        picker: bool,
+        accepted: impl FnOnce(),
+    ) -> Result<FilterAcceptance, MacosCaptureError> {
+        self.accept_selection_filter_with_hooks(
+            selection_filter,
+            candidate_request,
+            epoch,
+            resolution,
+            picker,
+            (|| {}, accepted),
+        )
+    }
+
+    fn accept_selection_filter_with_hooks(
+        &self,
+        selection_filter: NativeSelectionFilter,
+        candidate_request: MacosStreamRequest,
+        epoch: u64,
+        resolution: SourceResolution,
+        picker: bool,
+        hooks: (impl FnOnce(), impl FnOnce()),
+    ) -> Result<FilterAcceptance, MacosCaptureError> {
+        let (before_transition, accepted) = hooks;
+        before_transition();
+        let _lifecycle = lock(&self.lifecycle_start);
+        let mut state = lock(&self.state);
+        if !self.resolution_is_current(&state, &resolution) {
+            return Ok(FilterAcceptance::Stale);
+        }
+        if picker && !self.shared.consume_picker_resolution(&resolution) {
+            return Ok(FilterAcceptance::Stale);
+        }
+        let (acceptance, stored_selection) = if self.shared.capture_active() {
+            let request = state
+                .pending_request
+                .as_ref()
+                .map_or(state.request, |pending| pending.request);
+            let reservation = self.reserve_selection_candidate_locked(
+                &mut state,
+                epoch,
+                candidate_request,
+                selection_filter,
+            )?;
+            (
+                FilterAcceptance::Candidate {
+                    reservation,
+                    request,
+                },
+                None,
+            )
+        } else {
+            let selection_revision = state
+                .selection_revision
+                .checked_add(1)
+                .ok_or(MacosCaptureError::SequenceExhausted)?;
+            let lifecycle_revision = state
+                .lifecycle_revision
+                .checked_add(1)
+                .ok_or(MacosCaptureError::SequenceExhausted)?;
+            state.selection_revision = selection_revision;
+            state.lifecycle_revision = lifecycle_revision;
+            state.pending_interruption = None;
+            state.staging_epoch = None;
+            state.pending_selection = None;
+            state.inactive_epochs.clear();
+            state.candidate_epoch = None;
+            let selection = selection_filter.selection.clone();
+            state.selected_filter = Some(selection_filter);
+            let replaced = state.candidate.take();
+            (FilterAcceptance::Stored(replaced), Some(selection))
+        };
+        if let SourceResolution::Diagnostic(diagnostic) = &resolution {
+            self.shared.record_filter_enumerated(diagnostic, epoch);
+        }
+        drop(state);
+        if let Some(selection) = stored_selection {
+            self.shared.set_unconfirmed_selection(selection);
+            self.shared.set_status(MacosProtectedSourceState::ReadyIdle);
+        }
+        accepted();
+        Ok(acceptance)
+    }
+
+    fn accept_selection_filter(
+        &self,
+        selection_filter: NativeSelectionFilter,
+        candidate_request: MacosStreamRequest,
+        epoch: u64,
+        resolution: SourceResolution,
+        picker: bool,
+    ) -> Result<FilterAcceptance, MacosCaptureError> {
+        self.accept_selection_filter_with(
+            selection_filter,
+            candidate_request,
+            epoch,
+            resolution,
+            picker,
+            || {},
+        )
+    }
+
+    fn resolution_is_current(&self, state: &StreamState, resolution: &SourceResolution) -> bool {
+        self.shared.source_resolution_is_current(resolution)
+            && match resolution {
+                SourceResolution::General(_) => true,
+                SourceResolution::Diagnostic(diagnostic) => {
+                    state.selection_revision == diagnostic.attempt.selection_revision
+                }
+            }
+    }
+
+    fn finalize_picker_cancel(&self, resolution: &SourceResolution) -> bool {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let state = lock(&self.state);
+        if !self.resolution_is_current(&state, resolution)
+            || !self.shared.consume_picker_resolution(resolution)
+        {
+            return false;
+        }
+        let needs_selection = Self::current_epoch(&state).is_none()
+            && state.pending_selection.is_none()
+            && state.selected_filter.is_none();
+        drop(state);
+        if needs_selection {
+            self.shared
+                .set_status(MacosProtectedSourceState::NeedsSelection);
+        }
+        true
+    }
+
+    fn finalize_session_scoped_resolution(&self, resolution: &SourceResolution) -> bool {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let state = lock(&self.state);
+        if !self.resolution_is_current(&state, resolution) {
+            return false;
+        }
+        drop(state);
+        self.shared
+            .set_status(MacosProtectedSourceState::NeedsSelection);
+        true
+    }
+
+    fn finalize_resolution_error(
+        &self,
+        resolution: &SourceResolution,
+        consume_picker: bool,
+        error: MacosCaptureError,
+    ) -> bool {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let state = lock(&self.state);
+        if !self.resolution_is_current(&state, resolution)
+            || (consume_picker && !self.shared.consume_picker_resolution(resolution))
+        {
+            return false;
+        }
+        if let SourceResolution::Diagnostic(diagnostic) = resolution {
+            self.shared.record_non_stream_diagnostic_failure(
+                diagnostic,
+                MacosProtectedSourceState::Failed,
+            );
+        }
+        let preserve_current = Self::current_epoch(&state).is_some();
+        let preserve_selection =
+            state.pending_selection.is_some() || state.selected_filter.is_some();
+        let preserve_status =
+            preserve_current || state.candidate_epoch.is_some() || state.staging_epoch.is_some();
+        let status = (!preserve_status).then_some({
+            if preserve_selection {
+                MacosProtectedSourceState::ReadyIdle
+            } else if matches!(error, MacosCaptureError::DisplaySourceUnavailable(_)) {
+                MacosProtectedSourceState::NeedsSelection
+            } else {
+                MacosProtectedSourceState::Failed
+            }
+        });
+        drop(state);
+        if let Some(status) = status {
+            self.shared.set_status(status);
+        }
+        if preserve_current || preserve_selection {
+            self.shared.publish_recoverable_error(error);
+        } else {
+            self.shared.publish_error(error);
+        }
+        true
+    }
+
+    fn finalize_picker_failure(
+        &self,
+        resolution: &SourceResolution,
+        error: MacosCaptureError,
+    ) -> bool {
+        self.finalize_resolution_error(resolution, true, error)
+    }
+
+    fn finalize_candidate_preparation_failure(
+        &self,
+        failure: CandidatePreparationFailure,
+        resolution: Option<&SourceResolution>,
+    ) -> bool {
+        self.finalize_candidate_preparation_failure_with(failure, resolution, || {})
+    }
+
+    fn finalize_candidate_preparation_failure_with(
+        &self,
+        failure: CandidatePreparationFailure,
+        resolution: Option<&SourceResolution>,
+        before_finalization: impl FnOnce(),
+    ) -> bool {
+        before_finalization();
+        let _lifecycle = lock(&self.lifecycle_start);
+        let mut state = lock(&self.state);
+        if resolution.is_some_and(|resolution| !self.resolution_is_current(&state, resolution)) {
+            return false;
+        }
+        let failed_stage_cleared = state.staging_epoch != Some(failure.stage.epoch)
+            && state.candidate_epoch != Some(failure.stage.epoch)
+            && state
+                .pending_selection
+                .as_ref()
+                .is_none_or(|pending| pending.epoch != failure.stage.epoch);
+        let lifecycle_matches = failed_stage_cleared
+            && state.selection_revision == failure.stage.selection_revision
+            && state.lifecycle_revision == failure.stage.lifecycle_revision
+            && Self::current_epoch(&state) == failure.stage.predecessor_epoch
+            && state.staging_epoch.is_none()
+            && state.candidate_epoch.is_none();
+        if !lifecycle_matches {
+            return false;
+        }
+        let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) else {
+            return false;
+        };
+        if let Some(SourceResolution::Diagnostic(diagnostic)) = resolution {
+            self.shared.record_non_stream_diagnostic_failure(
+                diagnostic,
+                MacosProtectedSourceState::Failed,
+            );
+        }
+        let current_epoch = Self::current_epoch(&state);
+        let current_inactive =
+            current_epoch.is_some_and(|epoch| state.inactive_epochs.contains(&epoch));
+        let preserve_current = current_epoch.is_some();
+        let preserve_selection = state.selected_filter.is_some();
+        let status = if preserve_current {
+            if current_inactive {
+                MacosProtectedSourceState::NeedsSelection
+            } else {
+                MacosProtectedSourceState::Live
+            }
+        } else if preserve_selection {
+            MacosProtectedSourceState::ReadyIdle
+        } else if matches!(
+            &failure.error,
+            MacosCaptureError::DisplaySourceUnavailable(_)
+        ) {
+            MacosProtectedSourceState::NeedsSelection
+        } else {
+            MacosProtectedSourceState::Failed
+        };
+        state.lifecycle_revision = lifecycle_revision;
+        drop(state);
+        self.shared.set_status(status);
+        if preserve_current || preserve_selection {
+            self.shared.publish_recoverable_error(failure.error);
+        } else {
+            self.shared.publish_error(failure.error);
+        }
+        true
+    }
+
+    fn stage_candidate_with_selection(
         self: &Arc<Self>,
-        filter: &SCContentFilter,
+        selection_filter: Option<NativeSelectionFilter>,
         request: MacosStreamRequest,
         reserve_pool: &PoolReservationFactory,
         epoch: u64,
         recovery: Option<InterruptedRestage>,
-    ) -> Result<bool, MacosCaptureError> {
-        let Some((stage, replaced)) = self.reserve_candidate_stage(epoch, recovery)? else {
+        request_transaction: Option<PendingStreamRequest>,
+    ) -> Result<bool, CandidatePreparationFailure> {
+        let failure_stage = {
+            let state = lock(&self.state);
+            CandidateStageIdentity {
+                epoch,
+                selection_revision: recovery.map_or(state.selection_revision, |recovery| {
+                    recovery.selection_revision
+                }),
+                lifecycle_revision: state.lifecycle_revision,
+                predecessor_epoch: recovery
+                    .is_none()
+                    .then(|| Self::current_epoch(&state))
+                    .flatten(),
+            }
+        };
+        let Some(reservation) = self
+            .reserve_candidate_stage(
+                epoch,
+                request,
+                selection_filter,
+                recovery,
+                request_transaction,
+            )
+            .map_err(|error| CandidatePreparationFailure {
+                stage: failure_stage,
+                error,
+            })?
+        else {
             return Ok(false);
         };
+        self.prepare_and_start_candidate(reservation, request, reserve_pool)
+    }
+
+    fn prepare_and_start_candidate(
+        self: &Arc<Self>,
+        (stage, selection_filter, replaced): CandidateReservation,
+        request: MacosStreamRequest,
+        reserve_pool: &PoolReservationFactory,
+    ) -> Result<bool, CandidatePreparationFailure> {
         if let Some(replaced) = replaced {
             self.stop_stream(replaced);
         }
         let candidate = match NativeStream::prepare(
-            filter,
+            selection_filter,
             request,
-            epoch,
+            stage.epoch,
             Arc::clone(&self.shared),
             Arc::downgrade(self),
             reserve_pool,
         ) {
             Ok(candidate) => candidate,
             Err(error) => {
-                self.cancel_candidate_stage(stage);
-                return Err(error);
+                let identity = self.cancel_candidate_stage(stage, Some(error.clone()));
+                return Err(CandidatePreparationFailure::new(identity, error));
             }
         };
         self.start_candidate_stage(candidate, stage)
@@ -1133,12 +2126,68 @@ impl StreamSlot {
     fn reserve_candidate_stage(
         &self,
         epoch: u64,
+        candidate_request: MacosStreamRequest,
+        candidate_selection: Option<NativeSelectionFilter>,
         recovery: Option<InterruptedRestage>,
-    ) -> Result<Option<(CandidateStage, Option<NativeStream>)>, MacosCaptureError> {
+        request_transaction: Option<PendingStreamRequest>,
+    ) -> Result<Option<CandidateReservation>, MacosCaptureError> {
+        let _lifecycle = lock(&self.lifecycle_start);
         let mut state = lock(&self.state);
         if !self.shared.capture_active() {
+            if let Some(request) = request_transaction {
+                state.request = request.request;
+                state.pending_request = None;
+                let completion = request.completion;
+                drop(state);
+                let _ = completion.send(Ok(()));
+            }
             return Ok(None);
         }
+        let selection_replacement = request_transaction.is_none() && recovery.is_none();
+        match (request_transaction.as_ref(), state.pending_request.as_ref()) {
+            (Some(request), Some(_)) => {
+                return Err(MacosCaptureError::CaptureWorkerStartFailed(format!(
+                    "stream request transaction {} cannot replace another pending request",
+                    request.epoch
+                )));
+            }
+            (None, pending) => {
+                let authoritative_request =
+                    pending.map_or(state.request, |pending| pending.request);
+                if candidate_request != authoritative_request {
+                    return Err(MacosCaptureError::CaptureWorkerStartFailed(
+                        "candidate request snapshot does not match the authoritative stream request"
+                            .to_owned(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+        let selection_filter = candidate_selection
+            .or_else(|| {
+                state
+                    .pending_selection
+                    .as_ref()
+                    .map(|pending| pending.selection_filter.clone())
+            })
+            .or_else(|| state.selected_filter.clone());
+        let Some(selection_filter) = selection_filter else {
+            let Some(request) = request_transaction else {
+                return Err(MacosCaptureError::CaptureWorkerStartFailed(
+                    "candidate has no authoritative selection filter".to_owned(),
+                ));
+            };
+            state.request = request.request;
+            state.pending_request = None;
+            let completion = request.completion;
+            drop(state);
+            let _ = completion.send(Ok(()));
+            return Ok(None);
+        };
+        let lifecycle_revision = state
+            .lifecycle_revision
+            .checked_add(1)
+            .ok_or(MacosCaptureError::SequenceExhausted)?;
         let current_epoch = self.shared.current_epoch();
         let recovery = match recovery {
             Some(recovery) => {
@@ -1154,120 +2203,446 @@ impl StreamSlot {
                 Some(recovery)
             }
             None => {
-                state.selection_revision = state
-                    .selection_revision
-                    .checked_add(1)
-                    .ok_or(MacosCaptureError::SequenceExhausted)?;
+                if selection_replacement {
+                    state.selection_revision = state
+                        .selection_revision
+                        .checked_add(1)
+                        .ok_or(MacosCaptureError::SequenceExhausted)?;
+                }
                 state.pending_interruption = None;
                 None
             }
         };
+        state.lifecycle_revision = lifecycle_revision;
+        let request = request_transaction.or_else(|| {
+            state.pending_request.take().map(|mut pending| {
+                pending.epoch = epoch;
+                pending
+            })
+        });
+        let request_identity = request.as_ref().map(PendingStreamRequest::identity);
+        state.pending_request = request;
+        state.pending_selection = Some(PendingSelectionFilter {
+            epoch,
+            selection_revision: state.selection_revision,
+            selection_filter: selection_filter.clone(),
+        });
         let stage = CandidateStage {
             epoch,
             selection_revision: state.selection_revision,
+            lifecycle_revision,
+            predecessor_epoch: Self::current_epoch(&state),
             recovery_current_epoch: recovery.map(|_| current_epoch),
             recovery,
+            request: request_identity,
         };
         state.staging_epoch = Some(epoch);
-        Ok(Some((stage, state.candidate.take())))
+        if let Some(replaced_epoch) = state.candidate_epoch {
+            state
+                .inactive_epochs
+                .retain(|inactive| *inactive != replaced_epoch);
+        }
+        state.candidate_epoch = None;
+        Ok(Some((stage, selection_filter, state.candidate.take())))
     }
 
-    fn cancel_candidate_stage(&self, stage: CandidateStage) {
+    fn cancel_candidate_stage(
+        &self,
+        stage: CandidateStage,
+        error: Option<MacosCaptureError>,
+    ) -> CandidateStageIdentity {
+        let _lifecycle = lock(&self.lifecycle_start);
         let mut state = lock(&self.state);
-        if state.staging_epoch == Some(stage.epoch) {
+        let mut identity = stage.identity();
+        let current = state.lifecycle_revision == stage.lifecycle_revision
+            && state.staging_epoch == Some(stage.epoch);
+        if current {
             state.staging_epoch = None;
+            state
+                .pending_selection
+                .take_if(|pending| pending.epoch == stage.epoch);
+            if stage
+                .recovery
+                .is_some_and(|recovery| state.pending_interruption == Some(recovery))
+            {
+                state.pending_interruption = None;
+            }
+            if let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) {
+                state.lifecycle_revision = lifecycle_revision;
+                identity.lifecycle_revision = lifecycle_revision;
+            }
         }
-        if stage
-            .recovery
-            .is_some_and(|recovery| state.pending_interruption == Some(recovery))
-        {
-            state.pending_interruption = None;
+        let completion = current
+            && stage.request.is_some_and(|request| {
+                state
+                    .pending_request
+                    .as_ref()
+                    .is_some_and(|pending| pending.identity() == request)
+            });
+        let completion = completion
+            .then(|| {
+                state
+                    .pending_request
+                    .take()
+                    .map(|pending| pending.completion)
+            })
+            .flatten();
+        drop(state);
+        if let (Some(completion), Some(error)) = (completion, error) {
+            let _ = completion.send(Err(error));
         }
+        identity
+    }
+
+    #[cfg(test)]
+    fn fail_candidate_preparation_fixture(
+        &self,
+        stage: CandidateStage,
+        error: MacosCaptureError,
+    ) -> CandidatePreparationFailure {
+        let identity = self.cancel_candidate_stage(stage, Some(error.clone()));
+        CandidatePreparationFailure::new(identity, error)
     }
 
     fn start_candidate_stage(
         self: &Arc<Self>,
         candidate: NativeStream,
         stage: CandidateStage,
-    ) -> Result<bool, MacosCaptureError> {
+    ) -> Result<bool, CandidatePreparationFailure> {
         let stream = candidate.stream.clone();
         let mut candidate = Some(candidate);
-        let discarded = {
-            let mut state = lock(&self.state);
-            if !stage.is_current(&state, &self.shared) {
-                true
-            } else {
-                state.candidate = candidate.take();
-                state.staging_epoch = None;
-                self.shared.set_status(MacosProtectedSourceState::Starting);
+        let started = self.invoke_candidate_start(
+            stage,
+            |state| state.candidate = candidate.take(),
+            || {
                 start_stream(
                     &stream,
                     stage.epoch,
                     Arc::downgrade(self),
                     Arc::clone(&self.shared),
                 );
-                false
-            }
-        };
-        if discarded {
-            candidate
+            },
+        );
+        if !started {
+            let error = MacosCaptureError::CaptureWorkerStartFailed(
+                "stream request candidate was superseded before start".to_owned(),
+            );
+            let identity = self.cancel_candidate_stage(stage, Some(error));
+            if let Err(error) = candidate
                 .expect("uninstalled candidate remains owned")
-                .discard_unstarted()?;
+                .discard_unstarted()
+            {
+                return Err(CandidatePreparationFailure::new(identity, error));
+            }
             return Ok(false);
         }
         Ok(true)
     }
 
-    fn activate(
+    fn invoke_candidate_start(
         &self,
+        stage: CandidateStage,
+        install: impl FnOnce(&mut StreamState),
+        invoke_start: impl FnOnce(),
+    ) -> bool {
+        let _lifecycle = lock(&self.lifecycle_start);
+        {
+            let mut state = lock(&self.state);
+            if !stage.begin(&mut state, &self.shared) {
+                return false;
+            }
+            install(&mut state);
+            self.shared.set_status(MacosProtectedSourceState::Starting);
+        }
+        invoke_start();
+        true
+    }
+
+    #[cfg(test)]
+    fn start_candidate_fixture(&self, stage: CandidateStage) -> bool {
+        self.start_candidate_fixture_with(stage, || {})
+    }
+
+    #[cfg(test)]
+    fn start_candidate_fixture_with(
+        &self,
+        stage: CandidateStage,
+        invoke_start: impl FnOnce(),
+    ) -> bool {
+        self.invoke_candidate_start(
+            stage,
+            |state| state.fixture_candidate_epoch = Some(stage.epoch),
+            invoke_start,
+        )
+    }
+
+    #[cfg(test)]
+    fn activate_candidate_fixture(&self, epoch: u64) -> bool {
+        let completion = {
+            let _lifecycle = lock(&self.lifecycle_start);
+            let rejected = lock(&self.rejected_epochs);
+            let mut state = lock(&self.state);
+            if !Self::candidate_is_activatable(&state, &rejected, epoch) {
+                return false;
+            }
+            let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) else {
+                return false;
+            };
+            state.lifecycle_revision = lifecycle_revision;
+            state.candidate_epoch = None;
+            state.fixture_candidate_epoch = None;
+            state.fixture_current_epoch = Some(epoch);
+            Self::commit_pending_selection(&mut state, epoch);
+            let completion = Self::commit_pending_request(&mut state, epoch);
+            self.shared.activate_epoch(epoch);
+            completion
+        };
+        if let Some(completion) = completion {
+            let _ = completion.send(Ok(()));
+        }
+        true
+    }
+
+    #[cfg(test)]
+    fn fail_candidate_fixture(&self, epoch: u64, error: MacosCaptureError) -> bool {
+        let mut removal = self.remove(epoch);
+        if removal.role != StreamRole::Candidate {
+            return false;
+        }
+        if let Some(completion) = removal.request_completion.take() {
+            let _ = completion.send(Err(error));
+        }
+        true
+    }
+
+    #[cfg(test)]
+    fn drain_lifecycle_callbacks(&self) {
+        self.lifecycle_callbacks.exec_sync(|| {});
+    }
+
+    fn current_is_epoch(state: &StreamState, epoch: u64) -> bool {
+        let current = state.current.as_ref().map(NativeStream::epoch);
+        #[cfg(test)]
+        {
+            current.or(state.fixture_current_epoch) == Some(epoch)
+        }
+        #[cfg(not(test))]
+        {
+            current == Some(epoch)
+        }
+    }
+
+    fn current_epoch(state: &StreamState) -> Option<u64> {
+        let current = state.current.as_ref().map(NativeStream::epoch);
+        #[cfg(test)]
+        {
+            current.or(state.fixture_current_epoch)
+        }
+        #[cfg(not(test))]
+        {
+            current
+        }
+    }
+
+    fn tracks_epoch(state: &StreamState, epoch: u64) -> bool {
+        Self::current_is_epoch(state, epoch)
+            || state.candidate_epoch == Some(epoch)
+            || state
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.epoch() == epoch)
+    }
+
+    fn record_stream_activity(&self, epoch: u64, active: bool, display_filter: bool) {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let mut state = lock(&self.state);
+        if !Self::tracks_epoch(&state, epoch) {
+            return;
+        }
+        if display_filter {
+            return;
+        }
+        if active {
+            state.inactive_epochs.retain(|inactive| *inactive != epoch);
+        } else if !state.inactive_epochs.contains(&epoch) {
+            state.inactive_epochs.push(epoch);
+        }
+        let current = Self::current_is_epoch(&state, epoch);
+        drop(state);
+        if current {
+            self.shared.set_status(if active {
+                MacosProtectedSourceState::Live
+            } else {
+                MacosProtectedSourceState::NeedsSelection
+            });
+        }
+    }
+
+    fn activate_candidate_for_publication(
+        &self,
+        state: &mut StreamState,
+        rejected: &[u64],
         epoch: u64,
         confirmed_delivery: Option<MacosValidatedStreamDelivery>,
-    ) -> bool {
-        let previous = {
-            let mut state = lock(&self.state);
-            let Some(candidate) = state
-                .candidate
-                .take_if(|candidate| candidate.epoch() == epoch)
-            else {
-                return false;
-            };
-            let Some(confirmed_delivery) = confirmed_delivery else {
-                state.candidate = Some(candidate);
-                return false;
-            };
-            let previous = state.current.replace(candidate);
-            let recovered = state
-                .pending_interruption
-                .take_if(|recovery| recovery.matches(epoch))
-                .is_some();
-            state.selected_filter = state.current.as_ref().map(|current| current.filter.clone());
-            if let Some(current) = &state.current {
-                self.shared.confirm_selection(
-                    current.selection.clone(),
-                    Arc::clone(&current.source_id),
-                    epoch,
-                    confirmed_delivery,
-                );
+    ) -> Option<PublicationSideEffects> {
+        if !Self::candidate_is_activatable(state, rejected, epoch) {
+            return None;
+        }
+        let lifecycle_revision = state.lifecycle_revision.checked_add(1)?;
+        let candidate = state.candidate.take();
+        #[cfg(test)]
+        let fixture_candidate = state
+            .fixture_candidate_epoch
+            .take_if(|candidate| *candidate == epoch);
+        #[cfg(not(test))]
+        candidate.as_ref()?;
+        #[cfg(test)]
+        if candidate.is_none() && fixture_candidate.is_none() {
+            return None;
+        }
+        let Some(confirmed_delivery) = confirmed_delivery else {
+            state.candidate = candidate;
+            #[cfg(test)]
+            {
+                state.fixture_candidate_epoch = fixture_candidate;
             }
-            self.shared.activate_epoch(epoch);
-            if recovered {
-                self.shared.set_status(MacosProtectedSourceState::Live);
-            }
-            previous
+            return None;
         };
-        if let Some(previous) = previous {
+        state.lifecycle_revision = lifecycle_revision;
+        state.candidate_epoch = None;
+        let previous = candidate.and_then(|candidate| state.current.replace(candidate));
+        #[cfg(test)]
+        if fixture_candidate.is_some() {
+            state.fixture_current_epoch = Some(epoch);
+        }
+        Self::commit_pending_selection(state, epoch);
+        let request_completion = Self::commit_pending_request(state, epoch);
+        let recovered = state
+            .pending_interruption
+            .take_if(|recovery| recovery.matches(epoch))
+            .is_some();
+        if let Some(current) = &state.current {
+            self.shared.confirm_selection(
+                current.selection.clone(),
+                Arc::clone(&current.source_id),
+                epoch,
+                confirmed_delivery,
+            );
+        }
+        self.shared.activate_epoch(epoch);
+        if recovered {
+            self.shared.set_status(MacosProtectedSourceState::Live);
+        }
+        Some(PublicationSideEffects {
+            previous,
+            request_completion,
+        })
+    }
+
+    fn publish_decoded_sample(&self, epoch: u64, sample: DecodedSample) -> bool {
+        let is_frame = matches!(&sample.event, MacosFrameEvent::Frame(_));
+        self.publish_decoded_event_with(epoch, is_frame, sample.confirmed_delivery, || {
+            self.shared.publish(sample.event)
+        })
+    }
+
+    fn publish_decoded_event_with(
+        &self,
+        epoch: u64,
+        is_frame: bool,
+        confirmed_delivery: Option<MacosValidatedStreamDelivery>,
+        publish: impl FnOnce(),
+    ) -> bool {
+        let lifecycle = lock(&self.lifecycle_start);
+        let rejected = lock(&self.rejected_epochs);
+        let mut state = lock(&self.state);
+        if !self.shared.capture_active()
+            || rejected.contains(&epoch)
+            || state.inactive_epochs.contains(&epoch)
+        {
+            return false;
+        }
+        let side_effects = if Self::current_is_epoch(&state, epoch) {
+            PublicationSideEffects::default()
+        } else if is_frame {
+            let Some(side_effects) = self.activate_candidate_for_publication(
+                &mut state,
+                &rejected,
+                epoch,
+                confirmed_delivery,
+            ) else {
+                return false;
+            };
+            side_effects
+        } else {
+            return false;
+        };
+        drop(state);
+        publish();
+        drop(rejected);
+        drop(lifecycle);
+        if let Some(completion) = side_effects.request_completion {
+            let _ = completion.send(Ok(()));
+        }
+        if let Some(previous) = side_effects.previous {
             self.stop_stream(previous);
         }
         true
     }
 
-    fn remove(&self, epoch: u64) -> StreamRemoval {
-        let mut state = lock(&self.state);
-        if state
-            .candidate
-            .as_ref()
-            .is_some_and(|candidate| candidate.epoch() == epoch)
+    fn commit_pending_request(
+        state: &mut StreamState,
+        epoch: u64,
+    ) -> Option<mpsc::SyncSender<Result<(), MacosCaptureError>>> {
+        if let Some(request) = state
+            .pending_request
+            .take_if(|request| request.epoch == epoch)
         {
+            state.request = request.request;
+            Some(request.completion)
+        } else {
+            None
+        }
+    }
+
+    fn commit_pending_selection(state: &mut StreamState, epoch: u64) {
+        if let Some(pending) = state
+            .pending_selection
+            .take_if(|pending| pending.epoch == epoch)
+        {
+            state.selected_filter = Some(pending.selection_filter);
+        }
+    }
+
+    fn candidate_is_activatable(state: &StreamState, rejected: &[u64], epoch: u64) -> bool {
+        !rejected.contains(&epoch)
+            && !state.inactive_epochs.contains(&epoch)
+            && state.candidate_epoch == Some(epoch)
+            && state.pending_selection.as_ref().is_some_and(|pending| {
+                pending.epoch == epoch && pending.selection_revision == state.selection_revision
+            })
+    }
+
+    fn remove(&self, epoch: u64) -> StreamRemoval {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let mut state = lock(&self.state);
+        if state.candidate_epoch == Some(epoch) {
+            state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
+            state.candidate_epoch = None;
+            state.inactive_epochs.retain(|inactive| *inactive != epoch);
+            #[cfg(test)]
+            {
+                state
+                    .fixture_candidate_epoch
+                    .take_if(|candidate| *candidate == epoch);
+            }
+            state
+                .pending_selection
+                .take_if(|pending| pending.epoch == epoch);
+            let request_completion = state
+                .pending_request
+                .take_if(|request| request.epoch == epoch)
+                .map(|request| request.completion);
             if state
                 .pending_interruption
                 .is_some_and(|recovery| recovery.matches(epoch))
@@ -1278,51 +2653,133 @@ impl StreamSlot {
                 role: StreamRole::Candidate,
                 stream: state.candidate.take(),
                 selection_revision: state.selection_revision,
+                request_completion,
             };
         }
-        if state
-            .current
-            .as_ref()
-            .is_some_and(|current| current.epoch() == epoch)
-        {
+        if Self::current_is_epoch(&state, epoch) {
+            state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
             let current = state.current.take();
+            state.inactive_epochs.retain(|inactive| *inactive != epoch);
+            #[cfg(test)]
+            {
+                state
+                    .fixture_current_epoch
+                    .take_if(|current| *current == epoch);
+            }
             self.shared.activate_epoch(0);
             self.shared.clear_tahoe_selection();
             return StreamRemoval {
                 role: StreamRole::Current,
                 stream: current,
                 selection_revision: state.selection_revision,
+                request_completion: None,
             };
         }
         StreamRemoval {
             role: StreamRole::Stale,
             stream: None,
             selection_revision: state.selection_revision,
+            request_completion: None,
         }
     }
 
     fn accepts_epoch(&self, epoch: u64) -> bool {
+        let rejected = lock(&self.rejected_epochs);
+        if rejected.contains(&epoch) {
+            return false;
+        }
         let state = lock(&self.state);
-        state
-            .current
-            .as_ref()
-            .is_some_and(|stream| stream.epoch() == epoch)
-            || state
-                .candidate
+        !state.inactive_epochs.contains(&epoch)
+            && (state
+                .current
                 .as_ref()
                 .is_some_and(|stream| stream.epoch() == epoch)
+                || state
+                    .candidate
+                    .as_ref()
+                    .is_some_and(|stream| stream.epoch() == epoch))
     }
 
-    fn has_current(&self) -> bool {
-        lock(&self.state).current.is_some()
+    fn record_stream_start_success(&self, epoch: u64) {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let rejected = lock(&self.rejected_epochs);
+        if rejected.contains(&epoch) {
+            return;
+        }
+        let tracked = {
+            let state = lock(&self.state);
+            state.candidate_epoch == Some(epoch)
+                || state
+                    .current
+                    .as_ref()
+                    .is_some_and(|stream| stream.epoch() == epoch)
+        };
+        if tracked {
+            self.shared
+                .record_stream_diagnostic_result(epoch, MacosProtectedSourceState::ReadyIdle);
+        }
+    }
+
+    fn reject_epoch(&self, epoch: u64) {
+        let mut rejected = lock(&self.rejected_epochs);
+        if !rejected.contains(&epoch) {
+            rejected.push(epoch);
+        }
+    }
+
+    fn clear_rejected_epoch(&self, epoch: u64) {
+        lock(&self.rejected_epochs).retain(|rejected| *rejected != epoch);
+    }
+
+    fn selection_revision(&self) -> u64 {
+        lock(&self.state).selection_revision
     }
 
     fn has_newer_lifecycle(&self, selection_revision: u64) -> bool {
         let state = lock(&self.state);
         state.selection_revision != selection_revision
-            || state.current.is_some()
-            || state.candidate.is_some()
+            || Self::current_epoch(&state).is_some()
+            || state.candidate_epoch.is_some()
             || state.staging_epoch.is_some()
+    }
+
+    fn finalize_stream_error(
+        &self,
+        role: StreamRole,
+        selection_revision: u64,
+        terminal_state: MacosProtectedSourceState,
+        error: MacosCaptureError,
+    ) {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let state = lock(&self.state);
+        let current_epoch = Self::current_epoch(&state);
+        let preserve_current = role == StreamRole::Candidate && current_epoch.is_some();
+        let superseded_candidate = role == StreamRole::Candidate
+            && (state.selection_revision != selection_revision
+                || state.candidate_epoch.is_some()
+                || state.staging_epoch.is_some());
+        let superseded_current = role == StreamRole::Current
+            && (!self.shared.capture_active()
+                || state.selection_revision != selection_revision
+                || current_epoch.is_some()
+                || state.candidate_epoch.is_some()
+                || state.staging_epoch.is_some());
+        let current_inactive =
+            current_epoch.is_some_and(|epoch| state.inactive_epochs.contains(&epoch));
+        drop(state);
+        if superseded_candidate || superseded_current {
+            self.shared.publish_recoverable_error(error);
+        } else if preserve_current {
+            self.shared.set_status(if current_inactive {
+                MacosProtectedSourceState::NeedsSelection
+            } else {
+                MacosProtectedSourceState::Live
+            });
+            self.shared.publish_recoverable_error(error);
+        } else if role != StreamRole::Stale {
+            self.shared.set_status(terminal_state);
+            self.shared.publish_error(error);
+        }
     }
 
     fn active_identity(&self) -> Option<(Arc<str>, u64)> {
@@ -1333,27 +2790,32 @@ impl StreamSlot {
     }
 
     fn has_selection(&self) -> bool {
-        lock(&self.state).selected_filter.is_some()
+        let state = lock(&self.state);
+        state.pending_selection.is_some() || state.selected_filter.is_some()
     }
 
-    fn store_selection(&self, filter: &SCContentFilter) -> Result<(), MacosCaptureError> {
-        let selection = selection_from_filter(filter)?;
-        // SAFETY: The picker callback supplies a live immutable filter. The
-        // retained owner remains process-local and is never serialized.
-        let filter = unsafe {
-            Retained::retain(ptr::from_ref(filter).cast_mut())
-                .ok_or(MacosCaptureError::RetainNativeFilterFailed)?
-        };
+    #[cfg(test)]
+    fn clear_selection(&self) -> Result<(), MacosCaptureError> {
+        let _lifecycle = lock(&self.lifecycle_start);
         let mut state = lock(&self.state);
         state.selection_revision = state
             .selection_revision
             .checked_add(1)
             .ok_or(MacosCaptureError::SequenceExhausted)?;
+        state.lifecycle_revision = state
+            .lifecycle_revision
+            .checked_add(1)
+            .ok_or(MacosCaptureError::SequenceExhausted)?;
+        state.selected_filter = None;
+        state.pending_selection = None;
         state.pending_interruption = None;
+        state.pending_request = None;
         state.staging_epoch = None;
-        state.selected_filter = Some(NativeFilter(filter));
+        state.candidate_epoch = None;
+        state.inactive_epochs.clear();
         drop(state);
-        self.shared.set_unconfirmed_selection(selection);
+        self.shared
+            .set_unconfirmed_selection(MacosCaptureSelection::None);
         Ok(())
     }
 
@@ -1420,8 +2882,91 @@ impl StreamSlot {
         }
     }
 
-    fn selected_filter(&self) -> Option<NativeFilter> {
-        lock(&self.state).selected_filter.clone()
+    fn request(&self) -> MacosStreamRequest {
+        let state = lock(&self.state);
+        state
+            .pending_request
+            .as_ref()
+            .map_or(state.request, |pending| pending.request)
+    }
+
+    fn committed_request(&self) -> MacosStreamRequest {
+        lock(&self.state).request
+    }
+
+    fn set_request(
+        self: &Arc<Self>,
+        request: MacosStreamRequest,
+        reserve_pool: &PoolReservationFactory,
+    ) -> Result<StreamRequestTransaction, MacosCaptureError> {
+        let (transaction, reservation) = self.begin_request_candidate(request)?;
+        if let Some(reservation) = reservation
+            && let Err(failure) =
+                self.prepare_and_start_candidate(reservation, request, reserve_pool)
+        {
+            let error = failure.error.clone();
+            self.finalize_candidate_preparation_failure(failure, None);
+            return Err(error);
+        }
+        Ok(transaction)
+    }
+
+    fn begin_request_candidate(
+        &self,
+        request: MacosStreamRequest,
+    ) -> Result<(StreamRequestTransaction, Option<CandidateReservation>), MacosCaptureError> {
+        {
+            let _lifecycle = lock(&self.lifecycle_start);
+            let state = lock(&self.state);
+            if state.pending_request.is_some() {
+                return Err(MacosCaptureError::CaptureWorkerStartFailed(
+                    "another stream request transaction is still pending".to_owned(),
+                ));
+            }
+            if state.request == request {
+                return Ok((
+                    StreamRequestTransaction::completed(self.shared.current_epoch(), Ok(())),
+                    None,
+                ));
+            }
+        }
+        let epoch = self.allocate_epoch()?;
+        let (completion, receiver) = mpsc::sync_channel(1);
+        let reservation = self.reserve_candidate_stage(
+            epoch,
+            request,
+            None,
+            None,
+            Some(PendingStreamRequest {
+                epoch,
+                request,
+                completion,
+            }),
+        )?;
+        Ok((
+            StreamRequestTransaction {
+                generation: epoch,
+                completion: receiver,
+            },
+            reservation,
+        ))
+    }
+
+    #[cfg(test)]
+    fn begin_request_candidate_fixture(
+        &self,
+        request: MacosStreamRequest,
+    ) -> Result<(StreamRequestTransaction, Option<NativeStream>), MacosCaptureError> {
+        let (transaction, reservation) = self.begin_request_candidate(request)?;
+        let Some((stage, _selection_filter, replaced)) = reservation else {
+            return Ok((transaction, None));
+        };
+        if !self.start_candidate_fixture(stage) {
+            return Err(MacosCaptureError::CaptureWorkerStartFailed(
+                "fixture request candidate was superseded before start".to_owned(),
+            ));
+        }
+        Ok((transaction, replaced))
     }
 
     fn current_stream(&self) -> Option<Retained<SCStream>> {
@@ -1434,19 +2979,56 @@ impl StreamSlot {
     fn stage_interrupted_recovery(
         self: &Arc<Self>,
         plan: InterruptedRestagePlan,
-    ) -> Result<bool, MacosCaptureError> {
-        let epoch = self.allocate_epoch()?;
-        self.stage_candidate(
-            &plan.filter.0,
+    ) -> Result<bool, CandidatePreparationFailure> {
+        let lifecycle_revision = lock(&self.state).lifecycle_revision;
+        let epoch = self
+            .allocate_epoch()
+            .map_err(|error| CandidatePreparationFailure {
+                stage: CandidateStageIdentity {
+                    epoch: plan.recovery.interrupted_epoch,
+                    selection_revision: plan.recovery.selection_revision,
+                    lifecycle_revision,
+                    predecessor_epoch: None,
+                },
+                error,
+            })?;
+        self.stage_candidate_with_selection(
+            Some(plan.selection_filter),
             plan.request,
             &plan.reserve_pool,
             epoch,
             Some(plan.recovery),
+            None,
         )
     }
 
+    fn begin_capture_activation(&self) -> Result<CaptureActivation, MacosCaptureError> {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let mut state = lock(&self.state);
+        if self.shared.capture_active() {
+            return Ok(CaptureActivation::Unchanged);
+        }
+        let Some(selection_filter) = state.selected_filter.clone() else {
+            self.shared.set_capture_active(true);
+            return Ok(CaptureActivation::NeedsSelection);
+        };
+        let epoch = self.allocate_epoch()?;
+        let request = state
+            .pending_request
+            .as_ref()
+            .map_or(state.request, |pending| pending.request);
+        let reservation =
+            self.reserve_selection_candidate_locked(&mut state, epoch, request, selection_filter)?;
+        self.shared.set_capture_active(true);
+        Ok(CaptureActivation::Candidate {
+            reservation: Box::new(reservation),
+            request,
+        })
+    }
+
     fn set_capture_active(&self, active: bool) -> bool {
-        let (current, candidate) = {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let (current, candidate, selection, diagnostic_completion) = {
             let mut state = lock(&self.state);
             if self.shared.set_capture_active(active) == active {
                 return false;
@@ -1454,19 +3036,52 @@ impl StreamSlot {
             if active {
                 return true;
             }
+            let diagnostic_completion = self.shared.take_restart_diagnostic_completion();
             state.selection_revision = state.selection_revision.saturating_add(1);
+            state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
             state.pending_interruption = None;
             state.staging_epoch = None;
+            state.pending_request = None;
+            state.candidate_epoch = None;
+            state.inactive_epochs.clear();
+            #[cfg(test)]
+            {
+                state.fixture_candidate_epoch = None;
+                state.fixture_current_epoch = None;
+            }
+            let mut selection = state.pending_selection.take().map(|pending| {
+                let selection = pending.selection_filter.selection.clone();
+                state.selected_filter = Some(pending.selection_filter);
+                selection
+            });
             if state.current.is_none()
                 && state.selected_filter.is_none()
                 && let Some(candidate) = state.candidate.as_ref()
             {
-                state.selected_filter = Some(candidate.filter.clone());
+                let selection_filter = NativeSelectionFilter {
+                    filter: candidate.filter.clone(),
+                    selection: candidate.selection.clone(),
+                    source_id: Arc::clone(&candidate.source_id),
+                };
+                selection = Some(selection_filter.selection.clone());
+                state.selected_filter = Some(selection_filter);
             }
-            (state.current.take(), state.candidate.take())
+            (
+                state.current.take(),
+                state.candidate.take(),
+                selection,
+                diagnostic_completion,
+            )
         };
         self.shared.activate_epoch(0);
         self.shared.clear_tahoe_selection();
+        if let Some(selection) = selection {
+            self.shared.set_unconfirmed_selection(selection);
+        }
+        drop(_lifecycle);
+        if let Some(completion) = diagnostic_completion {
+            let _ = completion.send(MacosProtectedSourceState::Failed);
+        }
         if let Some(candidate) = candidate {
             self.stop_stream(candidate);
         }
@@ -1508,6 +3123,8 @@ fn start_stream(
         // the duration of this completion invocation.
         if let Some(error) = unsafe { error.as_ref() } {
             handle_stream_error(&streams, epoch, &shared, error);
+        } else {
+            dispatch_stream_start_success(&streams, epoch);
         }
     });
     // SAFETY: ScreenCaptureKit copies the heap block for asynchronous use, and
@@ -1515,17 +3132,71 @@ fn start_stream(
     unsafe { stream.startCaptureWithCompletionHandler(Some(&completion)) };
 }
 
+fn dispatch_stream_start_success(streams: &Weak<StreamSlot>, epoch: u64) {
+    let Some(streams) = streams.upgrade() else {
+        return;
+    };
+    let callbacks = streams.lifecycle_callbacks.clone();
+    callbacks.exec_async(move || streams.record_stream_start_success(epoch));
+}
+
 fn handle_stream_error(
     streams: &Weak<StreamSlot>,
     epoch: u64,
-    shared: &SessionShared,
+    shared: &Arc<SessionShared>,
     error: &NSError,
 ) {
     let Some(streams) = streams.upgrade() else {
         return;
     };
-    let removal = streams.remove(epoch);
     let state = classify_stream_error(error);
+    let error = native_error("ScreenCaptureKit stream", error);
+    let shared = Arc::clone(shared);
+    dispatch_owned_stream_error(streams, epoch, shared, state, error);
+}
+
+fn dispatch_owned_stream_error(
+    streams: Arc<StreamSlot>,
+    epoch: u64,
+    shared: Arc<SessionShared>,
+    state: MacosProtectedSourceState,
+    error: MacosCaptureError,
+) {
+    streams.reject_epoch(epoch);
+    let callbacks = streams.lifecycle_callbacks.clone();
+    callbacks.exec_async(move || {
+        handle_owned_stream_error(&streams, epoch, &shared, state, error);
+    });
+}
+
+fn handle_owned_stream_error(
+    streams: &Arc<StreamSlot>,
+    epoch: u64,
+    shared: &SessionShared,
+    state: MacosProtectedSourceState,
+    error: MacosCaptureError,
+) {
+    handle_owned_stream_error_with(streams, epoch, shared, state, error, || {});
+}
+
+fn handle_owned_stream_error_with(
+    streams: &Arc<StreamSlot>,
+    epoch: u64,
+    shared: &SessionShared,
+    state: MacosProtectedSourceState,
+    error: MacosCaptureError,
+    after_retirement: impl FnOnce(),
+) {
+    let mut removal = streams.remove(epoch);
+    streams.clear_rejected_epoch(epoch);
+    let state = if removal.role == StreamRole::Stale {
+        state
+    } else {
+        shared.record_stream_diagnostic_result(epoch, state)
+    };
+    if let Some(completion) = removal.request_completion.take() {
+        let _ = completion.send(Err(error.clone()));
+    }
     let role = removal.role;
     let selection_revision = removal.selection_revision;
     let recovery = (removal.role == StreamRole::Current
@@ -1542,8 +3213,9 @@ fn handle_stream_error(
     {
         shared.counters.record_drop(&worker_error);
     }
+    after_retirement();
     if let Some(recovery) = recovery {
-        let stream_error = native_error("ScreenCaptureKit stream", error);
+        let stream_error = error;
         match streams.stage_interrupted_recovery(recovery) {
             Ok(true) => shared.publish_recoverable_error(stream_error),
             Ok(false) => {
@@ -1552,34 +3224,13 @@ fn handle_stream_error(
                 }
             }
             Err(stage_error) => {
-                shared.publish_recoverable_error(stream_error);
-                handle_filter_error(&streams, shared, stage_error);
+                shared.counters.record_drop(&stream_error);
+                streams.finalize_candidate_preparation_failure(stage_error, None);
             }
         }
         return;
     }
-    let preserve_current = match role {
-        StreamRole::Candidate if streams.has_current() => {
-            shared.set_status(MacosProtectedSourceState::Live);
-            true
-        }
-        StreamRole::Current
-            if !shared.capture_active() || streams.has_newer_lifecycle(selection_revision) =>
-        {
-            true
-        }
-        StreamRole::Candidate | StreamRole::Current => {
-            shared.set_status(state);
-            false
-        }
-        StreamRole::Stale => return,
-    };
-    let error = native_error("ScreenCaptureKit stream", error);
-    if preserve_current {
-        shared.publish_recoverable_error(error);
-    } else {
-        shared.publish_error(error);
-    }
+    streams.finalize_stream_error(role, selection_revision, state, error);
 }
 
 fn handle_fatal_stream_error(
@@ -1592,41 +3243,57 @@ fn handle_fatal_stream_error(
     let Some(streams) = streams.upgrade() else {
         return;
     };
-    let removal = streams.remove(epoch);
-    let preserve_current = removal.role == StreamRole::Candidate && streams.has_current();
-    let superseded_current = removal.role == StreamRole::Current
-        && (!shared.capture_active() || streams.has_newer_lifecycle(removal.selection_revision));
-    if preserve_current {
-        shared.set_status(MacosProtectedSourceState::Live);
-        shared.publish_recoverable_error(error);
-    } else if superseded_current {
-        shared.publish_recoverable_error(error);
-    } else if removal.role != StreamRole::Stale {
-        shared.set_status(MacosProtectedSourceState::Failed);
-        shared.publish_error(error);
+    streams.reject_epoch(epoch);
+    let callbacks = streams.lifecycle_callbacks.clone();
+    callbacks.exec_async(move || {
+        handle_owned_fatal_stream_error(&streams, epoch, shared, error);
+    });
+}
+
+fn handle_owned_fatal_stream_error(
+    streams: &Arc<StreamSlot>,
+    epoch: u64,
+    shared: Arc<SessionShared>,
+    error: MacosCaptureError,
+) {
+    handle_owned_fatal_stream_error_with(streams, epoch, shared, error, || {});
+}
+
+fn handle_owned_fatal_stream_error_with(
+    streams: &Arc<StreamSlot>,
+    epoch: u64,
+    shared: Arc<SessionShared>,
+    error: MacosCaptureError,
+    after_retirement: impl FnOnce(),
+) {
+    let mut removal = streams.remove(epoch);
+    streams.clear_rejected_epoch(epoch);
+    if removal.role != StreamRole::Stale {
+        shared.record_stream_diagnostic_result(epoch, MacosProtectedSourceState::Failed);
     }
-    let Some(retired) = removal.stream else {
-        return;
-    };
-    let stop_shared = Arc::clone(&shared);
-    if let Err(spawn_error) = std::thread::Builder::new()
-        .name("hypercolor-macos-screen-rejection-stop".to_owned())
-        .spawn(move || {
-            if let Err(error) = retired.stop() {
-                stop_shared.publish_recoverable_error(error);
-            }
-        })
+    if let Some(completion) = removal.request_completion.take() {
+        let _ = completion.send(Err(error.clone()));
+    }
+    let role = removal.role;
+    let selection_revision = removal.selection_revision;
+    if let Some(retired) = removal.stream
+        && let Err(stop_error) = retired.stop()
     {
-        shared.publish_recoverable_error(MacosCaptureError::CaptureWorkerStartFailed(
-            spawn_error.to_string(),
-        ));
+        shared.counters.record_drop(&stop_error);
+        shared.publish_recoverable_error(stop_error);
     }
+    after_retirement();
+    streams.finalize_stream_error(
+        role,
+        selection_revision,
+        MacosProtectedSourceState::Failed,
+        error,
+    );
 }
 
 struct PickerObserverIvars {
     shared: Arc<SessionShared>,
     streams: Arc<StreamSlot>,
-    request: MacosStreamRequest,
     reserve_pool: PoolReservationFactory,
 }
 
@@ -1647,11 +3314,10 @@ define_class!(
             _picker: &SCContentSharingPicker,
             _stream: Option<&SCStream>,
         ) {
-            if !self.ivars().streams.has_selection() {
-                self.ivars()
-                    .shared
-                    .set_status(MacosProtectedSourceState::NeedsSelection);
-            }
+            let Some(resolution) = self.ivars().shared.picker_resolution() else {
+                return;
+            };
+            self.ivars().streams.finalize_picker_cancel(&resolution);
         }
 
         #[allow(non_snake_case)]
@@ -1662,39 +3328,30 @@ define_class!(
             filter: &SCContentFilter,
             _stream: Option<&SCStream>,
         ) {
-            if let Err(error) = self.ivars().shared.begin_resolution() {
-                handle_filter_error(&self.ivars().streams, &self.ivars().shared, error);
+            let Some(resolution) = self.ivars().shared.picker_resolution() else {
                 return;
-            }
+            };
             accept_filter(
                 &self.ivars().streams,
                 &self.ivars().shared,
-                self.ivars().request,
+                self.ivars().streams.request(),
                 &self.ivars().reserve_pool,
                 filter,
+                resolution,
+                true,
             );
         }
 
         #[allow(non_snake_case)]
         #[unsafe(method(contentSharingPickerStartDidFailWithError:))]
         fn contentSharingPickerStartDidFailWithError(&self, error: &NSError) {
-            let preserve_current = self.ivars().streams.has_current();
-            let preserve_selection = self.ivars().streams.has_selection();
-            if !preserve_current && !preserve_selection {
-                self.ivars()
-                    .shared
-                    .set_status(MacosProtectedSourceState::Failed);
-            } else if !preserve_current {
-                self.ivars()
-                    .shared
-                    .set_status(MacosProtectedSourceState::ReadyIdle);
-            }
+            let Some(resolution) = self.ivars().shared.picker_resolution() else {
+                return;
+            };
             let error = native_error("ScreenCaptureKit picker", error);
-            if preserve_current || preserve_selection {
-                self.ivars().shared.publish_recoverable_error(error);
-            } else {
-                self.ivars().shared.publish_error(error);
-            }
+            self.ivars()
+                .streams
+                .finalize_picker_failure(&resolution, error);
         }
     }
 );
@@ -1706,11 +3363,10 @@ impl PickerObserver {
         shared: Arc<SessionShared>,
         reserve_pool: PoolReservationFactory,
     ) -> Retained<Self> {
-        let streams = StreamSlot::new(Arc::clone(&shared));
+        let streams = StreamSlot::new(Arc::clone(&shared), request);
         let this = mtm.alloc::<Self>().set_ivars(PickerObserverIvars {
             shared,
             streams,
-            request,
             reserve_pool,
         });
         // SAFETY: NSObject has no additional initialization requirements for
@@ -1718,14 +3374,17 @@ impl PickerObserver {
         unsafe { msg_send![super(this), init] }
     }
 
-    fn install_filter(&self, filter: &SCContentFilter) {
-        stage_filter(
-            &self.ivars().streams,
-            &self.ivars().shared,
-            self.ivars().request,
-            &self.ivars().reserve_pool,
-            filter,
-        );
+    fn request(&self) -> MacosStreamRequest {
+        self.ivars().streams.request()
+    }
+
+    fn set_request(
+        &self,
+        request: MacosStreamRequest,
+    ) -> Result<StreamRequestTransaction, MacosCaptureError> {
+        self.ivars()
+            .streams
+            .set_request(request, &self.ivars().reserve_pool)
     }
 
     fn present(&self, picker: &SCContentSharingPicker) {
@@ -1741,10 +3400,10 @@ impl PickerObserver {
     }
 
     fn set_active(&self, active: bool) {
-        if !self.ivars().streams.set_capture_active(active) {
-            return;
-        }
         if !active {
+            if !self.ivars().streams.set_capture_active(false) {
+                return;
+            }
             let status = if self.ivars().streams.has_selection() {
                 MacosProtectedSourceState::ReadyIdle
             } else {
@@ -1753,13 +3412,28 @@ impl PickerObserver {
             self.ivars().shared.set_status(status);
             return;
         }
-        let Some(filter) = self.ivars().streams.selected_filter() else {
-            self.ivars()
+        match self.ivars().streams.begin_capture_activation() {
+            Ok(CaptureActivation::Unchanged) => {}
+            Ok(CaptureActivation::NeedsSelection) => self
+                .ivars()
                 .shared
-                .set_status(MacosProtectedSourceState::NeedsSelection);
-            return;
-        };
-        self.install_filter(&filter.0);
+                .set_status(MacosProtectedSourceState::NeedsSelection),
+            Ok(CaptureActivation::Candidate {
+                reservation,
+                request,
+            }) => {
+                if let Err(failure) = self.ivars().streams.prepare_and_start_candidate(
+                    *reservation,
+                    request,
+                    &self.ivars().reserve_pool,
+                ) {
+                    self.ivars()
+                        .streams
+                        .finalize_candidate_preparation_failure(failure, None);
+                }
+            }
+            Err(error) => self.ivars().shared.counters.record_drop(&error),
+        }
     }
 
     fn stop(&self) {
@@ -1773,48 +3447,55 @@ fn accept_filter(
     request: MacosStreamRequest,
     reserve_pool: &PoolReservationFactory,
     filter: &SCContentFilter,
+    resolution: SourceResolution,
+    picker: bool,
 ) {
-    if shared.capture_active() {
-        stage_filter(streams, shared, request, reserve_pool, filter);
-    } else if let Err(error) = streams.store_selection(filter) {
-        handle_filter_error(streams, shared, error);
-    } else {
-        shared.set_status(MacosProtectedSourceState::ReadyIdle);
-    }
-}
-
-fn stage_filter(
-    streams: &Arc<StreamSlot>,
-    shared: &Arc<SessionShared>,
-    request: MacosStreamRequest,
-    reserve_pool: &PoolReservationFactory,
-    filter: &SCContentFilter,
-) {
-    let result = streams
-        .allocate_epoch()
-        .and_then(|epoch| streams.stage_candidate(filter, request, reserve_pool, epoch, None));
-    if let Err(error) = result {
-        handle_filter_error(streams, shared, error);
-    }
-}
-
-fn handle_filter_error(streams: &StreamSlot, shared: &SessionShared, error: MacosCaptureError) {
-    let preserve_current = streams.has_current();
-    let preserve_selection = streams.has_selection();
-    let status = if preserve_current {
-        MacosProtectedSourceState::Live
-    } else if preserve_selection {
-        MacosProtectedSourceState::ReadyIdle
-    } else if matches!(error, MacosCaptureError::DisplaySourceUnavailable(_)) {
-        MacosProtectedSourceState::NeedsSelection
-    } else {
-        MacosProtectedSourceState::Failed
+    let diagnostic = matches!(resolution, SourceResolution::Diagnostic(_));
+    let selection_filter = match NativeSelectionFilter::retain(filter) {
+        Ok(selection_filter) => selection_filter,
+        Err(error) => {
+            streams.finalize_resolution_error(&resolution, picker, error);
+            return;
+        }
     };
-    shared.set_status(status);
-    if preserve_current || preserve_selection {
-        shared.publish_recoverable_error(error);
-    } else {
-        shared.publish_error(error);
+    let epoch = match streams.allocate_epoch() {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            streams.finalize_resolution_error(&resolution, picker, error);
+            return;
+        }
+    };
+    match streams.accept_selection_filter(
+        selection_filter,
+        request,
+        epoch,
+        resolution.clone(),
+        picker,
+    ) {
+        Ok(FilterAcceptance::Stale) => {}
+        Ok(FilterAcceptance::Stored(replaced)) => {
+            if let Some(replaced) = replaced {
+                streams.stop_stream(replaced);
+            }
+            if diagnostic {
+                shared.record_stream_diagnostic_result(epoch, MacosProtectedSourceState::Failed);
+            }
+        }
+        Ok(FilterAcceptance::Candidate {
+            reservation,
+            request,
+        }) => match streams.prepare_and_start_candidate(reservation, request, reserve_pool) {
+            Ok(true) => {}
+            Ok(false) => {
+                shared.record_stream_diagnostic_result(epoch, MacosProtectedSourceState::Failed);
+            }
+            Err(failure) => {
+                streams.finalize_candidate_preparation_failure(failure, Some(&resolution));
+            }
+        },
+        Err(error) => {
+            streams.finalize_resolution_error(&resolution, false, error);
+        }
     }
 }
 
@@ -1827,7 +3508,7 @@ pub struct MacosScreenCaptureSession {
     main: MainThreadBound<MainThreadSession>,
     shared: Arc<SessionShared>,
     streams: Arc<StreamSlot>,
-    request: MacosStreamRequest,
+    capabilities: MacosCaptureCapabilities,
 }
 
 impl MacosScreenCaptureSession {
@@ -1861,14 +3542,14 @@ impl MacosScreenCaptureSession {
             Ok(Arc::new(observer) as PoolObservation)
         }) as PoolReservationFactory;
         dispatch2::run_on_main(move |mtm| {
-            Self::new_on_main(request, selector, capabilities.tahoe, reserve_pool, mtm)
+            Self::new_on_main(request, selector, capabilities, reserve_pool, mtm)
         })
     }
 
     fn new_on_main(
         request: MacosStreamRequest,
         selector: MacosCaptureSelector,
-        tahoe: MacosTahoeCapabilities,
+        capabilities: MacosCaptureCapabilities,
         reserve_pool: PoolReservationFactory,
         mtm: MainThreadMarker,
     ) -> Result<Self, MacosCaptureError> {
@@ -1878,7 +3559,7 @@ impl MacosScreenCaptureSession {
         } else {
             MacosProtectedSourceState::NeedsUserAction
         };
-        let shared = Arc::new(SessionShared::new(status, selector, tahoe));
+        let shared = Arc::new(SessionShared::new(status, selector, capabilities.tahoe));
         let observer = PickerObserver::new(mtm, request, Arc::clone(&shared), reserve_pool);
         let streams = Arc::clone(&observer.ivars().streams);
         // SAFETY: These are main-thread ScreenCaptureKit setup calls. The
@@ -1895,6 +3576,10 @@ impl MacosScreenCaptureSession {
                     | SCContentSharingPickerMode::SingleDisplay,
             );
             configuration.setAllowsChangingSelectedContent(true);
+            let excluded_bundle_ids = NSArray::from_retained_slice(&[NSString::from_str(
+                HYPERCOLOR_UI_BUNDLE_IDENTIFIER,
+            )]);
+            configuration.setExcludedBundleIDs(&excluded_bundle_ids);
             picker.setDefaultConfiguration(&configuration);
             picker.setMaximumStreamCount(Some(&NSNumber::new_i32(2)));
             let protocol: &ProtocolObject<dyn SCContentSharingPickerObserver> =
@@ -1907,7 +3592,7 @@ impl MacosScreenCaptureSession {
             main: MainThreadBound::new(MainThreadSession { picker, observer }, mtm),
             shared,
             streams,
-            request,
+            capabilities,
         };
         if authorized {
             session.resolve_configured_source()?;
@@ -1924,7 +3609,7 @@ impl MacosScreenCaptureSession {
             self.shared
                 .set_status(MacosProtectedSourceState::NeedsSelection);
             if let Err(error) = self.resolve_configured_source() {
-                handle_filter_error(&self.streams, &self.shared, error);
+                self.shared.counters.record_drop(&error);
             }
         } else {
             self.shared
@@ -1939,7 +3624,7 @@ impl MacosScreenCaptureSession {
                 .set_status(MacosProtectedSourceState::NeedsUserAction);
             return Err(MacosCaptureError::ScreenCapturePermissionRequired);
         }
-        self.shared.begin_resolution()?;
+        self.streams.begin_picker_resolution()?;
         self.main
             .get_on_main(|main| main.observer.present(&main.picker));
         Ok(())
@@ -1949,8 +3634,33 @@ impl MacosScreenCaptureSession {
         self.shared.status()
     }
 
+    pub fn begin_post_authorization_stream_diagnostic(
+        &self,
+    ) -> Result<mpsc::Receiver<MacosProtectedSourceState>, MacosCaptureError> {
+        if !CGPreflightScreenCaptureAccess() {
+            return Err(MacosCaptureError::ScreenCapturePermissionRequired);
+        }
+        let (resolution, completion_rx) = self.streams.setup_restart_diagnostic(true)?;
+        if let Err(error) = self.resolve_configured_source_with_resolution(
+            SourceResolution::Diagnostic(resolution.clone()),
+        ) {
+            self.shared
+                .fail_restart_diagnostic_attempt(resolution.attempt);
+            self.streams.finalize_resolution_error(
+                &SourceResolution::Diagnostic(resolution),
+                false,
+                error,
+            );
+        }
+        Ok(completion_rx)
+    }
+
     pub fn selection(&self) -> MacosCaptureSelection {
         self.shared.selection()
+    }
+
+    pub fn selection_revision(&self) -> u64 {
+        self.streams.selection_revision()
     }
 
     pub fn tahoe_selection_capabilities(&self) -> Option<MacosTahoeSelectionCapabilities> {
@@ -1987,7 +3697,8 @@ impl MacosScreenCaptureSession {
             snapshot,
             Arc::clone(&self.streams) as Arc<dyn ScreenshotIdentityFence>,
             Arc::new(NativeScreenshotCaptureBackend),
-            self.request.cursor_composed,
+            self.main
+                .get_on_main(|main| main.observer.request().cursor_composed),
             Box::new(move |result| {
                 completion(result.map(|references| {
                     MacosScreenshotReferenceCapture::new(source_id, generation, references)
@@ -2014,30 +3725,65 @@ impl MacosScreenCaptureSession {
     }
 
     pub fn set_selector(&self, selector: MacosCaptureSelector) -> Result<(), MacosCaptureError> {
-        self.shared.set_selector(selector);
         if CGPreflightScreenCaptureAccess() {
-            self.resolve_configured_source()
+            let resolution = self.streams.set_selector_and_begin_resolution(selector)?;
+            self.resolve_configured_source_with_resolution(resolution)
         } else {
+            self.streams.set_selector(selector);
             self.shared
                 .set_status(MacosProtectedSourceState::NeedsUserAction);
             Ok(())
         }
     }
 
+    pub fn set_stream_request(&self, request: MacosStreamRequest) -> Result<(), MacosCaptureError> {
+        let (generation, completion) = self.begin_stream_request(request)?;
+        StreamRequestTransaction {
+            generation,
+            completion,
+        }
+        .wait()
+    }
+
+    pub fn begin_stream_request(
+        &self,
+        request: MacosStreamRequest,
+    ) -> Result<(u64, mpsc::Receiver<Result<(), MacosCaptureError>>), MacosCaptureError> {
+        request.cadence.timescale()?;
+        self.capabilities
+            .validate_dynamic_range(request.dynamic_range)?;
+        let transaction = self
+            .main
+            .get_on_main(|main| main.observer.set_request(request))?;
+        Ok(transaction.into_parts())
+    }
+
+    pub fn stream_request(&self) -> MacosStreamRequest {
+        self.streams.committed_request()
+    }
+
     fn resolve_configured_source(&self) -> Result<(), MacosCaptureError> {
-        let selector = self.shared.selector();
+        let resolution = self.streams.begin_resolution()?;
+        self.resolve_configured_source_with_resolution(resolution)
+    }
+
+    fn resolve_configured_source_with_resolution(
+        &self,
+        resolution: SourceResolution,
+    ) -> Result<(), MacosCaptureError> {
+        let selector = resolution.selector().clone();
         if selector == MacosCaptureSelector::SessionScoped {
-            self.shared
-                .set_status(MacosProtectedSourceState::NeedsSelection);
+            self.streams.finalize_session_scoped_resolution(&resolution);
             return Ok(());
         }
         resolve_display_selector(
             Arc::clone(&self.streams),
             Arc::clone(&self.shared),
-            self.request,
+            self.main.get_on_main(|main| main.observer.request()),
             self.main
                 .get_on_main(|main| Arc::clone(&main.observer.ivars().reserve_pool)),
             selector,
+            resolution,
         )
     }
 }
@@ -2048,11 +3794,11 @@ fn resolve_display_selector(
     request: MacosStreamRequest,
     reserve_pool: PoolReservationFactory,
     selector: MacosCaptureSelector,
+    resolution: SourceResolution,
 ) -> Result<(), MacosCaptureError> {
-    let resolution_epoch = shared.begin_resolution()?;
     let completion = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {
-            if !shared.resolution_is_current(resolution_epoch) {
+            if !source_resolution_is_current(&streams, &shared, &resolution) {
                 return;
             }
             // SAFETY: ScreenCaptureKit supplies callback objects for the
@@ -2068,14 +3814,24 @@ fn resolve_display_selector(
                         .and_then(|content| display_filter(content, &selector))
                 }
             };
-            if !shared.resolution_is_current(resolution_epoch) {
+            if !source_resolution_is_current(&streams, &shared, &resolution) {
                 return;
             }
             match result {
                 Ok(filter) => {
-                    accept_filter(&streams, &shared, request, &reserve_pool, &filter);
+                    accept_filter(
+                        &streams,
+                        &shared,
+                        request,
+                        &reserve_pool,
+                        &filter,
+                        resolution.clone(),
+                        false,
+                    );
                 }
-                Err(error) => handle_filter_error(&streams, &shared, error),
+                Err(error) => {
+                    streams.finalize_resolution_error(&resolution, false, error);
+                }
             }
         },
     );
@@ -2085,6 +3841,20 @@ fn resolve_display_selector(
     Ok(())
 }
 
+fn source_resolution_is_current(
+    streams: &StreamSlot,
+    shared: &SessionShared,
+    resolution: &SourceResolution,
+) -> bool {
+    shared.source_resolution_is_current(resolution)
+        && match resolution {
+            SourceResolution::General(_) => true,
+            SourceResolution::Diagnostic(diagnostic) => {
+                streams.selection_revision() == diagnostic.attempt.selection_revision
+            }
+        }
+}
+
 fn display_filter(
     content: &SCShareableContent,
     selector: &MacosCaptureSelector,
@@ -2092,6 +3862,22 @@ fn display_filter(
     // SAFETY: Shareable content owns an immutable display snapshot. The
     // returned array and each selected display are retained locally.
     let displays = unsafe { content.displays() };
+    // SAFETY: The same immutable shareable-content snapshot retains its
+    // returned window array and each member.
+    let excluded_windows = unsafe { content.windows() }
+        .to_vec()
+        .into_iter()
+        .filter(|window| {
+            // SAFETY: Every retained SCWindow and owning application belongs
+            // to this immutable shareable-content snapshot.
+            unsafe {
+                window.owningApplication().is_some_and(|application| {
+                    is_hypercolor_ui_bundle_identifier(&application.bundleIdentifier().to_string())
+                })
+            }
+        })
+        .collect::<Vec<_>>();
+    let excluded = NSArray::<SCWindow>::from_retained_slice(&excluded_windows);
     let primary_display = CGMainDisplayID();
     let mut primary_uuid_error = None;
     for display in displays.to_vec() {
@@ -2106,9 +3892,8 @@ fn display_filter(
             Err(_) => continue,
         };
         if selector.matches_display(&source_id, display_id == primary_display) {
-            let excluded = NSArray::<SCWindow>::from_slice(&[]);
-            // SAFETY: The filter retains the selected display and the empty
-            // exclusion list. The display comes from this content snapshot.
+            // SAFETY: The filter retains the selected display and the stable
+            // Hypercolor window identities from this content snapshot.
             return Ok(unsafe {
                 SCContentFilter::initWithDisplay_excludingWindows(
                     SCContentFilter::alloc(),
@@ -3135,28 +4920,31 @@ fn exact_u32(value: f64) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::Arc;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::thread;
+    use std::time::Duration;
 
     use super::{
         CandidateStage, InterruptedRestage, InterruptionRecoveryPhase, MacosCaptureColorimetry,
         MacosCaptureDynamicRange, MacosCaptureError, MacosCapturePixelFormat, MacosColorPrimaries,
-        MacosColorRange, MacosConfiguredStream, MacosDeliveredFrameMetadata, MacosHostArchitecture,
-        MacosPixelExtent, MacosProtectedSourceState, MacosRuntimeCapability,
-        MacosStreamDeliveryRejection, MacosStreamDeliveryState, MacosStreamDeliveryValidator,
-        MacosStreamPreset, MacosTahoeCapabilities, MacosTahoeRuntimeProbes, MacosTransferFunction,
-        MacosValidatedStreamDelivery, PoolBackingLifetime, PoolObservation, SCCaptureDynamicRange,
-        SCStreamConfiguration, SCStreamConfigurationPreset, ScreenshotCaptureBackend,
-        ScreenshotFilterHandle, ScreenshotIdentityFence, ScreenshotImageCompletion,
-        ScreenshotTransactionSnapshot, SessionShared, StreamState, SysctlI32Value,
-        capture_capabilities_from_probes, capture_dynamic_range, classify_delivery_error,
-        color_range_from_fourcc, conservative_pool_quote, execute_screenshot_transaction,
+        MacosColorRange, MacosConfiguredStream, MacosDeliveredFrameMetadata, MacosFrameEvent,
+        MacosFrameStatus, MacosHostArchitecture, MacosPixelExtent, MacosProtectedSourceState,
+        MacosRuntimeCapability, MacosStreamDeliveryRejection, MacosStreamDeliveryState,
+        MacosStreamDeliveryValidator, MacosStreamPreset, MacosTahoeCapabilities,
+        MacosTahoeRuntimeProbes, MacosTransferFunction, MacosValidatedStreamDelivery,
+        NativeSelectionFilter, NativeStream, PendingStreamRequest, PoolBackingLifetime,
+        PoolObservation, SCCaptureDynamicRange, SCStreamConfiguration, SCStreamConfigurationPreset,
+        ScreenshotCaptureBackend, ScreenshotFilterHandle, ScreenshotIdentityFence,
+        ScreenshotImageCompletion, ScreenshotTransactionSnapshot, SessionShared, SourceResolution,
+        StreamSlot, SysctlI32Value, capture_capabilities_from_probes, capture_dynamic_range,
+        classify_delivery_error, color_range_from_fourcc, conservative_pool_quote,
+        execute_screenshot_transaction, is_hypercolor_ui_bundle_identifier,
         session_selection_source_id, with_admitted_surface,
     };
     use crate::{
-        MacosScreenshotReferenceCapability, MacosScreenshotReferenceImage,
-        MacosScreenshotReferenceSet,
+        MacosCaptureCadence, MacosScreenshotReferenceCapability, MacosScreenshotReferenceImage,
+        MacosScreenshotReferenceSet, MacosStreamRequest,
     };
 
     struct FixtureScreenshotCall {
@@ -3258,70 +5046,1101 @@ mod tests {
         screenshot_capture_selector: MacosRuntimeCapability::Absent,
     };
 
-    struct StreamSlotStartFixture {
-        shared: SessionShared,
-        state: StreamState,
-        started: Vec<u64>,
-        discarded: Vec<u64>,
+    #[test]
+    fn hypercolor_ui_exclusion_matches_only_the_stable_app_bundle() {
+        assert!(is_hypercolor_ui_bundle_identifier(
+            "tech.hyperbliss.hypercolor"
+        ));
+        assert!(!is_hypercolor_ui_bundle_identifier(
+            "tech.hyperbliss.hypercolor.daemon"
+        ));
+        assert!(!is_hypercolor_ui_bundle_identifier(
+            "com.example.hypercolor"
+        ));
     }
 
-    impl StreamSlotStartFixture {
-        fn new(current_epoch: u64, selection_revision: u64) -> Self {
-            let shared = SessionShared::new(
-                MacosProtectedSourceState::Live,
-                super::MacosCaptureSelector::Auto,
-                MacosTahoeCapabilities {
-                    content_tone_mapping_info: MacosRuntimeCapability::Absent,
-                    screenshot_api: MacosRuntimeCapability::Absent,
+    #[test]
+    fn stream_selection_revision_advances_monotonically_across_lifecycles() {
+        let shared = Arc::new(SessionShared::new(
+            MacosProtectedSourceState::ReadyIdle,
+            super::MacosCaptureSelector::Auto,
+            MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
+        ));
+        let streams = StreamSlot::new(shared, MacosStreamRequest::default());
+        assert_eq!(streams.selection_revision(), 0);
+
+        assert!(streams.set_capture_active(true));
+        assert!(streams.set_capture_active(false));
+        assert_eq!(streams.selection_revision(), 1);
+
+        assert!(streams.set_capture_active(true));
+        assert!(streams.set_capture_active(false));
+        assert_eq!(streams.selection_revision(), 2);
+    }
+
+    fn stream_slot_fixture(current_epoch: u64, selection_revision: u64) -> Arc<StreamSlot> {
+        let shared = Arc::new(SessionShared::new(
+            MacosProtectedSourceState::Live,
+            super::MacosCaptureSelector::Auto,
+            MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
+        ));
+        shared.set_capture_active(true);
+        shared.activate_epoch(current_epoch);
+        let streams = StreamSlot::new(shared, MacosStreamRequest::default());
+        {
+            let mut state = super::lock(&streams.state);
+            state.selection_revision = selection_revision;
+            state.selected_filter = Some(NativeSelectionFilter::fixture(1));
+            state.fixture_current_epoch = (current_epoch != 0).then_some(current_epoch);
+        }
+        streams
+    }
+
+    fn reserve_selection_candidate_fixture(
+        streams: &StreamSlot,
+        epoch: u64,
+        request: MacosStreamRequest,
+        selection_id: u64,
+    ) -> Result<Option<(CandidateStage, Option<NativeStream>)>, MacosCaptureError> {
+        streams
+            .reserve_candidate_stage(
+                epoch,
+                request,
+                Some(NativeSelectionFilter::fixture(selection_id)),
+                None,
+                None,
+            )
+            .map(|reservation| {
+                reservation.map(|(stage, _selection_filter, replaced)| (stage, replaced))
+            })
+    }
+
+    fn reserve_request_candidate_fixture(
+        streams: &StreamSlot,
+        epoch: u64,
+        request: MacosStreamRequest,
+        pending: PendingStreamRequest,
+    ) -> Result<Option<(CandidateStage, Option<NativeStream>)>, MacosCaptureError> {
+        streams
+            .reserve_candidate_stage(epoch, request, None, None, Some(pending))
+            .map(|reservation| {
+                reservation.map(|(stage, _selection_filter, replaced)| (stage, replaced))
+            })
+    }
+
+    fn pending_request(
+        epoch: u64,
+        request: MacosStreamRequest,
+    ) -> (
+        PendingStreamRequest,
+        std::sync::mpsc::Receiver<Result<(), MacosCaptureError>>,
+    ) {
+        let (completion, receiver) = std::sync::mpsc::sync_channel(1);
+        (
+            PendingStreamRequest {
+                epoch,
+                request,
+                completion,
+            },
+            receiver,
+        )
+    }
+
+    fn selection_filter_ids(streams: &StreamSlot) -> (Option<u64>, Option<(u64, u64)>) {
+        let state = super::lock(&streams.state);
+        (
+            state
+                .selected_filter
+                .as_ref()
+                .map(NativeSelectionFilter::fixture_id),
+            state
+                .pending_selection
+                .as_ref()
+                .map(|pending| (pending.epoch, pending.selection_filter.fixture_id())),
+        )
+    }
+
+    fn sdr_delivery_fixture() -> MacosValidatedStreamDelivery {
+        let configured = MacosConfiguredStream {
+            requested_dynamic_range: MacosCaptureDynamicRange::Sdr,
+            requested_preset: MacosStreamPreset::SdrDefault,
+            configured_dynamic_range: MacosCaptureDynamicRange::Sdr,
+            configured_pixel_format: MacosCapturePixelFormat::Bgra8,
+            configured_color_range: MacosColorRange::Full,
+        };
+        let delivered = MacosDeliveredFrameMetadata::new(
+            MacosCapturePixelFormat::Bgra8,
+            MacosCaptureColorimetry {
+                primaries: MacosColorPrimaries::Srgb,
+                transfer: MacosTransferFunction::Srgb,
+                matrix: None,
+                range: MacosColorRange::Full,
+                chroma_location: None,
+            },
+            None,
+            None,
+        )
+        .expect("fixture delivery metadata should be valid");
+        MacosValidatedStreamDelivery {
+            configured,
+            delivered,
+        }
+    }
+
+    #[test]
+    fn current_publication_holds_lifecycle_until_publish_precedes_deactivation() {
+        let streams = stream_slot_fixture(41, 9);
+        let (publishing_tx, publishing_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let publishing_streams = Arc::clone(&streams);
+        let publisher = thread::spawn(move || {
+            publishing_streams.publish_decoded_event_with(41, false, None, || {
+                publishing_tx
+                    .send(())
+                    .expect("publication should be observable");
+                release_rx.recv().expect("publication should resume");
+                publishing_streams
+                    .shared
+                    .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+            })
+        });
+        publishing_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("current publication should hold the lifecycle gate");
+        assert!(streams.state.try_lock().is_ok());
+
+        let (deactivation_started_tx, deactivation_started_rx) = mpsc::channel();
+        let (deactivated_tx, deactivated_rx) = mpsc::channel();
+        let deactivating_streams = Arc::clone(&streams);
+        let deactivator = thread::spawn(move || {
+            deactivation_started_tx
+                .send(())
+                .expect("deactivation attempt should be observable");
+            let changed = deactivating_streams.set_capture_active(false);
+            deactivating_streams
+                .shared
+                .set_status(MacosProtectedSourceState::ReadyIdle);
+            deactivated_tx
+                .send(changed)
+                .expect("deactivation should be observable");
+        });
+        deactivation_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("deactivation should reach the lifecycle gate");
+        assert_eq!(
+            deactivated_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert_eq!(streams.shared.current_epoch(), 41);
+
+        release_tx.send(()).expect("publication should be released");
+        assert!(publisher.join().expect("publisher thread should join"));
+        assert!(
+            deactivated_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("deactivation should follow publication")
+        );
+        deactivator.join().expect("deactivation thread should join");
+        assert_eq!(streams.shared.current_epoch(), 0);
+        assert_eq!(
+            streams.shared.status(),
+            MacosProtectedSourceState::ReadyIdle
+        );
+    }
+
+    #[test]
+    fn candidate_first_frame_publish_holds_lifecycle_until_deactivation() {
+        let streams = stream_slot_fixture(41, 9);
+        let (stage, _) =
+            reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 2)
+                .expect("candidate reservation should succeed")
+                .expect("active capture should admit the candidate");
+        assert!(streams.start_candidate_fixture(stage));
+        let (publishing_tx, publishing_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let publishing_streams = Arc::clone(&streams);
+        let publisher = thread::spawn(move || {
+            publishing_streams.publish_decoded_event_with(
+                42,
+                true,
+                Some(sdr_delivery_fixture()),
+                || {
+                    publishing_tx
+                        .send(())
+                        .expect("first-frame publication should be observable");
+                    release_rx.recv().expect("publication should resume");
+                    publishing_streams
+                        .shared
+                        .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+                },
+            )
+        });
+        publishing_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("candidate activation should reach publication under the lifecycle gate");
+        assert!(streams.state.try_lock().is_ok());
+        assert_eq!(streams.shared.current_epoch(), 42);
+        assert_eq!(selection_filter_ids(&streams), (Some(2), None));
+
+        let (deactivation_started_tx, deactivation_started_rx) = mpsc::channel();
+        let (deactivated_tx, deactivated_rx) = mpsc::channel();
+        let deactivating_streams = Arc::clone(&streams);
+        let deactivator = thread::spawn(move || {
+            deactivation_started_tx
+                .send(())
+                .expect("deactivation attempt should be observable");
+            let changed = deactivating_streams.set_capture_active(false);
+            deactivating_streams
+                .shared
+                .set_status(MacosProtectedSourceState::ReadyIdle);
+            deactivated_tx
+                .send(changed)
+                .expect("deactivation should be observable");
+        });
+        deactivation_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("deactivation should reach the lifecycle gate");
+        assert_eq!(
+            deactivated_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+
+        release_tx.send(()).expect("publication should be released");
+        assert!(publisher.join().expect("publisher thread should join"));
+        assert!(
+            deactivated_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("deactivation should follow first-frame publication")
+        );
+        deactivator.join().expect("deactivation thread should join");
+        assert_eq!(streams.shared.current_epoch(), 0);
+        assert_eq!(selection_filter_ids(&streams), (Some(2), None));
+        assert_eq!(
+            streams.shared.status(),
+            MacosProtectedSourceState::ReadyIdle
+        );
+    }
+
+    #[test]
+    fn stale_picker_resolution_cannot_mutate_filter_acceptance() {
+        let streams = stream_slot_fixture(41, 9);
+        let stale = streams
+            .begin_resolution()
+            .expect("picker resolution should begin");
+        streams.shared.enable_picker_callbacks(stale);
+        let picker_resolution = streams
+            .shared
+            .picker_resolution()
+            .expect("picker update should retain its exact resolution");
+        let initial_revision = streams.selection_revision();
+        let initial_selection = selection_filter_ids(&streams);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let accepting_streams = Arc::clone(&streams);
+        let accepting = thread::spawn(move || {
+            accepting_streams.accept_selection_filter_with_hooks(
+                NativeSelectionFilter::fixture(2),
+                MacosStreamRequest::default(),
+                42,
+                picker_resolution,
+                true,
+                (
+                    || {
+                        ready_tx
+                            .send(())
+                            .expect("retained picker filter should be observable");
+                        release_rx
+                            .recv()
+                            .expect("picker filter acceptance should resume");
+                    },
+                    || panic!("stale picker filter must not be accepted"),
+                ),
+            )
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("picker filter should pause before the lifecycle transition");
+
+        let fresh = streams
+            .begin_picker_resolution()
+            .expect("newer picker resolution should begin");
+        release_tx
+            .send(())
+            .expect("stale picker acceptance should resume");
+        assert!(matches!(
+            accepting.join().expect("acceptance thread should join"),
+            Ok(super::FilterAcceptance::Stale)
+        ));
+        assert_eq!(streams.selection_revision(), initial_revision);
+        assert_eq!(selection_filter_ids(&streams), initial_selection);
+
+        let retry = streams
+            .accept_selection_filter(
+                NativeSelectionFilter::fixture(3),
+                MacosStreamRequest::default(),
+                43,
+                fresh,
+                true,
+            )
+            .expect("fresh resolution should be accepted");
+        assert!(matches!(retry, super::FilterAcceptance::Candidate { .. }));
+        assert_eq!(selection_filter_ids(&streams), (Some(1), Some((43, 3))));
+    }
+
+    fn install_live_successor(streams: &StreamSlot, epoch: u64) {
+        let (stage, _) = reserve_selection_candidate_fixture(
+            streams,
+            epoch,
+            MacosStreamRequest::default(),
+            epoch,
+        )
+        .expect("successor reservation should succeed")
+        .expect("active capture should admit the successor");
+        assert!(streams.start_candidate_fixture(stage));
+        assert!(streams.activate_candidate_fixture(epoch));
+        assert!(streams.publish_decoded_event_with(epoch, false, None, || {
+            streams
+                .shared
+                .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+        }));
+    }
+
+    fn assert_retired_error_cannot_overwrite_successor(fatal: bool) {
+        let streams = stream_slot_fixture(41, 9);
+        let error = MacosCaptureError::CaptureWorkerStartFailed(
+            "retired injected stream failure".to_owned(),
+        );
+        let (retired_tx, retired_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let failing_streams = Arc::clone(&streams);
+        let failing_shared = Arc::clone(&streams.shared);
+        let finalizer = thread::spawn(move || {
+            let after_retirement = || {
+                retired_tx
+                    .send(())
+                    .expect("retired stream should be observable");
+                release_rx.recv().expect("error finalization should resume");
+            };
+            if fatal {
+                super::handle_owned_fatal_stream_error_with(
+                    &failing_streams,
+                    41,
+                    failing_shared,
+                    error,
+                    after_retirement,
+                );
+            } else {
+                super::handle_owned_stream_error_with(
+                    &failing_streams,
+                    41,
+                    &failing_shared,
+                    MacosProtectedSourceState::PermissionDenied,
+                    error,
+                    after_retirement,
+                );
+            }
+        });
+        retired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old error should pause after retirement");
+        assert_eq!(streams.shared.current_epoch(), 0);
+
+        install_live_successor(&streams, 42);
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+        release_tx
+            .send(())
+            .expect("old error finalization should resume");
+        finalizer.join().expect("error finalizer should join");
+
+        assert_eq!(streams.shared.current_epoch(), 42);
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+        assert!(matches!(
+            streams.shared.mailbox.take_latest(),
+            Some(Ok(MacosFrameEvent::RecoverableError(_)))
+        ));
+    }
+
+    #[test]
+    fn ordinary_error_finalization_cannot_overwrite_live_successor() {
+        assert_retired_error_cannot_overwrite_successor(false);
+    }
+
+    #[test]
+    fn fatal_error_finalization_cannot_overwrite_live_successor() {
+        assert_retired_error_cannot_overwrite_successor(true);
+    }
+
+    #[test]
+    fn retired_preparation_failure_cannot_overwrite_live_successor() {
+        let streams = stream_slot_fixture(41, 9);
+        let removal = streams.remove(41);
+        assert_eq!(removal.role, super::StreamRole::Current);
+        assert_eq!(streams.shared.current_epoch(), 0);
+        let recovery = InterruptedRestage::interrupted(41, 9);
+        let (stage, _selection, replaced) = streams
+            .reserve_candidate_stage(
+                42,
+                MacosStreamRequest::default(),
+                Some(NativeSelectionFilter::fixture(1)),
+                Some(recovery),
+                None,
+            )
+            .expect("interrupted restage should reserve")
+            .expect("active capture should admit interrupted restage");
+        assert!(replaced.is_none());
+        let failure = streams.fail_candidate_preparation_fixture(
+            stage,
+            MacosCaptureError::CaptureWorkerStartFailed(
+                "retired interrupted restage failed to prepare".to_owned(),
+            ),
+        );
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finalized_tx, finalized_rx) = mpsc::channel();
+        let failing_streams = Arc::clone(&streams);
+        let finalizer = thread::spawn(move || {
+            let finalized =
+                failing_streams.finalize_candidate_preparation_failure_with(failure, None, || {
+                    paused_tx
+                        .send(())
+                        .expect("post-retirement finalization pause should be observable");
+                    release_rx
+                        .recv()
+                        .expect("preparation finalization should resume");
+                });
+            finalized_tx
+                .send(finalized)
+                .expect("preparation finalization result should be observable");
+        });
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old preparation failure should pause after retirement");
+
+        let (successor, _) =
+            reserve_selection_candidate_fixture(&streams, 43, MacosStreamRequest::default(), 43)
+                .expect("successor reservation should succeed")
+                .expect("active capture should admit the successor");
+        assert!(streams.start_candidate_fixture(successor));
+        streams
+            .shared
+            .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started));
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Starting);
+        release_tx
+            .send(())
+            .expect("old preparation finalization should resume");
+        assert!(
+            !finalized_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("stale preparation finalization should finish")
+        );
+        finalizer.join().expect("preparation finalizer should join");
+
+        assert_eq!(streams.shared.current_epoch(), 0);
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Starting);
+        assert!(matches!(
+            streams.shared.mailbox.take_latest(),
+            Some(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started)))
+        ));
+        assert!(streams.activate_candidate_fixture(43));
+        assert!(streams.publish_decoded_event_with(43, false, None, || {
+            streams
+                .shared
+                .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+        }));
+        assert_eq!(streams.shared.current_epoch(), 43);
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+        assert!(matches!(
+            streams.shared.mailbox.take_latest(),
+            Some(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle)))
+        ));
+    }
+
+    #[test]
+    fn preparation_failure_revision_rejects_request_only_aba() {
+        let original = MacosStreamRequest::default();
+        let request_a = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("first request-only candidate should be valid");
+        let request_b = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(45), true)
+            .expect("second request-only candidate should be valid");
+        let streams = stream_slot_fixture(41, 9);
+        super::lock(&streams.state).request = original;
+
+        let (pending_a, completion_a) = pending_request(42, request_a);
+        let (stage_a, _) = reserve_request_candidate_fixture(&streams, 42, request_a, pending_a)
+            .expect("first request candidate should reserve")
+            .expect("active capture should stage the first request candidate");
+        assert_eq!(streams.selection_revision(), 9);
+        let revision_a = stage_a.lifecycle_revision;
+        let failure_a = streams.fail_candidate_preparation_fixture(
+            stage_a,
+            MacosCaptureError::CaptureWorkerStartFailed(
+                "first request candidate failed to prepare".to_owned(),
+            ),
+        );
+        assert!(failure_a.stage.lifecycle_revision > revision_a);
+        let failure_a_revision = failure_a.stage.lifecycle_revision;
+        assert!(
+            completion_a
+                .recv()
+                .expect("first request should complete")
+                .is_err()
+        );
+
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finalized_tx, finalized_rx) = mpsc::channel();
+        let failing_streams = Arc::clone(&streams);
+        let finalizer_a = thread::spawn(move || {
+            let finalized = failing_streams.finalize_candidate_preparation_failure_with(
+                failure_a,
+                None,
+                || {
+                    paused_tx
+                        .send(())
+                        .expect("first finalizer pause should be observable");
+                    release_rx.recv().expect("first finalizer should resume");
                 },
             );
-            shared.set_capture_active(true);
-            shared.activate_epoch(current_epoch);
-            Self {
-                shared,
-                state: StreamState {
-                    selection_revision,
-                    ..StreamState::default()
+            finalized_tx
+                .send(finalized)
+                .expect("first finalizer result should be observable");
+        });
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first finalizer should pause before lifecycle validation");
+
+        let (pending_b, completion_b) = pending_request(43, request_b);
+        let (stage_b, _) = reserve_request_candidate_fixture(&streams, 43, request_b, pending_b)
+            .expect("second request candidate should reserve")
+            .expect("active capture should stage the second request candidate");
+        assert_eq!(streams.selection_revision(), 9);
+        assert!(stage_b.lifecycle_revision > failure_a_revision);
+        let error_b = MacosCaptureError::CaptureWorkerStartFailed(
+            "second request candidate failed to prepare".to_owned(),
+        );
+        let failure_b = streams.fail_candidate_preparation_fixture(stage_b, error_b.clone());
+        assert!(failure_b.stage.lifecycle_revision > stage_b.lifecycle_revision);
+        let failure_b_revision = failure_b.stage.lifecycle_revision;
+        assert!(
+            completion_b
+                .recv()
+                .expect("second request should complete")
+                .is_err()
+        );
+        assert!(streams.finalize_candidate_preparation_failure(failure_b, None));
+        assert!(super::lock(&streams.state).lifecycle_revision > failure_b_revision);
+        assert_eq!(streams.selection_revision(), 9);
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+
+        release_tx
+            .send(())
+            .expect("first finalizer should resume after the ABA lifecycle");
+        assert!(
+            !finalized_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("stale first finalizer should finish")
+        );
+        finalizer_a.join().expect("first finalizer should join");
+
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+        assert!(matches!(
+            streams.shared.mailbox.take_latest(),
+            Some(Ok(MacosFrameEvent::RecoverableError(error))) if error.as_ref() == &error_b
+        ));
+    }
+
+    #[test]
+    fn current_inactive_epoch_rejects_queued_frame_publication() {
+        let streams = stream_slot_fixture(41, 9);
+        streams.record_stream_activity(41, false, false);
+        let published = AtomicBool::new(false);
+
+        assert!(!streams.publish_decoded_event_with(
+            41,
+            true,
+            Some(sdr_delivery_fixture()),
+            || {
+                published.store(true, Ordering::Release);
+                streams
+                    .shared
+                    .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+            },
+        ));
+        assert!(!published.load(Ordering::Acquire));
+        assert_eq!(streams.shared.current_epoch(), 41);
+        assert_eq!(
+            streams.shared.status(),
+            MacosProtectedSourceState::NeedsSelection
+        );
+    }
+
+    #[test]
+    fn candidate_inactive_epoch_rejects_first_frame_activation() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("candidate request should be valid");
+        let streams = stream_slot_fixture(41, 9);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(42, next);
+        let (stage, _) = reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("candidate reservation should succeed")
+            .expect("active capture should admit the candidate");
+        assert!(streams.start_candidate_fixture(stage));
+        streams.record_stream_activity(42, false, false);
+        let published = AtomicBool::new(false);
+
+        assert!(!streams.publish_decoded_event_with(
+            42,
+            true,
+            Some(sdr_delivery_fixture()),
+            || published.store(true, Ordering::Release),
+        ));
+        assert!(!published.load(Ordering::Acquire));
+        assert_eq!(streams.shared.current_epoch(), 41);
+        assert_eq!(streams.committed_request(), original);
+        assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+        let state = super::lock(&streams.state);
+        assert_eq!(state.candidate_epoch, Some(42));
+        assert_eq!(
+            state.pending_request.as_ref().map(|request| request.epoch),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn display_current_inactive_callback_does_not_block_publication() {
+        let streams = stream_slot_fixture(41, 9);
+        streams.record_stream_activity(41, false, true);
+        let published = AtomicBool::new(false);
+
+        assert!(streams.publish_decoded_event_with(41, true, None, || {
+            published.store(true, Ordering::Release);
+            streams
+                .shared
+                .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+        }));
+        assert!(published.load(Ordering::Acquire));
+        assert_eq!(streams.shared.current_epoch(), 41);
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+    }
+
+    #[test]
+    fn display_candidate_inactive_callback_does_not_strand_request() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("candidate request should be valid");
+        let streams = stream_slot_fixture(41, 9);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(42, next);
+        let (stage, _) = reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("candidate reservation should succeed")
+            .expect("active capture should admit the candidate");
+        assert!(streams.start_candidate_fixture(stage));
+        streams.record_stream_activity(42, false, true);
+
+        assert!(
+            streams.publish_decoded_event_with(42, true, Some(sdr_delivery_fixture()), || {
+                streams
+                    .shared
+                    .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+            },)
+        );
+        assert_eq!(completion.recv(), Ok(Ok(())));
+        assert_eq!(streams.shared.current_epoch(), 42);
+        assert_eq!(streams.committed_request(), next);
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+    }
+
+    fn assert_latest_lifecycle(streams: &StreamSlot, expected: MacosFrameStatus) {
+        assert!(matches!(
+            streams.shared.mailbox.take_latest(),
+            Some(Ok(MacosFrameEvent::Lifecycle(actual))) if actual == expected
+        ));
+    }
+
+    #[test]
+    fn stale_picker_cancel_cannot_overwrite_successor_starting() {
+        let streams = stream_slot_fixture(0, 0);
+        super::lock(&streams.state).selected_filter = None;
+        let stale = streams
+            .begin_picker_resolution()
+            .expect("first picker resolution should begin");
+        let fresh = streams
+            .begin_picker_resolution()
+            .expect("successor picker resolution should begin");
+        streams
+            .shared
+            .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started));
+
+        assert!(!streams.finalize_picker_cancel(&stale));
+        assert_eq!(streams.shared.picker_resolution(), Some(fresh));
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Starting);
+        assert_latest_lifecycle(&streams, MacosFrameStatus::Started);
+    }
+
+    #[test]
+    fn stale_picker_failure_cannot_overwrite_successor_live() {
+        let streams = stream_slot_fixture(41, 9);
+        let stale = streams
+            .begin_picker_resolution()
+            .expect("first picker resolution should begin");
+        let fresh = streams
+            .begin_picker_resolution()
+            .expect("successor picker resolution should begin");
+        streams
+            .shared
+            .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+
+        assert!(!streams.finalize_picker_failure(
+            &stale,
+            MacosCaptureError::CaptureWorkerStartFailed("stale picker failure".to_owned()),
+        ));
+        assert_eq!(streams.shared.picker_resolution(), Some(fresh));
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+        assert_latest_lifecycle(&streams, MacosFrameStatus::Idle);
+    }
+
+    #[test]
+    fn stale_filter_error_cannot_overwrite_successor_starting() {
+        let streams = stream_slot_fixture(0, 0);
+        super::lock(&streams.state).selected_filter = None;
+        let stale = streams
+            .begin_picker_resolution()
+            .expect("picker filter resolution should begin");
+        let fresh = streams
+            .begin_picker_resolution()
+            .expect("successor filter resolution should begin");
+        streams
+            .shared
+            .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started));
+
+        assert!(!streams.finalize_resolution_error(
+            &stale,
+            true,
+            MacosCaptureError::RetainNativeFilterFailed,
+        ));
+        assert_eq!(streams.shared.picker_resolution(), Some(fresh));
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Starting);
+        assert_latest_lifecycle(&streams, MacosFrameStatus::Started);
+    }
+
+    #[test]
+    fn stale_enumeration_error_cannot_overwrite_successor_live() {
+        let streams = stream_slot_fixture(41, 9);
+        let stale = streams
+            .begin_resolution()
+            .expect("first enumeration should begin");
+        let fresh = streams
+            .begin_resolution()
+            .expect("successor enumeration should begin");
+        streams
+            .shared
+            .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle));
+
+        assert!(!streams.finalize_resolution_error(
+            &stale,
+            false,
+            MacosCaptureError::MissingShareableContent,
+        ));
+        assert!(streams.shared.source_resolution_is_current(&fresh));
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+        assert_latest_lifecycle(&streams, MacosFrameStatus::Idle);
+    }
+
+    #[test]
+    fn diagnostic_selector_remains_primary_across_concurrent_set_selector() {
+        let streams = stream_slot_fixture(0, 7);
+        let (diagnostic, completion) = streams
+            .begin_restart_diagnostic(true, 7)
+            .expect("diagnostic resolution should begin");
+        let resolution = SourceResolution::Diagnostic(diagnostic.clone());
+        assert_eq!(
+            resolution.selector(),
+            &super::MacosCaptureSelector::PrimaryDisplay
+        );
+
+        let lifecycle = super::lock(&streams.lifecycle_start);
+        let (started_tx, started_rx) = mpsc::channel();
+        let mutating_streams = Arc::clone(&streams);
+        let mutation = thread::spawn(move || {
+            started_tx
+                .send(())
+                .expect("selector mutation should be observable");
+            mutating_streams
+                .set_selector_and_begin_resolution(super::MacosCaptureSelector::Auto)
+                .expect("selector mutation should begin its own resolution")
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("selector mutation should reach the lifecycle gate");
+        assert_eq!(
+            streams.shared.selector(),
+            super::MacosCaptureSelector::PrimaryDisplay
+        );
+        drop(lifecycle);
+        let successor = mutation.join().expect("selector mutation should join");
+
+        assert_eq!(streams.shared.selector(), super::MacosCaptureSelector::Auto);
+        assert_eq!(successor.selector(), &super::MacosCaptureSelector::Auto);
+        assert_eq!(
+            resolution.selector(),
+            &super::MacosCaptureSelector::PrimaryDisplay
+        );
+        assert_eq!(completion.recv(), Ok(MacosProtectedSourceState::Failed));
+    }
+
+    #[test]
+    fn diagnostic_setup_fences_old_filter_acceptance_and_new_picker_resolution() {
+        let streams = stream_slot_fixture(41, 9);
+        let stale_resolution = streams
+            .begin_picker_resolution()
+            .expect("old picker resolution should begin");
+        let (setup_tx, setup_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let setup_streams = Arc::clone(&streams);
+        let setup = thread::spawn(move || {
+            setup_streams.setup_restart_diagnostic_with(true, || {
+                setup_tx
+                    .send(())
+                    .expect("installed diagnostic setup should be observable");
+                release_rx.recv().expect("diagnostic setup should resume");
+            })
+        });
+        setup_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("diagnostic should pause while holding the lifecycle gate");
+
+        assert_eq!(streams.shared.picker_resolution(), None);
+        assert_eq!(
+            streams.shared.selector(),
+            super::MacosCaptureSelector::PrimaryDisplay
+        );
+        assert!(streams.shared.capture_active());
+        assert_eq!(
+            streams.shared.selection(),
+            super::MacosCaptureSelection::None
+        );
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Starting);
+
+        let (filter_started_tx, filter_started_rx) = mpsc::channel();
+        let (filter_done_tx, filter_done_rx) = mpsc::channel();
+        let filter_streams = Arc::clone(&streams);
+        let stale_filter_resolution = stale_resolution.clone();
+        let stale_filter = thread::spawn(move || {
+            filter_started_tx
+                .send(())
+                .expect("old filter acceptance should be observable");
+            let result = filter_streams.accept_selection_filter(
+                NativeSelectionFilter::fixture(2),
+                MacosStreamRequest::default(),
+                42,
+                stale_filter_resolution,
+                true,
+            );
+            filter_done_tx
+                .send(result)
+                .expect("old filter result should be observable");
+        });
+        let (picker_started_tx, picker_started_rx) = mpsc::channel();
+        let (picker_done_tx, picker_done_rx) = mpsc::channel();
+        let picker_streams = Arc::clone(&streams);
+        let new_picker = thread::spawn(move || {
+            picker_started_tx
+                .send(())
+                .expect("new picker resolution should be observable");
+            let resolution = picker_streams.begin_picker_resolution();
+            picker_done_tx
+                .send(resolution)
+                .expect("new picker result should be observable");
+        });
+        filter_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old filter should reach the lifecycle gate");
+        picker_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("new picker should reach the lifecycle gate");
+        assert!(matches!(
+            filter_done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(
+            picker_done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+
+        release_tx
+            .send(())
+            .expect("diagnostic setup should release the lifecycle gate");
+        let (diagnostic, completion) = setup
+            .join()
+            .expect("diagnostic setup thread should join")
+            .expect("diagnostic setup should succeed");
+        assert!(matches!(
+            filter_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("old filter should finish after diagnostic setup"),
+            Ok(super::FilterAcceptance::Stale)
+        ));
+        let picker_resolution = picker_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("new picker should finish after diagnostic setup")
+            .expect("new picker resolution should succeed");
+        stale_filter.join().expect("old filter thread should join");
+        new_picker.join().expect("new picker thread should join");
+
+        assert!(!streams.shared.diagnostic_resolution_is_current(&diagnostic));
+        assert_eq!(
+            streams.shared.picker_resolution(),
+            Some(picker_resolution.clone())
+        );
+        assert!(
+            streams
+                .shared
+                .source_resolution_is_current(&picker_resolution)
+        );
+        assert_eq!(completion.recv(), Ok(MacosProtectedSourceState::Failed));
+        assert_eq!(selection_filter_ids(&streams), (None, None));
+    }
+
+    #[test]
+    fn inactive_filter_acceptance_precedes_crossing_activation_atomically() {
+        let streams = stream_slot_fixture(41, 9);
+        assert!(streams.set_capture_active(false));
+        streams.next_epoch.store(43, Ordering::Release);
+        let resolution = streams
+            .begin_resolution()
+            .expect("filter resolution should begin");
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let accepting_streams = Arc::clone(&streams);
+        let accepting = thread::spawn(move || {
+            accepting_streams.accept_selection_filter_with(
+                NativeSelectionFilter::fixture(2),
+                MacosStreamRequest::default(),
+                42,
+                resolution,
+                false,
+                || {
+                    accepted_tx
+                        .send(())
+                        .expect("filter acceptance should be observable");
+                    release_rx.recv().expect("filter acceptance should resume");
                 },
-                started: Vec::new(),
-                discarded: Vec::new(),
-            }
-        }
+            )
+        });
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("filter acceptance should hold the lifecycle gate");
 
-        fn reserve_regular(&mut self, epoch: u64) -> CandidateStage {
-            self.state.selection_revision += 1;
-            self.state.pending_interruption = None;
-            self.state.staging_epoch = Some(epoch);
-            CandidateStage {
-                epoch,
-                selection_revision: self.state.selection_revision,
-                recovery_current_epoch: None,
-                recovery: None,
-            }
-        }
+        let (activation_tx, activation_rx) = mpsc::channel();
+        let activation_streams = Arc::clone(&streams);
+        let activation = thread::spawn(move || {
+            activation_tx
+                .send(activation_streams.begin_capture_activation())
+                .expect("activation result should be observable");
+        });
+        assert!(matches!(
+            activation_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
 
-        fn stop_demand(&mut self) {
-            self.shared.set_capture_active(false);
-            self.shared.activate_epoch(0);
-            self.state.selection_revision += 1;
-            self.state.pending_interruption = None;
-            self.state.staging_epoch = None;
-        }
+        release_tx
+            .send(())
+            .expect("filter acceptance should be released");
+        assert!(matches!(
+            accepting.join().expect("acceptance thread should join"),
+            Ok(super::FilterAcceptance::Stored(None))
+        ));
+        let activation_result = activation_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("activation should finish after filter acceptance")
+            .expect("activation should reserve the accepted filter");
+        activation.join().expect("activation thread should join");
+        let super::CaptureActivation::Candidate { reservation, .. } = activation_result else {
+            panic!("activation should stage the accepted filter");
+        };
+        assert_eq!(reservation.1.fixture_id(), 2);
+        assert!(streams.start_candidate_fixture(reservation.0));
+        assert!(streams.activate_candidate_fixture(reservation.0.epoch));
+        assert_eq!(selection_filter_ids(&streams), (Some(2), None));
+    }
 
-        fn activate_newer_session(&mut self, epoch: u64) {
-            self.shared.activate_epoch(epoch);
-            self.state.staging_epoch = None;
-        }
+    #[test]
+    fn active_filter_acceptance_precedes_crossing_deactivation_atomically() {
+        let streams = stream_slot_fixture(41, 9);
+        let resolution = streams
+            .begin_resolution()
+            .expect("filter resolution should begin");
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let accepting_streams = Arc::clone(&streams);
+        let accepting = thread::spawn(move || {
+            accepting_streams.accept_selection_filter_with(
+                NativeSelectionFilter::fixture(2),
+                MacosStreamRequest::default(),
+                42,
+                resolution,
+                false,
+                || {
+                    accepted_tx
+                        .send(())
+                        .expect("filter acceptance should be observable");
+                    release_rx.recv().expect("filter acceptance should resume");
+                },
+            )
+        });
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("filter acceptance should hold the lifecycle gate");
 
-        fn try_start(&mut self, stage: CandidateStage) -> bool {
-            if !stage.is_current(&self.state, &self.shared) {
-                self.discarded.push(stage.epoch);
-                return false;
-            }
-            self.state.staging_epoch = None;
-            self.started.push(stage.epoch);
-            true
-        }
+        let (deactivation_tx, deactivation_rx) = mpsc::channel();
+        let deactivation_streams = Arc::clone(&streams);
+        let deactivation = thread::spawn(move || {
+            deactivation_tx
+                .send(deactivation_streams.set_capture_active(false))
+                .expect("deactivation result should be observable");
+        });
+        assert_eq!(
+            deactivation_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+
+        release_tx
+            .send(())
+            .expect("filter acceptance should be released");
+        let acceptance = accepting
+            .join()
+            .expect("acceptance thread should join")
+            .expect("active acceptance should reserve a candidate");
+        assert!(
+            deactivation_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("deactivation should finish after filter acceptance")
+        );
+        deactivation
+            .join()
+            .expect("deactivation thread should join");
+        let super::FilterAcceptance::Candidate { reservation, .. } = acceptance else {
+            panic!("active acceptance should stage the delivered filter");
+        };
+        assert!(!streams.start_candidate_fixture(reservation.0));
+        assert_eq!(selection_filter_ids(&streams), (Some(2), None));
+        assert!(!streams.shared.capture_active());
+    }
+
+    #[test]
+    fn candidate_activation_requires_its_pending_selection_revision() {
+        let streams = stream_slot_fixture(41, 9);
+        let (stage, _) =
+            reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 2)
+                .expect("candidate reservation succeeds")
+                .expect("active capture admits a candidate");
+        assert!(streams.start_candidate_fixture(stage));
+        super::lock(&streams.state).selection_revision += 1;
+
+        assert!(!streams.activate_candidate_fixture(42));
+        assert_eq!(selection_filter_ids(&streams), (Some(1), Some((42, 2))));
+        assert_eq!(streams.shared.current_epoch(), 41);
     }
 
     #[test]
@@ -3362,38 +6181,891 @@ mod tests {
 
     #[test]
     fn stream_slot_start_fixture_discards_a_candidate_after_demand_stops() {
-        let mut fixture = StreamSlotStartFixture::new(41, 9);
-        let stage = fixture.reserve_regular(42);
+        let streams = stream_slot_fixture(41, 9);
+        let (stage, replaced) =
+            reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 42)
+                .expect("production slot reserves a candidate")
+                .expect("active demand admits a candidate");
+        assert!(replaced.is_none());
 
-        fixture.stop_demand();
+        assert!(streams.set_capture_active(false));
 
-        assert!(!fixture.try_start(stage));
-        assert!(fixture.started.is_empty());
-        assert_eq!(fixture.discarded, vec![42]);
+        assert!(!streams.start_candidate_fixture(stage));
+        assert_eq!(super::lock(&streams.state).candidate_epoch, None);
     }
 
     #[test]
     fn stream_slot_start_fixture_rejects_a_repick_before_the_old_start_runs() {
-        let mut fixture = StreamSlotStartFixture::new(41, 9);
-        let stale = fixture.reserve_regular(42);
-        let current = fixture.reserve_regular(43);
+        let streams = stream_slot_fixture(41, 9);
+        let (stale, _) =
+            reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 42)
+                .expect("first candidate reserves")
+                .expect("first candidate stages");
+        let (current, _) =
+            reserve_selection_candidate_fixture(&streams, 43, MacosStreamRequest::default(), 43)
+                .expect("replacement candidate reserves")
+                .expect("replacement candidate stages");
 
-        assert!(!fixture.try_start(stale));
-        assert!(fixture.try_start(current));
-        assert_eq!(fixture.started, vec![43]);
-        assert_eq!(fixture.discarded, vec![42]);
+        assert!(!streams.start_candidate_fixture(stale));
+        assert!(streams.start_candidate_fixture(current));
+        assert_eq!(super::lock(&streams.state).candidate_epoch, Some(43));
+    }
+
+    #[test]
+    fn candidate_start_gate_blocks_deactivation_until_native_start_is_invoked() {
+        let streams = stream_slot_fixture(41, 9);
+        let (stage, _) =
+            reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 42)
+                .expect("candidate reservation succeeds")
+                .expect("active capture admits a candidate");
+        let invoked = Arc::new(AtomicBool::new(false));
+        let (installed_tx, installed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let starter_streams = Arc::clone(&streams);
+        let starter_invoked = Arc::clone(&invoked);
+        let starter = thread::spawn(move || {
+            starter_streams.start_candidate_fixture_with(stage, move || {
+                installed_tx
+                    .send(())
+                    .expect("installed candidate should be observable");
+                release_rx
+                    .recv()
+                    .expect("native start invocation should be released");
+                starter_invoked.store(true, Ordering::Release);
+            })
+        });
+        installed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("candidate should install before the injected invocation pauses");
+
+        let (deactivate_started_tx, deactivate_started_rx) = mpsc::channel();
+        let (deactivate_done_tx, deactivate_done_rx) = mpsc::channel();
+        let deactivate_streams = Arc::clone(&streams);
+        let deactivate_invoked = Arc::clone(&invoked);
+        let deactivate = thread::spawn(move || {
+            deactivate_started_tx
+                .send(())
+                .expect("deactivation attempt should be observable");
+            let changed = deactivate_streams.set_capture_active(false);
+            deactivate_done_tx
+                .send((changed, deactivate_invoked.load(Ordering::Acquire)))
+                .expect("deactivation result should be observable");
+        });
+        deactivate_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("deactivation should reach the lifecycle gate");
+        assert_eq!(
+            deactivate_done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert_eq!(super::lock(&streams.state).candidate_epoch, Some(42));
+
+        release_tx
+            .send(())
+            .expect("native start invocation should resume");
+        assert!(starter.join().expect("starter thread should join"));
+        assert_eq!(
+            deactivate_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("deactivation should finish after invocation"),
+            (true, true)
+        );
+        deactivate.join().expect("deactivation thread should join");
+        assert_eq!(super::lock(&streams.state).candidate_epoch, None);
+    }
+
+    #[test]
+    fn candidate_start_gate_blocks_repick_until_native_start_is_invoked() {
+        let streams = stream_slot_fixture(41, 9);
+        let (stage, _) =
+            reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 42)
+                .expect("candidate reservation succeeds")
+                .expect("active capture admits a candidate");
+        let invoked = Arc::new(AtomicBool::new(false));
+        let (installed_tx, installed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let starter_streams = Arc::clone(&streams);
+        let starter_invoked = Arc::clone(&invoked);
+        let starter = thread::spawn(move || {
+            starter_streams.start_candidate_fixture_with(stage, move || {
+                installed_tx
+                    .send(())
+                    .expect("installed candidate should be observable");
+                release_rx
+                    .recv()
+                    .expect("native start invocation should be released");
+                starter_invoked.store(true, Ordering::Release);
+            })
+        });
+        installed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("candidate should install before the injected invocation pauses");
+
+        let (repick_started_tx, repick_started_rx) = mpsc::channel();
+        let (repick_done_tx, repick_done_rx) = mpsc::channel();
+        let repick_streams = Arc::clone(&streams);
+        let repick_invoked = Arc::clone(&invoked);
+        let repick = thread::spawn(move || {
+            repick_started_tx
+                .send(())
+                .expect("repick attempt should be observable");
+            let (replacement, retired) = reserve_selection_candidate_fixture(
+                &repick_streams,
+                43,
+                MacosStreamRequest::default(),
+                43,
+            )
+            .expect("repick reservation succeeds")
+            .expect("active capture admits the repick");
+            assert!(retired.is_none());
+            repick_done_tx
+                .send((replacement.epoch, repick_invoked.load(Ordering::Acquire)))
+                .expect("repick result should be observable");
+        });
+        repick_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("repick should reach the lifecycle gate");
+        assert_eq!(
+            repick_done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert_eq!(super::lock(&streams.state).candidate_epoch, Some(42));
+
+        release_tx
+            .send(())
+            .expect("native start invocation should resume");
+        assert!(starter.join().expect("starter thread should join"));
+        assert_eq!(
+            repick_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("repick should finish after invocation"),
+            (43, true)
+        );
+        repick.join().expect("repick thread should join");
+        assert_eq!(super::lock(&streams.state).staging_epoch, Some(43));
+    }
+
+    #[test]
+    fn stale_async_start_failure_cannot_retire_the_successor_candidate() {
+        let streams = stream_slot_fixture(41, 9);
+        let (diagnostic, diagnostic_completion) = streams
+            .shared
+            .begin_restart_diagnostic(true, 9)
+            .expect("diagnostic attempt begins");
+        streams.shared.record_filter_enumerated(&diagnostic, 42);
+        let (callback_blocked_tx, callback_blocked_rx) = mpsc::channel();
+        let (release_callback_tx, release_callback_rx) = mpsc::channel();
+        streams.lifecycle_callbacks.exec_async(move || {
+            callback_blocked_tx
+                .send(())
+                .expect("blocked lifecycle callback should be observable");
+            release_callback_rx
+                .recv()
+                .expect("lifecycle callback should be released");
+        });
+        callback_blocked_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("lifecycle callback queue should pause");
+        let (stale, _) =
+            reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 42)
+                .expect("stale candidate reservation succeeds")
+                .expect("active capture admits the stale candidate");
+        let failure_streams = Arc::clone(&streams);
+        let failure_shared = Arc::clone(&streams.shared);
+        assert!(streams.start_candidate_fixture_with(stale, move || {
+            super::dispatch_owned_stream_error(
+                failure_streams,
+                42,
+                failure_shared,
+                MacosProtectedSourceState::PermissionDenied,
+                MacosCaptureError::CaptureWorkerStartFailed(
+                    "stale injected start failure".to_owned(),
+                ),
+            );
+        }));
+        assert!(streams.set_capture_active(false));
+        assert!(streams.set_capture_active(true));
+
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("successor request is valid");
+        let (pending, completion) = pending_request(43, next);
+        let (successor, _) = reserve_request_candidate_fixture(&streams, 43, next, pending)
+            .expect("successor reservation succeeds")
+            .expect("reactivated capture admits the successor");
+        assert!(streams.start_candidate_fixture(successor));
+
+        release_callback_tx
+            .send(())
+            .expect("stale start completion should resume");
+        streams.drain_lifecycle_callbacks();
+        super::dispatch_stream_start_success(&Arc::downgrade(&streams), 42);
+        streams.drain_lifecycle_callbacks();
+
+        assert_eq!(super::lock(&streams.state).candidate_epoch, Some(43));
+        assert_eq!(streams.request(), next);
+        assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+        assert_eq!(
+            diagnostic_completion.try_recv(),
+            Ok(MacosProtectedSourceState::Failed)
+        );
+        assert!(streams.activate_candidate_fixture(43));
+        assert_eq!(completion.recv(), Ok(Ok(())));
+        streams
+            .shared
+            .fail_restart_diagnostic_attempt(diagnostic.attempt);
+        assert_eq!(
+            diagnostic_completion.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        );
+    }
+
+    #[test]
+    fn deactivation_retires_diagnostic_before_queued_candidate_completion() {
+        let streams = stream_slot_fixture(41, 9);
+        let (diagnostic, diagnostic_completion) = streams
+            .shared
+            .begin_restart_diagnostic(true, 9)
+            .expect("diagnostic attempt should begin");
+        streams.shared.record_filter_enumerated(&diagnostic, 42);
+
+        let (blocked_tx, blocked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        streams.lifecycle_callbacks.exec_async(move || {
+            blocked_tx
+                .send(())
+                .expect("queued completion pause should be observable");
+            release_rx.recv().expect("queued completion should resume");
+        });
+        blocked_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("lifecycle queue should pause before candidate completion");
+
+        let (candidate, _) =
+            reserve_selection_candidate_fixture(&streams, 42, MacosStreamRequest::default(), 42)
+                .expect("diagnostic candidate should reserve")
+                .expect("active capture should admit the diagnostic candidate");
+        let callback_streams = Arc::clone(&streams);
+        let callback_shared = Arc::clone(&streams.shared);
+        assert!(streams.start_candidate_fixture_with(candidate, move || {
+            super::dispatch_owned_stream_error(
+                callback_streams,
+                42,
+                callback_shared,
+                MacosProtectedSourceState::PermissionDenied,
+                MacosCaptureError::CaptureWorkerStartFailed(
+                    "queued diagnostic candidate completion".to_owned(),
+                ),
+            );
+        }));
+
+        assert!(streams.set_capture_active(false));
+        assert_eq!(
+            diagnostic_completion
+                .recv_timeout(Duration::from_secs(1))
+                .expect("deactivation should terminally complete the diagnostic"),
+            MacosProtectedSourceState::Failed
+        );
+        streams
+            .shared
+            .publish(MacosFrameEvent::Lifecycle(MacosFrameStatus::Stopped));
+
+        release_tx
+            .send(())
+            .expect("stale candidate completion should resume");
+        streams.drain_lifecycle_callbacks();
+        super::dispatch_stream_start_success(&Arc::downgrade(&streams), 42);
+        streams.drain_lifecycle_callbacks();
+
+        assert!(!streams.shared.capture_active());
+        assert_eq!(streams.shared.current_epoch(), 0);
+        assert_eq!(super::lock(&streams.state).candidate_epoch, None);
+        assert!(matches!(
+            streams.shared.mailbox.take_latest(),
+            Some(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Stopped)))
+        ));
+    }
+
+    fn assert_failure_before_activation_rejects_the_candidate(
+        dispatch_failure: impl FnOnce(&Arc<StreamSlot>, Arc<SessionShared>, MacosCaptureError),
+    ) {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("candidate request is valid");
+        let streams = stream_slot_fixture(41, 9);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(42, next);
+        let (stage, _) = reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("candidate reservation succeeds")
+            .expect("active capture admits the candidate");
+        assert!(streams.start_candidate_fixture(stage));
+
+        let (callback_blocked_tx, callback_blocked_rx) = mpsc::channel();
+        let (release_callback_tx, release_callback_rx) = mpsc::channel();
+        streams.lifecycle_callbacks.exec_async(move || {
+            callback_blocked_tx
+                .send(())
+                .expect("blocked lifecycle callback should be observable");
+            release_callback_rx
+                .recv()
+                .expect("lifecycle callback should be released");
+        });
+        callback_blocked_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("lifecycle callback queue should pause");
+
+        dispatch_failure(
+            &streams,
+            Arc::clone(&streams.shared),
+            MacosCaptureError::CaptureWorkerStartFailed(
+                "injected candidate failure before activation".to_owned(),
+            ),
+        );
+
+        assert!(!streams.accepts_epoch(42));
+        assert!(!streams.activate_candidate_fixture(42));
+        assert_eq!(streams.committed_request(), original);
+        assert_eq!(streams.shared.current_epoch(), 41);
+        assert_eq!(super::lock(&streams.state).candidate_epoch, Some(42));
+        assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+        release_callback_tx
+            .send(())
+            .expect("queued teardown should resume");
+        streams.drain_lifecycle_callbacks();
+
+        assert_eq!(super::lock(&streams.state).candidate_epoch, None);
+        assert_eq!(streams.committed_request(), original);
+        assert_eq!(streams.shared.current_epoch(), 41);
+        assert!(matches!(completion.recv(), Ok(Err(_))));
+    }
+
+    #[test]
+    fn start_failure_before_activation_rejects_the_exact_candidate_synchronously() {
+        assert_failure_before_activation_rejects_the_candidate(|streams, shared, error| {
+            super::dispatch_owned_stream_error(
+                Arc::clone(streams),
+                42,
+                shared,
+                MacosProtectedSourceState::PermissionDenied,
+                error,
+            );
+        });
+    }
+
+    #[test]
+    fn fatal_failure_before_activation_rejects_the_exact_candidate_synchronously() {
+        assert_failure_before_activation_rejects_the_candidate(|streams, shared, error| {
+            super::handle_fatal_stream_error(&Arc::downgrade(streams), 42, shared, error);
+        });
     }
 
     #[test]
     fn stream_slot_start_fixture_never_regresses_a_newer_live_session_to_interrupted() {
-        let mut fixture = StreamSlotStartFixture::new(0, 9);
+        let streams = stream_slot_fixture(0, 9);
         let recovery = InterruptedRestage::interrupted(41, 9);
 
-        assert!(recovery.can_begin(&fixture.state, &fixture.shared));
-        fixture.activate_newer_session(43);
+        assert!(recovery.can_begin(&super::lock(&streams.state), &streams.shared));
+        streams.shared.activate_epoch(43);
 
-        assert!(!recovery.can_begin(&fixture.state, &fixture.shared));
-        assert_eq!(fixture.shared.status(), MacosProtectedSourceState::Live);
+        assert!(!recovery.can_begin(&super::lock(&streams.state), &streams.shared));
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
+    }
+
+    #[test]
+    fn pending_selection_request_after_repick_avoids_the_current_filter() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("request is valid");
+        let streams = stream_slot_fixture(41, 9);
+        let (repick, _) = reserve_selection_candidate_fixture(&streams, 42, original, 2)
+            .expect("repick reserves")
+            .expect("active capture stages the repick");
+        assert!(streams.start_candidate_fixture(repick));
+        assert_eq!(selection_filter_ids(&streams), (Some(1), Some((42, 2))));
+        assert_eq!(streams.shared.current_epoch(), 41);
+
+        streams.next_epoch.store(43, Ordering::Release);
+        let (transaction, replaced) = streams
+            .begin_request_candidate_fixture(next)
+            .expect("request restages the repick selection");
+        assert!(replaced.is_none());
+        assert_eq!(transaction.generation, 43);
+        assert_eq!(selection_filter_ids(&streams), (Some(1), Some((43, 2))));
+        assert_eq!(
+            transaction.completion.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        );
+        assert!(!streams.activate_candidate_fixture(42));
+        assert_eq!(
+            transaction.completion.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        );
+        assert_eq!(streams.shared.current_epoch(), 41);
+
+        assert!(streams.activate_candidate_fixture(43));
+        assert_eq!(transaction.completion.recv(), Ok(Ok(())));
+        assert_eq!(selection_filter_ids(&streams), (Some(2), None));
+        assert_eq!(streams.committed_request(), next);
+        assert_eq!(streams.shared.current_epoch(), 43);
+    }
+
+    #[test]
+    fn pending_selection_request_after_first_candidate_keeps_the_only_filter() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("request is valid");
+        let streams = stream_slot_fixture(0, 3);
+        super::lock(&streams.state).selected_filter = None;
+        let (first, _) = reserve_selection_candidate_fixture(&streams, 42, original, 7)
+            .expect("first selection reserves")
+            .expect("active capture stages the first selection");
+        assert!(streams.start_candidate_fixture(first));
+        assert_eq!(selection_filter_ids(&streams), (None, Some((42, 7))));
+
+        streams.next_epoch.store(43, Ordering::Release);
+        let (transaction, replaced) = streams
+            .begin_request_candidate_fixture(next)
+            .expect("request restages the only selection");
+        assert!(replaced.is_none());
+        assert_eq!(selection_filter_ids(&streams), (None, Some((43, 7))));
+        assert_eq!(
+            transaction.completion.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        );
+        assert!(!streams.activate_candidate_fixture(42));
+
+        assert!(streams.activate_candidate_fixture(43));
+        assert_eq!(transaction.completion.recv(), Ok(Ok(())));
+        assert_eq!(selection_filter_ids(&streams), (Some(7), None));
+        assert_eq!(streams.committed_request(), next);
+        assert_eq!(streams.shared.current_epoch(), 43);
+    }
+
+    #[test]
+    fn pending_selection_request_fences_async_preinstall_ordering() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("request is valid");
+        let streams = stream_slot_fixture(41, 9);
+        let (uninstalled, _) = reserve_selection_candidate_fixture(&streams, 42, original, 8)
+            .expect("async selection reserves")
+            .expect("active capture stages the async selection");
+        assert_eq!(selection_filter_ids(&streams), (Some(1), Some((42, 8))));
+
+        streams.next_epoch.store(43, Ordering::Release);
+        let (transaction, replaced) = streams
+            .begin_request_candidate_fixture(next)
+            .expect("request supersedes the pre-install stage");
+        assert!(replaced.is_none());
+        assert_eq!(selection_filter_ids(&streams), (Some(1), Some((43, 8))));
+        assert!(!streams.start_candidate_fixture(uninstalled));
+        assert_eq!(
+            transaction.completion.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        );
+
+        assert!(streams.activate_candidate_fixture(43));
+        assert_eq!(transaction.completion.recv(), Ok(Ok(())));
+        assert_eq!(selection_filter_ids(&streams), (Some(8), None));
+        assert_eq!(streams.committed_request(), next);
+    }
+
+    #[test]
+    fn stream_slot_request_restage_commits_only_at_candidate_activation() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(9, next);
+
+        let (stage, replaced) = reserve_request_candidate_fixture(&streams, 9, next, pending)
+            .expect("request restage should reserve")
+            .expect("active request should stage a candidate");
+        assert!(replaced.is_none());
+        assert_eq!(streams.request(), next);
+        assert_eq!(super::lock(&streams.state).request, original);
+        assert_eq!(
+            completion.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        assert!(streams.start_candidate_fixture(stage));
+        assert_eq!(
+            completion.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        assert!(streams.activate_candidate_fixture(stage.epoch));
+        assert_eq!(completion.recv(), Ok(Ok(())));
+
+        let state = super::lock(&streams.state);
+        assert_eq!(state.request, next);
+        assert!(state.pending_request.is_none());
+        assert_eq!(state.candidate_epoch, None);
+    }
+
+    #[test]
+    fn picker_replacement_retargets_the_pending_request_transaction() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("pending request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(42, next);
+        let (request_stage, _) = reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("request candidate reserves")
+            .expect("active capture stages the request candidate");
+        assert!(streams.start_candidate_fixture(request_stage));
+
+        let (picker_stage, replaced) = reserve_selection_candidate_fixture(&streams, 43, next, 43)
+            .expect("picker replacement reserves with the authoritative request")
+            .expect("active capture stages the picker replacement");
+        assert!(replaced.is_none());
+        assert_eq!(picker_stage.request.map(|request| request.epoch), Some(43));
+        assert_eq!(streams.request(), next);
+        assert_eq!(streams.committed_request(), original);
+        assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+        assert!(!streams.fail_candidate_fixture(
+            42,
+            MacosCaptureError::CaptureWorkerStartFailed(
+                "stale replaced candidate failed".to_owned(),
+            )
+        ));
+        assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+        assert!(streams.start_candidate_fixture(picker_stage));
+        assert!(streams.activate_candidate_fixture(43));
+        assert_eq!(completion.recv(), Ok(Ok(())));
+        assert_eq!(streams.committed_request(), next);
+    }
+
+    #[test]
+    fn stale_resolution_snapshot_cannot_displace_the_pending_request_transaction() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("pending request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(42, next);
+        let (request_stage, _) = reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("request candidate reserves")
+            .expect("active capture stages the request candidate");
+        assert!(streams.start_candidate_fixture(request_stage));
+        let selection_revision = streams.selection_revision();
+
+        let error = match reserve_selection_candidate_fixture(&streams, 43, original, 43) {
+            Ok(_) => panic!("stale resolution snapshot must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("authoritative stream request"));
+        assert_eq!(streams.selection_revision(), selection_revision);
+        assert_eq!(super::lock(&streams.state).candidate_epoch, Some(42));
+        assert_eq!(streams.request(), next);
+        assert_eq!(streams.committed_request(), original);
+        assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+        let (retry, _) = reserve_selection_candidate_fixture(&streams, 44, next, 44)
+            .expect("resolution retries with the authoritative pending request")
+            .expect("retry stages a replacement candidate");
+        assert!(!streams.fail_candidate_fixture(
+            42,
+            MacosCaptureError::CaptureWorkerStartFailed(
+                "stale request candidate failed".to_owned(),
+            )
+        ));
+        assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+        assert!(streams.start_candidate_fixture(retry));
+        assert!(streams.activate_candidate_fixture(44));
+        assert_eq!(completion.recv(), Ok(Ok(())));
+        assert_eq!(streams.committed_request(), next);
+    }
+
+    #[test]
+    fn stale_resolution_snapshot_after_request_commit_cannot_replace_the_committed_request() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("pending request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(42, next);
+        let (request_stage, _) = reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("request candidate reserves")
+            .expect("active capture stages the request candidate");
+        assert!(streams.start_candidate_fixture(request_stage));
+        assert!(streams.activate_candidate_fixture(42));
+        assert_eq!(completion.recv(), Ok(Ok(())));
+
+        let selection_revision = streams.selection_revision();
+        let current_epoch = streams.shared.current_epoch();
+        let error = match reserve_selection_candidate_fixture(&streams, 43, original, 43) {
+            Ok(_) => panic!("post-commit stale resolution snapshot must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("authoritative stream request"));
+        assert_eq!(streams.selection_revision(), selection_revision);
+        assert_eq!(streams.shared.current_epoch(), current_epoch);
+        {
+            let state = super::lock(&streams.state);
+            assert_eq!(state.request, next);
+            assert!(state.pending_request.is_none());
+            assert_eq!(state.staging_epoch, None);
+            assert_eq!(state.candidate_epoch, None);
+        }
+
+        let (retry, replaced) = reserve_selection_candidate_fixture(&streams, 44, next, 44)
+            .expect("resolution retries with the committed request")
+            .expect("retry stages a replacement candidate");
+        assert!(replaced.is_none());
+        assert!(streams.start_candidate_fixture(retry));
+        assert!(streams.activate_candidate_fixture(44));
+        assert_eq!(streams.committed_request(), next);
+        assert_eq!(streams.shared.current_epoch(), 44);
+    }
+
+    #[test]
+    fn stale_resolution_snapshot_after_request_rollback_cannot_replace_the_committed_request() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("pending request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(42, next);
+        let (request_stage, _) = reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("request candidate reserves")
+            .expect("active capture stages the request candidate");
+        assert!(streams.start_candidate_fixture(request_stage));
+        let failure =
+            MacosCaptureError::CaptureWorkerStartFailed("fixture request failure".to_owned());
+        assert!(streams.fail_candidate_fixture(42, failure.clone()));
+        assert_eq!(completion.recv(), Ok(Err(failure)));
+
+        let selection_revision = streams.selection_revision();
+        let current_epoch = streams.shared.current_epoch();
+        let error = match reserve_selection_candidate_fixture(&streams, 43, next, 43) {
+            Ok(_) => panic!("post-rollback stale resolution snapshot must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("authoritative stream request"));
+        assert_eq!(streams.selection_revision(), selection_revision);
+        assert_eq!(streams.shared.current_epoch(), current_epoch);
+        {
+            let state = super::lock(&streams.state);
+            assert_eq!(state.request, original);
+            assert!(state.pending_request.is_none());
+            assert_eq!(state.staging_epoch, None);
+            assert_eq!(state.candidate_epoch, None);
+        }
+
+        let (retry, replaced) = reserve_selection_candidate_fixture(&streams, 44, original, 44)
+            .expect("resolution retries with the rolled-back committed request")
+            .expect("retry stages a replacement candidate");
+        assert!(replaced.is_none());
+        assert!(streams.start_candidate_fixture(retry));
+        assert!(streams.activate_candidate_fixture(44));
+        assert_eq!(streams.committed_request(), original);
+        assert_eq!(streams.shared.current_epoch(), 44);
+    }
+
+    #[test]
+    fn stream_slot_request_restage_failure_rolls_back_pending_request() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new_hdr(MacosCaptureCadence::NativeRefresh, true)
+            .expect("fixture HDR request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(12, next);
+
+        let (stage, replaced) = reserve_request_candidate_fixture(&streams, 12, next, pending)
+            .expect("request restage should reserve")
+            .expect("active request should stage a candidate");
+        assert!(replaced.is_none());
+        assert!(streams.start_candidate_fixture(stage));
+        let error = MacosCaptureError::CaptureWorkerStartFailed("fixture async failure".to_owned());
+        assert!(streams.fail_candidate_fixture(stage.epoch, error.clone()));
+        assert_eq!(completion.recv(), Ok(Err(error)));
+
+        let state = super::lock(&streams.state);
+        assert_eq!(state.request, original);
+        assert!(state.pending_request.is_none());
+        assert_eq!(state.staging_epoch, None);
+        assert_eq!(state.candidate_epoch, None);
+    }
+
+    #[test]
+    fn stream_slot_serializes_request_transactions_while_a_candidate_is_pending() {
+        let original = MacosStreamRequest::default();
+        let first = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("first fixture request is valid");
+        let second = MacosStreamRequest::new_hdr(MacosCaptureCadence::NativeRefresh, true)
+            .expect("second fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        super::lock(&streams.state).request = original;
+        let (pending, completion) = pending_request(12, first);
+        let (stage, _) = reserve_request_candidate_fixture(&streams, 12, first, pending)
+            .expect("first request reserves")
+            .expect("first request stages");
+        assert!(streams.start_candidate_fixture(stage));
+        let reserve_pool: super::PoolReservationFactory =
+            Arc::new(|_, _| -> Result<PoolObservation, MacosCaptureError> {
+                unreachable!("serialized request never prepares another native stream")
+            });
+
+        let error = match streams.set_request(second, &reserve_pool) {
+            Ok(_) => panic!("a second request cannot overtake the pending transaction"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("still pending"));
+        assert_eq!(
+            completion.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        assert!(streams.activate_candidate_fixture(stage.epoch));
+        assert_eq!(completion.recv(), Ok(Ok(())));
+        assert_eq!(streams.committed_request(), first);
+    }
+
+    #[test]
+    fn restart_diagnostic_requires_grant_enumeration_and_stream_permission_failure() {
+        let shared = SessionShared::new(
+            MacosProtectedSourceState::Starting,
+            super::MacosCaptureSelector::PrimaryDisplay,
+            MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
+        );
+        let (resolution, completion) = shared
+            .begin_restart_diagnostic(true, 7)
+            .expect("diagnostic attempt begins");
+        shared.record_filter_enumerated(&resolution, 42);
+
+        assert_eq!(
+            shared.record_stream_diagnostic_result(42, MacosProtectedSourceState::PermissionDenied),
+            MacosProtectedSourceState::NeedsProcessRestart
+        );
+        assert_eq!(
+            completion.recv(),
+            Ok(MacosProtectedSourceState::NeedsProcessRestart)
+        );
+    }
+
+    #[test]
+    fn restart_diagnostic_requires_its_exact_resolution_provenance() {
+        let shared = SessionShared::new(
+            MacosProtectedSourceState::Starting,
+            super::MacosCaptureSelector::PrimaryDisplay,
+            MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
+        );
+        let (stale, stale_completion) = shared
+            .begin_restart_diagnostic(true, 7)
+            .expect("first diagnostic begins");
+        let (fresh, fresh_completion) = shared
+            .begin_restart_diagnostic(true, 8)
+            .expect("second diagnostic supersedes it");
+        assert_eq!(
+            stale_completion.recv(),
+            Ok(MacosProtectedSourceState::Failed)
+        );
+
+        shared.record_non_stream_diagnostic_failure(&stale, MacosProtectedSourceState::Failed);
+        assert_eq!(
+            fresh_completion.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        shared.record_filter_enumerated(&fresh, 43);
+        assert_eq!(
+            shared.record_stream_diagnostic_result(43, MacosProtectedSourceState::PermissionDenied),
+            MacosProtectedSourceState::NeedsProcessRestart
+        );
+        assert_eq!(
+            fresh_completion.recv(),
+            Ok(MacosProtectedSourceState::NeedsProcessRestart)
+        );
+    }
+
+    #[test]
+    fn ordinary_resolution_supersedes_the_diagnostic_without_stranding_its_receiver() {
+        let shared = SessionShared::new(
+            MacosProtectedSourceState::Starting,
+            super::MacosCaptureSelector::PrimaryDisplay,
+            MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
+        );
+        let (diagnostic, completion) = shared
+            .begin_restart_diagnostic(true, 7)
+            .expect("diagnostic begins");
+
+        let ordinary = shared
+            .begin_resolution()
+            .expect("ordinary resolution begins");
+
+        assert!(shared.resolution_is_current(ordinary));
+        assert_eq!(completion.recv(), Ok(MacosProtectedSourceState::Failed));
+        shared.record_filter_enumerated(&diagnostic, 42);
+        assert_eq!(
+            shared.record_stream_diagnostic_result(42, MacosProtectedSourceState::PermissionDenied),
+            MacosProtectedSourceState::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn primary_display_diagnostic_clears_picker_identity_before_enumeration() {
+        let shared = Arc::new(SessionShared::new(
+            MacosProtectedSourceState::ReadyIdle,
+            super::MacosCaptureSelector::SessionScoped,
+            MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
+        ));
+        shared.set_unconfirmed_selection(super::MacosCaptureSelection::SessionScoped {
+            content_style: super::MacosCaptureContentStyle::Window,
+        });
+        let streams = StreamSlot::new(Arc::clone(&shared), MacosStreamRequest::default());
+        {
+            let mut state = super::lock(&streams.state);
+            state.staging_epoch = Some(8);
+            state.pending_request = Some(pending_request(8, MacosStreamRequest::default()).0);
+        }
+
+        streams
+            .clear_selection()
+            .expect("diagnostic reset clears prior selection state");
+        shared.set_selector(super::MacosCaptureSelector::PrimaryDisplay);
+
+        let state = super::lock(&streams.state);
+        assert!(state.selected_filter.is_none());
+        assert_eq!(state.staging_epoch, None);
+        assert!(state.pending_request.is_none());
+        assert_eq!(shared.selection(), super::MacosCaptureSelection::None);
+        assert_eq!(
+            shared.selector(),
+            super::MacosCaptureSelector::PrimaryDisplay
+        );
+    }
+
+    #[test]
+    fn old_stream_completion_cannot_satisfy_primary_display_diagnostic() {
+        let shared = SessionShared::new(
+            MacosProtectedSourceState::Starting,
+            super::MacosCaptureSelector::PrimaryDisplay,
+            MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
+        );
+        let (resolution, completion) = shared
+            .begin_restart_diagnostic(true, 7)
+            .expect("diagnostic begins");
+        shared.record_filter_enumerated(&resolution, 42);
+
+        assert_eq!(
+            shared.record_stream_diagnostic_result(41, MacosProtectedSourceState::ReadyIdle),
+            MacosProtectedSourceState::ReadyIdle
+        );
+        assert_eq!(
+            completion.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        assert_eq!(
+            shared.record_stream_diagnostic_result(42, MacosProtectedSourceState::PermissionDenied),
+            MacosProtectedSourceState::NeedsProcessRestart
+        );
+        assert_eq!(
+            completion.recv(),
+            Ok(MacosProtectedSourceState::NeedsProcessRestart)
+        );
     }
 
     #[test]

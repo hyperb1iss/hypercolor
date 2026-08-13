@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::{MacosCaptureDynamicRange, MacosCaptureError, MacosStreamPreset};
+use crate::{
+    MacosCaptureCapabilities, MacosCaptureDynamicRange, MacosCaptureError, MacosStreamPreset,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MacosCaptureSelector {
@@ -98,6 +100,19 @@ pub struct MacosStreamRequest {
 }
 
 impl MacosStreamRequest {
+    /// Resolve the strongest truthful production request for this host.
+    pub fn for_capabilities(
+        cadence: MacosCaptureCadence,
+        cursor_composed: bool,
+        capabilities: MacosCaptureCapabilities,
+    ) -> Result<Self, MacosCaptureError> {
+        if capabilities.hdr_stream.is_present() {
+            Self::new_hdr(cadence, cursor_composed)
+        } else {
+            Self::new(cadence, cursor_composed)
+        }
+    }
+
     pub fn new(
         cadence: MacosCaptureCadence,
         cursor_composed: bool,

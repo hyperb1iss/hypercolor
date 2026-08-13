@@ -171,8 +171,62 @@ use crate::types::canvas::{
 use crate::types::event::ZoneColors;
 use std::fmt::Write as _;
 use std::mem::size_of;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Acquisition cadence requested from a native screen backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenCaptureCadence {
+    /// Use the source's configured acquisition cadence.
+    #[default]
+    Configured,
+    /// Allow the native source to publish at the display's refresh cadence.
+    NativeRefresh,
+    /// Request an explicit nonzero acquisition rate.
+    FramesPerSecond(NonZeroU32),
+}
+
+impl ScreenCaptureCadence {
+    /// Construct an explicit nonzero acquisition rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureCadenceError::Zero`] when `frames_per_second` is zero.
+    pub const fn frames_per_second(frames_per_second: u32) -> Result<Self, CaptureCadenceError> {
+        let cadence = match CaptureCadence::new(frames_per_second) {
+            Ok(cadence) => cadence,
+            Err(error) => return Err(error),
+        };
+        Ok(Self::FramesPerSecond(
+            NonZeroU32::new(cadence.frames_per_second())
+                .expect("validated capture cadence is nonzero"),
+        ))
+    }
+
+    /// Resolve a demand override against the configured acquisition cadence.
+    #[must_use]
+    pub const fn resolve(self, configured: Self) -> Self {
+        match self {
+            Self::Configured => configured,
+            explicit => explicit,
+        }
+    }
+
+    const fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NativeRefresh, _) | (_, Self::NativeRefresh) => Self::NativeRefresh,
+            (Self::FramesPerSecond(left), Self::FramesPerSecond(right)) => {
+                if left.get() >= right.get() {
+                    Self::FramesPerSecond(left)
+                } else {
+                    Self::FramesPerSecond(right)
+                }
+            }
+            (Self::Configured, cadence) | (cadence, Self::Configured) => cadence,
+        }
+    }
+}
 
 /// Requested screen publication state for downstream render consumers.
 ///
@@ -187,6 +241,10 @@ pub enum ScreenCaptureDemand {
     Active {
         /// Maximum width and height requested by the current consumer union.
         requested_extent: PixelExtent,
+        /// Native acquisition cadence requested by the current consumer union.
+        cadence: ScreenCaptureCadence,
+        /// Cursor composition requested from the native source.
+        cursor: ScreenCursorPolicy,
     },
 }
 
@@ -194,7 +252,25 @@ impl ScreenCaptureDemand {
     /// Construct active demand from a validated extent.
     #[must_use]
     pub const fn active(requested_extent: PixelExtent) -> Self {
-        Self::Active { requested_extent }
+        Self::active_with_policy(
+            requested_extent,
+            ScreenCaptureCadence::Configured,
+            ScreenCursorPolicy::Exclude,
+        )
+    }
+
+    /// Construct active demand with an explicit acquisition and cursor policy.
+    #[must_use]
+    pub const fn active_with_policy(
+        requested_extent: PixelExtent,
+        cadence: ScreenCaptureCadence,
+        cursor: ScreenCursorPolicy,
+    ) -> Self {
+        Self::Active {
+            requested_extent,
+            cadence,
+            cursor,
+        }
     }
 
     /// Construct active demand from checked pixel dimensions.
@@ -220,7 +296,27 @@ impl ScreenCaptureDemand {
     pub const fn requested_extent(self) -> Option<PixelExtent> {
         match self {
             Self::Inactive => None,
-            Self::Active { requested_extent } => Some(requested_extent),
+            Self::Active {
+                requested_extent, ..
+            } => Some(requested_extent),
+        }
+    }
+
+    /// Requested native acquisition cadence, or `None` while inactive.
+    #[must_use]
+    pub const fn cadence(self) -> Option<ScreenCaptureCadence> {
+        match self {
+            Self::Inactive => None,
+            Self::Active { cadence, .. } => Some(cadence),
+        }
+    }
+
+    /// Requested cursor composition policy, or `None` while inactive.
+    #[must_use]
+    pub const fn cursor(self) -> Option<ScreenCursorPolicy> {
+        match self {
+            Self::Inactive => None,
+            Self::Active { cursor, .. } => Some(cursor),
         }
     }
 
@@ -232,11 +328,25 @@ impl ScreenCaptureDemand {
             (
                 Self::Active {
                     requested_extent: left,
+                    cadence: left_cadence,
+                    cursor: left_cursor,
                 },
                 Self::Active {
                     requested_extent: right,
+                    cadence: right_cadence,
+                    cursor: right_cursor,
                 },
-            ) => Self::active(left.union(right)),
+            ) => Self::active_with_policy(
+                left.union(right),
+                left_cadence.union(right_cadence),
+                if matches!(left_cursor, ScreenCursorPolicy::Include)
+                    || matches!(right_cursor, ScreenCursorPolicy::Include)
+                {
+                    ScreenCursorPolicy::Include
+                } else {
+                    ScreenCursorPolicy::Exclude
+                },
+            ),
         }
     }
 }
@@ -307,6 +417,9 @@ pub struct CaptureConfig {
     /// Target capture frames per second. Default: 30.
     pub target_fps: u32,
 
+    /// Cadence requested from the native acquisition backend.
+    pub acquisition_cadence: ScreenCaptureCadence,
+
     /// Sector grid columns (horizontal divisions). Default: 8.
     pub grid_cols: u32,
 
@@ -361,6 +474,9 @@ impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             target_fps: 30,
+            acquisition_cadence: ScreenCaptureCadence::FramesPerSecond(
+                NonZeroU32::new(30).expect("default capture cadence is nonzero"),
+            ),
             grid_cols: 8,
             grid_rows: 6,
             analysis_memory_bytes: u64::MAX,
@@ -1061,6 +1177,14 @@ impl ScreenCaptureInput {
     #[must_use]
     pub fn config(&self) -> &CaptureConfig {
         &self.config
+    }
+
+    pub(crate) fn set_led_tone_map_calibration(&mut self, calibration: LedToneMapCalibration) {
+        self.config.target_led_white_x = calibration.target_white_x();
+        self.config.target_led_white_y = calibration.target_white_y();
+        self.config.target_led_reference_white_nits = calibration.target_reference_white_nits();
+        self.config.target_led_peak_nits = calibration.target_peak_nits();
+        self.config.exposure_ev = calibration.exposure_ev();
     }
 
     /// Update the requested publication extent for the next analyzed frame.

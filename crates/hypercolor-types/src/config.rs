@@ -693,6 +693,17 @@ impl Default for AudioConfig {
 
 // ─── Screen Capture ──────────────────────────────────────────────────────────
 
+/// Native acquisition cadence for screen capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureCadenceMode {
+    /// Acquire at `capture_fps`.
+    #[default]
+    Fixed,
+    /// Allow the native backend to acquire at the display refresh cadence.
+    NativeRefresh,
+}
+
 /// Screen capture settings for ambient lighting effects.
 ///
 /// The capture source is chosen interactively through the desktop portal
@@ -707,6 +718,9 @@ pub struct CaptureConfig {
 
     #[serde(default = "defaults::capture_fps")]
     pub capture_fps: u32,
+
+    #[serde(default)]
+    pub cadence: CaptureCadenceMode,
 
     /// Sector grid columns for ambilight zone sampling.
     #[serde(default = "defaults::capture_grid_cols")]
@@ -1054,6 +1068,7 @@ impl Default for CaptureConfig {
             enabled: defaults::capture_enabled(),
             source: defaults::capture_source(),
             capture_fps: defaults::capture_fps(),
+            cadence: CaptureCadenceMode::default(),
             grid_cols: defaults::capture_grid_cols(),
             grid_rows: defaults::capture_grid_rows(),
             publication_memory_bytes: None,
