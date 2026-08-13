@@ -269,6 +269,8 @@ from .input_source_platform_status_type_1_type import InputSourcePlatformStatusT
 from .input_source_status import InputSourceStatus
 from .input_status import InputStatus
 from .invoke_control_action_request import InvokeControlActionRequest
+from .latency_histogram_bucket_status import LatencyHistogramBucketStatus
+from .latency_histogram_status import LatencyHistogramStatus
 from .latency_percentiles_status import LatencyPercentilesStatus
 from .latest_frame_status import LatestFrameStatus
 from .layer_order_request import LayerOrderRequest
@@ -618,6 +620,8 @@ __all__ = (
     "InputSourceStatus",
     "InputStatus",
     "InvokeControlActionRequest",
+    "LatencyHistogramBucketStatus",
+    "LatencyHistogramStatus",
     "LatencyPercentilesStatus",
     "LatestFrameStatus",
     "LayerOrderRequest",

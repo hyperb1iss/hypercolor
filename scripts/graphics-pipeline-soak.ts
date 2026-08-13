@@ -1,19 +1,22 @@
 #!/usr/bin/env bun
 
-type JsonObject = Record<string, unknown>
+export type JsonObject = Record<string, unknown>
 
 type Config = {
     daemon: string
     durationMs: number
     intervalMs: number
     warmupMs: number
+    requireMacosNativeCapture: boolean
     minFpsRatio: number
+    maxInputP95Ms: number
     maxBackpressureFrames: number
     maxWriteFailureDelta: number
     maxRetryDelta: number
     maxOutputErrorDelta: number
     maxFullFrameCopyFrames: number
     maxFrameCopyCount: number
+    maxSessionFullFrameCopyCountDelta: number
     maxPoolSaturationDelta: number
     maxEffectFallbackDelta: number
     maxProducerGpuReadbackFailureDelta: number
@@ -31,7 +34,7 @@ type Config = {
     json: boolean
 }
 
-type MetricSample = {
+export type MetricSample = {
     receivedAtMs: number
     data: JsonObject
 }
@@ -70,18 +73,21 @@ const palette = {
     reset: "\x1b[0m",
 }
 
-const defaults: Config = {
+export const defaults: Config = {
     daemon: "http://127.0.0.1:9420",
     durationMs: 60_000,
     intervalMs: 1_000,
     warmupMs: 5_000,
+    requireMacosNativeCapture: false,
     minFpsRatio: 0.75,
+    maxInputP95Ms: 1,
     maxBackpressureFrames: 0,
     maxWriteFailureDelta: 0,
     maxRetryDelta: 0,
     maxOutputErrorDelta: 0,
     maxFullFrameCopyFrames: 0,
     maxFrameCopyCount: 0,
+    maxSessionFullFrameCopyCountDelta: 0,
     maxPoolSaturationDelta: 0,
     maxEffectFallbackDelta: 0,
     maxProducerGpuReadbackFailureDelta: 0,
@@ -113,13 +119,18 @@ Options:
   --duration <30s|2m|1500ms>           Friendlier duration syntax
   --interval-ms <ms>                   Metrics interval [${defaults.intervalMs}]
   --warmup-ms <ms>                     Exclude initial samples from steady-state checks [${defaults.warmupMs}]
+  --macos-native-capture               Enforce the Spec 76 native screen, audio, and input workload
   --min-fps-ratio <ratio>              Median actual FPS must stay above target * ratio [${defaults.minFpsRatio}]
+  --max-input-p95-ms <ms>              Maximum session input-stage p95 [${defaults.maxInputP95Ms}]
   --max-backpressure-frames <n>        Maximum dropped WS frames [${defaults.maxBackpressureFrames}]
   --max-write-failure-delta <n>        Maximum display write failures [${defaults.maxWriteFailureDelta}]
   --max-retry-delta <n>                Maximum display retry attempts [${defaults.maxRetryDelta}]
   --max-output-error-delta <n>         Maximum render pacing output-error frames [${defaults.maxOutputErrorDelta}]
   --max-full-frame-copy-frames <n>     Maximum pacing full-frame-copy frames [${defaults.maxFullFrameCopyFrames}]
   --max-frame-copy-count <n>           Maximum per-frame full-copy count [${defaults.maxFrameCopyCount}]
+  --max-session-full-frame-copy-count-delta <n>
+                                      Maximum session full-frame-copy count growth
+                                      [${defaults.maxSessionFullFrameCopyCountDelta}]
   --max-pool-saturation-delta <n>      Maximum render-surface pool saturation reallocs [${defaults.maxPoolSaturationDelta}]
   --max-effect-fallback-delta <n>      Maximum effect fallbacks [${defaults.maxEffectFallbackDelta}]
   --max-producer-gpu-readback-failure-delta <n>
@@ -163,6 +174,10 @@ function parseArgs(argv: string[]): Config {
             config.json = true
             continue
         }
+        if (arg === "--macos-native-capture") {
+            config.requireMacosNativeCapture = true
+            continue
+        }
 
         const value = argv[index + 1]
         if (!value || value.startsWith("--")) {
@@ -189,6 +204,9 @@ function parseArgs(argv: string[]): Config {
             case "--min-fps-ratio":
                 config.minFpsRatio = parseNonNegativeNumber(arg, value)
                 break
+            case "--max-input-p95-ms":
+                config.maxInputP95Ms = parseNonNegativeNumber(arg, value)
+                break
             case "--max-backpressure-frames":
                 config.maxBackpressureFrames = parseNonNegativeInt(arg, value)
                 break
@@ -206,6 +224,9 @@ function parseArgs(argv: string[]): Config {
                 break
             case "--max-frame-copy-count":
                 config.maxFrameCopyCount = parseNonNegativeInt(arg, value)
+                break
+            case "--max-session-full-frame-copy-count-delta":
+                config.maxSessionFullFrameCopyCountDelta = parseNonNegativeInt(arg, value)
                 break
             case "--max-pool-saturation-delta":
                 config.maxPoolSaturationDelta = parseNonNegativeInt(arg, value)
@@ -314,7 +335,7 @@ function wsEndpoint(raw: string): string {
     return prefix.toString()
 }
 
-async function assertDaemonReachable(config: Config): Promise<void> {
+async function fetchStatus(config: Config): Promise<JsonObject> {
     const statusUrl = `${apiPrefix(config.daemon)}/status`
     let response: Response
     try {
@@ -325,26 +346,56 @@ async function assertDaemonReachable(config: Config): Promise<void> {
     if (!response.ok) {
         throw new Error(`Daemon status check failed at ${statusUrl}: HTTP ${response.status}`)
     }
+    const envelope = (await response.json()) as JsonObject
+    const status = objectAt(envelope, ["data"])
+    if (!status) {
+        throw new Error(`Daemon status at ${statusUrl} omitted the data object`)
+    }
+    return status
 }
 
-async function observe(config: Config): Promise<{ samples: MetricSample[]; backpressure: BackpressureSample[] }> {
-    await assertDaemonReachable(config)
+async function observe(config: Config): Promise<{
+    samples: MetricSample[]
+    backpressure: BackpressureSample[]
+    statusBefore: JsonObject
+    statusBaseline: JsonObject
+    acceptanceStartedAtMs: number
+    statusAfter: JsonObject
+}> {
+    const statusBefore = await fetchStatus(config)
+    let statusBaseline =
+        !config.requireMacosNativeCapture || config.warmupMs === 0 ? statusBefore : undefined
+    let acceptanceStartedAtMs = config.warmupMs
 
     const samples: MetricSample[] = []
     const backpressure: BackpressureSample[] = []
     const endpoint = wsEndpoint(config.daemon)
     const startedAtMs = Date.now()
 
-    return await new Promise((resolve, reject) => {
+    const observed = await new Promise<{ samples: MetricSample[]; backpressure: BackpressureSample[] }>((resolve, reject) => {
         const socket = new WebSocket(endpoint)
         let settled = false
         let sawOpen = false
+
+        const cleanup = () => {
+            clearTimeout(openTimer)
+            clearTimeout(finishTimer)
+            if (baselineTimer) {
+                clearTimeout(baselineTimer)
+            }
+            process.off("SIGINT", interrupt)
+        }
 
         const finish = () => {
             if (settled) {
                 return
             }
+            if (config.requireMacosNativeCapture && !statusBaseline) {
+                fail(new Error("Warmup status checkpoint did not complete before the observation window"))
+                return
+            }
             settled = true
+            cleanup()
             socket.close()
             resolve({ samples, backpressure })
         }
@@ -354,8 +405,13 @@ async function observe(config: Config): Promise<{ samples: MetricSample[]; backp
                 return
             }
             settled = true
+            cleanup()
             socket.close()
             reject(error)
+        }
+
+        const interrupt = () => {
+            fail(new Error("Graphics soak interrupted before the observation window completed"))
         }
 
         const openTimer = setTimeout(() => {
@@ -364,7 +420,25 @@ async function observe(config: Config): Promise<{ samples: MetricSample[]; backp
             }
         }, 5_000)
 
-        const finishTimer = setTimeout(finish, config.durationMs)
+        let finishTimer = setTimeout(finish, config.durationMs)
+        const baselineTimer =
+            !config.requireMacosNativeCapture || config.warmupMs === 0
+                ? undefined
+                : setTimeout(() => {
+                      void fetchStatus(config)
+                          .then((status) => {
+                              statusBaseline = status
+                              acceptanceStartedAtMs = Date.now() - startedAtMs
+                              clearTimeout(finishTimer)
+                              finishTimer = setTimeout(
+                                  finish,
+                                  config.durationMs - config.warmupMs,
+                              )
+                          })
+                          .catch((error) => {
+                              fail(new Error(`Warmup status checkpoint failed: ${errorMessage(error)}`))
+                          })
+                  }, config.warmupMs)
 
         socket.onopen = () => {
             sawOpen = true
@@ -379,9 +453,13 @@ async function observe(config: Config): Promise<{ samples: MetricSample[]; backp
         }
 
         socket.onerror = () => {
-            clearTimeout(openTimer)
-            clearTimeout(finishTimer)
             fail(new Error(`WebSocket error while observing ${endpoint}`))
+        }
+
+        socket.onclose = () => {
+            if (!settled) {
+                fail(new Error(`WebSocket closed before the observation window completed: ${endpoint}`))
+            }
         }
 
         socket.onmessage = (event: MessageEvent) => {
@@ -415,15 +493,50 @@ async function observe(config: Config): Promise<{ samples: MetricSample[]; backp
             }
         }
 
-        process.once("SIGINT", finish)
+        process.once("SIGINT", interrupt)
     })
+    const statusAfter = config.requireMacosNativeCapture ? await fetchStatus(config) : statusBefore
+    if (!statusBaseline) {
+        throw new Error("Warmup status checkpoint is unavailable")
+    }
+    return { ...observed, statusBefore, statusBaseline, acceptanceStartedAtMs, statusAfter }
 }
 
-function analyze(config: Config, samples: MetricSample[], backpressure: BackpressureSample[]): Report {
-    const steadySamples = samples.filter((sample) => sample.receivedAtMs >= config.warmupMs)
-    const observed = steadySamples.length > 0 ? steadySamples : samples
-    const first = observed[0]
-    const last = observed.at(-1)
+export function analyze(
+    config: Config,
+    samples: MetricSample[],
+    backpressure: BackpressureSample[],
+    statusBefore: JsonObject,
+    statusAfter: JsonObject,
+    statusBaseline: JsonObject = statusBefore,
+    acceptanceStartedAtMs: number = config.warmupMs,
+): Report {
+    const acceptanceBoundaryMs = config.requireMacosNativeCapture
+        ? acceptanceStartedAtMs
+        : config.warmupMs
+    const acceptanceFrameToken = config.requireMacosNativeCapture
+        ? requiredInputHistogramFrameToken(statusBaseline)
+        : undefined
+    const steadySamples = config.requireMacosNativeCapture
+        ? samples.filter(
+              (sample) => requiredNumberAt(sample.data, ["timeline", "frame_token"]) > acceptanceFrameToken!,
+          )
+        : samples.filter((sample) => sample.receivedAtMs >= acceptanceBoundaryMs)
+    const baseline = config.requireMacosNativeCapture
+        ? config.warmupMs === 0
+            ? samples[0]
+            : samples
+                  .filter(
+                      (sample) =>
+                          requiredNumberAt(sample.data, ["timeline", "frame_token"]) <= acceptanceFrameToken!,
+                  )
+                  .at(-1)
+        : config.warmupMs === 0
+          ? samples[0]
+          : samples.filter((sample) => sample.receivedAtMs < acceptanceBoundaryMs).at(-1)
+    const observed = steadySamples
+    const first = baseline
+    const last = steadySamples.at(-1)
     const checks: Check[] = []
 
     if (!first || !last) {
@@ -434,9 +547,26 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
             sampleCount: samples.length,
             backpressure,
             summary: {},
-            checks: [{ name: "metrics samples", ok: false, actual: 0, limit: "> 0" }],
+            checks: [
+                {
+                    name: "warmup baseline and steady metrics",
+                    ok: false,
+                    actual: `${baseline ? 1 : 0}/${steadySamples.length}`,
+                    limit: "baseline/steady > 0",
+                },
+            ],
         }
     }
+
+    const steadyWindowMs = config.durationMs - config.warmupMs
+    const minimumLastSampleMs = Math.max(
+        0,
+        acceptanceBoundaryMs + steadyWindowMs - config.intervalMs * 2,
+    )
+    const expectedSteadySamples = Math.max(
+        2,
+        Math.floor(steadyWindowMs / config.intervalMs) - 1,
+    )
 
     const fpsValues = observed.map((sample) => numberAt(sample.data, ["fps", "actual"])).filter((value) => value > 0)
     const targetFps = numberAt(last.data, ["fps", "target"])
@@ -460,6 +590,44 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
     ])
     const frameP95BudgetMs = targetFps > 0 ? (1_000 / targetFps) * 1.25 : Number.POSITIVE_INFINITY
     const maxFrameP95Ms = maxAt(observed, ["frame_time", "p95_ms"])
+    let maxInputP95Ms = 0
+    let inputSampleCountDelta = 0
+    let sessionFullFrameCopyCountDelta = 0
+
+    if (config.requireMacosNativeCapture) {
+        checks.push(
+            checkAtLeast(
+                "observation window coverage ms",
+                last.receivedAtMs,
+                minimumLastSampleMs,
+            ),
+        )
+        checks.push(checkAtLeast("steady metrics samples", steadySamples.length, expectedSteadySamples))
+        inputSampleCountDelta = requiredMetricSequenceDelta(
+            statusBefore,
+            statusBaseline,
+            statusAfter,
+            ["session_performance", "input_stage", "sample_count"],
+        )
+        sessionFullFrameCopyCountDelta = requiredMetricSequenceDelta(
+            statusBefore,
+            statusBaseline,
+            statusAfter,
+            ["session_performance", "full_frame_cpu_copies", "count"],
+        )
+        maxInputP95Ms = requiredHistogramDeltaP95Ms(statusBaseline, statusAfter)
+        checks.push(daemonContinuityCheck(statusBefore, statusAfter, config.durationMs))
+        checks.push(...workloadChecks(statusBaseline, statusAfter))
+        checks.push(checkAtMost("input-stage p95 ms", maxInputP95Ms, config.maxInputP95Ms))
+        checks.push(checkAtLeast("input-stage sample growth", inputSampleCountDelta, 1))
+        checks.push(
+            checkAtMost(
+                "session full-frame-copy count delta",
+                sessionFullFrameCopyCountDelta,
+                config.maxSessionFullFrameCopyCountDelta,
+            ),
+        )
+    }
 
     checks.push(checkAtLeast("median fps", round(medianFps), round(minFps)))
     checks.push(checkAtMost("frame p95 ms", round(maxFrameP95Ms), round(frameP95BudgetMs)))
@@ -594,6 +762,13 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         targetFps,
         medianFps: round(medianFps),
         maxFrameP95Ms: round(maxFrameP95Ms),
+        ...(config.requireMacosNativeCapture
+            ? {
+                  maxInputP95Ms: round(maxInputP95Ms),
+                  inputSampleCountDelta,
+                  sessionFullFrameCopyCountDelta,
+              }
+            : {}),
         backpressureFrames,
         writeFailureDelta: delta(first.data, last.data, ["display_output", "write_failures_total"]),
         retryDelta: delta(first.data, last.data, ["display_output", "retry_attempts_total"]),
@@ -709,6 +884,237 @@ function delta(first: JsonObject, last: JsonObject, path: string[]): number {
     return Math.max(0, numberAt(last, path) - numberAt(first, path))
 }
 
+function requiredMetricSequenceDelta(
+    statusBefore: JsonObject,
+    statusBaseline: JsonObject,
+    statusAfter: JsonObject,
+    statusPath: string[],
+): number {
+    const values = [
+        requiredNumberAt(statusBefore, statusPath),
+        requiredNumberAt(statusBaseline, statusPath),
+        requiredNumberAt(statusAfter, statusPath),
+    ]
+    for (let index = 1; index < values.length; index += 1) {
+        const previous = values[index - 1]
+        const current = values[index]
+        if (current < previous) {
+            throw new Error(`Cumulative metric regressed: ${statusPath.join(".")} (${previous} -> ${current})`)
+        }
+    }
+    return values[values.length - 1] - values[1]
+}
+
+type CumulativeHistogram = {
+    bucketWidthUs: number
+    overflowBucketIndex: number
+    snapshotFrameToken: number
+    buckets: Map<number, number>
+}
+
+function requiredInputHistogramFrameToken(status: JsonObject): number {
+    const inputStage = objectAt(status, ["session_performance", "input_stage"])
+    const histogram = inputStage ? objectAt(inputStage, ["cumulative_histogram"]) : undefined
+    if (!histogram) {
+        throw new Error("Missing input-stage cumulative histogram")
+    }
+    return requiredNonNegativeInteger(histogram, ["snapshot_frame_token"])
+}
+
+function requiredHistogramDeltaP95Ms(statusBaseline: JsonObject, statusAfter: JsonObject): number {
+    const baseline = cumulativeInputHistogram(statusBaseline)
+    const after = cumulativeInputHistogram(statusAfter)
+    if (
+        baseline.bucketWidthUs !== after.bucketWidthUs ||
+        baseline.overflowBucketIndex !== after.overflowBucketIndex
+    ) {
+        throw new Error("Input latency histogram geometry changed during observation")
+    }
+
+    const bucketIndexes = new Set([...baseline.buckets.keys(), ...after.buckets.keys()])
+    const deltas = [...bucketIndexes]
+        .sort((left, right) => left - right)
+        .map((bucketIndex) => {
+            const beforeCount = baseline.buckets.get(bucketIndex) ?? 0
+            const afterCount = after.buckets.get(bucketIndex) ?? 0
+            if (afterCount < beforeCount) {
+                throw new Error(
+                    `Cumulative input histogram regressed at bucket ${bucketIndex}: ` +
+                        `${beforeCount} -> ${afterCount}`,
+                )
+            }
+            return { bucketIndex, count: afterCount - beforeCount }
+        })
+
+    const sampleCount = deltas.reduce((total, bucket) => total + bucket.count, 0)
+    if (sampleCount === 0) {
+        return 0
+    }
+    const rank = Math.ceil((sampleCount * 95) / 100)
+    let observed = 0
+    for (const bucket of deltas) {
+        observed += bucket.count
+        if (observed >= rank) {
+            if (bucket.bucketIndex >= after.overflowBucketIndex) {
+                return Number.POSITIVE_INFINITY
+            }
+            return (bucket.bucketIndex * after.bucketWidthUs) / 1_000
+        }
+    }
+    throw new Error("Input latency histogram did not contain its reported sample count")
+}
+
+function cumulativeInputHistogram(status: JsonObject): CumulativeHistogram {
+    const inputStage = objectAt(status, ["session_performance", "input_stage"])
+    const histogram = inputStage ? objectAt(inputStage, ["cumulative_histogram"]) : undefined
+    if (!inputStage || !histogram) {
+        throw new Error("Missing input-stage cumulative histogram")
+    }
+    const bucketWidthUs = requiredPositiveInteger(histogram, ["bucket_width_us"])
+    const overflowBucketIndex = requiredPositiveInteger(histogram, ["overflow_bucket_index"])
+    const snapshotFrameToken = requiredNonNegativeInteger(histogram, ["snapshot_frame_token"])
+    const rawBuckets = valueAt(histogram, ["buckets"])
+    if (!Array.isArray(rawBuckets)) {
+        throw new Error("Missing input-stage cumulative histogram buckets")
+    }
+
+    const buckets = new Map<number, number>()
+    for (const rawBucket of rawBuckets) {
+        if (!rawBucket || typeof rawBucket !== "object" || Array.isArray(rawBucket)) {
+            throw new Error("Invalid input-stage cumulative histogram bucket")
+        }
+        const bucket = rawBucket as JsonObject
+        const bucketIndex = requiredNonNegativeInteger(bucket, ["bucket_index"])
+        const count = requiredNonNegativeInteger(bucket, ["count"])
+        if (bucketIndex > overflowBucketIndex || buckets.has(bucketIndex)) {
+            throw new Error(`Invalid input-stage cumulative histogram bucket index: ${bucketIndex}`)
+        }
+        buckets.set(bucketIndex, count)
+    }
+
+    const histogramSamples = [...buckets.values()].reduce((total, count) => total + count, 0)
+    const reportedSamples = requiredNonNegativeInteger(inputStage, ["sample_count"])
+    if (histogramSamples !== reportedSamples) {
+        throw new Error(
+            `Input latency histogram sample count mismatch: ${histogramSamples} != ${reportedSamples}`,
+        )
+    }
+    return { bucketWidthUs, overflowBucketIndex, snapshotFrameToken, buckets }
+}
+
+function workloadChecks(statusBaseline: JsonObject, statusAfter: JsonObject): Check[] {
+    return [
+        workloadCheck("native screen active", statusBaseline, statusAfter, nativeScreenActive),
+        nativeScreenPublicationCheck(statusBaseline, statusAfter),
+        workloadCheck("audio input active", statusBaseline, statusAfter, (status) => sourceActive(status, "audio")),
+        workloadCheck("interaction input active", statusBaseline, statusAfter, (status) =>
+            sourceActive(status, "interaction"),
+        ),
+    ]
+}
+
+function daemonContinuityCheck(statusBefore: JsonObject, statusAfter: JsonObject, durationMs: number): Check {
+    const before = stringAt(statusBefore, ["server", "instance_id"])
+    const after = stringAt(statusAfter, ["server", "instance_id"])
+    const uptimeBefore = numberAt(statusBefore, ["uptime_seconds"])
+    const uptimeAfter = numberAt(statusAfter, ["uptime_seconds"])
+    const minimumUptimeGrowth = Math.max(0, Math.floor(durationMs / 1_000) - 1)
+    const continuous = Boolean(before) && before === after && uptimeAfter - uptimeBefore >= minimumUptimeGrowth
+    return {
+        name: "daemon session continuity",
+        ok: continuous,
+        actual: continuous ? "continuous" : "changed",
+        limit: "continuous",
+    }
+}
+
+function nativeScreenPublicationCheck(statusBefore: JsonObject, statusAfter: JsonObject): Check {
+    const before = nativeScreenSource(statusBefore)
+    const after = nativeScreenSource(statusAfter)
+    const beforeSourceId = before ? stringAt(before, ["source_id"]) : ""
+    const afterSourceId = after ? stringAt(after, ["source_id"]) : ""
+    const beforeSession = before ? numberAt(before, ["session_generation"]) : 0
+    const afterSession = after ? numberAt(after, ["session_generation"]) : 0
+    const beforeGraph = before ? numberAt(before, ["source_graph_generation"]) : 0
+    const afterGraph = after ? numberAt(after, ["source_graph_generation"]) : 0
+    const beforeCapture = before
+        ? numberAt(before, ["platform", "telemetry", "capture_session_generation"])
+        : 0
+    const afterCapture = after
+        ? numberAt(after, ["platform", "telemetry", "capture_session_generation"])
+        : 0
+    const sameSource =
+        Boolean(before) &&
+        Boolean(after) &&
+        Boolean(beforeSourceId) &&
+        beforeSourceId === afterSourceId &&
+        beforeSession > 0 &&
+        beforeSession === afterSession &&
+        beforeGraph > 0 &&
+        beforeGraph === afterGraph &&
+        beforeCapture > 0 &&
+        beforeCapture === afterCapture
+    const beforeCount = before ? numberAt(before, ["platform", "telemetry", "frames_published"]) : 0
+    const afterCount = after ? numberAt(after, ["platform", "telemetry", "frames_published"]) : 0
+    const growth = sameSource && afterCount >= beforeCount ? afterCount - beforeCount : -1
+    return checkAtLeast("native screen publication growth", growth, 1)
+}
+
+function workloadCheck(
+    name: string,
+    statusBefore: JsonObject,
+    statusAfter: JsonObject,
+    predicate: (status: JsonObject) => boolean,
+): Check {
+    const before = predicate(statusBefore)
+    const after = predicate(statusAfter)
+    return {
+        name,
+        ok: before && after,
+        actual: `${before ? "active" : "inactive"}/${after ? "active" : "inactive"}`,
+        limit: "active/active",
+    }
+}
+
+function nativeScreenActive(status: JsonObject): boolean {
+    if (valueAt(status, ["capture_available"]) !== true) {
+        return false
+    }
+    return Boolean(nativeScreenSource(status))
+}
+
+function nativeScreenSource(status: JsonObject): JsonObject | undefined {
+    return sources(status).find(
+        (source) =>
+            sourceIsActive(source, "screen") &&
+            valueAt(source, ["freshness"]) === "fresh" &&
+            valueAt(source, ["platform", "type"]) === "macos_screen" &&
+            valueAt(source, ["platform", "telemetry", "publication_path"]) === "native",
+    )
+}
+
+function sourceActive(status: JsonObject, kind: string): boolean {
+    return sources(status).some((source) => sourceIsActive(source, kind))
+}
+
+function sourceIsActive(source: JsonObject, kind: string): boolean {
+    const freshness = valueAt(source, ["freshness"])
+    return (
+        valueAt(source, ["kind"]) === kind &&
+        valueAt(source, ["demanded"]) === true &&
+        numberAt(source, ["active_consumer_count"]) > 0 &&
+        valueAt(source, ["state"]) === "live" &&
+        (freshness === "fresh" || freshness === "not_applicable")
+    )
+}
+
+function sources(status: JsonObject): JsonObject[] {
+    const value = valueAt(status, ["input", "sources"])
+    return Array.isArray(value)
+        ? value.filter((source): source is JsonObject => Boolean(source) && typeof source === "object")
+        : []
+}
+
 function maxAt(samples: MetricSample[], path: string[]): number {
     return samples.reduce((max, sample) => Math.max(max, numberAt(sample.data, path)), 0)
 }
@@ -759,6 +1165,22 @@ function requiredNumberAt(root: JsonObject, path: string[]): number {
     const value = valueAt(root, path)
     if (typeof value !== "number" || !Number.isFinite(value)) {
         throw new Error(`Missing numeric metric: ${path.join(".")}`)
+    }
+    return value
+}
+
+function requiredNonNegativeInteger(root: JsonObject, path: string[]): number {
+    const value = requiredNumberAt(root, path)
+    if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`Metric must be a non-negative integer: ${path.join(".")}`)
+    }
+    return value
+}
+
+function requiredPositiveInteger(root: JsonObject, path: string[]): number {
+    const value = requiredNonNegativeInteger(root, path)
+    if (value === 0) {
+        throw new Error(`Metric must be a positive integer: ${path.join(".")}`)
     }
     return value
 }
@@ -830,8 +1252,17 @@ function printReport(report: Report): void {
 
 async function main(): Promise<void> {
     const config = parseArgs(process.argv.slice(2))
-    const { samples, backpressure } = await observe(config)
-    const report = analyze(config, samples, backpressure)
+    const { samples, backpressure, statusBefore, statusBaseline, acceptanceStartedAtMs, statusAfter } =
+        await observe(config)
+    const report = analyze(
+        config,
+        samples,
+        backpressure,
+        statusBefore,
+        statusAfter,
+        statusBaseline,
+        acceptanceStartedAtMs,
+    )
     const json = `${JSON.stringify(report, null, 2)}\n`
 
     if (config.out) {
@@ -847,7 +1278,9 @@ async function main(): Promise<void> {
     process.exit(report.ok ? 0 : 1)
 }
 
-main().catch((error) => {
-    console.error(`${palette.red}graphics soak failed:${palette.reset} ${errorMessage(error)}`)
-    process.exit(1)
-})
+if (import.meta.main) {
+    main().catch((error) => {
+        console.error(`${palette.red}graphics soak failed:${palette.reset} ${errorMessage(error)}`)
+        process.exit(1)
+    })
+}

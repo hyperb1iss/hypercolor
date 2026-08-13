@@ -284,6 +284,19 @@ pub(crate) struct PerformanceSnapshot {
     pub full_frame_copy_bytes_total: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LatencyHistogramBucketSnapshot {
+    pub bucket_index: u32,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LatencyHistogramSnapshot {
+    pub bucket_width_us: u32,
+    pub overflow_bucket_index: u32,
+    pub buckets: Vec<LatencyHistogramBucketSnapshot>,
+}
+
 #[derive(Debug)]
 struct LatencyHistogram {
     buckets: Box<[u64]>,
@@ -352,6 +365,24 @@ impl LatencyHistogram {
             }
         }
         self.max_us
+    }
+
+    fn snapshot(&self) -> LatencyHistogramSnapshot {
+        LatencyHistogramSnapshot {
+            bucket_width_us: LATENCY_BUCKET_WIDTH_US,
+            overflow_bucket_index: u32::try_from(LATENCY_BUCKET_COUNT).unwrap_or(u32::MAX),
+            buckets: self
+                .buckets
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, count)| *count > 0)
+                .map(|(bucket_index, count)| LatencyHistogramBucketSnapshot {
+                    bucket_index: u32::try_from(bucket_index).unwrap_or(u32::MAX),
+                    count,
+                })
+                .collect(),
+        }
     }
 }
 
@@ -491,6 +522,10 @@ impl PerformanceTracker {
             full_frame_copy_frames_total: self.full_frame_copy_frames_total,
             full_frame_copy_bytes_total: self.full_frame_copy_bytes_total,
         }
+    }
+
+    pub(crate) fn input_time_histogram_snapshot(&self) -> LatencyHistogramSnapshot {
+        self.input_time.snapshot()
     }
 
     /// Record one deduplicated effect-render failure observed by the daemon.
@@ -859,6 +894,7 @@ mod tests {
         tracker.clear_frame_timings();
 
         let snapshot = tracker.snapshot();
+        let histogram = tracker.input_time_histogram_snapshot();
         assert_eq!(snapshot.frame_count, 0);
         assert_eq!(snapshot.input_time.p95_ms, 0.98);
         assert_eq!(snapshot.input_time.p99_ms, 0.98);
@@ -866,5 +902,15 @@ mod tests {
         assert_eq!(snapshot.full_frame_copy_count_total, 2);
         assert_eq!(snapshot.full_frame_copy_frames_total, 1);
         assert_eq!(snapshot.full_frame_copy_bytes_total, 4096);
+        assert_eq!(histogram.bucket_width_us, 100);
+        assert_eq!(histogram.overflow_bucket_index, 4096);
+        assert_eq!(
+            histogram
+                .buckets
+                .iter()
+                .map(|bucket| (bucket.bucket_index, bucket.count))
+                .collect::<Vec<_>>(),
+            vec![(8, 1), (10, 1)]
+        );
     }
 }

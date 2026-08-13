@@ -93,6 +93,23 @@ pub struct LatencyPercentilesStatus {
     pub p95_ms: f64,
     pub p99_ms: f64,
     pub max_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cumulative_histogram: Option<LatencyHistogramStatus>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LatencyHistogramStatus {
+    pub bucket_width_us: u32,
+    pub overflow_bucket_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_frame_token: Option<u64>,
+    pub buckets: Vec<LatencyHistogramBucketStatus>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LatencyHistogramBucketStatus {
+    pub bucket_index: u32,
+    pub count: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1315,7 +1332,13 @@ async fn get_status_with_privacy(
         })
     };
 
-    let performance = state.performance.read().await.snapshot();
+    let (performance, input_time_histogram) = {
+        let performance = state.performance.read().await;
+        (
+            performance.snapshot(),
+            performance.input_time_histogram_snapshot(),
+        )
+    };
 
     // Query the live render loop for timing data.
     let render_loop_status = {
@@ -1360,6 +1383,22 @@ async fn get_status_with_privacy(
             p95_ms: round_2(performance.input_time.p95_ms),
             p99_ms: round_2(performance.input_time.p99_ms),
             max_ms: round_2(performance.input_time.max_ms),
+            cumulative_histogram: Some(LatencyHistogramStatus {
+                bucket_width_us: input_time_histogram.bucket_width_us,
+                overflow_bucket_index: input_time_histogram.overflow_bucket_index,
+                snapshot_frame_token: performance
+                    .latest_frame
+                    .as_ref()
+                    .map(|frame| frame.timeline.frame_token),
+                buckets: input_time_histogram
+                    .buckets
+                    .into_iter()
+                    .map(|bucket| LatencyHistogramBucketStatus {
+                        bucket_index: bucket.bucket_index,
+                        count: bucket.count,
+                    })
+                    .collect(),
+            }),
         },
         full_frame_cpu_copies: FullFrameCopySessionStatus {
             count: performance.full_frame_copy_count_total,
@@ -2885,6 +2924,22 @@ mod tests {
         assert_eq!(
             json["data"]["session_performance"]["input_stage"]["p99_ms"],
             0.1
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["input_stage"]["cumulative_histogram"]["bucket_width_us"],
+            100
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["input_stage"]["cumulative_histogram"]["overflow_bucket_index"],
+            4096
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["input_stage"]["cumulative_histogram"]["snapshot_frame_token"],
+            77
+        );
+        assert_eq!(
+            json["data"]["session_performance"]["input_stage"]["cumulative_histogram"]["buckets"],
+            serde_json::json!([{ "bucket_index": 1, "count": 2 }])
         );
         assert_eq!(
             json["data"]["session_performance"]["full_frame_cpu_copies"]["count"],
