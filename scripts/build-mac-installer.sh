@@ -34,6 +34,7 @@ SKIP_UI=0
 SKIP_EFFECTS=0
 NOTARIZE=0
 CHECK_ONLY=0
+TCC_CANARY=0
 
 CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
 STAGE_ASSETS="${ROOT_DIR}/scripts/stage-app-bundle-assets.sh"
@@ -49,6 +50,7 @@ Options:
   --skip-ui                    Reuse existing UI build output
   --skip-effects               Reuse existing effects build output
   --notarize                   Produce signed, notarized app and DMG artifacts
+  --tcc-canary                 Include the signed physical TCC canary surface
   --check-only                 Verify prerequisites and exit
   -h, --help                   Show this help
 
@@ -76,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     --skip-ui)     SKIP_UI=1; shift ;;
     --skip-effects) SKIP_EFFECTS=1; shift ;;
     --notarize)    NOTARIZE=1; shift ;;
+    --tcc-canary)  TCC_CANARY=1; shift ;;
     --check-only)  CHECK_ONLY=1; shift ;;
     -h|--help)     usage; exit 0 ;;
     *)             usage >&2; die "unknown option: $1" ;;
@@ -88,6 +91,9 @@ case "${PROFILE}" in
 esac
 
 [[ "$(uname -s)" == "Darwin" ]] || die "this script only runs on macOS"
+if [[ "${TCC_CANARY}" -eq 1 && "${NOTARIZE}" -ne 1 ]]; then
+  die "--tcc-canary requires --notarize"
+fi
 
 assert_prerequisites() {
   require cargo "install Rust from https://rustup.rs/"
@@ -209,7 +215,12 @@ if [[ "${SKIP_EFFECTS}" -ne 1 ]]; then
   run_step "Build bundled effects" bash -c "cd '${ROOT_DIR}/sdk' && bun run build:effects"
 fi
 
-build_cargo "Build daemon sidecar (with servo)" -p hypercolor-daemon --features servo
+daemon_features="servo"
+if [[ "${TCC_CANARY}" -eq 1 ]]; then
+  daemon_features="${daemon_features},macos-tcc-canary"
+fi
+build_cargo "Build daemon sidecar (with servo)" \
+  -p hypercolor-daemon --features "${daemon_features}"
 build_cargo "Build CLI sidecar" -p hypercolor-cli
 
 stage_assets

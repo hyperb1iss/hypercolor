@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "persistence_flush_tests"
 required-features = ["persistence-test-hooks"]
 
+[[test]]
+name = "macos_tcc_canary_tests"
+required-features = ["macos-tcc-canary"]
+
 [lints]
 workspace = true
 
@@ -24,6 +28,7 @@ allocation-contract-tests = []
 builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/default"]
 media-lottie = ["hypercolor-core/media-lottie"]
 media-video = ["hypercolor-core/media-video"]
+macos-tcc-canary = ["screen-capture"]
 persistence-test-hooks = []
 wgpu = [
     "dep:wgpu",
@@ -99,11 +104,13 @@ sd-notify = "0.4"
 sysinfo = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
 dispatch2 = "0.3.1"
 hypercolor-macos-capture = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-input = { workspace = true }
 objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }
+security-framework = "3.7.0"
 sysinfo = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]

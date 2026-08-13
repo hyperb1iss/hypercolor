@@ -41,6 +41,51 @@ mod windows_service;
 #[derive(Parser, Debug)]
 #[command(name = "hypercolor-daemon", about = "Hypercolor lighting daemon")]
 struct DaemonArgs {
+    /// Arm one signed macOS TCC canary row for the next matching daemon owner.
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    #[arg(
+        long,
+        hide = true,
+        value_name = "REQUEST_JSON",
+        conflicts_with = "macos_tcc_canary_validate"
+    )]
+    macos_tcc_canary_arm: Option<PathBuf>,
+
+    /// Validate a directory of signed macOS TCC canary receipts.
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    #[arg(
+        long,
+        hide = true,
+        value_name = "RECEIPT_DIR",
+        conflicts_with = "macos_tcc_canary_arm"
+    )]
+    macos_tcc_canary_validate: Option<PathBuf>,
+
+    /// Validate one macOS TCC canary request without arming it.
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    #[arg(
+        long,
+        hide = true,
+        value_name = "REQUEST_JSON",
+        conflicts_with_all = ["macos_tcc_canary_arm", "macos_tcc_canary_validate"]
+    )]
+    macos_tcc_canary_check_request: Option<PathBuf>,
+
+    /// Atomically publish one bounded macOS TCC canary artifact.
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    #[arg(
+        long,
+        hide = true,
+        value_names = ["CANARY_ROOT", "SOURCE", "DESTINATION"],
+        num_args = 3,
+        conflicts_with_all = [
+            "macos_tcc_canary_arm",
+            "macos_tcc_canary_validate",
+            "macos_tcc_canary_check_request"
+        ]
+    )]
+    macos_tcc_canary_publish: Option<Vec<PathBuf>>,
+
     /// Path to the configuration file.
     #[arg(short, long)]
     config: Option<PathBuf>,
@@ -171,6 +216,44 @@ fn main() -> Result<()> {
     let macos_owner = args.macos_owner.into();
     #[cfg(target_os = "macos")]
     let macos_owner_store = MacosOwnerStore::new(ConfigManager::data_dir());
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    if let Some(request_path) = args.macos_tcc_canary_arm.as_deref() {
+        let path = hypercolor_daemon::macos_tcc_canary::arm_macos_tcc_canary(
+            &ConfigManager::data_dir(),
+            request_path,
+        )?;
+        println!("macos_tcc_canary_armed={}", path.display());
+        return Ok(());
+    }
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    if let Some(receipt_dir) = args.macos_tcc_canary_validate.as_deref() {
+        let validation =
+            hypercolor_daemon::macos_tcc_canary::validate_macos_tcc_canary_receipts(receipt_dir)?;
+        println!("{}", serde_json::to_string_pretty(&validation)?);
+        if !validation.preferred_topology_eligible {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    if let Some(request_path) = args.macos_tcc_canary_check_request.as_deref() {
+        hypercolor_daemon::macos_tcc_canary::validate_macos_tcc_canary_request(request_path)?;
+        println!("macos_tcc_canary_request_valid={}", request_path.display());
+        return Ok(());
+    }
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    if let Some(paths) = args.macos_tcc_canary_publish.as_deref() {
+        let [canary_root, source, destination] = paths else {
+            anyhow::bail!("macOS TCC canary artifact publication requires exactly three paths");
+        };
+        hypercolor_daemon::macos_tcc_canary::publish_macos_tcc_canary_artifact(
+            canary_root,
+            source,
+            destination,
+        )?;
+        println!("macos_tcc_canary_artifact={}", destination.display());
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     let macos_owner_identity = current_macos_owner_identity()?;
     #[cfg(target_os = "macos")]
@@ -228,6 +311,14 @@ fn main() -> Result<()> {
         eprintln!(
             "macos_daemon_owner_recovery_required: requested={requested_owner:?} prior={prior_owner:?} phase={phase:?}"
         );
+    }
+
+    #[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+    if hypercolor_daemon::macos_tcc_canary::run_armed_macos_tcc_canary(
+        &ConfigManager::data_dir(),
+        macos_owner,
+    )? {
+        return Ok(());
     }
 
     #[cfg(target_os = "windows")]

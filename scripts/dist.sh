@@ -26,6 +26,7 @@ BIN_DIR=""
 RUST_TARGET=""
 RELEASE_VERSION=""
 BUILD_ROOT=""
+TCC_CANARY=0
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
@@ -74,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     --ci)               CI_MODE=1; shift ;;
     --web-assets)       WEB_ASSETS_DIR="$2"; shift 2 ;;
     --bin-dir)          BIN_DIR="$2"; shift 2 ;;
+    --tcc-canary)       TCC_CANARY=1; shift ;;
     --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
     --version)          RELEASE_VERSION="$2"; shift 2 ;;
     -h|--help)
@@ -91,6 +93,7 @@ Options:
   --bin-dir <dir>      Package pre-built binaries from <dir> instead of
                        building them (absolute path; must contain the four
                        release binaries)
+  --tcc-canary         Include the signed physical TCC canary surface
   -h, --help           Show this help
 EOF
       exit 0
@@ -142,6 +145,13 @@ case "${RUST_TARGET}" in
   *apple*|*darwin*) IS_MACOS=1 ;;
 esac
 
+if [[ "${TCC_CANARY}" -eq 1 && "${IS_MACOS}" -ne 1 ]]; then
+  die "--tcc-canary requires a macOS target"
+fi
+if [[ "${TCC_CANARY}" -eq 1 && -n "${BIN_DIR}" ]]; then
+  die "--tcc-canary cannot verify pre-built binaries from --bin-dir"
+fi
+
 TARGET_FLAG=()
 if [[ "${RUST_TARGET}" != "${HOST_TARGET}" ]]; then
   TARGET_FLAG=(--target "${RUST_TARGET}")
@@ -180,8 +190,13 @@ else
   # The daemon's merge alone still overruns a 15Gi arm64 runner into swap,
   # so this trims the peak rather than eliminating it; CI provisions swap
   # for the remainder.
+  DAEMON_FEATURE_FLAG=()
+  if [[ "${TCC_CANARY}" -eq 1 ]]; then
+    DAEMON_FEATURE_FLAG=(--features macos-tcc-canary)
+  fi
   ./scripts/cargo-cache-build.sh cargo build --release --locked \
     -p hypercolor-daemon --bin hypercolor-daemon \
+    ${DAEMON_FEATURE_FLAG[@]+"${DAEMON_FEATURE_FLAG[@]}"} \
     ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
   ./scripts/cargo-cache-build.sh cargo build --release --locked \
     -p hypercolor-cli --bin hypercolor \

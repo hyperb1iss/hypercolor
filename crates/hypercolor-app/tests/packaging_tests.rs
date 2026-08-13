@@ -18,6 +18,7 @@ const CARGO_TARGET_GC_SERVICE: &str =
     include_str!("../../../packaging/systemd/user/hypercolor-cargo-target-gc.service");
 const CARGO_TARGET_GC_TIMER: &str =
     include_str!("../../../packaging/systemd/user/hypercolor-cargo-target-gc.timer");
+const RUN_MACOS_TCC_CANARY_SH: &str = include_str!("../../../scripts/run-macos-tcc-canary-row.sh");
 const BRAND_BUILD_PY: &str = include_str!("../../../assets/brand/build.py");
 const DIAGNOSE_WINDOWS_PS1: &str = include_str!("../../../scripts/diagnose-windows.ps1");
 const FETCH_PAWNIO_ASSETS_PS1: &str = include_str!("../../../scripts/fetch-pawnio-assets.ps1");
@@ -279,6 +280,93 @@ fn macos_release_lanes_use_the_manifest_signing_actor() {
     assert!(!BUILD_MAC_INSTALLER_SH.contains("dmg,app"));
     assert!(BUILD_MAC_INSTALLER_SH.contains(r#""${SIGNING_ACTOR}" app"#));
     assert!(DIST_SH.contains(r#""${MACOS_SIGNING_ACTOR}" standalone"#));
+}
+
+#[test]
+fn signed_macos_builds_can_enable_the_physical_tcc_canary_explicitly() {
+    assert!(BUILD_MAC_INSTALLER_SH.contains("--tcc-canary"));
+    assert!(BUILD_MAC_INSTALLER_SH.contains("--tcc-canary requires --notarize"));
+    assert!(
+        BUILD_MAC_INSTALLER_SH.contains(r#"daemon_features="${daemon_features},macos-tcc-canary""#)
+    );
+    assert!(DIST_SH.contains("--tcc-canary requires a macOS target"));
+    assert!(DIST_SH.contains("DAEMON_FEATURE_FLAG=(--features macos-tcc-canary)"));
+    assert!(DIST_SH.contains(r#""${MACOS_SIGNING_ACTOR}" standalone"#));
+}
+
+#[test]
+fn tcc_canary_runner_uses_the_daemon_canonical_data_directory() {
+    assert!(
+        RUN_MACOS_TCC_CANARY_SH
+            .contains(r#"${HOME:?HOME must be set}/Library/Application Support/hypercolor"#)
+    );
+    assert!(!RUN_MACOS_TCC_CANARY_SH.contains("--data-dir"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("--execute-protected-actions"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("--macos-tcc-canary-check-request"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("regular non-symlink witness"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("request process_replacement_witness_id is invalid"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("login_arbitration_witness_id"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("armed request does not exactly match"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("identifier_is_safe"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#"$1" != "." && "$1" != "..""#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("installed_row_artifacts"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("install_new_artifact"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("--macos-tcc-canary-publish"));
+    assert!(!RUN_MACOS_TCC_CANARY_SH.contains(r#"/bin/ln "${source}" "${destination}""#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("require_real_path_ancestors"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("path has a symlink ancestor"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("row_committed=true"));
+    assert!(!RUN_MACOS_TCC_CANARY_SH.contains("kill -TERM \"${predecessor_pid}\""));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("--cli PATH"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${cli}" service enable"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${cli}" service stop"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${cli}" service start"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${brew}" services start hypercolor"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${brew}" services stop hypercolor"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(r#""${brew}" services start hypercolor"#));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("app_supervisor_daemon_restart"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("app_quit_then_minimized_launch"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("launchd_login_start"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("brew_services_login_start"));
+    assert!(!RUN_MACOS_TCC_CANARY_SH.contains("launchctl kickstart"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("operation_timeout_ms + 999"));
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("minimum_timeout_seconds"));
+    assert!(
+        RUN_MACOS_TCC_CANARY_SH
+            .contains(r#""${daemon}" --macos-owner standalone >/dev/null 2>&1 &"#)
+    );
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains("ensure_descendant_directory"));
+    let predecessor_stop = RUN_MACOS_TCC_CANARY_SH
+        .find(r#""${cli}" service stop"#)
+        .expect("runner should stop the direct service before replacement");
+    let exit_observation = RUN_MACOS_TCC_CANARY_SH
+        .find("action_observed_unix_ms=$(( $(date +%s) * 1000 ))")
+        .expect("runner should timestamp predecessor exit after waiting");
+    let replacement_witness = RUN_MACOS_TCC_CANARY_SH
+        .find(r#"kind: "process_replacement""#)
+        .expect("runner should record a replacement witness");
+    let successor_start = RUN_MACOS_TCC_CANARY_SH
+        .rfind(r#""${cli}" service start"#)
+        .expect("runner should start the direct successor after its witness");
+    assert!(predecessor_stop < exit_observation);
+    assert!(exit_observation < replacement_witness);
+    assert!(replacement_witness < successor_start);
+    let pending_receipt_wait = RUN_MACOS_TCC_CANARY_SH
+        .find("a regular atomic pending receipt did not arrive")
+        .expect("runner should wait for an atomic pending receipt");
+    let receipt_wait = RUN_MACOS_TCC_CANARY_SH
+        .find("a regular atomic receipt did not arrive")
+        .expect("runner should wait for an atomic receipt");
+    let settings_install = RUN_MACOS_TCC_CANARY_SH
+        .find(r#"install_witness "${settings_witness_id}" system_settings_identity"#)
+        .expect("runner should install the settings witness");
+    assert!(pending_receipt_wait < settings_install);
+    assert!(settings_install < receipt_wait);
+    assert!(RUN_MACOS_TCC_CANARY_SH.contains(".signing.audit_token_bound_valid == true"));
+    assert!(
+        RUN_MACOS_TCC_CANARY_SH
+            .contains(".launcher.parent_signing.audit_token_bound_valid == true")
+    );
 }
 
 #[test]

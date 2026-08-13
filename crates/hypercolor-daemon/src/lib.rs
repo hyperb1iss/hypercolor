@@ -22,6 +22,8 @@ pub mod layout_store;
 pub mod library;
 pub mod logical_devices;
 pub mod macos_owner;
+#[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+pub mod macos_tcc_canary;
 pub mod mcp;
 pub mod mdns;
 pub mod network;
