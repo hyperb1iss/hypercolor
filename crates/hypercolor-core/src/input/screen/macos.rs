@@ -60,9 +60,9 @@ use crate::input::traits::{
 };
 use crate::input::{
     MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
-    MacosScreenPlatformStatus, MacosSelectionState, MacosTahoeCapabilities,
-    MacosTahoeSelectionCapabilities, SourceKind, SourcePlatformStatus, SourceStatusHandle,
-    SourceStatusReporter,
+    MacosScreenPlatformStatus, MacosScreenTimingStatus, MacosSelectionState,
+    MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, MacosTimingStatus, SourceKind,
+    SourcePlatformStatus, SourceStatusHandle, SourceStatusReporter,
 };
 
 const WORKER_WAIT: Duration = Duration::from_millis(100);
@@ -71,6 +71,8 @@ const PUBLICATION_PATH_UNKNOWN: u8 = 0;
 const PUBLICATION_PATH_CPU: u8 = 1;
 const PUBLICATION_PATH_NATIVE: u8 = 2;
 const PUBLICATION_PATH_CPU_FALLBACK: u8 = 3;
+const TIMING_BUCKET_WIDTH_NS: u64 = 100_000;
+const TIMING_BUCKET_COUNT: usize = 4096;
 
 #[derive(Debug, Default)]
 struct MacosScreenRuntimeTelemetry {
@@ -78,31 +80,148 @@ struct MacosScreenRuntimeTelemetry {
     fallback_reason: Mutex<Option<Arc<str>>>,
     publication_plan_generation: AtomicU64,
     stale_frames: AtomicU64,
-    cpu_reduction_total_ns: AtomicU64,
-    cpu_reduction_max_ns: AtomicU64,
-    native_import_total_ns: AtomicU64,
-    native_import_max_ns: AtomicU64,
-    native_reduction_submit_total_ns: AtomicU64,
-    native_reduction_submit_max_ns: AtomicU64,
+    cpu_reduction_timing: AtomicTimingHistogram,
+    native_import_timing: AtomicTimingHistogram,
+    native_reduction_submit_timing: AtomicTimingHistogram,
+    capture_to_native_publication_timing: AtomicTimingHistogram,
+    capture_to_converted_publication_timing: AtomicTimingHistogram,
     admitted_native_bytes: AtomicU64,
     pinned_generations: AtomicUsize,
 }
 
+#[derive(Debug)]
+struct AtomicTimingHistogram {
+    buckets: Box<[AtomicU64]>,
+    generation: AtomicU64,
+    sample_count: AtomicU64,
+    total_ns: AtomicU64,
+    max_ns: AtomicU64,
+}
+
+impl Default for AtomicTimingHistogram {
+    fn default() -> Self {
+        Self {
+            buckets: (0..=TIMING_BUCKET_COUNT)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+            generation: AtomicU64::new(0),
+            sample_count: AtomicU64::new(0),
+            total_ns: AtomicU64::new(0),
+            max_ns: AtomicU64::new(0),
+        }
+    }
+}
+
+impl AtomicTimingHistogram {
+    fn record(&self, elapsed: Duration) {
+        self.record_with_hook(elapsed, || {});
+    }
+
+    fn record_with_hook(&self, elapsed: Duration, before_complete: impl FnOnce()) {
+        let generation = self.begin_write();
+        let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let bucket = usize::try_from(nanos / TIMING_BUCKET_WIDTH_NS)
+            .unwrap_or(usize::MAX)
+            .min(TIMING_BUCKET_COUNT);
+        self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
+        let _ = self
+            .total_ns
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+                Some(total.saturating_add(nanos))
+            });
+        self.max_ns.fetch_max(nanos, Ordering::Relaxed);
+        before_complete();
+        self.sample_count.fetch_add(1, Ordering::Relaxed);
+        self.generation
+            .store(generation.wrapping_add(1), Ordering::Release);
+    }
+
+    fn begin_write(&self) -> u64 {
+        let mut generation = self.generation.load(Ordering::Relaxed);
+        loop {
+            if generation & 1 == 1 {
+                std::hint::spin_loop();
+                generation = self.generation.load(Ordering::Acquire);
+                continue;
+            }
+            let started = generation.wrapping_add(1);
+            match self.generation.compare_exchange_weak(
+                generation,
+                started,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return started,
+                Err(observed) => generation = observed,
+            }
+        }
+    }
+
+    fn percentile_upper_bound_ns(&self, percentile: u64, sample_count: u64, maximum: u64) -> u64 {
+        if sample_count == 0 {
+            return 0;
+        }
+        let rank = sample_count.saturating_mul(percentile).saturating_add(99) / 100;
+        let mut observed = 0_u64;
+        for (index, count) in self.buckets.iter().enumerate() {
+            observed = observed.saturating_add(count.load(Ordering::Relaxed));
+            if observed >= rank {
+                if index == TIMING_BUCKET_COUNT {
+                    return maximum;
+                }
+                return u64::try_from(index.saturating_add(1))
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(TIMING_BUCKET_WIDTH_NS)
+                    .min(maximum);
+            }
+        }
+        maximum
+    }
+
+    fn snapshot(&self) -> MacosTimingStatus {
+        self.snapshot_with_hooks(|| {}, || {})
+    }
+
+    fn snapshot_with_hooks(
+        &self,
+        mut retrying: impl FnMut(),
+        mut after_p95: impl FnMut(),
+    ) -> MacosTimingStatus {
+        loop {
+            let generation = self.generation.load(Ordering::Acquire);
+            if generation & 1 == 1 {
+                retrying();
+                std::hint::spin_loop();
+                continue;
+            }
+            let sample_count = self.sample_count.load(Ordering::Relaxed);
+            let total_ns = self.total_ns.load(Ordering::Relaxed);
+            let max_ns = self.max_ns.load(Ordering::Relaxed);
+            let p95_ns = self.percentile_upper_bound_ns(95, sample_count, max_ns);
+            after_p95();
+            let p99_ns = self.percentile_upper_bound_ns(99, sample_count, max_ns);
+            std::sync::atomic::fence(Ordering::Acquire);
+            if self.generation.load(Ordering::Relaxed) == generation {
+                return MacosTimingStatus {
+                    sample_count,
+                    total_ns,
+                    max_ns,
+                    p95_ns,
+                    p99_ns,
+                };
+            }
+            retrying();
+        }
+    }
+}
+
 impl PlatformGpuSurfaceTimingSink for MacosScreenRuntimeTelemetry {
     fn record_import(&self, elapsed: Duration) {
-        record_timing(
-            &self.native_import_total_ns,
-            &self.native_import_max_ns,
-            elapsed,
-        );
+        self.native_import_timing.record(elapsed);
     }
 
     fn record_native_reduction_submission(&self, elapsed: Duration) {
-        record_timing(
-            &self.native_reduction_submit_total_ns,
-            &self.native_reduction_submit_max_ns,
-            elapsed,
-        );
+        self.native_reduction_submit_timing.record(elapsed);
     }
 }
 
@@ -136,20 +255,18 @@ impl MacosScreenRuntimeTelemetry {
     }
 
     fn record_cpu_reduction(&self, elapsed: Duration) {
-        record_timing(
-            &self.cpu_reduction_total_ns,
-            &self.cpu_reduction_max_ns,
-            elapsed,
-        );
+        self.cpu_reduction_timing.record(elapsed);
     }
-}
 
-fn record_timing(total: &AtomicU64, maximum: &AtomicU64, elapsed: Duration) {
-    let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
-    let _ = total.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_add(nanos))
-    });
-    maximum.fetch_max(nanos, Ordering::Relaxed);
+    fn record_native_publication(&self, captured_at: Instant) {
+        self.capture_to_native_publication_timing
+            .record(Instant::now().saturating_duration_since(captured_at));
+    }
+
+    fn record_converted_publication(&self, captured_at: Instant) {
+        self.capture_to_converted_publication_timing
+            .record(Instant::now().saturating_duration_since(captured_at));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1080,6 +1197,54 @@ impl MacosScreenCaptureInput {
         }
         let diagnostics = self.control.diagnostics();
         let source = self.exact.source();
+        let timing = MacosScreenTimingStatus {
+            callback: timing_status(
+                diagnostics.callback_sample_count,
+                diagnostics.callback_total_ns,
+                diagnostics.callback_max_ns,
+                diagnostics.callback_p95_ns,
+                diagnostics.callback_p99_ns,
+            ),
+            retain: timing_status(
+                diagnostics.retain_sample_count,
+                diagnostics.retain_total_ns,
+                diagnostics.retain_max_ns,
+                diagnostics.retain_p95_ns,
+                diagnostics.retain_p99_ns,
+            ),
+            enqueue: timing_status(
+                diagnostics.enqueue_sample_count,
+                diagnostics.enqueue_total_ns,
+                diagnostics.enqueue_max_ns,
+                diagnostics.enqueue_p95_ns,
+                diagnostics.enqueue_p99_ns,
+            ),
+            conversion: timing_status(
+                diagnostics.conversion_sample_count,
+                diagnostics.conversion_total_ns,
+                diagnostics.conversion_max_ns,
+                diagnostics.conversion_p95_ns,
+                diagnostics.conversion_p99_ns,
+            ),
+            cpu_reduction: self.telemetry.cpu_reduction_timing.snapshot(),
+            native_import: self.telemetry.native_import_timing.snapshot(),
+            native_reduction_submit: self.telemetry.native_reduction_submit_timing.snapshot(),
+            publication: timing_status(
+                diagnostics.publication_sample_count,
+                diagnostics.publication_total_ns,
+                diagnostics.publication_max_ns,
+                diagnostics.publication_p95_ns,
+                diagnostics.publication_p99_ns,
+            ),
+            capture_to_native_publication: self
+                .telemetry
+                .capture_to_native_publication_timing
+                .snapshot(),
+            capture_to_converted_publication: self
+                .telemetry
+                .capture_to_converted_publication_timing
+                .snapshot(),
+        };
         self.status
             .set_platform(Some(SourcePlatformStatus::MacosScreen(
                 MacosScreenPlatformStatus {
@@ -1151,42 +1316,25 @@ impl MacosScreenCaptureInput {
                     frames_published: diagnostics.frames_published,
                     frames_superseded: diagnostics.superseded_deliveries,
                     frames_malformed: diagnostics.malformed_frames,
-                    frames_dropped: frame_drop_counters(diagnostics),
+                    frames_dropped: frame_drop_counters(&diagnostics),
                     frames_stale: self.telemetry.stale_frames.load(Ordering::Acquire),
                     publication_path: self.telemetry.publication_path(),
                     fallback_reason: lock(&self.telemetry.fallback_reason).clone(),
-                    callback_total_ns: diagnostics.callback_total_ns,
-                    callback_max_ns: diagnostics.callback_max_ns,
-                    retain_total_ns: diagnostics.retain_total_ns,
-                    retain_max_ns: diagnostics.retain_max_ns,
-                    conversion_total_ns: diagnostics.conversion_total_ns,
-                    conversion_max_ns: diagnostics.conversion_max_ns,
-                    cpu_reduction_total_ns: self
-                        .telemetry
-                        .cpu_reduction_total_ns
-                        .load(Ordering::Acquire),
-                    cpu_reduction_max_ns: self
-                        .telemetry
-                        .cpu_reduction_max_ns
-                        .load(Ordering::Acquire),
-                    native_import_total_ns: self
-                        .telemetry
-                        .native_import_total_ns
-                        .load(Ordering::Acquire),
-                    native_import_max_ns: self
-                        .telemetry
-                        .native_import_max_ns
-                        .load(Ordering::Acquire),
-                    native_reduction_submit_total_ns: self
-                        .telemetry
-                        .native_reduction_submit_total_ns
-                        .load(Ordering::Acquire),
-                    native_reduction_submit_max_ns: self
-                        .telemetry
-                        .native_reduction_submit_max_ns
-                        .load(Ordering::Acquire),
-                    publication_total_ns: diagnostics.publication_total_ns,
-                    publication_max_ns: diagnostics.publication_max_ns,
+                    timing,
+                    callback_total_ns: timing.callback.total_ns,
+                    callback_max_ns: timing.callback.max_ns,
+                    retain_total_ns: timing.retain.total_ns,
+                    retain_max_ns: timing.retain.max_ns,
+                    conversion_total_ns: timing.conversion.total_ns,
+                    conversion_max_ns: timing.conversion.max_ns,
+                    cpu_reduction_total_ns: timing.cpu_reduction.total_ns,
+                    cpu_reduction_max_ns: timing.cpu_reduction.max_ns,
+                    native_import_total_ns: timing.native_import.total_ns,
+                    native_import_max_ns: timing.native_import.max_ns,
+                    native_reduction_submit_total_ns: timing.native_reduction_submit.total_ns,
+                    native_reduction_submit_max_ns: timing.native_reduction_submit.max_ns,
+                    publication_total_ns: timing.publication.total_ns,
+                    publication_max_ns: timing.publication.max_ns,
                 },
             )))?;
         Ok(())
@@ -2401,7 +2549,6 @@ fn publish_frame(
         return Ok(());
     }
     if exact_delivery.cpu {
-        let reduction_started = Instant::now();
         let capture =
             native_cpu_capture_frame(&frame, captured_at, fresh_until, &source, source_id.clone())?;
         if Instant::now() > fresh_until {
@@ -2409,7 +2556,6 @@ fn publish_frame(
             return Ok(());
         }
         publish_macos_scalar_exact(&frame, &capture, &source, exact, exact_runtimes, telemetry)?;
-        telemetry.record_cpu_reduction(reduction_started.elapsed());
     }
     if !needs_legacy_cpu_publication(exact_delivery) {
         if let Some(status) = status_session.load() {
@@ -2462,6 +2608,7 @@ fn publish_frame(
         }
         publication.latest = Some(data);
     }
+    telemetry.record_converted_publication(captured_at);
     Ok(())
 }
 
@@ -2654,9 +2801,9 @@ fn publish_macos_native_exact(
     source: &MacosPublicationSource,
     exact: &MacosExactPublicationShared,
     runtimes: &mut [MacosExactRuntime],
-) -> anyhow::Result<MacosExactDelivery> {
+) -> anyhow::Result<(MacosExactDelivery, Arc<MacosScreenRuntimeTelemetry>)> {
     let telemetry = Arc::new(MacosScreenRuntimeTelemetry::default());
-    publish_macos_native_exact_with_telemetry(
+    let delivery = publish_macos_native_exact_with_telemetry(
         frame,
         captured_at,
         fresh_until,
@@ -2664,7 +2811,8 @@ fn publish_macos_native_exact(
         exact,
         runtimes,
         &telemetry,
-    )
+    )?;
+    Ok((delivery, telemetry))
 }
 
 fn publish_macos_native_exact_with_telemetry(
@@ -2701,6 +2849,7 @@ fn publish_macos_native_exact_with_telemetry(
         .checked_add(1)
         .and_then(NonZeroU64::new)
         .ok_or_else(|| anyhow!("macOS capture sequence exhausted"))?;
+    let mut native_published = false;
     for route in &mut runtime.native_routes {
         if published_at < route.next_publish_at
             || route
@@ -2748,6 +2897,7 @@ fn publish_macos_native_exact_with_telemetry(
         };
         match hub.publish(publisher, payload, &metadata) {
             Ok(_) => {
+                native_published = true;
                 telemetry
                     .publication_plan_generation
                     .store(publisher.plan_generation().get(), Ordering::Release);
@@ -2759,6 +2909,9 @@ fn publish_macos_native_exact_with_telemetry(
             Err(ScreenPublicationHubError::PublicationPressure { .. }) => {}
             Err(error) => return Err(error.into()),
         }
+    }
+    if native_published {
+        telemetry.record_native_publication(captured_at);
     }
     Ok(delivery)
 }
@@ -2782,12 +2935,15 @@ fn publish_macos_cpu_exact(
         telemetry
             .publication_plan_generation
             .store(fanout.plan_generation().get(), Ordering::Release);
-        fanout.publish_due(
+        let report = fanout.publish_due(
             &hub,
             Some(frame),
             Instant::now(),
             ScreenPublicationHealth::Healthy,
         )?;
+        if report.published() > 0 {
+            telemetry.record_converted_publication(frame.metadata().captured_at);
+        }
     }
     Ok(())
 }
@@ -2809,10 +2965,11 @@ fn publish_macos_scalar_exact(
         return Ok(());
     };
     if let Some(fanout) = runtime.fanout.as_mut() {
+        let reduction_started = Instant::now();
         telemetry
             .publication_plan_generation
             .store(fanout.plan_generation().get(), Ordering::Release);
-        fanout.publish_due_scalar(
+        let report = fanout.publish_due_scalar(
             &hub,
             frame,
             Instant::now(),
@@ -2825,6 +2982,10 @@ fn publish_macos_scalar_exact(
                     })?
             },
         )?;
+        if report.published() > 0 {
+            telemetry.record_cpu_reduction(reduction_started.elapsed());
+            telemetry.record_converted_publication(frame.metadata().captured_at);
+        }
     }
     Ok(())
 }
@@ -3167,6 +3328,22 @@ const fn nonzero_telemetry(value: u64) -> Option<u64> {
     if value == 0 { None } else { Some(value) }
 }
 
+const fn timing_status(
+    sample_count: u64,
+    total_ns: u64,
+    max_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
+) -> MacosTimingStatus {
+    MacosTimingStatus {
+        sample_count,
+        total_ns,
+        max_ns,
+        p95_ns,
+        p99_ns,
+    }
+}
+
 const fn pixel_format_name(format: MacosCapturePixelFormat) -> &'static str {
     match format {
         MacosCapturePixelFormat::Bgra8 => "bgra8",
@@ -3206,7 +3383,7 @@ const fn transfer_function_name(function: CaptureTransferFunction) -> &'static s
     }
 }
 
-fn frame_drop_counters(diagnostics: MacosCaptureCallbackDiagnostics) -> Arc<[(Arc<str>, u64)]> {
+fn frame_drop_counters(diagnostics: &MacosCaptureCallbackDiagnostics) -> Arc<[(Arc<str>, u64)]> {
     MacosFrameDropReason::ALL
         .into_iter()
         .map(|reason| {
@@ -3561,6 +3738,114 @@ mod tests {
     const YUV420_FULL_RANGE: u32 = 0x3432_3066;
     const YUV44410_FULL_RANGE: u32 = 0x7866_3434;
 
+    #[test]
+    fn runtime_timing_percentiles_are_bounded_by_the_exact_maximum() {
+        let timing = AtomicTimingHistogram::default();
+        timing.record(Duration::from_nanos(1));
+        timing.record(Duration::from_micros(250));
+
+        let snapshot = timing.snapshot();
+        assert_eq!(snapshot.sample_count, 2);
+        assert_eq!(snapshot.total_ns, 250_001);
+        assert_eq!(snapshot.max_ns, 250_000);
+        assert_eq!(snapshot.p95_ns, 250_000);
+        assert_eq!(snapshot.p99_ns, 250_000);
+    }
+
+    #[test]
+    fn runtime_timing_snapshot_retries_when_population_changes() {
+        let timing = AtomicTimingHistogram::default();
+        timing.record(Duration::from_nanos(40));
+        let mut injected = false;
+
+        let snapshot = timing.snapshot_with_hooks(
+            || {},
+            || {
+                if !injected {
+                    timing.record(Duration::from_nanos(70));
+                    injected = true;
+                }
+            },
+        );
+
+        assert_eq!(snapshot.sample_count, 2);
+        assert_eq!(snapshot.total_ns, 110);
+        assert_eq!(snapshot.max_ns, 70);
+        assert_eq!(snapshot.p95_ns, 70);
+        assert_eq!(snapshot.p99_ns, 70);
+    }
+
+    #[test]
+    fn cpu_reduction_timing_excludes_frames_when_branch_cadence_is_not_due() {
+        let native_frame = frame();
+        let native_source = source(&native_frame);
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        *lock(&exact.hub) = Some(builder.publication_hub());
+        exact.replace_source(Some(native_source.clone()));
+        let demand = cpu_demand_for_kind_at_hz(
+            ScreenProcessingProfile::default(),
+            ScreenPublicationKind::Surface,
+            NonZeroU32::MIN,
+        );
+        let resolved = resolve_macos_publication_branch(&native_source, &demand)
+            .expect("CPU demand resolves")
+            .expect("configured source owns CPU demand");
+        let mut runtimes = Vec::new();
+        commit_cpu_runtime(
+            &mut builder,
+            &exact,
+            &native_source,
+            resolved,
+            &mut runtimes,
+        );
+        let telemetry = MacosScreenRuntimeTelemetry::default();
+        let captured_at = Instant::now();
+        let first = native_cpu_capture_frame(
+            &native_frame,
+            captured_at,
+            captured_at + Duration::from_secs(2),
+            &native_source,
+            native_source.epoch.source_id.clone(),
+        )
+        .expect("first native scalar envelope is valid");
+        publish_macos_scalar_exact(
+            &native_frame,
+            &first,
+            &native_source,
+            &exact,
+            &mut runtimes,
+            &telemetry,
+        )
+        .expect("first due CPU branch publishes");
+        assert_eq!(telemetry.cpu_reduction_timing.snapshot().sample_count, 1);
+
+        let mut next_native_frame = (*native_frame).clone();
+        next_native_frame.sequence = next_native_frame
+            .sequence
+            .checked_add(1)
+            .expect("fixture sequence advances");
+        let next_native_frame = Arc::new(next_native_frame);
+        let next = native_cpu_capture_frame(
+            &next_native_frame,
+            captured_at,
+            captured_at + Duration::from_secs(2),
+            &native_source,
+            native_source.epoch.source_id.clone(),
+        )
+        .expect("second native scalar envelope is valid");
+        publish_macos_scalar_exact(
+            &next_native_frame,
+            &next,
+            &native_source,
+            &exact,
+            &mut runtimes,
+            &telemetry,
+        )
+        .expect("not-due CPU branch is skipped");
+        assert_eq!(telemetry.cpu_reduction_timing.snapshot().sample_count, 1);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn capture_pool_rebases_before_exposing_an_observed_surface() {
@@ -3873,6 +4158,14 @@ mod tests {
         profile: ScreenProcessingProfile,
         kind: ScreenPublicationKind,
     ) -> RegisteredScreenBranchDemand {
+        cpu_demand_for_kind_at_hz(profile, kind, NonZeroU32::new(60).expect("nonzero cadence"))
+    }
+
+    fn cpu_demand_for_kind_at_hz(
+        profile: ScreenProcessingProfile,
+        kind: ScreenPublicationKind,
+        requested_hz: NonZeroU32,
+    ) -> RegisteredScreenBranchDemand {
         RegisteredScreenBranchDemand::new(
             ScreenPublicationRequest::new(
                 ScreenSourceSelector::Configured,
@@ -3882,7 +4175,7 @@ mod tests {
                 ScreenAspectPolicy::Cover,
                 Arc::new(profile),
             ),
-            NonZeroU32::new(60).expect("nonzero cadence"),
+            requested_hz,
         )
     }
 
@@ -4965,7 +5258,10 @@ mod tests {
         frame: &Arc<MacosCaptureFrame>,
         source: &MacosPublicationSource,
         resolved: ResolvedScreenBranchDemand,
-    ) -> Arc<ScreenBranchPublication> {
+    ) -> (
+        Arc<ScreenBranchPublication>,
+        Arc<MacosScreenRuntimeTelemetry>,
+    ) {
         let exact = MacosExactPublicationShared::default();
         exact.replace_source(Some(source.clone()));
         let mut builder = ScreenPlanBuilder::new();
@@ -5004,7 +5300,7 @@ mod tests {
             .expect("initial plan has no retired readers");
 
         let now = Instant::now();
-        publish_macos_native_exact(
+        let (_, telemetry) = publish_macos_native_exact(
             frame,
             now,
             now + Duration::from_secs(1),
@@ -5015,10 +5311,11 @@ mod tests {
         .expect("native frame publishes");
         let hub = exact.hub().expect("test hub remains installed");
         let (_, lease) = hub.observe_matching_lease(|_| true);
-        lease
+        let publication = lease
             .expect("committed native branch has a lease")
             .read()
-            .expect("native branch has a publication")
+            .expect("native branch has a publication");
+        (publication, telemetry)
     }
 
     #[test]
@@ -5034,7 +5331,7 @@ mod tests {
             ScreenPublicationExecutor::SourceNative(_)
         ));
 
-        let publication = publish_native_fixture(&frame, &source, resolved);
+        let (publication, telemetry) = publish_native_fixture(&frame, &source, resolved);
         assert_eq!(publication.native_sequence(), NonZeroU64::MIN);
         let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
             panic!("identity macOS native branch publishes its GPU surface");
@@ -5050,6 +5347,13 @@ mod tests {
         assert!(surface.retained_owner::<TestPreparedTarget>().is_some());
         assert!(surface.resource_lifetime().is_some());
         assert!(surface.capture_resource_lifetime().is_some());
+        assert_eq!(
+            telemetry
+                .capture_to_native_publication_timing
+                .snapshot()
+                .sample_count,
+            1
+        );
     }
 
     #[test]
@@ -5092,7 +5396,7 @@ mod tests {
                 ScreenPublicationExecutor::SourceNative(_)
             ));
             assert!(!macos_native_descriptor_is_identity(resolved.descriptor()));
-            let publication = publish_native_fixture(&native_frame, &native_source, resolved);
+            let (publication, _) = publish_native_fixture(&native_frame, &native_source, resolved);
             let ScreenBranchPayload::NativeWork(payload) = publication.payload() else {
                 panic!("extended native source must publish deferred work");
             };
@@ -5476,7 +5780,7 @@ mod tests {
         ));
         assert!(!macos_native_descriptor_is_identity(capable.descriptor()));
         let output_extent = capable.descriptor().geometry().output_extent();
-        let publication = publish_native_fixture(&frame, &source, capable);
+        let (publication, _) = publish_native_fixture(&frame, &source, capable);
         let ScreenBranchPayload::NativeWork(payload) = publication.payload() else {
             panic!("reduced macOS native branch publishes deferred GPU work");
         };

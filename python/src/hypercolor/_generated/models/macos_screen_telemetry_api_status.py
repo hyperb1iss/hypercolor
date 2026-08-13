@@ -11,6 +11,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.macos_frame_drop_api_status import MacosFrameDropApiStatus
+    from ..models.macos_screen_timing_api_status import MacosScreenTimingApiStatus
 
 
 T = TypeVar("T", bound="MacosScreenTelemetryApiStatus")
@@ -59,6 +60,7 @@ class MacosScreenTelemetryApiStatus:
         publication_plan_generation (int | None | Unset):
         resource_generation (int | None | Unset):
         selection_diagnostic_label (None | str | Unset):
+        timing (MacosScreenTimingApiStatus | None | Unset):
         topology_generation (int | None | Unset):
         transfer_function (None | str | Unset):
     """
@@ -102,11 +104,14 @@ class MacosScreenTelemetryApiStatus:
     publication_plan_generation: int | None | Unset = UNSET
     resource_generation: int | None | Unset = UNSET
     selection_diagnostic_label: None | str | Unset = UNSET
+    timing: MacosScreenTimingApiStatus | None | Unset = UNSET
     topology_generation: int | None | Unset = UNSET
     transfer_function: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.macos_screen_timing_api_status import MacosScreenTimingApiStatus
+
         admitted_native_bytes = self.admitted_native_bytes
 
         callback_max_ns = self.callback_max_ns
@@ -250,6 +255,14 @@ class MacosScreenTelemetryApiStatus:
         else:
             selection_diagnostic_label = self.selection_diagnostic_label
 
+        timing: dict[str, Any] | None | Unset
+        if isinstance(self.timing, Unset):
+            timing = UNSET
+        elif isinstance(self.timing, MacosScreenTimingApiStatus):
+            timing = self.timing.to_dict()
+        else:
+            timing = self.timing
+
         topology_generation: int | None | Unset
         if isinstance(self.topology_generation, Unset):
             topology_generation = UNSET
@@ -326,6 +339,8 @@ class MacosScreenTelemetryApiStatus:
             field_dict["resource_generation"] = resource_generation
         if selection_diagnostic_label is not UNSET:
             field_dict["selection_diagnostic_label"] = selection_diagnostic_label
+        if timing is not UNSET:
+            field_dict["timing"] = timing
         if topology_generation is not UNSET:
             field_dict["topology_generation"] = topology_generation
         if transfer_function is not UNSET:
@@ -336,6 +351,7 @@ class MacosScreenTelemetryApiStatus:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.macos_frame_drop_api_status import MacosFrameDropApiStatus
+        from ..models.macos_screen_timing_api_status import MacosScreenTimingApiStatus
 
         d = dict(src_dict)
         admitted_native_bytes = d.pop("admitted_native_bytes")
@@ -548,6 +564,23 @@ class MacosScreenTelemetryApiStatus:
             d.pop("selection_diagnostic_label", UNSET)
         )
 
+        def _parse_timing(data: object) -> MacosScreenTimingApiStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                timing_type_1 = MacosScreenTimingApiStatus.from_dict(data)
+
+                return timing_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(MacosScreenTimingApiStatus | None | Unset, data)
+
+        timing = _parse_timing(d.pop("timing", UNSET))
+
         def _parse_topology_generation(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -608,6 +641,7 @@ class MacosScreenTelemetryApiStatus:
             publication_plan_generation=publication_plan_generation,
             resource_generation=resource_generation,
             selection_diagnostic_label=selection_diagnostic_label,
+            timing=timing,
             topology_generation=topology_generation,
             transfer_function=transfer_function,
         )

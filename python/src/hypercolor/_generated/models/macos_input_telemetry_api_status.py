@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.macos_architecture_api import MacosArchitectureApi
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.macos_timing_api_status import MacosTimingApiStatus
+
 
 T = TypeVar("T", bound="MacosInputTelemetryApiStatus")
 
@@ -18,6 +22,7 @@ class MacosInputTelemetryApiStatus:
     Attributes:
         executable_architecture (MacosArchitectureApi):
         authorization_last_transition_age_ms (int | None | Unset):
+        callback_to_publication_timing (MacosTimingApiStatus | None | Unset):
         capture_session_generation (int | None | Unset):
         host_architecture (MacosArchitectureApi | None | Unset):
         input_events_dropped (int | None | Unset):
@@ -36,6 +41,7 @@ class MacosInputTelemetryApiStatus:
 
     executable_architecture: MacosArchitectureApi
     authorization_last_transition_age_ms: int | None | Unset = UNSET
+    callback_to_publication_timing: MacosTimingApiStatus | None | Unset = UNSET
     capture_session_generation: int | None | Unset = UNSET
     host_architecture: MacosArchitectureApi | None | Unset = UNSET
     input_events_dropped: int | None | Unset = UNSET
@@ -53,6 +59,8 @@ class MacosInputTelemetryApiStatus:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.macos_timing_api_status import MacosTimingApiStatus
+
         executable_architecture = self.executable_architecture.value
 
         authorization_last_transition_age_ms: int | None | Unset
@@ -62,6 +70,16 @@ class MacosInputTelemetryApiStatus:
             authorization_last_transition_age_ms = (
                 self.authorization_last_transition_age_ms
             )
+
+        callback_to_publication_timing: dict[str, Any] | None | Unset
+        if isinstance(self.callback_to_publication_timing, Unset):
+            callback_to_publication_timing = UNSET
+        elif isinstance(self.callback_to_publication_timing, MacosTimingApiStatus):
+            callback_to_publication_timing = (
+                self.callback_to_publication_timing.to_dict()
+            )
+        else:
+            callback_to_publication_timing = self.callback_to_publication_timing
 
         capture_session_generation: int | None | Unset
         if isinstance(self.capture_session_generation, Unset):
@@ -160,6 +178,10 @@ class MacosInputTelemetryApiStatus:
             field_dict["authorization_last_transition_age_ms"] = (
                 authorization_last_transition_age_ms
             )
+        if callback_to_publication_timing is not UNSET:
+            field_dict["callback_to_publication_timing"] = (
+                callback_to_publication_timing
+            )
         if capture_session_generation is not UNSET:
             field_dict["capture_session_generation"] = capture_session_generation
         if host_architecture is not UNSET:
@@ -195,6 +217,8 @@ class MacosInputTelemetryApiStatus:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.macos_timing_api_status import MacosTimingApiStatus
+
         d = dict(src_dict)
         executable_architecture = MacosArchitectureApi(d.pop("executable_architecture"))
 
@@ -211,6 +235,29 @@ class MacosInputTelemetryApiStatus:
             _parse_authorization_last_transition_age_ms(
                 d.pop("authorization_last_transition_age_ms", UNSET)
             )
+        )
+
+        def _parse_callback_to_publication_timing(
+            data: object,
+        ) -> MacosTimingApiStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                callback_to_publication_timing_type_1 = MacosTimingApiStatus.from_dict(
+                    data
+                )
+
+                return callback_to_publication_timing_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(MacosTimingApiStatus | None | Unset, data)
+
+        callback_to_publication_timing = _parse_callback_to_publication_timing(
+            d.pop("callback_to_publication_timing", UNSET)
         )
 
         def _parse_capture_session_generation(data: object) -> int | None | Unset:
@@ -372,6 +419,7 @@ class MacosInputTelemetryApiStatus:
         macos_input_telemetry_api_status = cls(
             executable_architecture=executable_architecture,
             authorization_last_transition_age_ms=authorization_last_transition_age_ms,
+            callback_to_publication_timing=callback_to_publication_timing,
             capture_session_generation=capture_session_generation,
             host_architecture=host_architecture,
             input_events_dropped=input_events_dropped,

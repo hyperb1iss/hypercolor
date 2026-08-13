@@ -268,6 +268,48 @@ pub struct MacosInputPlatformStatus {
     pub tap_reenabled: Option<u64>,
     /// Ordered state gaps observed across native and core folding.
     pub state_gaps: Option<u64>,
+    /// Event-tap callback entry through canonical core publication.
+    pub callback_to_publication_timing: Option<MacosTimingStatus>,
+}
+
+/// Bounded latency distribution retained without raw samples.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MacosTimingStatus {
+    /// Number of observations in the distribution.
+    pub sample_count: u64,
+    /// Saturating sum of all observations.
+    pub total_ns: u64,
+    /// Exact maximum observation.
+    pub max_ns: u64,
+    /// Bounded 95th-percentile upper estimate.
+    pub p95_ns: u64,
+    /// Bounded 99th-percentile upper estimate.
+    pub p99_ns: u64,
+}
+
+/// Screen-capture stage and end-to-end latency distributions.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MacosScreenTimingStatus {
+    /// Native callback execution.
+    pub callback: MacosTimingStatus,
+    /// Native surface validation and retain work.
+    pub retain: MacosTimingStatus,
+    /// Latest-value worker enqueue work.
+    pub enqueue: MacosTimingStatus,
+    /// Retained native-sample decode and validation work.
+    pub conversion: MacosTimingStatus,
+    /// Core CPU reduction work.
+    pub cpu_reduction: MacosTimingStatus,
+    /// Renderer IOSurface import work.
+    pub native_import: MacosTimingStatus,
+    /// Native reduction encode and queue-submission work.
+    pub native_reduction_submit: MacosTimingStatus,
+    /// Decoded native-frame publication work.
+    pub publication: MacosTimingStatus,
+    /// Capture timestamp through exact native publication.
+    pub capture_to_native_publication: MacosTimingStatus,
+    /// Capture timestamp through CPU-converted publication.
+    pub capture_to_converted_publication: MacosTimingStatus,
 }
 
 /// Platform detail for the macOS screen-capture adapter.
@@ -343,6 +385,8 @@ pub struct MacosScreenPlatformStatus {
     pub publication_path: Option<Arc<str>>,
     /// Exact bounded reason for falling back from native publication.
     pub fallback_reason: Option<Arc<str>>,
+    /// Stage and end-to-end timing distributions for the active session.
+    pub timing: MacosScreenTimingStatus,
     /// Total callback execution time measured by the native boundary.
     pub callback_total_ns: u64,
     /// Maximum callback execution time measured by the native boundary.
@@ -351,9 +395,9 @@ pub struct MacosScreenPlatformStatus {
     pub retain_total_ns: u64,
     /// Maximum native surface validation and retain time.
     pub retain_max_ns: u64,
-    /// Total native frame conversion time.
+    /// Total retained native-frame decode and validation time.
     pub conversion_total_ns: u64,
-    /// Maximum native frame conversion time.
+    /// Maximum retained native-frame decode and validation time.
     pub conversion_max_ns: u64,
     /// Total CPU reduction time measured by core.
     pub cpu_reduction_total_ns: u64,

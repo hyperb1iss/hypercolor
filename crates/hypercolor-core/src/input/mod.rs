@@ -45,11 +45,12 @@ pub use sensor::SensorPoller;
 pub use status::{
     MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
     MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosSelectionState, MacosTahoeCapabilities, MacosTahoeSelectionCapabilities,
-    ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
-    SourceIssue, SourceKind, SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot,
-    SourceSessionWriter, SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError,
-    SourceStatusHandle, SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
+    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities,
+    MacosTahoeSelectionCapabilities, MacosTimingStatus, ScreenCaptureDiagnostics,
+    ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness, SourceIssue, SourceKind,
+    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
+    SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError, SourceStatusHandle,
+    SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
     SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
     classify_source_resource_scan,
 };

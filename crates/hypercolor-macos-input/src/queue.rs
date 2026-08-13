@@ -20,9 +20,19 @@ struct QueuedInputEvent {
 
 struct AtomicLatencyHistogram {
     buckets: Box<[AtomicU64]>,
+    generation: AtomicU64,
     sample_count: AtomicU64,
     total_ns: AtomicU64,
     max_ns: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AtomicLatencySnapshot {
+    sample_count: u64,
+    total_ns: u64,
+    max_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
 }
 
 impl Default for AtomicLatencyHistogram {
@@ -31,6 +41,7 @@ impl Default for AtomicLatencyHistogram {
             buckets: (0..=LATENCY_BUCKET_COUNT)
                 .map(|_| AtomicU64::new(0))
                 .collect(),
+            generation: AtomicU64::new(0),
             sample_count: AtomicU64::new(0),
             total_ns: AtomicU64::new(0),
             max_ns: AtomicU64::new(0),
@@ -40,22 +51,50 @@ impl Default for AtomicLatencyHistogram {
 
 impl AtomicLatencyHistogram {
     fn record(&self, elapsed: Duration) {
+        self.record_with_hook(elapsed, || {});
+    }
+
+    fn record_with_hook(&self, elapsed: Duration, before_complete: impl FnOnce()) {
+        let generation = self.begin_write();
         let elapsed_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
         let bucket = usize::try_from(elapsed_ns / LATENCY_BUCKET_WIDTH_NS)
             .unwrap_or(usize::MAX)
             .min(LATENCY_BUCKET_COUNT);
         self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
-        self.sample_count.fetch_add(1, Ordering::Relaxed);
         let _ = self
             .total_ns
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
                 Some(total.saturating_add(elapsed_ns))
             });
         self.max_ns.fetch_max(elapsed_ns, Ordering::Relaxed);
+        before_complete();
+        self.sample_count.fetch_add(1, Ordering::Relaxed);
+        self.generation
+            .store(generation.wrapping_add(1), Ordering::Release);
     }
 
-    fn percentile_upper_bound_ns(&self, percentile: u64) -> u64 {
-        let sample_count = self.sample_count.load(Ordering::Relaxed);
+    fn begin_write(&self) -> u64 {
+        let mut generation = self.generation.load(Ordering::Relaxed);
+        loop {
+            if generation & 1 == 1 {
+                std::hint::spin_loop();
+                generation = self.generation.load(Ordering::Acquire);
+                continue;
+            }
+            let started = generation.wrapping_add(1);
+            match self.generation.compare_exchange_weak(
+                generation,
+                started,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return started,
+                Err(observed) => generation = observed,
+            }
+        }
+    }
+
+    fn percentile_upper_bound_ns(&self, percentile: u64, sample_count: u64, maximum: u64) -> u64 {
         if sample_count == 0 {
             return 0;
         }
@@ -65,15 +104,51 @@ impl AtomicLatencyHistogram {
             observed = observed.saturating_add(count.load(Ordering::Relaxed));
             if observed >= rank {
                 if index == LATENCY_BUCKET_COUNT {
-                    return self.max_ns.load(Ordering::Relaxed);
+                    return maximum;
                 }
                 return u64::try_from(index.saturating_add(1))
                     .unwrap_or(u64::MAX)
                     .saturating_mul(LATENCY_BUCKET_WIDTH_NS)
-                    .min(self.max_ns.load(Ordering::Relaxed));
+                    .min(maximum);
             }
         }
-        self.max_ns.load(Ordering::Relaxed)
+        maximum
+    }
+
+    fn snapshot(&self) -> AtomicLatencySnapshot {
+        self.snapshot_with_hooks(|| {}, || {})
+    }
+
+    fn snapshot_with_hooks(
+        &self,
+        mut retrying: impl FnMut(),
+        mut after_p95: impl FnMut(),
+    ) -> AtomicLatencySnapshot {
+        loop {
+            let generation = self.generation.load(Ordering::Acquire);
+            if generation & 1 == 1 {
+                retrying();
+                std::hint::spin_loop();
+                continue;
+            }
+            let sample_count = self.sample_count.load(Ordering::Relaxed);
+            let total_ns = self.total_ns.load(Ordering::Relaxed);
+            let max_ns = self.max_ns.load(Ordering::Relaxed);
+            let p95_ns = self.percentile_upper_bound_ns(95, sample_count, max_ns);
+            after_p95();
+            let p99_ns = self.percentile_upper_bound_ns(99, sample_count, max_ns);
+            std::sync::atomic::fence(Ordering::Acquire);
+            if self.generation.load(Ordering::Relaxed) == generation {
+                return AtomicLatencySnapshot {
+                    sample_count,
+                    total_ns,
+                    max_ns,
+                    p95_ns,
+                    p99_ns,
+                };
+            }
+            retrying();
+        }
     }
 }
 
@@ -97,6 +172,7 @@ pub(crate) struct Diagnostics {
 
 impl Diagnostics {
     fn snapshot(&self, queue_capacity: usize, queue_depth: usize) -> MacosInputDiagnostics {
+        let callback_to_publication = self.callback_to_publication.snapshot();
         MacosInputDiagnostics {
             queue_capacity,
             queue_depth,
@@ -112,24 +188,11 @@ impl Diagnostics {
             invalid_scroll_phases: self.invalid_scroll_phases.load(Ordering::Relaxed),
             last_point_delta_x: self.last_point_delta_x.load(Ordering::Relaxed),
             last_point_delta_y: self.last_point_delta_y.load(Ordering::Relaxed),
-            callback_to_publication_sample_count: self
-                .callback_to_publication
-                .sample_count
-                .load(Ordering::Relaxed),
-            callback_to_publication_total_ns: self
-                .callback_to_publication
-                .total_ns
-                .load(Ordering::Relaxed),
-            callback_to_publication_max_ns: self
-                .callback_to_publication
-                .max_ns
-                .load(Ordering::Relaxed),
-            callback_to_publication_p95_ns: self
-                .callback_to_publication
-                .percentile_upper_bound_ns(95),
-            callback_to_publication_p99_ns: self
-                .callback_to_publication
-                .percentile_upper_bound_ns(99),
+            callback_to_publication_sample_count: callback_to_publication.sample_count,
+            callback_to_publication_total_ns: callback_to_publication.total_ns,
+            callback_to_publication_max_ns: callback_to_publication.max_ns,
+            callback_to_publication_p95_ns: callback_to_publication.p95_ns,
+            callback_to_publication_p99_ns: callback_to_publication.p99_ns,
         }
     }
 
@@ -447,8 +510,37 @@ mod tests {
         let histogram = AtomicLatencyHistogram::default();
         histogram.record(Duration::from_nanos(1));
 
-        assert_eq!(histogram.percentile_upper_bound_ns(95), 1);
-        assert_eq!(histogram.percentile_upper_bound_ns(99), 1);
-        assert_eq!(histogram.max_ns.load(Ordering::Relaxed), 1);
+        let snapshot = histogram.snapshot();
+        assert_eq!(snapshot.p95_ns, 1);
+        assert_eq!(snapshot.p99_ns, 1);
+        assert_eq!(snapshot.max_ns, 1);
+    }
+
+    #[test]
+    fn callback_latency_snapshot_retries_when_population_changes() {
+        let histogram = AtomicLatencyHistogram::default();
+        histogram.record(Duration::from_nanos(40));
+        let mut injected = false;
+
+        let snapshot = histogram.snapshot_with_hooks(
+            || {},
+            || {
+                if !injected {
+                    histogram.record(Duration::from_nanos(70));
+                    injected = true;
+                }
+            },
+        );
+
+        assert_eq!(
+            snapshot,
+            AtomicLatencySnapshot {
+                sample_count: 2,
+                total_ns: 110,
+                max_ns: 70,
+                p95_ns: 70,
+                p99_ns: 70,
+            }
+        );
     }
 }

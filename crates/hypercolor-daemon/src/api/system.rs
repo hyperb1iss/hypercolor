@@ -16,8 +16,9 @@ use hypercolor_core::input::screen::{
 use hypercolor_core::input::{
     MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
     MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosSelectionState, MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, SourceFreshness,
-    SourceIssue, SourceKind, SourcePlatformStatus, SourceState, SourceStatus,
+    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities,
+    MacosTahoeSelectionCapabilities, MacosTimingStatus, SourceFreshness, SourceIssue, SourceKind,
+    SourcePlatformStatus, SourceState, SourceStatus,
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -370,6 +371,31 @@ pub struct MacosInputTelemetryApiStatus {
     pub tap_reenabled: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_gaps: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_to_publication_timing: Option<MacosTimingApiStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosTimingApiStatus {
+    pub sample_count: u64,
+    pub total_ns: u64,
+    pub max_ns: u64,
+    pub p95_ns: u64,
+    pub p99_ns: u64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MacosScreenTimingApiStatus {
+    pub callback: MacosTimingApiStatus,
+    pub retain: MacosTimingApiStatus,
+    pub enqueue: MacosTimingApiStatus,
+    pub conversion: MacosTimingApiStatus,
+    pub cpu_reduction: MacosTimingApiStatus,
+    pub native_import: MacosTimingApiStatus,
+    pub native_reduction_submit: MacosTimingApiStatus,
+    pub publication: MacosTimingApiStatus,
+    pub capture_to_native_publication: MacosTimingApiStatus,
+    pub capture_to_converted_publication: MacosTimingApiStatus,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -424,6 +450,8 @@ pub struct MacosScreenTelemetryApiStatus {
     pub publication_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<MacosScreenTimingApiStatus>,
     pub callback_total_ns: u64,
     pub callback_max_ns: u64,
     pub retain_total_ns: u64,
@@ -964,6 +992,10 @@ fn macos_input_platform_status(
             tap_disabled_user_input: status.tap_disabled_user_input,
             tap_reenabled: status.tap_reenabled,
             state_gaps: status.state_gaps,
+            callback_to_publication_timing: status
+                .callback_to_publication_timing
+                .as_ref()
+                .map(macos_timing_status),
         },
     }
 }
@@ -1029,6 +1061,7 @@ fn macos_screen_platform_status(
             frames_stale: status.frames_stale,
             publication_path: status.publication_path.as_deref().map(str::to_owned),
             fallback_reason: status.fallback_reason.as_deref().map(str::to_owned),
+            timing: Some(macos_screen_timing_status(&status.timing)),
             callback_total_ns: status.callback_total_ns,
             callback_max_ns: status.callback_max_ns,
             retain_total_ns: status.retain_total_ns,
@@ -1044,6 +1077,33 @@ fn macos_screen_platform_status(
             publication_total_ns: status.publication_total_ns,
             publication_max_ns: status.publication_max_ns,
         },
+    }
+}
+
+fn macos_timing_status(status: &MacosTimingStatus) -> MacosTimingApiStatus {
+    MacosTimingApiStatus {
+        sample_count: status.sample_count,
+        total_ns: status.total_ns,
+        max_ns: status.max_ns,
+        p95_ns: status.p95_ns,
+        p99_ns: status.p99_ns,
+    }
+}
+
+fn macos_screen_timing_status(status: &MacosScreenTimingStatus) -> MacosScreenTimingApiStatus {
+    MacosScreenTimingApiStatus {
+        callback: macos_timing_status(&status.callback),
+        retain: macos_timing_status(&status.retain),
+        enqueue: macos_timing_status(&status.enqueue),
+        conversion: macos_timing_status(&status.conversion),
+        cpu_reduction: macos_timing_status(&status.cpu_reduction),
+        native_import: macos_timing_status(&status.native_import),
+        native_reduction_submit: macos_timing_status(&status.native_reduction_submit),
+        publication: macos_timing_status(&status.publication),
+        capture_to_native_publication: macos_timing_status(&status.capture_to_native_publication),
+        capture_to_converted_publication: macos_timing_status(
+            &status.capture_to_converted_publication,
+        ),
     }
 }
 
@@ -2275,9 +2335,10 @@ mod tests {
     use hypercolor_core::input::{
         InputData, InputSource, MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner,
         MacosDaemonOwnerConflict, MacosInputPlatformStatus, MacosProtectedSourceState,
-        MacosScreenPlatformStatus, MacosSelectionState, MacosTahoeCapabilities,
-        MacosTahoeSelectionCapabilities, SourceFreshness, SourceKind, SourcePlatformStatus,
-        SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
+        MacosScreenPlatformStatus, MacosScreenTimingStatus, MacosSelectionState,
+        MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, MacosTimingStatus,
+        SourceFreshness, SourceKind, SourcePlatformStatus, SourceState, SourceStatus,
+        SourceStatusHandle, SourceStatusReporter,
     };
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
@@ -2364,6 +2425,22 @@ mod tests {
         }
     }
 
+    const fn timing_fixture(
+        sample_count: u64,
+        total_ns: u64,
+        max_ns: u64,
+        p95_ns: u64,
+        p99_ns: u64,
+    ) -> MacosTimingStatus {
+        MacosTimingStatus {
+            sample_count,
+            total_ns,
+            max_ns,
+            p95_ns,
+            p99_ns,
+        }
+    }
+
     #[test]
     fn input_source_status_serializes_macos_input_platform() {
         let platform = SourcePlatformStatus::MacosInput(MacosInputPlatformStatus {
@@ -2393,6 +2470,9 @@ mod tests {
             tap_disabled_user_input: Some(1),
             tap_reenabled: Some(3),
             state_gaps: Some(4),
+            callback_to_publication_timing: Some(timing_fixture(
+                990, 1_980_000, 4_000, 2_000, 3_000,
+            )),
         });
         let status =
             input_source_status(&source_status_fixture(Some(platform)), Instant::now(), true);
@@ -2426,7 +2506,14 @@ mod tests {
                     "tap_disabled_timeout": 2,
                     "tap_disabled_user_input": 1,
                     "tap_reenabled": 3,
-                    "state_gaps": 4
+                    "state_gaps": 4,
+                    "callback_to_publication_timing": {
+                        "sample_count": 990,
+                        "total_ns": 1_980_000,
+                        "max_ns": 4_000,
+                        "p95_ns": 2_000,
+                        "p99_ns": 3_000
+                    }
                 }
             })
         );
@@ -2524,6 +2611,22 @@ mod tests {
             frames_stale: 1,
             publication_path: Some(Arc::from("cpu_fallback")),
             fallback_reason: Some(Arc::from("native_descriptor_incompatible")),
+            timing: MacosScreenTimingStatus {
+                callback: timing_fixture(10, 900, 90, 80, 90),
+                retain: timing_fixture(10, 400, 40, 30, 40),
+                enqueue: timing_fixture(10, 300, 30, 20, 30),
+                conversion: timing_fixture(10, 700, 70, 60, 70),
+                cpu_reduction: timing_fixture(10, 1_100, 110, 100, 110),
+                native_import: timing_fixture(10, 600, 60, 50, 60),
+                native_reduction_submit: timing_fixture(10, 800, 80, 70, 80),
+                publication: timing_fixture(10, 500, 50, 40, 50),
+                capture_to_native_publication: timing_fixture(
+                    8, 8_000_000, 1_200_000, 1_000_000, 1_200_000,
+                ),
+                capture_to_converted_publication: timing_fixture(
+                    6, 9_000_000, 1_800_000, 1_600_000, 1_800_000,
+                ),
+            },
             callback_total_ns: 900,
             callback_max_ns: 90,
             retain_total_ns: 400,
@@ -2605,6 +2708,16 @@ mod tests {
         assert_eq!(telemetry["native_import_total_ns"], 600);
         assert_eq!(telemetry["native_reduction_submit_total_ns"], 800);
         assert_eq!(telemetry["publication_total_ns"], 500);
+        assert_eq!(telemetry["timing"]["callback"]["sample_count"], 10);
+        assert_eq!(telemetry["timing"]["enqueue"]["p99_ns"], 30);
+        assert_eq!(
+            telemetry["timing"]["capture_to_native_publication"]["p95_ns"],
+            1_000_000
+        );
+        assert_eq!(
+            telemetry["timing"]["capture_to_converted_publication"]["sample_count"],
+            6
+        );
 
         let remote = input_source_status(&source, Instant::now(), false);
         let remote = serde_json::to_value(remote).expect("remote screen status should serialize");
@@ -2708,6 +2821,8 @@ mod tests {
         assert!(schemas.contains_key("MacosTahoeSelectionCapabilitiesApiStatus"));
         assert!(schemas.contains_key("MacosInputTelemetryApiStatus"));
         assert!(schemas.contains_key("MacosScreenTelemetryApiStatus"));
+        assert!(schemas.contains_key("MacosTimingApiStatus"));
+        assert!(schemas.contains_key("MacosScreenTimingApiStatus"));
         assert!(schemas.contains_key("MacosFrameDropApiStatus"));
         let platform_schema = &schemas["InputSourcePlatformStatus"];
         let encoded = serde_json::to_string(platform_schema).expect("schema should encode");

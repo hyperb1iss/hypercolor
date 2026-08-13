@@ -20,8 +20,8 @@ use crate::input::traits::{
 };
 use crate::input::{
     LegacyWheelProjector, MacosAuthorizationState, MacosCapabilityOwner, MacosInputPlatformStatus,
-    MacosProtectedSourceState, SourceIssue, SourceKind, SourcePlatformStatus, SourceSessionSlot,
-    SourceStatusHandle, SourceStatusReporter,
+    MacosProtectedSourceState, MacosTimingStatus, SourceIssue, SourceKind, SourcePlatformStatus,
+    SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
 use crate::types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
@@ -576,6 +576,13 @@ impl MacosHostInput {
                     state_gaps: native
                         .map(|diagnostics| diagnostics.state_gaps)
                         .or((folded_state_gaps > 0).then_some(folded_state_gaps)),
+                    callback_to_publication_timing: native.map(|diagnostics| MacosTimingStatus {
+                        sample_count: diagnostics.callback_to_publication_sample_count,
+                        total_ns: diagnostics.callback_to_publication_total_ns,
+                        max_ns: diagnostics.callback_to_publication_max_ns,
+                        p95_ns: diagnostics.callback_to_publication_p95_ns,
+                        p99_ns: diagnostics.callback_to_publication_p99_ns,
+                    }),
                 },
             )))?;
         Ok(())

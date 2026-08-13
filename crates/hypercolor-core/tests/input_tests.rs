@@ -18,10 +18,10 @@ use hypercolor_core::input::{
     AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
     InputManager, InputSource, MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner,
     MacosDaemonOwnerConflict, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosSelectionState, MacosTahoeCapabilities, MediaSource, NetSource, ScreenData,
-    ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind, SourcePlatformStatus,
-    SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
-    SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
+    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities, MediaSource, NetSource,
+    ScreenData, ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind,
+    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
+    SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
     SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
@@ -3464,6 +3464,7 @@ fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
         frames_stale: 0,
         publication_path: Some(Arc::from("cpu")),
         fallback_reason: None,
+        timing: MacosScreenTimingStatus::default(),
         callback_total_ns: 0,
         callback_max_ns: 0,
         retain_total_ns: 0,

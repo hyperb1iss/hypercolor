@@ -304,6 +304,7 @@ from .macos_frame_drop_api_status import MacosFrameDropApiStatus
 from .macos_input_telemetry_api_status import MacosInputTelemetryApiStatus
 from .macos_protected_source_state_api import MacosProtectedSourceStateApi
 from .macos_screen_telemetry_api_status import MacosScreenTelemetryApiStatus
+from .macos_screen_timing_api_status import MacosScreenTimingApiStatus
 from .macos_selection_state_api_type_0 import MacosSelectionStateApiType0
 from .macos_selection_state_api_type_0_type import MacosSelectionStateApiType0Type
 from .macos_selection_state_api_type_1 import MacosSelectionStateApiType1
@@ -314,6 +315,7 @@ from .macos_tahoe_capabilities_api_status import MacosTahoeCapabilitiesApiStatus
 from .macos_tahoe_selection_capabilities_api_status import (
     MacosTahoeSelectionCapabilitiesApiStatus,
 )
+from .macos_timing_api_status import MacosTimingApiStatus
 from .meta import Meta
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
@@ -653,6 +655,7 @@ __all__ = (
     "MacosInputTelemetryApiStatus",
     "MacosProtectedSourceStateApi",
     "MacosScreenTelemetryApiStatus",
+    "MacosScreenTimingApiStatus",
     "MacosSelectionStateApiType0",
     "MacosSelectionStateApiType0Type",
     "MacosSelectionStateApiType1",
@@ -661,6 +664,7 @@ __all__ = (
     "MacosSelectionStateApiType2Type",
     "MacosTahoeCapabilitiesApiStatus",
     "MacosTahoeSelectionCapabilitiesApiStatus",
+    "MacosTimingApiStatus",
     "Meta",
     "NormalizedPosition",
     "NormalizedRect",

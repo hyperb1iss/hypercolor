@@ -701,6 +701,7 @@ define_class!(
                 }
                 sample => sample,
             };
+            let _enqueue_timing = self.ivars().shared.counters.observe_enqueue();
             if self.ivars().samples.publish(sample) == SamplePublishOutcome::Superseded {
                 self.ivars()
                     .shared
