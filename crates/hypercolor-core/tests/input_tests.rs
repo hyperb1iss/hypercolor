@@ -1243,10 +1243,11 @@ fn input_graph_rejects_zero_repeat_events_before_publication() {
 }
 
 #[test]
-fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
+fn input_graph_clears_transient_data_but_retains_last_good_snapshots() {
     let mut interaction = hypercolor_core::input::InteractionData::default();
     interaction.keyboard.pressed_keys.push("KeyA".to_owned());
     interaction.generation = 1;
+    let screen = ScreenData::from_zones(Vec::new(), 1, 1);
     let media = Arc::new(hypercolor_types::media::MediaState::unavailable());
     let mut manager = InputManager::new();
     manager.add_source(Box::new(SequencedSource::new(
@@ -1255,6 +1256,10 @@ fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
     )));
     manager.add_source(Box::new(SequencedSource::new(
         [InputData::Media(Arc::clone(&media)), InputData::None],
+        false,
+    )));
+    manager.add_source(Box::new(SequencedSource::new(
+        [InputData::Screen(screen), InputData::None],
         false,
     )));
     manager.start_all().expect("sequenced sources should start");
@@ -1270,6 +1275,10 @@ fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
         first.slots()[1].latest().as_deref(),
         Some(InputData::Media(_))
     ));
+    assert!(matches!(
+        first.slots()[2].latest().as_deref(),
+        Some(InputData::Screen(_))
+    ));
 
     manager.sample_sources(1.0 / 60.0);
     let second = graph.snapshot();
@@ -1278,6 +1287,10 @@ fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
         panic!("change-only media snapshot should remain published");
     };
     assert!(Arc::ptr_eq(&retained, &media));
+    assert!(matches!(
+        second.slots()[2].latest().as_deref(),
+        Some(InputData::Screen(_))
+    ));
 }
 
 #[test]

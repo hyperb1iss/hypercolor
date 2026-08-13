@@ -251,7 +251,10 @@ impl InputPublicationSlot {
         }
         let retain_change_only_sample = sample.is_none()
             && latest.as_ref().is_some_and(|latest| {
-                matches!(latest.as_ref(), InputData::Media(_) | InputData::Net(_))
+                matches!(
+                    latest.as_ref(),
+                    InputData::Screen(_) | InputData::Media(_) | InputData::Net(_)
+                )
             });
         if !retain_change_only_sample {
             self.inner.latest.store(sample);
