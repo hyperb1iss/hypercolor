@@ -45,6 +45,7 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, Method, header};
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
@@ -53,7 +54,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
 use crate::interaction_routing::InteractionRoutingControl;
-use hypercolor_core::asset::AssetLibrary;
+use hypercolor_core::asset::{AssetLibrary, AssetLibraryLimits};
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
@@ -1142,12 +1143,19 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             },
         );
     let cors_origin = cors_origins(&web_config, security_state.security_enabled());
+    // The request body includes multipart framing in addition to the asset bytes.
+    let asset_upload_body_limit =
+        usize::try_from(AssetLibraryLimits::default().hard_file_cap_bytes)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1024 * 1024);
 
     let api = Router::new()
         // ── Assets ───────────────────────────────────────────────────
         .route(
             "/assets",
-            axum::routing::get(assets::list_assets).post(assets::upload_asset),
+            axum::routing::get(assets::list_assets)
+                .post(assets::upload_asset)
+                .layer(DefaultBodyLimit::max(asset_upload_body_limit)),
         )
         .route(
             "/assets/{id}",

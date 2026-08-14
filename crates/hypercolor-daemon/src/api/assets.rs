@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
+use axum::extract::multipart::MultipartError;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::asset::{
     AssetEvent, AssetLibraryError, AssetTypeHint, AssetUploadOptions, MediaAssetRecord,
@@ -196,32 +197,34 @@ async fn parse_upload(
     let mut tags = Vec::new();
     let mut type_hint = parse_type_hint(query_type_hint).map_err(ApiError::bad_request)?;
 
-    while let Some(field) = multipart.next_field().await.map_err(|error| {
-        ApiError::bad_request(format!("Failed to read multipart upload: {error}"))
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| multipart_error_response("Failed to read multipart upload", error))?
+    {
         let field_name = field.name().map(ToOwned::to_owned);
         match field_name.as_deref() {
             Some("file") => {
                 file_name = field.file_name().map(ToOwned::to_owned);
                 let bytes = field.bytes().await.map_err(|error| {
-                    ApiError::bad_request(format!("Failed to read uploaded file: {error}"))
+                    multipart_error_response("Failed to read uploaded file", error)
                 })?;
                 file_bytes = Some(bytes.to_vec());
             }
             Some("name") => {
                 display_name = Some(field.text().await.map_err(|error| {
-                    ApiError::bad_request(format!("Failed to read asset name: {error}"))
+                    multipart_error_response("Failed to read asset name", error)
                 })?);
             }
             Some("tags") => {
                 let raw = field.text().await.map_err(|error| {
-                    ApiError::bad_request(format!("Failed to read asset tags: {error}"))
+                    multipart_error_response("Failed to read asset tags", error)
                 })?;
                 tags = parse_tags(&raw).map_err(ApiError::bad_request)?;
             }
             Some("type") => {
                 let raw = field.text().await.map_err(|error| {
-                    ApiError::bad_request(format!("Failed to read asset type hint: {error}"))
+                    multipart_error_response("Failed to read asset type hint", error)
                 })?;
                 type_hint = parse_type_hint(Some(&raw)).map_err(ApiError::bad_request)?;
             }
@@ -245,6 +248,15 @@ async fn parse_upload(
         tags,
         type_hint,
     })
+}
+
+fn multipart_error_response(context: &str, error: MultipartError) -> Response {
+    let message = format!("{context}: {error}");
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::payload_too_large(message)
+    } else {
+        ApiError::bad_request(message)
+    }
 }
 
 fn parse_type_hint(raw: Option<&str>) -> Result<Option<AssetTypeHint>, String> {

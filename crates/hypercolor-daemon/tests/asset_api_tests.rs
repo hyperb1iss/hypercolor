@@ -1,10 +1,13 @@
 use std::io::Cursor;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use axum::Router;
 use axum::body::Body;
+use axum::extract::DefaultBodyLimit;
+use axum::routing::post;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api::{self, AppState, assets};
 use hypercolor_types::event::{AssetChangeKind, HypercolorEvent};
 use image::{ImageBuffer, ImageFormat, Rgba};
 use tower::ServiceExt;
@@ -207,6 +210,47 @@ async fn asset_upload_list_metadata_blob_and_thumbnail_work() {
         Some("nosniff")
     );
     assert!(!body_bytes(thumbnail).await.is_empty());
+}
+
+#[tokio::test]
+async fn asset_upload_accepts_media_larger_than_axum_default_body_limit() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let app = test_app_with_state(state);
+    let mut bytes = png_bytes([255, 0, 160, 255]);
+    bytes.resize(2 * 1024 * 1024, 0);
+
+    let response = send(
+        &app,
+        multipart_upload_request("/api/v1/assets", "large.png", &bytes, &[]),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn asset_upload_reports_route_body_limit_as_payload_too_large() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let app = Router::new()
+        .route(
+            "/api/v1/assets",
+            post(assets::upload_asset).layer(DefaultBodyLimit::max(1024)),
+        )
+        .with_state(state);
+    let mut bytes = png_bytes([255, 0, 160, 255]);
+    bytes.resize(1024, 0);
+
+    let response = send(
+        &app,
+        multipart_upload_request("/api/v1/assets", "too-large.png", &bytes, &[]),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "payload_too_large"
+    );
 }
 
 #[tokio::test]
