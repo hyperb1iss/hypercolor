@@ -15,6 +15,7 @@ mod native;
 mod screenshot;
 mod session;
 mod stream_contract;
+#[cfg(any(target_os = "macos", test))]
 mod worker;
 
 #[cfg(target_os = "macos")]

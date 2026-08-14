@@ -226,8 +226,10 @@ pub struct MacosCapturePlane {
 pub struct MacosCaptureSurface {
     pub iosurface_id: u32,
     pub allocation_bytes: u64,
+    #[cfg(any(target_os = "macos", feature = "capture-fixtures"))]
     owner: Arc<MacosRetainedPixelBuffer>,
     delivery_metadata: Option<MacosDeliveredFrameMetadata>,
+    #[cfg(any(target_os = "macos", feature = "capture-fixtures"))]
     _admission_lifetime: Option<Arc<dyn Send + Sync>>,
 }
 
@@ -539,7 +541,14 @@ impl MacosCaptureSurface {
     }
 
     pub fn retained_owner_count(&self) -> usize {
-        Arc::strong_count(&self.owner)
+        #[cfg(any(target_os = "macos", feature = "capture-fixtures"))]
+        {
+            Arc::strong_count(&self.owner)
+        }
+        #[cfg(not(any(target_os = "macos", feature = "capture-fixtures")))]
+        {
+            0
+        }
     }
 
     /// Hands borrowed native surface handles to audited macOS interop code.
@@ -582,6 +591,7 @@ impl MacosCaptureSurface {
         lengths: &[u64],
         operation: impl FnOnce(&[&[u8]]) -> R,
     ) -> Result<R, MacosCaptureError> {
+        #[cfg(any(target_os = "macos", feature = "capture-fixtures"))]
         match &*self.owner {
             #[cfg(target_os = "macos")]
             MacosRetainedPixelBuffer::Native { pixel_buffer } => {
@@ -604,6 +614,11 @@ impl MacosCaptureSurface {
                 Ok(operation(&borrowed))
             }
         }
+        #[cfg(not(any(target_os = "macos", feature = "capture-fixtures")))]
+        {
+            let _ = (lengths, operation);
+            Err(MacosCaptureError::CpuMappingUnavailable)
+        }
     }
 }
 
@@ -617,6 +632,7 @@ impl fmt::Debug for MacosCaptureSurface {
     }
 }
 
+#[cfg(any(target_os = "macos", feature = "capture-fixtures"))]
 enum MacosRetainedPixelBuffer {
     #[cfg(target_os = "macos")]
     Native {
@@ -629,6 +645,7 @@ enum MacosRetainedPixelBuffer {
     },
 }
 
+#[cfg(any(target_os = "macos", feature = "capture-fixtures"))]
 impl fmt::Debug for MacosRetainedPixelBuffer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -993,6 +1010,7 @@ fn validate_planes(
     Ok(planes)
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn validate_capture_planes(
     storage: MacosPixelExtent,
     format: MacosCapturePixelFormat,

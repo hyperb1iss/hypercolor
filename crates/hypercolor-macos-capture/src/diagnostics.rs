@@ -1,9 +1,14 @@
+#[cfg(any(target_os = "macos", test))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(target_os = "macos", test))]
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "macos", test))]
 use crate::MacosCaptureError;
 
+#[cfg(any(target_os = "macos", test))]
 const TIMING_BUCKET_WIDTH_NS: u64 = 100_000;
+#[cfg(any(target_os = "macos", test))]
 const TIMING_BUCKET_COUNT: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,6 +38,7 @@ impl MacosFrameDropReason {
         Self::Resource,
     ];
 
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) const fn from_error(error: &MacosCaptureError) -> Self {
         match error {
             MacosCaptureError::InvalidSampleBuffer => Self::InvalidSample,
@@ -152,6 +158,7 @@ impl MacosCaptureCallbackDiagnostics {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Default)]
 pub(crate) struct CallbackCounters {
     frames_received: AtomicU64,
@@ -167,6 +174,7 @@ pub(crate) struct CallbackCounters {
     dropped: [AtomicU64; MacosFrameDropReason::ALL.len()],
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug)]
 struct TimingCounters {
     buckets: Box<[AtomicU64]>,
@@ -176,6 +184,7 @@ struct TimingCounters {
     max_ns: AtomicU64,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl Default for TimingCounters {
     fn default() -> Self {
         Self {
@@ -190,6 +199,7 @@ impl Default for TimingCounters {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl TimingCounters {
     fn record(&self, elapsed: Duration) {
         self.record_with_hook(elapsed, || {});
@@ -287,18 +297,22 @@ impl TimingCounters {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) struct TimingObservation<'a> {
     counters: &'a TimingCounters,
     started: Instant,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl Drop for TimingObservation<'_> {
     fn drop(&mut self) {
         self.counters.record(self.started.elapsed());
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl CallbackCounters {
+    #[cfg(target_os = "macos")]
     pub(crate) fn observe_callback(&self) -> TimingObservation<'_> {
         TimingObservation {
             counters: &self.callback_timing,
@@ -306,6 +320,7 @@ impl CallbackCounters {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn observe_retain(&self) -> TimingObservation<'_> {
         TimingObservation {
             counters: &self.retain_timing,
@@ -320,6 +335,7 @@ impl CallbackCounters {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn observe_conversion(&self) -> TimingObservation<'_> {
         TimingObservation {
             counters: &self.conversion_timing,
@@ -327,6 +343,7 @@ impl CallbackCounters {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn observe_publication(&self) -> TimingObservation<'_> {
         TimingObservation {
             counters: &self.publication_timing,
@@ -334,18 +351,22 @@ impl CallbackCounters {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn record_received(&self) {
         self.frames_received.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn record_published(&self) {
         self.frames_published.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn record_lifecycle(&self) {
         self.lifecycle_events.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn record_native_sample_superseded(&self) {
         self.native_samples_superseded
             .fetch_add(1, Ordering::Relaxed);

@@ -85,11 +85,13 @@ impl MacosTahoeSelectionCapabilities {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Default)]
 pub(crate) struct MacosTahoeSelectionCapabilityState {
     current: Option<MacosTahoeSelectionCapabilities>,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl MacosTahoeSelectionCapabilityState {
     pub(crate) fn confirm(
         &mut self,
