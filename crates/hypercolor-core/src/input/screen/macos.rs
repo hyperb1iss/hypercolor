@@ -50,8 +50,6 @@ use super::{
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
-#[cfg(target_os = "macos")]
-use super::{ScreenByteAdmissionError, ScreenByteLease};
 use crate::input::status::SourceSessionSlot;
 #[cfg(target_os = "macos")]
 use crate::input::traits::MacosScreenshotReferenceAction;
@@ -64,6 +62,12 @@ use crate::input::{
     MacosTahoeCapabilities, MacosTahoeSelectionCapabilities, MacosTimingStatus, SourceKind,
     SourcePlatformStatus, SourceStatusHandle, SourceStatusReporter,
 };
+
+#[cfg(target_os = "macos")]
+mod surface_pool;
+
+#[cfg(target_os = "macos")]
+use surface_pool::MacosSurfacePool;
 
 const WORKER_WAIT: Duration = Duration::from_millis(100);
 
@@ -266,224 +270,6 @@ impl MacosScreenRuntimeTelemetry {
     fn record_converted_publication(&self, captured_at: Instant) {
         self.capture_to_converted_publication_timing
             .record(Instant::now().saturating_duration_since(captured_at));
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct MacosCapturePoolAdmission {
-    lifetime: Arc<MacosCaptureAdmissionLifetime>,
-    metadata_bytes: u64,
-    observed: Vec<(u32, u64)>,
-}
-
-#[cfg(target_os = "macos")]
-struct MacosCaptureAdmissionLifetime {
-    lease: Arc<ScreenByteLease>,
-    telemetry: Arc<MacosScreenRuntimeTelemetry>,
-    bytes: AtomicU64,
-}
-
-#[cfg(target_os = "macos")]
-impl MacosCaptureAdmissionLifetime {
-    fn new(lease: Arc<ScreenByteLease>, telemetry: Arc<MacosScreenRuntimeTelemetry>) -> Self {
-        let bytes = lease.bytes();
-        telemetry
-            .admitted_native_bytes
-            .fetch_add(bytes, Ordering::AcqRel);
-        Self {
-            lease,
-            telemetry,
-            bytes: AtomicU64::new(bytes),
-        }
-    }
-
-    fn reconcile(&self, exact_bytes: u64) -> Result<(), ScreenByteAdmissionError> {
-        self.lease.try_reconcile_exact(exact_bytes)?;
-        let previous = self.bytes.swap(exact_bytes, Ordering::AcqRel);
-        if exact_bytes >= previous {
-            self.telemetry
-                .admitted_native_bytes
-                .fetch_add(exact_bytes - previous, Ordering::AcqRel);
-        } else {
-            self.telemetry
-                .admitted_native_bytes
-                .fetch_sub(previous - exact_bytes, Ordering::AcqRel);
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn bytes(&self) -> u64 {
-        self.lease.bytes()
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Drop for MacosCaptureAdmissionLifetime {
-    fn drop(&mut self) {
-        self.telemetry
-            .admitted_native_bytes
-            .fetch_sub(self.bytes.load(Ordering::Acquire), Ordering::AcqRel);
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl MacosCapturePoolAdmission {
-    fn reserve(
-        coordinator: &ScreenByteAdmissionCoordinator,
-        telemetry: Arc<MacosScreenRuntimeTelemetry>,
-        conservative_surface_bytes: u64,
-        native_metadata_bytes: u64,
-    ) -> Result<Self, hypercolor_macos_capture::MacosCaptureError> {
-        let tracking_bytes = u64::try_from(std::mem::size_of::<(u32, u64)>())
-            .ok()
-            .and_then(|bytes| {
-                bytes.checked_mul(
-                    u64::try_from(hypercolor_macos_capture::MACOS_STREAM_QUEUE_DEPTH).ok()?,
-                )
-            })
-            .and_then(|bytes| bytes.checked_add(u64::try_from(std::mem::size_of::<Self>()).ok()?))
-            .and_then(|bytes| {
-                bytes.checked_add(u64::try_from(std::mem::size_of::<ScreenByteLease>()).ok()?)
-            })
-            .ok_or(hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?;
-        let metadata_bytes = native_metadata_bytes
-            .checked_add(tracking_bytes)
-            .ok_or(hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?;
-        let surface_bytes = conservative_surface_bytes
-            .checked_mul(
-                u64::try_from(hypercolor_macos_capture::MACOS_STREAM_QUEUE_DEPTH)
-                    .map_err(|_| hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?,
-            )
-            .ok_or(hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?;
-        let total_bytes = surface_bytes
-            .checked_add(metadata_bytes)
-            .ok_or(hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?;
-        let reservation = coordinator
-            .try_acquire(total_bytes)
-            .map_err(map_macos_pool_admission_error)?;
-        let mut observed = Vec::new();
-        observed
-            .try_reserve_exact(hypercolor_macos_capture::MACOS_STREAM_QUEUE_DEPTH)
-            .map_err(
-                |_| hypercolor_macos_capture::MacosCaptureError::ScreenResourceExhausted {
-                    requested_bytes: tracking_bytes,
-                    available_bytes: 0,
-                },
-            )?;
-        Ok(Self {
-            lifetime: Arc::new(MacosCaptureAdmissionLifetime::new(
-                Arc::new(reservation.freeze()),
-                telemetry,
-            )),
-            metadata_bytes,
-            observed,
-        })
-    }
-
-    fn observe(
-        &mut self,
-        iosurface_id: u32,
-        allocation_bytes: u64,
-    ) -> Result<Arc<MacosCaptureAdmissionLifetime>, hypercolor_macos_capture::MacosCaptureError>
-    {
-        if iosurface_id == 0 || allocation_bytes == 0 {
-            return Err(hypercolor_macos_capture::MacosCaptureError::InvalidSurface);
-        }
-        let existing = self
-            .observed
-            .iter()
-            .position(|(observed_id, _)| *observed_id == iosurface_id);
-        if existing.is_none()
-            && self.observed.len() == hypercolor_macos_capture::MACOS_STREAM_QUEUE_DEPTH
-        {
-            return Err(
-                hypercolor_macos_capture::MacosCaptureError::ScreenResourceExhausted {
-                    requested_bytes: allocation_bytes,
-                    available_bytes: 0,
-                },
-            );
-        }
-        let observed_count = self.observed.len() + usize::from(existing.is_none());
-        let mut observed_sum = 0_u64;
-        let mut observed_max = allocation_bytes;
-        for (index, (_, observed_bytes)) in self.observed.iter().enumerate() {
-            let bytes = if Some(index) == existing {
-                allocation_bytes
-            } else {
-                *observed_bytes
-            };
-            observed_sum = observed_sum
-                .checked_add(bytes)
-                .ok_or(hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?;
-            observed_max = observed_max.max(bytes);
-        }
-        if existing.is_none() {
-            observed_sum = observed_sum
-                .checked_add(allocation_bytes)
-                .ok_or(hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?;
-        }
-        let unseen_count = hypercolor_macos_capture::MACOS_STREAM_QUEUE_DEPTH - observed_count;
-        let projected_unseen = observed_max
-            .checked_mul(
-                u64::try_from(unseen_count)
-                    .map_err(|_| hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?,
-            )
-            .ok_or(hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?;
-        let exact_bytes = self
-            .metadata_bytes
-            .checked_add(observed_sum)
-            .and_then(|bytes| bytes.checked_add(projected_unseen))
-            .ok_or(hypercolor_macos_capture::MacosCaptureError::ArithmeticOverflow)?;
-        self.lifetime
-            .reconcile(exact_bytes)
-            .map_err(map_macos_pool_admission_error)?;
-        if let Some(index) = existing {
-            self.observed[index].1 = allocation_bytes;
-        } else {
-            self.observed.push((iosurface_id, allocation_bytes));
-        }
-        Ok(Arc::clone(&self.lifetime))
-    }
-
-    #[cfg(test)]
-    fn exact_observed_pool_bytes(&self) -> u64 {
-        self.observed.iter().map(|(_, bytes)| bytes).sum()
-    }
-
-    #[cfg(test)]
-    fn metadata_bytes(&self) -> u64 {
-        self.metadata_bytes
-    }
-
-    #[cfg(test)]
-    fn reservation_variance(&self) -> u64 {
-        self.lifetime
-            .lease
-            .bytes()
-            .saturating_sub(self.metadata_bytes)
-            .saturating_sub(self.exact_observed_pool_bytes())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn map_macos_pool_admission_error(
-    error: ScreenByteAdmissionError,
-) -> hypercolor_macos_capture::MacosCaptureError {
-    let (requested_bytes, available_bytes) = match error {
-        ScreenByteAdmissionError::CapacityExceeded {
-            requested_bytes,
-            available_bytes,
-        } => (requested_bytes, available_bytes),
-        ScreenByteAdmissionError::CapacityShrinkRejected {
-            requested_capacity,
-            reserved_bytes,
-        } => (reserved_bytes, requested_capacity),
-        ScreenByteAdmissionError::RevisionExhausted => (u64::MAX, 0),
-    };
-    hypercolor_macos_capture::MacosCaptureError::ScreenResourceExhausted {
-        requested_bytes,
-        available_bytes,
     }
 }
 
@@ -1095,15 +881,15 @@ impl MacosScreenCaptureInput {
             request,
             selector,
             move |conservative_surface_bytes, native_metadata_bytes| {
-                let pool = Arc::new(Mutex::new(MacosCapturePoolAdmission::reserve(
+                let pool = MacosSurfacePool::reserve(
                     &pool_coordinator,
                     Arc::clone(&pool_telemetry),
                     conservative_surface_bytes,
                     native_metadata_bytes,
-                )?));
+                )?;
                 Ok(move |iosurface_id, allocation_bytes| {
-                    let lease = lock(&pool).observe(iosurface_id, allocation_bytes)?;
-                    Ok(lease as Arc<dyn Send + Sync>)
+                    let token = pool.observe(iosurface_id, allocation_bytes)?;
+                    Ok(token as Arc<dyn Send + Sync>)
                 })
             },
         )?;
@@ -3844,131 +3630,6 @@ mod tests {
         )
         .expect("not-due CPU branch is skipped");
         assert_eq!(telemetry.cpu_reduction_timing.snapshot().sample_count, 1);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn capture_pool_rebases_before_exposing_an_observed_surface() {
-        let coordinator =
-            ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(1_000_000, 1_000_000));
-        let mut pool = MacosCapturePoolAdmission::reserve(
-            &coordinator,
-            Arc::new(MacosScreenRuntimeTelemetry::default()),
-            100,
-            32,
-        )
-        .expect("conservative queue quote should fit");
-        let initial = pool.lifetime.bytes();
-        assert!(initial >= 8 * 100 + 32);
-
-        let first = pool
-            .observe(1, 120)
-            .expect("first exact pool observation should fit");
-        assert_eq!(first.bytes(), pool.metadata_bytes() + 8 * 120);
-        assert_eq!(coordinator.snapshot().reserved_bytes(), first.bytes());
-        assert_eq!(pool.exact_observed_pool_bytes(), 120);
-        assert_eq!(pool.reservation_variance(), 7 * 120);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn capture_pool_collapses_to_exact_sum_after_all_slots_are_observed() {
-        let coordinator =
-            ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(1_000_000, 1_000_000));
-        let mut pool = MacosCapturePoolAdmission::reserve(
-            &coordinator,
-            Arc::new(MacosScreenRuntimeTelemetry::default()),
-            128,
-            64,
-        )
-        .expect("conservative queue quote should fit");
-        let allocations = [112_u64, 128, 144, 160, 176, 192, 208, 224];
-        for (index, allocation) in allocations.into_iter().enumerate() {
-            pool.observe(
-                u32::try_from(index + 1).expect("fixture id fits"),
-                allocation,
-            )
-            .expect("exact slot observation should fit");
-        }
-        let exact_sum: u64 = allocations.into_iter().sum();
-        assert_eq!(pool.exact_observed_pool_bytes(), exact_sum);
-        assert_eq!(pool.reservation_variance(), 0);
-        assert_eq!(pool.lifetime.bytes(), pool.metadata_bytes() + exact_sum);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn capture_pool_rejects_larger_surface_without_recording_or_rebasing() {
-        let coordinator =
-            ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(1_200, 1_200));
-        let mut pool = MacosCapturePoolAdmission::reserve(
-            &coordinator,
-            Arc::new(MacosScreenRuntimeTelemetry::default()),
-            100,
-            32,
-        )
-        .expect("conservative queue quote should fit");
-        let reserved_before = coordinator.snapshot().reserved_bytes();
-
-        assert!(matches!(
-            pool.observe(1, 200),
-            Err(hypercolor_macos_capture::MacosCaptureError::ScreenResourceExhausted { .. })
-        ));
-        assert_eq!(pool.exact_observed_pool_bytes(), 0);
-        assert_eq!(pool.lifetime.bytes(), reserved_before);
-        assert_eq!(coordinator.snapshot().reserved_bytes(), reserved_before);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn retained_surface_lifetime_keeps_the_pool_admitted_after_stream_drop() {
-        let coordinator =
-            ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(1_000_000, 1_000_000));
-        let mut pool = MacosCapturePoolAdmission::reserve(
-            &coordinator,
-            Arc::new(MacosScreenRuntimeTelemetry::default()),
-            100,
-            32,
-        )
-        .expect("conservative queue quote should fit");
-        let retained = pool
-            .observe(1, 120)
-            .expect("first exact pool observation should fit");
-        let admitted_bytes = retained.bytes();
-
-        drop(pool);
-        assert_eq!(coordinator.snapshot().reserved_bytes(), admitted_bytes);
-        drop(retained);
-        assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn candidate_pool_reserves_alongside_a_pinned_old_generation() {
-        let coordinator =
-            ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(2_000, 2_000));
-        let mut old = MacosCapturePoolAdmission::reserve(
-            &coordinator,
-            Arc::new(MacosScreenRuntimeTelemetry::default()),
-            100,
-            32,
-        )
-        .expect("old stream quote should fit");
-        let pinned = old
-            .observe(1, 120)
-            .expect("old stream observation should fit");
-        drop(old);
-
-        assert!(matches!(
-            MacosCapturePoolAdmission::reserve(
-                &coordinator,
-                Arc::new(MacosScreenRuntimeTelemetry::default()),
-                100,
-                32,
-            ),
-            Err(hypercolor_macos_capture::MacosCaptureError::ScreenResourceExhausted { .. })
-        ));
-        assert_eq!(coordinator.snapshot().reserved_bytes(), pinned.bytes());
     }
 
     #[derive(Debug)]
