@@ -37,6 +37,7 @@ const VERIFY_RELEASE_SH: &str = include_str!("../../../scripts/verify-release-ar
 const VERIFY_MACOS_DEPLOYMENT_TARGET_SH: &str =
     include_str!("../../../scripts/verify-macos-deployment-target.sh");
 const SIGN_MACOS_ARTIFACTS_SH: &str = include_str!("../../../scripts/sign-macos-artifacts.sh");
+const MACOS_SIGNING_KEYCHAIN_C: &str = include_str!("../../../scripts/macos-signing-keychain.c");
 const MACOS_SIGNING_MANIFEST: &str = include_str!("../../../packaging/macos/signing-manifest.tsv");
 const TAURI_CONFIG: &str = include_str!("../tauri.conf.json");
 const MACOS_DAEMON_ENTITLEMENTS: &str =
@@ -113,9 +114,13 @@ fn curl_installer_compares_macos_versions_by_numeric_component() {
 }
 
 #[test]
-fn macos_distribution_covers_arm64_and_amd64() {
+fn macos_packaging_and_installers_cover_both_architectures() {
+    assert!(CI_WORKFLOW.contains("target: macos-arm64"));
+    assert!(CI_WORKFLOW.contains("target: macos-x64"));
+    assert!(CI_WORKFLOW.contains("rust-target: aarch64-apple-darwin"));
+    assert!(CI_WORKFLOW.contains("rust-target: x86_64-apple-darwin"));
+
     for expected in ["macos-arm64", "macos-amd64"] {
-        assert!(CI_WORKFLOW.contains(&format!("target: {expected}")));
         assert!(GET_INSTALLER.contains(expected));
         assert!(INSTALL_RELEASE_SH.contains(expected));
         assert!(HOMEBREW_FORMULA.contains(expected));
@@ -123,7 +128,6 @@ fn macos_distribution_covers_arm64_and_amd64() {
 
     assert!(CI_WORKFLOW.contains("os: macos-26"));
     assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
-    assert!(CI_WORKFLOW.contains("SHA256_MACOS_AMD64"));
     assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_AMD64"));
     assert!(HOMEBREW_FORMULA.contains("keep_alive successful_exit: false"));
     assert!(HOMEBREW_FORMULA.contains(r#""--macos-owner", "homebrew""#));
@@ -304,7 +308,7 @@ fn ci_builds_pr_docs_without_widening_deployment_permissions() {
 }
 
 #[test]
-fn ci_audits_pr_and_release_macho_deployment_targets() {
+fn public_ci_audits_pr_and_unsigned_app_macho_deployment_targets() {
     assert!(CI_WORKFLOW.contains("cargo check --workspace --locked"));
     assert!(CI_WORKFLOW.contains("cargo nextest run --locked -p hypercolor-macos-gpu-interop"));
     assert!(CI_WORKFLOW.contains("cargo build --locked -p hypercolor-cli --bin hypercolor"));
@@ -312,7 +316,7 @@ fn ci_audits_pr_and_release_macho_deployment_targets() {
         CI_WORKFLOW
             .matches("./scripts/verify-macos-deployment-target.sh")
             .count(),
-        3
+        2
     );
 }
 
@@ -380,28 +384,53 @@ fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
 }
 
 #[test]
-fn ci_builds_normalized_macos_dmg_artifacts_for_cask_urls() {
-    assert!(CI_WORKFLOW.contains("Build signed and notarized macOS artifacts"));
+fn public_ci_builds_unsigned_macos_packaging_fixtures_only() {
     assert!(CI_WORKFLOW.contains("cask_arch: arm64"));
     assert!(CI_WORKFLOW.contains("cask_arch: x86_64"));
-    assert!(
-        CI_WORKFLOW.contains(
-            "Hypercolor-${{ steps.version.outputs.version }}-${{ matrix.cask_arch }}.dmg"
-        )
-    );
-    assert!(CI_WORKFLOW.contains("*.notarization.json"));
-    assert!(CI_WORKFLOW.contains("-name '*.notarization.json'"));
+    assert!(CI_WORKFLOW.contains("artifact-kind: unsigned-app"));
+    assert!(CI_WORKFLOW.contains("--no-sign"));
+    assert!(CI_WORKFLOW.contains(r#"@("--target", $env:RUST_TARGET)"#));
+    assert!(CI_WORKFLOW.contains("Upload unsigned macOS packaging fixture"));
+    assert!(CI_WORKFLOW.contains("name: oss-ci-${{ steps.version.outputs.version }}"));
+    assert!(!CI_WORKFLOW.contains("Build signed and notarized macOS artifacts"));
+    assert!(!CI_WORKFLOW.contains("APPLE_SIGNING_IDENTITY"));
+    assert!(!CI_WORKFLOW.contains("-name '*.dmg'"));
+    assert!(!CI_WORKFLOW.contains("-name '*.notarization.json'"));
 }
 
 #[test]
-fn macos_release_lanes_use_the_manifest_signing_actor() {
+fn proprietary_macos_release_tools_use_the_manifest_signing_actor() {
     assert!(!CI_WORKFLOW.contains(r#"APPLE_SIGNING_IDENTITY: "-""#));
-    assert!(CI_WORKFLOW.contains("./scripts/sign-macos-artifacts.sh app"));
-    assert!(CI_WORKFLOW.contains("Assemble signed macOS distribution"));
+    assert!(!CI_WORKFLOW.contains("./scripts/sign-macos-artifacts.sh"));
     assert!(BUILD_MAC_INSTALLER_SH.contains(r#"--bundles app"#));
     assert!(!BUILD_MAC_INSTALLER_SH.contains("dmg,app"));
     assert!(BUILD_MAC_INSTALLER_SH.contains(r#""${SIGNING_ACTOR}" app"#));
     assert!(DIST_SH.contains(r#""${MACOS_SIGNING_ACTOR}" standalone"#));
+}
+
+#[test]
+fn macos_signing_secrets_stay_out_of_process_arguments() {
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("printf '%s\\0%s\\0'"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("env -u APPLE_CERTIFICATE_PASSWORD"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("APPLE_NOTARY_KEYCHAIN_PROFILE"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("--keychain-profile"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("security create-keychain -p"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("security unlock-keychain -p"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("security import"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("set-key-partition-list"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("--apple-id"));
+    assert!(!SIGN_MACOS_ARTIFACTS_SH.contains("--password"));
+
+    assert!(MACOS_SIGNING_KEYCHAIN_C.contains("read_secret_frame"));
+    assert!(MACOS_SIGNING_KEYCHAIN_C.contains("SecItemImport"));
+    assert!(MACOS_SIGNING_KEYCHAIN_C.contains("SecKeychainItemSetAccessWithPassword"));
+    assert!(MACOS_SIGNING_KEYCHAIN_C.contains("memset_s"));
+
+    assert!(!CI_WORKFLOW.contains("APPLE_"));
+    assert!(!CI_WORKFLOW.contains("notarytool"));
+
+    assert!(BUILD_MAC_INSTALLER_SH.contains("APPLE_NOTARY_KEYCHAIN_PROFILE"));
+    assert!(BUILD_MAC_INSTALLER_SH.contains("raw Apple ID credentials are unsupported"));
 }
 
 #[test]
@@ -503,13 +532,12 @@ fn macos_release_verifier_checks_signatures_and_notarization_provenance() {
 }
 
 #[test]
-fn ci_publishes_homebrew_formula_and_cask() {
-    assert!(CI_WORKFLOW.contains("packaging/homebrew/hypercolor.rb > hypercolor.rb"));
-    assert!(CI_WORKFLOW.contains("packaging/homebrew/hypercolor-app.rb > hypercolor-app.rb"));
-    assert!(CI_WORKFLOW.contains("sha256_macos_app_arm64"));
-    assert!(CI_WORKFLOW.contains("sha256_macos_app_x86_64"));
-    assert!(CI_WORKFLOW.contains("tap/Casks"));
-    assert!(CI_WORKFLOW.contains("Casks/hypercolor-app.rb"));
+fn public_ci_leaves_homebrew_promotion_to_the_proprietary_release_pipeline() {
+    assert!(!CI_WORKFLOW.contains("update-homebrew:"));
+    assert!(!CI_WORKFLOW.contains("HOMEBREW_TAP_TOKEN"));
+    assert!(!CI_WORKFLOW.contains("tap/Casks"));
+    assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_ARM64"));
+    assert!(HOMEBREW_CASK.contains("SHA256_MACOS_APP_ARM64"));
 }
 
 #[test]

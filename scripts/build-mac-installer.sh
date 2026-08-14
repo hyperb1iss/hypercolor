@@ -10,9 +10,10 @@
 # present. To produce a release-ready artifact locally:
 #
 #   APPLE_SIGNING_IDENTITY="Developer ID Application: Stefanie Jane (TEAMID)" \
-#   APPLE_ID="stef@hyperbliss.tech" \
 #   APPLE_TEAM_ID="TEAMID" \
-#   APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
+#   APPLE_API_KEY_ID="KEYID" \
+#   APPLE_API_ISSUER="issuer-uuid" \
+#   APPLE_API_KEY_PATH="${HOME}/private_keys/AuthKey_KEYID.p8" \
 #   scripts/build-mac-installer.sh --notarize
 #
 # Without those env vars the script produces an unsigned development app.
@@ -55,9 +56,9 @@ Options:
   -h, --help                   Show this help
 
 Release signing is driven by APPLE_SIGNING_IDENTITY. Notarization additionally
-needs APPLE_ID,
-APPLE_TEAM_ID, and APPLE_APP_SPECIFIC_PASSWORD (or APPLE_API_KEY_ID +
-APPLE_API_ISSUER + APPLE_API_KEY_PATH for App Store Connect keys).
+needs APPLE_API_KEY_ID + APPLE_API_ISSUER + APPLE_API_KEY_PATH, or a
+preconfigured APPLE_NOTARY_KEYCHAIN_PROFILE. Raw Apple ID passwords are not
+accepted.
 EOF
 }
 
@@ -119,12 +120,14 @@ assert_prerequisites() {
     [[ "${PROFILE}" == "release" ]] || die "--notarize requires the release profile"
     require jq "install with: brew install jq"
     [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]] || die "--notarize requires APPLE_SIGNING_IDENTITY"
-    if [[ -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER:-}" && -n "${APPLE_API_KEY_PATH:-}" ]]; then
+    if [[ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" || -n "${APPLE_ID:-}" ]]; then
+      die "raw Apple ID credentials are unsupported; use a notarytool keychain profile"
+    elif [[ -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER:-}" && -n "${APPLE_API_KEY_PATH:-}" ]]; then
       info "notarization will use App Store Connect API key ${APPLE_API_KEY_ID}"
-    elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
-      info "notarization will use Apple ID ${APPLE_ID}"
+    elif [[ -n "${APPLE_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
+      info "notarization will use keychain profile ${APPLE_NOTARY_KEYCHAIN_PROFILE}"
     else
-      die "--notarize needs APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD, or the API key trio (APPLE_API_KEY_ID, APPLE_API_ISSUER, APPLE_API_KEY_PATH)"
+      die "--notarize needs the App Store Connect API key trio or APPLE_NOTARY_KEYCHAIN_PROFILE"
     fi
   fi
 }

@@ -119,7 +119,7 @@ New work, scoped to the v1 unified-app vision.
 | First-run flow | 🆕 | PawnIO detection (Windows), permission walkthrough (macOS), SCM-service detection (Windows) |
 | Tauri NSIS bundler config | 🆕 | `bundle.windows.nsis` block in `tauri.conf.json` |
 | Tauri DMG bundler config | 🆕 | `bundle.macOS` block + Homebrew Cask formula |
-| Notarization workflow | 🆕 | GitHub Actions step using `xcrun notarytool` |
+| Notarization workflow | 🆕 | Proprietary release step using `xcrun notarytool` |
 | AppImage build (deferred to v1.1) | 🆕 | Bundle WebKit2GTK 4.1 for old-distro reach |
 
 **Retired**: `crates/hypercolor-tray/` — its menu logic moves into `hypercolor-app`'s tray
@@ -1016,34 +1016,22 @@ itself, and the uninstaller.
 | Notarization | Mandatory for distribution outside MAS. Free, automated via `xcrun notarytool` |
 | Stapling | `xcrun stapler staple` attaches notarization ticket for offline verification |
 
-**GitHub Actions workflow:**
+**Release boundary:**
 
-```yaml
-- name: Import signing certs
-  uses: apple-actions/import-codesign-certs@v3
-  with:
-    p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-    p12-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+The public repository builds unsigned per-architecture `.app` fixtures with
+`--no-sign`. Those fixtures have short retention, use an `oss-ci-*` artifact
+namespace, and never enter a GitHub release. Public workflows contain no Apple
+release credentials or Homebrew promotion token.
 
-- name: Build and sign
-  run: |
-    cargo tauri build --target aarch64-apple-darwin
-  env:
-    APPLE_SIGNING_IDENTITY: "Developer ID Application: Stefanie Jane (TEAMID)"
+The proprietary release pipeline builds each candidate once, invokes
+`scripts/sign-macos-artifacts.sh`, notarizes and staples the result, runs the
+physical TCC acceptance matrix, and promotes the exact accepted bits. The
+pipeline supplies the App Store Connect API key as a private `0400` or `0600`
+file. PKCS#12 and ephemeral-keychain passwords reach Security.framework through
+a bounded stdin frame and never appear in process arguments.
 
-- name: Notarize
-  run: |
-    xcrun notarytool submit \
-      target/aarch64-apple-darwin/release/bundle/dmg/Hypercolor_0.1.0_aarch64.dmg \
-      --apple-id "${{ secrets.APPLE_ID }}" \
-      --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-      --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-      --wait
-
-- name: Staple
-  run: |
-    xcrun stapler staple target/aarch64-apple-darwin/release/bundle/dmg/Hypercolor_0.1.0_aarch64.dmg
-```
+Local Apple ID notarization uses a preconfigured `notarytool` keychain profile.
+The signing actor never accepts a raw Apple ID password.
 
 ### 11.3 Linux — No Signing (v1)
 

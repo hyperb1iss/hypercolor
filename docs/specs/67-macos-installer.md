@@ -1,11 +1,11 @@
-# 67 — macOS Installer: Wired State and Signing Flip-The-Switch
+# 67: macOS Installer Packaging and Release Boundary
 
-> Captures the macOS bundle pipeline as it stands today, the discrete pieces of
-> hardware-key infrastructure required to ship a Developer ID notarized DMG, and
-> the exact patches to apply once the Apple credentials are provisioned.
+> Captures the macOS bundle pipeline, the public OSS validation surface, and the
+> private release boundary for Developer ID signing and notarization.
 
-**Status:** Implemented. Release CI uses the manifest-driven Developer ID
-signing and notarization actor; local unsigned builds remain available.
+**Status:** Implemented. Public CI validates unsigned app packaging without
+release credentials. Proprietary builds sign, notarize, accept, and promote
+macOS release artifacts.
 **Scope:** `scripts/build-mac-installer.sh`, `scripts/generate-mac-icons.sh`,
 `crates/hypercolor-app/icons/`, `crates/hypercolor-app/tauri.conf.json`,
 `.github/workflows/ci.yml` (mac branches of `build-native-app`)
@@ -20,7 +20,9 @@ signing and notarization actor; local unsigned builds remain available.
 
 ### 1.1 Bundle assembly
 
-Local and CI builds both produce per-arch DMG + `.app` artifacts via Tauri 2's bundler.
+Local and CI builds produce per-architecture `.app` artifacts through Tauri 2's
+bundler. Public CI retains them only as short-lived unsigned packaging fixtures.
+The proprietary release pipeline produces the signed and notarized DMGs.
 
 | Surface | File | Status |
 |---|---|---|
@@ -29,10 +31,10 @@ Local and CI builds both produce per-arch DMG + `.app` artifacts via Tauri 2's b
 | `Info.plist` with microphone and screen-capture purpose strings; no Apple Events string | `crates/hypercolor-app/Info.plist` | Live |
 | Exact six-key daemon hardened-runtime entitlement profile | `packaging/macos/daemon.entitlements.plist` | Live |
 | Sidecar staging (daemon + CLI under `target/bundle-stage/binaries/`) | `scripts/stage-app-bundle-assets.sh` | Live |
-| Per-arch CI build matrix (`macos-arm64`, `macos-x64`) | `.github/workflows/ci.yml` § `build-native-app` | Live; release artifacts are signed and notarized by `scripts/sign-macos-artifacts.sh` |
-| DMG artifact name normalization to `Hypercolor-<ver>-<arch>.dmg` | `.github/workflows/ci.yml` § Normalize macOS DMG | Live |
+| Per-arch CI build matrix (`macos-arm64`, `macos-x64`) | `.github/workflows/ci.yml` § `build-native-app` | Live; uploads short-lived unsigned `.app` fixtures only |
+| Manifest-driven Developer ID signing and notarization actor | `scripts/sign-macos-artifacts.sh` | Live; invoked only by local or proprietary builds |
 | Homebrew Cask template with per-arch SHA placeholders | `packaging/homebrew/hypercolor-app.rb` | Live |
-| Cask publish step (commits to `hyperb1iss/homebrew-tap`) | `.github/workflows/ci.yml` § `update-homebrew` | Live |
+| Signed DMG and Homebrew Cask promotion | Proprietary release pipeline | Private; never receives credentials from OSS CI |
 
 ### 1.2 Local build script
 
@@ -73,13 +75,19 @@ committed so contributors without Quick Look tooling can still build.
 
 ---
 
-## 2. What Signing + Notarization Need
+## 2. Signing and Notarization Boundary
 
 Distribution outside the Mac App Store still requires an Apple-issued Developer
 ID certificate and notarization service. Per [`46-cross-platform-packaging.md`
 §11.2](../design/46-cross-platform-packaging.md#112-macos--apple-developer-id--notarization-required)
-this is a $99/yr Apple Developer Program membership plus an
-`apple-actions/import-codesign-certs@v3` step in CI.
+this requires an Apple Developer Program membership, a Developer ID identity,
+an App Store Connect API key, and the repository's manifest-driven signing
+actor.
+
+Apple release credentials belong exclusively to local private keychains and
+the proprietary release system. They are never configured as secrets in the
+public OSS repository. Public workflows never sign, notarize, or publish a
+macOS artifact.
 
 ### 2.1 One-time setup
 
@@ -87,107 +95,54 @@ this is a $99/yr Apple Developer Program membership plus an
 2. In Keychain Access, request and download the **Developer ID Application**
    certificate (do **not** use "Mac App Distribution"; that's MAS-specific).
 3. Export the cert + private key as a `.p12` with a password. Note the password.
-4. Generate an app-specific password for the Apple ID at
-   <https://appleid.apple.com/account/manage> → Sign-In and Security →
-   App-Specific Passwords. (Alternatively, provision an App Store Connect API
-   key at <https://appstoreconnect.apple.com/access/api> — preferred for CI.)
+4. Provision an App Store Connect API key at
+   <https://appstoreconnect.apple.com/access/api>. Store it only in the
+   proprietary release system.
 5. Note the Team ID from <https://developer.apple.com/account>.
 
-### 2.2 GitHub secrets to add
+Local Apple ID notarization uses a stored `notarytool` profile. Run
+`xcrun notarytool store-credentials hypercolor-notary`, then enter the Apple ID,
+Team ID, and app-specific password at the secure prompts. Never pass the
+password to `notarytool submit`.
 
-In the repo settings (`Settings → Secrets and variables → Actions`):
+### 2.2 Proprietary release inputs
 
-| Secret | Value |
-|---|---|
-| `APPLE_DEVELOPER_ID_P12` | Base64 of the exported `.p12` (`base64 -i cert.p12 | pbcopy`) |
-| `APPLE_DEVELOPER_ID_P12_PASSWORD` | The password used during `.p12` export |
-| `APPLE_SIGNING_IDENTITY` | The full identity string, e.g. `Developer ID Application: Stefanie Jane (TEAMID)` |
-| `APPLE_ID` | The Apple ID email used for the Developer Program |
-| `APPLE_TEAM_ID` | The 10-character team identifier |
-| `APPLE_APP_SPECIFIC_PASSWORD` | The app-specific password from step 4 |
+The proprietary pipeline provides the signing identity, team identifier,
+certificate material, and a private App Store Connect API-key file to
+`scripts/sign-macos-artifacts.sh`. The API key must be a non-symlink regular
+file with mode `0400` or `0600`.
 
-If using App Store Connect API keys instead, swap the last three for
-`APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, and `APPLE_API_KEY_PATH`.
+The signing actor imports PKCS#12 and ephemeral-keychain passwords through a
+bounded stdin frame into Security.framework. Neither password enters a process
+argument. Raw Apple ID passwords are rejected. Interactive local signing may
+use a stored `notarytool` keychain profile.
 
-### 2.3 CI patch (drop-in for `.github/workflows/ci.yml`)
+### 2.3 Public OSS validation
 
-In the `build-native-app` job, gate signing/notarization to tag builds with
-the matrix entries that have `cask_arch != ""`. Add these steps before the
-existing **Build Tauri native bundle** step:
-
-```yaml
-- name: Import Apple Developer ID certificate
-  if: matrix.cask_arch != '' && startsWith(github.ref, 'refs/tags/')
-  uses: apple-actions/import-codesign-certs@v3
-  with:
-    p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-    p12-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
-```
-
-Update the **Build Tauri native bundle** step to drop `--no-sign` on signed
-runs and to surface the signing identity:
-
-```yaml
-- name: Build Tauri native bundle
-  working-directory: crates/hypercolor-app
-  shell: pwsh
-  env:
-    TAURI_BUNDLES: ${{ matrix.bundles }}
-    APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-  run: |
-    $configArgs = @()
-    if (Test-Path "tauri.bundle.conf.json") {
-      $configArgs += @("--config", "tauri.bundle.conf.json")
-    }
-    if ($env:RUNNER_OS -eq "Windows" -and (Test-Path "tauri.windows.bundle.conf.json")) {
-      $configArgs += @("--config", "tauri.windows.bundle.conf.json")
-    }
-    $signArgs = @()
-    if ($env:RUNNER_OS -ne "macOS" -or [string]::IsNullOrEmpty($env:APPLE_SIGNING_IDENTITY)) {
-      $signArgs += @("--no-sign")
-    }
-    cargo tauri build --ci @signArgs --bundles $env:TAURI_BUNDLES @configArgs
-```
-
-Add a notarization step after **Normalize macOS DMG artifact name**, before
-**Upload native app bundle**:
-
-```yaml
-- name: Notarize and staple macOS DMG
-  if: matrix.cask_arch != '' && startsWith(github.ref, 'refs/tags/')
-  env:
-    APPLE_ID: ${{ secrets.APPLE_ID }}
-    APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-    APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-  run: |
-    set -euo pipefail
-    dmg="$(find target/release/bundle/dmg crates/hypercolor-app/target/release/bundle/dmg \
-            -maxdepth 1 -type f -name '*.dmg' 2>/dev/null | head -1)"
-    [ -n "${dmg}" ] || { echo 'no DMG found for notarization' >&2; exit 1; }
-    xcrun notarytool submit "${dmg}" \
-      --apple-id "${APPLE_ID}" \
-      --team-id "${APPLE_TEAM_ID}" \
-      --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
-      --wait --timeout 30m
-    xcrun stapler staple "${dmg}"
-    xcrun stapler validate "${dmg}"
-```
-
-Untagged builds and PRs keep building unsigned DMGs as today.
+The public `build-native-app` matrix builds macOS app bundles with `--no-sign`,
+checks the deployment target, and uploads the result under an `oss-ci-*` name
+with seven-day retention. The release job downloads only `hypercolor-*`
+artifacts, and its allowlist contains no macOS artifact type. Public CI also
+runs the signing transport regression test without using real credentials.
 
 ---
 
-## 3. Local Signed Build
+## 3. Proprietary or Local Signed Build
 
 Once the cert is in your local keychain (System keychain → "My Certificates"):
 
 ```bash
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Stefanie Jane (TEAMID)"
-export APPLE_ID="<your-apple-id-email>"
 export APPLE_TEAM_ID="TEAMID"
-export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+export APPLE_API_KEY_ID="KEYID"
+export APPLE_API_ISSUER="issuer-uuid"
+export APPLE_API_KEY_PATH="/private/path/AuthKey_KEYID.p8"
 just mac-installer --notarize
 ```
+
+To use the stored local profile instead, set
+`APPLE_NOTARY_KEYCHAIN_PROFILE=hypercolor-notary` and omit the three API-key
+variables.
 
 The script auto-detects which env vars are present and only invokes notary when
 asked. Unsigned local builds remain a one-liner for dev iteration:
@@ -217,7 +172,7 @@ codesign --verify --deep --strict --verbose=2 "/Volumes/Hypercolor/Hypercolor.ap
 A successful run prints `the validate action worked!`, `accepted`, and
 `valid on disk` respectively. If `spctl` reports `rejected (rejected source=no
 usable signature)` or notary returns `Invalid`, fetch the log with
-`xcrun notarytool log <submission-id> --apple-id ... --team-id ... --password ...`
+`xcrun notarytool log <submission-id> --keychain-profile hypercolor-notary`
 and read the JSON for the offending file (typically a sidecar binary that needs
 hardened-runtime entitlements applied via `codesign --deep`).
 
@@ -225,12 +180,12 @@ hardened-runtime entitlements applied via `codesign --deep`).
 
 ## 5. Cask Publication
 
-The `update-homebrew` CI job already templates `packaging/homebrew/hypercolor-app.rb`
-with the per-arch DMG SHA256s and commits the result to `hyperb1iss/homebrew-tap`
-under `Casks/hypercolor-app.rb`. No additional work is required for cask
-distribution once the DMG is notarized — `brew install --cask` reads the URLs
-from the cask formula, downloads the notarized DMG, and Homebrew's mount-and-copy
-flow inherits the staple from the DMG.
+The proprietary release pipeline templates
+`packaging/homebrew/hypercolor-app.rb` with the accepted per-architecture DMG
+digests and promotes the cask only after receipt validation. Public OSS CI does
+not hold the tap token and cannot update the cask. `brew install --cask` reads
+the promoted URLs, downloads the notarized DMG, and preserves the stapled
+ticket through Homebrew's mount-and-copy flow.
 
 ---
 
@@ -257,11 +212,11 @@ These items are explicitly out of scope for the v1 launch per
 | Trigger | Command |
 |---|---|
 | Regenerate icons after editing SVG | `just mac-icons` |
-| Build unsigned DMG for local testing | `just mac-installer --profile preview` |
+| Build unsigned `.app` for local testing | `just mac-installer --profile preview` |
 | Build signed + notarized DMG locally | `just mac-installer --notarize` (env vars required) |
 | Check prerequisites only | `just mac-installer --check-only` |
 | Validate a notarized DMG | `xcrun stapler validate <dmg>` |
-| Read notary failure log | `xcrun notarytool log <id> --apple-id ... --team-id ... --password ...` |
+| Read notary failure log | `xcrun notarytool log <id> --keychain-profile hypercolor-notary` |
 
 ---
 

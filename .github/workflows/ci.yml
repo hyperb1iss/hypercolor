@@ -131,6 +131,10 @@ jobs:
               - 'scripts/cargo-target-gc.sh'
               - 'scripts/tests/cargo-cache-build-tests.sh'
               - 'scripts/tests/cargo-target-gc-tests.sh'
+              - 'scripts/sign-macos-artifacts.sh'
+              - 'scripts/macos-signing-keychain.c'
+              - 'scripts/build-mac-installer.sh'
+              - 'scripts/tests/macos-signing-secret-transport-tests.sh'
               - 'packaging/systemd/user/hypercolor-cargo-target-gc.*'
               - 'justfile'
               - '.github/actions/rust-build-cache/**'
@@ -267,6 +271,9 @@ jobs:
           printf 'macOS SDK: %s\n' "${sdk_version}"
           test "$(uname -m)" = "${{ matrix.expected-arch }}"
           test "${sdk_version%%.*}" = "26"
+
+      - name: Verify macOS signing secret transport
+        run: ./scripts/tests/macos-signing-secret-transport-tests.sh
 
       - name: Install NASM
         if: matrix.expected-arch == 'x86_64'
@@ -1324,21 +1331,19 @@ jobs:
           - target: macos-arm64
             os: macos-26
             rust-target: aarch64-apple-darwin
-            artifact-kind: dmg-app
+            bundles: app
+            artifact-kind: unsigned-app
             cask_arch: arm64
             artifact-path: |
-              crates/hypercolor-app/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-              crates/hypercolor-app/target/aarch64-apple-darwin/release/bundle/dmg/*.notarization.json
-              crates/hypercolor-app/target/aarch64-apple-darwin/release/bundle/macos/*.app
+              target/aarch64-apple-darwin/release/bundle/macos/*.app
           - target: macos-x64
             os: macos-26-intel
             rust-target: x86_64-apple-darwin
-            artifact-kind: dmg-app
+            bundles: app
+            artifact-kind: unsigned-app
             cask_arch: x86_64
             artifact-path: |
-              crates/hypercolor-app/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-              crates/hypercolor-app/target/x86_64-apple-darwin/release/bundle/dmg/*.notarization.json
-              crates/hypercolor-app/target/x86_64-apple-darwin/release/bundle/macos/*.app
+              target/x86_64-apple-darwin/release/bundle/macos/*.app
     runs-on: ${{ matrix.os }}
     env:
       # Absolute on purpose. Cargo resolves a relative CARGO_TARGET_DIR
@@ -1489,11 +1494,11 @@ jobs:
         run: ./scripts/stage-app-bundle-assets.ps1
 
       - name: Build Tauri native bundle
-        if: runner.os == 'Windows'
         working-directory: crates/hypercolor-app
         shell: pwsh
         env:
           TAURI_BUNDLES: ${{ matrix.bundles }}
+          RUST_TARGET: ${{ matrix.rust-target }}
         run: |
           $configArgs = @()
           if (Test-Path "tauri.bundle.conf.json") {
@@ -1503,45 +1508,36 @@ jobs:
             $configArgs += @("--config", "tauri.windows.bundle.conf.json")
           }
           $buildArgs = @("--ci", "--bundles", $env:TAURI_BUNDLES)
-          # No signtool identity on Windows runners yet.
+          # Public CI proves packaging without receiving release credentials.
           $buildArgs += "--no-sign"
+          if ($env:RUNNER_OS -eq "macOS") {
+            $buildArgs += @("--target", $env:RUST_TARGET)
+          }
           cargo tauri build @buildArgs @configArgs
 
-      - name: Build signed and notarized macOS artifacts
+      - name: Verify unsigned macOS app deployment target
         if: matrix.cask_arch != ''
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: >-
-          ./scripts/sign-macos-artifacts.sh app
-          --target "${{ matrix.rust-target }}"
-          --version "${{ steps.version.outputs.version }}"
-          --arch "${{ matrix.cask_arch }}"
-          --ci
-
-      - name: Verify signed macOS app artifacts
-        if: matrix.cask_arch != ''
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          profile_dir="crates/hypercolor-app/target/${{ matrix.rust-target }}/release"
+          profile_dir="target/${{ matrix.rust-target }}/release"
           app="${profile_dir}/bundle/macos/Hypercolor.app"
-          dmg="${profile_dir}/bundle/dmg/Hypercolor-${{ steps.version.outputs.version }}-${{ matrix.cask_arch }}.dmg"
-          ./scripts/verify-release-artifact.sh \
-            --macos-app "${app}" "${dmg}" "${dmg}.notarization.json" \
-            "${{ matrix.rust-target }}"
           ./scripts/verify-macos-deployment-target.sh "${app}"
 
-      - name: Upload native app bundle
+      - name: Upload native release bundle
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: hypercolor-app-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
           path: ${{ matrix.artifact-path }}
           if-no-files-found: error
+
+      - name: Upload unsigned macOS packaging fixture
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: oss-ci-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
+          retention-days: 7
 
   # ── Build Release Tarballs ────────────────────────────────────
   build-release-smoke:
@@ -1665,12 +1661,6 @@ jobs:
           - target: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
-          - target: macos-arm64
-            os: macos-26
-            rust-target: aarch64-apple-darwin
-          - target: macos-amd64
-            os: macos-26-intel
-            rust-target: x86_64-apple-darwin
     # This lane is cold on every run: it only fires on tag refs, and the cache
     # action saves on main alone, so no release-* key is ever written. A cold
     # release build of the Servo stack runs well over half an hour on the
@@ -1680,16 +1670,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Qualify macOS runner and SDK
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
-          xcodebuild -version
-          sdk_version="$(xcrun --show-sdk-version)"
-          printf 'macOS SDK: %s\n' "${sdk_version}"
-          test "${sdk_version%%.*}" = "26"
 
       - name: Report runner capacity
         shell: bash
@@ -1794,23 +1774,6 @@ jobs:
             --version "${{ steps.version.outputs.version }}"
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
-      - name: Assemble signed macOS distribution
-        if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: |
-          set -euo pipefail
-          ./scripts/dist.sh --ci --skip-docs \
-            --web-assets web-assets \
-            --target ${{ matrix.target }} \
-            --version "${{ steps.version.outputs.version }}"
-          test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
-
       # Kept for the failure modes that leave the runner alive. Memory
       # exhaustion is not one of them: it takes the whole VM down and every
       # remaining step with it, which is why the build step samples inline.
@@ -1844,17 +1807,6 @@ jobs:
           ./scripts/verify-release-artifact.sh \
             "dist/${dist_name}.tar.gz" \
             "dist/${dist_name}.tar.gz.sha256"
-
-      - name: Verify signed macOS release tarball
-        if: runner.os == 'macOS'
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          dist_name="${{ steps.version.outputs.dist_name }}"
-          ./scripts/verify-release-artifact.sh \
-            "dist/${dist_name}.tar.gz" \
-            "dist/${dist_name}.tar.gz.sha256"
-          ./scripts/verify-macos-deployment-target.sh "dist/${dist_name}"
 
       - name: Build Debian package
         if: runner.os == 'Linux'
@@ -1922,7 +1874,6 @@ jobs:
           # hundreds of internal files into individual release assets.
           mapfile -t files < <(find release-artifacts -type f \
             \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \
-               -o -name '*.dmg' -o -name '*.notarization.json' \
                -o -name '*.deb' -o -name '*-setup.exe' \) | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No release artifacts found" >&2
@@ -2024,103 +1975,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-
-  # ── Update Homebrew Tap ────────────────────────────────────────
-  update-homebrew:
-    if: >-
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      startsWith(github.ref, 'refs/tags/') &&
-      !contains(github.ref_name, '-')
-    needs: create-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Determine version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Download release artifacts and compute checksums
-        id: checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          for platform in linux-amd64 linux-arm64 macos-amd64 macos-arm64; do
-            tarball="hypercolor-${VERSION}-${platform}.tar.gz"
-            url="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${tarball}"
-            echo "Downloading ${tarball}..."
-            curl -fSL "${url}" -o "${tarball}"
-            sha=$(sha256sum "${tarball}" | cut -d' ' -f1)
-            echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
-            echo "  ${platform}: ${sha}"
-          done
-
-          for arch in arm64 x86_64; do
-            dmg="Hypercolor-${VERSION}-${arch}.dmg"
-            url="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${dmg}"
-            echo "Downloading ${dmg}..."
-            curl -fSL "${url}" -o "${dmg}"
-            sha=$(sha256sum "${dmg}" | cut -d' ' -f1)
-            case "${arch}" in
-              arm64) echo "sha256_macos_app_arm64=${sha}" >> "$GITHUB_OUTPUT" ;;
-              x86_64) echo "sha256_macos_app_x86_64=${sha}" >> "$GITHUB_OUTPUT" ;;
-            esac
-            echo "  macos-app-${arch}: ${sha}"
-          done
-
-      - name: Generate Homebrew files
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          sed \
-            -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \
-            -e "s/SHA256_MACOS_AMD64/${{ steps.checksums.outputs.sha256_macos_amd64 }}/g" \
-            -e "s/SHA256_MACOS_ARM64/${{ steps.checksums.outputs.sha256_macos_arm64 }}/g" \
-            -e "s/SHA256_LINUX_AMD64/${{ steps.checksums.outputs.sha256_linux_amd64 }}/g" \
-            -e "s/SHA256_LINUX_ARM64/${{ steps.checksums.outputs.sha256_linux_arm64 }}/g" \
-            packaging/homebrew/hypercolor.rb > hypercolor.rb
-          sed \
-            -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \
-            -e "s/SHA256_MACOS_APP_ARM64/${{ steps.checksums.outputs.sha256_macos_app_arm64 }}/g" \
-            -e "s/SHA256_MACOS_APP_X86_64/${{ steps.checksums.outputs.sha256_macos_app_x86_64 }}/g" \
-            packaging/homebrew/hypercolor-app.rb > hypercolor-app.rb
-          echo "Generated formula:"
-          cat hypercolor.rb
-          echo "Generated cask:"
-          cat hypercolor-app.rb
-
-      - name: Upload Homebrew files
-        uses: actions/upload-artifact@v7
-        with:
-          name: homebrew-hypercolor-${{ steps.version.outputs.version }}
-          path: |
-            hypercolor.rb
-            hypercolor-app.rb
-          if-no-files-found: error
-
-      - name: Push to homebrew-tap
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
-            echo "HOMEBREW_TAP_TOKEN is not configured; artifact only."
-            exit 0
-          fi
-
-          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/hyperb1iss/homebrew-tap.git" tap
-          mkdir -p tap/Formula tap/Casks
-          cp hypercolor.rb tap/Formula/hypercolor.rb
-          cp hypercolor-app.rb tap/Casks/hypercolor-app.rb
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/hypercolor.rb Casks/hypercolor-app.rb
-          git commit -m "hypercolor: update to ${{ steps.version.outputs.version }}"
-          git push
 
   # ── Update AUR Package ────────────────────────────────────────
   update-aur:

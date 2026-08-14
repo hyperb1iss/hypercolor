@@ -641,7 +641,7 @@ consumer tests where public
 ### H5.1 Remove signing secrets from process arguments
 
 **Files:** `scripts/sign-macos-artifacts.sh`, audited Security.framework helper,
-signing-script tests, `.github/workflows/ci.yml`
+signing-script tests, public CI validation only
 
 **Depends on:** none
 
@@ -651,21 +651,26 @@ signing-script tests, `.github/workflows/ci.yml`
 
 - Import PKCS#12 and ephemeral-keychain credentials through stdin or private file
   descriptors and Security.framework.
-- Use App Store Connect API-key notarization in CI.
+- Keep all release credentials and signed-release orchestration in the
+  proprietary build system. Public CI never receives release credentials.
+- Keep an explicit file-based App Store Connect API-key interface for the
+  proprietary build system.
 - Keep Apple-ID mode interactive through a stored notarytool keychain profile.
 - Remove password-bearing argv paths.
 
 #### Verify
 
-- [ ] Sentinel credentials never appear in argv, logs, receipts, xtrace, or
+- [x] Sentinel credentials never appear in argv, logs, receipts, xtrace, or
       cleanup output while another process polls the process table.
 - [ ] Existing signature, entitlement, notarization, and stapling verification
       remains green.
+- [x] Public workflows contain no Apple release-secret references and never
+      publish unsigned macOS artifacts as releases.
 
 ### H5.2 Bind physical acceptance to immutable artifacts
 
-**Files:** CI and release workflows, TCC canary runner and receipt validator,
-artifact verification scripts, canary tests
+**Files:** public promotion contract, proprietary release workflow, TCC canary
+runner and receipt validator, artifact verification scripts, canary tests
 
 **Depends on:** H1.3, H1.5, H5.1
 
@@ -673,11 +678,14 @@ artifact verification scripts, canary tests
 
 #### Implementation
 
-- Build, sign, notarize, staple, checksum, and upload each candidate once.
+- Build, sign, notarize, staple, checksum, and upload each macOS candidate once
+  in the proprietary build system.
 - Drive the production app and daemon with a separate signed canary harness.
 - Bind receipts to artifact and inner Mach-O digests, signing identity, commit,
   version, architecture, OS, topology, and every required TCC row.
-- Make release and Homebrew publication consume the accepted artifact IDs.
+- Make proprietary macOS release and Homebrew publication consume only artifact
+  IDs and receipt bundles produced by the accepted build. Export public
+  provenance, never signing credentials.
 - Forbid post-canary rebuilds.
 
 #### Verify

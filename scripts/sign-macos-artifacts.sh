@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$-" == *x* ]]; then
+  set +x
+fi
+
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="${ROOT_DIR}/packaging/macos/signing-manifest.tsv"
 APP_ENTITLEMENTS="crates/hypercolor-app/entitlements.plist"
@@ -33,8 +37,8 @@ then creates, signs, notarizes, and staples a separate DMG.
 Signing requires APPLE_SIGNING_IDENTITY and APPLE_TEAM_ID. The identity may
 already be installed, or APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD may
 provide a base64-encoded PKCS#12 certificate. Notarization accepts either the
-APPLE_ID, APPLE_TEAM_ID, APPLE_APP_SPECIFIC_PASSWORD trio or the
-APPLE_API_KEY_ID, APPLE_API_ISSUER, APPLE_API_KEY_PATH trio.
+APPLE_API_KEY_ID, APPLE_API_ISSUER, APPLE_API_KEY_PATH trio or a preconfigured
+APPLE_NOTARY_KEYCHAIN_PROFILE. Raw Apple ID passwords are not accepted.
 EOF
 }
 
@@ -121,16 +125,50 @@ ensure_signing_tmp() {
 
 decode_certificate() {
   local output="$1"
-  if printf '%s' "${APPLE_CERTIFICATE}" | base64 -D > "${output}" 2>/dev/null; then
+  local certificate="$2"
+  if printf '%s' "${certificate}" | base64 -D > "${output}" 2>/dev/null; then
     return
   fi
-  printf '%s' "${APPLE_CERTIFICATE}" | base64 --decode > "${output}" 2>/dev/null \
+  printf '%s' "${certificate}" | base64 --decode > "${output}" 2>/dev/null \
     || die "APPLE_CERTIFICATE is not valid base64"
+}
+
+compile_signing_keychain_helper() {
+  local helper="$1"
+  require xcrun
+  xcrun --sdk macosx clang \
+    -std=c17 -Wall -Wextra -Werror -Wno-deprecated-declarations \
+    -mmacosx-version-min=15.2 \
+    -framework Security -framework CoreFoundation \
+    "${ROOT_DIR}/scripts/macos-signing-keychain.c" \
+    -o "${helper}"
+  chmod 700 "${helper}"
+}
+
+create_signing_keychain() {
+  local certificate="$1"
+  local keychain_password="$2"
+  local certificate_password="$3"
+  local helper="${SIGNING_TMP}/macos-signing-keychain"
+  compile_signing_keychain_helper "${helper}"
+
+  if ! printf '%s\0%s\0' "${keychain_password}" "${certificate_password}" \
+    | env -u APPLE_CERTIFICATE_PASSWORD \
+      "${helper}" "${SIGNING_KEYCHAIN}" "${certificate}"; then
+    certificate_password=""
+    keychain_password=""
+    die "could not create the ephemeral signing keychain"
+  fi
+  certificate_password=""
+  keychain_password=""
 }
 
 prepare_signing_identity() {
   require codesign
   require security
+  local encoded_certificate="${APPLE_CERTIFICATE:-}"
+  local certificate_password="${APPLE_CERTIFICATE_PASSWORD:-}"
+  unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
   [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]] \
     || die "APPLE_SIGNING_IDENTITY is required"
   [[ "${APPLE_SIGNING_IDENTITY}" != "-" ]] \
@@ -142,9 +180,9 @@ prepare_signing_identity() {
     return
   fi
 
-  [[ -n "${APPLE_CERTIFICATE:-}" ]] \
+  [[ -n "${encoded_certificate}" ]] \
     || die "signing identity is not installed and APPLE_CERTIFICATE is missing"
-  [[ -n "${APPLE_CERTIFICATE_PASSWORD:-}" ]] \
+  [[ -n "${certificate_password}" ]] \
     || die "APPLE_CERTIFICATE_PASSWORD is required"
 
   ensure_signing_tmp
@@ -152,15 +190,14 @@ prepare_signing_identity() {
   local keychain_password
   keychain_password="$(uuidgen)"
   SIGNING_KEYCHAIN="${SIGNING_TMP}/hypercolor-signing.keychain-db"
-  decode_certificate "${certificate}"
+  decode_certificate "${certificate}" "${encoded_certificate}"
+  encoded_certificate=""
+  chmod 600 "${certificate}"
 
-  security create-keychain -p "${keychain_password}" "${SIGNING_KEYCHAIN}" >/dev/null
-  security set-keychain-settings -lut 21600 "${SIGNING_KEYCHAIN}"
-  security unlock-keychain -p "${keychain_password}" "${SIGNING_KEYCHAIN}"
-  security import "${certificate}" -k "${SIGNING_KEYCHAIN}" \
-    -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
-  security set-key-partition-list -S apple-tool:,apple: -s \
-    -k "${keychain_password}" "${SIGNING_KEYCHAIN}" >/dev/null
+  create_signing_keychain \
+    "${certificate}" "${keychain_password}" "${certificate_password}"
+  certificate_password=""
+  keychain_password=""
 
   security find-identity -v -p codesigning "${SIGNING_KEYCHAIN}" \
     | grep -F "${APPLE_SIGNING_IDENTITY}" >/dev/null \
@@ -168,13 +205,23 @@ prepare_signing_identity() {
 }
 
 validate_notary_credentials() {
+  if [[ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" || -n "${APPLE_ID:-}" ]]; then
+    die "raw Apple ID notarization credentials are unsupported; store them with 'xcrun notarytool store-credentials' and set APPLE_NOTARY_KEYCHAIN_PROFILE"
+  fi
   if [[ -n "${APPLE_API_KEY_ID:-}" || -n "${APPLE_API_ISSUER:-}" || -n "${APPLE_API_KEY_PATH:-}" ]]; then
-    [[ -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER:-}" && -s "${APPLE_API_KEY_PATH:-}" ]] \
+    [[ -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER:-}" \
+      && -f "${APPLE_API_KEY_PATH:-}" && -s "${APPLE_API_KEY_PATH:-}" ]] \
       || die "notarization requires the complete App Store Connect API key trio"
+    [[ ! -L "${APPLE_API_KEY_PATH}" ]] \
+      || die "APPLE_API_KEY_PATH must not be a symbolic link"
+    local key_mode
+    key_mode="$(stat -f '%Lp' "${APPLE_API_KEY_PATH}")"
+    [[ "${key_mode}" == "600" || "${key_mode}" == "400" ]] \
+      || die "APPLE_API_KEY_PATH must have mode 0600 or 0400"
     return
   fi
-  [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]] \
-    || die "notarization requires Apple ID credentials or an App Store Connect API key"
+  [[ -n "${APPLE_NOTARY_KEYCHAIN_PROFILE:-}" ]] \
+    || die "notarization requires an App Store Connect API key or APPLE_NOTARY_KEYCHAIN_PROFILE"
 }
 
 resolve_rule() {
@@ -353,9 +400,12 @@ notarize() {
       --key "${APPLE_API_KEY_PATH}" --key-id "${APPLE_API_KEY_ID}" \
       --issuer "${APPLE_API_ISSUER}" > "${receipt}"
   else
+    local profile_args=(--keychain-profile "${APPLE_NOTARY_KEYCHAIN_PROFILE}")
+    if [[ -n "${APPLE_NOTARY_KEYCHAIN_PATH:-}" ]]; then
+      profile_args+=(--keychain "${APPLE_NOTARY_KEYCHAIN_PATH}")
+    fi
     xcrun notarytool submit "${submission}" --wait --output-format json \
-      --apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" \
-      --password "${APPLE_APP_SPECIFIC_PASSWORD}" > "${receipt}"
+      "${profile_args[@]}" > "${receipt}"
   fi
   jq -e '.status == "Accepted"' "${receipt}" >/dev/null \
     || die "Apple notarization did not accept ${submission}"
