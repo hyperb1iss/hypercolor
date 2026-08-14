@@ -2229,6 +2229,51 @@ fn update_pinned_generations(
         .store(retained.len(), Ordering::Release);
 }
 
+fn with_current_macos_worker_authority<T>(
+    exact: &MacosExactPublicationShared,
+    runtimes: &[MacosExactRuntime],
+    operation: impl FnOnce(
+        &ScreenPublicationHub,
+        &ScreenWorkerBinding,
+    ) -> Result<T, ScreenPublicationHubError>,
+) -> anyhow::Result<Option<T>> {
+    let Some(hub) = exact.hub() else {
+        return Ok(None);
+    };
+    let authority = hub.committed_state();
+    let Some(binding) = runtimes
+        .iter()
+        .map(|runtime| &runtime.binding)
+        .find(|binding| authority.owns_runtime_binding(binding))
+    else {
+        return Ok(None);
+    };
+    match operation(&hub, binding) {
+        Ok(value) => Ok(Some(value)),
+        Err(ScreenPublicationHubError::WorkerAuthorityStale { .. }) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn report_macos_worker_health(
+    exact: &MacosExactPublicationShared,
+    runtimes: &[MacosExactRuntime],
+    health: ScreenPublicationHealth,
+) -> anyhow::Result<()> {
+    with_current_macos_worker_authority(exact, runtimes, |hub, binding| {
+        hub.report_worker_delivery_health(binding, health)
+    })?;
+    Ok(())
+}
+
+fn invalidate_macos_worker(
+    exact: &MacosExactPublicationShared,
+    runtimes: &[MacosExactRuntime],
+) -> anyhow::Result<()> {
+    with_current_macos_worker_authority(exact, runtimes, ScreenPublicationHub::invalidate_worker)?;
+    Ok(())
+}
+
 fn run_worker(
     mut prepared: PreparedWorker,
     mailbox: MacosFrameMailbox,
@@ -2245,46 +2290,60 @@ fn run_worker(
     let mut topology = TopologyState::default();
     let mut resources = ResourceState::default();
     let mut exact_runtimes = Vec::new();
-    while !stop.load(Ordering::Acquire) {
-        handle_worker_commands(&command_rx, &mut prepared, &mut exact_runtimes, &exact);
-        update_pinned_generations(&exact_runtimes, &telemetry);
-        let Some(delivery) =
-            mailbox.wait_latest_while(WORKER_WAIT, || !stop.load(Ordering::Acquire))
-        else {
-            continue;
-        };
-        match delivery {
-            Ok(MacosFrameEvent::Frame(frame)) => {
-                publish_frame(
-                    &mut prepared,
-                    Arc::from(frame),
-                    capture_source_id(control.selection())?,
-                    &mut topology,
-                    &mut resources,
-                    &publication,
-                    &exact,
-                    &telemetry,
-                    &mut exact_runtimes,
-                    worker_generation,
-                    target_fps,
-                    &status_session,
-                    &control,
-                )?;
+    let result: anyhow::Result<()> = (|| {
+        while !stop.load(Ordering::Acquire) {
+            handle_worker_commands(&command_rx, &mut prepared, &mut exact_runtimes, &exact);
+            update_pinned_generations(&exact_runtimes, &telemetry);
+            let Some(delivery) =
+                mailbox.wait_latest_while(WORKER_WAIT, || !stop.load(Ordering::Acquire))
+            else {
+                continue;
+            };
+            match delivery {
+                Ok(MacosFrameEvent::Frame(frame)) => {
+                    publish_frame(
+                        &mut prepared,
+                        Arc::from(frame),
+                        capture_source_id(control.selection())?,
+                        &mut topology,
+                        &mut resources,
+                        &publication,
+                        &exact,
+                        &telemetry,
+                        &mut exact_runtimes,
+                        worker_generation,
+                        target_fps,
+                        &status_session,
+                        &control,
+                    )?;
+                }
+                Ok(MacosFrameEvent::Lifecycle(
+                    MacosFrameStatus::Suspended | MacosFrameStatus::Stopped,
+                ))
+                | Err(_) => {
+                    lock(&publication).latest = None;
+                    invalidate_macos_worker(&exact, &exact_runtimes)?;
+                }
+                Ok(MacosFrameEvent::RecoverableError(_)) => {
+                    report_macos_worker_health(
+                        &exact,
+                        &exact_runtimes,
+                        ScreenPublicationHealth::Recovering,
+                    )?;
+                }
+                Ok(MacosFrameEvent::Lifecycle(_)) => {}
             }
-            Ok(MacosFrameEvent::Lifecycle(
-                MacosFrameStatus::Suspended | MacosFrameStatus::Stopped,
-            ))
-            | Err(_) => lock(&publication).latest = None,
-            Ok(MacosFrameEvent::Lifecycle(_)) => {}
-            Ok(MacosFrameEvent::RecoverableError(_)) => {}
         }
-    }
+        Ok(())
+    })();
+    let invalidation = invalidate_macos_worker(&exact, &exact_runtimes);
     exact.replace_source(None);
     exact.clear_owned_sources();
     exact_runtimes.clear();
     telemetry.pinned_generations.store(0, Ordering::Release);
     prepared.analyzer.stop();
-    Ok(())
+    result?;
+    invalidation
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3503,10 +3562,11 @@ mod tests {
     use crate::input::screen::{
         CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
         PreparedLedToneMap, ResolvedScreenColorTransform, ScreenAdmissionCapacity,
-        ScreenAspectPolicy, ScreenBranchPublication, ScreenExtentRequest, ScreenHdrPolicy,
-        ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-        ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPlanBuilder,
-        ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+        ScreenAspectPolicy, ScreenBranchDeliveryLifecycle, ScreenBranchPublication,
+        ScreenExtentRequest, ScreenHdrPolicy, ScreenInputGraphGeneration,
+        ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativeTargetPreparation,
+        ScreenNativeTargetPreparer, ScreenPayloadKind, ScreenPlanBuilder, ScreenProcessingProfile,
+        ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationFreshness,
         ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter,
         ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenToneMapOperator, ScreenToneMapPolicy,
     };
@@ -3559,6 +3619,170 @@ mod tests {
         assert_eq!(snapshot.max_ns, 70);
         assert_eq!(snapshot.p95_ns, 70);
         assert_eq!(snapshot.p99_ns, 70);
+    }
+
+    #[test]
+    fn worker_invalidation_is_atomic_across_branches_and_stale_safe() {
+        let mut builder = ScreenPlanBuilder::new();
+        let exact = MacosExactPublicationShared::default();
+        let hub = builder.publication_hub();
+        *lock(&exact.hub) = Some(Arc::clone(&hub));
+        let mut runtimes = Vec::new();
+        let source = source(&frame());
+        exact.replace_source(Some(source.clone()));
+        let surface = resolve_macos_publication_branch(
+            &source,
+            &cpu_demand_for_kind(
+                ScreenProcessingProfile::default(),
+                ScreenPublicationKind::Surface,
+            ),
+        )
+        .expect("surface demand resolves")
+        .expect("configured source owns surface demand");
+        let zones = resolve_macos_publication_branch(
+            &source,
+            &cpu_demand_for_kind(
+                ScreenProcessingProfile::default(),
+                ScreenPublicationKind::Zones {
+                    columns: NonZeroU32::new(2).expect("nonzero columns"),
+                    rows: NonZeroU32::new(1).expect("nonzero rows"),
+                },
+            ),
+        )
+        .expect("zone demand resolves")
+        .expect("configured source owns zone demand");
+        let descriptors = commit_cpu_runtimes(
+            &mut builder,
+            &exact,
+            &source,
+            [surface, zones],
+            &mut runtimes,
+        );
+        let bound_at = Instant::now();
+        bind_current_macos_exact_runtime(&mut runtimes, &source, &hub, bound_at)
+            .expect("current runtime binds")
+            .expect("current runtime exists");
+        let captured_at = bound_at + Duration::from_millis(20);
+        let first = cpu_capture_frame(&source, 1, captured_at, [32, 64, 96, 255]);
+        publish_cpu_frame(&exact, &mut runtimes, &source, &first);
+        let leases = descriptors
+            .iter()
+            .map(|descriptor| hub.lease(descriptor).expect("branch lease remains live"))
+            .collect::<Vec<_>>();
+        let initial = leases
+            .iter()
+            .map(|lease| lease.observe(captured_at))
+            .collect::<Vec<_>>();
+        assert!(initial.iter().all(|(publication, delivery)| {
+            publication.is_some()
+                && delivery.lifecycle() == ScreenBranchDeliveryLifecycle::Live
+                && delivery.freshness() == Some(ScreenPublicationFreshness::Fresh)
+                && delivery.source_health() == Some(ScreenPublicationHealth::Healthy)
+                && delivery.invalidation_epoch() == 0
+        }));
+
+        report_macos_worker_health(&exact, &runtimes, ScreenPublicationHealth::Recovering)
+            .expect("recoverable health report succeeds");
+        for (lease, (publication, _)) in leases.iter().zip(&initial) {
+            let (retained, delivery) = lease.observe(captured_at);
+            assert!(
+                retained
+                    .as_ref()
+                    .zip(publication.as_ref())
+                    .is_some_and(|(retained, publication)| Arc::ptr_eq(retained, publication))
+            );
+            assert_eq!(delivery.lifecycle(), ScreenBranchDeliveryLifecycle::Live);
+            assert_eq!(
+                delivery.source_health(),
+                Some(ScreenPublicationHealth::Recovering)
+            );
+            assert_eq!(delivery.invalidation_epoch(), 0);
+        }
+
+        let old_binding = runtimes
+            .last()
+            .expect("committed runtime exists")
+            .binding
+            .clone();
+        let publisher = hub
+            .publisher(&descriptors[0], &old_binding)
+            .expect("current worker owns surface publisher");
+        let prepared_at = captured_at + Duration::from_millis(10);
+        let intent = ScreenPublicationMetadata::try_intent(
+            source.epoch.clone(),
+            publisher.plan_generation(),
+            NonZeroU64::new(2).expect("nonzero sequence"),
+            prepared_at,
+            prepared_at + Duration::from_secs(1),
+        )
+        .expect("pre-invalidation intent is valid");
+        let prepared = hub
+            .prepare_writable_publication(&publisher, ScreenPayloadKind::Surface, &intent)
+            .expect("pre-invalidation publication reserves");
+        invalidate_macos_worker(&exact, &runtimes).expect("current worker invalidates");
+        assert!(matches!(
+            hub.finalize_writable_publication(
+                prepared,
+                prepared_at + Duration::from_millis(1),
+                ScreenPublicationHealth::Healthy,
+            ),
+            Err(ScreenPublicationHubError::PublicationInvalidated)
+        ));
+        let invalidated = leases
+            .iter()
+            .map(|lease| lease.observe(captured_at))
+            .collect::<Vec<_>>();
+        let invalidation_epoch = invalidated[0].1.invalidation_epoch();
+        assert_ne!(invalidation_epoch, 0);
+        assert!(invalidated.iter().all(|(publication, delivery)| {
+            publication.is_none()
+                && delivery.lifecycle() == ScreenBranchDeliveryLifecycle::Pending
+                && delivery.freshness().is_none()
+                && delivery.source_health() == Some(ScreenPublicationHealth::Failed)
+                && delivery.invalidation_epoch() == invalidation_epoch
+        }));
+
+        let recovered_at = captured_at + Duration::from_millis(20);
+        let recovered = cpu_capture_frame(&source, 2, recovered_at, [96, 64, 32, 255]);
+        publish_cpu_frame(&exact, &mut runtimes, &source, &recovered);
+        assert!(leases.iter().all(|lease| {
+            let (publication, delivery) = lease.observe(recovered_at);
+            publication.is_some()
+                && delivery.lifecycle() == ScreenBranchDeliveryLifecycle::Live
+                && delivery.source_health() == Some(ScreenPublicationHealth::Healthy)
+                && delivery.invalidation_epoch() == invalidation_epoch
+        }));
+
+        let replacement =
+            resolve_macos_publication_branch(&source, &cpu_demand(transition_profile(false)))
+                .expect("replacement demand resolves")
+                .expect("configured source owns replacement demand");
+        let replacement_descriptor =
+            commit_cpu_runtime(&mut builder, &exact, &source, replacement, &mut runtimes);
+        let replacement_bound_at = recovered_at + Duration::from_millis(20);
+        bind_current_macos_exact_runtime(&mut runtimes, &source, &hub, replacement_bound_at)
+            .expect("replacement runtime binds")
+            .expect("replacement runtime exists");
+        let replacement_at = replacement_bound_at + Duration::from_millis(20);
+        let replacement_frame = cpu_capture_frame(&source, 3, replacement_at, [48, 48, 48, 255]);
+        publish_cpu_frame(&exact, &mut runtimes, &source, &replacement_frame);
+        let replacement_lease = hub
+            .lease(&replacement_descriptor)
+            .expect("replacement lease is committed");
+        let replacement_publication = replacement_lease
+            .read()
+            .expect("replacement branch published");
+        assert!(matches!(
+            hub.invalidate_worker(&old_binding),
+            Err(ScreenPublicationHubError::WorkerAuthorityStale { .. })
+        ));
+        let after_stale_invalidation = replacement_lease
+            .read()
+            .expect("stale worker cannot clear replacement publication");
+        assert!(Arc::ptr_eq(
+            &replacement_publication,
+            &after_stale_invalidation
+        ));
     }
 
     #[test]

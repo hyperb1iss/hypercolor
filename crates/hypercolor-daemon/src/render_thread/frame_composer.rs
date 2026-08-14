@@ -126,6 +126,14 @@ fn producer_frame_requires_composition_for_preview(
 
 impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
+        let observed_invalidation_epoch = self.inputs.screen_invalidation_epoch;
+        if synchronize_screen_invalidation_epoch(
+            self.compose.screen_queue,
+            &mut self.inputs.screen_compositor_epoch,
+            observed_invalidation_epoch,
+        ) {
+            self.compose.sparkleflinger.release_native_screen_caches();
+        }
         self.compose_render_group_frame_set(Instant::now()).await
     }
 
@@ -731,6 +739,19 @@ pub(super) fn synchronize_screen_plan_generation(
     changed
 }
 
+fn synchronize_screen_invalidation_epoch(
+    screen_queue: &mut ProducerQueue,
+    current_epoch: &mut u64,
+    observed_epoch: u64,
+) -> bool {
+    if observed_epoch <= *current_epoch {
+        return false;
+    }
+    let _ = screen_queue.clear_latest();
+    *current_epoch = observed_epoch;
+    true
+}
+
 #[cfg(any(
     test,
     all(
@@ -872,3 +893,28 @@ fn scene_canvas_forces_full_surface(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod h21_tests {
+    use hypercolor_core::types::canvas::Canvas;
+
+    use super::{ProducerFrame, ProducerQueue, synchronize_screen_invalidation_epoch};
+
+    #[test]
+    fn invalidation_epoch_clears_old_output_before_fresh_publication() {
+        let mut queue = ProducerQueue::new();
+        let mut epoch = 0;
+        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
+
+        assert!(synchronize_screen_invalidation_epoch(
+            &mut queue, &mut epoch, 1
+        ));
+        assert!(!queue.has_latest());
+
+        queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
+        assert!(!synchronize_screen_invalidation_epoch(
+            &mut queue, &mut epoch, 1
+        ));
+        assert!(queue.has_latest());
+    }
+}

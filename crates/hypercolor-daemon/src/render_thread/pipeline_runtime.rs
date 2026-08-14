@@ -16,9 +16,9 @@ use hypercolor_core::input::routing::{
     InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
 };
 use hypercolor_core::input::screen::{
-    PixelExtent, ResolvedScreenPublicationDescriptor, ScreenBranchLease, ScreenBranchPublication,
-    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenPlanGeneration,
-    ScreenPublicationExecutorRequest,
+    PixelExtent, ResolvedScreenPublicationDescriptor, ScreenBranchDeliveryState, ScreenBranchLease,
+    ScreenBranchPublication, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenPlanGeneration, ScreenPublicationExecutorRequest,
 };
 use hypercolor_core::input::{
     InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
@@ -92,6 +92,9 @@ pub(crate) struct FrameInputs {
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) screen_publication: Option<Arc<ScreenBranchPublication>>,
+    pub(crate) screen_delivery_state: Option<ScreenBranchDeliveryState>,
+    pub(crate) screen_invalidation_epoch: u64,
+    pub(crate) screen_compositor_epoch: u64,
     pub(crate) screen_descriptor: Option<ResolvedScreenPublicationDescriptor>,
     pub(crate) sensors: Arc<SystemSnapshot>,
     pub(crate) input_availability: InputSourceAvailability,
@@ -167,8 +170,12 @@ impl InputReuseState {
     ) -> ScreenPlanGeneration {
         let screen_extent = PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
             .expect("render canvas dimensions are non-empty");
-        let (generation, publication) = self.routes.read_screen(screen_target, screen_extent);
+        let (generation, publication, delivery_state) =
+            self.routes.read_screen(screen_target, screen_extent);
         self.cached_inputs.screen_publication = publication;
+        self.cached_inputs.screen_invalidation_epoch =
+            delivery_state.map_or(0, ScreenBranchDeliveryState::invalidation_epoch);
+        self.cached_inputs.screen_delivery_state = delivery_state;
         self.cached_inputs.screen_descriptor = self.routes.screen_descriptor().cloned();
         generation
     }
@@ -289,7 +296,11 @@ impl InputRouteCache {
         &mut self,
         target: Option<&ScreenNativeExecutionTarget>,
         extent: PixelExtent,
-    ) -> (ScreenPlanGeneration, Option<Arc<ScreenBranchPublication>>) {
+    ) -> (
+        ScreenPlanGeneration,
+        Option<Arc<ScreenBranchPublication>>,
+        Option<ScreenBranchDeliveryState>,
+    ) {
         let target_id = target.map(ScreenNativeExecutionTarget::id);
         let (plan_generation, observed_lease) = self.reader.screen_observation(target, extent);
         let route_is_current = self.screen_publication_route.as_ref().is_some_and(|route| {
@@ -305,12 +316,13 @@ impl InputRouteCache {
                 lease: observed_lease,
             });
         }
-        let publication = self
+        let observation = self
             .screen_publication_route
             .as_ref()
             .and_then(|route| route.lease.as_ref())
-            .and_then(ScreenBranchLease::read);
-        (plan_generation, publication)
+            .map(|lease| lease.observe(Instant::now()));
+        let (publication, delivery_state) = observation.unzip();
+        (plan_generation, publication.flatten(), delivery_state)
     }
 
     fn screen_descriptor(&self) -> Option<&ResolvedScreenPublicationDescriptor> {
@@ -633,7 +645,6 @@ impl FrameInputs {
         self.media = None;
         self.net = None;
         self.lighting = None;
-        self.screen_publication = None;
         self.screen_surface = None;
         self.screen_sector_grid.clear();
     }
@@ -654,6 +665,9 @@ impl FrameInputs {
             interaction: InteractionData::default(),
             screen_data: None,
             screen_publication: None,
+            screen_delivery_state: None,
+            screen_invalidation_epoch: 0,
+            screen_compositor_epoch: 0,
             screen_descriptor: None,
             sensors: Arc::clone(&empty_sensors),
             input_availability: InputSourceAvailability::default(),
