@@ -11,10 +11,11 @@ use objc2_metal::{MTLPixelFormat, MTLTexture};
 use thiserror::Error;
 
 use crate::macos::{
-    ImportedEffectFrame, ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor,
-    MacosIosurfaceImporter, MacosMetalStorageMode, create_core_video_texture_cache,
-    import_core_video_metal_texture_plane, import_core_video_pixel_buffer_plane,
-    import_iosurface_metal_texture_plane, metal_device_import_contract,
+    ImportedEffectFrame, ImportedFrameFormat, MacosCaptureCacheOwner, MacosGpuInteropError,
+    MacosIosurfaceImportDescriptor, MacosIosurfaceImporter, MacosMetalStorageMode,
+    create_core_video_texture_cache, import_core_video_metal_texture_plane,
+    import_core_video_pixel_buffer_plane, import_iosurface_metal_texture_plane,
+    metal_device_import_contract,
 };
 
 const MAX_CAPTURE_DESCRIPTORS: usize = 8;
@@ -86,6 +87,12 @@ unsafe impl Sync for RetainedMetalTexture {}
 #[derive(Debug, Clone)]
 struct RetainedCoreVideoTexture {
     _wrapper: CFRetained<CVMetalTexture>,
+}
+
+#[derive(Clone)]
+struct CachedMacosScreenPlane {
+    plane: ImportedMacosScreenPlane,
+    capture_owner: MacosCaptureCacheOwner,
 }
 
 // SAFETY: the wrapper is retained only as immutable ownership for its Metal
@@ -339,7 +346,7 @@ pub struct MacosScreenBridge {
     importers: Mutex<HashMap<MacosIosurfaceImportDescriptor, MacosIosurfaceImporter>>,
     core_video_cache: Option<Mutex<SendableCoreVideoTextureCache>>,
     core_video_cache_error: Option<String>,
-    native_wrappers: Mutex<HashMap<MacosScreenStorageIdentity, ImportedMacosScreenPlane>>,
+    native_wrappers: Mutex<HashMap<MacosScreenStorageIdentity, CachedMacosScreenPlane>>,
 }
 
 impl MacosScreenBridge {
@@ -513,7 +520,7 @@ impl MacosScreenBridge {
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
         pixel_buffer: &CVPixelBuffer,
-        frame: &MacosCaptureFrame,
+        frame: &Arc<MacosCaptureFrame>,
         resource_generation: u64,
         source_pixel_format: u32,
         descriptors: &[CapturePlaneImportDescriptor],
@@ -542,11 +549,12 @@ impl MacosScreenBridge {
         &self,
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
-        frame: &MacosCaptureFrame,
+        frame: &Arc<MacosCaptureFrame>,
         resource_generation: u64,
         source_pixel_format: u32,
         descriptors: &[CapturePlaneImportDescriptor],
     ) -> Result<Vec<ImportedMacosScreenPlane>, MacosScreenBridgeError> {
+        let capture_owner = MacosCaptureCacheOwner::new(Arc::clone(frame));
         let mut imported_planes = admitted_plane_vector(descriptors.len())?;
         for (plane, descriptor) in frame.planes.iter().zip(descriptors) {
             let plane_index = usize::try_from(plane.index).map_err(|_| {
@@ -582,6 +590,7 @@ impl MacosScreenBridge {
                         resource_generation,
                         plane_index,
                         source_pixel_format,
+                        Some(&capture_owner),
                     )?;
                     ImportedMacosScreenPlane {
                         storage_identity,
@@ -593,7 +602,7 @@ impl MacosScreenBridge {
                 CapturePlaneImportDescriptor::Bgr10A2Unorm { width, height }
                 | CapturePlaneImportDescriptor::R16Unorm { width, height }
                 | CapturePlaneImportDescriptor::Rg16Unorm { width, height } => self
-                    .native_wrapper_or_insert(storage_identity, || {
+                    .native_wrapper_or_insert(storage_identity, &capture_owner, || {
                         let (format, metal_format) = native_plane_format(*descriptor);
                         let texture = import_iosurface_metal_texture_plane(
                             device,
@@ -624,11 +633,12 @@ impl MacosScreenBridge {
         &self,
         device: &wgpu::Device,
         pixel_buffer: &CVPixelBuffer,
-        frame: &MacosCaptureFrame,
+        frame: &Arc<MacosCaptureFrame>,
         resource_generation: u64,
         source_pixel_format: u32,
         descriptors: &[CapturePlaneImportDescriptor],
     ) -> Result<Vec<ImportedMacosScreenPlane>, MacosScreenBridgeError> {
+        let capture_owner = MacosCaptureCacheOwner::new(Arc::clone(frame));
         let cache = self.core_video_cache.as_ref().ok_or_else(|| {
             MacosScreenBridgeError::SurfaceHandoff(
                 self.core_video_cache_error
@@ -647,8 +657,9 @@ impl MacosScreenBridge {
         for (plane, descriptor) in frame.planes.iter().zip(descriptors) {
             let storage_identity =
                 self.storage_identity(frame, plane, resource_generation, source_pixel_format);
-            if let Some(cached) = wrappers.get(&storage_identity) {
-                imported_planes.push(cached.clone());
+            if let Some(cached) = wrappers.get_mut(&storage_identity) {
+                cached.capture_owner = capture_owner.clone();
+                imported_planes.push(cached.plane.clone());
                 continue;
             }
             let plane_index = usize::try_from(plane.index).map_err(|_| {
@@ -701,7 +712,13 @@ impl MacosScreenBridge {
                 wrappers.clear();
                 cache.cache().flush(0);
             }
-            wrappers.insert(storage_identity, imported_plane.clone());
+            wrappers.insert(
+                storage_identity,
+                CachedMacosScreenPlane {
+                    plane: imported_plane.clone(),
+                    capture_owner: capture_owner.clone(),
+                },
+            );
             imported_planes.push(imported_plane);
         }
         Ok(imported_planes)
@@ -763,9 +780,23 @@ impl MacosScreenBridge {
         )
     }
 
+    /// Release every cached wrapper and its retained capture owner.
+    pub fn clear_capture_caches(&self) {
+        self.importers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.native_wrappers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.flush_core_video_cache();
+    }
+
     fn native_wrapper_or_insert(
         &self,
         identity: MacosScreenStorageIdentity,
+        capture_owner: &MacosCaptureCacheOwner,
         create: impl FnOnce() -> Result<ImportedMacosScreenPlane, MacosScreenBridgeError>,
     ) -> Result<ImportedMacosScreenPlane, MacosScreenBridgeError> {
         let (plane, flush_core_video) = {
@@ -773,15 +804,22 @@ impl MacosScreenBridge {
                 .native_wrappers
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(cached) = wrappers.get(&identity) {
-                return Ok(cached.clone());
+            if let Some(cached) = wrappers.get_mut(&identity) {
+                cached.capture_owner = capture_owner.clone();
+                return Ok(cached.plane.clone());
             }
             let plane = create()?;
             let flush_core_video = wrappers.len() >= MAX_CORE_VIDEO_WRAPPERS;
             if flush_core_video {
                 wrappers.clear();
             }
-            wrappers.insert(identity, plane.clone());
+            wrappers.insert(
+                identity,
+                CachedMacosScreenPlane {
+                    plane: plane.clone(),
+                    capture_owner: capture_owner.clone(),
+                },
+            );
             (plane, flush_core_video)
         };
         if flush_core_video {

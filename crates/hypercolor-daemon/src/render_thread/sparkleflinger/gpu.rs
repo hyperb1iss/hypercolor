@@ -545,7 +545,8 @@ impl MacosScreenBridge {
         &self.device
     }
 
-    fn clear_storage_ids(&self) {
+    fn clear_capture_caches(&self) {
+        self.interop.clear_capture_caches();
         self.storage_ids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2037,7 +2038,7 @@ impl GpuSparkleFlinger {
         #[cfg(all(target_os = "macos", feature = "screen-capture"))]
         {
             if let Some(bridge) = &self.screen_bridge {
-                bridge.clear_storage_ids();
+                bridge.clear_capture_caches();
             }
         }
         #[cfg(target_os = "windows")]
@@ -2168,7 +2169,13 @@ impl GpuSparkleFlinger {
         if let Some(timing_sink) = surface.timing_sink() {
             timing_sink.record_import(import_started.elapsed());
         }
-        let (imported, storage_id) = imported?;
+        let (imported, storage_id) = match imported {
+            Ok(imported) => imported,
+            Err(error) => {
+                self.release_native_screen_caches();
+                return Err(error);
+            }
+        };
         anyhow::ensure!(
             imported.capture().storage_extent.width == surface.extent().width()
                 && imported.capture().storage_extent.height == surface.extent().height(),
@@ -2202,12 +2209,16 @@ impl GpuSparkleFlinger {
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("SparkleFlinger macOS native screen reduction"),
                         });
-                bridge.reducer.encode(
+                let reduction = bridge.reducer.encode(
                     &imported,
                     &physical.target,
                     macos_reduction_descriptor(descriptor)?,
                     &mut encoder,
-                )?;
+                );
+                if let Err(error) = reduction {
+                    self.release_native_screen_caches();
+                    return Err(error.into());
+                }
                 let submission_index = self.queue.submit(Some(encoder.finish()));
                 self.retire_native_screen_leases(
                     submission_index,
@@ -2230,7 +2241,7 @@ impl GpuSparkleFlinger {
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("SparkleFlinger macOS native screen materialization"),
                             });
-                    bridge.reducer.encode_materialization(
+                    let materialization = bridge.reducer.encode_materialization(
                         &physical.target,
                         logical_target,
                         [
@@ -2241,7 +2252,11 @@ impl GpuSparkleFlinger {
                         ],
                         macos_native_letterbox_fill(descriptor)?,
                         &mut encoder,
-                    )?;
+                    );
+                    if let Err(error) = materialization {
+                        self.release_native_screen_caches();
+                        return Err(error.into());
+                    }
                     let submission_index = self.queue.submit(Some(encoder.finish()));
                     self.retire_native_screen_leases(
                         submission_index,

@@ -97,6 +97,9 @@ fn bridge_imports_and_caches_complete_capture_storage_identity() -> Result<(), S
     assert_eq!(bridge.cached_wrap_count(), 2);
 
     drop(frame);
+    assert_eq!(Arc::strong_count(first.capture()), 5);
+    bridge.clear_capture_caches();
+    assert_eq!(bridge.cached_wrap_count(), 0);
     assert_eq!(Arc::strong_count(first.capture()), 3);
     assert_eq!(first.capture().surface.retained_owner_count(), 1);
     Ok(())

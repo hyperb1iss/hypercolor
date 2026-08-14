@@ -536,6 +536,21 @@ pub struct ImportedFrameTimings {
 struct CachedIosurfaceWrap {
     texture: Arc<wgpu::Texture>,
     view: Arc<wgpu::TextureView>,
+    capture_owner: Option<MacosCaptureCacheOwner>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MacosCaptureCacheOwner {
+    _owner: Arc<dyn Send + Sync>,
+}
+
+impl MacosCaptureCacheOwner {
+    pub(crate) fn new<T>(owner: Arc<T>) -> Self
+    where
+        T: Send + Sync + 'static,
+    {
+        Self { _owner: owner }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -637,6 +652,7 @@ impl MacosIosurfaceImporter {
             resource_generation,
             0,
             PIXEL_FORMAT_BGRA as u32,
+            None,
         )
     }
 
@@ -650,6 +666,7 @@ impl MacosIosurfaceImporter {
         resource_generation: u64,
         plane: usize,
         source_pixel_format: u32,
+        capture_owner: Option<&MacosCaptureCacheOwner>,
     ) -> Result<ImportedEffectFrame> {
         validate_iosurface_shape(self.descriptor, iosurface, plane)?;
         validate_iosurface_format(iosurface, source_pixel_format)?;
@@ -682,7 +699,10 @@ impl MacosIosurfaceImporter {
             storage_mode: self.storage_mode,
             metal_registry_id: self.metal_registry_id,
         };
-        if let Some(cached) = self.wraps.get(&cache_key) {
+        if let Some(cached) = self.wraps.get_mut(&cache_key) {
+            if let Some(capture_owner) = capture_owner {
+                cached.capture_owner = Some(capture_owner.clone());
+            }
             return Ok(ImportedEffectFrame {
                 width: self.descriptor.width,
                 height: self.descriptor.height,
@@ -753,6 +773,7 @@ impl MacosIosurfaceImporter {
             CachedIosurfaceWrap {
                 texture: Arc::clone(&texture),
                 view: Arc::clone(&view),
+                capture_owner: capture_owner.cloned(),
             },
         );
 
@@ -1348,5 +1369,33 @@ mod tests {
         let baseline = wrap_key(u32::from_be_bytes(*b"420v"), 1_024);
         assert_ne!(baseline, wrap_key(u32::from_be_bytes(*b"420f"), 1_024));
         assert_ne!(baseline, wrap_key(u32::from_be_bytes(*b"420v"), 2_048));
+    }
+
+    #[test]
+    fn capture_cache_owner_lives_until_explicit_cache_clear() {
+        let external = Arc::new(());
+        let retained = Arc::downgrade(&external);
+        let mut cache = HashMap::from([(1_u8, MacosCaptureCacheOwner::new(external))]);
+
+        assert!(retained.upgrade().is_some());
+        cache.clear();
+        assert!(retained.upgrade().is_none());
+    }
+
+    #[test]
+    fn cache_reimport_replaces_owner_without_losing_live_ownership() {
+        let first = Arc::new(());
+        let first_retained = Arc::downgrade(&first);
+        let second = Arc::new(());
+        let second_retained = Arc::downgrade(&second);
+        let mut cached = MacosCaptureCacheOwner::new(first);
+
+        assert_eq!(Arc::strong_count(&cached._owner), 1);
+        cached = MacosCaptureCacheOwner::new(second);
+
+        assert!(first_retained.upgrade().is_none());
+        assert!(second_retained.upgrade().is_some());
+        drop(cached);
+        assert!(second_retained.upgrade().is_none());
     }
 }
