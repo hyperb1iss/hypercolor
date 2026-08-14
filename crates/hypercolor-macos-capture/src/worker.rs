@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
@@ -12,6 +13,16 @@ pub(crate) enum SamplePublishOutcome {
 #[derive(Debug)]
 pub(crate) struct LatestSampleInput<T> {
     inner: Arc<LatestSampleInner<T>>,
+    pending_invalidations: Arc<AtomicU64>,
+}
+
+pub(crate) struct SamplePublication {
+    pending_invalidations: Arc<AtomicU64>,
+}
+
+struct PendingInvalidation<'a> {
+    pending: &'a AtomicU64,
+    ready: &'a Condvar,
 }
 
 #[derive(Debug)]
@@ -22,8 +33,15 @@ struct LatestSampleInner<T> {
 
 #[derive(Debug)]
 struct LatestSampleState<T> {
-    latest: Option<T>,
+    latest: Option<GenerationStamped<T>>,
+    generation: u64,
     closed: bool,
+}
+
+#[derive(Debug)]
+struct GenerationStamped<T> {
+    generation: u64,
+    sample: T,
 }
 
 pub(crate) struct LatestSampleWorker<T> {
@@ -35,7 +53,28 @@ impl<T> Clone for LatestSampleInput<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            pending_invalidations: Arc::clone(&self.pending_invalidations),
         }
+    }
+}
+
+impl SamplePublication {
+    pub(crate) fn is_current(&self) -> bool {
+        self.pending_invalidations.load(Ordering::Acquire) == 0
+    }
+}
+
+impl<'a> PendingInvalidation<'a> {
+    fn begin(pending: &'a AtomicU64, ready: &'a Condvar) -> Self {
+        pending.fetch_add(1, Ordering::AcqRel);
+        Self { pending, ready }
+    }
+}
+
+impl Drop for PendingInvalidation<'_> {
+    fn drop(&mut self) {
+        self.pending.fetch_sub(1, Ordering::AcqRel);
+        self.ready.notify_all();
     }
 }
 
@@ -45,10 +84,12 @@ impl<T> LatestSampleInput<T> {
             inner: Arc::new(LatestSampleInner {
                 state: Mutex::new(LatestSampleState {
                     latest: None,
+                    generation: 0,
                     closed: false,
                 }),
                 ready: Condvar::new(),
             }),
+            pending_invalidations: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -57,7 +98,12 @@ impl<T> LatestSampleInput<T> {
         if state.closed {
             return SamplePublishOutcome::Closed;
         }
-        let outcome = if state.latest.replace(sample).is_some() {
+        let generation = state.generation;
+        let outcome = if state
+            .latest
+            .replace(GenerationStamped { generation, sample })
+            .is_some()
+        {
             SamplePublishOutcome::Superseded
         } else {
             SamplePublishOutcome::Accepted
@@ -69,13 +115,60 @@ impl<T> LatestSampleInput<T> {
 
     fn close(&self) {
         let mut state = self.lock();
+        Self::advance_generation(&mut state);
         state.closed = true;
-        state.latest = None;
         drop(state);
         self.inner.ready.notify_all();
     }
 
-    fn take_next(&self) -> Option<T> {
+    pub(crate) fn invalidate_if(&self, invalidate: impl FnOnce() -> bool) -> bool {
+        self.invalidate_if_with(|| {}, invalidate)
+    }
+
+    fn invalidate_if_with(
+        &self,
+        requested: impl FnOnce(),
+        invalidate: impl FnOnce() -> bool,
+    ) -> bool {
+        let pending = PendingInvalidation::begin(&self.pending_invalidations, &self.inner.ready);
+        requested();
+        let mut state = self.lock();
+        let invalidated = !state.closed && invalidate();
+        if invalidated {
+            Self::advance_generation(&mut state);
+        }
+        drop(state);
+        drop(pending);
+        invalidated
+    }
+
+    #[cfg(test)]
+    pub(crate) fn invalidate_if_observed(
+        &self,
+        requested: impl FnOnce(),
+        invalidate: impl FnOnce() -> bool,
+    ) -> bool {
+        self.invalidate_if_with(requested, invalidate)
+    }
+
+    pub(crate) fn synchronize_if(&self, synchronize: impl FnOnce() -> bool) -> bool {
+        let state = self.lock();
+        let state = self
+            .inner
+            .ready
+            .wait_while(state, |_| {
+                self.pending_invalidations.load(Ordering::Acquire) != 0
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !state.closed && synchronize()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.lock().generation
+    }
+
+    fn take_next(&self) -> Option<GenerationStamped<T>> {
         let state = self.lock();
         let mut state = self
             .inner
@@ -86,6 +179,23 @@ impl<T> LatestSampleInput<T> {
             return None;
         }
         state.latest.take()
+    }
+
+    fn publish_if_current(&self, generation: u64, publish: impl FnOnce(SamplePublication)) {
+        let state = self.lock();
+        if !state.closed && state.generation == generation {
+            publish(SamplePublication {
+                pending_invalidations: Arc::clone(&self.pending_invalidations),
+            });
+        }
+    }
+
+    fn advance_generation(state: &mut LatestSampleState<T>) {
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .expect("macOS decode generation must remain monotonic");
+        state.latest = None;
     }
 
     fn lock(&self) -> MutexGuard<'_, LatestSampleState<T>> {
@@ -100,15 +210,18 @@ impl<T: Send + 'static> LatestSampleWorker<T> {
     pub(crate) fn spawn<O: Send + 'static>(
         thread_name: &str,
         mut decode: impl FnMut(T) -> O + Send + 'static,
-        mut publish: impl FnMut(O) + Send + 'static,
+        mut publish: impl FnMut(O, SamplePublication) + Send + 'static,
     ) -> io::Result<Self> {
         let input = LatestSampleInput::new();
         let worker_input = input.clone();
         let worker = thread::Builder::new()
             .name(thread_name.to_owned())
             .spawn(move || {
-                while let Some(sample) = worker_input.take_next() {
-                    publish(decode(sample));
+                while let Some(stamped) = worker_input.take_next() {
+                    let decoded = decode(stamped.sample);
+                    worker_input.publish_if_current(stamped.generation, |publication| {
+                        publish(decoded, publication);
+                    });
                 }
             })?;
         Ok(Self {
@@ -166,7 +279,7 @@ mod tests {
                 }
                 sample
             },
-            move |sample| {
+            move |sample, _publication| {
                 published_tx
                     .send(sample)
                     .expect("decoded sample should publish");
@@ -208,7 +321,7 @@ mod tests {
         let mut worker = LatestSampleWorker::spawn(
             "macos-capture-decode-error-test",
             move |sample: Result<(), &'static str>| (thread::current().id(), sample),
-            move |result| {
+            move |result, _publication| {
                 published_tx
                     .send(result)
                     .expect("decode result should publish");
@@ -230,6 +343,98 @@ mod tests {
     }
 
     #[test]
+    fn blocked_pre_suspend_decode_cannot_publish_after_restart_generation() {
+        let (decode_started_tx, decode_started_rx) = mpsc::channel();
+        let (release_decode_tx, release_decode_rx) = mpsc::channel();
+        let (published_tx, published_rx) = mpsc::channel();
+        let mut first = true;
+        let mut worker = LatestSampleWorker::spawn(
+            "macos-capture-generation-fence-test",
+            move |sample| {
+                if first {
+                    first = false;
+                    decode_started_tx
+                        .send(())
+                        .expect("blocked decode should be observable");
+                    release_decode_rx.recv().expect("decode should resume");
+                }
+                sample
+            },
+            move |sample, _publication| {
+                published_tx
+                    .send(sample)
+                    .expect("current generation should publish");
+            },
+        )
+        .expect("worker should start");
+        let input = worker.input();
+
+        assert_eq!(input.publish(1), SamplePublishOutcome::Accepted);
+        decode_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker should begin decoding the old generation");
+        assert!(input.invalidate_if(|| true));
+        assert!(input.invalidate_if(|| true));
+        release_decode_tx
+            .send(())
+            .expect("old generation decode should resume");
+        assert_eq!(
+            published_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+
+        assert_eq!(input.publish(2), SamplePublishOutcome::Accepted);
+        assert_eq!(
+            published_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("new generation should publish"),
+            2
+        );
+        worker.close();
+        worker.join().expect("worker should join");
+    }
+
+    #[test]
+    fn rejected_invalidation_does_not_advance_the_decode_generation() {
+        let (decode_started_tx, decode_started_rx) = mpsc::sync_channel(1);
+        let (release_decode_tx, release_decode_rx) = mpsc::sync_channel(1);
+        let (published_tx, published_rx) = mpsc::sync_channel(1);
+        let mut worker = LatestSampleWorker::spawn(
+            "macos-capture-rejected-invalidation-test",
+            move |sample| {
+                decode_started_tx
+                    .send(())
+                    .expect("decode should be observable");
+                release_decode_rx.recv().expect("decode should resume");
+                sample
+            },
+            move |sample, _publication| {
+                published_tx
+                    .send(sample)
+                    .expect("unchanged generation should publish");
+            },
+        )
+        .expect("worker should start");
+        let input = worker.input();
+
+        assert_eq!(input.publish(1), SamplePublishOutcome::Accepted);
+        decode_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("decode should start");
+        assert!(!input.invalidate_if(|| false));
+        release_decode_tx.send(()).expect("decode should resume");
+        assert_eq!(
+            published_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("rejected invalidation must retain the generation"),
+            1
+        );
+
+        worker.close();
+        worker.join().expect("worker should join");
+    }
+
+    #[test]
     fn teardown_wakes_and_joins_an_idle_worker() {
         struct ExitMarker(Arc<AtomicBool>);
 
@@ -244,7 +449,7 @@ mod tests {
         let mut worker = LatestSampleWorker::spawn(
             "macos-capture-teardown-test",
             |sample: ()| sample,
-            move |_| {
+            move |_, _publication| {
                 let _ = &marker;
             },
         )

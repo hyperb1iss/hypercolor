@@ -1113,6 +1113,118 @@ fn mailbox_wait_returns_a_ready_delivery_without_polling() {
 }
 
 #[test]
+fn mailbox_terminal_control_survives_latest_frame_pressure() {
+    let mailbox = MacosFrameMailbox::new();
+    for sequence in 0..64 {
+        let mut frame = bgra_cpu_frame([sequence, 0, 0, 255], rgb_color());
+        frame.sequence = u64::from(sequence);
+        mailbox.publish(Ok(MacosFrameEvent::Frame(Box::new(frame))));
+    }
+    mailbox.publish(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Suspended)));
+    for sequence in 64..128 {
+        let mut frame = bgra_cpu_frame([sequence, 0, 0, 255], rgb_color());
+        frame.sequence = u64::from(sequence);
+        mailbox.publish(Ok(MacosFrameEvent::Frame(Box::new(frame))));
+    }
+
+    let (_, invalidation_generation, terminal) = mailbox
+        .take_latest_with_generation()
+        .expect("terminal control remains pending");
+    assert_eq!(invalidation_generation, 1);
+    assert!(matches!(
+        terminal,
+        Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Suspended))
+    ));
+    let (_, frame_generation, latest_frame) = mailbox
+        .take_latest_with_generation()
+        .expect("latest frame remains independently pending");
+    assert_eq!(frame_generation, invalidation_generation);
+    assert!(matches!(
+        latest_frame,
+        Ok(MacosFrameEvent::Frame(frame)) if frame.sequence == 127
+    ));
+    assert!(!mailbox.has_pending());
+}
+
+#[test]
+fn mailbox_recoverable_diagnostic_retains_control_and_last_good_frame() {
+    let mailbox = MacosFrameMailbox::new();
+    mailbox.publish(Ok(MacosFrameEvent::Frame(Box::new(bgra_cpu_frame(
+        [3, 2, 1, 255],
+        rgb_color(),
+    )))));
+    mailbox.publish(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started)));
+    mailbox.publish(Ok(MacosFrameEvent::RecoverableError(Box::new(
+        MacosCaptureError::CaptureWorkerStartFailed("recoverable fixture".to_owned()),
+    ))));
+
+    assert!(matches!(
+        mailbox.take_latest(),
+        Some(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started)))
+    ));
+    assert!(matches!(
+        mailbox.take_latest(),
+        Some(Ok(MacosFrameEvent::Frame(_)))
+    ));
+    assert!(matches!(
+        mailbox.take_latest(),
+        Some(Ok(MacosFrameEvent::RecoverableError(_)))
+    ));
+}
+
+#[test]
+fn mailbox_frame_and_diagnostic_revision_order_preserves_newest_health() {
+    fn drain_health(mailbox: &MacosFrameMailbox) -> &'static str {
+        let mut health = "unknown";
+        while let Some(delivery) = mailbox.take_latest() {
+            match delivery {
+                Ok(MacosFrameEvent::Frame(_)) => health = "healthy",
+                Ok(MacosFrameEvent::RecoverableError(_)) => health = "recovering",
+                Ok(MacosFrameEvent::Lifecycle(_)) | Err(_) => {}
+            }
+        }
+        health
+    }
+
+    let newer_frame = MacosFrameMailbox::new();
+    newer_frame.publish(Ok(MacosFrameEvent::RecoverableError(Box::new(
+        MacosCaptureError::CaptureWorkerStartFailed("older diagnostic".to_owned()),
+    ))));
+    newer_frame.publish(Ok(MacosFrameEvent::Frame(Box::new(bgra_cpu_frame(
+        [4, 3, 2, 255],
+        rgb_color(),
+    )))));
+    assert_eq!(drain_health(&newer_frame), "healthy");
+
+    let newer_diagnostic = MacosFrameMailbox::new();
+    newer_diagnostic.publish(Ok(MacosFrameEvent::Frame(Box::new(bgra_cpu_frame(
+        [2, 3, 4, 255],
+        rgb_color(),
+    )))));
+    newer_diagnostic.publish(Ok(MacosFrameEvent::RecoverableError(Box::new(
+        MacosCaptureError::CaptureWorkerStartFailed("newer diagnostic".to_owned()),
+    ))));
+    assert_eq!(drain_health(&newer_diagnostic), "recovering");
+}
+
+#[test]
+fn mailbox_terminal_deliveries_advance_ordered_invalidation_generations() {
+    let mailbox = MacosFrameMailbox::new();
+    for message in ["first fatal callback", "duplicate fatal callback"] {
+        mailbox.publish(Err(MacosCaptureError::CaptureWorkerStartFailed(
+            message.to_owned(),
+        )));
+    }
+
+    let (_, invalidation_generation, fatal) = mailbox
+        .take_latest_with_generation()
+        .expect("fatal control remains pending");
+    assert_eq!(invalidation_generation, 2);
+    assert!(fatal.is_err());
+    assert!(!mailbox.has_pending());
+}
+
+#[test]
 fn mailbox_wake_releases_a_stopped_waiter_without_a_delivery() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;

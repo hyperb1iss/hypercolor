@@ -1,7 +1,7 @@
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::{MacosCaptureError, MacosFrameEvent};
+use crate::{MacosCaptureError, MacosFrameEvent, MacosFrameStatus};
 
 #[derive(Debug, Clone, Default)]
 pub struct MacosFrameMailbox {
@@ -16,9 +16,20 @@ struct MailboxInner {
 
 #[derive(Debug, Default)]
 struct MailboxState {
-    latest: Option<Result<MacosFrameEvent, MacosCaptureError>>,
+    control: Option<PendingDelivery>,
+    frame: Option<PendingDelivery>,
+    diagnostic: Option<PendingDelivery>,
     superseded: u64,
     wake_generation: u64,
+    delivery_revision: u64,
+    invalidation_generation: u64,
+}
+
+#[derive(Debug)]
+struct PendingDelivery {
+    revision: u64,
+    invalidation_generation: u64,
+    delivery: Result<MacosFrameEvent, MacosCaptureError>,
 }
 
 impl MacosFrameMailbox {
@@ -28,7 +39,34 @@ impl MacosFrameMailbox {
 
     pub fn publish(&self, delivery: Result<MacosFrameEvent, MacosCaptureError>) {
         let mut state = self.lock();
-        if state.latest.replace(delivery).is_some() {
+        state.delivery_revision = state
+            .delivery_revision
+            .checked_add(1)
+            .expect("macOS mailbox delivery revision must remain monotonic");
+        let terminal = matches!(
+            &delivery,
+            Err(_)
+                | Ok(MacosFrameEvent::Lifecycle(
+                    MacosFrameStatus::Suspended | MacosFrameStatus::Stopped
+                ))
+        );
+        if terminal {
+            state.invalidation_generation = state
+                .invalidation_generation
+                .checked_add(1)
+                .expect("macOS mailbox invalidation generation must remain monotonic");
+        }
+        let pending = PendingDelivery {
+            revision: state.delivery_revision,
+            invalidation_generation: state.invalidation_generation,
+            delivery,
+        };
+        let lane = match &pending.delivery {
+            Ok(MacosFrameEvent::Frame(_)) => &mut state.frame,
+            Ok(MacosFrameEvent::RecoverableError(_)) => &mut state.diagnostic,
+            Ok(MacosFrameEvent::Lifecycle(_)) | Err(_) => &mut state.control,
+        };
+        if lane.replace(pending).is_some() {
             state.superseded = state.superseded.saturating_add(1);
         }
         drop(state);
@@ -36,11 +74,17 @@ impl MacosFrameMailbox {
     }
 
     pub fn take_latest(&self) -> Option<Result<MacosFrameEvent, MacosCaptureError>> {
-        self.lock().latest.take()
+        Self::take_next(&mut self.lock()).map(|(_, _, delivery)| delivery)
+    }
+
+    pub fn take_latest_with_generation(
+        &self,
+    ) -> Option<(u64, u64, Result<MacosFrameEvent, MacosCaptureError>)> {
+        Self::take_next(&mut self.lock())
     }
 
     pub fn has_pending(&self) -> bool {
-        self.lock().latest.is_some()
+        Self::has_pending_state(&self.lock())
     }
 
     pub fn superseded_count(&self) -> u64 {
@@ -59,6 +103,15 @@ impl MacosFrameMailbox {
         timeout: Duration,
         keep_waiting: impl Fn() -> bool,
     ) -> Option<Result<MacosFrameEvent, MacosCaptureError>> {
+        self.wait_latest_with_generation_while(timeout, keep_waiting)
+            .map(|(_, _, delivery)| delivery)
+    }
+
+    pub fn wait_latest_with_generation_while(
+        &self,
+        timeout: Duration,
+        keep_waiting: impl Fn() -> bool,
+    ) -> Option<(u64, u64, Result<MacosFrameEvent, MacosCaptureError>)> {
         self.wait_latest_while_with_hook(timeout, keep_waiting, || {})
     }
 
@@ -67,11 +120,14 @@ impl MacosFrameMailbox {
         timeout: Duration,
         keep_waiting: impl Fn() -> bool,
         mut before_wait: impl FnMut(),
-    ) -> Option<Result<MacosFrameEvent, MacosCaptureError>> {
+    ) -> Option<(u64, u64, Result<MacosFrameEvent, MacosCaptureError>)> {
         let started = Instant::now();
         let mut state = self.lock();
         let wake_generation = state.wake_generation;
-        while state.latest.is_none() && state.wake_generation == wake_generation && keep_waiting() {
+        while !Self::has_pending_state(&state)
+            && state.wake_generation == wake_generation
+            && keep_waiting()
+        {
             before_wait();
             let remaining = timeout.saturating_sub(started.elapsed());
             if remaining.is_zero() {
@@ -87,7 +143,7 @@ impl MacosFrameMailbox {
                 break;
             }
         }
-        state.latest.take()
+        Self::take_next(&mut state)
     }
 
     pub fn wake(&self) {
@@ -102,6 +158,33 @@ impl MacosFrameMailbox {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn has_pending_state(state: &MailboxState) -> bool {
+        state.control.is_some() || state.frame.is_some() || state.diagnostic.is_some()
+    }
+
+    fn take_next(
+        state: &mut MailboxState,
+    ) -> Option<(u64, u64, Result<MacosFrameEvent, MacosCaptureError>)> {
+        state
+            .control
+            .take()
+            .or_else(|| match (&state.frame, &state.diagnostic) {
+                (Some(frame), Some(diagnostic)) if diagnostic.revision < frame.revision => {
+                    state.diagnostic.take()
+                }
+                (Some(_), _) => state.frame.take(),
+                (None, Some(_)) => state.diagnostic.take(),
+                (None, None) => None,
+            })
+            .map(|pending| {
+                (
+                    pending.revision,
+                    pending.invalidation_generation,
+                    pending.delivery,
+                )
+            })
     }
 }
 

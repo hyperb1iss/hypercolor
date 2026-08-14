@@ -51,7 +51,9 @@ use objc2_screen_capture_kit::{
 
 use crate::diagnostics::CallbackCounters;
 use crate::stream_contract::MacosTahoeSelectionCapabilityState;
-use crate::worker::{LatestSampleInput, LatestSampleWorker, SamplePublishOutcome};
+use crate::worker::{
+    LatestSampleInput, LatestSampleWorker, SamplePublication, SamplePublishOutcome,
+};
 use crate::{
     MACOS_STREAM_QUEUE_DEPTH, MacosAttachment, MacosCaptureCallbackDiagnostics,
     MacosCaptureCapabilities, MacosCaptureColorimetry, MacosCaptureContentStyle,
@@ -503,9 +505,25 @@ impl SessionShared {
 
 struct RetainedNativeSample {
     attachments: MacosRawFrameAttachments,
-    pixel_buffer: Option<CFRetained<CVPixelBuffer>>,
-    admission_lifetime: Option<PoolBackingLifetime>,
+    pixel_buffer: CFRetained<CVPixelBuffer>,
+    admission_lifetime: PoolBackingLifetime,
     cursor_composed: bool,
+}
+
+enum RetainedNativeDelivery<T = RetainedNativeSample> {
+    Complete(T),
+    Lifecycle(MacosFrameStatus),
+}
+
+fn route_retained_delivery<T>(
+    delivery: RetainedNativeDelivery<T>,
+    complete: impl FnOnce(T),
+    lifecycle: impl FnOnce(MacosFrameStatus),
+) {
+    match delivery {
+        RetainedNativeDelivery::Complete(sample) => complete(sample),
+        RetainedNativeDelivery::Lifecycle(status) => lifecycle(status),
+    }
 }
 
 struct DecodedSample {
@@ -521,7 +539,7 @@ fn retain_sample(
     sample: &CMSampleBuffer,
     cursor_composed: bool,
     pool: &PoolObservation,
-) -> Result<RetainedNativeSample, MacosCaptureError> {
+) -> Result<RetainedNativeDelivery, MacosCaptureError> {
     // SAFETY: ScreenCaptureKit supplied a live CMSampleBuffer reference for
     // the duration of this callback.
     if !unsafe { sample.is_valid() } {
@@ -539,36 +557,29 @@ fn retain_sample(
             return Err(MacosCaptureError::MalformedAttachment("status"));
         }
     };
-    let (pixel_buffer, admission_lifetime) = if status == MacosFrameStatus::Complete {
-        let pixel_buffer = borrowed_pixel_buffer(sample)?;
-        let storage_extent = extent(
-            CVPixelBufferGetWidth(pixel_buffer),
-            CVPixelBufferGetHeight(pixel_buffer),
-        )?;
-        let pixel_format_fourcc = CVPixelBufferGetPixelFormatType(pixel_buffer);
-        let pixel_format = MacosCapturePixelFormat::from_fourcc(pixel_format_fourcc)?;
-        let planes = planes(pixel_buffer, storage_extent)?;
-        let (iosurface_id, allocation_bytes) = borrowed_surface_identity(pixel_buffer)?;
-        crate::frame::validate_capture_planes(
-            storage_extent,
-            pixel_format,
-            planes,
-            allocation_bytes,
-        )?;
-        with_admitted_surface(pool, iosurface_id, allocation_bytes, |admission_lifetime| {
-            // SAFETY: admission succeeded while the callback still owns the
-            // borrowed image buffer, so this takes the retained owner handed off.
-            let pixel_buffer = unsafe { CFRetained::retain(NonNull::from(pixel_buffer)) };
-            (Some(pixel_buffer), Some(admission_lifetime))
-        })?
-    } else {
-        (None, None)
-    };
-    Ok(RetainedNativeSample {
-        attachments,
-        pixel_buffer,
-        admission_lifetime,
-        cursor_composed,
+    if status != MacosFrameStatus::Complete {
+        return Ok(RetainedNativeDelivery::Lifecycle(status));
+    }
+    let pixel_buffer = borrowed_pixel_buffer(sample)?;
+    let storage_extent = extent(
+        CVPixelBufferGetWidth(pixel_buffer),
+        CVPixelBufferGetHeight(pixel_buffer),
+    )?;
+    let pixel_format_fourcc = CVPixelBufferGetPixelFormatType(pixel_buffer);
+    let pixel_format = MacosCapturePixelFormat::from_fourcc(pixel_format_fourcc)?;
+    let planes = planes(pixel_buffer, storage_extent)?;
+    let (iosurface_id, allocation_bytes) = borrowed_surface_identity(pixel_buffer)?;
+    crate::frame::validate_capture_planes(storage_extent, pixel_format, planes, allocation_bytes)?;
+    with_admitted_surface(pool, iosurface_id, allocation_bytes, |admission_lifetime| {
+        // SAFETY: admission succeeded while the callback still owns the
+        // borrowed image buffer, so this takes the retained owner handed off.
+        let pixel_buffer = unsafe { CFRetained::retain(NonNull::from(pixel_buffer)) };
+        RetainedNativeDelivery::Complete(RetainedNativeSample {
+            attachments,
+            pixel_buffer,
+            admission_lifetime,
+            cursor_composed,
+        })
     })
 }
 
@@ -624,6 +635,7 @@ fn borrowed_surface_identity(
 
 fn publish_decoded_result(
     result: Result<DecodedSample, MacosCaptureError>,
+    publication: SamplePublication,
     epoch: u64,
     streams: &Weak<StreamSlot>,
     shared: &Arc<SessionShared>,
@@ -632,7 +644,7 @@ fn publish_decoded_result(
     match result {
         Ok(sample) => {
             if let Some(streams) = streams.upgrade() {
-                streams.publish_decoded_sample(epoch, sample);
+                streams.publish_decoded_sample(epoch, sample, &publication);
             }
         }
         Err(error @ MacosCaptureError::StreamDeliveryRejected(_)) => {
@@ -643,7 +655,7 @@ fn publish_decoded_result(
 }
 
 struct CaptureOutputIvars {
-    samples: LatestSampleInput<Result<RetainedNativeSample, MacosCaptureError>>,
+    samples: LatestSampleInput<RetainedNativeSample>,
     pool: PoolObservation,
     shared: Arc<SessionShared>,
     streams: Weak<StreamSlot>,
@@ -679,7 +691,7 @@ define_class!(
             {
                 return;
             }
-            let sample = if output_type == SCStreamOutputType::Screen {
+            let delivery = if output_type == SCStreamOutputType::Screen {
                 let _retain_timing = self.ivars().shared.counters.observe_retain();
                 retain_sample(
                     sample_buffer,
@@ -689,7 +701,7 @@ define_class!(
             } else {
                 Err(MacosCaptureError::UnexpectedStreamOutputType(output_type.0))
             };
-            let sample = match sample {
+            let delivery = match delivery {
                 Err(error @ MacosCaptureError::ScreenResourceExhausted { .. }) => {
                     handle_fatal_stream_error(
                         &self.ivars().streams,
@@ -699,15 +711,34 @@ define_class!(
                     );
                     return;
                 }
-                sample => sample,
+                Err(error) => {
+                    self.ivars().shared.counters.record_drop(&error);
+                    return;
+                }
+                Ok(delivery) => delivery,
             };
-            let _enqueue_timing = self.ivars().shared.counters.observe_enqueue();
-            if self.ivars().samples.publish(sample) == SamplePublishOutcome::Superseded {
-                self.ivars()
-                    .shared
-                    .counters
-                    .record_native_sample_superseded();
-            }
+            route_retained_delivery(
+                delivery,
+                |sample| {
+                    let _enqueue_timing = self.ivars().shared.counters.observe_enqueue();
+                    if self.ivars().samples.publish(sample) == SamplePublishOutcome::Superseded {
+                        self.ivars()
+                            .shared
+                            .counters
+                            .record_native_sample_superseded();
+                    }
+                },
+                |status| {
+                    if let Some(streams) = self.ivars().streams.upgrade() {
+                        route_stream_lifecycle(
+                            &self.ivars().samples,
+                            &streams,
+                            self.ivars().epoch,
+                            status,
+                        );
+                    }
+                },
+            );
         }
     }
 
@@ -727,7 +758,9 @@ define_class!(
         #[unsafe(method(streamDidBecomeActive:))]
         fn streamDidBecomeActive(&self, _stream: &SCStream) {
             if let Some(streams) = self.ivars().streams.upgrade() {
-                streams.record_stream_activity(
+                route_stream_activity(
+                    &self.ivars().samples,
+                    &streams,
                     self.ivars().epoch,
                     true,
                     self.ivars().display_filter,
@@ -739,7 +772,9 @@ define_class!(
         #[unsafe(method(streamDidBecomeInactive:))]
         fn streamDidBecomeInactive(&self, _stream: &SCStream) {
             if let Some(streams) = self.ivars().streams.upgrade() {
-                streams.record_stream_activity(
+                route_stream_activity(
+                    &self.ivars().samples,
+                    &streams,
                     self.ivars().epoch,
                     false,
                     self.ivars().display_filter,
@@ -749,10 +784,40 @@ define_class!(
     }
 );
 
+fn route_stream_lifecycle<T>(
+    samples: &LatestSampleInput<T>,
+    streams: &StreamSlot,
+    epoch: u64,
+    status: MacosFrameStatus,
+) {
+    if matches!(
+        status,
+        MacosFrameStatus::Suspended | MacosFrameStatus::Stopped
+    ) {
+        samples.invalidate_if(|| streams.publish_stream_lifecycle(epoch, status));
+    } else {
+        samples.synchronize_if(|| streams.publish_stream_lifecycle(epoch, status));
+    }
+}
+
+fn route_stream_activity<T>(
+    samples: &LatestSampleInput<T>,
+    streams: &StreamSlot,
+    epoch: u64,
+    active: bool,
+    display_filter: bool,
+) {
+    if active {
+        samples.synchronize_if(|| streams.record_stream_activity(epoch, true, display_filter));
+    } else {
+        samples.invalidate_if(|| streams.record_stream_activity(epoch, false, display_filter));
+    }
+}
+
 impl CaptureOutput {
     fn new(
         epoch: u64,
-        samples: LatestSampleInput<Result<RetainedNativeSample, MacosCaptureError>>,
+        samples: LatestSampleInput<RetainedNativeSample>,
         pool: PoolObservation,
         shared: Arc<SessionShared>,
         streams: Weak<StreamSlot>,
@@ -1110,7 +1175,7 @@ struct NativeStream {
     source_id: Arc<str>,
     request: MacosStreamRequest,
     reserve_pool: PoolReservationFactory,
-    worker: LatestSampleWorker<Result<RetainedNativeSample, MacosCaptureError>>,
+    worker: LatestSampleWorker<RetainedNativeSample>,
     _output: Retained<CaptureOutput>,
     _queue: DispatchRetained<DispatchQueue>,
 }
@@ -1142,15 +1207,12 @@ impl NativeStream {
         let worker_streams = streams.clone();
         let worker = LatestSampleWorker::spawn(
             "hypercolor-macos-screen-capture",
-            move |sample: Result<RetainedNativeSample, MacosCaptureError>| {
+            move |sample: RetainedNativeSample| {
                 let _timing = decode_shared.counters.observe_conversion();
-                match sample {
-                    Ok(sample) => decode_sample(&mut decoder, &mut delivery_validator, sample),
-                    Err(error) => Err(classify_delivery_error(&mut delivery_validator, error)),
-                }
+                decode_sample(&mut decoder, &mut delivery_validator, sample)
             },
-            move |result| {
-                publish_decoded_result(result, epoch, &worker_streams, &worker_shared);
+            move |result, publication| {
+                publish_decoded_result(result, publication, epoch, &worker_streams, &worker_shared);
             },
         )
         .map_err(|error| MacosCaptureError::CaptureWorkerStartFailed(error.to_string()))?;
@@ -1534,6 +1596,7 @@ struct StreamState {
     request: MacosStreamRequest,
     pending_request: Option<PendingStreamRequest>,
     inactive_epochs: Vec<u64>,
+    terminal_epochs: Vec<u64>,
     #[cfg(test)]
     fixture_current_epoch: Option<u64>,
     #[cfg(test)]
@@ -1663,6 +1726,7 @@ impl StreamSlot {
         state.staging_epoch = None;
         state.candidate_epoch = None;
         state.inactive_epochs.clear();
+        state.terminal_epochs.clear();
         self.shared.activate_epoch(0);
         self.shared.clear_tahoe_selection();
         self.shared
@@ -1772,9 +1836,7 @@ impl StreamSlot {
         };
         state.staging_epoch = Some(epoch);
         if let Some(replaced_epoch) = state.candidate_epoch {
-            state
-                .inactive_epochs
-                .retain(|inactive| *inactive != replaced_epoch);
+            Self::forget_epoch_activity(state, replaced_epoch);
         }
         state.candidate_epoch = None;
         Ok((stage, selection_filter, state.candidate.take()))
@@ -1851,6 +1913,7 @@ impl StreamSlot {
             state.staging_epoch = None;
             state.pending_selection = None;
             state.inactive_epochs.clear();
+            state.terminal_epochs.clear();
             state.candidate_epoch = None;
             let selection = selection_filter.selection.clone();
             state.selected_filter = Some(selection_filter);
@@ -2239,9 +2302,7 @@ impl StreamSlot {
         };
         state.staging_epoch = Some(epoch);
         if let Some(replaced_epoch) = state.candidate_epoch {
-            state
-                .inactive_epochs
-                .retain(|inactive| *inactive != replaced_epoch);
+            Self::forget_epoch_activity(&mut state, replaced_epoch);
         }
         state.candidate_epoch = None;
         Ok(Some((stage, selection_filter, state.candidate.take())))
@@ -2454,20 +2515,31 @@ impl StreamSlot {
                 .is_some_and(|candidate| candidate.epoch() == epoch)
     }
 
-    fn record_stream_activity(&self, epoch: u64, active: bool, display_filter: bool) {
+    fn forget_epoch_activity(state: &mut StreamState, epoch: u64) {
+        state.inactive_epochs.retain(|inactive| *inactive != epoch);
+        state.terminal_epochs.retain(|terminal| *terminal != epoch);
+    }
+
+    fn record_stream_activity(&self, epoch: u64, active: bool, display_filter: bool) -> bool {
         let _lifecycle = lock(&self.lifecycle_start);
         let mut state = lock(&self.state);
         if !Self::tracks_epoch(&state, epoch) {
-            return;
+            return false;
         }
         if display_filter {
-            return;
+            return false;
         }
-        if active {
-            state.inactive_epochs.retain(|inactive| *inactive != epoch);
+        let changed = if active {
+            let changed =
+                state.inactive_epochs.contains(&epoch) || state.terminal_epochs.contains(&epoch);
+            Self::forget_epoch_activity(&mut state, epoch);
+            changed
         } else if !state.inactive_epochs.contains(&epoch) {
             state.inactive_epochs.push(epoch);
-        }
+            true
+        } else {
+            false
+        };
         let current = Self::current_is_epoch(&state, epoch);
         drop(state);
         if current {
@@ -2477,6 +2549,7 @@ impl StreamSlot {
                 MacosProtectedSourceState::NeedsSelection
             });
         }
+        changed
     }
 
     fn activate_candidate_for_publication(
@@ -2509,12 +2582,16 @@ impl StreamSlot {
             }
             return None;
         };
+        let previous_epoch = Self::current_epoch(state);
         state.lifecycle_revision = lifecycle_revision;
         state.candidate_epoch = None;
         let previous = candidate.and_then(|candidate| state.current.replace(candidate));
         #[cfg(test)]
         if fixture_candidate.is_some() {
             state.fixture_current_epoch = Some(epoch);
+        }
+        if let Some(previous_epoch) = previous_epoch {
+            Self::forget_epoch_activity(state, previous_epoch);
         }
         Self::commit_pending_selection(state, epoch);
         let request_completion = Self::commit_pending_request(state, epoch);
@@ -2540,13 +2617,63 @@ impl StreamSlot {
         })
     }
 
-    fn publish_decoded_sample(&self, epoch: u64, sample: DecodedSample) -> bool {
+    fn publish_decoded_sample(
+        &self,
+        epoch: u64,
+        sample: DecodedSample,
+        publication: &SamplePublication,
+    ) -> bool {
         let is_frame = matches!(&sample.event, MacosFrameEvent::Frame(_));
-        self.publish_decoded_event_with(epoch, is_frame, sample.confirmed_delivery, || {
-            self.shared.publish(sample.event)
-        })
+        self.publish_decoded_event_if(
+            epoch,
+            is_frame,
+            sample.confirmed_delivery,
+            || publication.is_current(),
+            || self.shared.publish(sample.event),
+        )
     }
 
+    fn publish_stream_lifecycle(&self, epoch: u64, status: MacosFrameStatus) -> bool {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let rejected = lock(&self.rejected_epochs);
+        let mut state = lock(&self.state);
+        if !self.shared.capture_active()
+            || rejected.contains(&epoch)
+            || !Self::tracks_epoch(&state, epoch)
+        {
+            return false;
+        }
+        let current = Self::current_is_epoch(&state, epoch);
+        if matches!(
+            status,
+            MacosFrameStatus::Suspended | MacosFrameStatus::Stopped
+        ) {
+            if state.terminal_epochs.contains(&epoch) {
+                return false;
+            }
+            let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) else {
+                return false;
+            };
+            state.lifecycle_revision = lifecycle_revision;
+            if !state.inactive_epochs.contains(&epoch) {
+                state.inactive_epochs.push(epoch);
+            }
+            state.terminal_epochs.push(epoch);
+            drop(state);
+            if current {
+                self.shared.publish(MacosFrameEvent::Lifecycle(status));
+            }
+            return true;
+        }
+        if !current || state.inactive_epochs.contains(&epoch) {
+            return false;
+        }
+        drop(state);
+        self.shared.publish(MacosFrameEvent::Lifecycle(status));
+        true
+    }
+
+    #[cfg(test)]
     fn publish_decoded_event_with(
         &self,
         epoch: u64,
@@ -2554,7 +2681,21 @@ impl StreamSlot {
         confirmed_delivery: Option<MacosValidatedStreamDelivery>,
         publish: impl FnOnce(),
     ) -> bool {
+        self.publish_decoded_event_if(epoch, is_frame, confirmed_delivery, || true, publish)
+    }
+
+    fn publish_decoded_event_if(
+        &self,
+        epoch: u64,
+        is_frame: bool,
+        confirmed_delivery: Option<MacosValidatedStreamDelivery>,
+        publication_is_current: impl FnOnce() -> bool,
+        publish: impl FnOnce(),
+    ) -> bool {
         let lifecycle = lock(&self.lifecycle_start);
+        if !publication_is_current() {
+            return false;
+        }
         let rejected = lock(&self.rejected_epochs);
         let mut state = lock(&self.state);
         if !self.shared.capture_active()
@@ -2630,7 +2771,7 @@ impl StreamSlot {
         if state.candidate_epoch == Some(epoch) {
             state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
             state.candidate_epoch = None;
-            state.inactive_epochs.retain(|inactive| *inactive != epoch);
+            Self::forget_epoch_activity(&mut state, epoch);
             #[cfg(test)]
             {
                 state
@@ -2660,7 +2801,7 @@ impl StreamSlot {
         if Self::current_is_epoch(&state, epoch) {
             state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
             let current = state.current.take();
-            state.inactive_epochs.retain(|inactive| *inactive != epoch);
+            Self::forget_epoch_activity(&mut state, epoch);
             #[cfg(test)]
             {
                 state
@@ -2814,6 +2955,7 @@ impl StreamSlot {
         state.staging_epoch = None;
         state.candidate_epoch = None;
         state.inactive_epochs.clear();
+        state.terminal_epochs.clear();
         drop(state);
         self.shared
             .set_unconfirmed_selection(MacosCaptureSelection::None);
@@ -3045,6 +3187,7 @@ impl StreamSlot {
             state.pending_request = None;
             state.candidate_epoch = None;
             state.inactive_epochs.clear();
+            state.terminal_epochs.clear();
             #[cfg(test)]
             {
                 state.fixture_candidate_epoch = None;
@@ -4359,36 +4502,13 @@ fn decode_sample(
     delivery_validator: &mut MacosStreamDeliveryValidator,
     sample: RetainedNativeSample,
 ) -> Result<DecodedSample, MacosCaptureError> {
-    let status = match sample.attachments.status {
-        MacosAttachment::Value(status) => MacosFrameStatus::try_from(status)?,
-        MacosAttachment::Missing => return Err(MacosCaptureError::MissingAttachment("status")),
-        MacosAttachment::Malformed => {
-            return Err(MacosCaptureError::MalformedAttachment("status"));
-        }
-    };
-    if status != MacosFrameStatus::Complete {
-        return decoder
-            .decode(MacosRawCaptureSample {
-                frame: None,
-                attachments: sample.attachments,
-            })
-            .map(|event| DecodedSample {
-                event,
-                confirmed_delivery: None,
-            });
-    }
-
     let awaiting_first_delivery = matches!(
         delivery_validator.state(),
         MacosStreamDeliveryState::AwaitingFirstCompleteFrame(_)
     );
-    let pixel_buffer = sample
-        .pixel_buffer
-        .ok_or(MacosCaptureError::MissingFramePayload)
-        .map_err(|error| classify_delivery_error(delivery_validator, error))?;
     let frame = decode_complete_frame(
-        pixel_buffer,
-        sample.admission_lifetime,
+        sample.pixel_buffer,
+        Some(sample.admission_lifetime),
         sample.cursor_composed,
     )
     .map_err(|error| classify_delivery_error(delivery_validator, error))?;
@@ -4941,8 +5061,10 @@ mod tests {
         StreamSlot, SysctlI32Value, capture_capabilities_from_probes, capture_dynamic_range,
         classify_delivery_error, color_range_from_fourcc, conservative_pool_quote,
         execute_screenshot_transaction, is_hypercolor_ui_bundle_identifier,
+        route_retained_delivery, route_stream_activity, route_stream_lifecycle,
         session_selection_source_id, with_admitted_surface,
     };
+    use crate::worker::{LatestSampleWorker, SamplePublishOutcome};
     use crate::{
         MacosCaptureCadence, MacosScreenshotReferenceCapability, MacosScreenshotReferenceImage,
         MacosScreenshotReferenceSet, MacosStreamRequest,
@@ -5077,6 +5199,24 @@ mod tests {
         assert!(streams.set_capture_active(true));
         assert!(streams.set_capture_active(false));
         assert_eq!(streams.selection_revision(), 2);
+    }
+
+    #[test]
+    fn incomplete_native_delivery_never_enters_the_latest_frame_slot() {
+        let latest_frame_slot_called = AtomicBool::new(false);
+        let lifecycle_called = AtomicBool::new(false);
+
+        route_retained_delivery(
+            super::RetainedNativeDelivery::<()>::Lifecycle(MacosFrameStatus::Idle),
+            |_| latest_frame_slot_called.store(true, Ordering::Release),
+            |status| {
+                assert_eq!(status, MacosFrameStatus::Idle);
+                lifecycle_called.store(true, Ordering::Release);
+            },
+        );
+
+        assert!(!latest_frame_slot_called.load(Ordering::Acquire));
+        assert!(lifecycle_called.load(Ordering::Acquire));
     }
 
     fn stream_slot_fixture(current_epoch: u64, selection_revision: u64) -> Arc<StreamSlot> {
@@ -5457,6 +5597,10 @@ mod tests {
         assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
         assert!(matches!(
             streams.shared.mailbox.take_latest(),
+            Some(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Idle)))
+        ));
+        assert!(matches!(
+            streams.shared.mailbox.take_latest(),
             Some(Ok(MacosFrameEvent::RecoverableError(_)))
         ));
     }
@@ -5469,6 +5613,28 @@ mod tests {
     #[test]
     fn fatal_error_finalization_cannot_overwrite_live_successor() {
         assert_retired_error_cannot_overwrite_successor(true);
+    }
+
+    #[test]
+    fn duplicate_fatal_callbacks_invalidate_the_owned_epoch_once() {
+        let streams = stream_slot_fixture(41, 9);
+        let error = MacosCaptureError::CaptureWorkerStartFailed(
+            "duplicate fatal callback fixture".to_owned(),
+        );
+
+        super::handle_owned_fatal_stream_error(
+            &streams,
+            41,
+            Arc::clone(&streams.shared),
+            error.clone(),
+        );
+        super::handle_owned_fatal_stream_error(&streams, 41, Arc::clone(&streams.shared), error);
+
+        assert!(matches!(
+            streams.shared.mailbox.take_latest_with_generation(),
+            Some((_, 1, Err(MacosCaptureError::CaptureWorkerStartFailed(_))))
+        ));
+        assert!(!streams.shared.mailbox.has_pending());
     }
 
     #[test]
@@ -5673,6 +5839,235 @@ mod tests {
             streams.shared.status(),
             MacosProtectedSourceState::NeedsSelection
         );
+    }
+
+    #[test]
+    fn terminal_lifecycle_generation_rejects_frames_until_stream_reactivation() {
+        let streams = stream_slot_fixture(41, 9);
+        assert!(streams.publish_stream_lifecycle(41, MacosFrameStatus::Suspended));
+        let stale_published = AtomicBool::new(false);
+
+        assert!(!streams.publish_decoded_event_with(41, true, None, || {
+            stale_published.store(true, Ordering::Release);
+        }));
+        assert!(!stale_published.load(Ordering::Acquire));
+        assert!(matches!(
+            streams.shared.mailbox.take_latest_with_generation(),
+            Some((
+                _,
+                1,
+                Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Suspended))
+            ))
+        ));
+
+        streams.record_stream_activity(41, true, false);
+        let resumed_published = AtomicBool::new(false);
+        assert!(streams.publish_decoded_event_with(41, true, None, || {
+            resumed_published.store(true, Ordering::Release);
+        }));
+        assert!(resumed_published.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn rejected_terminal_lifecycle_does_not_advance_decode_generation() {
+        let streams = stream_slot_fixture(41, 9);
+        let mut worker = LatestSampleWorker::spawn(
+            "macos-capture-terminal-generation-test",
+            |sample: ()| sample,
+            |(), _publication| {},
+        )
+        .expect("generation worker should start");
+        let samples = worker.input();
+        let initial_generation = samples.generation();
+
+        route_stream_lifecycle(&samples, &streams, 999, MacosFrameStatus::Suspended);
+        assert_eq!(samples.generation(), initial_generation);
+
+        route_stream_lifecycle(&samples, &streams, 41, MacosFrameStatus::Suspended);
+        let terminal_generation = samples.generation();
+        assert!(terminal_generation > initial_generation);
+
+        route_stream_lifecycle(&samples, &streams, 41, MacosFrameStatus::Suspended);
+        assert_eq!(samples.generation(), terminal_generation);
+
+        worker.close();
+        worker.join().expect("generation worker should join");
+    }
+
+    #[test]
+    fn terminal_invalidation_crossing_cannot_publish_the_old_generation() {
+        let streams = stream_slot_fixture(41, 9);
+        let publish_streams = Arc::clone(&streams);
+        let old_published = Arc::new(AtomicBool::new(false));
+        let new_published = Arc::new(AtomicBool::new(false));
+        let worker_old_published = Arc::clone(&old_published);
+        let worker_new_published = Arc::clone(&new_published);
+        let (publication_entered_tx, publication_entered_rx) = mpsc::sync_channel(1);
+        let (release_publication_tx, release_publication_rx) = mpsc::sync_channel(1);
+        let (publication_result_tx, publication_result_rx) = mpsc::sync_channel(2);
+        let mut worker = LatestSampleWorker::spawn(
+            "macos-capture-terminal-crossing-test",
+            |sample| sample,
+            move |sample, publication| {
+                if sample == 1 {
+                    publication_entered_tx
+                        .send(())
+                        .expect("old publication should hold the generation lock");
+                    release_publication_rx
+                        .recv()
+                        .expect("old publication should resume");
+                }
+                let published = publish_streams.publish_decoded_event_if(
+                    41,
+                    true,
+                    None,
+                    || publication.is_current(),
+                    || {
+                        if sample == 1 {
+                            worker_old_published.store(true, Ordering::Release);
+                        } else {
+                            worker_new_published.store(true, Ordering::Release);
+                        }
+                    },
+                );
+                publication_result_tx
+                    .send((sample, published))
+                    .expect("publication outcome should be observable");
+            },
+        )
+        .expect("crossing worker should start");
+        let samples = worker.input();
+
+        assert_eq!(samples.publish(1), SamplePublishOutcome::Accepted);
+        publication_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old decode should enter generation-locked publication");
+
+        let terminal_samples = samples.clone();
+        let terminal_streams = Arc::clone(&streams);
+        let (invalidation_requested_tx, invalidation_requested_rx) = mpsc::sync_channel(1);
+        let (terminal_done_tx, terminal_done_rx) = mpsc::sync_channel(1);
+        let terminal = thread::spawn(move || {
+            let accepted = terminal_samples.invalidate_if_observed(
+                || {
+                    invalidation_requested_tx
+                        .send(())
+                        .expect("terminal invalidation request should be observable");
+                },
+                || terminal_streams.publish_stream_lifecycle(41, MacosFrameStatus::Suspended),
+            );
+            terminal_done_tx
+                .send(accepted)
+                .expect("terminal outcome should be observable");
+        });
+        invalidation_requested_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("terminal callback should request invalidation");
+
+        let active_samples = samples.clone();
+        let active_streams = Arc::clone(&streams);
+        let (active_started_tx, active_started_rx) = mpsc::sync_channel(1);
+        let (active_done_tx, active_done_rx) = mpsc::sync_channel(1);
+        let active = thread::spawn(move || {
+            active_started_tx
+                .send(())
+                .expect("active callback start should be observable");
+            route_stream_activity(&active_samples, &active_streams, 41, true, false);
+            active_done_tx
+                .send(())
+                .expect("active callback completion should be observable");
+        });
+        active_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("exact active callback should start after terminal invalidation");
+        assert_eq!(
+            active_done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        release_publication_tx
+            .send(())
+            .expect("old generation publication should resume");
+
+        assert_eq!(
+            publication_result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("old publication should settle"),
+            (1, false)
+        );
+        assert!(!old_published.load(Ordering::Acquire));
+        assert!(
+            terminal_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("terminal transition should settle")
+        );
+        terminal.join().expect("terminal callback should join");
+        active_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("exact active callback should follow terminal invalidation");
+        active.join().expect("active callback should join");
+
+        assert_eq!(samples.publish(2), SamplePublishOutcome::Accepted);
+        assert_eq!(
+            publication_result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("new generation should publish"),
+            (2, true)
+        );
+        assert!(new_published.load(Ordering::Acquire));
+
+        worker.close();
+        worker.join().expect("crossing worker should join");
+    }
+
+    #[test]
+    fn candidate_terminal_lifecycle_blocks_first_frame_until_exact_reactivation() {
+        for status in [MacosFrameStatus::Suspended, MacosFrameStatus::Stopped] {
+            let streams = stream_slot_fixture(41, 9);
+            let (stage, _) = reserve_selection_candidate_fixture(
+                &streams,
+                42,
+                MacosStreamRequest::default(),
+                42,
+            )
+            .expect("candidate reservation should succeed")
+            .expect("active capture should admit the candidate");
+            assert!(streams.start_candidate_fixture(stage));
+            let revision = super::lock(&streams.state).lifecycle_revision;
+
+            assert!(!streams.publish_stream_lifecycle(999, status));
+            assert_eq!(super::lock(&streams.state).lifecycle_revision, revision);
+            assert!(streams.publish_stream_lifecycle(42, status));
+            let terminal_revision = super::lock(&streams.state).lifecycle_revision;
+            assert!(terminal_revision > revision);
+            assert!(!streams.publish_stream_lifecycle(42, status));
+            assert_eq!(
+                super::lock(&streams.state).lifecycle_revision,
+                terminal_revision
+            );
+            assert!(!streams.shared.mailbox.has_pending());
+
+            let stale_published = AtomicBool::new(false);
+            assert!(!streams.publish_decoded_event_with(
+                42,
+                true,
+                Some(sdr_delivery_fixture()),
+                || stale_published.store(true, Ordering::Release),
+            ));
+            assert!(!stale_published.load(Ordering::Acquire));
+            assert_eq!(streams.shared.current_epoch(), 41);
+            assert_eq!(super::lock(&streams.state).candidate_epoch, Some(42));
+
+            streams.record_stream_activity(42, true, false);
+            let resumed_published = AtomicBool::new(false);
+            assert!(streams.publish_decoded_event_with(
+                42,
+                true,
+                Some(sdr_delivery_fixture()),
+                || resumed_published.store(true, Ordering::Release),
+            ));
+            assert!(resumed_published.load(Ordering::Acquire));
+            assert_eq!(streams.shared.current_epoch(), 42);
+        }
     }
 
     #[test]

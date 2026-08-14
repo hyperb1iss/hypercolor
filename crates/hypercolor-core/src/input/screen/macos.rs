@@ -2274,6 +2274,24 @@ fn invalidate_macos_worker(
     Ok(())
 }
 
+fn synchronize_macos_invalidation_generation(
+    observed: &mut u64,
+    delivered: u64,
+    publication: &Arc<Mutex<MacosPublication>>,
+    exact: &MacosExactPublicationShared,
+    runtimes: &[MacosExactRuntime],
+) -> anyhow::Result<bool> {
+    if delivered < *observed {
+        return Ok(false);
+    }
+    if delivered > *observed {
+        lock(publication).latest = None;
+        invalidate_macos_worker(exact, runtimes)?;
+        *observed = delivered;
+    }
+    Ok(true)
+}
+
 fn run_worker(
     mut prepared: PreparedWorker,
     mailbox: MacosFrameMailbox,
@@ -2290,15 +2308,25 @@ fn run_worker(
     let mut topology = TopologyState::default();
     let mut resources = ResourceState::default();
     let mut exact_runtimes = Vec::new();
+    let mut invalidation_generation = 0;
     let result: anyhow::Result<()> = (|| {
         while !stop.load(Ordering::Acquire) {
             handle_worker_commands(&command_rx, &mut prepared, &mut exact_runtimes, &exact);
             update_pinned_generations(&exact_runtimes, &telemetry);
-            let Some(delivery) =
-                mailbox.wait_latest_while(WORKER_WAIT, || !stop.load(Ordering::Acquire))
+            let Some((_, delivery_invalidation_generation, delivery)) = mailbox
+                .wait_latest_with_generation_while(WORKER_WAIT, || !stop.load(Ordering::Acquire))
             else {
                 continue;
             };
+            if !synchronize_macos_invalidation_generation(
+                &mut invalidation_generation,
+                delivery_invalidation_generation,
+                &publication,
+                &exact,
+                &exact_runtimes,
+            )? {
+                continue;
+            }
             match delivery {
                 Ok(MacosFrameEvent::Frame(frame)) => {
                     publish_frame(
@@ -2320,10 +2348,7 @@ fn run_worker(
                 Ok(MacosFrameEvent::Lifecycle(
                     MacosFrameStatus::Suspended | MacosFrameStatus::Stopped,
                 ))
-                | Err(_) => {
-                    lock(&publication).latest = None;
-                    invalidate_macos_worker(&exact, &exact_runtimes)?;
-                }
+                | Err(_) => {}
                 Ok(MacosFrameEvent::RecoverableError(_)) => {
                     report_macos_worker_health(
                         &exact,
@@ -3719,7 +3744,18 @@ mod tests {
         let prepared = hub
             .prepare_writable_publication(&publisher, ScreenPayloadKind::Surface, &intent)
             .expect("pre-invalidation publication reserves");
-        invalidate_macos_worker(&exact, &runtimes).expect("current worker invalidates");
+        let worker_publication = Arc::new(Mutex::new(MacosPublication::default()));
+        let mut observed_invalidation_generation = 0;
+        assert!(
+            synchronize_macos_invalidation_generation(
+                &mut observed_invalidation_generation,
+                1,
+                &worker_publication,
+                &exact,
+                &runtimes,
+            )
+            .expect("new terminal generation invalidates")
+        );
         assert!(matches!(
             hub.finalize_writable_publication(
                 prepared,
@@ -3741,6 +3777,29 @@ mod tests {
                 && delivery.source_health() == Some(ScreenPublicationHealth::Failed)
                 && delivery.invalidation_epoch() == invalidation_epoch
         }));
+        assert!(
+            synchronize_macos_invalidation_generation(
+                &mut observed_invalidation_generation,
+                1,
+                &worker_publication,
+                &exact,
+                &runtimes,
+            )
+            .expect("duplicate terminal generation is accepted without reinvalidation")
+        );
+        assert!(leases.iter().all(|lease| {
+            lease.observe(captured_at).1.invalidation_epoch() == invalidation_epoch
+        }));
+        assert!(
+            !synchronize_macos_invalidation_generation(
+                &mut observed_invalidation_generation,
+                0,
+                &worker_publication,
+                &exact,
+                &runtimes,
+            )
+            .expect("pre-terminal frame generation is rejected")
+        );
 
         let recovered_at = captured_at + Duration::from_millis(20);
         let recovered = cpu_capture_frame(&source, 2, recovered_at, [96, 64, 32, 255]);
