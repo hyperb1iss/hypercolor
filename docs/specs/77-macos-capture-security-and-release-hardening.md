@@ -310,9 +310,10 @@ configuration
 
 ### H1.5 Make launcher metadata version-neutral
 
-**Files:** `crates/hypercolor-daemon/src/main.rs`,
-`crates/hypercolor-app/src/supervisor/mod.rs`, launchd and Homebrew service files,
-`scripts/get-hypercolor.sh`, `scripts/install-release.sh`, `scripts/dist.sh`,
+**Files:** daemon launcher-resolution modules,
+`crates/hypercolor-app/src/supervisor/mod.rs`, the `hypercolor` installer
+transaction, launchd and Homebrew service files, `scripts/get-hypercolor.sh`,
+`scripts/install-release.sh`, `scripts/dist.sh`,
 `scripts/verify-release-artifact.sh`, packaging and supervisor tests
 
 **Depends on:** H1.4
@@ -321,19 +322,40 @@ configuration
 
 #### Implementation
 
-- Replace launcher `--macos-owner` arguments with
-  `HYPERCOLOR_MACOS_OWNER`.
-- Let old daemons ignore the environment and new daemons prefer it.
-- Add bounded legacy inference when metadata is absent.
-- Stage, verify, switch, and reload binary, UI, and launcher metadata as one
-  transactional install unit.
-- Roll back to the previous complete unit when any stage fails.
+- During the compatibility window, launchers publish
+  `HYPERCOLOR_MACOS_OWNER` plus the equal deprecated `--macos-owner` argument.
+  New daemons prefer the environment, accept an equal argument, and reject a
+  conflict. Remove the argument only after the supported-version floor moves.
+- Treat launcher metadata as a claim. Corroborate direct and Homebrew owners
+  through exact launchctl PID identity and app sidecars through their signed
+  parent before guard acquisition or owner publication.
+- Add bounded legacy inference when metadata is absent. Malformed, ambiguous,
+  or failed identity inspection rejects startup.
+- Harden artifact verification against path traversal, symlink, hardlink,
+  special, and duplicate members. Bind every member's type, mode, and digest.
+- Let the candidate `hypercolor` binary own a Rust install transaction. Shell
+  wrappers only download, verify, and invoke it. Homebrew and app casks retain
+  their native transaction ownership.
+- For raw direct installs, stage and verify an immutable digest-named unit
+  before stopping the current owner. Then preflight authority, unload, prove
+  guard release, switch one `active` symlink, reload, and require a newer exact
+  owner publication.
+- Journal first-install conversion from an in-place layout into a complete
+  synthetic legacy unit before mutation. Keep this install journal and lock
+  separate from the canonical owner store, handover journal, and flock.
+- Roll back the active unit, launcher metadata, and loaded state on failure.
+  Rollback completes only after a newer exact prior-owner publication.
 
 #### Verify
 
 - [ ] New launcher plus old daemon works in legacy mode.
 - [ ] Old launcher plus new daemon is classified through bounded inference.
+- [ ] Conflicting or uncorroborated launcher claims fail before guard
+      acquisition and owner publication.
+- [ ] Unsafe archive members and manifest mismatches fail before install
+      mutation.
 - [ ] Unsafe app and daemon skew fails before stopping the working owner.
+- [ ] First conversion from an in-place install is crash-replay safe.
 - [ ] Failure injection after every installer stage restores the prior unit.
 - [ ] Rollback preserves the canonical flock, owner store, journal, and TCC
       identity.
