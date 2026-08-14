@@ -13,6 +13,8 @@ use hypercolor_core::config::paths::data_dir;
 use hypercolor_macos_owner::{
     MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy, MacosOwnerStore,
 };
+#[cfg(target_os = "macos")]
+use hypercolor_macos_owner::{MacosOwnerExecutionError, MacosOwnerIncarnation};
 use hypercolor_types::event::MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
@@ -80,12 +82,13 @@ pub enum SystemdUserServicePlan {
 /// App-managed daemon supervisor state.
 ///
 /// Tracks the PID of whichever daemon child the watchdog is currently
-/// supervising. The actual `Child` handle lives inside the watchdog task
-/// so blocking waits can run on a dedicated thread without holding the
-/// state mutex.
+/// supervising. On macOS, the handover authority and watchdog share the
+/// retained `Child` through `app_sidecar_child`.
 #[derive(Clone, Default)]
 pub struct SupervisorState {
     child_pid: Arc<Mutex<Option<u32>>>,
+    #[cfg(target_os = "macos")]
+    app_sidecar_child: Arc<Mutex<Option<AppSidecarChild>>>,
     /// Latched true when the watchdog circuit-breaker fires —
     /// `WATCHDOG_MAX_RAPID_RESTARTS` failures within `WATCHDOG_FAILURE_WINDOW`.
     /// The tray reads this to surface the red `IconState::Error` so users
@@ -182,6 +185,104 @@ impl SupervisorState {
 
     fn clear_child(&self) {
         *self.child_guard() = None;
+        #[cfg(target_os = "macos")]
+        {
+            *self
+                .app_sidecar_child
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = None;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn register_app_sidecar_child(
+        &self,
+        incarnation: MacosOwnerIncarnation,
+        daemon: SharedManagedDaemon,
+    ) -> Result<(), MacosOwnerExecutionError> {
+        let child_pid = daemon.lock().unwrap_or_else(PoisonError::into_inner).id();
+        if incarnation.owner != MacosDaemonOwner::AppSidecar
+            || incarnation.identity.pid != child_pid
+        {
+            return Err(MacosOwnerExecutionError::new(
+                "app-sidecar owner identity does not match the retained child",
+            ));
+        }
+        *self
+            .app_sidecar_child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(AppSidecarChild {
+            incarnation,
+            daemon,
+        });
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn preflight_app_sidecar_stop(
+        &self,
+        incarnation: &MacosOwnerIncarnation,
+    ) -> Result<(), MacosOwnerExecutionError> {
+        let authority = self
+            .app_sidecar_child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(authority) = authority.as_ref() else {
+            return Err(MacosOwnerExecutionError::new(
+                "app-sidecar termination requires a retained child handle",
+            ));
+        };
+        if authority.incarnation != *incarnation {
+            return Err(MacosOwnerExecutionError::new(
+                "app-sidecar owner identity does not match the retained child",
+            ));
+        }
+        let mut daemon = authority
+            .daemon
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(child) = daemon.child.as_mut() else {
+            return Err(MacosOwnerExecutionError::new(
+                "app-sidecar termination requires an unreaped child handle",
+            ));
+        };
+        if child
+            .try_wait()
+            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
+            .is_some()
+        {
+            return Err(MacosOwnerExecutionError::new(
+                "app-sidecar termination requires a live unreaped child handle",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn stop_app_sidecar(
+        &self,
+        incarnation: &MacosOwnerIncarnation,
+    ) -> Result<(), MacosOwnerExecutionError> {
+        let authority = self
+            .app_sidecar_child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(authority) = authority.as_ref() else {
+            return Ok(());
+        };
+        if authority.incarnation != *incarnation {
+            return Err(MacosOwnerExecutionError::new(
+                "app-sidecar owner identity does not match the retained child",
+            ));
+        }
+        let mut daemon = authority
+            .daemon
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(child) = daemon.child.as_mut() else {
+            return Ok(());
+        };
+        hypercolor_macos_owner::request_macos_child_termination(child)
     }
 
     fn mark_permanent_failure(&self) {
@@ -196,19 +297,26 @@ impl SupervisorState {
     }
 }
 
+type SharedManagedDaemon = Arc<Mutex<ManagedDaemon>>;
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct AppSidecarChild {
+    incarnation: MacosOwnerIncarnation,
+    daemon: SharedManagedDaemon,
+}
+
 /// App-owned daemon child process.
 pub struct ManagedDaemon {
-    /// Underlying child handle. Wrapped in `Option` so the watchdog can
-    /// `take()` it before performing a blocking `wait()` without tripping
-    /// the kill-on-drop fallback below.
+    /// Child handle retained until the watchdog reaps it. On macOS, the
+    /// handover authority shares this same managed daemon.
     pub(crate) child: Option<Child>,
     #[allow(dead_code)]
     pub(crate) platform_guard: PlatformGuard,
 }
 
 impl ManagedDaemon {
-    /// Return the child process ID, or 0 if the child has been taken out
-    /// (which only happens inside the watchdog right before wait()).
+    /// Return the child process ID, or 0 after the watchdog reaps it.
     #[must_use]
     pub fn id(&self) -> u32 {
         self.child.as_ref().map_or(0, Child::id)
@@ -1014,6 +1122,16 @@ async fn run_watchdog_loop(
 
         tracing::info!(pid, "supervisor: daemon healthy");
         let spawned_at = Instant::now();
+        let daemon = Arc::new(Mutex::new(daemon));
+        #[cfg(target_os = "macos")]
+        if let Err(error) = bind_app_sidecar_child(&state, pid, Arc::clone(&daemon)) {
+            tracing::error!(pid, %error, "healthy app sidecar did not publish its exact owner identity");
+            drop(daemon);
+            state.clear_child();
+            record_failure(&mut restart_count, &mut window_anchor);
+            tokio::time::sleep(restart_backoff(restart_count)).await;
+            continue;
+        }
         let exit = wait_for_exit(daemon).await;
         let uptime = spawned_at.elapsed();
         state.clear_child();
@@ -1058,6 +1176,27 @@ async fn run_watchdog_loop(
         }
         tokio::time::sleep(restart_backoff(restart_count)).await;
     }
+}
+
+#[cfg(target_os = "macos")]
+fn bind_app_sidecar_child(
+    state: &SupervisorState,
+    pid: u32,
+    daemon: SharedManagedDaemon,
+) -> Result<(), MacosOwnerExecutionError> {
+    let store = MacosOwnerStore::new(data_dir());
+    let record = store
+        .load_owner_record()
+        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
+        .filter(|record| {
+            record.active_owner == MacosDaemonOwner::AppSidecar && record.active_identity.pid == pid
+        })
+        .ok_or_else(|| {
+            MacosOwnerExecutionError::new(
+                "healthy app sidecar has no matching authoritative owner publication",
+            )
+        })?;
+    state.register_app_sidecar_child(record.incarnation(), daemon)
 }
 
 const fn macos_external_owner_offline(
@@ -1272,23 +1411,120 @@ mod tests {
             Some(MacosExternalOwnerMode::Homebrew)
         );
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stale_or_mismatched_sidecar_identity_never_stops_the_retained_child() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
+        use std::sync::{Arc, Mutex, PoisonError};
+
+        use hypercolor_macos_owner::{MacosOwnerIdentity, MacosOwnerIncarnation};
+
+        use super::{ManagedDaemon, PlatformGuard, SupervisorState};
+
+        let child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fixture child should spawn");
+        let pid = child.id();
+        let daemon = Arc::new(Mutex::new(ManagedDaemon {
+            child: Some(child),
+            platform_guard: PlatformGuard,
+        }));
+        let exact = MacosOwnerIncarnation {
+            owner: MacosDaemonOwner::AppSidecar,
+            owner_epoch: 9,
+            identity: MacosOwnerIdentity::new(
+                "audit-current",
+                "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+                "requirement-current",
+                pid,
+            )
+            .expect("exact identity should build"),
+        };
+        let state = SupervisorState::default();
+        state
+            .register_app_sidecar_child(exact.clone(), Arc::clone(&daemon))
+            .expect("exact child should register");
+
+        let stale_pid_reuse = MacosOwnerIncarnation {
+            owner: MacosDaemonOwner::AppSidecar,
+            owner_epoch: 8,
+            identity: MacosOwnerIdentity::new(
+                "audit-stale",
+                "/Applications/Old Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+                "requirement-stale",
+                pid,
+            )
+            .expect("stale identity should build"),
+        };
+        assert!(state.preflight_app_sidecar_stop(&stale_pid_reuse).is_err());
+        assert!(state.stop_app_sidecar(&stale_pid_reuse).is_err());
+        assert!(
+            daemon
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .child
+                .as_mut()
+                .expect("child should remain retained")
+                .try_wait()
+                .expect("child state should read")
+                .is_none()
+        );
+
+        state
+            .preflight_app_sidecar_stop(&exact)
+            .expect("exact live retained child should pass preflight");
+        state
+            .stop_app_sidecar(&exact)
+            .expect("exact retained child should stop");
+        {
+            let mut daemon = daemon.lock().unwrap_or_else(PoisonError::into_inner);
+            let status = daemon
+                .child
+                .as_mut()
+                .expect("child should remain retained until reap")
+                .wait()
+                .expect("stopped child should reap");
+            assert_eq!(status.signal(), Some(15), "handover stop must use SIGTERM");
+            daemon.child.take();
+        }
+        state.clear_child();
+        assert!(state.preflight_app_sidecar_stop(&exact).is_err());
+        state
+            .stop_app_sidecar(&exact)
+            .expect("replayed exact stop should be idempotent after the child is cleared");
+    }
 }
 
-/// Block on a `ManagedDaemon` child until it exits. Runs the blocking
-/// `Child::wait()` on a dedicated thread so the watchdog task stays async.
-async fn wait_for_exit(daemon: ManagedDaemon) -> Result<std::process::ExitStatus> {
-    let join = tauri::async_runtime::spawn_blocking(move || {
-        let mut daemon = daemon;
-        let Some(mut child) = daemon.child.take() else {
-            return Err(std::io::Error::other("daemon child already taken"));
-        };
-        let status = child.wait();
-        // platform_guard (Job Object on Windows) drops here, AFTER the
-        // child has been waited on. The Drop above sees `child = None`
-        // and does nothing — child is already reaped.
-        drop(daemon);
-        status
-    });
+/// Poll a retained `ManagedDaemon` child on a dedicated thread until it exits.
+async fn wait_for_exit(daemon: SharedManagedDaemon) -> Result<std::process::ExitStatus> {
+    let join = tauri::async_runtime::spawn_blocking(
+        move || -> std::io::Result<std::process::ExitStatus> {
+            loop {
+                let status = {
+                    let mut daemon = daemon.lock().unwrap_or_else(PoisonError::into_inner);
+                    let child = daemon
+                        .child
+                        .as_mut()
+                        .ok_or_else(|| std::io::Error::other("daemon child already taken"))?;
+                    let status = child.try_wait()?;
+                    if status.is_some() {
+                        daemon.child.take();
+                    }
+                    status
+                };
+                if let Some(status) = status {
+                    return Ok(status);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        },
+    );
     match join.await {
         Ok(Ok(status)) => Ok(status),
         Ok(Err(error)) => Err(anyhow::Error::from(error)),

@@ -246,15 +246,13 @@ fn restart_capture_owner_with(
             },
         });
     }
-    executor
-        .flush_and_stop(active_owner, Some(record.active_identity.pid))
+    let incarnation = record.incarnation();
+    store
+        .request_stop_if_current(&incarnation, || executor.flush_and_stop(&incarnation))
         .map_err(anyhow::Error::from)?;
     let restart = (|| {
         if !executor
-            .wait_for_guard_release(
-                record.active_identity.pid,
-                hypercolor_macos_owner::MACOS_MANAGED_HANDOVER_TIMEOUT,
-            )
+            .wait_for_guard_release(hypercolor_macos_owner::MACOS_MANAGED_HANDOVER_TIMEOUT)
             .map_err(anyhow::Error::from)?
         {
             anyhow::bail!(
@@ -381,19 +379,33 @@ fn choose_daemon_owner_inner(
     ))?;
     let outcome = choose_daemon_owner(&store, &mut executor, requested_owner, transaction_id)
         .map_err(anyhow::Error::from)?;
-    if let MacosOwnerCoordinatorOutcome::Active { owner, .. } = outcome {
-        state.set_macos_external_owner(match owner {
-            MacosDaemonOwner::DirectLaunchd => {
-                Some(hypercolor_macos_owner::MacosExternalOwnerMode::DirectLaunchd)
-            }
-            MacosDaemonOwner::Homebrew => {
-                Some(hypercolor_macos_owner::MacosExternalOwnerMode::Homebrew)
-            }
-            MacosDaemonOwner::AppSidecar | MacosDaemonOwner::Standalone => None,
-        });
-        state.set_macos_owner_offline(None);
-    }
+    apply_owner_choice_outcome(&state, &outcome);
     Ok(outcome)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_owner_choice_outcome(state: &SupervisorState, outcome: &MacosOwnerCoordinatorOutcome) {
+    match outcome {
+        MacosOwnerCoordinatorOutcome::Active { owner, .. } => {
+            state.set_macos_external_owner(match owner {
+                MacosDaemonOwner::DirectLaunchd => {
+                    Some(hypercolor_macos_owner::MacosExternalOwnerMode::DirectLaunchd)
+                }
+                MacosDaemonOwner::Homebrew => {
+                    Some(hypercolor_macos_owner::MacosExternalOwnerMode::Homebrew)
+                }
+                MacosDaemonOwner::AppSidecar | MacosDaemonOwner::Standalone => None,
+            });
+            state.set_macos_owner_offline(None);
+        }
+        MacosOwnerCoordinatorOutcome::RolledBack {
+            prior_owner: MacosDaemonOwner::AppSidecar,
+            ..
+        } => release_app_sidecar_supervisor(state),
+        MacosOwnerCoordinatorOutcome::PendingStandalone { .. }
+        | MacosOwnerCoordinatorOutcome::RolledBack { .. }
+        | MacosOwnerCoordinatorOutcome::RecoveryRequired { .. } => {}
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -445,6 +457,15 @@ struct AppOwnerExecutor<R: Runtime> {
     uid: String,
     launch_agents: std::path::PathBuf,
     app_sidecar_supervisor_started: bool,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AppOwnerStopAuthority {
+    SupervisorChild,
+    LaunchctlService(String),
+    HomebrewService(&'static str),
+    UserDirected,
 }
 
 #[cfg(target_os = "macos")]
@@ -504,6 +525,13 @@ impl<R: Runtime> AppOwnerExecutor<R> {
             &String::from_utf8_lossy(&output.stdout),
             service_label(owner)?,
         ))
+    }
+
+    fn stop_authority(
+        &self,
+        owner: MacosDaemonOwner,
+    ) -> Result<AppOwnerStopAuthority, MacosOwnerExecutionError> {
+        app_owner_stop_authority(owner, &self.uid)
     }
 }
 
@@ -595,44 +623,46 @@ impl<R: Runtime> hypercolor_macos_owner::MacosOwnerExecutor for AppOwnerExecutor
         }
     }
 
+    fn preflight_stop_authority(
+        &mut self,
+        incarnation: &hypercolor_macos_owner::MacosOwnerIncarnation,
+    ) -> Result<(), MacosOwnerExecutionError> {
+        match self.stop_authority(incarnation.owner)? {
+            AppOwnerStopAuthority::SupervisorChild => {
+                self.state.preflight_app_sidecar_stop(incarnation)
+            }
+            AppOwnerStopAuthority::LaunchctlService(_)
+            | AppOwnerStopAuthority::HomebrewService(_) => Ok(()),
+            AppOwnerStopAuthority::UserDirected => Err(MacosOwnerExecutionError::new(
+                "standalone termination requires its terminal user",
+            )),
+        }
+    }
+
     fn flush_and_stop(
         &mut self,
-        owner: MacosDaemonOwner,
-        pid: Option<u32>,
+        incarnation: &hypercolor_macos_owner::MacosOwnerIncarnation,
     ) -> Result<(), MacosOwnerExecutionError> {
-        if owner == MacosDaemonOwner::AppSidecar {
+        if incarnation.owner == MacosDaemonOwner::AppSidecar {
             hold_app_sidecar_supervisor(&self.state);
         }
-        if owner == MacosDaemonOwner::Standalone {
-            return Err(MacosOwnerExecutionError::new(
+        match self.stop_authority(incarnation.owner)? {
+            AppOwnerStopAuthority::SupervisorChild => self.state.stop_app_sidecar(incarnation),
+            AppOwnerStopAuthority::LaunchctlService(target) => {
+                let output = command_output("/bin/launchctl", &["print", &target])?;
+                if !output.status.success() {
+                    return Ok(());
+                }
+                run_command("/bin/launchctl", &["kill", "SIGTERM", &target])
+            }
+            AppOwnerStopAuthority::HomebrewService(formula) => {
+                let brew = homebrew_binary()?;
+                run_command(&brew.to_string_lossy(), &["services", "stop", formula])
+            }
+            AppOwnerStopAuthority::UserDirected => Err(MacosOwnerExecutionError::new(
                 "standalone termination requires its terminal user",
-            ));
+            )),
         }
-        let pid = pid
-            .or_else(|| {
-                self.store
-                    .load_owner_record()
-                    .ok()
-                    .flatten()
-                    .filter(|record| record.active_owner == owner)
-                    .map(|record| record.active_identity.pid)
-            })
-            .or_else(|| {
-                (owner == MacosDaemonOwner::AppSidecar)
-                    .then(|| self.state.child_pid())
-                    .flatten()
-            });
-        if let Some(pid) = pid {
-            return hypercolor_macos_owner::terminate_macos_owner_process(pid);
-        }
-        let Some(target) = fallback_service_stop_target(owner, &self.uid)? else {
-            return Ok(());
-        };
-        let output = command_output("/bin/launchctl", &["print", &target])?;
-        if !output.status.success() {
-            return Ok(());
-        }
-        run_command("/bin/launchctl", &["kill", "SIGTERM", &target])
     }
 
     fn start(&mut self, owner: MacosDaemonOwner) -> Result<(), MacosOwnerExecutionError> {
@@ -681,11 +711,9 @@ impl<R: Runtime> hypercolor_macos_owner::MacosOwnerExecutor for AppOwnerExecutor
 
     fn wait_for_guard_release(
         &mut self,
-        pid: u32,
         timeout: std::time::Duration,
     ) -> Result<bool, MacosOwnerExecutionError> {
         hypercolor_macos_owner::wait_for_macos_guard_release(
-            pid,
             timeout,
             &std::env::temp_dir()
                 .join("hypercolor-daemon.lock")
@@ -721,14 +749,18 @@ fn release_app_sidecar_supervisor(state: &SupervisorState) {
 }
 
 #[cfg(target_os = "macos")]
-fn fallback_service_stop_target(
+fn app_owner_stop_authority(
     owner: MacosDaemonOwner,
     uid: &str,
-) -> Result<Option<String>, MacosOwnerExecutionError> {
-    if owner == MacosDaemonOwner::AppSidecar {
-        return Ok(None);
-    }
-    Ok(Some(format!("gui/{uid}/{}", service_label(owner)?)))
+) -> Result<AppOwnerStopAuthority, MacosOwnerExecutionError> {
+    Ok(match owner {
+        MacosDaemonOwner::AppSidecar => AppOwnerStopAuthority::SupervisorChild,
+        MacosDaemonOwner::DirectLaunchd => {
+            AppOwnerStopAuthority::LaunchctlService(format!("gui/{uid}/{}", service_label(owner)?))
+        }
+        MacosDaemonOwner::Homebrew => AppOwnerStopAuthority::HomebrewService("hypercolor"),
+        MacosDaemonOwner::Standalone => AppOwnerStopAuthority::UserDirected,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -804,16 +836,17 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        MacosCaptureOwner, MacosCaptureOwnerRestartOutcome, MacosDaemonOwnerRemedyOutcome,
-        MacosStartupRecoveryDisposition, complete_offline_remedy_with, execute_offline_remedy_with,
-        fallback_service_stop_target, hold_app_sidecar_supervisor, launchctl_service_disabled,
-        release_app_sidecar_supervisor, restart_capture_owner_with, service_label,
-        startup_recovery_disposition, update_app_sidecar_gate_for_autostart,
+        AppOwnerStopAuthority, MacosCaptureOwner, MacosCaptureOwnerRestartOutcome,
+        MacosDaemonOwnerRemedyOutcome, MacosStartupRecoveryDisposition, app_owner_stop_authority,
+        apply_owner_choice_outcome, complete_offline_remedy_with, execute_offline_remedy_with,
+        hold_app_sidecar_supervisor, launchctl_service_disabled, release_app_sidecar_supervisor,
+        restart_capture_owner_with, service_label, startup_recovery_disposition,
+        update_app_sidecar_gate_for_autostart,
     };
     use hypercolor_macos_owner::{
         MacosDaemonOwner, MacosHandoverOperation, MacosOwnerCoordinatorOutcome,
-        MacosOwnerExecutionError, MacosOwnerExecutor, MacosOwnerIdentity, MacosOwnerRemedy,
-        MacosOwnerStore,
+        MacosOwnerExecutionError, MacosOwnerExecutor, MacosOwnerIdentity, MacosOwnerIncarnation,
+        MacosOwnerRemedy, MacosOwnerStore,
     };
 
     use crate::supervisor::{MacosDaemonOwnerOfflineStatus, SupervisorState};
@@ -821,6 +854,7 @@ mod tests {
     struct RestartFixtureExecutor {
         store: MacosOwnerStore,
         operations: Vec<MacosHandoverOperation>,
+        stopped_incarnations: Vec<MacosOwnerIncarnation>,
         next_pid: u32,
         guard_released: bool,
     }
@@ -830,6 +864,7 @@ mod tests {
             Self {
                 store,
                 operations: Vec::new(),
+                stopped_incarnations: Vec::new(),
                 next_pid: 1_000,
                 guard_released: true,
             }
@@ -854,12 +889,19 @@ mod tests {
             ))
         }
 
+        fn preflight_stop_authority(
+            &mut self,
+            _incarnation: &MacosOwnerIncarnation,
+        ) -> Result<(), MacosOwnerExecutionError> {
+            Ok(())
+        }
+
         fn flush_and_stop(
             &mut self,
-            owner: MacosDaemonOwner,
-            _pid: Option<u32>,
+            incarnation: &MacosOwnerIncarnation,
         ) -> Result<(), MacosOwnerExecutionError> {
-            self.operations.push(match owner {
+            self.stopped_incarnations.push(incarnation.clone());
+            self.operations.push(match incarnation.owner {
                 MacosDaemonOwner::AppSidecar => MacosHandoverOperation::FlushAndStopAppSidecar {},
                 MacosDaemonOwner::DirectLaunchd => {
                     MacosHandoverOperation::FlushAndStopDirectLaunchd {}
@@ -903,7 +945,6 @@ mod tests {
 
         fn wait_for_guard_release(
             &mut self,
-            _pid: u32,
             _timeout: Duration,
         ) -> Result<bool, MacosOwnerExecutionError> {
             Ok(self.guard_released)
@@ -974,16 +1015,57 @@ mod tests {
     }
 
     #[test]
-    fn app_sidecar_without_authoritative_pid_has_no_launchctl_stop_target() {
+    fn newer_prior_app_sidecar_rollback_releases_only_proven_terminal_gate() {
+        let state = SupervisorState::default();
+        hold_app_sidecar_supervisor(&state);
+
+        apply_owner_choice_outcome(
+            &state,
+            &MacosOwnerCoordinatorOutcome::RecoveryRequired {
+                requested_owner: MacosDaemonOwner::DirectLaunchd,
+                prior_owner: MacosDaemonOwner::AppSidecar,
+                phase: hypercolor_macos_owner::MacosHandoverPhase::RollbackAutostartsRestored,
+            },
+        );
+        assert!(state.owner_handover_stop());
+
+        apply_owner_choice_outcome(
+            &state,
+            &MacosOwnerCoordinatorOutcome::RolledBack {
+                prior_owner: MacosDaemonOwner::DirectLaunchd,
+                failure: "fixture rollback".to_owned(),
+            },
+        );
+        assert!(state.owner_handover_stop());
+
+        apply_owner_choice_outcome(
+            &state,
+            &MacosOwnerCoordinatorOutcome::RolledBack {
+                prior_owner: MacosDaemonOwner::AppSidecar,
+                failure: "newer prior publication restored ownership".to_owned(),
+            },
+        );
+        assert!(!state.owner_handover_stop());
+    }
+
+    #[test]
+    fn managed_topologies_resolve_only_their_exact_stop_authority() {
         assert_eq!(
-            fallback_service_stop_target(MacosDaemonOwner::AppSidecar, "501")
-                .expect("app sidecar fallback should resolve"),
-            None
+            app_owner_stop_authority(MacosDaemonOwner::AppSidecar, "501")
+                .expect("app sidecar authority should resolve"),
+            AppOwnerStopAuthority::SupervisorChild
         );
         assert_eq!(
-            fallback_service_stop_target(MacosDaemonOwner::DirectLaunchd, "501")
-                .expect("launchd fallback should resolve"),
-            Some("gui/501/tech.hyperbliss.hypercolor".to_owned())
+            app_owner_stop_authority(MacosDaemonOwner::DirectLaunchd, "501")
+                .expect("launchd authority should resolve"),
+            AppOwnerStopAuthority::LaunchctlService(
+                "gui/501/tech.hyperbliss.hypercolor".to_owned()
+            )
+        );
+        assert_eq!(
+            app_owner_stop_authority(MacosDaemonOwner::Homebrew, "501")
+                .expect("Homebrew authority should resolve"),
+            AppOwnerStopAuthority::HomebrewService("hypercolor")
         );
     }
 
@@ -1089,6 +1171,7 @@ mod tests {
                 MacosHandoverOperation::StartDirectLaunchd {},
             ]
         );
+        assert_eq!(executor.stopped_incarnations, [record.incarnation()]);
     }
 
     #[test]

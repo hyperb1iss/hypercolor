@@ -537,6 +537,15 @@ struct CliOwnerExecutor {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CliOwnerStopAuthority {
+    AppSupervisor,
+    LaunchctlService(String),
+    HomebrewService(&'static str),
+    UserDirected,
+}
+
+#[cfg(target_os = "macos")]
 impl CliOwnerExecutor {
     fn new(store: hypercolor_macos_owner::MacosOwnerStore) -> Result<Self> {
         let uid = command_stdout("/usr/bin/id", &["-u"])?;
@@ -582,6 +591,22 @@ impl CliOwnerExecutor {
         owner: hypercolor_macos_owner::MacosDaemonOwner,
     ) -> Result<String, hypercolor_macos_owner::MacosOwnerExecutionError> {
         Ok(format!("gui/{}/{}", self.uid, Self::label(owner)?))
+    }
+
+    fn stop_authority(
+        &self,
+        owner: hypercolor_macos_owner::MacosDaemonOwner,
+    ) -> Result<CliOwnerStopAuthority, hypercolor_macos_owner::MacosOwnerExecutionError> {
+        use hypercolor_macos_owner::MacosDaemonOwner;
+
+        Ok(match owner {
+            MacosDaemonOwner::AppSidecar => CliOwnerStopAuthority::AppSupervisor,
+            MacosDaemonOwner::DirectLaunchd => {
+                CliOwnerStopAuthority::LaunchctlService(self.target(owner)?)
+            }
+            MacosDaemonOwner::Homebrew => CliOwnerStopAuthority::HomebrewService("hypercolor"),
+            MacosDaemonOwner::Standalone => CliOwnerStopAuthority::UserDirected,
+        })
     }
 }
 
@@ -642,38 +667,49 @@ impl hypercolor_macos_owner::MacosOwnerExecutor for CliOwnerExecutor {
         Ok(())
     }
 
+    fn preflight_stop_authority(
+        &mut self,
+        incarnation: &hypercolor_macos_owner::MacosOwnerIncarnation,
+    ) -> Result<(), hypercolor_macos_owner::MacosOwnerExecutionError> {
+        use hypercolor_macos_owner::MacosOwnerExecutionError;
+
+        match self.stop_authority(incarnation.owner)? {
+            CliOwnerStopAuthority::AppSupervisor => Err(MacosOwnerExecutionError::new(
+                "app-sidecar termination requires the app supervisor's retained child handle",
+            )),
+            CliOwnerStopAuthority::LaunchctlService(_)
+            | CliOwnerStopAuthority::HomebrewService(_) => Ok(()),
+            CliOwnerStopAuthority::UserDirected => Err(MacosOwnerExecutionError::new(
+                "standalone termination requires its terminal user",
+            )),
+        }
+    }
+
     fn flush_and_stop(
         &mut self,
-        owner: hypercolor_macos_owner::MacosDaemonOwner,
-        pid: Option<u32>,
+        incarnation: &hypercolor_macos_owner::MacosOwnerIncarnation,
     ) -> Result<(), hypercolor_macos_owner::MacosOwnerExecutionError> {
-        use hypercolor_macos_owner::{MacosDaemonOwner, MacosOwnerExecutionError};
+        use hypercolor_macos_owner::MacosOwnerExecutionError;
 
-        if owner == MacosDaemonOwner::Standalone {
-            return Err(MacosOwnerExecutionError::new(
+        match self.stop_authority(incarnation.owner)? {
+            CliOwnerStopAuthority::AppSupervisor => Err(MacosOwnerExecutionError::new(
+                "app-sidecar termination requires the app supervisor's retained child handle",
+            )),
+            CliOwnerStopAuthority::LaunchctlService(target) => {
+                let output = owner_command_output("/bin/launchctl", &["print", &target])?;
+                if !output.status.success() {
+                    return Ok(());
+                }
+                owner_run_command("/bin/launchctl", &["kill", "SIGTERM", &target])
+            }
+            CliOwnerStopAuthority::HomebrewService(formula) => {
+                let brew = homebrew_binary()?;
+                owner_run_command(&brew.to_string_lossy(), &["services", "stop", formula])
+            }
+            CliOwnerStopAuthority::UserDirected => Err(MacosOwnerExecutionError::new(
                 "standalone termination requires its terminal user",
-            ));
+            )),
         }
-        let pid = pid.or_else(|| {
-            self.store
-                .load_owner_record()
-                .ok()
-                .flatten()
-                .filter(|record| record.active_owner == owner)
-                .map(|record| record.active_identity.pid)
-        });
-        if let Some(pid) = pid {
-            return hypercolor_macos_owner::terminate_macos_owner_process(pid);
-        }
-        if owner == MacosDaemonOwner::AppSidecar {
-            return Ok(());
-        }
-        let target = self.target(owner)?;
-        let output = owner_command_output("/bin/launchctl", &["print", &target])?;
-        if !output.status.success() {
-            return Ok(());
-        }
-        owner_run_command("/bin/launchctl", &["kill", "SIGTERM", &target])
     }
 
     fn start(
@@ -720,11 +756,9 @@ impl hypercolor_macos_owner::MacosOwnerExecutor for CliOwnerExecutor {
 
     fn wait_for_guard_release(
         &mut self,
-        pid: u32,
         timeout: std::time::Duration,
     ) -> Result<bool, hypercolor_macos_owner::MacosOwnerExecutionError> {
         hypercolor_macos_owner::wait_for_macos_guard_release(
-            pid,
             timeout,
             &std::env::temp_dir()
                 .join("hypercolor-daemon.lock")
@@ -1037,7 +1071,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn app_sidecar_service_identity_matches_tauri_artifacts() {
-        use hypercolor_macos_owner::{MacosDaemonOwner, MacosOwnerStore};
+        use hypercolor_macos_owner::{
+            MacosDaemonOwner, MacosOwnerExecutor, MacosOwnerIdentity, MacosOwnerStore,
+        };
 
         let directory = tempfile::tempdir().expect("temporary directory should build");
         let executor = super::CliOwnerExecutor {
@@ -1057,6 +1093,66 @@ mod tests {
                 .file_name()
                 .and_then(std::ffi::OsStr::to_str),
             Some(hypercolor_macos_owner::MACOS_APP_LAUNCH_AGENT_PLIST_FILE_NAME)
+        );
+        assert_eq!(
+            executor
+                .stop_authority(MacosDaemonOwner::AppSidecar)
+                .expect("app-sidecar authority should resolve"),
+            super::CliOwnerStopAuthority::AppSupervisor
+        );
+
+        let record = executor
+            .store
+            .publish_owner(
+                MacosDaemonOwner::AppSidecar,
+                MacosOwnerIdentity::new(
+                    "audit-sidecar",
+                    "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+                    "requirement-sidecar",
+                    4_242,
+                )
+                .expect("identity should build"),
+            )
+            .expect("owner should publish");
+        let mut executor = executor;
+        let preflight_error = executor
+            .preflight_stop_authority(&record.incarnation())
+            .expect_err("CLI must reject app-owned stop authority before handover");
+        assert!(
+            preflight_error
+                .to_string()
+                .contains("retained child handle")
+        );
+        let error = executor
+            .flush_and_stop(&record.incarnation())
+            .expect_err("CLI must not stop an app-owned child");
+        assert!(error.to_string().contains("retained child handle"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cli_external_owner_stops_use_only_exact_launcher_identities() {
+        use hypercolor_macos_owner::{MacosDaemonOwner, MacosOwnerStore};
+
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let executor = super::CliOwnerExecutor {
+            store: MacosOwnerStore::new(directory.path()),
+            uid: "501".to_owned(),
+            launch_agents: directory.path().to_path_buf(),
+        };
+        assert_eq!(
+            executor
+                .stop_authority(MacosDaemonOwner::DirectLaunchd)
+                .expect("launchd authority should resolve"),
+            super::CliOwnerStopAuthority::LaunchctlService(
+                "gui/501/tech.hyperbliss.hypercolor".to_owned()
+            )
+        );
+        assert_eq!(
+            executor
+                .stop_authority(MacosDaemonOwner::Homebrew)
+                .expect("Homebrew authority should resolve"),
+            super::CliOwnerStopAuthority::HomebrewService("hypercolor")
         );
     }
 }

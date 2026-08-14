@@ -263,6 +263,27 @@ impl MacosOwnerRecord {
             recovery_required: None,
         }
     }
+
+    /// Return the complete durable identity of this owner acquisition.
+    pub fn incarnation(&self) -> MacosOwnerIncarnation {
+        MacosOwnerIncarnation {
+            owner: self.active_owner,
+            owner_epoch: self.owner_epoch,
+            identity: self.active_identity.clone(),
+        }
+    }
+}
+
+/// Exact durable identity of one owner acquisition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MacosOwnerIncarnation {
+    /// Topology that acquired the canonical daemon guard.
+    pub owner: MacosDaemonOwner,
+    /// Monotonic acquisition epoch published by that owner.
+    pub owner_epoch: u64,
+    /// Full process identity published for the acquisition.
+    pub identity: MacosOwnerIdentity,
 }
 
 /// Result of publishing a contender against the current owner epoch.
@@ -478,7 +499,7 @@ pub struct MacosHandoverJournal {
     pub phase: MacosHandoverPhase,
     /// Owner epoch observed before mutation began.
     pub active_epoch: u64,
-    /// Contender epoch associated with the request, when one exists.
+    /// Requested owner epoch published during this handover, when one exists.
     pub contender_epoch: Option<u64>,
     /// Standalone process whose user-directed exit is pending.
     pub pending_standalone_pid: Option<u32>,
@@ -545,10 +566,7 @@ impl MacosHandoverJournal {
             allowed_rollback_operations,
             phase: MacosHandoverPhase::Prepared,
             active_epoch: prior_record.owner_epoch,
-            contender_epoch: prior_record
-                .conflict
-                .as_ref()
-                .map(|conflict| conflict.active_epoch),
+            contender_epoch: None,
             pending_standalone_pid,
         })
     }
@@ -612,20 +630,24 @@ pub trait MacosOwnerExecutor {
         enabled: bool,
     ) -> Result<(), MacosOwnerExecutionError>;
 
-    /// Flush and stop one managed owner identified by the durable record.
+    /// Verify that this executor can stop one exact managed owner acquisition.
+    fn preflight_stop_authority(
+        &mut self,
+        incarnation: &MacosOwnerIncarnation,
+    ) -> Result<(), MacosOwnerExecutionError>;
+
+    /// Flush and stop one exact managed owner acquisition.
     fn flush_and_stop(
         &mut self,
-        owner: MacosDaemonOwner,
-        pid: Option<u32>,
+        incarnation: &MacosOwnerIncarnation,
     ) -> Result<(), MacosOwnerExecutionError>;
 
     /// Idempotently start one managed owner.
     fn start(&mut self, owner: MacosDaemonOwner) -> Result<(), MacosOwnerExecutionError>;
 
-    /// Wait through a native process notification, then confirm guard release.
+    /// Wait until the canonical daemon guard can be acquired.
     fn wait_for_guard_release(
         &mut self,
-        pid: u32,
         timeout: Duration,
     ) -> Result<bool, MacosOwnerExecutionError>;
 
@@ -706,108 +728,51 @@ pub fn try_acquire_macos_daemon_guard(
     }
 }
 
-/// Request graceful termination of one local macOS owner process.
+/// Request graceful termination through a retained, unreaped child handle.
 ///
-/// A process that already exited is treated as successfully stopped so replay
-/// after a crash remains idempotent.
+/// # Errors
+///
+/// Returns an error when the child state cannot be inspected, its identifier
+/// cannot be represented by the platform API, or `SIGTERM` cannot be delivered.
 #[cfg(target_os = "macos")]
-pub fn terminate_macos_owner_process(pid: u32) -> Result<(), MacosOwnerExecutionError> {
-    use nix::errno::Errno;
+pub fn request_macos_child_termination(
+    child: &mut std::process::Child,
+) -> Result<(), MacosOwnerExecutionError> {
     use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
 
-    let pid = i32::try_from(pid)
-        .map_err(|_| MacosOwnerExecutionError::new("process ID exceeds macOS pid_t"))?;
-    match kill(Pid::from_raw(pid), Signal::SIGTERM) {
-        Ok(()) | Err(Errno::ESRCH) => Ok(()),
-        Err(error) => Err(MacosOwnerExecutionError::new(format!(
-            "failed to terminate local daemon owner: {error}"
-        ))),
+    if child
+        .try_wait()
+        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
+        .is_some()
+    {
+        return Ok(());
     }
-}
-
-/// Wait for one process to exit through macOS kernel process notification.
-#[cfg(target_os = "macos")]
-pub fn wait_for_macos_process_exit(
-    pid: u32,
-    timeout: Duration,
-) -> Result<bool, MacosOwnerExecutionError> {
-    use nix::errno::Errno;
-    use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent, Kqueue};
-    use nix::sys::signal::kill;
-    use nix::unistd::Pid;
-
-    let pid_i32 = i32::try_from(pid)
-        .map_err(|_| MacosOwnerExecutionError::new("process ID exceeds macOS pid_t"))?;
-    match kill(Pid::from_raw(pid_i32), None) {
-        Err(Errno::ESRCH) => return Ok(true),
-        Err(error) => {
-            return Err(MacosOwnerExecutionError::new(format!(
-                "failed to inspect owner process: {error}"
-            )));
-        }
-        Ok(()) => {}
-    }
-    let queue = Kqueue::new().map_err(|error| {
-        MacosOwnerExecutionError::new(format!("failed to create process event queue: {error}"))
+    let pid = i32::try_from(child.id()).map_err(|_| {
+        MacosOwnerExecutionError::new("retained child identifier exceeds the macOS process range")
     })?;
-    let change = KEvent::new(
-        pid as usize,
-        EventFilter::EVFILT_PROC,
-        EventFlag::EV_ADD | EventFlag::EV_ONESHOT,
-        FilterFlag::NOTE_EXIT,
-        0,
-        0,
-    );
-    let mut events = [KEvent::new(
-        0,
-        EventFilter::EVFILT_PROC,
-        EventFlag::empty(),
-        FilterFlag::empty(),
-        0,
-        0,
-    )];
-    let timeout = nix::libc::timespec {
-        tv_sec: timeout
-            .as_secs()
-            .try_into()
-            .unwrap_or(nix::libc::time_t::MAX),
-        tv_nsec: timeout.subsec_nanos().into(),
-    };
-    match queue.kevent(&[change], &mut events, Some(timeout)) {
-        Ok(0) => Ok(false),
-        Ok(_) if events[0].flags().contains(EventFlag::EV_ERROR) => {
-            if events[0].data() == i64::from(Errno::ESRCH as i32) as isize {
-                Ok(true)
-            } else {
-                Err(MacosOwnerExecutionError::new(format!(
-                    "process event registration failed with errno {}",
-                    events[0].data()
-                )))
-            }
-        }
-        Ok(_) => Ok(true),
-        Err(Errno::EINTR) => Ok(false),
-        Err(error) => Err(MacosOwnerExecutionError::new(format!(
-            "failed to await owner process exit: {error}"
-        ))),
-    }
+    kill(Pid::from_raw(pid), Signal::SIGTERM)
+        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))
 }
 
-/// Confirm process exit and reacquire the final single-instance guard.
+/// Wait until the final single-instance guard can be acquired.
 #[cfg(target_os = "macos")]
 pub fn wait_for_macos_guard_release(
-    pid: u32,
     timeout: Duration,
     instance_name: &str,
 ) -> Result<bool, MacosOwnerExecutionError> {
-    if !wait_for_macos_process_exit(pid, timeout)? {
-        return Ok(false);
+    use std::time::Instant;
+
+    let started = Instant::now();
+    loop {
+        if try_acquire_macos_daemon_guard(instance_name)?.is_some() {
+            return Ok(true);
+        }
+        let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+            return Ok(false);
+        };
+        std::thread::sleep(remaining.min(Duration::from_millis(25)));
     }
-    let guard = single_instance::SingleInstance::new(instance_name).map_err(|error| {
-        MacosOwnerExecutionError::new(format!("failed to inspect daemon guard: {error}"))
-    })?;
-    Ok(guard.is_single())
 }
 
 /// Wait for an exact durable owner publication through a native file watch.
@@ -1139,6 +1104,34 @@ impl MacosOwnerStore {
         read_owner_record(&self.owner_record_path())
     }
 
+    /// Issue one stop request only while the exact owner publication remains current.
+    ///
+    /// The callback runs under the same coordination lock used by owner publication,
+    /// so it must not write through this store or wait for the daemon guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner record is unavailable or no longer matches,
+    /// when the coordination lock cannot be acquired, or when the request fails.
+    pub fn request_stop_if_current(
+        &self,
+        expected: &MacosOwnerIncarnation,
+        request: impl FnOnce() -> Result<(), MacosOwnerExecutionError>,
+    ) -> Result<(), MacosOwnerExecutionError> {
+        let _lock = self
+            .acquire_coordination_lock()
+            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
+        let current = read_owner_record(&self.owner_record_path())
+            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
+            .ok_or_else(|| MacosOwnerExecutionError::new("macOS owner record is unavailable"))?;
+        if current.incarnation() != *expected {
+            return Err(MacosOwnerExecutionError::new(
+                "macOS owner incarnation changed before the stop request",
+            ));
+        }
+        request()
+    }
+
     /// Publish a newly acquired owner and advance the durable owner epoch.
     ///
     /// The locked record supplies the persisted external-owner mode and any
@@ -1330,6 +1323,51 @@ impl MacosOwnerStore {
         Ok(journal)
     }
 
+    fn bind_requested_epoch(
+        &self,
+        transaction_id: &MacosHandoverTransactionId,
+        requested_owner: MacosDaemonOwner,
+        requested_epoch: u64,
+    ) -> Result<MacosHandoverJournal, MacosOwnerStoreError> {
+        let _lock = self.acquire_coordination_lock()?;
+        let path = self.handover_journal_path();
+        let mut journal =
+            read_handover_journal(&path)?.ok_or(MacosOwnerStoreError::MissingHandoverJournal)?;
+        if journal.transaction_id != *transaction_id {
+            return Err(MacosOwnerStoreError::HandoverTransactionMismatch);
+        }
+        if journal.phase.is_terminal() {
+            return Ok(journal);
+        }
+        if journal
+            .contender_epoch
+            .is_some_and(|epoch| epoch > journal.active_epoch)
+        {
+            return if journal.contender_epoch == Some(requested_epoch) {
+                Ok(journal)
+            } else {
+                Err(MacosOwnerStoreError::InvalidArtifact {
+                    artifact: "handover journal",
+                    detail: "requested owner epoch changed after it was bound",
+                })
+            };
+        }
+        if requested_owner != journal.requested_owner || requested_epoch <= journal.active_epoch {
+            return Err(MacosOwnerStoreError::InvalidArtifact {
+                artifact: "handover journal",
+                detail: "requested owner incarnation does not match the transaction",
+            });
+        }
+        journal.journal_revision = journal
+            .journal_revision
+            .checked_add(1)
+            .ok_or(MacosOwnerStoreError::JournalRevisionOverflow)?;
+        journal.contender_epoch = Some(requested_epoch);
+        validate_handover_journal(&journal)?;
+        write_json_atomic(&self.data_dir, &path, "handover journal", &journal)?;
+        Ok(journal)
+    }
+
     fn acquire_coordination_lock(&self) -> Result<CoordinationLock, MacosOwnerStoreError> {
         fs::create_dir_all(&self.data_dir).map_err(|source| {
             MacosOwnerStoreError::CreateDirectory {
@@ -1377,6 +1415,16 @@ pub fn choose_daemon_owner(
     let prior_record = store
         .load_owner_record()?
         .ok_or(MacosOwnerCoordinatorError::MissingActiveOwner)?;
+    if requested_owner != prior_record.active_owner
+        && prior_record.active_owner != MacosDaemonOwner::Standalone
+    {
+        preflight_exact_stop_authority(
+            store,
+            executor,
+            prior_record.active_owner,
+            prior_record.owner_epoch,
+        )?;
+    }
     let prior_autostart_states = MacosAutostartStates::new(
         inspect_autostart(executor, MacosDaemonOwner::AppSidecar)?,
         inspect_autostart(executor, MacosDaemonOwner::DirectLaunchd)?,
@@ -1399,6 +1447,71 @@ fn inspect_autostart(
     executor
         .autostart_enabled(owner)
         .map_err(|source| MacosOwnerCoordinatorError::InspectAutostart { owner, source })
+}
+
+fn preflight_forward_stop_authority(
+    store: &MacosOwnerStore,
+    executor: &mut impl MacosOwnerExecutor,
+    journal: &MacosHandoverJournal,
+) -> Result<ForwardStopPreflight, MacosOwnerCoordinatorError> {
+    if journal.requested_owner == journal.prior_owner
+        || journal.prior_owner == MacosDaemonOwner::Standalone
+    {
+        return Ok(ForwardStopPreflight::Ready);
+    }
+    let operation = flush_stop_operation(journal.prior_owner)?;
+    let record =
+        store
+            .load_owner_record()?
+            .ok_or_else(|| MacosOwnerCoordinatorError::Operation {
+                operation,
+                source: MacosOwnerExecutionError::new(
+                    "macOS owner record is unavailable during stop-authority preflight",
+                ),
+            })?;
+    if record.active_owner == journal.prior_owner && record.owner_epoch > journal.active_epoch {
+        return Ok(ForwardStopPreflight::PriorOwnerReplaced);
+    }
+    if record.active_owner != journal.prior_owner || record.owner_epoch != journal.active_epoch {
+        return Err(MacosOwnerCoordinatorError::Operation {
+            operation,
+            source: MacosOwnerExecutionError::new(
+                "macOS owner incarnation changed before stop-authority preflight",
+            ),
+        });
+    }
+    executor
+        .preflight_stop_authority(&record.incarnation())
+        .map_err(|source| MacosOwnerCoordinatorError::Operation { operation, source })?;
+    Ok(ForwardStopPreflight::Ready)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardStopPreflight {
+    Ready,
+    PriorOwnerReplaced,
+}
+
+fn preflight_exact_stop_authority(
+    store: &MacosOwnerStore,
+    executor: &mut impl MacosOwnerExecutor,
+    owner: MacosDaemonOwner,
+    owner_epoch: u64,
+) -> Result<(), MacosOwnerCoordinatorError> {
+    let operation = flush_stop_operation(owner)?;
+    let incarnation = store
+        .load_owner_record()?
+        .filter(|record| record.active_owner == owner && record.owner_epoch == owner_epoch)
+        .map(|record| record.incarnation())
+        .ok_or_else(|| MacosOwnerCoordinatorError::Operation {
+            operation,
+            source: MacosOwnerExecutionError::new(
+                "macOS owner incarnation changed before stop-authority preflight",
+            ),
+        })?;
+    executor
+        .preflight_stop_authority(&incarnation)
+        .map_err(|source| MacosOwnerCoordinatorError::Operation { operation, source })
 }
 
 /// Resume the current local transaction before accepting another owner choice.
@@ -1557,6 +1670,21 @@ fn recovery_required(journal: &MacosHandoverJournal) -> MacosOwnerCoordinatorOut
     }
 }
 
+fn rollback_stop_authority_is_unbound(journal: &MacosHandoverJournal) -> bool {
+    journal
+        .contender_epoch
+        .is_none_or(|epoch| epoch <= journal.active_epoch)
+}
+
+fn newer_prior_owner_is_published(
+    store: &MacosOwnerStore,
+    journal: &MacosHandoverJournal,
+) -> Result<bool, MacosOwnerStoreError> {
+    Ok(store.load_owner_record()?.is_some_and(|record| {
+        record.active_owner == journal.prior_owner && record.owner_epoch > journal.active_epoch
+    }))
+}
+
 fn terminal_outcome(
     store: &MacosOwnerStore,
     journal: &MacosHandoverJournal,
@@ -1599,8 +1727,14 @@ fn run_handover(
                     )?;
                     journal = advance(store, &journal, MacosHandoverPhase::AwaitingGuardRelease)?;
                 } else {
+                    if preflight_forward_stop_authority(store, executor, &journal)?
+                        == ForwardStopPreflight::PriorOwnerReplaced
+                    {
+                        journal = begin_rollback(store, &journal)?;
+                        continue;
+                    }
                     for operation in autostart_operations_for(journal.requested_owner) {
-                        if execute_operation(executor, &journal, operation, true).is_err() {
+                        if execute_operation(store, executor, &journal, operation, true).is_err() {
                             journal = begin_rollback(store, &journal)?;
                             break;
                         }
@@ -1612,6 +1746,12 @@ fn run_handover(
                 }
             }
             MacosHandoverPhase::AutostartsConfigured => {
+                if preflight_forward_stop_authority(store, executor, &journal)?
+                    == ForwardStopPreflight::PriorOwnerReplaced
+                {
+                    journal = begin_rollback(store, &journal)?;
+                    continue;
+                }
                 journal = advance(
                     store,
                     &journal,
@@ -1625,8 +1765,14 @@ fn run_handover(
                 )?;
             }
             MacosHandoverPhase::StopRequested => {
+                if preflight_forward_stop_authority(store, executor, &journal)?
+                    == ForwardStopPreflight::PriorOwnerReplaced
+                {
+                    journal = begin_rollback(store, &journal)?;
+                    continue;
+                }
                 let operation = flush_stop_operation(journal.prior_owner)?;
-                if execute_operation(executor, &journal, operation, true).is_err() {
+                if execute_operation(store, executor, &journal, operation, true).is_err() {
                     journal = begin_rollback(store, &journal)?;
                 } else {
                     journal = advance(store, &journal, MacosHandoverPhase::OutgoingOwnerStopped)?;
@@ -1636,27 +1782,21 @@ fn run_handover(
                 journal = advance(store, &journal, MacosHandoverPhase::AwaitingGuardRelease)?;
             }
             MacosHandoverPhase::AwaitingGuardRelease => {
-                let pid = if let Some(pid) = journal.pending_standalone_pid {
-                    Some(pid)
-                } else {
-                    active_pid(store, journal.prior_owner)?
-                };
-                let Some(pid) = pid else {
-                    journal = advance(store, &journal, MacosHandoverPhase::GuardReleased)?;
-                    continue;
-                };
+                let standalone_pid = journal.pending_standalone_pid;
                 let timeout = if journal.pending_standalone_pid.is_some() {
                     MACOS_STANDALONE_HANDOVER_TIMEOUT
                 } else {
                     MACOS_MANAGED_HANDOVER_TIMEOUT
                 };
-                let released = executor.wait_for_guard_release(pid, timeout);
+                let released = executor.wait_for_guard_release(timeout);
                 if released
                     .as_ref()
                     .is_err_and(|_| journal.pending_standalone_pid.is_some())
                 {
                     return Err(MacosOwnerCoordinatorError::Operation {
-                        operation: MacosHandoverOperation::AwaitStandaloneExit { pid },
+                        operation: MacosHandoverOperation::AwaitStandaloneExit {
+                            pid: standalone_pid.expect("checked standalone handover"),
+                        },
                         source: released.expect_err("checked error result"),
                     });
                 }
@@ -1668,7 +1808,9 @@ fn run_handover(
                     if journal.pending_standalone_pid.is_some() {
                         return Ok(MacosOwnerCoordinatorOutcome::PendingStandalone {
                             requested_owner: journal.requested_owner,
-                            remedy: MacosOwnerRemedy::StopStandaloneOwner { pid },
+                            remedy: MacosOwnerRemedy::StopStandaloneOwner {
+                                pid: standalone_pid.expect("checked standalone handover"),
+                            },
                         });
                     }
                     journal = begin_rollback(store, &journal)?;
@@ -1679,7 +1821,9 @@ fn run_handover(
             MacosHandoverPhase::GuardReleased => {
                 if journal.pending_standalone_pid.is_some() {
                     for operation in autostart_operations_for(journal.requested_owner) {
-                        if let Err(error) = execute_operation(executor, &journal, operation, true) {
+                        if let Err(error) =
+                            execute_operation(store, executor, &journal, operation, true)
+                        {
                             return Err(error);
                         }
                     }
@@ -1690,10 +1834,11 @@ fn run_handover(
             }
             MacosHandoverPhase::StartRequested => {
                 let operation = start_operation(journal.requested_owner)?;
-                if let Err(error) = execute_operation(executor, &journal, operation, true) {
+                if let Err(error) = execute_operation(store, executor, &journal, operation, true) {
                     if journal.prior_owner == MacosDaemonOwner::Standalone {
                         return Err(error);
                     }
+                    journal = bind_requested_epoch_from_record(store, &journal)?;
                     journal = begin_rollback(store, &journal)?;
                     continue;
                 }
@@ -1705,6 +1850,7 @@ fn run_handover(
                     journal.active_epoch,
                     MACOS_MANAGED_HANDOVER_TIMEOUT,
                 );
+                journal = bind_requested_epoch_from_record(store, &journal)?;
                 if started.is_err() && journal.prior_owner == MacosDaemonOwner::Standalone {
                     return Err(MacosOwnerCoordinatorError::Operation {
                         operation: start_operation(journal.requested_owner)
@@ -1737,8 +1883,21 @@ fn run_handover(
                 });
             }
             MacosHandoverPhase::RollbackPending => {
+                if journal.requested_owner != journal.prior_owner
+                    && !newer_prior_owner_is_published(store, &journal)?
+                    && !rollback_stop_authority_is_unbound(&journal)
+                {
+                    preflight_exact_stop_authority(
+                        store,
+                        executor,
+                        journal.requested_owner,
+                        journal
+                            .contender_epoch
+                            .expect("checked bound contender epoch"),
+                    )?;
+                }
                 for operation in autostart_operations_from(journal.prior_autostart_states) {
-                    execute_operation(executor, &journal, operation, false)?;
+                    execute_operation(store, executor, &journal, operation, false)?;
                 }
                 journal = advance(
                     store,
@@ -1747,10 +1906,24 @@ fn run_handover(
                 )?;
             }
             MacosHandoverPhase::RollbackAutostartsRestored => {
+                let prior_owner_is_active = newer_prior_owner_is_published(store, &journal)?;
+                if journal.requested_owner != journal.prior_owner && !prior_owner_is_active {
+                    if rollback_stop_authority_is_unbound(&journal) {
+                        return Ok(recovery_required(&journal));
+                    }
+                    preflight_exact_stop_authority(
+                        store,
+                        executor,
+                        journal.requested_owner,
+                        journal
+                            .contender_epoch
+                            .expect("checked bound contender epoch"),
+                    )?;
+                }
                 journal = advance(
                     store,
                     &journal,
-                    if journal.requested_owner == journal.prior_owner {
+                    if journal.requested_owner == journal.prior_owner || prior_owner_is_active {
                         MacosHandoverPhase::RollbackCommitPending
                     } else {
                         MacosHandoverPhase::RollbackStopRequested
@@ -1758,11 +1931,25 @@ fn run_handover(
                 )?;
             }
             MacosHandoverPhase::RollbackStopRequested => {
+                if rollback_stop_authority_is_unbound(&journal) {
+                    return Ok(recovery_required(&journal));
+                }
+                preflight_exact_stop_authority(
+                    store,
+                    executor,
+                    journal.requested_owner,
+                    journal
+                        .contender_epoch
+                        .expect("checked bound contender epoch"),
+                )?;
                 let operation = flush_stop_operation(journal.requested_owner)?;
-                execute_operation(executor, &journal, operation, false)?;
+                execute_operation(store, executor, &journal, operation, false)?;
                 journal = advance(store, &journal, MacosHandoverPhase::RollbackOwnerStopped)?;
             }
             MacosHandoverPhase::RollbackOwnerStopped => {
+                if rollback_stop_authority_is_unbound(&journal) {
+                    return Ok(recovery_required(&journal));
+                }
                 journal = advance(
                     store,
                     &journal,
@@ -1770,14 +1957,16 @@ fn run_handover(
                 )?;
             }
             MacosHandoverPhase::RollbackAwaitingGuardRelease => {
-                if let Some(pid) = active_pid(store, journal.requested_owner)?
-                    && !executor
-                        .wait_for_guard_release(pid, MACOS_MANAGED_HANDOVER_TIMEOUT)
-                        .map_err(|source| MacosOwnerCoordinatorError::Operation {
-                            operation: flush_stop_operation(journal.requested_owner)
-                                .expect("validated requested owner is managed"),
-                            source,
-                        })?
+                if rollback_stop_authority_is_unbound(&journal) {
+                    return Ok(recovery_required(&journal));
+                }
+                if !executor
+                    .wait_for_guard_release(MACOS_MANAGED_HANDOVER_TIMEOUT)
+                    .map_err(|source| MacosOwnerCoordinatorError::Operation {
+                        operation: flush_stop_operation(journal.requested_owner)
+                            .expect("validated requested owner is managed"),
+                        source,
+                    })?
                 {
                     return Err(MacosOwnerCoordinatorError::GuardReleaseTimeout);
                 }
@@ -1788,7 +1977,7 @@ fn run_handover(
             }
             MacosHandoverPhase::RollbackStartRequested => {
                 let operation = start_operation(journal.prior_owner)?;
-                execute_operation(executor, &journal, operation, false)?;
+                execute_operation(store, executor, &journal, operation, false)?;
                 journal = advance(store, &journal, MacosHandoverPhase::PriorOwnerStarted)?;
             }
             MacosHandoverPhase::PriorOwnerStarted => {
@@ -1853,6 +2042,7 @@ fn begin_rollback(
 }
 
 fn execute_operation(
+    store: &MacosOwnerStore,
     executor: &mut impl MacosOwnerExecutor,
     journal: &MacosHandoverJournal,
     operation: MacosHandoverOperation,
@@ -1868,17 +2058,23 @@ fn execute_operation(
         MacosHandoverOperation::SetAppSidecarAutostart { enabled } => {
             executor.set_autostart(MacosDaemonOwner::AppSidecar, enabled)
         }
-        MacosHandoverOperation::FlushAndStopAppSidecar {} => executor.flush_and_stop(
+        MacosHandoverOperation::FlushAndStopAppSidecar {} => flush_and_stop_owner(
+            store,
+            executor,
+            journal,
             MacosDaemonOwner::AppSidecar,
-            operation_pid(journal, MacosDaemonOwner::AppSidecar, forward),
+            forward,
         ),
         MacosHandoverOperation::StartAppSidecar {} => executor.start(MacosDaemonOwner::AppSidecar),
         MacosHandoverOperation::SetDirectLaunchdAutostart { enabled } => {
             executor.set_autostart(MacosDaemonOwner::DirectLaunchd, enabled)
         }
-        MacosHandoverOperation::FlushAndStopDirectLaunchd {} => executor.flush_and_stop(
+        MacosHandoverOperation::FlushAndStopDirectLaunchd {} => flush_and_stop_owner(
+            store,
+            executor,
+            journal,
             MacosDaemonOwner::DirectLaunchd,
-            operation_pid(journal, MacosDaemonOwner::DirectLaunchd, forward),
+            forward,
         ),
         MacosHandoverOperation::StartDirectLaunchd {} => {
             executor.start(MacosDaemonOwner::DirectLaunchd)
@@ -1886,9 +2082,12 @@ fn execute_operation(
         MacosHandoverOperation::SetHomebrewAutostart { enabled } => {
             executor.set_autostart(MacosDaemonOwner::Homebrew, enabled)
         }
-        MacosHandoverOperation::FlushAndStopHomebrew {} => executor.flush_and_stop(
+        MacosHandoverOperation::FlushAndStopHomebrew {} => flush_and_stop_owner(
+            store,
+            executor,
+            journal,
             MacosDaemonOwner::Homebrew,
-            operation_pid(journal, MacosDaemonOwner::Homebrew, forward),
+            forward,
         ),
         MacosHandoverOperation::StartHomebrew {} => executor.start(MacosDaemonOwner::Homebrew),
         MacosHandoverOperation::AwaitStandaloneExit { .. } => Ok(()),
@@ -1896,16 +2095,72 @@ fn execute_operation(
     .map_err(|source| MacosOwnerCoordinatorError::Operation { operation, source })
 }
 
-fn operation_pid(
+fn flush_and_stop_owner(
+    store: &MacosOwnerStore,
+    executor: &mut impl MacosOwnerExecutor,
     journal: &MacosHandoverJournal,
     owner: MacosDaemonOwner,
     forward: bool,
-) -> Option<u32> {
-    if forward && journal.prior_owner == owner {
-        journal.pending_standalone_pid
+) -> Result<(), MacosOwnerExecutionError> {
+    let incarnation = if forward {
+        if owner != journal.prior_owner {
+            return Err(MacosOwnerExecutionError::new(
+                "forward stop does not target the journal's prior owner",
+            ));
+        }
+        store
+            .load_owner_record()
+            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
+            .filter(|record| {
+                record.active_owner == owner && record.owner_epoch == journal.active_epoch
+            })
+            .map(|record| record.incarnation())
+            .ok_or_else(|| {
+                MacosOwnerExecutionError::new(
+                    "handover journal has no matching prior owner incarnation",
+                )
+            })?
     } else {
-        None
-    }
+        if owner != journal.requested_owner {
+            return Err(MacosOwnerExecutionError::new(
+                "rollback stop does not target the journal's requested owner",
+            ));
+        }
+        let Some(requested_epoch) = journal
+            .contender_epoch
+            .filter(|epoch| *epoch > journal.active_epoch)
+        else {
+            return Ok(());
+        };
+        store
+            .load_owner_record()
+            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?
+            .filter(|record| record.active_owner == owner && record.owner_epoch == requested_epoch)
+            .map(|record| record.incarnation())
+            .ok_or_else(|| {
+                MacosOwnerExecutionError::new(
+                    "handover journal has no matching requested owner incarnation",
+                )
+            })?
+    };
+    store.request_stop_if_current(&incarnation, || executor.flush_and_stop(&incarnation))
+}
+
+fn bind_requested_epoch_from_record(
+    store: &MacosOwnerStore,
+    journal: &MacosHandoverJournal,
+) -> Result<MacosHandoverJournal, MacosOwnerStoreError> {
+    let requested = store
+        .load_owner_record()?
+        .filter(|record| {
+            record.active_owner == journal.requested_owner
+                && record.owner_epoch > journal.active_epoch
+        })
+        .map(|record| (record.active_owner, record.owner_epoch));
+    requested.map_or_else(
+        || Ok(journal.clone()),
+        |(owner, epoch)| store.bind_requested_epoch(&journal.transaction_id, owner, epoch),
+    )
 }
 
 fn require_operation(
@@ -1917,16 +2172,6 @@ fn require_operation(
     } else {
         Err(MacosOwnerCoordinatorError::UnauthorizedOperation { operation })
     }
-}
-
-fn active_pid(
-    store: &MacosOwnerStore,
-    owner: MacosDaemonOwner,
-) -> Result<Option<u32>, MacosOwnerStoreError> {
-    Ok(store
-        .load_owner_record()?
-        .filter(|record| record.active_owner == owner)
-        .map(|record| record.active_identity.pid))
 }
 
 const fn external_owner_mode(owner: MacosDaemonOwner) -> Option<MacosExternalOwnerMode> {
