@@ -875,8 +875,9 @@ the next wave.
 - [x] Deep review completed at baseline `854f36f`.
 - [x] GPU-only production requirement approved.
 - [x] Follow-up architecture and implementation plan approved.
-- [ ] Wave 0 in progress.
-- [ ] Wave 1 pending.
+- [x] Wave 0 completed in commits `29598732`, `165dc483`, `423af8a`, and
+      `3f4a4a5` with independent verification.
+- [ ] Wave 1 in progress.
 - [ ] Wave 2 pending.
 - [ ] Wave 3 pending.
 - [ ] Wave 4 pending.
@@ -884,4 +885,5 @@ the next wave.
 - [ ] Wave 6 pending.
 - [ ] Wave 7 pending.
 
-Next task: H0.1, amend spec 76 and sweep stale fallback contracts.
+Active tasks: H1.1 protected-control authorization and H1.4 identity-safe owner
+handover.
