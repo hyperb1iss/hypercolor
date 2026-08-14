@@ -583,17 +583,37 @@ pub fn VendorMark(
     }
 
     if let Some(image_path) = vendor.image_path {
+        let image_failed = RwSignal::new(false);
         let img_style = format!(
             "width: {inner_px}px; height: {inner_px}px; object-fit: contain; \
              filter: drop-shadow(0 0 4px rgba({primary}, 0.45))"
         );
+        let label_style = format!(
+            "font-family: {}; font-size: {font_px}px; font-weight: 700; \
+             letter-spacing: -0.04em; line-height: 1; color: rgb({primary}); \
+             text-shadow: 0 0 6px rgba({primary}, 0.45)",
+            vendor.mark_font.css_value()
+        );
+        let mark = vendor.monogram;
         return view! {
             <div
                 class="inline-flex items-center justify-center shrink-0"
                 style=chip_style
                 title=display_name
             >
-                <img src=image_path alt=display_name style=img_style />
+                <Show
+                    when=move || image_failed.get()
+                    fallback=move || view! {
+                        <img
+                            src=image_path
+                            alt=display_name
+                            style=img_style.clone()
+                            on:error=move |_| image_failed.set(true)
+                        />
+                    }
+                >
+                    <span style=label_style.clone()>{mark}</span>
+                </Show>
             </div>
         }
         .into_any();

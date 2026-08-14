@@ -1011,6 +1011,12 @@ input[type="range"].slider-silk::-moz-range-track {
     contain-intrinsic-size: 300px 225px;
 }
 
+.vendor-mark-svg > svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
 /* Accent edge glow — for active/important panels. Pairs with one of
    the `.accent-*` classes below, which set `--glow-rgb` to the right
    SilkCircuit palette value. Without an accent class the default is
