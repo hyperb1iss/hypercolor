@@ -316,6 +316,9 @@ pub struct AppState {
     /// Stable network identity exposed by API and discovery surfaces.
     pub server_identity: ServerIdentity,
 
+    /// Current daemon process session identifier, when one was attested.
+    pub server_session_id: Option<String>,
+
     /// Shared API auth and rate-limiting state for HTTP and WS command dispatch.
     pub security_state: security::SecurityState,
 }
@@ -657,6 +660,7 @@ impl AppState {
                 instance_name: "hypercolor".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
+            server_session_id: None,
             security_state: security::SecurityState::from_config(&HypercolorConfig::default()),
         }
     }
@@ -746,8 +750,18 @@ impl AppState {
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
+            server_session_id: None,
             security_state: security::SecurityState::from_config(&daemon.config_manager.get()),
         }
+    }
+
+    pub(crate) fn install_macos_daemon_session(
+        &mut self,
+        attestation: &crate::macos_owner::MacosDaemonSessionAttestation,
+    ) {
+        self.server_session_id = Some(attestation.server_session_id.as_str().to_owned());
+        self.security_state
+            .install_macos_daemon_session(attestation);
     }
 }
 

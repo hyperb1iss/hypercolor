@@ -792,6 +792,8 @@ pub struct HealthChecks {
 pub struct ServerInfo {
     #[serde(flatten)]
     pub identity: ServerIdentity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_session_id: Option<String>,
     pub device_count: usize,
     pub auth_required: bool,
 }
@@ -1695,6 +1697,7 @@ pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
 
     ApiResponse::ok(ServerInfo {
         identity: state.server_identity.clone(),
+        server_session_id: state.server_session_id.clone(),
         device_count,
         auth_required: state.security_state.security_enabled(),
     })
@@ -2314,14 +2317,15 @@ fn round_2(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        get_sensor, get_sensors, get_status, input_source_status, input_status_snapshot,
-        macos_daemon_ownership, macos_selection_state, macos_tahoe_selection_capabilities,
-        us_to_ms_f64,
+        get_sensor, get_sensors, get_server, get_status, input_source_status,
+        input_status_snapshot, macos_daemon_ownership, macos_selection_state,
+        macos_tahoe_selection_capabilities, us_to_ms_f64,
     };
     use crate::api::AppState;
     use crate::macos_owner::{
-        MacosDaemonOwner, MacosHandoverPhase, MacosOwnerConflict, MacosOwnerRecoveryRequired,
-        MacosOwnerSnapshot,
+        MacosDaemonOwner, MacosDaemonSessionAttestation, MacosHandoverPhase, MacosOwnerConflict,
+        MacosOwnerIdentity, MacosOwnerRecoveryRequired, MacosOwnerSnapshot,
+        MacosProtectedControlCredential, MacosServerSessionId,
     };
     use crate::performance::{
         CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
@@ -2399,6 +2403,38 @@ mod tests {
         fn is_screen_source(&self) -> bool {
             true
         }
+    }
+
+    #[tokio::test]
+    async fn server_response_exposes_only_the_attested_session_id() {
+        let tempdir = tempfile::tempdir().expect("server test data dir should be created");
+        let session_id = MacosServerSessionId::from_bytes([0x33; 16]);
+        let credential = MacosProtectedControlCredential::from_bytes([0x77; 32]);
+        let attestation = MacosDaemonSessionAttestation {
+            schema_version: crate::macos_owner::MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION,
+            owner: MacosDaemonOwner::AppSidecar,
+            owner_epoch: 7,
+            owner_identity: MacosOwnerIdentity::new(
+                "audit-server",
+                "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+                "requirement-server",
+                4242,
+            )
+            .expect("fixture identity should be valid"),
+            server_session_id: session_id.clone(),
+            protected_control_credential: credential.clone(),
+        };
+        let mut state = AppState::new_with_data_dir(tempdir.path().join("data"));
+        state.install_macos_daemon_session(&attestation);
+
+        let response = get_server(State(Arc::new(state))).await;
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("server response should read");
+        let value: Value = serde_json::from_slice(&bytes).expect("server response should be JSON");
+
+        assert_eq!(value["data"]["server_session_id"], session_id.as_str());
+        assert!(!String::from_utf8_lossy(&bytes).contains(credential.expose_secret()));
     }
 
     fn source_status_fixture(platform: Option<SourcePlatformStatus>) -> SourceStatus {

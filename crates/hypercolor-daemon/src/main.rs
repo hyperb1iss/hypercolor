@@ -12,8 +12,8 @@ use hypercolor_daemon::daemon::{self, DaemonRunOptions};
 #[cfg(target_os = "macos")]
 use hypercolor_daemon::macos_owner::{
     MacosDaemonGuard, MacosDaemonOwner, MacosOwnerCoordinatorOutcome, MacosOwnerIdentity,
-    MacosOwnerRecoveryRequired, MacosOwnerSnapshot, MacosOwnerStore, acquire_macos_daemon_guard,
-    recover_incoming_daemon_owner, try_acquire_macos_daemon_guard,
+    MacosOwnerRecord, MacosOwnerRecoveryRequired, MacosOwnerStore, MacosOwnerStoreError,
+    acquire_macos_daemon_guard, recover_incoming_daemon_owner, try_acquire_macos_daemon_guard,
 };
 use hypercolor_daemon::startup::install_signal_handlers;
 #[cfg(target_os = "macos")]
@@ -150,6 +150,7 @@ impl DaemonArgs {
             #[cfg(not(target_os = "macos"))]
             macos_owner: None,
             macos_owner_snapshot: None,
+            macos_daemon_session_attestation: None,
         }
     }
 }
@@ -289,12 +290,14 @@ fn main() -> Result<()> {
     let _instance_guard = instance;
 
     #[cfg(target_os = "macos")]
-    let mut owner_snapshot = publish_macos_owner(
+    let macos_owner_record = publish_macos_owner(
         &macos_owner_store,
         &macos_instance_guard,
         macos_owner,
         macos_owner_identity,
     )?;
+    #[cfg(target_os = "macos")]
+    let mut owner_snapshot = macos_owner_record.snapshot();
     #[cfg(target_os = "macos")]
     if let Some(MacosOwnerCoordinatorOutcome::RecoveryRequired {
         requested_owner,
@@ -321,6 +324,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    #[cfg(target_os = "macos")]
+    let macos_daemon_session_attestation = macos_owner_store
+        .publish_daemon_session_attestation(
+            &macos_instance_guard,
+            &macos_owner_record.incarnation(),
+        )
+        .context("failed to publish the private macOS daemon session")?;
+
     #[cfg(target_os = "windows")]
     if args.windows_service {
         return windows_service::run(args.into_run_options());
@@ -330,8 +341,38 @@ fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         options.macos_owner_snapshot = Some(owner_snapshot);
+        options.macos_daemon_session_attestation = Some(macos_daemon_session_attestation.clone());
     }
-    run_daemon(options)
+    let result = run_daemon(options);
+    #[cfg(target_os = "macos")]
+    let result = finish_macos_daemon_run(result, || {
+        macos_owner_store.clear_daemon_session_attestation(
+            &macos_owner_record.incarnation(),
+            &macos_daemon_session_attestation.server_session_id,
+        )
+    });
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn finish_macos_daemon_run(
+    daemon_result: Result<()>,
+    clear_session: impl FnOnce() -> Result<bool, MacosOwnerStoreError>,
+) -> Result<()> {
+    let cleanup_result = clear_session();
+    match (daemon_result, cleanup_result) {
+        (Err(daemon_error), Err(cleanup_error)) => {
+            eprintln!(
+                "failed to clear the private macOS daemon session after daemon failure: {cleanup_error}"
+            );
+            Err(daemon_error)
+        }
+        (Err(daemon_error), Ok(_)) => Err(daemon_error),
+        (Ok(()), Ok(_)) => Ok(()),
+        (Ok(()), Err(cleanup_error)) => {
+            Err(cleanup_error).context("failed to clear the private macOS daemon session")
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -488,11 +529,11 @@ fn publish_macos_owner(
     guard: &MacosDaemonGuard,
     owner: MacosDaemonOwner,
     identity: MacosOwnerIdentity,
-) -> Result<MacosOwnerSnapshot> {
+) -> Result<MacosOwnerRecord> {
     let record = store
         .publish_guard_winner(guard, owner, identity)
         .context("failed to publish the macOS daemon owner")?;
-    Ok(record.snapshot())
+    Ok(record)
 }
 
 #[cfg(target_os = "macos")]
@@ -645,11 +686,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::{
         MacosDaemonOwnerArg, MacosOwnerContention, arbitrate_macos_owner_contention_with,
-        launchd_contender_exits_zero, macos_contender_exit_code, parse_designated_requirement,
+        finish_macos_daemon_run, launchd_contender_exits_zero, macos_contender_exit_code,
+        parse_designated_requirement,
     };
     #[cfg(target_os = "macos")]
     use hypercolor_daemon::macos_owner::{
-        MacosDaemonOwner, MacosOwnerIdentity, MacosOwnerStore, try_acquire_macos_daemon_guard,
+        MacosDaemonOwner, MacosOwnerIdentity, MacosOwnerStore, MacosOwnerStoreError,
+        try_acquire_macos_daemon_guard,
     };
     use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode, ServoGpuImportMode};
     #[cfg(target_os = "macos")]
@@ -976,6 +1019,28 @@ mod tests {
         assert_eq!(
             ServoGpuImportMode::from(ServoGpuImportModeArg::On),
             ServoGpuImportMode::On
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn normal_daemon_return_always_cleans_up_and_preserves_error_precedence() {
+        let cleanup_calls = std::cell::Cell::new(0);
+        let daemon_error = finish_macos_daemon_run(Err(anyhow::anyhow!("daemon failed")), || {
+            cleanup_calls.set(cleanup_calls.get() + 1);
+            Err(MacosOwnerStoreError::MissingOwnerRecord)
+        })
+        .expect_err("daemon and cleanup failure should remain an error");
+        assert_eq!(cleanup_calls.get(), 1);
+        assert_eq!(daemon_error.to_string(), "daemon failed");
+
+        let cleanup_error =
+            finish_macos_daemon_run(Ok(()), || Err(MacosOwnerStoreError::MissingOwnerRecord))
+                .expect_err("cleanup failure after success should be returned");
+        assert!(
+            cleanup_error
+                .to_string()
+                .contains("failed to clear the private macOS daemon session")
         );
     }
 

@@ -23,6 +23,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::api::envelope::ApiError;
+use crate::macos_owner::{MacosDaemonSessionAttestation, MacosProtectedControlCredential};
 use hypercolor_types::config::{
     HypercolorConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
 };
@@ -41,6 +42,7 @@ const HEADER_RETRY_AFTER: HeaderName = HeaderName::from_static("retry-after");
 #[derive(Clone)]
 pub struct SecurityState {
     auth: AuthConfig,
+    macos_session_credential: Option<MacosProtectedControlCredential>,
     network: NetworkAccessPolicy,
     rate_limiter: Arc<Mutex<RateLimiter>>,
 }
@@ -93,6 +95,15 @@ impl RequestAuthContext {
     }
 
     #[must_use]
+    const fn macos_daemon_session(security_enabled: bool) -> Self {
+        Self {
+            security_enabled,
+            granted_tier: Some(AccessTier::Control),
+            protected_control: ProtectedControl::Granted,
+        }
+    }
+
+    #[must_use]
     #[cfg(test)]
     pub(crate) const fn read_only() -> Self {
         Self::authenticated(AccessTier::Read)
@@ -131,6 +142,7 @@ impl SecurityState {
         if cfg!(test) {
             return Self {
                 auth: AuthConfig::default(),
+                macos_session_credential: None,
                 network: NetworkAccessPolicy::default(),
                 rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             };
@@ -143,6 +155,7 @@ impl SecurityState {
                 control_key,
                 read_key,
             },
+            macos_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
         }
@@ -157,6 +170,29 @@ impl SecurityState {
 
     pub(crate) fn security_enabled(&self) -> bool {
         self.auth.control_key.is_some() || self.auth.read_key.is_some()
+    }
+
+    pub(crate) fn install_macos_daemon_session(
+        &mut self,
+        attestation: &MacosDaemonSessionAttestation,
+    ) {
+        self.macos_session_credential = Some(attestation.protected_control_credential.clone());
+    }
+
+    fn is_macos_session_credential(&self, token: &str) -> bool {
+        self.macos_session_credential
+            .as_ref()
+            .is_some_and(|credential| credential.expose_secret() == token)
+    }
+
+    fn resolve_loopback_token(&self, token: &str) -> Option<RequestAuthContext> {
+        if self.is_macos_session_credential(token) {
+            Some(RequestAuthContext::macos_daemon_session(
+                self.security_enabled(),
+            ))
+        } else {
+            resolve_token_tier(token, &self.auth).map(RequestAuthContext::authenticated)
+        }
     }
 }
 
@@ -188,6 +224,7 @@ impl SecurityState {
                 control_key: control_key.map(ToOwned::to_owned),
                 read_key: read_key.map(ToOwned::to_owned),
             },
+            macos_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
         }
@@ -196,14 +233,22 @@ impl SecurityState {
     pub(crate) fn with_network_config(network: NetworkConfig) -> Self {
         Self {
             auth: AuthConfig::default(),
+            macos_session_credential: None,
             network: NetworkAccessPolicy::from_config(&network),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
         }
     }
 
+    fn with_macos_session_credential(credential: MacosProtectedControlCredential) -> Self {
+        let mut state = Self::with_keys(None, None);
+        state.macos_session_credential = Some(credential);
+        state
+    }
+
     fn with_network_policy(network: NetworkAccessPolicy) -> Self {
         Self {
             auth: AuthConfig::default(),
+            macos_session_credential: None,
             network,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
         }
@@ -553,6 +598,12 @@ pub async fn enforce_security(
         return response;
     }
 
+    if !request_is_loopback(&request)
+        && extract_token(&request).is_some_and(|token| state.is_macos_session_credential(&token))
+    {
+        return ApiError::unauthorized("Invalid API key");
+    }
+
     if is_exempt_path(request.uri().path()) {
         request
             .extensions_mut()
@@ -568,11 +619,8 @@ pub async fn enforce_security(
         }
 
         let auth_context = extract_token(&request)
-            .and_then(|token| resolve_token_tier(&token, &state.auth))
-            .map_or_else(
-                RequestAuthContext::unsecured,
-                RequestAuthContext::authenticated,
-            );
+            .and_then(|token| state.resolve_loopback_token(&token))
+            .map_or_else(RequestAuthContext::unsecured, std::convert::identity);
         request.extensions_mut().insert(auth_context);
         return next.run(request).await;
     }
@@ -938,6 +986,7 @@ mod tests {
         ClientAddressRule, NetworkAccessPolicy, RequestAuthContext, SecurityState,
         enforce_security, normalize_api_key,
     };
+    use crate::macos_owner::MacosProtectedControlCredential;
 
     const CONTROL_KEY: &str = "hc_ak_control_test";
     const READ_KEY: &str = "hc_ak_r_read_test";
@@ -1150,6 +1199,56 @@ mod tests {
             .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn loopback_session_credential_grants_control_without_enabling_public_auth() {
+        let credential = MacosProtectedControlCredential::from_bytes([0x42; 32]);
+        let state = SecurityState::with_macos_session_credential(credential.clone());
+        assert!(!state.security_enabled());
+        let context = state
+            .resolve_loopback_token(credential.expose_secret())
+            .expect("session credential should resolve");
+        assert!(context.can_control());
+        assert!(context.can_protected_control());
+        assert!(!context.security_enabled());
+
+        let response = router_with_security_state(state)
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    credential.expose_secret(),
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn nonloopback_session_credential_is_rejected_when_public_auth_is_disabled() {
+        let credential = MacosProtectedControlCredential::from_bytes([0x24; 32]);
+        let state = SecurityState::with_macos_session_credential(credential.clone());
+        let response = router_with_security_state(state)
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    credential.expose_secret(),
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -1378,6 +1477,28 @@ mod tests {
             ))
             .await
             .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-ratelimit-limit").is_none());
+    }
+
+    #[tokio::test]
+    async fn loopback_websocket_session_query_grants_protected_control() {
+        let credential = MacosProtectedControlCredential::from_bytes([0x81; 32]);
+        let response = router_with_security_state(SecurityState::with_macos_session_credential(
+            credential.clone(),
+        ))
+        .oneshot(with_connect_info(
+            Request::builder()
+                .uri(format!("/api/v1/ws?token={}", credential.expose_secret()))
+                .header("upgrade", "websocket")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            1042,
+        ))
+        .await
+        .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().get("x-ratelimit-limit").is_none());

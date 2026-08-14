@@ -1,5 +1,6 @@
 //! Durable macOS daemon ownership and handover state.
 
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,10 +13,14 @@ use serde::{Deserialize, Serialize};
 pub const MACOS_OWNER_RECORD_SCHEMA_VERSION: u32 = 1;
 /// Current handover-journal schema version.
 pub const MACOS_HANDOVER_JOURNAL_SCHEMA_VERSION: u32 = 1;
+/// Current daemon-session attestation schema version.
+pub const MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION: u32 = 1;
 /// Stable owner-record file name within the per-user data directory.
 pub const MACOS_OWNER_RECORD_FILE_NAME: &str = "macos-daemon-owner.json";
 /// Stable handover-journal file name within the per-user data directory.
 pub const MACOS_HANDOVER_JOURNAL_FILE_NAME: &str = "macos-daemon-handover.json";
+/// Stable daemon-session attestation file name within the per-user data directory.
+pub const MACOS_DAEMON_SESSION_ATTESTATION_FILE_NAME: &str = "macos-daemon-session.json";
 /// Stable coordination-lock file name shared by both durable artifacts.
 pub const MACOS_OWNER_COORDINATION_LOCK_FILE_NAME: &str = "macos-daemon-owner.lock";
 /// Tauri product name and app-sidecar LaunchAgent label.
@@ -39,6 +44,10 @@ pub const MACOS_MANAGED_HANDOVER_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum wait for user-directed standalone-owner termination.
 pub const MACOS_STANDALONE_HANDOVER_TIMEOUT: Duration = Duration::from_mins(1);
 const MAX_TEMPORARY_CREATE_ATTEMPTS: usize = 64;
+const MACOS_SERVER_SESSION_ID_PREFIX: &str = "hc_session_";
+const MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX: &str = "hc_pc_";
+const MACOS_SERVER_SESSION_ID_BYTES: usize = 16;
+const MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES: usize = 32;
 
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -284,6 +293,155 @@ pub struct MacosOwnerIncarnation {
     pub owner_epoch: u64,
     /// Full process identity published for the acquisition.
     pub identity: MacosOwnerIdentity,
+}
+
+/// Per-process identifier exposed by the daemon discovery endpoint.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct MacosServerSessionId(String);
+
+impl MacosServerSessionId {
+    /// Construct a canonical session identifier from 128 bits of entropy.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; MACOS_SERVER_SESSION_ID_BYTES]) -> Self {
+        Self(format_hex_token(MACOS_SERVER_SESSION_ID_PREFIX, &bytes))
+    }
+
+    /// Borrow the canonical session identifier.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for MacosServerSessionId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("MacosServerSessionId")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl<'de> Deserialize<'de> for MacosServerSessionId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        validate_hex_token(
+            &value,
+            MACOS_SERVER_SESSION_ID_PREFIX,
+            MACOS_SERVER_SESSION_ID_BYTES,
+            "server_session_id must be a canonical 128-bit token",
+        )
+        .map_err(serde::de::Error::custom)?;
+        Ok(Self(value))
+    }
+}
+
+/// Private 256-bit bearer credential for one daemon process session.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct MacosProtectedControlCredential(String);
+
+impl MacosProtectedControlCredential {
+    /// Construct a canonical protected-control credential from 256 bits.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES]) -> Self {
+        Self(format_hex_token(
+            MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX,
+            &bytes,
+        ))
+    }
+
+    /// Explicitly expose the bearer value for authenticated local transport.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for MacosProtectedControlCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MacosProtectedControlCredential([REDACTED])")
+    }
+}
+
+impl<'de> Deserialize<'de> for MacosProtectedControlCredential {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        validate_hex_token(
+            &value,
+            MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX,
+            MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES,
+            "protected_control_credential must be a canonical 256-bit token",
+        )
+        .map_err(serde::de::Error::custom)?;
+        Ok(Self(value))
+    }
+}
+
+/// Private process-session proof derived from canonical daemon ownership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MacosDaemonSessionAttestation {
+    /// Durable schema version.
+    pub schema_version: u32,
+    /// Topology holding the canonical daemon guard.
+    pub owner: MacosDaemonOwner,
+    /// Exact owner epoch current when this session was published.
+    pub owner_epoch: u64,
+    /// Full process identity current when this session was published.
+    pub owner_identity: MacosOwnerIdentity,
+    /// Per-process identifier safe to expose from `GET /server`.
+    pub server_session_id: MacosServerSessionId,
+    /// Private bearer credential accepted only from a loopback peer.
+    pub protected_control_credential: MacosProtectedControlCredential,
+}
+
+impl MacosDaemonSessionAttestation {
+    fn generate(record: &MacosOwnerRecord) -> Result<Self, MacosOwnerStoreError> {
+        let mut entropy =
+            [0_u8; MACOS_SERVER_SESSION_ID_BYTES + MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES];
+        File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut entropy))
+            .map_err(|source| MacosOwnerStoreError::Read {
+                artifact: "daemon session entropy",
+                path: PathBuf::from("/dev/urandom"),
+                source,
+            })?;
+        let (session_bytes, credential_bytes) = entropy.split_at(MACOS_SERVER_SESSION_ID_BYTES);
+        let session_bytes = session_bytes
+            .try_into()
+            .expect("session entropy slice has the exact array length");
+        let credential_bytes = credential_bytes
+            .try_into()
+            .expect("credential entropy slice has the exact array length");
+        Ok(Self {
+            schema_version: MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION,
+            owner: record.active_owner,
+            owner_epoch: record.owner_epoch,
+            owner_identity: record.active_identity.clone(),
+            server_session_id: MacosServerSessionId::from_bytes(session_bytes),
+            protected_control_credential: MacosProtectedControlCredential::from_bytes(
+                credential_bytes,
+            ),
+        })
+    }
+
+    /// Return the exact owner acquisition that authorized this session.
+    #[must_use]
+    pub fn owner_incarnation(&self) -> MacosOwnerIncarnation {
+        MacosOwnerIncarnation {
+            owner: self.owner,
+            owner_epoch: self.owner_epoch,
+            identity: self.owner_identity.clone(),
+        }
+    }
 }
 
 /// Result of publishing a contender against the current owner epoch.
@@ -1014,6 +1172,15 @@ pub enum MacosOwnerStoreError {
         #[source]
         source: std::io::Error,
     },
+    /// A matching daemon-session attestation could not be removed.
+    #[error("failed to remove macOS daemon session attestation at {path}: {source}")]
+    RemoveSessionAttestation {
+        /// Attestation path.
+        path: PathBuf,
+        /// Filesystem failure.
+        #[source]
+        source: std::io::Error,
+    },
     /// No owner record exists for the requested mutation.
     #[error("macOS owner record does not exist")]
     MissingOwnerRecord,
@@ -1094,6 +1261,12 @@ impl MacosOwnerStore {
         self.data_dir.join(MACOS_HANDOVER_JOURNAL_FILE_NAME)
     }
 
+    /// Return the daemon-session attestation path.
+    pub fn daemon_session_attestation_path(&self) -> PathBuf {
+        self.data_dir
+            .join(MACOS_DAEMON_SESSION_ATTESTATION_FILE_NAME)
+    }
+
     /// Return the stable lock path shared by every writer.
     pub fn coordination_lock_path(&self) -> PathBuf {
         self.data_dir.join(MACOS_OWNER_COORDINATION_LOCK_FILE_NAME)
@@ -1102,6 +1275,95 @@ impl MacosOwnerStore {
     /// Load and validate the current owner record.
     pub fn load_owner_record(&self) -> Result<Option<MacosOwnerRecord>, MacosOwnerStoreError> {
         read_owner_record(&self.owner_record_path())
+    }
+
+    /// Load a private session attestation only when its exact owner is current.
+    ///
+    /// Artifact presence is not ownership authority. Callers that need owner
+    /// authority must independently verify the canonical daemon guard.
+    pub fn load_daemon_session_attestation(
+        &self,
+    ) -> Result<Option<MacosDaemonSessionAttestation>, MacosOwnerStoreError> {
+        let _lock = self.acquire_coordination_lock()?;
+        let Some(attestation) =
+            read_daemon_session_attestation(&self.daemon_session_attestation_path())?
+        else {
+            return Ok(None);
+        };
+        let current = read_owner_record(&self.owner_record_path())?
+            .ok_or(MacosOwnerStoreError::MissingOwnerRecord)?;
+        if attestation.owner_incarnation() != current.incarnation() {
+            return Err(MacosOwnerStoreError::InvalidArtifact {
+                artifact: "daemon session attestation",
+                detail: "owner topology, epoch, or identity is not current",
+            });
+        }
+        Ok(Some(attestation))
+    }
+
+    /// Publish a new private process session for the exact guard-winning owner.
+    #[cfg(target_os = "macos")]
+    pub fn publish_daemon_session_attestation(
+        &self,
+        _guard: &MacosDaemonGuard,
+        expected_owner: &MacosOwnerIncarnation,
+    ) -> Result<MacosDaemonSessionAttestation, MacosOwnerStoreError> {
+        let _lock = self.acquire_coordination_lock()?;
+        let current = read_owner_record(&self.owner_record_path())?
+            .ok_or(MacosOwnerStoreError::MissingOwnerRecord)?;
+        if current.incarnation() != *expected_owner {
+            return Err(MacosOwnerStoreError::InvalidArtifact {
+                artifact: "daemon session attestation",
+                detail: "current owner does not match the guard-winning incarnation",
+            });
+        }
+        let attestation = MacosDaemonSessionAttestation::generate(&current)?;
+        validate_daemon_session_attestation(&attestation)?;
+        write_json_atomic(
+            &self.data_dir,
+            &self.daemon_session_attestation_path(),
+            "daemon session attestation",
+            &attestation,
+        )?;
+        Ok(attestation)
+    }
+
+    /// Clear only the exact current owner's matching process session.
+    #[cfg(target_os = "macos")]
+    pub fn clear_daemon_session_attestation(
+        &self,
+        expected_owner: &MacosOwnerIncarnation,
+        expected_session: &MacosServerSessionId,
+    ) -> Result<bool, MacosOwnerStoreError> {
+        let _lock = self.acquire_coordination_lock()?;
+        let current = read_owner_record(&self.owner_record_path())?
+            .ok_or(MacosOwnerStoreError::MissingOwnerRecord)?;
+        if current.incarnation() != *expected_owner {
+            return Err(MacosOwnerStoreError::InvalidArtifact {
+                artifact: "daemon session attestation",
+                detail: "current owner does not match the clearing incarnation",
+            });
+        }
+        let path = self.daemon_session_attestation_path();
+        let Some(attestation) = read_daemon_session_attestation(&path)? else {
+            return Ok(false);
+        };
+        if attestation.owner_incarnation() != *expected_owner
+            || attestation.server_session_id != *expected_session
+        {
+            return Err(MacosOwnerStoreError::InvalidArtifact {
+                artifact: "daemon session attestation",
+                detail: "identity, epoch, or server session does not match",
+            });
+        }
+        fs::remove_file(&path).map_err(|source| {
+            MacosOwnerStoreError::RemoveSessionAttestation {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        sync_parent_directory(&self.data_dir)?;
+        Ok(true)
     }
 
     /// Issue one stop request only while the exact owner publication remains current.
@@ -2342,28 +2604,141 @@ fn read_handover_journal(
     Ok(Some(journal))
 }
 
+fn read_daemon_session_attestation(
+    path: &Path,
+) -> Result<Option<MacosDaemonSessionAttestation>, MacosOwnerStoreError> {
+    let Some(bytes) = read_private_optional(path, "daemon session attestation")? else {
+        return Ok(None);
+    };
+    let attestation =
+        serde_json::from_slice::<MacosDaemonSessionAttestation>(&bytes).map_err(|source| {
+            MacosOwnerStoreError::Decode {
+                artifact: "daemon session attestation",
+                source,
+            }
+        })?;
+    validate_daemon_session_attestation(&attestation)?;
+    Ok(Some(attestation))
+}
+
+fn read_private_optional(
+    path: &Path,
+    artifact: &'static str,
+) -> Result<Option<Vec<u8>>, MacosOwnerStoreError> {
+    let path_metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(MacosOwnerStoreError::Read {
+                artifact,
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    validate_private_file_metadata(&path_metadata, artifact)?;
+    let file = File::open(path).map_err(|source| MacosOwnerStoreError::Read {
+        artifact,
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let file_metadata = file
+        .metadata()
+        .map_err(|source| MacosOwnerStoreError::Read {
+            artifact,
+            path: path.to_path_buf(),
+            source,
+        })?;
+    validate_private_file_metadata(&file_metadata, artifact)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if path_metadata.dev() != file_metadata.dev() || path_metadata.ino() != file_metadata.ino()
+        {
+            return Err(MacosOwnerStoreError::InvalidArtifact {
+                artifact,
+                detail: "file changed while it was opened",
+            });
+        }
+    }
+    read_bounded_file(file, path, artifact).map(Some)
+}
+
+fn validate_private_file_metadata(
+    metadata: &fs::Metadata,
+    artifact: &'static str,
+) -> Result<(), MacosOwnerStoreError> {
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(MacosOwnerStoreError::InvalidArtifact {
+            artifact,
+            detail: "must be a regular file",
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.mode() & 0o777 != 0o600 {
+            return Err(MacosOwnerStoreError::InvalidArtifact {
+                artifact,
+                detail: "mode must be 0600",
+            });
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        validate_private_file_uid(
+            metadata.uid(),
+            nix::unistd::Uid::current().as_raw(),
+            artifact,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_private_file_uid(
+    owner_uid: u32,
+    current_uid: u32,
+    artifact: &'static str,
+) -> Result<(), MacosOwnerStoreError> {
+    if owner_uid != current_uid {
+        return Err(MacosOwnerStoreError::InvalidArtifact {
+            artifact,
+            detail: "owner UID must match the current user",
+        });
+    }
+    Ok(())
+}
+
+fn read_bounded_file(
+    file: File,
+    path: &Path,
+    artifact: &'static str,
+) -> Result<Vec<u8>, MacosOwnerStoreError> {
+    let mut bytes = Vec::new();
+    file.take((MAX_MACOS_OWNER_ARTIFACT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|source| MacosOwnerStoreError::Read {
+            artifact,
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() > MAX_MACOS_OWNER_ARTIFACT_BYTES {
+        return Err(MacosOwnerStoreError::ArtifactTooLarge {
+            artifact,
+            maximum_bytes: MAX_MACOS_OWNER_ARTIFACT_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
 fn read_optional(
     path: &Path,
     artifact: &'static str,
 ) -> Result<Option<Vec<u8>>, MacosOwnerStoreError> {
     match File::open(path) {
-        Ok(file) => {
-            let mut bytes = Vec::new();
-            file.take((MAX_MACOS_OWNER_ARTIFACT_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)
-                .map_err(|source| MacosOwnerStoreError::Read {
-                    artifact,
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-            if bytes.len() > MAX_MACOS_OWNER_ARTIFACT_BYTES {
-                return Err(MacosOwnerStoreError::ArtifactTooLarge {
-                    artifact,
-                    maximum_bytes: MAX_MACOS_OWNER_ARTIFACT_BYTES,
-                });
-            }
-            Ok(Some(bytes))
-        }
+        Ok(file) => read_bounded_file(file, path, artifact).map(Some),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(MacosOwnerStoreError::Read {
             artifact,
@@ -2397,6 +2772,68 @@ fn validate_owner_record(record: &MacosOwnerRecord) -> Result<(), MacosOwnerStor
     }
     if let Some(conflict) = &record.conflict {
         validate_owner_identity(&conflict.contender_identity)?;
+    }
+    Ok(())
+}
+
+fn validate_daemon_session_attestation(
+    attestation: &MacosDaemonSessionAttestation,
+) -> Result<(), MacosOwnerStoreError> {
+    validate_version(
+        "daemon session attestation",
+        attestation.schema_version,
+        MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION,
+    )?;
+    if attestation.owner_epoch == 0 {
+        return Err(MacosOwnerStoreError::InvalidArtifact {
+            artifact: "daemon session attestation",
+            detail: "owner_epoch must be positive",
+        });
+    }
+    validate_owner_identity(&attestation.owner_identity)?;
+    validate_hex_token(
+        attestation.server_session_id.as_str(),
+        MACOS_SERVER_SESSION_ID_PREFIX,
+        MACOS_SERVER_SESSION_ID_BYTES,
+        "server_session_id must be a canonical 128-bit token",
+    )?;
+    validate_hex_token(
+        attestation.protected_control_credential.expose_secret(),
+        MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX,
+        MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES,
+        "protected_control_credential must be a canonical 256-bit token",
+    )
+}
+
+fn format_hex_token(prefix: &str, bytes: &[u8]) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut value = String::with_capacity(prefix.len() + bytes.len() * 2);
+    value.push_str(prefix);
+    for byte in bytes {
+        value.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        value.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    value
+}
+
+fn validate_hex_token(
+    value: &str,
+    prefix: &str,
+    entropy_bytes: usize,
+    detail: &'static str,
+) -> Result<(), MacosOwnerStoreError> {
+    let hex = value
+        .strip_prefix(prefix)
+        .filter(|hex| hex.len() == entropy_bytes * 2)
+        .filter(|hex| {
+            hex.bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        });
+    if hex.is_none() {
+        return Err(MacosOwnerStoreError::InvalidArtifact {
+            artifact: "daemon session attestation",
+            detail,
+        });
     }
     Ok(())
 }
@@ -2600,7 +3037,18 @@ fn create_temporary_file(
             options.mode(0o600);
         }
         match options.open(&temporary_path) {
-            Ok(file) => return Ok((file, temporary_path)),
+            Ok(file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(fs::Permissions::from_mode(0o600))
+                        .map_err(|source| MacosOwnerStoreError::CreateTemporary {
+                            path: path.to_path_buf(),
+                            source,
+                        })?;
+                }
+                return Ok((file, temporary_path));
+            }
             Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(source) => {
                 return Err(MacosOwnerStoreError::CreateTemporary {
@@ -2632,4 +3080,17 @@ fn sync_parent_directory(data_dir: &Path) -> Result<(), MacosOwnerStoreError> {
 #[cfg(not(unix))]
 fn sync_parent_directory(_data_dir: &Path) -> Result<(), MacosOwnerStoreError> {
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::validate_private_file_uid;
+
+    #[test]
+    fn private_session_file_rejects_another_uid() {
+        let error = validate_private_file_uid(501, 502, "daemon session attestation")
+            .expect_err("another UID must fail closed");
+
+        assert!(error.to_string().contains("current user"));
+    }
 }

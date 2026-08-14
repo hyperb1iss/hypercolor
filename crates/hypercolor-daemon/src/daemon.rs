@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::api::{self, AppState};
-use crate::macos_owner::{MacosDaemonOwner, MacosOwnerSnapshot};
+use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
 use crate::startup::{DaemonState, load_config};
 
@@ -53,6 +53,8 @@ pub struct DaemonRunOptions {
     pub macos_owner: Option<MacosDaemonOwner>,
     /// Durable ownership snapshot published before input source construction.
     pub macos_owner_snapshot: Option<MacosOwnerSnapshot>,
+    /// Exact private process session derived from canonical macOS ownership.
+    pub macos_daemon_session_attestation: Option<MacosDaemonSessionAttestation>,
 }
 
 pub trait DaemonExtensionInstaller: Send + Sync {
@@ -100,6 +102,7 @@ pub async fn run_with_extensions(
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
+    let macos_daemon_session_attestation = options.macos_daemon_session_attestation.clone();
     // Must land before any registry scan, which resolves the bundled catalog
     // the first time it enumerates effects.
     if options.effects_dir.is_some() {
@@ -185,7 +188,11 @@ pub async fn run_with_extensions(
     daemon_state.start().await?;
 
     let ui_dir = resolve_ui_dir(options.ui_dir);
-    let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
+    let mut app_state = AppState::from_daemon_state(&daemon_state);
+    if let Some(attestation) = macos_daemon_session_attestation.as_ref() {
+        app_state.install_macos_daemon_session(attestation);
+    }
+    let app_state = Arc::new(app_state);
     api::displays::sync_display_preference_overlays(&app_state).await;
     if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
         if let Err(shutdown_error) = daemon_state.shutdown().await {
