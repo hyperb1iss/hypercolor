@@ -213,13 +213,16 @@
     const renderHostFrame = function() {
       if (typeof window.__hypercolorRenderHostFrame === 'function') { window.__hypercolorRenderHostFrame(); }
     };
-    window.__hypercolorApplyHostFrame = function(timeSecs, deltaSecs, frameNumber, width, height) {
+    window.__hypercolorApplyFrameTiming = function(timeSecs, deltaSecs, frameNumber, width, height) {
       if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
       applyTimingAndCanvas(
         window.engine,
         { timeSecs: timeSecs, deltaSecs: deltaSecs, frameNumber: frameNumber },
         { width: width, height: height }
       );
+    };
+    window.__hypercolorApplyHostFrame = function(timeSecs, deltaSecs, frameNumber, width, height) {
+      window.__hypercolorApplyFrameTiming(timeSecs, deltaSecs, frameNumber, width, height);
       renderHostFrame();
     };
     window.__hypercolorApplyFramePayload = function(payload) {

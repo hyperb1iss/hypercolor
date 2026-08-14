@@ -69,6 +69,7 @@ impl ServoRenderer {
                 include_media: self.include_media_updates,
                 include_net: self.include_net_updates,
                 include_lighting: self.include_lighting_updates,
+                emit_frame_timing: true,
                 render_host_frame: self.host_driven_animation,
                 selected_sensor_labels: selected_sensor_labels(
                     &self.scoped_sensor_control_ids,
@@ -84,7 +85,7 @@ impl ServoRenderer {
                             .expect("LightScript frame payload should serialize as a JSON object"),
                     );
                 }
-                LightScriptFrameUpdate::HostFrameScript(script) => {
+                LightScriptFrameUpdate::TimingScript(script) => {
                     self.pending_scripts.push(script);
                 }
             }

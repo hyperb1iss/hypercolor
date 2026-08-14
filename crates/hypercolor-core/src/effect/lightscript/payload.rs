@@ -47,9 +47,8 @@ impl LightScriptFramePayload {
     }
 
     #[cfg(feature = "servo")]
-    pub(super) fn is_host_frame_only(&self) -> bool {
-        self.render_host_frame
-            && self.audio.is_none()
+    pub(super) fn is_timing_only(&self) -> bool {
+        self.audio.is_none()
             && self.screen.is_none()
             && self.sensors.is_none()
             && self.media.is_none()
