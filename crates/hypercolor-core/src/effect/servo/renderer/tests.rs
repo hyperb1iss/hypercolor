@@ -757,7 +757,12 @@ fn frame_payloads_track_animation_cap_without_js_throttle() {
     renderer.pending_frame_payloads.clear();
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 15.0));
     assert_eq!(renderer.last_animation_fps_cap, Some(20));
-    assert!(renderer.pending_scripts.is_empty());
+    assert!(
+        renderer
+            .pending_scripts
+            .first()
+            .is_some_and(|script| script.starts_with("window.__hypercolorApplyFrameTiming("))
+    );
     assert!(renderer.pending_frame_payloads.is_empty());
 }
 
@@ -789,6 +794,25 @@ fn host_driven_frames_use_fast_host_script_without_payload() {
             .iter()
             .all(|script| !script.contains("instance.render("))
     );
+}
+
+#[test]
+fn raf_driven_capture_frames_publish_timing_without_host_render() {
+    let mut renderer = ServoRenderer::new();
+    renderer.include_audio_updates = false;
+    let mut input = frame_input(1.0 / 30.0);
+    input.time_secs = 2.5;
+    input.frame_number = 75;
+
+    renderer.enqueue_frame_payloads(&input);
+
+    assert!(renderer.pending_frame_payloads.is_empty());
+    let script = renderer
+        .pending_scripts
+        .first()
+        .expect("RAF-driven capture frame should publish host timing");
+    assert!(script.starts_with("window.__hypercolorApplyFrameTiming(2.5,"));
+    assert!(!script.contains("__hypercolorApplyHostFrame"));
 }
 
 #[test]
@@ -1052,7 +1076,12 @@ fn frame_payloads_skip_near_tier_jitter_updates() {
     renderer.pending_frame_payloads.clear();
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 58.0));
     assert_eq!(renderer.last_animation_fps_cap, Some(60));
-    assert!(renderer.pending_scripts.is_empty());
+    assert!(
+        renderer
+            .pending_scripts
+            .first()
+            .is_some_and(|script| script.starts_with("window.__hypercolorApplyFrameTiming("))
+    );
     assert!(renderer.pending_frame_payloads.is_empty());
 }
 
@@ -1068,7 +1097,12 @@ fn frame_payloads_skip_unchanged_input_updates() {
     renderer.pending_scripts.clear();
     renderer.pending_frame_payloads.clear();
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
-    assert!(renderer.pending_scripts.is_empty());
+    assert!(
+        renderer
+            .pending_scripts
+            .first()
+            .is_some_and(|script| script.starts_with("window.__hypercolorApplyFrameTiming("))
+    );
     assert!(renderer.pending_frame_payloads.is_empty());
 }
 

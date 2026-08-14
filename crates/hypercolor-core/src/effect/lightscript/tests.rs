@@ -10,6 +10,7 @@ fn default_options() -> LightScriptFrameUpdateOptions<'static> {
         include_media: false,
         include_net: false,
         include_lighting: false,
+        emit_frame_timing: false,
         render_host_frame: false,
         selected_sensor_labels: None,
     }
@@ -64,6 +65,7 @@ fn bootstrap_script_contains_runtime_shape_and_frame_adapter() {
     assert!(script.contains("window.engine.inputAvailability = { declared: false"));
     assert!(script.contains("Number.isFinite(window.engine.time)"));
     assert!(script.contains("const time = Number.isFinite(window.engine.time)"));
+    assert!(script.contains("window.__hypercolorApplyFrameTiming = function("));
     assert!(script.contains("window.__hypercolorApplyHostFrame = function("));
     assert!(script.contains("window.__hypercolorApplyFramePayload = function(payload)"));
     assert!(script.contains("applyAudio(engine, payload.audio)"));
