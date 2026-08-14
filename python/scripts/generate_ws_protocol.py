@@ -53,6 +53,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
 def render(manifest: dict[str, Any]) -> str:
     channels = [str(channel["name"]) for channel in expect_list(manifest["channels"])]
     json_payloads = expect_dict(manifest["json_payloads"])
+    json_payload_contracts = render_python_value(json_payloads, indent=0)
     binary_messages = expect_list(manifest["binary_messages"])
     preview_messages = [
         message for message in binary_messages if message.get("layout") == "preview_frame"
@@ -76,11 +77,8 @@ def render(manifest: dict[str, Any]) -> str:
         ")",
         *tuple_assignment("WS_CAPABILITIES", manifest["capabilities"]),
         "",
-        "JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(",
-        "    {",
-        *render_json_payload_contracts(json_payloads),
-        "    }",
-        ")",
+        f"JSON_PAYLOAD_CONTRACTS: Final = {json_payload_contracts[0]}",
+        *json_payload_contracts[1:],
         "",
         "BINARY_MESSAGE_TAGS: Final = MappingProxyType(",
         "    {",
@@ -111,19 +109,65 @@ def render(manifest: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_json_payload_contracts(payloads: dict[str, Any]) -> list[str]:
-    lines: list[str] = []
-    for name, raw_contract in payloads.items():
-        contract = expect_dict(raw_contract)
-        lines.extend(
-            [
-                f"        {quote(name)}: (",
-                f"            {int(contract['schema_version'])},",
-                f"            {quote(str(contract['channel']))},",
-                f"            {quote(str(contract['event']))},",
-                "        ),",
-            ]
-        )
+def render_python_value(value: Any, *, indent: int) -> list[str]:
+    if isinstance(value, dict):
+        return render_python_mapping(value, indent=indent)
+
+    if isinstance(value, list):
+        return render_python_list(value, indent=indent)
+
+    if value is None:
+        rendered = "None"
+    elif isinstance(value, bool):
+        rendered = str(value)
+    elif isinstance(value, (int, float)):
+        rendered = repr(value)
+    elif isinstance(value, str):
+        rendered = quote(value)
+    else:
+        raise TypeError("expected JSON value")
+    return [rendered]
+
+
+def render_python_mapping(value: dict[Any, Any], *, indent: int) -> list[str]:
+    if not value:
+        return ["MappingProxyType({})"]
+    lines = ["MappingProxyType(", f"{' ' * (indent + 4)}{{"]
+    child_indent = indent + 8
+    child_prefix = " " * child_indent
+    for key, child in value.items():
+        if not isinstance(key, str):
+            raise TypeError("expected JSON object key")
+        rendered = render_python_value(child, indent=child_indent)
+        if len(rendered) == 1:
+            lines.append(f"{child_prefix}{quote(key)}: {rendered[0]},")
+            continue
+        lines.append(f"{child_prefix}{quote(key)}: {rendered[0]}")
+        lines.extend(rendered[1:-1])
+        lines.append(f"{rendered[-1]},")
+    lines.extend((f"{' ' * (indent + 4)}}}", f"{' ' * indent})"))
+    return lines
+
+
+def render_python_list(value: list[Any], *, indent: int) -> list[str]:
+    if not value:
+        return ["()"]
+    if len(value) == 1:
+        rendered = render_python_value(value[0], indent=indent)
+        if len(rendered) == 1:
+            return [f"({rendered[0]},)"]
+    lines = ["("]
+    child_indent = indent + 4
+    child_prefix = " " * child_indent
+    for child in value:
+        rendered = render_python_value(child, indent=child_indent)
+        if len(rendered) == 1:
+            lines.append(f"{child_prefix}{rendered[0]},")
+            continue
+        lines.append(f"{child_prefix}{rendered[0]}")
+        lines.extend(rendered[1:-1])
+        lines.append(f"{rendered[-1]},")
+    lines.append(f"{' ' * indent})")
     return lines
 
 
@@ -135,7 +179,7 @@ def tuple_assignment(name: str, values: Any) -> list[str]:
 
 
 def quote(value: str) -> str:
-    return json.dumps(value)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def expect_dict(value: Any) -> dict[str, Any]:
