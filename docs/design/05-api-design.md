@@ -2198,26 +2198,40 @@ For audit/debug purposes, the daemon can optionally log events to a ring buffer 
 
 ### 9.1 Threat Model
 
-Hypercolor controls lights. It cannot brick hardware, exfiltrate data, or compromise system security. The primary concerns are:
+Hypercolor controls lights and can optionally observe screen and host-input data. The primary concerns are:
 
 | Threat                           | Severity | Mitigation                    |
 | -------------------------------- | -------- | ----------------------------- |
 | Unauthorized effect changes      | Low      | Annoying, not dangerous       |
 | Excessive API calls (DoS)        | Medium   | Rate limiting                 |
 | Reading device info              | Low      | No sensitive data exposed     |
+| Reading captured screen or input | High     | Protected control credential  |
+| Triggering TCC prompts or picker | Medium   | Protected control credential  |
 | Firmware manipulation            | High     | Not exposed via API at all    |
 | Daemon crash via malformed input | Medium   | Input validation, fuzzing     |
 | Network-exposed daemon hijacked  | Medium   | API keys for non-local access |
 
-### 9.2 Local Access (No Auth)
+### 9.2 Local Access
 
-When bound to `127.0.0.1` (the default), no authentication is required. The reasoning:
+When bound to `127.0.0.1` (the default), ordinary lighting control requires no
+authentication. Loopback is network locality, not user identity, so privacy
+surfaces use a separate protected-control authority.
 
-- The daemon runs as the user's own process
-- Only processes on the same machine can connect
-- D-Bus session bus is already authenticated per the D-Bus spec
+The credentialless loopback tier is a compatibility policy for low-impact
+lighting control. It does not prove that a client shares the daemon's user ID.
+A native process under another local account can reach the same host loopback
+namespace.
 
-This matches the security model of OpenRGB (TCP 6742, no auth), WLED (HTTP, no auth on local network), and other RGB tools (HTTP API, local only by default).
+The Input Monitoring and Screen Recording authorization routes, the capture
+source picker, monitor enumeration, and the `screen_canvas`, `screen_zones`,
+and `input_events` WebSocket channels require an authenticated control
+credential even on loopback. Read keys and unauthenticated local clients cannot
+reach them. Trusted in-process transports receive protected control only after
+their transport-specific authentication succeeds.
+
+The ordinary tier remains compatible with OpenRGB, WLED, and other local RGB
+tools. The protected tier is stricter because screen and input data cross a
+privacy boundary those lighting-only models do not cover.
 
 ### 9.3 Network Access (API Key)
 

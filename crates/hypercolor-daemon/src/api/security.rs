@@ -49,22 +49,17 @@ pub struct SecurityState {
 pub(crate) struct RequestAuthContext {
     security_enabled: bool,
     granted_tier: Option<AccessTier>,
+    protected_control: ProtectedControl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectedControl {
+    Denied,
+    Granted,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TrustedLocalControl;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RequestLocality {
-    loopback: bool,
-}
-
-impl RequestLocality {
-    #[must_use]
-    pub(crate) const fn is_loopback(self) -> bool {
-        self.loopback
-    }
-}
 
 impl RequestAuthContext {
     #[must_use]
@@ -72,6 +67,7 @@ impl RequestAuthContext {
         Self {
             security_enabled: false,
             granted_tier: None,
+            protected_control: ProtectedControl::Denied,
         }
     }
 
@@ -80,6 +76,7 @@ impl RequestAuthContext {
         Self {
             security_enabled: true,
             granted_tier: None,
+            protected_control: ProtectedControl::Denied,
         }
     }
 
@@ -88,6 +85,10 @@ impl RequestAuthContext {
         Self {
             security_enabled: true,
             granted_tier: Some(granted_tier),
+            protected_control: match granted_tier {
+                AccessTier::Read => ProtectedControl::Denied,
+                AccessTier::Control => ProtectedControl::Granted,
+            },
         }
     }
 
@@ -111,6 +112,11 @@ impl RequestAuthContext {
     #[must_use]
     pub(crate) const fn can_control(self) -> bool {
         !self.security_enabled || matches!(self.granted_tier, Some(AccessTier::Control))
+    }
+
+    #[must_use]
+    pub(crate) const fn can_protected_control(self) -> bool {
+        matches!(self.protected_control, ProtectedControl::Granted)
     }
 
     #[must_use]
@@ -532,11 +538,6 @@ pub async fn enforce_security(
     next: Next,
 ) -> Response {
     let mut request = request;
-    let loopback = request_is_loopback(&request);
-    request
-        .extensions_mut()
-        .insert(RequestLocality { loopback });
-
     if request
         .extensions_mut()
         .remove::<TrustedLocalControl>()
@@ -566,22 +567,22 @@ pub async fn enforce_security(
             );
         }
 
-        if !state.security_enabled() {
-            request
-                .extensions_mut()
-                .insert(RequestAuthContext::unsecured());
-            return next.run(request).await;
-        }
-        request
-            .extensions_mut()
-            .insert(RequestAuthContext::unsecured());
+        let auth_context = extract_token(&request)
+            .and_then(|token| resolve_token_tier(&token, &state.auth))
+            .map_or_else(
+                RequestAuthContext::unsecured,
+                RequestAuthContext::authenticated,
+            );
+        request.extensions_mut().insert(auth_context);
         return next.run(request).await;
     }
 
     if !state.security_enabled() {
-        request
-            .extensions_mut()
-            .insert(RequestAuthContext::unsecured());
+        if request.extensions().get::<RequestAuthContext>().is_none() {
+            request
+                .extensions_mut()
+                .insert(RequestAuthContext::unsecured());
+        }
         return next.run(request).await;
     }
 
@@ -923,7 +924,7 @@ fn masked_v6(address: Ipv6Addr, prefix: u8) -> u128 {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use axum::extract::ConnectInfo;
+    use axum::extract::{ConnectInfo, Extension};
     use axum::http::header::AUTHORIZATION;
     use axum::routing::{get, post};
     use axum::{Router, body::Body};
@@ -934,7 +935,8 @@ mod tests {
     use hypercolor_types::config::{NetworkAccessMode, NetworkClientScope, NetworkConfig};
 
     use super::{
-        ClientAddressRule, NetworkAccessPolicy, SecurityState, enforce_security, normalize_api_key,
+        ClientAddressRule, NetworkAccessPolicy, RequestAuthContext, SecurityState,
+        enforce_security, normalize_api_key,
     };
 
     const CONTROL_KEY: &str = "hc_ak_control_test";
@@ -949,7 +951,30 @@ mod tests {
         Router::new()
             .route("/health", get(|| async { StatusCode::OK }))
             .route("/api/v1/status", get(|| async { StatusCode::OK }))
-            .route("/api/v1/ws", get(|| async { StatusCode::OK }))
+            .route(
+                "/api/v1/ws",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        if context.can_protected_control() {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::FORBIDDEN
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/protected-control",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        if context.can_protected_control() {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::FORBIDDEN
+                        }
+                    },
+                ),
+            )
             .route("/api/v1/scenes", post(|| async { StatusCode::CREATED }))
             .route(
                 "/api/v1/effects/install",
@@ -1070,6 +1095,61 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().get("x-ratelimit-limit").is_none());
+    }
+
+    #[tokio::test]
+    async fn loopback_locality_does_not_grant_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/protected-control")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn loopback_read_key_does_not_grant_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    READ_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn loopback_control_key_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    CONTROL_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -1250,7 +1330,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_upgrade_allows_query_token_authentication() {
+    async fn websocket_upgrade_read_query_lacks_protected_control() {
         let app = secured_test_router();
         let response = app
             .oneshot(
@@ -1263,7 +1343,44 @@ mod tests {
             .await
             .expect("request failed");
 
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().contains_key("x-ratelimit-limit"));
+    }
+
+    #[tokio::test]
+    async fn websocket_upgrade_control_query_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/ws?token={CONTROL_KEY}"))
+                    .header("upgrade", "websocket")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key("x-ratelimit-limit"));
+    }
+
+    #[tokio::test]
+    async fn loopback_websocket_control_query_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri(format!("/api/v1/ws?token={CONTROL_KEY}"))
+                    .header("upgrade", "websocket")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-ratelimit-limit").is_none());
     }
 
     #[tokio::test]

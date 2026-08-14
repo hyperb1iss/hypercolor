@@ -108,15 +108,36 @@ pub(crate) fn spawn_trusted_local_socket(
     state: Arc<AppState>,
     runtime: &tokio::runtime::Handle,
 ) -> TrustedLocalWebSocket {
+    spawn_local_socket_with_context(
+        state,
+        runtime,
+        crate::api::security::trusted_local_control_context(),
+    )
+}
+
+fn spawn_local_socket_with_context(
+    state: Arc<AppState>,
+    runtime: &tokio::runtime::Handle,
+    auth_context: RequestAuthContext,
+) -> TrustedLocalWebSocket {
     let (socket, transport) = trusted_local_socket_pair();
     let shutdown = transport.shutdown_token();
     drop(runtime.spawn(handle_socket(
         SessionSocket::Local(transport),
         state,
-        crate::api::security::trusted_local_control_context(),
+        auth_context,
         Some(shutdown),
     )));
     socket
+}
+
+#[cfg(test)]
+pub(super) fn spawn_test_local_socket(
+    state: Arc<AppState>,
+    runtime: &tokio::runtime::Handle,
+    auth_context: RequestAuthContext,
+) -> TrustedLocalWebSocket {
+    spawn_local_socket_with_context(state, runtime, auth_context)
 }
 
 enum SessionSocket {
@@ -1127,7 +1148,7 @@ pub(super) fn authorize_subscription_channels(
     auth_context: RequestAuthContext,
     channels: &[WsChannel],
 ) -> Result<(), WsProtocolError> {
-    if auth_context.can_control() {
+    if auth_context.can_protected_control() {
         return Ok(());
     }
 
@@ -1142,7 +1163,7 @@ pub(super) fn authorize_subscription_channels(
         Ok(())
     } else {
         Err(WsProtocolError::forbidden(
-            "Screen capture preview subscriptions require a control-tier API key",
+            "Sensitive screen and input subscriptions require a control credential",
             json!({"channels": restricted_channels, "required_tier": "control"}),
         ))
     }

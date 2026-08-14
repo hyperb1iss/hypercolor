@@ -19,14 +19,11 @@ use hypercolor_types::api::capture::{
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::security::RequestLocality;
+use crate::api::security::RequestAuthContext;
 
-fn local_request_rejection(locality: RequestLocality) -> Option<Response> {
-    (!locality.is_loopback()).then(|| {
-        ApiError::forbidden(
-            "Protected capture actions and monitor enumeration require a local request",
-        )
-    })
+fn protected_control_rejection(auth_context: RequestAuthContext) -> Option<Response> {
+    (!auth_context.can_protected_control())
+        .then(|| ApiError::forbidden("Protected capture access requires a control credential"))
 }
 
 const fn grant_owner(owner: MacosCapabilityOwner) -> ProtectedSourceGrantOwner {
@@ -158,7 +155,7 @@ fn install_macos_picker_persistence_task(
         ),
         (
             status = 403,
-            description = "Local request required",
+            description = "Control credential required",
             body = crate::api::envelope::ApiErrorResponse
         )
     ),
@@ -166,9 +163,9 @@ fn install_macos_picker_persistence_task(
 )]
 pub(crate) async fn authorize_input_monitoring(
     State(state): State<Arc<AppState>>,
-    Extension(locality): Extension<RequestLocality>,
+    Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
-    if let Some(response) = local_request_rejection(locality) {
+    if let Some(response) = protected_control_rejection(auth_context) {
         return response;
     }
     let Some(manager) = state.config_manager.as_ref() else {
@@ -223,7 +220,7 @@ pub(crate) async fn authorize_input_monitoring(
         ),
         (
             status = 403,
-            description = "Local request required",
+            description = "Control credential required",
             body = crate::api::envelope::ApiErrorResponse
         )
     ),
@@ -231,9 +228,9 @@ pub(crate) async fn authorize_input_monitoring(
 )]
 pub(crate) async fn authorize_screen_recording(
     State(state): State<Arc<AppState>>,
-    Extension(locality): Extension<RequestLocality>,
+    Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
-    if let Some(response) = local_request_rejection(locality) {
+    if let Some(response) = protected_control_rejection(auth_context) {
         return response;
     }
     let Some(manager) = state.config_manager.as_ref() else {
@@ -289,7 +286,7 @@ pub(crate) async fn authorize_screen_recording(
         ),
         (
             status = 403,
-            description = "Local request required",
+            description = "Control credential required",
             body = crate::api::envelope::ApiErrorResponse
         )
     ),
@@ -297,9 +294,9 @@ pub(crate) async fn authorize_screen_recording(
 )]
 pub(crate) async fn pick_capture_source(
     State(state): State<Arc<AppState>>,
-    Extension(locality): Extension<RequestLocality>,
+    Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
-    if let Some(response) = local_request_rejection(locality) {
+    if let Some(response) = protected_control_rejection(auth_context) {
         return response;
     }
     let Some(manager) = state.config_manager.as_ref() else {
@@ -420,16 +417,16 @@ pub(crate) async fn pick_capture_source(
         ),
         (
             status = 403,
-            description = "Local request required",
+            description = "Control credential required",
             body = crate::api::envelope::ApiErrorResponse
         )
     ),
     tag = "capture"
 )]
 pub(crate) async fn list_capture_monitors(
-    Extension(locality): Extension<RequestLocality>,
+    Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
-    if let Some(response) = local_request_rejection(locality) {
+    if let Some(response) = protected_control_rejection(auth_context) {
         return response;
     }
     let monitors: Vec<CaptureMonitor> = hypercolor_core::input::screen::available_monitors()

@@ -184,26 +184,44 @@ async fn protected_capture_routes_reject_malformed_forwarded_clients() {
 }
 
 #[tokio::test]
-async fn protected_capture_routes_accept_trustworthy_loopback_clients() {
+async fn protected_capture_routes_reject_unauthenticated_loopback_clients() {
     let app = test_app();
-    let monitors = app
-        .clone()
-        .oneshot(request_from(
-            Ipv4Addr::LOCALHOST,
-            Method::GET,
-            "/api/v1/capture/monitors",
-        ))
-        .await
-        .expect("local monitor request should complete");
-    let authorization = app
-        .oneshot(request_from(
-            Ipv4Addr::LOCALHOST,
-            Method::POST,
-            "/api/v1/input/authorize",
-        ))
-        .await
-        .expect("local authorization request should complete");
+    for (method, path) in [
+        (Method::POST, "/api/v1/input/authorize"),
+        (Method::POST, "/api/v1/capture/authorize"),
+        (Method::POST, "/api/v1/capture/source/pick"),
+        (Method::GET, "/api/v1/capture/monitors"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request_from(Ipv4Addr::LOCALHOST, method, path))
+            .await
+            .expect("local protected request should complete");
 
-    assert_eq!(monitors.status(), StatusCode::OK);
-    assert_ne!(authorization.status(), StatusCode::FORBIDDEN);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn protected_capture_routes_accept_trusted_in_process_control() {
+    let api = api::local::TrustedLocalApi::new(Arc::new(isolated_state()));
+    for (method, path) in [
+        (Method::POST, "/api/v1/input/authorize"),
+        (Method::POST, "/api/v1/capture/authorize"),
+        (Method::POST, "/api/v1/capture/source/pick"),
+        (Method::GET, "/api/v1/capture/monitors"),
+    ] {
+        let response = api
+            .execute(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("trusted request should build"),
+            )
+            .await
+            .expect("trusted protected request should complete");
+
+        assert_ne!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
 }

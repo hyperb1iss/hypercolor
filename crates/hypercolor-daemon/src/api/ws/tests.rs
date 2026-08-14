@@ -3,7 +3,7 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use axum::body::Bytes;
-use axum::extract::ws::Utf8Bytes;
+use axum::extract::ws::{Message, Utf8Bytes};
 use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
@@ -80,7 +80,7 @@ use super::relays::{
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_channels,
-    negotiate_preview_transport, validated_zone_layout_preview,
+    negotiate_preview_transport, spawn_test_local_socket, validated_zone_layout_preview,
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
@@ -2231,6 +2231,83 @@ fn read_only_auth_rejects_private_capture_subscriptions() {
 }
 
 #[test]
+fn unsecured_loopback_auth_rejects_private_capture_subscriptions() {
+    let channels = [
+        WsChannel::ScreenCanvas,
+        WsChannel::ScreenZones,
+        WsChannel::InputEvents,
+    ];
+
+    let error = authorize_subscription_channels(RequestAuthContext::unsecured(), &channels)
+        .expect_err("loopback locality must not authorize sensitive subscriptions");
+
+    assert_eq!(error.code, "forbidden");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "channels": ["screen_canvas", "screen_zones", "input_events"],
+            "required_tier": "control"
+        }))
+    );
+}
+
+#[tokio::test]
+async fn rejected_private_subscription_creates_no_input_demand() {
+    let state = Arc::new(AppState::new());
+    let mut socket = spawn_test_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        RequestAuthContext::unsecured(),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "subscribe",
+                "channels": ["screen_canvas", "screen_zones", "input_events"]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("test socket should accept subscription request");
+    let rejection = socket
+        .recv()
+        .await
+        .expect("test socket should emit subscription rejection");
+    let Message::Text(rejection) = rejection else {
+        panic!("subscription rejection should be JSON text");
+    };
+    let rejection: serde_json::Value =
+        serde_json::from_str(rejection.as_str()).expect("rejection should be JSON");
+    assert_eq!(rejection["type"], "error");
+    assert_eq!(rejection["code"], "forbidden");
+
+    assert_eq!(
+        state
+            .input_publication_demands
+            .registration_count(InputPublicationConsumer::PassiveStream),
+        0
+    );
+    assert_eq!(
+        state
+            .input_publication_demands
+            .requested_hz(SourceKind::Screen),
+        0
+    );
+    assert_eq!(
+        state
+            .input_publication_demands
+            .requested_hz(SourceKind::Interaction),
+        0
+    );
+
+    socket.shutdown().await;
+}
+
+#[test]
 fn read_only_auth_allows_non_capture_preview_subscriptions() {
     let channels = [
         WsChannel::Events,
@@ -4296,6 +4373,65 @@ async fn dispatch_command_preserves_secured_ws_auth_context() {
             error,
         } => {
             assert_eq!(id, "cmd_status");
+            assert_eq!(status, 200);
+            assert!(data.is_some());
+            assert!(error.is_none());
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_rejects_unsecured_protected_capture_access() {
+    let state = Arc::new(AppState::new());
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::unsecured(),
+        "cmd_capture_monitors".to_owned(),
+        "GET".to_owned(),
+        "/capture/monitors".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            status,
+            data,
+            error,
+            ..
+        } => {
+            assert_eq!(status, 403);
+            assert!(data.is_none());
+            assert_eq!(
+                error.and_then(|value| value.get("code").cloned()),
+                Some(serde_json::json!("forbidden"))
+            );
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_allows_control_protected_capture_access() {
+    let state = secured_state();
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::control(),
+        "cmd_capture_monitors".to_owned(),
+        "GET".to_owned(),
+        "/capture/monitors".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            status,
+            data,
+            error,
+            ..
+        } => {
             assert_eq!(status, 200);
             assert!(data.is_some());
             assert!(error.is_none());

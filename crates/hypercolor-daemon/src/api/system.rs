@@ -27,7 +27,7 @@ use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::security::RequestLocality;
+use crate::api::security::RequestAuthContext;
 use crate::api::settings;
 use crate::macos_owner::{MacosDaemonOwner, MacosHandoverPhase, MacosOwnerSnapshot};
 use crate::performance::LatestFrameMetrics;
@@ -796,7 +796,7 @@ pub struct ServerInfo {
     pub auth_required: bool,
 }
 
-/// Build the redacted input health snapshot used by non-local status surfaces.
+/// Build the redacted input health snapshot used without protected control.
 #[must_use]
 pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
     input_status_snapshot_with_privacy(state, false)
@@ -1367,9 +1367,9 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
 
 pub(crate) async fn get_status_route(
     State(state): State<Arc<AppState>>,
-    Extension(locality): Extension<RequestLocality>,
+    Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
-    get_status_with_privacy(state, locality.is_loopback()).await
+    get_status_with_privacy(state, auth_context.can_protected_control()).await
 }
 
 async fn get_status_with_privacy(
