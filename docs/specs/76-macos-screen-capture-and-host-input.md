@@ -1,6 +1,6 @@
 # 76 - macOS Screen Capture and Host Input
 
-**Status:** Implementation-ready, revision 26; Claude Opus PASS
+**Status:** Implementation-ready, revision 27; GPU-only amendment approved
 **Author:** Nova
 **Date:** 2026-08-10
 **Platform floor:** macOS 15.2 Sequoia
@@ -12,6 +12,7 @@
 `hypercolor-windows-input`, `hypercolor-leptos-ext`, `hypercolor-cli`,
 `hypercolor-ui`, `sdk/packages/core`
 **Depends on:** specs 14, 57, 71, 72, and 73
+**Hardening companion:** spec 77
 **Supersedes:** the unimplemented macOS portions of specs 14 and 71, plus the
 temporary macOS `device_query` bridge retained by spec 72
 
@@ -217,7 +218,8 @@ The design delivers:
 3. ScreenCaptureKit display, window, application, and multi-window selection
    through Apple's system picker.
 4. Exact native acquisition with descriptor-keyed derived publications.
-5. A CPU-correct fallback and a zero-full-frame-copy IOSurface and Metal path.
+5. A zero-full-frame-copy IOSurface and Metal production path with a
+   fixture-only CPU correctness oracle.
 6. SDR correctness on every supported Mac and HDR capture on supported Apple
    Silicon.
 7. Explicit TCC state, remediation, revocation, and source health.
@@ -287,6 +289,10 @@ the stable identity `macos:session`.
     `brew services start hypercolor`, and terminal-launched standalone daemon
     are separate TCC topologies. Diagnostics and remediation name the exact
     owner; the UI never claims that granting one code identity grants another.
+17. Production macOS screen capture is GPU-only. Missing or failed Metal
+    capability invalidates stale output, rebuilds native execution, and fails
+    closed without selecting a CPU capture, conversion, publication, reduction,
+    or compositor path.
 
 ## 6. Process topology and TCC canary
 
@@ -884,8 +890,9 @@ The new `hypercolor-macos-capture` crate owns:
 
 The crate follows the same audit posture as the other platform capture crates.
 It exposes no Objective-C object in its public contract. The native owner is an
-opaque `Arc` whose only safe operations are metadata inspection, CPU mapping,
-and handoff to the macOS GPU interop crate.
+opaque `Arc` whose production-safe operations are metadata inspection and
+handoff to the macOS GPU interop crate. Fixture-gated tests may map retained
+storage for parity oracles, but production types expose no CPU mapping path.
 
 `hypercolor-macos-gpu-interop` first moves its existing Servo-only dependencies
 and module behind a `servo-context` feature. It then gains an independent
@@ -1092,27 +1099,20 @@ The source follows these rules:
 Recovery is bounded by state transitions and native notifications. Repeated
 blind timer restart is forbidden.
 
-## 10. CPU correctness path
+## 10. Fixture-only CPU correctness oracle
 
-The CPU path is both a bring-up oracle and a supported fallback when Metal
-import is unavailable.
+The CPU implementation is a bring-up and parity oracle compiled only for tests
+with the macOS capture fixture feature. It is not an `InputSource`, publication
+executor, runtime fallback, diagnostic recovery mode, or production feature.
+Production macOS types cannot request, construct, or select it.
 
-The ScreenCaptureKit callback retains and replaces one bounded latest native
-frame slot, then returns. A dedicated `hypercolor-macos-screen-capture` worker,
-mirroring the Windows screen worker, takes the newest retained generation. The
-worker locks the `CVPixelBuffer` read-only, validates every plane, stride,
-extent, and length, and copies or converts only into already admitted exact
-publication backing. It publishes one immutable latest CPU frame for the render
-thread to latch in constant time. Superseded native frames drop without
-conversion. The lock is never held across renderer work or consumer
-publication.
+The oracle locks a retained fixture `CVPixelBuffer` read-only, validates every
+plane, stride, extent, and length, and converts into fixture-owned output. It
+never publishes into the render thread or participates in source lifecycle.
+Fixture generations still fence asynchronous test work so stale conversions
+cannot make a parity assertion pass against the wrong source.
 
-Stopping or replacing the source first closes the worker input, then joins the
-worker, then retires any converted latest frame and its byte claim. A worker
-completion carries source and capture-session generations, so conversion begun
-for an old stream cannot publish into its replacement.
-
-Supported CPU inputs are:
+Supported oracle inputs are:
 
 - `BGRA` BGRA8 SDR;
 - `l10r` ARGB2101010 HDR;
@@ -1126,13 +1126,12 @@ primaries, and chroma siting. Missing metadata is an unsupported descriptor,
 not permission to guess BT.709 or full range. The CPU oracle maps and converts
 each plane independently before the shared linear color transform.
 
-The first screen milestone may ship BGRA8 SDR before later waves complete, but
-the feature described by this spec is not complete until every listed format,
-the native GPU path, and HDR acceptance pass. CPU fallback is not a reason to
-lower capture resolution or FPS. It reports pressure and lets the existing
-adaptive render policy choose work only through explicit product controls.
+The feature described by this spec is not complete until every listed format
+passes the native GPU path and HDR acceptance where supported. Missing native
+capability never lowers capture resolution or FPS and never activates the
+oracle. It publishes typed native-unavailable state and no screen frame.
 
-CPU and GPU outputs use the same golden fixture suite. A platform path that
+The oracle and GPU output use the same golden fixture suite. A native path that
 cannot match the canonical transform within the format's tolerance does not
 become active.
 
@@ -1150,7 +1149,7 @@ The shared byte coordinator charges:
 - overlapping old and candidate stream generations;
 - native import metadata and any normalization target;
 - exact derived publication textures; and
-- CPU fallback planes when they coexist with native storage.
+- fixture-only oracle storage when a parity test explicitly admits it.
 
 ScreenCaptureKit owns queue allocation and does not expose an IOSurface before
 the first callback. Native queue memory therefore uses two-phase admission:
@@ -1212,9 +1211,11 @@ Video texture cache first, then the direct managed IOSurface importer. The Core
 Video path consumes the retained `CVPixelBuffer`, creates one `CVMetalTexture`
 per plane, retains each wrapper through GPU completion, and validates that each
 resulting `MTLTexture` names the expected IOSurface, plane, format, and extent.
-Both candidates must remain zero-copy and pass the same coherency oracle. A
-candidate that returns nil, selects an incompatible mode, copies, or fails
-parity is rejected before the next candidate runs.
+Both candidates must remain zero-copy and pass the same structural validation.
+A candidate that returns nil, selects an incompatible mode, copies, or names the
+wrong IOSurface plane is rejected before the next candidate runs. Production
+startup does not map frame bytes or consult a CPU parity result when selecting
+an importer.
 
 Apple-family textures are expected to use `MTLStorageModeShared`; Intel
 discrete textures are expected to use `MTLStorageModeManaged`. If both importer
@@ -1225,19 +1226,23 @@ No `synchronizeResource` operation runs before GPU sampling. That operation
 makes GPU writes visible to the CPU and is the wrong direction for a
 ScreenCaptureKit-produced IOSurface. Import-side coherency relies on the
 framework's complete-frame callback, retained `CVPixelBuffer` ownership through
-command-buffer completion, and the driver contract exercised by the W4 probe.
-The probe alternates incompatible byte patterns across every reused queue slot,
-samples immediately and after sustained load, checks the imported texture's
-IOSurface and plane identity, and compares GPU output with a locked CPU oracle.
+command-buffer completion, and the driver contract exercised by the W4 fixture
+and signed physical acceptance. Those gates alternate incompatible byte patterns
+across every reused queue slot, sample immediately and after sustained load,
+check the imported texture's IOSurface and plane identity, and compare completed
+GPU output with the fixture-only CPU oracle. They qualify the shipped importer
+implementation and never run as production path-selection logic.
 
 `synchronizeResource` appears only on managed GPU-to-CPU readback resources in
 the parity fixture, after the GPU writes and before CPU mapping. Startup records
-device family, actual storage mode, importer, probe result, and every mismatch.
+device family, actual storage mode, importer, structural validation result, and
+every mismatch.
 If neither direct IOSurface import nor `CVMetalTextureCache` lets Intel sample a
 ScreenCaptureKit pixel buffer coherently without a full-frame copy, Intel native
 acceptance fails and the release is blocked until a coherent GPU mechanism
-lands. A runtime CPU fallback may diagnose the failure, but it cannot satisfy
-the first-class Intel claim or the zero-full-frame-copy contract.
+lands. The fixture oracle may diagnose the failure, but production remains
+native-unavailable and cannot satisfy the first-class Intel claim until the GPU
+mechanism passes.
 
 Imported textures are cached by the complete storage identity:
 
@@ -1267,6 +1272,13 @@ the implementation adds an explicit synchronization primitive at the interop
 boundary. It must not paper over a race with a per-frame CPU wait. Any added
 primitive records wait time and storage identity so stalls are diagnosable.
 
+A bounded diagnostic may copy only a completed GPU result into CPU-visible
+memory after the owning command buffer signals completion. The readback belongs
+to the final publication, uses a size-bounded staging allocation charged to the
+diagnostic budget, and is dropped after protocol, device-output, or diagnostic
+delivery. No readback result may select an importer, mutate capture state, feed a
+later capture or composition pass, or provide a production recovery path.
+
 ### 11.4 Native reduction
 
 The source IOSurface feeds the exact publication DAG:
@@ -1280,6 +1292,30 @@ The source IOSurface feeds the exact publication DAG:
 The steady-state native path performs no full-frame CPU copy. Damage metadata
 may skip work only when the output algorithm proves incremental equivalence.
 Absence of damage never changes output correctness.
+
+### 11.5 Native execution recovery
+
+The daemon owns one transactional native execution state:
+
+```text
+Ready(target N)
+  -> Invalidating(error)
+  -> Rebuilding
+  -> Ready(target N+1)
+  -> Unavailable(last error)
+```
+
+A structural import, target-owner, extent, descriptor, encoder, or submission
+failure clears the compositor's retained screen layer, releases every
+screen-specific GPU cache, fences the failed target generation, and rebuilds
+the bridge, reducer, preparer, and execution target. The replacement target is
+published only after full construction succeeds, and active demand is then
+resolved against its new identity.
+
+Only a specifically typed transient not-ready result may retain a still-fresh
+current frame. Persistent and unclassified errors invalidate immediately.
+`Unavailable` retains GPU-required demand and may attempt native reconstruction
+after new demand or frame activity, but it exposes no CPU execution edge.
 
 ## 12. Color and HDR
 
@@ -1396,23 +1432,23 @@ HDR highlights smoothly, and applies gamut compression before device encoding.
 Clipping, global normalization by the brightest pixel, and frame-to-frame
 auto-exposure pumping are rejected.
 
-CPU and GPU implementations share vectors for SDR white, saturated primaries,
-wide-gamut colors, diffuse HDR, specular peaks, gradients, and scene cuts.
+The fixture-only CPU oracle and production GPU kernels share vectors for SDR
+white, saturated primaries, wide-gamut colors, diffuse HDR, specular peaks,
+gradients, and scene cuts.
 
 ### 12.4 Tahoe diagnostics and calibration
 
-On an HDR-capable Tahoe selection, `SCScreenshotConfiguration` captures paired SDR
-and HDR images from the same selected filter for a diagnostic parity report. On
-an SDR-only Tahoe selection, it captures one SDR reference image and records HDR and
-paired range as unsupported. Both reports compare reference white, gamut
-conversion, and final zone colors. Only the paired report compares highlight
-rolloff across ranges.
+On an HDR-capable Tahoe selection, the diagnostic harness runs paired SDR and HDR
+configurations through the same ScreenCaptureKit, IOSurface, Metal, and
+SparkleFlinger path used in production. On an SDR-only Tahoe selection, it runs
+one SDR configuration and records HDR and paired range as unsupported. Both
+reports compare reference white, gamut conversion, and final zone colors. Only
+the paired report compares highlight rolloff across ranges.
 
-Core Graphics snapshots use `CGContentToneMappingInfo` with
-reference-white-based tone mapping, explicit preferred dynamic range, and
-content average light level where known. That CPU result is a platform
-reference, not the live GPU implementation. The live kernel remains explicit
-and testable across platforms.
+Diagnostics may inspect only the bounded completed-GPU egress described in
+section 11.3. Core Graphics snapshots and CPU-side platform reference capture
+are not part of the shipped diagnostic. Fixture tests retain the platform-neutral
+CPU oracle for deterministic parity vectors.
 
 ## 13. Core and daemon integration
 
@@ -1439,7 +1475,7 @@ legacy case in `input_tests.rs`, stale backend labels in shared fixtures, and
 the public backend list in `input/traits.rs`, plus the deleted lock-order entry
 in `docs/design/32-lock-ordering.md`. The same lock-ordering edit adds
 `MacosHostInput::shared` for the canonical batch fold and
-`MacosScreenCaptureInput::latest_frame` for the bounded native and converted
+`MacosScreenCaptureInput::latest_frame` for the bounded native-surface
 latest-value handoff. Neither lock is held while acquiring `input_manager`,
 calling native APIs, joining a worker, or running renderer work. There is no
 hidden fallback to privacy-buggy polling.
@@ -1455,8 +1491,9 @@ The existing input graph transaction owns config changes:
   storage descriptor remain compatible;
 - changing target LED white point, target reference white, calibrated peak, or
   exposure validates a candidate tone-mapping configuration and atomically
-  swaps CPU constants and GPU uniforms at a frame boundary without reopening
-  the native stream;
+  swaps shared tone-map transition constants and GPU uniforms at a frame
+  boundary without reopening the native stream. Fixture oracles consume the
+  same constants only under test;
 - changing extent branches replans derived publications without reopening the
   native stream unless native source geometry changes; and
 - disabling a source stops its native worker after the replacement graph is
@@ -1588,7 +1625,10 @@ The source status surface also adds structured macOS fields:
   reason;
 - event-tap timeout disables, user-input disables, reenables, and gaps;
 - callback, retain, import, conversion, reduction, and publication timing; and
-- CPU fallback or native path with exact fallback reason.
+- native-ready, native-invalidating, native-rebuilding, native-pending, or
+  native-unavailable execution state with an exact bounded reason;
+- invalidation epoch, active target generation, rejected stale-publication
+  count, and the last completed recovery transaction state.
 
 High-cardinality labels such as IOSurface ID, window title, and application name
 stay in bounded diagnostics rather than metrics labels.
@@ -2038,10 +2078,15 @@ Repository integration tests prove:
 - direct IOSurface and Core Video texture-cache candidates follow their
   per-family order, preserve plane identity, and collapse dual failure into
   `macos_screen_metal_import_failed`;
+- injected structural import, conversion, reduction, and device-loss failures
+  atomically clear retained output and native caches, fence the failed target
+  generation, reject every stale publication, rebuild the complete native
+  target, and either resume with a newer generation or become
+  native-unavailable without a CPU recovery path;
 - the existing Servo IOSurface importer selects shared storage on Apple-family
   devices and managed storage on non-Apple-family devices with parity on both;
-- the CPU worker supersedes stale native frames, publishes only matching source
-  and session generations, and joins before claims retire;
+- the fixture CPU oracle fences stale native frames and accepts only matching
+  source and session generations without registering a production publisher;
 - `PointerScroll` round-trips through serde and the schema-1 WebSocket envelope,
   maps into LightScript, parses in the SDK, and preserves legacy `wheel`;
 - browser injection accepts and validates both the legacy `wheel` edge and new
@@ -2237,9 +2282,8 @@ process topology named by that contract:
    screen, audio, and interaction active. Measurement starts immediately before
    `InputManager::sample_all()` reads the first source and ends after the final
    `InputData` snapshot is assembled for the frame. The screen measurement is
-   the constant-time latest-value latch only. CPU validation and conversion run
-   on the dedicated capture worker and are reported separately as
-   capture-to-converted-publication latency.
+   the constant-time latest-value latch only. Native validation, import, and GPU
+   reduction are reported separately as capture-to-native-publication latency.
 9. Host input callback entry to canonical event publication stays below 2
    milliseconds at p95 and 5 milliseconds at p99.
 10. An active broker topology meets the same end-to-end screen and input
@@ -2250,8 +2294,9 @@ process topology named by that contract:
     import, and publication claims.
 12. Replanning or repicking may temporarily overlap old and candidate resources
     only when the byte coordinator admits both generations.
-13. CPU fallback reports its measured capacity and resource pressure. It never
-    rewrites a request to make a benchmark green.
+13. Missing or failed GPU capability reports native-unavailable state and drops
+    the screen layer. It never rewrites a request or selects CPU work to make a
+    benchmark green.
 
 Benchmarks report source pixels, output pixels, bytes, dynamic range, queue
 depth, display refresh, and publication branches. A single blessed 1080p number
@@ -2363,17 +2408,18 @@ pass, and public support claims agree.
 
 Exit: every input test and signed acceptance row passes with no polling fallback.
 
-### W3: CPU-correct ScreenCaptureKit source
+### W3: ScreenCaptureKit source and fixture oracle
 
 1. Add `hypercolor-macos-capture` and frame fixtures.
 2. Implement permission preflight, picker callbacks, and source state.
 3. Configure and run one native stream.
 4. Validate and retain complete frames.
-5. Implement BGRA8 CPU publication and exact branch integration.
+5. Implement the fixture-only BGRA8 correctness oracle.
 6. Wire status, API actions, UI remediation, and diagnostics.
 
-Exit: signed SDR capture is correct across topology, lifecycle, picker, and
-permission acceptance. The CPU path matches golden fixtures.
+Exit: signed native acquisition is correct across topology, lifecycle, picker,
+and permission acceptance. The fixture oracle matches golden fixtures and is
+unavailable to production builds.
 
 ### W4: IOSurface and Metal publication
 
@@ -2389,10 +2435,14 @@ permission acceptance. The CPU path matches golden fixtures.
    texture-cache candidates, import coherency and readback probes, wrapper
    caching, and two-phase pool admission.
 6. Add the macOS capture latest-frame lock to the lock inventory, then run
-   native reduction, Servo import, and CPU/GPU parity on Apple Silicon and Intel.
+   native reduction, Servo import, and fixture-oracle GPU parity on Apple
+   Silicon and Intel.
 7. Prove the steady-state zero-full-frame-copy contract.
 
-Exit: native SDR capture is the default path and passes the 4K60 soak.
+Exit: native SDR capture is the only production path, production targets contain
+no CPU capture, conversion, publication, reduction, or compositor executor, the
+injected structural-failure matrix proves full GPU invalidation and rebuild, and
+the path passes the 4K60 soak.
 
 ### W5: HDR and Tahoe capabilities
 
@@ -2404,8 +2454,9 @@ Exit: native SDR capture is the default path and passes the 4K60 soak.
    `target_led_reference_white_nits`, `target_led_peak_nits`, and `exposure_ev`
    fields to `CaptureConfig`, their exact defaults and cross-field validation,
    the frame-boundary live-reconfiguration path from section 13.2, and the
-   advanced controls and reset scope from section 14. Keep CPU constants, GPU
-   uniforms, golden vectors, and the algorithm revision in one parity contract.
+   advanced controls and reset scope from section 14. Keep shared reference
+   constants, GPU uniforms, golden vectors, and the algorithm revision in one
+   parity contract.
    Thread `suppress_scene_cut_bypass` from the private macOS transition state to
    `PreparedTemporalSmoother::stage` beside `reset_history` and to
    `downscale_frame` beside `reset_smoother`, forwarding the latter into
@@ -2496,13 +2547,18 @@ The macOS feature is complete when:
 - keyboard and pointer input are native, event-driven, independently gated, and
   free of `device_query`;
 - screen capture uses Apple's system picker and complete lifecycle state;
-- CPU and Metal outputs match canonical fixtures;
+- Metal output matches the fixture-only oracle on canonical fixtures;
+- production artifacts contain no CPU capture, conversion, publication,
+  reduction, or compositor executor for macOS screen input;
+- injected structural GPU failures clear retained output, reject stale target
+  generations, rebuild the complete GPU target, and become unavailable without
+  CPU recovery when rebuilding cannot succeed;
 - the Servo importer selects family-correct storage and passes signed Intel
   CPU-oracle byte parity under IOSurface reuse;
 - native SDR passes every supported Mac row;
 - native HDR and tone mapping pass Apple Silicon rows;
-- Tahoe paired-range diagnostics ship for HDR-capable selections, and the SDR
-  reference diagnostic ships for SDR-only Tahoe selections;
+- Tahoe paired-range GPU diagnostics ship for HDR-capable selections, and the
+  completed-GPU SDR diagnostic ships for SDR-only Tahoe selections;
 - every active device exposing the required Metal 4 facilities has benchmark
   artifacts and a recorded adoption decision;
 - no stale generation, pinned allocation, or held input survives teardown;
@@ -2544,8 +2600,8 @@ descriptor and arbitrary-resolution contracts.
 ### Start with CPU capture as the permanent macOS path
 
 Rejected because a full-frame readback and upload cannot meet the intended
-native-resolution, high-refresh product ceiling. CPU capture remains an oracle
-and fallback.
+native-resolution, high-refresh product ceiling. CPU capture remains a
+fixture-only oracle and is never a production fallback.
 
 ### Force every Tahoe system onto a separate Metal 4 renderer
 
