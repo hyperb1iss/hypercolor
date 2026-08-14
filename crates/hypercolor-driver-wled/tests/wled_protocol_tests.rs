@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1615,18 +1615,38 @@ async fn acquire_cross_process_test_lock(name: &str) -> CrossProcessTestLock {
                 let _ = writeln!(file, "pid={}", std::process::id());
                 return CrossProcessTestLock { path };
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(error) if is_cross_process_test_lock_contended(error.kind()) => {
                 clear_stale_test_lock(&path);
                 assert!(
                     started_at.elapsed() < TEST_LOCK_ACQUIRE_TIMEOUT,
-                    "timed out waiting for test lock at {}",
-                    path.display()
+                    "timed out waiting for test lock at {}: last error was {error}",
+                    path.display(),
                 );
                 tokio::time::sleep(TEST_LOCK_POLL_INTERVAL).await;
             }
             Err(error) => panic!("failed to acquire test lock at {}: {error}", path.display()),
         }
     }
+}
+
+fn is_cross_process_test_lock_contended(kind: ErrorKind) -> bool {
+    kind == ErrorKind::AlreadyExists || cfg!(windows) && kind == ErrorKind::PermissionDenied
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_delete_pending_error_is_test_lock_contention() {
+    assert!(is_cross_process_test_lock_contended(
+        ErrorKind::PermissionDenied
+    ));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn permission_denied_is_not_test_lock_contention() {
+    assert!(!is_cross_process_test_lock_contended(
+        ErrorKind::PermissionDenied
+    ));
 }
 
 fn clear_stale_test_lock(path: &Path) {
