@@ -9,15 +9,42 @@
 //! `Result<T, String>` can convert via `?` (see `From<ApiError> for String`)
 //! or `map_err(Into::into)`.
 
-use std::fmt;
+use std::{cell::RefCell, fmt};
 
-use gloo_net::http::{Method, Request, RequestBuilder, Response};
+use gloo_net::http::{Method, RequestBuilder, Response};
 use serde::{Serialize, de::DeserializeOwned};
 
 use super::ApiEnvelope;
 
 #[cfg(target_arch = "wasm32")]
 const API_KEY_STORAGE_KEY: &str = "hypercolor.api_key";
+
+thread_local! {
+    static DAEMON_TRANSPORT: RefCell<DaemonTransport> = RefCell::new(DaemonTransport::default());
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct DaemonTransport {
+    native_app: bool,
+    base_url: Option<String>,
+    protected_control_credential: Option<String>,
+}
+
+impl DaemonTransport {
+    fn resolve_url(&self, url: &str) -> Option<String> {
+        if !url.starts_with('/') {
+            return Some(url.to_owned());
+        }
+        self.base_url
+            .as_ref()
+            .map(|base| format!("{}{url}", base.trim_end_matches('/')))
+            .or_else(|| (!self.native_app).then(|| url.to_owned()))
+    }
+
+    fn authorization_token(&self, stored_api_key: Option<String>) -> Option<String> {
+        self.protected_control_credential.clone().or(stored_api_key)
+    }
+}
 
 // ── Error type ──────────────────────────────────────────────────────────────
 
@@ -139,9 +166,67 @@ pub fn save_api_key(api_key: &str) {
     save_api_key_impl(api_key);
 }
 
-pub(crate) fn with_auth(request: RequestBuilder) -> RequestBuilder {
-    if let Some(api_key) = stored_api_key() {
-        request.header("Authorization", &format!("Bearer {api_key}"))
+/// Configure the daemon base URL held only for this browser process.
+pub fn begin_native_daemon_verification() {
+    DAEMON_TRANSPORT.with_borrow_mut(|transport| {
+        transport.native_app = true;
+        transport.base_url = None;
+        transport.protected_control_credential = None;
+    });
+}
+
+/// Install an exact verified daemon connection without persistent storage.
+pub fn install_verified_daemon_connection(base_url: &str, credential: Option<&str>) {
+    let base_url = base_url.trim().trim_end_matches('/');
+    let credential = credential
+        .map(str::trim)
+        .filter(|credential| !credential.is_empty());
+    DAEMON_TRANSPORT.with_borrow_mut(|transport| {
+        transport.native_app = true;
+        transport.base_url = (!base_url.is_empty()).then(|| base_url.to_owned());
+        transport.protected_control_credential = credential.map(str::to_owned);
+    });
+}
+
+/// Remove both parts of the verified native daemon connection.
+pub fn clear_verified_daemon_connection() {
+    DAEMON_TRANSPORT.with_borrow_mut(|transport| {
+        transport.base_url = None;
+        transport.protected_control_credential = None;
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn reset_daemon_transport_for_test() {
+    DAEMON_TRANSPORT.with_borrow_mut(|transport| *transport = DaemonTransport::default());
+}
+
+/// Resolve a daemon-relative URL against the in-memory native base route.
+#[must_use]
+pub fn daemon_url(url: &str) -> Option<String> {
+    DAEMON_TRANSPORT.with_borrow(|transport| transport.resolve_url(url))
+}
+
+/// Select the in-memory protected credential before any stored public key.
+#[must_use]
+pub fn authorization_token() -> Option<String> {
+    DAEMON_TRANSPORT.with_borrow(|transport| transport.authorization_token(stored_api_key()))
+}
+
+pub(crate) fn request(method: Method, url: &str) -> Result<RequestBuilder, ApiError> {
+    if !url.starts_with('/') {
+        return Err(ApiError::Network(
+            "authenticated daemon API URLs must be relative".to_owned(),
+        ));
+    }
+    let url = daemon_url(url)
+        .ok_or_else(|| ApiError::Network("verified daemon connection is unavailable".to_owned()))?;
+    Ok(with_auth(RequestBuilder::new(&url).method(method)))
+}
+
+fn with_auth(request: RequestBuilder) -> RequestBuilder {
+    if let Some(token) = authorization_token() {
+        request.header("Authorization", &format!("Bearer {token}"))
     } else {
         request
     }
@@ -199,7 +284,7 @@ async fn send_request<Req>(
 where
     Req: Serialize + ?Sized,
 {
-    let mut builder = with_auth(RequestBuilder::new(url).method(method));
+    let mut builder = request(method, url)?;
     if let Some(version) = if_match {
         builder = builder.header("If-Match", &version.to_string());
     }
@@ -316,7 +401,7 @@ pub async fn fetch_json_optional<T>(url: &str) -> Result<Option<T>, ApiError>
 where
     T: DeserializeOwned,
 {
-    let resp = with_auth(Request::get(url))
+    let resp = request(Method::GET, url)?
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
@@ -411,7 +496,62 @@ pub async fn delete_empty(url: &str) -> Result<(), ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiError, MutationOutcome, extract_error_message, stale_current_version};
+    use super::{
+        ApiError, DaemonTransport, MutationOutcome, authorization_token,
+        begin_native_daemon_verification, clear_verified_daemon_connection, daemon_url,
+        extract_error_message, install_verified_daemon_connection, reset_daemon_transport_for_test,
+        stale_current_version,
+    };
+
+    #[test]
+    fn native_transport_routes_relative_urls_and_preserves_absolute_urls() {
+        let transport = DaemonTransport {
+            native_app: true,
+            base_url: Some("http://127.0.0.1:9420".to_owned()),
+            protected_control_credential: None,
+        };
+        assert_eq!(
+            transport.resolve_url("/api/v1/devices"),
+            Some("http://127.0.0.1:9420/api/v1/devices".to_owned())
+        );
+        assert_eq!(
+            transport.resolve_url("https://example.test/image.png"),
+            Some("https://example.test/image.png".to_owned())
+        );
+    }
+
+    #[test]
+    fn verified_credential_precedes_public_key_and_clears_without_persistence() {
+        let transport = DaemonTransport {
+            native_app: true,
+            base_url: None,
+            protected_control_credential: Some("protected".to_owned()),
+        };
+        assert_eq!(
+            transport.authorization_token(Some("public".to_owned())),
+            Some("protected".to_owned())
+        );
+
+        begin_native_daemon_verification();
+        assert_eq!(daemon_url("/api/v1/server"), None);
+        install_verified_daemon_connection("http://127.0.0.1:9420", Some("protected"));
+        assert!(
+            super::request(
+                gloo_net::http::Method::GET,
+                "https://attacker.example/steal"
+            )
+            .is_err()
+        );
+        assert_eq!(authorization_token().as_deref(), Some("protected"));
+        assert_eq!(
+            daemon_url("/api/v1/server"),
+            Some("http://127.0.0.1:9420/api/v1/server".to_owned())
+        );
+        clear_verified_daemon_connection();
+        assert_eq!(authorization_token(), None);
+        assert_eq!(daemon_url("/api/v1/server"), None);
+        reset_daemon_transport_for_test();
+    }
 
     #[test]
     fn stale_current_version_parses_daemon_412_body() {

@@ -511,7 +511,11 @@ fn MediaDetail(
                     let accent = kind_accent(kind);
                     let icon = kind_icon(kind);
                     let label = kind_label(kind);
-                    let blob_url = format!("/api/v1/assets/{}/blob", asset.id);
+                    let blob_url = crate::api::client::daemon_url(&format!(
+                        "/api/v1/assets/{}/blob",
+                        asset.id
+                    ))
+                    .unwrap_or_default();
                     let header_name = asset.name.clone();
                     let download_name = asset.name.clone();
                     let type_text = asset.mime_type.clone();

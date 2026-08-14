@@ -11,9 +11,10 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::daemon::{self, DaemonRunOptions};
 #[cfg(target_os = "macos")]
 use hypercolor_daemon::macos_owner::{
-    MacosDaemonGuard, MacosDaemonOwner, MacosOwnerCoordinatorOutcome, MacosOwnerIdentity,
-    MacosOwnerRecord, MacosOwnerRecoveryRequired, MacosOwnerStore, MacosOwnerStoreError,
-    acquire_macos_daemon_guard, recover_incoming_daemon_owner, try_acquire_macos_daemon_guard,
+    MacosDaemonGuard, MacosDaemonOwner, MacosDaemonSessionAttestation,
+    MacosOwnerCoordinatorOutcome, MacosOwnerIdentity, MacosOwnerRecord, MacosOwnerRecoveryRequired,
+    MacosOwnerStore, MacosOwnerStoreError, acquire_macos_daemon_guard,
+    recover_incoming_daemon_owner, try_acquire_macos_daemon_guard,
 };
 use hypercolor_daemon::startup::install_signal_handlers;
 #[cfg(target_os = "macos")]
@@ -324,14 +325,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    #[cfg(target_os = "macos")]
-    let macos_daemon_session_attestation = macos_owner_store
-        .publish_daemon_session_attestation(
-            &macos_instance_guard,
-            &macos_owner_record.incarnation(),
-        )
-        .context("failed to publish the private macOS daemon session")?;
-
     #[cfg(target_os = "windows")]
     if args.windows_service {
         return windows_service::run(args.into_run_options());
@@ -341,25 +334,143 @@ fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         options.macos_owner_snapshot = Some(owner_snapshot);
-        options.macos_daemon_session_attestation = Some(macos_daemon_session_attestation.clone());
     }
-    let result = run_daemon(options);
     #[cfg(target_os = "macos")]
-    let result = finish_macos_daemon_run(result, || {
-        macos_owner_store.clear_daemon_session_attestation(
-            &macos_owner_record.incarnation(),
-            &macos_daemon_session_attestation.server_session_id,
-        )
-    });
-    result
+    {
+        let runtime = daemon::build_main_runtime()?;
+        let (prepared, authority) = prepare_macos_daemon_with_session(
+            &runtime,
+            options,
+            macos_owner_store,
+            macos_owner_record,
+            macos_instance_guard,
+        )?;
+        let result = run_prepared_macos_daemon(runtime, prepared);
+        finish_macos_daemon_run(result, authority)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        run_daemon(options)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_macos_daemon_with_session(
+    runtime: &tokio::runtime::Runtime,
+    options: DaemonRunOptions,
+    store: MacosOwnerStore,
+    owner_record: MacosOwnerRecord,
+    instance_guard: MacosDaemonGuard,
+) -> Result<(daemon::PreparedDaemon, MacosDaemonRuntimeAuthority)> {
+    let mut prepared = runtime.block_on(daemon::prepare(options))?;
+    let listener_lease = prepared.take_api_listener_lease()?;
+    let mut authority =
+        MacosDaemonRuntimeAuthority::new(store, owner_record, instance_guard, listener_lease);
+    let attestation = authority
+        .publish_session()
+        .context("failed to publish the private macOS daemon session")?;
+    prepared.install_macos_daemon_session_attestation(attestation.clone());
+    Ok((prepared, authority))
+}
+
+#[cfg(all(target_os = "macos", test))]
+fn prepare_then_publish<Prepared, Published>(
+    prepare: impl FnOnce() -> Result<Prepared>,
+    publish: impl FnOnce() -> Result<Published>,
+) -> Result<(Prepared, Published)> {
+    let prepared = prepare()?;
+    let published = publish()?;
+    Ok((prepared, published))
+}
+
+#[cfg(target_os = "macos")]
+struct MacosDaemonRuntimeAuthority {
+    store: MacosOwnerStore,
+    owner_record: MacosOwnerRecord,
+    attestation: Option<MacosDaemonSessionAttestation>,
+    instance_guard: Option<MacosDaemonGuard>,
+    listener_lease: Option<daemon::ApiListenerLease>,
+    session_clear_finished: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosDaemonRuntimeAuthority {
+    fn new(
+        store: MacosOwnerStore,
+        owner_record: MacosOwnerRecord,
+        instance_guard: MacosDaemonGuard,
+        listener_lease: daemon::ApiListenerLease,
+    ) -> Self {
+        Self {
+            store,
+            owner_record,
+            attestation: None,
+            instance_guard: Some(instance_guard),
+            listener_lease: Some(listener_lease),
+            session_clear_finished: false,
+        }
+    }
+
+    fn publish_session(&mut self) -> Result<MacosDaemonSessionAttestation, MacosOwnerStoreError> {
+        let attestation = self.store.publish_daemon_session_attestation(
+            self.instance_guard
+                .as_ref()
+                .expect("runtime authority must retain its canonical guard"),
+            &self.owner_record.incarnation(),
+        )?;
+        self.attestation = Some(attestation.clone());
+        Ok(attestation)
+    }
+
+    fn clear_session(&mut self) -> Result<bool, MacosOwnerStoreError> {
+        let incarnation = self.owner_record.incarnation();
+        let attestation = match self.attestation.clone() {
+            Some(attestation) => Some(attestation),
+            None => self
+                .store
+                .load_daemon_session_attestation()?
+                .filter(|attestation| attestation.owner_incarnation() == incarnation),
+        };
+        let result = attestation.map_or(Ok(false), |attestation| {
+            self.store
+                .clear_daemon_session_attestation(&incarnation, &attestation.server_session_id)
+        });
+        if result.is_ok() {
+            self.session_clear_finished = true;
+        }
+        result
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MacosDaemonRuntimeAuthority {
+    fn drop(&mut self) {
+        if !self.session_clear_finished
+            && let Err(error) = self.clear_session()
+        {
+            eprintln!(
+                "failed to clear the private macOS daemon session during authority release: {error}"
+            );
+        }
+        drop(self.instance_guard.take());
+        drop(self.listener_lease.take());
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn finish_macos_daemon_run(
     daemon_result: Result<()>,
-    clear_session: impl FnOnce() -> Result<bool, MacosOwnerStoreError>,
+    mut authority: MacosDaemonRuntimeAuthority,
 ) -> Result<()> {
-    let cleanup_result = clear_session();
+    let cleanup_result = authority.clear_session();
+    combine_macos_daemon_result(daemon_result, cleanup_result)
+}
+
+#[cfg(target_os = "macos")]
+fn combine_macos_daemon_result(
+    daemon_result: Result<()>,
+    cleanup_result: Result<bool, MacosOwnerStoreError>,
+) -> Result<()> {
     match (daemon_result, cleanup_result) {
         (Err(daemon_error), Err(cleanup_error)) => {
             eprintln!(
@@ -623,17 +734,18 @@ fn run_daemon(options: DaemonRunOptions) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn run_daemon(options: DaemonRunOptions) -> Result<()> {
+fn run_prepared_macos_daemon(
+    runtime: tokio::runtime::Runtime,
+    prepared: daemon::PreparedDaemon,
+) -> Result<()> {
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
     let runtime_thread = std::thread::Builder::new()
         .name("hypercolor-daemon-runtime".to_owned())
         .spawn(move || {
             let _run_loop_stop = MainRunLoopStop;
-            let result = daemon::build_main_runtime().and_then(|runtime| {
-                runtime.block_on(async move {
-                    let shutdown_rx = install_signal_handlers();
-                    daemon::run(options, shutdown_rx).await
-                })
+            let result = runtime.block_on(async move {
+                let shutdown_rx = install_signal_handlers();
+                prepared.run(shutdown_rx).await
             });
             let _ = result_tx.send(result);
         })
@@ -685,9 +797,10 @@ mod tests {
     };
     #[cfg(target_os = "macos")]
     use super::{
-        MacosDaemonOwnerArg, MacosOwnerContention, arbitrate_macos_owner_contention_with,
-        finish_macos_daemon_run, launchd_contender_exits_zero, macos_contender_exit_code,
-        parse_designated_requirement,
+        MacosDaemonOwnerArg, MacosDaemonRuntimeAuthority, MacosOwnerContention,
+        arbitrate_macos_owner_contention_with, combine_macos_daemon_result,
+        launchd_contender_exits_zero, macos_contender_exit_code, parse_designated_requirement,
+        prepare_then_publish,
     };
     #[cfg(target_os = "macos")]
     use hypercolor_daemon::macos_owner::{
@@ -1024,24 +1137,126 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn normal_daemon_return_always_cleans_up_and_preserves_error_precedence() {
-        let cleanup_calls = std::cell::Cell::new(0);
-        let daemon_error = finish_macos_daemon_run(Err(anyhow::anyhow!("daemon failed")), || {
-            cleanup_calls.set(cleanup_calls.get() + 1);
-            Err(MacosOwnerStoreError::MissingOwnerRecord)
-        })
+    fn daemon_error_remains_primary_when_session_cleanup_also_fails() {
+        let daemon_error = combine_macos_daemon_result(
+            Err(anyhow::anyhow!("daemon failed")),
+            Err(MacosOwnerStoreError::MissingOwnerRecord),
+        )
         .expect_err("daemon and cleanup failure should remain an error");
-        assert_eq!(cleanup_calls.get(), 1);
         assert_eq!(daemon_error.to_string(), "daemon failed");
 
         let cleanup_error =
-            finish_macos_daemon_run(Ok(()), || Err(MacosOwnerStoreError::MissingOwnerRecord))
+            combine_macos_daemon_result(Ok(()), Err(MacosOwnerStoreError::MissingOwnerRecord))
                 .expect_err("cleanup failure after success should be returned");
         assert!(
             cleanup_error
                 .to_string()
                 .contains("failed to clear the private macOS daemon session")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_listener_attestation_occupied_port_prevents_publication() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("fixture should pre-bind a loopback port");
+        let occupied_address = occupied
+            .local_addr()
+            .expect("occupied address should resolve");
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let guard_path = directory.path().join("daemon.lock");
+        let guard = try_acquire_macos_daemon_guard(&guard_path.to_string_lossy())
+            .expect("guard acquisition should succeed")
+            .expect("fixture should win the guard");
+        let store = MacosOwnerStore::new(directory.path().join("store"));
+        let record = store
+            .publish_owner(
+                MacosDaemonOwner::AppSidecar,
+                owner_identity(MacosDaemonOwner::AppSidecar, std::process::id()),
+            )
+            .expect("owner record should publish");
+        let publication_count = std::cell::Cell::new(0_u32);
+
+        let error = prepare_then_publish(
+            || super::daemon::bind_api_listener(occupied_address),
+            || {
+                publication_count.set(publication_count.get() + 1);
+                Ok(store.publish_daemon_session_attestation(&guard, &record.incarnation())?)
+            },
+        )
+        .err()
+        .expect("occupied final API port must fail preparation");
+
+        assert_eq!(publication_count.get(), 0);
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AddrInUse)
+        );
+        assert!(
+            store
+                .load_daemon_session_attestation()
+                .expect("session state should load")
+                .is_none()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_runtime_authority_unwind_clears_visible_session_before_release() {
+        let runtime = super::daemon::build_main_runtime().expect("runtime should build");
+        let mut prepared = runtime
+            .block_on(super::daemon::prepare(super::DaemonRunOptions {
+                bind: Some("127.0.0.1:0".to_owned()),
+                ..super::DaemonRunOptions::default()
+            }))
+            .expect("daemon should prepare its final listener");
+        let address = prepared.advertised_bind();
+        let listener_lease = prepared
+            .take_api_listener_lease()
+            .expect("listener lease should transfer once");
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let guard_path = directory.path().join("daemon.lock");
+        let guard = try_acquire_macos_daemon_guard(&guard_path.to_string_lossy())
+            .expect("guard acquisition should succeed")
+            .expect("fixture should win the guard");
+        let store = MacosOwnerStore::new(directory.path().join("store"));
+        let record = store
+            .publish_owner(
+                MacosDaemonOwner::AppSidecar,
+                owner_identity(MacosDaemonOwner::AppSidecar, std::process::id()),
+            )
+            .expect("owner record should publish");
+        store
+            .publish_daemon_session_attestation(&guard, &record.incarnation())
+            .expect("visible session fixture should publish before authority recovery");
+        drop(prepared);
+        let _runtime_context = runtime.enter();
+
+        super::daemon::bind_api_listener(address)
+            .expect_err("listener lease must block takeover before authority release");
+        let authority =
+            MacosDaemonRuntimeAuthority::new(store.clone(), record, guard, listener_lease);
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _authority = authority;
+            panic!("exercise runtime authority unwind");
+        }));
+        assert!(unwind.is_err());
+        assert!(
+            store
+                .load_daemon_session_attestation()
+                .expect("session state should load")
+                .is_none()
+        );
+
+        let rebound = super::daemon::bind_api_listener(address)
+            .expect("port should rebind only after session, guard, and lease release");
+        drop(rebound);
+        let reacquired = try_acquire_macos_daemon_guard(&guard_path.to_string_lossy())
+            .expect("guard inspection should succeed")
+            .expect("canonical guard should release before port takeover");
+        drop(reacquired);
     }
 
     #[test]

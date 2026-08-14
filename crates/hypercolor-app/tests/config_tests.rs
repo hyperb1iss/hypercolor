@@ -139,20 +139,12 @@ fn default_capability_grants_window_and_autostart_permissions() {
 }
 
 #[test]
-fn default_capability_allows_local_daemon_remote_ipc() {
+fn default_capability_rejects_every_remote_ipc_origin() {
     let capability = default_capability();
-    let urls = capability
-        .get("remote")
-        .and_then(|remote| remote.get("urls"))
-        .and_then(serde_json::Value::as_array)
-        .expect("remote.urls should be configured");
-
-    for expected in ["http://127.0.0.1:9420/*", "http://localhost:9420/*"] {
-        assert!(
-            urls.iter().any(|value| value == expected),
-            "capability should allow IPC from {expected}"
-        );
-    }
+    assert!(
+        capability.get("remote").is_none(),
+        "bundled-origin commands must not be authorized for any remote document"
+    );
 }
 
 #[test]
@@ -569,7 +561,7 @@ fn tauri_config_has_app_section() {
 }
 
 #[test]
-fn tauri_config_exposes_global_tauri_api_for_local_remote_ui() {
+fn tauri_config_exposes_global_tauri_api_for_bundled_ui_bridge() {
     let config = tauri_config();
     let with_global_tauri = config
         .get("app")

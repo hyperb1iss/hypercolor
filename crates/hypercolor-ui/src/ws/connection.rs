@@ -51,6 +51,7 @@ use crate::api::client;
 
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
 const TAURI_WINDOW_VISIBILITY_EVENT: &str = "hypercolor-window-visibility";
+const VERIFIED_DAEMON_CONNECTION_EVENT: &str = "hypercolor-verified-daemon-connection-changed";
 const TAURI_WINDOW_VISIBLE_GLOBAL: &str = "__HYPERCOLOR_TAURI_WINDOW_VISIBLE";
 
 fn preview_now_ms() -> u64 {
@@ -257,15 +258,13 @@ impl WsManager {
             StoredValue::new_local(None);
         let tauri_visibility_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
             StoredValue::new_local(None);
+        let daemon_connection_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
+            StoredValue::new_local(None);
         let reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage> =
             StoredValue::new_local(None);
 
         // Reconnection attempt counter for exponential backoff.
         let reconnect_attempts = StoredValue::new(0_u32);
-
-        // Build WebSocket URL relative to page origin
-        let ws_url = build_ws_url();
-        let ws_url = StoredValue::new(ws_url);
 
         // ── connect() ──────────────────────────────────────────────────────
         // Callable multiple times: creates a fresh WebSocket and wires the
@@ -297,7 +296,10 @@ impl WsManager {
             set_preview_fps.set(0.0);
             set_sensors.set(None);
 
-            let url = ws_url.get_value();
+            let Some(url) = build_ws_url() else {
+                set_connection_state.set(ConnectionState::Disconnected);
+                return;
+            };
             let ws = match arraybuffer_websocket(&url, HYPERCOLOR_WS_PROTOCOL) {
                 Ok(ws) => ws,
                 Err(_) => {
@@ -766,6 +768,22 @@ impl WsManager {
                 },
             );
             tauri_visibility_change_callback.set_value(Some(on_tauri_visibility_change));
+
+            daemon_connection_change_callback.update_value(|handle| {
+                if let Some(mut handle) = handle.take() {
+                    handle.cancel();
+                }
+            });
+            let on_daemon_connection_change = on(
+                window.unchecked_ref(),
+                VERIFIED_DAEMON_CONNECTION_EVENT,
+                move |_| {
+                    if let Some(connect_fn) = connect.get_value() {
+                        connect_fn();
+                    }
+                },
+            );
+            daemon_connection_change_callback.set_value(Some(on_daemon_connection_change));
         }
 
         // Initial connection
@@ -923,7 +941,9 @@ fn dispose_existing_socket(
 /// Dev builds (Trunk dev server, any port) connect directly to the daemon
 /// (:9420) since Trunk's proxy doesn't handle WebSocket upgrades. Release
 /// builds are served by the daemon itself, so same-origin works.
-fn build_ws_url() -> String {
+fn build_ws_url() -> Option<String> {
+    let routed = client::daemon_url("/api/v1/ws")?;
+    let native_base = native_websocket_url(&routed);
     let location = current_page_location();
     let ws_protocol = location.websocket_protocol();
 
@@ -938,10 +958,28 @@ fn build_ws_url() -> String {
         location.host()
     };
 
-    let base = format!("{ws_protocol}//{host}/api/v1/ws");
-    client::stored_api_key().map_or(base.clone(), |key| {
-        format!("{base}?token={}", percent_encode(&key))
+    let base = native_base.unwrap_or_else(|| format!("{ws_protocol}//{host}/api/v1/ws"));
+    Some(authenticated_websocket_url(
+        base,
+        client::authorization_token().as_deref(),
+    ))
+}
+
+fn authenticated_websocket_url(base: String, token: Option<&str>) -> String {
+    token.map_or(base.clone(), |token| {
+        format!("{base}?token={}", percent_encode(token))
     })
+}
+
+fn native_websocket_url(routed: &str) -> Option<String> {
+    routed
+        .strip_prefix("https://")
+        .map(|rest| format!("wss://{rest}"))
+        .or_else(|| {
+            routed
+                .strip_prefix("http://")
+                .map(|rest| format!("ws://{rest}"))
+        })
 }
 
 fn percent_encode(input: &str) -> String {
@@ -973,4 +1011,48 @@ fn tauri_window_is_visible() -> bool {
     .ok()
     .and_then(|value| value.as_bool())
     .unwrap_or(true)
+}
+
+#[cfg(test)]
+mod transport_tests {
+    #[test]
+    fn native_daemon_routes_convert_http_schemes_for_websocket() {
+        assert_eq!(
+            super::native_websocket_url("http://127.0.0.1:9420/api/v1/ws").as_deref(),
+            Some("ws://127.0.0.1:9420/api/v1/ws")
+        );
+        assert_eq!(
+            super::native_websocket_url("https://daemon.test/api/v1/ws").as_deref(),
+            Some("wss://daemon.test/api/v1/ws")
+        );
+        assert!(super::native_websocket_url("/api/v1/ws").is_none());
+    }
+
+    #[test]
+    fn every_connection_uses_the_current_verified_websocket_token() {
+        let base = "ws://127.0.0.1:9420/api/v1/ws".to_owned();
+        let first = super::authenticated_websocket_url(base.clone(), Some("session-one"));
+        let rotated = super::authenticated_websocket_url(base, Some("session-two"));
+        assert_eq!(first, "ws://127.0.0.1:9420/api/v1/ws?token=session-one");
+        assert_eq!(rotated, "ws://127.0.0.1:9420/api/v1/ws?token=session-two");
+        assert_ne!(first, rotated);
+    }
+
+    #[test]
+    fn health_verified_native_base_enables_websocket_without_session_token() {
+        crate::api::client::reset_daemon_transport_for_test();
+        crate::api::client::begin_native_daemon_verification();
+        assert!(crate::api::client::daemon_url("/api/v1/ws").is_none());
+
+        crate::api::client::install_verified_daemon_connection("https://daemon.lan:19420", None);
+        let routed = crate::api::client::daemon_url("/api/v1/ws")
+            .expect("health-proven native route should exist");
+        let websocket =
+            super::native_websocket_url(&routed).expect("HTTPS daemon route should convert to WSS");
+        assert_eq!(
+            super::authenticated_websocket_url(websocket, None),
+            "wss://daemon.lan:19420/api/v1/ws"
+        );
+        crate::api::client::reset_daemon_transport_for_test();
+    }
 }

@@ -57,7 +57,8 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::support::launch_pawnio_helper,
             hypercolor_app::support::repair_smbus_service,
             hypercolor_app::window::open_external_url,
-            hypercolor_app::window::open_macos_system_settings
+            hypercolor_app::window::open_macos_system_settings,
+            hypercolor_app::supervisor::get_verified_daemon_connection
         ])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let forwarded = hypercolor_app::cli::AppArgs::parse(args);
@@ -74,18 +75,19 @@ fn main() -> anyhow::Result<()> {
                 .parse()
                 .expect("HYPERCOLOR_URL must be a valid URL");
 
-            tracing::info!(scheme = %url.scheme(), host = ?url.host_str(), port = ?url.port_or_known_default(), "creating webview window");
+            tracing::info!("creating bundled webview window");
 
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.clone()))
-                .title("Hypercolor")
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(800.0, 500.0)
-                .initialization_script(hypercolor_app::window::visibility_state_script(
-                    !cli.start_minimized,
-                ))
-                .on_new_window(hypercolor_app::window::open_new_window_in_system_browser)
-                .visible(!cli.start_minimized)
-                .build()?;
+            let window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("Hypercolor")
+                    .inner_size(1200.0, 800.0)
+                    .min_inner_size(800.0, 500.0)
+                    .initialization_script(hypercolor_app::window::visibility_state_script(
+                        !cli.start_minimized,
+                    ))
+                    .on_new_window(hypercolor_app::window::open_new_window_in_system_browser)
+                    .visible(!cli.start_minimized)
+                    .build()?;
 
             maybe_open_devtools(&window);
 

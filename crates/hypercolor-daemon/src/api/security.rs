@@ -34,6 +34,20 @@ const WRITE_LIMIT_PER_MIN: u32 = 60;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;
 const PAIRING_LIMIT_PER_MIN: u32 = 6;
 
+const TRUSTED_TAURI_ORIGINS: &[&str] = &[
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+
+pub(crate) fn is_trusted_tauri_origin(origin: &HeaderValue) -> bool {
+    origin.to_str().is_ok_and(|origin| {
+        TRUSTED_TAURI_ORIGINS
+            .iter()
+            .any(|trusted| origin.eq_ignore_ascii_case(trusted))
+    })
+}
+
 const HEADER_RATE_LIMIT_LIMIT: HeaderName = HeaderName::from_static("x-ratelimit-limit");
 const HEADER_RATE_LIMIT_REMAINING: HeaderName = HeaderName::from_static("x-ratelimit-remaining");
 const HEADER_RATE_LIMIT_RESET: HeaderName = HeaderName::from_static("x-ratelimit-reset");
@@ -612,7 +626,10 @@ pub async fn enforce_security(
     }
 
     if request_is_loopback(&request) {
-        if is_mutating_request(request.method()) && is_cross_site_request(&request) {
+        if is_mutating_request(request.method())
+            && is_cross_site_request(&request)
+            && !has_trusted_tauri_session(&state, &request)
+        {
             return ApiError::forbidden(
                 "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
             );
@@ -729,15 +746,23 @@ fn is_mutating_request(method: &Method) -> bool {
 }
 
 /// Returns `true` only when the browser explicitly marks the request as
-/// cross-site. Same-origin/same-site requests (the bundled web UI) and
-/// non-browser clients (CLI, SDK) omit or set a non-`cross-site` value, so
-/// this blocks drive-by CSRF without rejecting legitimate local clients.
+/// cross-site. Ordinary same-origin/same-site requests and non-browser clients
+/// omit or set a non-`cross-site` value. The bundled Tauri UI is cross-site and
+/// passes only through the separate exact-origin plus session-credential gate.
 fn is_cross_site_request(request: &Request<Body>) -> bool {
     request
         .headers()
         .get("sec-fetch-site")
         .and_then(|value| value.to_str().ok())
         .is_some_and(|site| site == "cross-site")
+}
+
+fn has_trusted_tauri_session(state: &SecurityState, request: &Request<Body>) -> bool {
+    request
+        .headers()
+        .get(header::ORIGIN)
+        .is_some_and(is_trusted_tauri_origin)
+        && extract_token(request).is_some_and(|token| state.is_macos_session_credential(&token))
 }
 
 fn resolve_token_tier(token: &str, auth: &AuthConfig) -> Option<AccessTier> {
@@ -1077,6 +1102,32 @@ mod tests {
         request
     }
 
+    async fn loopback_cross_site_mutation(
+        state: SecurityState,
+        origin: Option<&str>,
+        token: Option<&str>,
+    ) -> StatusCode {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scenes")
+            .header("sec-fetch-site", "cross-site");
+        if let Some(origin) = origin {
+            builder = builder.header(http::header::ORIGIN, origin);
+        }
+        if let Some(token) = token {
+            builder = with_bearer(builder, token);
+        }
+        router_with_security_state(state)
+            .oneshot(with_connect_info(
+                builder.body(Body::empty()).expect("request should build"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed")
+            .status()
+    }
+
     #[test]
     fn normalize_api_key_ignores_missing_or_blank_values() {
         assert_eq!(normalize_api_key(None), None);
@@ -1332,6 +1383,72 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let json = response_json(response).await;
         assert_eq!(json["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn tauri_cross_site_bypass_requires_exact_origin_and_current_session() {
+        let credential = MacosProtectedControlCredential::from_bytes([0x63; 32]);
+        let session = credential.expose_secret();
+        let session_state = || SecurityState::with_macos_session_credential(credential.clone());
+
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("tauri://localhost"),
+                Some(session),
+            )
+            .await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(session_state(), Some("tauri://localhost"), None).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("tauri://attacker.example"),
+                Some(session),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("https://tauri.localhost.evil"),
+                Some(session),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+
+        let response = router_with_security_state(session_state())
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().method("POST").uri("/api/v1/scenes"),
+                    session,
+                )
+                .body(Body::empty())
+                .expect("native request should build"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("native request failed");
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let mut public_key_state = SecurityState::with_keys(Some(CONTROL_KEY), None);
+        public_key_state.macos_session_credential = Some(credential);
+        assert_eq!(
+            loopback_cross_site_mutation(
+                public_key_state,
+                Some("tauri://localhost"),
+                Some(CONTROL_KEY),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]

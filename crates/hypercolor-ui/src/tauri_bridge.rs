@@ -1,8 +1,10 @@
 //! Optional bridge to native Tauri commands when the UI is hosted in hypercolor-app.
 
 use serde::Deserialize;
+#[cfg(any(target_arch = "wasm32", test))]
+use std::{cell::Cell, future::Future};
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::JsFuture;
 
@@ -28,6 +30,159 @@ impl MacosSystemSettingsPane {
 
 #[cfg(any(target_arch = "wasm32", test))]
 const MACOS_SYSTEM_SETTINGS_COMMAND: &str = "open_macos_system_settings";
+
+#[cfg(any(target_arch = "wasm32", test))]
+const VERIFIED_DAEMON_CONNECTION_COMMAND: &str = "get_verified_daemon_connection";
+
+#[cfg(target_arch = "wasm32")]
+const VERIFIED_DAEMON_CONNECTION_EVENT: &str = "verified-daemon-connection-changed";
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct VerifiedDaemonConnection {
+    base_url: String,
+    #[serde(default)]
+    server_session_id: Option<String>,
+    #[serde(default)]
+    protected_control_credential: Option<String>,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct VerifiedDaemonConnectionSnapshot {
+    revision: u64,
+    connection: Option<VerifiedDaemonConnection>,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+thread_local! {
+    static VERIFIED_DAEMON_REVISION: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Deserialize)]
+struct VerifiedDaemonConnectionEvent {
+    payload: VerifiedDaemonConnectionSnapshot,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn apply_verified_daemon_connection(snapshot: VerifiedDaemonConnectionSnapshot) -> bool {
+    let accepted = VERIFIED_DAEMON_REVISION.with(|revision| {
+        if snapshot.revision <= revision.get() {
+            false
+        } else {
+            revision.set(snapshot.revision);
+            true
+        }
+    });
+    if !accepted {
+        return false;
+    }
+    if let Some(connection) = snapshot.connection {
+        crate::api::client::install_verified_daemon_connection(
+            &connection.base_url,
+            connection.protected_control_credential.as_deref(),
+        );
+    } else {
+        crate::api::client::clear_verified_daemon_connection();
+    }
+    notify_verified_daemon_connection_change();
+    true
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+async fn snapshot_after_listener_registration<Registration, Snapshot, SnapshotFuture, T>(
+    registration: Registration,
+    snapshot: Snapshot,
+) -> Option<T>
+where
+    Registration: Future<Output = bool>,
+    Snapshot: FnOnce() -> SnapshotFuture,
+    SnapshotFuture: Future<Output = Option<T>>,
+{
+    if !registration.await {
+        return None;
+    }
+    snapshot().await
+}
+
+#[cfg(target_arch = "wasm32")]
+fn notify_verified_daemon_connection_change() {
+    let Some(window) = browser_window() else {
+        return;
+    };
+    if let Ok(event) = web_sys::Event::new("hypercolor-verified-daemon-connection-changed") {
+        let _ = window.dispatch_event(&event);
+    }
+}
+
+#[cfg(test)]
+fn notify_verified_daemon_connection_change() {}
+
+/// Initialize the bundled app's process-memory daemon transport.
+pub fn initialize_daemon_transport() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if tauri_invoke().is_none() {
+            return;
+        }
+        crate::api::client::begin_native_daemon_verification();
+
+        wasm_bindgen_futures::spawn_local(async {
+            let connection = snapshot_after_listener_registration(
+                subscribe_verified_daemon_connection_events(),
+                || async {
+                    let invoke = tauri_invoke()?;
+                    invoke_command(&invoke, VERIFIED_DAEMON_CONNECTION_COMMAND, None)
+                        .await
+                        .ok()
+                        .and_then(|value| serde_json_from_js_value(value).ok())
+                },
+            )
+            .await;
+            if let Some(snapshot) = connection {
+                apply_verified_daemon_connection(snapshot);
+            }
+        });
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn subscribe_verified_daemon_connection_events() -> bool {
+    let Some(window) = browser_window() else {
+        return false;
+    };
+    let Some(listen) = js_sys::Reflect::get(window.as_ref(), &JsValue::from_str("__TAURI__"))
+        .ok()
+        .and_then(|tauri| js_sys::Reflect::get(&tauri, &JsValue::from_str("event")).ok())
+        .and_then(|event| js_sys::Reflect::get(&event, &JsValue::from_str("listen")).ok())
+        .and_then(|listen| listen.dyn_into::<js_sys::Function>().ok())
+    else {
+        return false;
+    };
+    let callback = Closure::<dyn FnMut(JsValue)>::new(|value| {
+        if let Ok(event) = serde_json_from_js_value::<VerifiedDaemonConnectionEvent>(value) {
+            apply_verified_daemon_connection(event.payload);
+        }
+    });
+    let Ok(registration) = listen.call2(
+        &JsValue::NULL,
+        &JsValue::from_str(VERIFIED_DAEMON_CONNECTION_EVENT),
+        callback.as_ref(),
+    ) else {
+        return false;
+    };
+    let Ok(registration) = registration.dyn_into::<js_sys::Promise>() else {
+        return false;
+    };
+    if JsFuture::from(registration).await.is_err() {
+        return false;
+    }
+    callback.forget();
+    true
+}
 
 /// Status for a native Windows service.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -696,11 +851,131 @@ fn js_error_string(value: JsValue) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        cell::{Cell, RefCell},
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+
     use super::{
         MACOS_SYSTEM_SETTINGS_COMMAND, MacosOwnerCoordinatorOutcome, MacosOwnerRemedy,
         MacosSystemSettingsPane, PawnIoModuleStatus, PawnIoSupportStatus, ServiceSupportStatus,
-        bundled_payload_ready, smbus_support_ready, windows_daemon_service_conflict,
+        VERIFIED_DAEMON_CONNECTION_COMMAND, VERIFIED_DAEMON_REVISION, VerifiedDaemonConnection,
+        VerifiedDaemonConnectionSnapshot, apply_verified_daemon_connection, bundled_payload_ready,
+        smbus_support_ready, snapshot_after_listener_registration, windows_daemon_service_conflict,
     };
+
+    fn run_ready<F: Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("fixture future should resolve without suspension"),
+        }
+    }
+
+    #[test]
+    fn snapshot_request_waits_for_listener_registration_and_skips_rejection() {
+        let steps = RefCell::new(Vec::new());
+        let snapshot = run_ready(snapshot_after_listener_registration(
+            async {
+                steps.borrow_mut().push("listener-ready");
+                true
+            },
+            || async {
+                assert_eq!(steps.borrow().as_slice(), &["listener-ready"]);
+                steps.borrow_mut().push("snapshot-requested");
+                Some(42_u8)
+            },
+        ));
+        assert_eq!(snapshot, Some(42));
+        assert_eq!(
+            steps.into_inner(),
+            vec!["listener-ready", "snapshot-requested"]
+        );
+
+        let snapshot_requested = Cell::new(false);
+        let rejected = run_ready(snapshot_after_listener_registration(
+            async { false },
+            || async {
+                snapshot_requested.set(true);
+                Some(42_u8)
+            },
+        ));
+        assert_eq!(rejected, None);
+        assert!(!snapshot_requested.get());
+    }
+
+    #[test]
+    fn verified_connection_command_installs_and_rotates_only_process_memory() {
+        assert_eq!(
+            VERIFIED_DAEMON_CONNECTION_COMMAND,
+            "get_verified_daemon_connection"
+        );
+        VERIFIED_DAEMON_REVISION.with(|revision| revision.set(0));
+        crate::api::client::begin_native_daemon_verification();
+        let connection: VerifiedDaemonConnection = serde_json::from_value(serde_json::json!({
+            "baseUrl": "http://127.0.0.1:9420",
+            "serverSessionId": "hcs1_11111111111111111111111111111111",
+            "protectedControlCredential": format!("hcc1_{}", "22".repeat(32)),
+        }))
+        .expect("verified native connection should decode");
+        assert!(apply_verified_daemon_connection(
+            VerifiedDaemonConnectionSnapshot {
+                revision: 2,
+                connection: Some(connection),
+            }
+        ));
+        assert_eq!(
+            crate::api::client::daemon_url("/api/v1/devices"),
+            Some("http://127.0.0.1:9420/api/v1/devices".to_owned())
+        );
+        assert!(crate::api::client::authorization_token().is_some());
+
+        assert!(!apply_verified_daemon_connection(
+            VerifiedDaemonConnectionSnapshot {
+                revision: 1,
+                connection: None,
+            }
+        ));
+        assert!(crate::api::client::daemon_url("/api/v1/devices").is_some());
+
+        assert!(apply_verified_daemon_connection(
+            VerifiedDaemonConnectionSnapshot {
+                revision: 3,
+                connection: None,
+            }
+        ));
+        assert!(crate::api::client::authorization_token().is_none());
+        assert!(crate::api::client::daemon_url("/api/v1/devices").is_none());
+        crate::api::client::reset_daemon_transport_for_test();
+    }
+
+    #[test]
+    fn health_verified_native_connection_routes_without_protected_credential() {
+        VERIFIED_DAEMON_REVISION.with(|revision| revision.set(0));
+        crate::api::client::begin_native_daemon_verification();
+        assert!(crate::api::client::daemon_url("/api/v1/status").is_none());
+
+        let connection: VerifiedDaemonConnection = serde_json::from_value(serde_json::json!({
+            "baseUrl": "https://daemon.lan:19420",
+            "serverSessionId": null,
+            "protectedControlCredential": null,
+        }))
+        .expect("health-proven native connection should decode");
+        assert!(apply_verified_daemon_connection(
+            VerifiedDaemonConnectionSnapshot {
+                revision: 1,
+                connection: Some(connection),
+            }
+        ));
+        assert_eq!(
+            crate::api::client::daemon_url("/api/v1/status"),
+            Some("https://daemon.lan:19420/api/v1/status".to_owned())
+        );
+        assert!(crate::api::client::authorization_token().is_none());
+        crate::api::client::reset_daemon_transport_for_test();
+    }
 
     #[test]
     fn macos_system_settings_panes_route_to_the_scoped_native_command() {

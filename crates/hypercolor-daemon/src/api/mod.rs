@@ -1724,7 +1724,9 @@ fn configured_cors_origin(origin: &str) -> Option<HeaderValue> {
 }
 
 fn is_allowed_cors_origin(origin: &HeaderValue, configured_origins: &[HeaderValue]) -> bool {
-    is_loopback_origin(origin) || configured_origins.iter().any(|allowed| allowed == origin)
+    is_loopback_origin(origin)
+        || security::is_trusted_tauri_origin(origin)
+        || configured_origins.iter().any(|allowed| allowed == origin)
 }
 
 fn is_http_origin(origin: &str) -> bool {
@@ -1780,6 +1782,17 @@ mod cors_tests {
         ));
         assert!(is_allowed_cors_origin(
             &origin("http://127.0.0.1:9430"),
+            &configured
+        ));
+        for native_origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ] {
+            assert!(is_allowed_cors_origin(&origin(native_origin), &configured));
+        }
+        assert!(!is_allowed_cors_origin(
+            &origin("tauri://attacker.example"),
             &configured
         ));
     }

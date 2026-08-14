@@ -12,9 +12,13 @@ use anyhow::{Context, Result};
 use hypercolor_core::config::paths::data_dir;
 use hypercolor_macos_owner::{
     MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy, MacosOwnerStore,
+    MacosProtectedControlCredential, MacosServerSessionId,
 };
 #[cfg(target_os = "macos")]
-use hypercolor_macos_owner::{MacosOwnerExecutionError, MacosOwnerIncarnation};
+use hypercolor_macos_owner::{
+    MacosDaemonSessionAttestation, MacosOwnerExecutionError, MacosOwnerIncarnation,
+    try_acquire_macos_daemon_guard,
+};
 use hypercolor_types::event::MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
@@ -23,6 +27,28 @@ use url::Url;
 pub const DEFAULT_DAEMON_BIND: &str = "127.0.0.1:9420";
 
 const DAEMON_EXECUTABLE_STEM: &str = "hypercolor-daemon";
+
+pub const VERIFIED_DAEMON_CONNECTION_CHANGED_EVENT: &str = "verified-daemon-connection-changed";
+
+/// Process-memory connection proof exposed only to the bundled app UI.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedDaemonConnection {
+    pub base_url: String,
+    pub server_session_id: Option<MacosServerSessionId>,
+    pub protected_control_credential: Option<MacosProtectedControlCredential>,
+}
+
+/// Monotonic supervisor snapshot used to reject invoke/event reordering.
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedDaemonConnectionSnapshot {
+    pub revision: u64,
+    pub connection: Option<VerifiedDaemonConnection>,
+}
+
+type VerifiedConnectionEmitter =
+    Arc<dyn Fn(VerifiedDaemonConnectionSnapshot) + Send + Sync + 'static>;
 
 /// Linux systemd user service name for the daemon.
 pub const SYSTEMD_USER_SERVICE: &str = "hypercolor.service";
@@ -35,6 +61,9 @@ pub const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Delay between daemon startup health probes.
 pub const DAEMON_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+#[cfg(target_os = "macos")]
+const EXTERNAL_OWNER_VERIFY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Watchdog circuit-breaker: max rapid daemon restarts within
 /// [`WATCHDOG_FAILURE_WINDOW`] before the supervisor gives up.
@@ -97,6 +126,8 @@ pub struct SupervisorState {
     owner_handover_stop: Arc<std::sync::atomic::AtomicBool>,
     macos_external_owner: Arc<Mutex<Option<MacosExternalOwnerMode>>>,
     macos_owner_offline: Arc<Mutex<Option<MacosDaemonOwnerOfflineStatus>>>,
+    verified_connection: Arc<Mutex<VerifiedDaemonConnectionSnapshot>>,
+    verified_connection_emitter: Arc<Mutex<Option<VerifiedConnectionEmitter>>>,
 }
 
 /// App-local status when a persisted external owner is not reachable.
@@ -140,7 +171,53 @@ impl SupervisorState {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Return the current exact daemon-session proof, if one remains valid.
+    #[must_use]
+    pub fn verified_daemon_connection(&self) -> VerifiedDaemonConnectionSnapshot {
+        self.verified_connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn install_verified_connection_emitter(&self, emitter: VerifiedConnectionEmitter) {
+        *self
+            .verified_connection_emitter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(emitter);
+    }
+
+    fn replace_verified_connection(&self, connection: Option<VerifiedDaemonConnection>) {
+        let snapshot = {
+            let mut current = self
+                .verified_connection
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if current.connection == connection {
+                return;
+            }
+            current.revision = current.revision.saturating_add(1);
+            current.connection = connection;
+            current.clone()
+        };
+        if let Some(emitter) = self
+            .verified_connection_emitter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            emitter(snapshot);
+        }
+    }
+
+    fn clear_verified_connection(&self) {
+        self.replace_verified_connection(None);
+    }
+
     pub(crate) fn set_owner_handover_stop(&self, stopping: bool) {
+        if stopping {
+            self.clear_verified_connection();
+        }
         self.owner_handover_stop
             .store(stopping, std::sync::atomic::Ordering::Release);
     }
@@ -184,6 +261,7 @@ impl SupervisorState {
     }
 
     fn clear_child(&self) {
+        self.clear_verified_connection();
         *self.child_guard() = None;
         #[cfg(target_os = "macos")]
         {
@@ -192,6 +270,11 @@ impl SupervisorState {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = None;
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn app_sidecar_is_live(&self, incarnation: &MacosOwnerIncarnation) -> bool {
+        self.preflight_app_sidecar_stop(incarnation).is_ok()
     }
 
     #[cfg(target_os = "macos")]
@@ -295,6 +378,15 @@ impl SupervisorState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// Read the connection proof currently held by the native supervisor.
+#[tauri::command]
+#[must_use]
+pub fn get_verified_daemon_connection(
+    state: tauri::State<'_, SupervisorState>,
+) -> VerifiedDaemonConnectionSnapshot {
+    state.verified_daemon_connection()
 }
 
 type SharedManagedDaemon = Arc<Mutex<ManagedDaemon>>;
@@ -581,6 +673,157 @@ fn system_status_url(base: &Url) -> Url {
 }
 
 #[cfg(target_os = "macos")]
+fn server_identity_url(base: &Url) -> Url {
+    base.join("/api/v1/server")
+        .expect("static server-identity endpoint path should be valid")
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn health_verified_daemon_connection(base: &Url) -> VerifiedDaemonConnection {
+    VerifiedDaemonConnection {
+        base_url: base.as_str().trim_end_matches('/').to_owned(),
+        server_session_id: None,
+        protected_control_credential: None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn canonical_daemon_guard_path() -> PathBuf {
+    std::env::temp_dir().join("hypercolor-daemon.lock")
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_guard_is_contended(path: &Path) -> bool {
+    try_acquire_macos_daemon_guard(&path.to_string_lossy()).is_ok_and(|guard| guard.is_none())
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_base_is_loopback(base: &Url) -> bool {
+    if !matches!(base.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = base.host_str() else {
+        return false;
+    };
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct ServerIdentityEnvelope {
+    data: ServerIdentityData,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct ServerIdentityData {
+    server_session_id: Option<MacosServerSessionId>,
+}
+
+#[cfg(target_os = "macos")]
+fn attestation_matches_record(
+    attestation: &MacosDaemonSessionAttestation,
+    record: &hypercolor_macos_owner::MacosOwnerRecord,
+    expected_owner: MacosDaemonOwner,
+) -> bool {
+    record.active_owner == expected_owner && attestation.owner_incarnation() == record.incarnation()
+}
+
+#[cfg(target_os = "macos")]
+async fn verify_macos_daemon_connection(
+    client: &reqwest::Client,
+    base: &Url,
+    store: &MacosOwnerStore,
+    guard_path: &Path,
+    state: &SupervisorState,
+    expected_owner: MacosDaemonOwner,
+) -> Option<VerifiedDaemonConnection> {
+    if !daemon_base_is_loopback(base) {
+        return None;
+    }
+    let record = store.load_owner_record().ok().flatten()?;
+    let attestation = store.load_daemon_session_attestation().ok().flatten()?;
+    if !attestation_matches_record(&attestation, &record, expected_owner) {
+        return None;
+    }
+    let incarnation = record.incarnation();
+    if expected_owner == MacosDaemonOwner::AppSidecar && !state.app_sidecar_is_live(&incarnation) {
+        return None;
+    }
+    if !daemon_guard_is_contended(guard_path) {
+        return None;
+    }
+
+    let response = client
+        .get(server_identity_url(base))
+        .timeout(HEALTH_PROBE_TIMEOUT)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let observed_session = response
+        .json::<ServerIdentityEnvelope>()
+        .await
+        .ok()?
+        .data
+        .server_session_id?;
+
+    if !daemon_guard_is_contended(guard_path) {
+        return None;
+    }
+    let current_record = store.load_owner_record().ok().flatten()?;
+    let current_attestation = store.load_daemon_session_attestation().ok().flatten()?;
+    if current_record != record
+        || current_attestation != attestation
+        || observed_session != attestation.server_session_id
+    {
+        return None;
+    }
+    if expected_owner == MacosDaemonOwner::AppSidecar && !state.app_sidecar_is_live(&incarnation) {
+        return None;
+    }
+
+    Some(VerifiedDaemonConnection {
+        base_url: base.as_str().trim_end_matches('/').to_owned(),
+        server_session_id: Some(attestation.server_session_id),
+        protected_control_credential: Some(attestation.protected_control_credential),
+    })
+}
+
+#[cfg(target_os = "macos")]
+async fn monitor_external_macos_daemon_connection(
+    client: &reqwest::Client,
+    base: &Url,
+    state: &SupervisorState,
+    expected_owner: MacosDaemonOwner,
+) {
+    let store = MacosOwnerStore::new(data_dir());
+    let guard_path = canonical_daemon_guard_path();
+    loop {
+        tokio::time::sleep(EXTERNAL_OWNER_VERIFY_INTERVAL).await;
+        let connection = verify_macos_daemon_connection(
+            client,
+            base,
+            &store,
+            &guard_path,
+            state,
+            expected_owner,
+        )
+        .await;
+        state.replace_verified_connection(connection);
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Debug, serde::Deserialize)]
 struct SystemStatusEnvelope {
     data: SystemStatusData,
@@ -850,19 +1093,49 @@ fn start_with_external_owner<R: Runtime>(
     let bind = bind_from_daemon_url(&daemon_url).unwrap_or_else(|| DEFAULT_DAEMON_BIND.to_owned());
     let state = app.state::<SupervisorState>().inner().clone();
     state.set_macos_external_owner(external_owner);
+    let event_app = app.clone();
+    state.install_verified_connection_emitter(Arc::new(move |connection| {
+        if let Err(error) = event_app.emit(VERIFIED_DAEMON_CONNECTION_CHANGED_EVENT, connection) {
+            tracing::warn!(%error, "failed to publish verified daemon session change");
+        }
+    }));
+    state.clear_verified_connection();
     let app = app.clone();
 
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::new();
+        #[cfg(target_os = "macos")]
         let authoritative_owner_online = if let Some(owner) = external_owner {
-            probe_authoritative_macos_owner(&client, &daemon_url, external_mode_owner(owner), None)
-                .await
+            verify_macos_daemon_connection(
+                &client,
+                &daemon_url,
+                &MacosOwnerStore::new(data_dir()),
+                &canonical_daemon_guard_path(),
+                &state,
+                external_mode_owner(owner),
+            )
+            .await
         } else {
-            probe_health(&client, &daemon_url, HEALTH_PROBE_TIMEOUT).await
+            None
         };
-        if authoritative_owner_online {
+        #[cfg(not(target_os = "macos"))]
+        let authoritative_owner_online = probe_health(&client, &daemon_url, HEALTH_PROBE_TIMEOUT)
+            .await
+            .then(|| health_verified_daemon_connection(&daemon_url));
+        if let Some(connection) = authoritative_owner_online {
+            state.replace_verified_connection(Some(connection));
             state.set_macos_owner_offline(None);
             tracing::info!(url = %daemon_url, "daemon already running; reusing existing instance");
+            #[cfg(target_os = "macos")]
+            if let Some(owner) = external_owner {
+                monitor_external_macos_daemon_connection(
+                    &client,
+                    &daemon_url,
+                    &state,
+                    external_mode_owner(owner),
+                )
+                .await;
+            }
             return;
         }
 
@@ -882,6 +1155,11 @@ fn start_with_external_owner<R: Runtime>(
 
         #[cfg(target_os = "linux")]
         if try_start_systemd_user_service(&client, &daemon_url).await {
+            if probe_health(&client, &daemon_url, HEALTH_PROBE_TIMEOUT).await {
+                state.replace_verified_connection(Some(health_verified_daemon_connection(
+                    &daemon_url,
+                )));
+            }
             return;
         }
 
@@ -1132,6 +1410,29 @@ async fn run_watchdog_loop(
             tokio::time::sleep(restart_backoff(restart_count)).await;
             continue;
         }
+        #[cfg(target_os = "macos")]
+        {
+            let verified = verify_macos_daemon_connection(
+                &client,
+                &daemon_url,
+                &MacosOwnerStore::new(data_dir()),
+                &canonical_daemon_guard_path(),
+                &state,
+                MacosDaemonOwner::AppSidecar,
+            )
+            .await;
+            let Some(verified) = verified else {
+                tracing::error!(pid, "healthy app sidecar failed exact session verification");
+                state.clear_child();
+                drop(daemon);
+                record_failure(&mut restart_count, &mut window_anchor);
+                tokio::time::sleep(restart_backoff(restart_count)).await;
+                continue;
+            };
+            state.replace_verified_connection(Some(verified));
+        }
+        #[cfg(not(target_os = "macos"))]
+        state.replace_verified_connection(Some(health_verified_daemon_connection(&daemon_url)));
         let exit = wait_for_exit(daemon).await;
         let uptime = spawned_at.elapsed();
         state.clear_child();
@@ -1240,6 +1541,77 @@ mod tests {
     use hypercolor_macos_owner::{MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy};
 
     #[cfg(target_os = "macos")]
+    fn external_session_fixture() -> (
+        tempfile::TempDir,
+        hypercolor_macos_owner::MacosOwnerStore,
+        hypercolor_macos_owner::MacosDaemonGuard,
+        hypercolor_macos_owner::MacosDaemonSessionAttestation,
+        std::path::PathBuf,
+    ) {
+        use hypercolor_macos_owner::{
+            MacosOwnerIdentity, MacosOwnerStore, try_acquire_macos_daemon_guard,
+        };
+
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let guard_path = directory.path().join("daemon.lock");
+        let guard = try_acquire_macos_daemon_guard(&guard_path.to_string_lossy())
+            .expect("guard acquisition should succeed")
+            .expect("fixture should win the guard");
+        let store = MacosOwnerStore::new(directory.path().join("store"));
+        let record = store
+            .publish_owner(
+                MacosDaemonOwner::DirectLaunchd,
+                MacosOwnerIdentity::new(
+                    "audit-launchd",
+                    "/usr/local/bin/hypercolor-daemon",
+                    "requirement-launchd",
+                    std::process::id(),
+                )
+                .expect("identity should build"),
+            )
+            .expect("owner should publish");
+        let attestation = store
+            .publish_daemon_session_attestation(&guard, &record.incarnation())
+            .expect("session should publish");
+        (directory, store, guard, attestation, guard_path)
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn server_identity_fixture(body: String) -> (url::Url, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fixture listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("fixture address should resolve");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("request should connect");
+            let mut request = [0_u8; 4_096];
+            let read = stream
+                .read(&mut request)
+                .await
+                .expect("request should read");
+            let request = std::str::from_utf8(&request[..read])
+                .expect("request should contain UTF-8 headers");
+            assert!(request.starts_with("GET /api/v1/server HTTP/1.1"));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("response should write");
+        });
+        (
+            url::Url::parse(&format!("http://{address}")).expect("fixture daemon URL should parse"),
+            server,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
     async fn authoritative_probe_fixture(
         status_body: &'static str,
         selected_owner: MacosDaemonOwner,
@@ -1317,6 +1689,252 @@ mod tests {
                 remedy: MacosOwnerRemedy::StartHomebrewService,
             }
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn verified_connection_requires_matching_endpoint_session_and_live_guard() {
+        let (_directory, store, guard, attestation, guard_path) = external_session_fixture();
+        let body = serde_json::json!({
+            "data": { "server_session_id": attestation.server_session_id }
+        })
+        .to_string();
+        let (base, server) = server_identity_fixture(body).await;
+        let state = super::SupervisorState::default();
+
+        let verified = super::verify_macos_daemon_connection(
+            &reqwest::Client::new(),
+            &base,
+            &store,
+            &guard_path,
+            &state,
+            MacosDaemonOwner::DirectLaunchd,
+        )
+        .await;
+        server.await.expect("fixture server should finish");
+        let verified = verified.expect("matching live session should verify");
+        assert_eq!(
+            verified.server_session_id,
+            Some(attestation.server_session_id)
+        );
+        assert_eq!(
+            verified.protected_control_credential,
+            Some(attestation.protected_control_credential)
+        );
+        drop(guard);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn wrong_or_missing_endpoint_session_never_exposes_credential() {
+        let (_directory, store, _guard, _attestation, guard_path) = external_session_fixture();
+        let state = super::SupervisorState::default();
+        for body in [
+            serde_json::json!({ "data": { "server_session_id": null } }).to_string(),
+            serde_json::json!({
+                "data": {
+                    "server_session_id": hypercolor_macos_owner::MacosServerSessionId::from_bytes([0x77; 16])
+                }
+            })
+            .to_string(),
+        ] {
+            let (base, server) = server_identity_fixture(body).await;
+            assert!(
+                super::verify_macos_daemon_connection(
+                    &reqwest::Client::new(),
+                    &base,
+                    &store,
+                    &guard_path,
+                    &state,
+                    MacosDaemonOwner::DirectLaunchd,
+                )
+                .await
+                .is_none()
+            );
+            server.await.expect("fixture server should finish");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn stale_crash_artifacts_and_replayed_session_fail_without_live_guard() {
+        let (_directory, store, guard, attestation, guard_path) = external_session_fixture();
+        let replayed_session = attestation.server_session_id.clone();
+        drop(guard);
+        let unreachable =
+            url::Url::parse("http://127.0.0.1:9").expect("fixture daemon URL should parse");
+
+        assert_eq!(
+            store
+                .load_daemon_session_attestation()
+                .expect("stale matching artifacts should still load")
+                .expect("stale attestation should remain")
+                .server_session_id,
+            replayed_session
+        );
+        assert!(
+            super::verify_macos_daemon_connection(
+                &reqwest::Client::new(),
+                &unreachable,
+                &store,
+                &guard_path,
+                &super::SupervisorState::default(),
+                MacosDaemonOwner::DirectLaunchd,
+            )
+            .await
+            .is_none()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn nonloopback_daemon_base_never_enters_session_verification() {
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let base =
+            url::Url::parse("https://attacker.example:9420").expect("fixture URL should parse");
+        assert!(
+            super::verify_macos_daemon_connection(
+                &reqwest::Client::new(),
+                &base,
+                &hypercolor_macos_owner::MacosOwnerStore::new(directory.path()),
+                &directory.path().join("daemon.lock"),
+                &super::SupervisorState::default(),
+                MacosDaemonOwner::DirectLaunchd,
+            )
+            .await
+            .is_none()
+        );
+        assert!(!super::daemon_base_is_loopback(&base));
+        assert!(super::daemon_base_is_loopback(
+            &url::Url::parse("http://[::1]:9420").expect("loopback URL should parse")
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn prebound_unrelated_listener_cannot_become_the_app_sidecar_endpoint() {
+        use std::process::{Command, Stdio};
+        use std::sync::{Arc, Mutex};
+
+        use hypercolor_macos_owner::{
+            MacosOwnerIdentity, MacosOwnerStore, try_acquire_macos_daemon_guard,
+        };
+
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let guard_path = directory.path().join("daemon.lock");
+        let guard = try_acquire_macos_daemon_guard(&guard_path.to_string_lossy())
+            .expect("guard acquisition should succeed")
+            .expect("fixture should win the guard");
+        let child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fixture child should spawn");
+        let pid = child.id();
+        let daemon = Arc::new(Mutex::new(super::ManagedDaemon {
+            child: Some(child),
+            platform_guard: super::PlatformGuard,
+        }));
+        let store = MacosOwnerStore::new(directory.path().join("store"));
+        let record = store
+            .publish_owner(
+                MacosDaemonOwner::AppSidecar,
+                MacosOwnerIdentity::new(
+                    "audit-sidecar",
+                    "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+                    "requirement-sidecar",
+                    pid,
+                )
+                .expect("identity should build"),
+            )
+            .expect("owner should publish");
+        let state = super::SupervisorState::default();
+        state
+            .register_app_sidecar_child(record.incarnation(), Arc::clone(&daemon))
+            .expect("matching child should register");
+        assert!(state.app_sidecar_is_live(&record.incarnation()));
+        let unrelated_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("unrelated listener should pre-bind a loopback port");
+        let unrelated_address = unrelated_listener
+            .local_addr()
+            .expect("unrelated listener address should resolve");
+        let base = url::Url::parse(&format!("http://{unrelated_address}"))
+            .expect("unrelated listener URL should parse");
+
+        assert!(
+            super::verify_macos_daemon_connection(
+                &reqwest::Client::new(),
+                &base,
+                &store,
+                &guard_path,
+                &state,
+                MacosDaemonOwner::AppSidecar,
+            )
+            .await
+            .is_none()
+        );
+        assert!(
+            store
+                .load_daemon_session_attestation()
+                .expect("session state should load")
+                .is_none()
+        );
+        drop(unrelated_listener);
+        state.clear_child();
+        drop(daemon);
+        drop(guard);
+    }
+
+    #[test]
+    fn clearing_verified_state_emits_offline_and_removes_old_credential() {
+        use std::sync::{Arc, Mutex, PoisonError};
+
+        let state = super::SupervisorState::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&events);
+        state.install_verified_connection_emitter(Arc::new(move |connection| {
+            recorded
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(connection);
+        }));
+        state.replace_verified_connection(Some(super::VerifiedDaemonConnection {
+            base_url: "http://127.0.0.1:9420".to_owned(),
+            server_session_id: Some(hypercolor_macos_owner::MacosServerSessionId::from_bytes(
+                [0x11; 16],
+            )),
+            protected_control_credential: Some(
+                hypercolor_macos_owner::MacosProtectedControlCredential::from_bytes([0x22; 32]),
+            ),
+        }));
+        state.clear_verified_connection();
+
+        assert!(state.verified_daemon_connection().connection.is_none());
+        let events = events.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].revision, 1);
+        assert!(events[0].connection.is_some());
+        assert_eq!(events[1].revision, 2);
+        assert!(events[1].connection.is_none());
+    }
+
+    #[test]
+    fn native_health_proof_enables_base_without_macos_session_authority() {
+        let state = super::SupervisorState::default();
+        assert!(state.verified_daemon_connection().connection.is_none());
+
+        let base = url::Url::parse("https://daemon.lan:19420/").expect("URL should parse");
+        state.replace_verified_connection(Some(super::health_verified_daemon_connection(&base)));
+        let connection = state
+            .verified_daemon_connection()
+            .connection
+            .expect("health-proven native daemon should publish its route");
+        assert_eq!(connection.base_url, "https://daemon.lan:19420");
+        assert!(connection.server_session_id.is_none());
+        assert!(connection.protected_control_credential.is_none());
     }
 
     #[cfg(target_os = "macos")]

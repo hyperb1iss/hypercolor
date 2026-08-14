@@ -177,7 +177,7 @@ fn ws_origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
         return true;
     };
 
-    if is_loopback_origin(origin) {
+    if is_loopback_origin(origin) || crate::api::security::is_trusted_tauri_origin(origin) {
         return true;
     }
 
@@ -1729,6 +1729,32 @@ mod origin_tests {
         assert!(!is_loopback_origin(&HeaderValue::from_static(
             "https://evil.example"
         )));
+    }
+
+    #[test]
+    fn exact_bundled_tauri_origins_are_allowed_but_lookalikes_are_rejected() {
+        let state = AppState::new();
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::ORIGIN,
+                origin.parse().expect("native origin should parse"),
+            );
+            assert!(ws_origin_allowed(&state, &headers));
+        }
+
+        for origin in ["tauri://attacker.example", "https://tauri.localhost.evil"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::ORIGIN,
+                origin.parse().expect("lookalike origin should parse"),
+            );
+            assert!(!ws_origin_allowed(&state, &headers));
+        }
     }
 
     #[test]

@@ -61,7 +61,9 @@ fn AssetCard(
     let icon = kind_icon(kind);
     let label = kind_label(kind);
     let has_thumb = kind_has_thumbnail(kind);
-    let thumbnail_url = format!("/api/v1/assets/{}/thumbnail", asset.id);
+    let thumbnail_url =
+        crate::api::client::daemon_url(&format!("/api/v1/assets/{}/thumbnail", asset.id))
+            .unwrap_or_default();
     let meta_line = format!(
         "{} · {}",
         format_bytes(asset.byte_len),

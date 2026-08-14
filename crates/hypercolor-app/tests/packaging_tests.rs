@@ -40,6 +40,11 @@ const SIGN_MACOS_ARTIFACTS_SH: &str = include_str!("../../../scripts/sign-macos-
 const MACOS_SIGNING_KEYCHAIN_C: &str = include_str!("../../../scripts/macos-signing-keychain.c");
 const MACOS_SIGNING_MANIFEST: &str = include_str!("../../../packaging/macos/signing-manifest.tsv");
 const TAURI_CONFIG: &str = include_str!("../tauri.conf.json");
+const TAURI_MACOS_CONFIG: &str = include_str!("../tauri.macos.conf.json");
+const TAURI_BUNDLE_CONFIG: &str = include_str!("../tauri.bundle.conf.json");
+const TAURI_DEFAULT_CAPABILITY: &str = include_str!("../capabilities/default.json");
+const TAURI_BUILD_RS: &str = include_str!("../build.rs");
+const APP_MAIN_RS: &str = include_str!("../src/main.rs");
 const MACOS_DAEMON_ENTITLEMENTS: &str =
     include_str!("../../../packaging/macos/daemon.entitlements.plist");
 const MACOS_LAUNCHD_PLIST: &str =
@@ -67,6 +72,224 @@ const REQUIRED_PAWNIO_MODULES: &[&str] = &[
     "IntelMSR.bin",
     "AMDFamily17.bin",
 ];
+
+fn csp_directives(
+    csp: &str,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    csp.split(';')
+        .filter_map(|directive| {
+            let mut fields = directive.split_whitespace();
+            let name = fields.next()?;
+            Some((
+                name.to_owned(),
+                fields
+                    .map(str::to_owned)
+                    .collect::<std::collections::BTreeSet<_>>(),
+            ))
+        })
+        .collect()
+}
+
+fn csp_sources(values: &[&str]) -> std::collections::BTreeSet<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+#[test]
+fn app_window_is_bundled_and_never_accepts_daemon_document_bytes() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("Tauri config should parse");
+    let bundle_config: serde_json::Value =
+        serde_json::from_str(TAURI_BUNDLE_CONFIG).expect("bundle config should parse");
+
+    assert_eq!(config["build"]["frontendDist"], "../hypercolor-ui/dist");
+    assert_eq!(
+        bundle_config["build"]["frontendDist"],
+        "../../target/bundle-stage/ui"
+    );
+    assert!(APP_MAIN_RS.contains("WebviewUrl::App(\"index.html\".into())"));
+    assert!(!APP_MAIN_RS.contains("WebviewUrl::External"));
+    assert!(!APP_MAIN_RS.contains("window.navigate"));
+    assert!(!APP_MAIN_RS.contains("__HYPERCOLOR_DAEMON_BASE_URL__"));
+    assert!(!APP_MAIN_RS.contains("initialization_script(daemon"));
+}
+
+#[test]
+fn bundled_origin_capability_allows_exact_registered_commands_only() {
+    let capability: serde_json::Value =
+        serde_json::from_str(TAURI_DEFAULT_CAPABILITY).expect("default capability should parse");
+    assert!(capability.get("remote").is_none());
+    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+
+    let (_, build_commands) = TAURI_BUILD_RS
+        .split_once(".commands(&[")
+        .expect("build manifest should enumerate app commands");
+    let (build_commands, _) = build_commands
+        .split_once("]);")
+        .expect("build manifest command list should close");
+    let build_commands = build_commands
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix('"'))
+        .filter_map(|line| line.strip_suffix("\","))
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let (_, handlers) = APP_MAIN_RS
+        .split_once("tauri::generate_handler![")
+        .expect("app should register a command handler");
+    let (handlers, _) = handlers
+        .split_once("])")
+        .expect("command handler list should close");
+    let handlers = handlers
+        .split(',')
+        .filter_map(|entry| entry.trim().rsplit("::").next())
+        .filter(|entry| !entry.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(build_commands, handlers);
+
+    let command_permissions = capability["permissions"]
+        .as_array()
+        .expect("permissions should be an array")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter_map(|permission| permission.strip_prefix("allow-"))
+        .map(|permission| permission.replace('-', "_"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let build_commands = build_commands
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(command_permissions, build_commands);
+}
+
+#[test]
+fn bundled_origin_csp_is_exact_and_macos_network_access_is_loopback_only() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("Tauri config should parse");
+    let macos: serde_json::Value =
+        serde_json::from_str(TAURI_MACOS_CONFIG).expect("macOS Tauri config should parse");
+    let security = &config["app"]["security"];
+    let macos_security = &macos["app"]["security"];
+    assert!(
+        security
+            .get("dangerousDisableAssetCspModification")
+            .is_none()
+    );
+    assert!(
+        macos_security
+            .get("dangerousDisableAssetCspModification")
+            .is_none()
+    );
+
+    let base = csp_directives(
+        security["csp"]
+            .as_str()
+            .expect("base CSP should be a string"),
+    );
+    let macos = csp_directives(
+        macos_security["csp"]
+            .as_str()
+            .expect("macOS CSP should be a string"),
+    );
+    let directive_names = csp_sources(&[
+        "base-uri",
+        "connect-src",
+        "default-src",
+        "font-src",
+        "form-action",
+        "frame-ancestors",
+        "frame-src",
+        "img-src",
+        "media-src",
+        "object-src",
+        "script-src",
+        "style-src",
+        "worker-src",
+    ]);
+    assert_eq!(
+        base.keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        directive_names
+    );
+    assert_eq!(
+        macos
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        directive_names
+    );
+
+    for directives in [&base, &macos] {
+        assert_eq!(directives["default-src"], csp_sources(&["'self'"]));
+        assert_eq!(
+            directives["script-src"],
+            csp_sources(&["'self'", "'wasm-unsafe-eval'"])
+        );
+        assert_eq!(directives["worker-src"], csp_sources(&["'self'", "blob:"]));
+        assert_eq!(
+            directives["style-src"],
+            csp_sources(&["'self'", "'unsafe-inline'", "https://fonts.bunny.net"])
+        );
+        assert_eq!(
+            directives["font-src"],
+            csp_sources(&["'self'", "data:", "https://fonts.bunny.net"])
+        );
+        for denied in [
+            "object-src",
+            "base-uri",
+            "frame-src",
+            "frame-ancestors",
+            "form-action",
+        ] {
+            assert_eq!(directives[denied], csp_sources(&["'none'"]));
+        }
+    }
+
+    assert_eq!(
+        base["connect-src"],
+        csp_sources(&[
+            "ipc:",
+            "http://ipc.localhost",
+            "http:",
+            "https:",
+            "ws:",
+            "wss:",
+        ])
+    );
+    assert_eq!(
+        base["img-src"],
+        csp_sources(&["'self'", "data:", "blob:", "http:", "https:"])
+    );
+    assert_eq!(base["media-src"], base["img-src"]);
+
+    let loopback_http = [
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        "http://[::1]:*",
+        "https://127.0.0.1:*",
+        "https://localhost:*",
+        "https://[::1]:*",
+    ];
+    let mut macos_connect = csp_sources(&["ipc:", "http://ipc.localhost"]);
+    macos_connect.extend(loopback_http.iter().map(|source| (*source).to_owned()));
+    macos_connect.extend(
+        [
+            "ws://127.0.0.1:*",
+            "ws://localhost:*",
+            "ws://[::1]:*",
+            "wss://127.0.0.1:*",
+            "wss://localhost:*",
+            "wss://[::1]:*",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    assert_eq!(macos["connect-src"], macos_connect);
+    let mut macos_media = csp_sources(&["'self'", "data:", "blob:"]);
+    macos_media.extend(loopback_http.into_iter().map(str::to_owned));
+    assert_eq!(macos["img-src"], macos_media);
+    assert_eq!(macos["media-src"], macos["img-src"]);
+}
 
 #[test]
 fn macos_distribution_surfaces_require_15_2() {

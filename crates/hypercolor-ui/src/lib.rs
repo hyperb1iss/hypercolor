@@ -98,6 +98,7 @@ fn print_banner() {
 pub fn run_with_extensions(ext: UiExtensions) {
     _ = console_log::init_with_level(log::Level::Debug);
     console_error_panic_hook::set_once();
+    tauri_bridge::initialize_daemon_transport();
     print_banner();
     mount_to_body(move || app::app_view(ext));
 }

@@ -76,6 +76,51 @@ async fn loopback_origin_receives_cors_headers() {
 }
 
 #[tokio::test]
+async fn exact_bundled_tauri_origins_receive_cors_headers() {
+    for origin in [
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+    ] {
+        let response = test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .header(header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            origin
+        );
+    }
+
+    for origin in ["tauri://attacker.example", "https://tauri.localhost.evil"] {
+        let response = test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .header(header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
 async fn public_origin_does_not_receive_cors_headers() {
     let response = test_app()
         .oneshot(

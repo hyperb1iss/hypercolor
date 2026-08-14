@@ -57,6 +57,125 @@ pub struct DaemonRunOptions {
     pub macos_daemon_session_attestation: Option<MacosDaemonSessionAttestation>,
 }
 
+/// Ownership handle for the exact sockets bound during daemon preparation.
+///
+/// Each handle is a duplicate descriptor for the same listening socket used
+/// by Tokio. Keeping the lease alive prevents another process from binding the
+/// API address after serving stops and before process-level authority is
+/// invalidated.
+#[doc(hidden)]
+pub struct ApiListenerLease {
+    _listeners: Vec<std::net::TcpListener>,
+}
+
+/// Daemon startup state whose final API sockets are already bound.
+#[doc(hidden)]
+pub struct PreparedDaemon {
+    options: DaemonRunOptions,
+    config: HypercolorConfig,
+    config_path: PathBuf,
+    listen_addr: String,
+    listeners: Vec<TcpListener>,
+    listener_lease: Option<ApiListenerLease>,
+    advertised_bind: SocketAddr,
+}
+
+impl PreparedDaemon {
+    /// Resume a prepared daemon using its already-bound API listeners.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when subsystem startup, serving, or shutdown fails.
+    pub async fn run(self, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
+        self.run_with_extensions(shutdown_rx, &[]).await
+    }
+
+    /// Return the primary address owned by this prepared daemon.
+    #[must_use]
+    pub const fn advertised_bind(&self) -> SocketAddr {
+        self.advertised_bind
+    }
+
+    /// Attach the exact macOS process session published after socket binding.
+    pub fn install_macos_daemon_session_attestation(
+        &mut self,
+        attestation: MacosDaemonSessionAttestation,
+    ) {
+        self.options.macos_daemon_session_attestation = Some(attestation);
+    }
+
+    /// Transfer the socket lifetime lease to the process-level owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease was already transferred.
+    pub fn take_api_listener_lease(&mut self) -> Result<ApiListenerLease> {
+        self.listener_lease
+            .take()
+            .context("prepared API listener lease was already transferred")
+    }
+
+    async fn run_with_extensions(
+        mut self,
+        shutdown_rx: watch::Receiver<bool>,
+        extension_installers: &[&dyn DaemonExtensionInstaller],
+    ) -> Result<()> {
+        let macos_daemon_session_attestation =
+            self.options.macos_daemon_session_attestation.clone();
+        let listeners = std::mem::take(&mut self.listeners);
+        let mut daemon_state = DaemonState::initialize_with_macos_owner(
+            &self.config,
+            self.config_path.clone(),
+            self.options.macos_owner_snapshot,
+        )?;
+        for installer in extension_installers {
+            installer.install(&mut daemon_state)?;
+        }
+        daemon_state.start().await?;
+
+        let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
+        let mut app_state = AppState::from_daemon_state(&daemon_state);
+        if let Some(attestation) = macos_daemon_session_attestation.as_ref() {
+            app_state.install_macos_daemon_session(attestation);
+        }
+        let app_state = Arc::new(app_state);
+        api::displays::sync_display_preference_overlays(&app_state).await;
+        if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
+            if let Err(shutdown_error) = daemon_state.shutdown().await {
+                warn!(%shutdown_error, "Failed to roll back daemon after API-ready hook failure");
+            }
+            return Err(error);
+        }
+        let router = api::build_router(app_state, ui_dir.as_deref());
+
+        let mdns_publisher = MdnsPublisher::new(
+            &daemon_state.server_identity,
+            self.advertised_bind,
+            self.config.network.mdns_publish,
+            api::security::api_auth_required_from_env(),
+        )?;
+
+        if ui_dir.is_some() {
+            info!(url = %format!("http://{}/", self.advertised_bind), "Web UI available");
+        }
+        info!(binds = %self.listen_addr, "API server listening");
+
+        notify_ready();
+        spawn_watchdog();
+
+        serve_api_listeners(listeners, router, shutdown_rx).await?;
+
+        if let Some(publisher) = mdns_publisher {
+            publisher.shutdown().await;
+        }
+
+        daemon_state.shutdown().await?;
+
+        info!("Hypercolor daemon exited cleanly");
+        Ok(())
+    }
+}
+
 pub trait DaemonExtensionInstaller: Send + Sync {
     /// Install extension state, API routes, and lifecycle hooks before startup.
     ///
@@ -102,7 +221,21 @@ pub async fn run_with_extensions(
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
-    let macos_daemon_session_attestation = options.macos_daemon_session_attestation.clone();
+    prepare(options)
+        .await?
+        .run_with_extensions(shutdown_rx, extension_installers)
+        .await
+}
+
+/// Load configuration and bind every final API listener without starting the
+/// daemon subsystems or accepting connections.
+///
+/// # Errors
+///
+/// Returns an error when configuration, address resolution, authentication
+/// validation, or any final listener bind fails.
+#[doc(hidden)]
+pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
     // Must land before any registry scan, which resolves the bundled catalog
     // the first time it enumerates effects.
     if options.effects_dir.is_some() {
@@ -170,63 +303,22 @@ pub async fn run_with_extensions(
             config.network.unauthenticated_remote_access_allowed(),
         )?;
     }
-    let listeners = bind_api_listeners(&binds)?;
+    let (listeners, listener_lease) = bind_api_listeners(&binds)?;
     let advertised_bind = listeners
         .first()
         .context("no API listeners were bound")?
         .local_addr()
         .context("failed to read API listener address")?;
 
-    let mut daemon_state = DaemonState::initialize_with_macos_owner(
-        &config,
+    Ok(PreparedDaemon {
+        options,
+        config,
         config_path,
-        options.macos_owner_snapshot,
-    )?;
-    for installer in extension_installers {
-        installer.install(&mut daemon_state)?;
-    }
-    daemon_state.start().await?;
-
-    let ui_dir = resolve_ui_dir(options.ui_dir);
-    let mut app_state = AppState::from_daemon_state(&daemon_state);
-    if let Some(attestation) = macos_daemon_session_attestation.as_ref() {
-        app_state.install_macos_daemon_session(attestation);
-    }
-    let app_state = Arc::new(app_state);
-    api::displays::sync_display_preference_overlays(&app_state).await;
-    if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
-        if let Err(shutdown_error) = daemon_state.shutdown().await {
-            warn!(%shutdown_error, "Failed to roll back daemon after API-ready hook failure");
-        }
-        return Err(error);
-    }
-    let router = api::build_router(app_state, ui_dir.as_deref());
-
-    let mdns_publisher = MdnsPublisher::new(
-        &daemon_state.server_identity,
+        listen_addr,
+        listeners,
+        listener_lease: Some(listener_lease),
         advertised_bind,
-        config.network.mdns_publish,
-        api::security::api_auth_required_from_env(),
-    )?;
-
-    if ui_dir.is_some() {
-        info!(url = %format!("http://{advertised_bind}/"), "Web UI available");
-    }
-    info!(binds = %listen_addr, "API server listening");
-
-    notify_ready();
-    spawn_watchdog();
-
-    serve_api_listeners(listeners, router, shutdown_rx).await?;
-
-    if let Some(publisher) = mdns_publisher {
-        publisher.shutdown().await;
-    }
-
-    daemon_state.shutdown().await?;
-
-    info!("Hypercolor daemon exited cleanly");
-    Ok(())
+    })
 }
 
 async fn notify_api_ready_extensions(daemon: &DaemonState, state: &Arc<AppState>) -> Result<()> {
@@ -379,16 +471,18 @@ async fn resolve_bind_targets(targets: &[String]) -> Result<Vec<SocketAddr>> {
     Ok(resolved)
 }
 
-fn bind_api_listeners(binds: &[SocketAddr]) -> Result<Vec<TcpListener>> {
+fn bind_api_listeners(binds: &[SocketAddr]) -> Result<(Vec<TcpListener>, ApiListenerLease)> {
     let mut listeners = Vec::with_capacity(binds.len());
+    let mut leases = Vec::with_capacity(binds.len());
 
     for bind in binds {
-        let listener = bind_api_listener(*bind)
+        let (listener, lease) = bind_api_listener_with_lease(*bind)
             .with_context(|| format!("failed to bind API server to {bind}"))?;
         listeners.push(listener);
+        leases.push(lease);
     }
 
-    Ok(listeners)
+    Ok((listeners, ApiListenerLease { _listeners: leases }))
 }
 
 /// Construct one API TCP listener with the daemon's socket options.
@@ -399,6 +493,10 @@ fn bind_api_listeners(binds: &[SocketAddr]) -> Result<Vec<TcpListener>> {
 /// listened on, or converted into a Tokio listener.
 #[doc(hidden)]
 pub fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
+    bind_api_listener_with_lease(bind).map(|(listener, _lease)| listener)
+}
+
+fn bind_api_listener_with_lease(bind: SocketAddr) -> Result<(TcpListener, std::net::TcpListener)> {
     let socket = Socket::new(
         if bind.is_ipv4() {
             Domain::IPV4
@@ -423,7 +521,12 @@ pub fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
 
     let listener: std::net::TcpListener = socket.into();
     listener.set_nonblocking(true)?;
-    TcpListener::from_std(listener).context("failed to create async TCP listener")
+    let lease = listener
+        .try_clone()
+        .context("failed to duplicate API listener ownership handle")?;
+    let listener =
+        TcpListener::from_std(listener).context("failed to create async TCP listener")?;
+    Ok((listener, lease))
 }
 
 async fn serve_api_listeners(
@@ -754,7 +857,10 @@ mod tests {
     use hypercolor_core::config::ConfigManager;
     use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
-    use super::{default_env_filter, notify_api_ready_extensions, resolve_log_level};
+    use super::{
+        bind_api_listener, bind_api_listener_with_lease, default_env_filter,
+        notify_api_ready_extensions, resolve_log_level, serve_api_listeners_with_shutdown_timeout,
+    };
     use crate::api::AppState;
     use crate::extensions::DaemonLifecycleExtension;
     use crate::startup::{DaemonState, default_config};
@@ -832,6 +938,51 @@ mod tests {
                 "level {level} should squelch mdns_sd"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn exact_prebound_listener_is_served_and_leased_until_explicit_release() {
+        let (listener, lease) = bind_api_listener_with_lease(
+            "127.0.0.1:0"
+                .parse()
+                .expect("ephemeral loopback address should parse"),
+        )
+        .expect("listener and lease should bind together");
+        let address = listener
+            .local_addr()
+            .expect("prepared listener address should resolve");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let router = axum::Router::new().route(
+            "/listener-identity",
+            axum::routing::get(|| async { "prepared-listener" }),
+        );
+        let server = tokio::spawn(serve_api_listeners_with_shutdown_timeout(
+            vec![listener],
+            router,
+            shutdown_rx,
+            tokio::time::Duration::from_secs(1),
+        ));
+
+        let response = reqwest::get(format!("http://{address}/listener-identity"))
+            .await
+            .expect("request should reach the prepared listener");
+        assert_eq!(
+            response.text().await.expect("response body should read"),
+            "prepared-listener"
+        );
+        shutdown_tx
+            .send(true)
+            .expect("shutdown signal should reach the listener");
+        server
+            .await
+            .expect("listener task should join")
+            .expect("listener shutdown should succeed");
+
+        bind_api_listener(address).expect_err("lease must keep the exact socket unavailable");
+        drop(lease);
+        let rebound =
+            bind_api_listener(address).expect("dropping the lease should release the port");
+        drop(rebound);
     }
 
     #[tokio::test]
