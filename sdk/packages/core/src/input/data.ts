@@ -12,11 +12,11 @@ import {
     KeyboardInputState,
     KeyInputEvent,
     MouseInputEvent,
+    MouseInputState,
+    MouseMode,
     MouseScrollPhase,
     MouseScrollState,
     MouseScrollUnit,
-    MouseInputState,
-    MouseMode,
 } from './types'
 
 /**

@@ -268,6 +268,10 @@ jobs:
           test "$(uname -m)" = "${{ matrix.expected-arch }}"
           test "${sdk_version%%.*}" = "26"
 
+      - name: Install NASM
+        if: matrix.expected-arch == 'x86_64'
+        run: brew install nasm
+
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -342,8 +346,7 @@ jobs:
         run: |
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
-            -p hypercolor-macos-capture --features capture-fixtures \
-            --test capture_contract_tests
+            -p hypercolor-macos-capture --features capture-fixtures
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-core --features macos-capture-fixtures \
@@ -1186,9 +1189,45 @@ jobs:
             /tmp/hypercolor-e2e-*
 
   # ── Docs (Zola → GitHub Pages) ─────────────────────────────────
-  docs:
-    name: Docs
+  docs-build:
+    name: Docs Build
     needs: changes
+    if: >-
+      (github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true') ||
+      (github.ref == 'refs/heads/main' && (
+        (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+      ))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Zola
+        run: |
+          ZOLA_VERSION="0.22.1"
+          curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xz -C /usr/local/bin
+
+      - name: Build site
+        working-directory: docs
+        run: zola build
+
+      - name: Upload Pages artifact
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (
+            (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+            (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+          )
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/public
+
+  docs-deploy:
+    name: Docs Deploy
+    needs: [changes, docs-build]
     if: >-
       github.ref == 'refs/heads/main' &&
       (
@@ -1204,23 +1243,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Zola
-        run: |
-          ZOLA_VERSION="0.22.1"
-          curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar xz -C /usr/local/bin
-
-      - name: Build site
-        working-directory: docs
-        run: zola build
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: docs/public
-
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@v5

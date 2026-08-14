@@ -182,6 +182,128 @@ fn ci_qualifies_both_macos_architectures_with_xcode_26() {
 }
 
 #[test]
+fn ci_installs_nasm_before_intel_macos_compilation() {
+    let (_, macos_job) = CI_WORKFLOW
+        .split_once("\n  rust-check-macos:\n")
+        .expect("CI should define the macOS check job");
+    let (macos_job, _) = macos_job
+        .split_once("\n  generated-effects:\n")
+        .expect("generated effects should follow the macOS check job");
+    let install = macos_job
+        .find("- name: Install NASM")
+        .expect("Intel macOS checks should install NASM");
+    let (_, install_and_after) = macos_job
+        .split_once("- name: Install NASM\n")
+        .expect("Intel macOS checks should install NASM");
+    let (install_step, _) = install_and_after
+        .split_once("\n\n      - ")
+        .expect("another macOS step should follow NASM installation");
+    let qualification = macos_job
+        .find("- name: Qualify Intel Metal fixture")
+        .expect("Intel macOS checks should qualify native Metal import");
+    let workspace = macos_job
+        .find("- name: Check macOS workspace")
+        .expect("macOS checks should compile the workspace");
+
+    assert!(install_step.contains("if: matrix.expected-arch == 'x86_64'"));
+    assert!(install_step.contains("run: brew install nasm"));
+    assert!(install < qualification);
+    assert!(install < workspace);
+}
+
+#[test]
+fn ci_runs_inline_and_integration_macos_capture_fixtures() {
+    let (_, fixture_steps) = CI_WORKFLOW
+        .split_once("- name: Run macOS capture fixtures")
+        .expect("CI should run macOS capture fixtures");
+    let (fixture_steps, _) = fixture_steps
+        .split_once("- name: Run macOS host input and ownership fixtures")
+        .expect("host input fixtures should follow capture fixtures");
+    let (_, first_command_and_after) = fixture_steps
+        .split_once("./scripts/cargo-cache-build.sh")
+        .expect("capture fixtures should invoke the Cargo wrapper");
+    let (capture_command, _) = first_command_and_after
+        .split_once("\n          ./scripts/cargo-cache-build.sh")
+        .expect("core capture fixtures should follow crate capture fixtures");
+
+    assert!(capture_command.contains(
+        "cargo nextest run --locked \\\n            -p hypercolor-macos-capture --features capture-fixtures"
+    ));
+    for selector in ["--lib", "--tests", "--test", "-E"] {
+        assert!(
+            !capture_command.contains(selector),
+            "capture crate command must not select a target with {selector}"
+        );
+    }
+    assert!(fixture_steps.contains("--test macos_screen_capture_tests"));
+}
+
+#[test]
+fn ci_builds_pr_docs_without_widening_deployment_permissions() {
+    let (_, docs_jobs) = CI_WORKFLOW
+        .split_once("\n  docs-build:\n")
+        .expect("CI should define an unprivileged docs build job");
+    let (build_job, deploy_and_after) = docs_jobs
+        .split_once("\n  docs-deploy:\n")
+        .expect("CI should define a separate docs deployment job");
+    let (deploy_job, _) = deploy_and_after
+        .split_once("\n  web-assets:\n")
+        .expect("web assets should follow the docs jobs");
+    let (_, build_condition_and_after) = build_job
+        .split_once("    if: >-\n")
+        .expect("docs build should define a job condition");
+    let (build_condition, _) = build_condition_and_after
+        .split_once("    runs-on:")
+        .expect("docs build condition should precede its runner");
+    let (_, upload_and_after) = build_job
+        .split_once("      - name: Upload Pages artifact\n")
+        .expect("docs build should upload its Pages artifact");
+    let upload_step = upload_and_after;
+    let (_, upload_condition_and_after) = upload_step
+        .split_once("        if: >-\n")
+        .expect("Pages upload should define a condition");
+    let (upload_condition, _) = upload_condition_and_after
+        .split_once("        uses:")
+        .expect("Pages upload condition should precede its action");
+    let (_, deploy_condition_and_after) = deploy_job
+        .split_once("    if: >-\n")
+        .expect("docs deploy should define a job condition");
+    let (deploy_condition, _) = deploy_condition_and_after
+        .split_once("    runs-on:")
+        .expect("docs deploy condition should precede its runner");
+    let normalize = |condition: &str| condition.split_whitespace().collect::<Vec<_>>().join(" ");
+    let expected_build = normalize(
+        "(github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true') ||
+         (github.ref == 'refs/heads/main' && (
+           (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+         ))",
+    );
+    let expected_deploy = normalize(
+        "github.ref == 'refs/heads/main' && (
+           (github.event_name == 'push' && needs.changes.outputs.docs == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.deploy_docs)
+         )",
+    );
+
+    assert_eq!(normalize(build_condition), expected_build);
+    assert!(build_job.contains("permissions:\n      contents: read"));
+    assert!(build_job.contains("working-directory: docs\n        run: zola build"));
+    assert!(!build_job.contains("pages: write"));
+    assert!(!build_job.contains("id-token: write"));
+    assert!(!build_job.contains("actions/deploy-pages"));
+    assert!(upload_step.contains("uses: actions/upload-pages-artifact@v5"));
+    assert!(upload_step.contains("path: docs/public"));
+
+    assert!(deploy_job.contains("needs: [changes, docs-build]"));
+    assert_eq!(normalize(upload_condition), expected_deploy);
+    assert_eq!(normalize(deploy_condition), expected_deploy);
+    assert!(deploy_job.contains("pages: write"));
+    assert!(deploy_job.contains("id-token: write"));
+    assert!(deploy_job.contains("actions/deploy-pages@v5"));
+}
+
+#[test]
 fn ci_audits_pr_and_release_macho_deployment_targets() {
     assert!(CI_WORKFLOW.contains("cargo check --workspace --locked"));
     assert!(CI_WORKFLOW.contains("cargo nextest run --locked -p hypercolor-macos-gpu-interop"));
