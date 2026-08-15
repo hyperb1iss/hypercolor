@@ -196,7 +196,7 @@ impl SecurityState {
     fn is_macos_session_credential(&self, token: &str) -> bool {
         self.macos_session_credential
             .as_ref()
-            .is_some_and(|credential| credential.expose_secret() == token)
+            .is_some_and(|credential| constant_time_str_eq(credential.expose_secret(), token))
     }
 
     fn resolve_loopback_token(&self, token: &str) -> Option<RequestAuthContext> {
@@ -766,17 +766,34 @@ fn has_trusted_tauri_session(state: &SecurityState, request: &Request<Body>) -> 
 }
 
 fn resolve_token_tier(token: &str, auth: &AuthConfig) -> Option<AccessTier> {
-    if auth.control_key.as_deref() == Some(token) {
+    if auth
+        .control_key
+        .as_deref()
+        .is_some_and(|key| constant_time_str_eq(key, token))
+    {
         if token.starts_with("hc_ak_r_") {
             Some(AccessTier::Read)
         } else {
             Some(AccessTier::Control)
         }
-    } else if auth.read_key.as_deref() == Some(token) {
+    } else if auth
+        .read_key
+        .as_deref()
+        .is_some_and(|key| constant_time_str_eq(key, token))
+    {
         Some(AccessTier::Read)
     } else {
         None
     }
+}
+
+/// Compare a presented token against a stored credential without leaking
+/// match position through timing. Length still leaks, which is standard:
+/// credential lengths are fixed and public.
+fn constant_time_str_eq(left: &str, right: &str) -> bool {
+    use subtle::ConstantTimeEq;
+
+    left.as_bytes().ct_eq(right.as_bytes()).into()
 }
 
 fn tier_satisfies(granted: AccessTier, required: AccessTier) -> bool {

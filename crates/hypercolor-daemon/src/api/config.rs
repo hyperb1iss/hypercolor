@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::Response;
+use axum::{Extension, Json};
 use serde::Deserialize;
 use tracing::{info, warn};
 use utoipa::ToSchema;
@@ -20,7 +20,9 @@ use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
 
 use crate::api::AppState;
+use crate::api::capture::protected_control_rejection;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::security::RequestAuthContext;
 use crate::scene_transactions::{
     PreparedLayoutUpdate, SceneTransaction, apply_prepared_layout_update_under_guard,
 };
@@ -41,6 +43,38 @@ pub struct SetConfigRequest {
 pub struct ResetConfigRequest {
     pub key: Option<String>,
     pub live: Option<bool>,
+}
+
+/// Privacy-bearing config keys. Mutating them starts, retargets, or
+/// enables screen, audio, or host-input capture, so they carry the same
+/// control-credential requirement as the dedicated capture endpoints
+/// (`/capture/source/pick` guards the identical `capture.source` mutation).
+///
+/// The whole `capture` domain qualifies (screen content is the most
+/// sensitive plane and every leaf feeds the capture reconfiguration
+/// transaction). For audio and input, only the leaves that enable capture
+/// or retarget a device qualify: DSP tuning (`audio.fft_size`,
+/// `audio.smoothing`, ...) and interaction routing policy shape an
+/// already-consented stream and stay credential-free so a keyless install
+/// keeps its sliders.
+fn key_requires_protected_control(key: &str) -> bool {
+    if key == "capture"
+        || key
+            .strip_prefix("capture")
+            .is_some_and(|rest| rest.starts_with('.'))
+    {
+        return true;
+    }
+    matches!(
+        key,
+        "audio"
+            | "audio.enabled"
+            | "audio.device"
+            | "input"
+            | "input.enabled"
+            | "input.keyboard"
+            | "input.mouse"
+    )
 }
 
 const CAPTURE_CALIBRATION_RESET_KEY: &str = "capture.calibration";
@@ -79,10 +113,16 @@ pub async fn get_config_value(
 }
 
 /// `POST /api/v1/config/set` — Set a dotted config key and persist.
-pub async fn set_config_value(
+pub(crate) async fn set_config_value(
     State(state): State<Arc<AppState>>,
+    Extension(auth_context): Extension<RequestAuthContext>,
     Json(body): Json<SetConfigRequest>,
 ) -> Response {
+    if key_requires_protected_control(&normalize_config_key(&body.key))
+        && let Some(rejection) = protected_control_rejection(auth_context)
+    {
+        return rejection;
+    }
     let Some(manager) = state.config_manager.as_ref() else {
         return ApiError::internal("Config manager unavailable in this runtime");
     };
@@ -299,10 +339,20 @@ fn canonicalize_config_value(key: &str, value: serde_json::Value) -> serde_json:
 }
 
 /// `POST /api/v1/config/reset` — Reset one key or the full config to defaults.
-pub async fn reset_config_value(
+pub(crate) async fn reset_config_value(
     State(state): State<Arc<AppState>>,
+    Extension(auth_context): Extension<RequestAuthContext>,
     Json(body): Json<ResetConfigRequest>,
 ) -> Response {
+    // A full reset (no key) rewrites the capture domains too.
+    if body
+        .key
+        .as_deref()
+        .is_none_or(|key| key_requires_protected_control(&normalize_config_key(key)))
+        && let Some(rejection) = protected_control_rejection(auth_context)
+    {
+        return rejection;
+    }
     let Some(manager) = state.config_manager.as_ref() else {
         return ApiError::internal("Config manager unavailable in this runtime");
     };
@@ -1553,10 +1603,66 @@ mod tests {
         CAPTURE_CALIBRATION_RESET_KEY, CaptureConfigTransactionError, ResetConfigRequest,
         SetConfigRequest, apply_capture_config_transaction,
         apply_host_input_config_transaction_with_builder, canvas_dimensions_differ,
-        capture_statuses_match, maybe_apply_input_config_change, reset_config_value,
-        reset_json_scope, set_config_value, validate_prepared_capture_status,
+        capture_statuses_match, key_requires_protected_control, maybe_apply_input_config_change,
+        reset_config_value, reset_json_scope, set_config_value, validate_prepared_capture_status,
     };
     use crate::api::AppState;
+
+    #[test]
+    fn privacy_bearing_config_domains_require_protected_control() {
+        for key in [
+            "capture",
+            "capture.enabled",
+            "capture.source",
+            "audio.device",
+            "input.keyboard",
+        ] {
+            assert!(key_requires_protected_control(key), "{key}");
+        }
+        for key in [
+            "daemon.canvas_width",
+            "render.fps",
+            "captured",
+            "inputs.something",
+            "audiophile",
+            "audio.fft_size",
+            "audio.smoothing",
+            "audio.noise_gate",
+            "audio.beat_sensitivity",
+            "input.daemon_route",
+            "input.preview_route",
+        ] {
+            assert!(!key_requires_protected_control(key), "{key}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn uncredentialed_capture_config_writes_are_rejected() {
+        let state = Arc::new(AppState::new());
+
+        let response = set_config_value(
+            axum::extract::State(Arc::clone(&state)),
+            axum::Extension(crate::api::security::RequestAuthContext::unsecured()),
+            axum::Json(SetConfigRequest {
+                key: "capture.enabled".to_owned(),
+                value: "true".to_owned(),
+                live: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+
+        let response = reset_config_value(
+            axum::extract::State(state),
+            axum::Extension(crate::api::security::RequestAuthContext::unsecured()),
+            axum::Json(ResetConfigRequest {
+                key: None,
+                live: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
 
     struct TestScreenSource {
         running: bool,
@@ -2261,6 +2367,7 @@ mod tests {
 
         let response = reset_config_value(
             axum::extract::State(Arc::clone(&state)),
+            axum::Extension(crate::api::security::trusted_local_control_context()),
             axum::Json(ResetConfigRequest {
                 key: Some(CAPTURE_CALIBRATION_RESET_KEY.to_owned()),
                 live: Some(true),
@@ -2520,6 +2627,7 @@ mod tests {
 
         let response = set_config_value(
             axum::extract::State(Arc::clone(&state)),
+            axum::Extension(crate::api::security::trusted_local_control_context()),
             axum::Json(SetConfigRequest {
                 key: "capture.enabled".to_owned(),
                 value: "false".to_owned(),
@@ -2561,6 +2669,7 @@ mod tests {
         let request = tokio::spawn(async move {
             set_config_value(
                 axum::extract::State(request_state),
+                axum::Extension(crate::api::security::trusted_local_control_context()),
                 axum::Json(SetConfigRequest {
                     key: "capture.capture_fps".to_owned(),
                     value: unchanged_fps.to_string(),

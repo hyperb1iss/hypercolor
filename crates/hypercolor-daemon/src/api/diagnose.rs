@@ -2,15 +2,17 @@
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
 use axum::response::Response;
+use axum::{Extension, Json};
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
+use crate::api::capture::protected_control_rejection;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::security::RequestAuthContext;
 use crate::api::system::{InputStatus, actionable_input_diagnostics, input_status_snapshot};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
@@ -211,8 +213,9 @@ struct DiagnoseDeviceOutputItem {
     clippy::too_many_lines,
     reason = "diagnostics response assembly keeps checks and snapshot state in one handler"
 )]
-pub async fn run_diagnostics(
+pub(crate) async fn run_diagnostics(
     State(state): State<Arc<AppState>>,
+    Extension(auth_context): Extension<RequestAuthContext>,
     body: Option<Json<DiagnoseRequest>>,
 ) -> Response {
     let requested = body
@@ -228,6 +231,15 @@ pub async fn run_diagnostics(
                 "input".to_owned(),
             ]
         });
+
+    // The parity check actuates a real screenshot-reference capture, so
+    // it rides the protected-capture credential like every other capture
+    // actuation. The default check set stays credential-free.
+    if requested.iter().any(|check| check == "macos_screen_parity")
+        && let Some(rejection) = protected_control_rejection(auth_context)
+    {
+        return rejection;
+    }
 
     let include_system = body.as_ref().and_then(|b| b.system).unwrap_or(false);
 

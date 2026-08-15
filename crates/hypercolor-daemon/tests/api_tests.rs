@@ -301,6 +301,12 @@ fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
 }
 
+/// Build a trusted in-process API for tests exercising privacy-bearing
+/// config keys, which require the protected-control credential.
+fn trusted_api(state: Arc<AppState>) -> api::local::TrustedLocalApi {
+    api::local::TrustedLocalApi::new(state)
+}
+
 fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, tempfile::TempDir) {
     let (mut state, dir) = isolated_state_with_tempdir();
     let manager = Arc::new(
@@ -1475,10 +1481,7 @@ async fn status_returns_200_with_envelope() {
             .is_some_and(|s| !s.is_empty()),
         "cache_dir should be a non-empty string"
     );
-    assert!(
-        json["data"]["audio_available"].is_boolean(),
-        "audio_available should be a bool"
-    );
+    assert_eq!(json["data"]["audio_available"], false);
     assert_eq!(
         json["data"]["capture_available"],
         serde_json::json!(
@@ -1486,6 +1489,32 @@ async fn status_returns_200_with_envelope() {
                 || (cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some())
         )
     );
+}
+
+#[tokio::test]
+async fn status_derives_audio_availability_from_registered_sources() {
+    let state = Arc::new(isolated_state());
+    let (source, _) = ObservableInputSource::new("available_audio", false, Duration::from_secs(1));
+    state
+        .input_manager
+        .lock()
+        .await
+        .add_source(Box::new(source));
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["audio_available"], true);
 }
 
 #[tokio::test]
@@ -1917,10 +1946,10 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(
+        .execute(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/config/set")
@@ -2081,7 +2110,7 @@ async fn config_set_driver_registry_key_rejects_non_routable_ip() {
 #[tokio::test]
 async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     for (key, value) in [
         ("capture.capture_fps", "0"),
@@ -2090,8 +2119,7 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         ("capture.gamma", "nan"),
     ] {
         let response = app
-            .clone()
-            .oneshot(
+            .execute(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/config/set")
@@ -2120,10 +2148,10 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
 #[tokio::test]
 async fn config_set_rejects_capture_resource_plan_before_persistence() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(
+        .execute(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/config/set")
@@ -2147,7 +2175,7 @@ async fn config_set_rejects_capture_resource_plan_before_persistence() {
 #[tokio::test]
 async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let source = r"monitor:\\?\DISPLAY#TEST#stable";
     for (key, value) in [
@@ -2158,8 +2186,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
         ),
     ] {
         let response = app
-            .clone()
-            .oneshot(
+            .execute(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/config/set")
@@ -2179,7 +2206,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     }
 
     let response = app
-        .oneshot(
+        .execute(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/config/set")
@@ -2213,10 +2240,10 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(
+        .execute(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/config/set")
@@ -2268,10 +2295,10 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(
+        .execute(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/config/set")
@@ -2318,10 +2345,10 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(
+        .execute(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/config/set")
@@ -2366,10 +2393,10 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
+    let app = trusted_api(Arc::clone(&state));
 
     let response = app
-        .oneshot(
+        .execute(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/config/set")

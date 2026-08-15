@@ -21,7 +21,7 @@ use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::security::RequestAuthContext;
 
-fn protected_control_rejection(auth_context: RequestAuthContext) -> Option<Response> {
+pub(crate) fn protected_control_rejection(auth_context: RequestAuthContext) -> Option<Response> {
     (!auth_context.can_protected_control())
         .then(|| ApiError::forbidden("Protected capture access requires a control credential"))
 }

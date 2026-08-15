@@ -248,6 +248,37 @@ async fn protected_capture_routes_reject_unauthenticated_loopback_clients() {
 }
 
 #[tokio::test]
+async fn privacy_bearing_config_and_diagnose_reject_unauthenticated_loopback_clients() {
+    let app = test_app();
+    for (path, body) in [
+        (
+            "/api/v1/config/set",
+            r#"{"key":"capture.enabled","value":"true"}"#,
+        ),
+        ("/api/v1/config/reset", "{}"),
+        ("/api/v1/diagnose", r#"{"checks":["macos_screen_parity"]}"#),
+    ] {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .expect("request should build");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 9420))));
+
+        let response = app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("local privacy-bearing request should complete");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+}
+
+#[tokio::test]
 async fn protected_capture_routes_accept_trusted_in_process_control() {
     let api = api::local::TrustedLocalApi::new(Arc::new(isolated_state()));
     for (method, path) in [

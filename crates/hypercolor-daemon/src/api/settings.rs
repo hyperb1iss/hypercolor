@@ -50,7 +50,18 @@ pub struct SetBrightnessRequest {
 /// `GET /api/v1/audio/devices` — Enumerate audio input devices for the Settings UI.
 pub async fn list_audio_devices(State(state): State<Arc<AppState>>) -> Response {
     let current = current_audio_device_id(&state);
-    let devices = audio_device_options(&current);
+    let current_for_enumeration = current.clone();
+    let devices =
+        match tokio::task::spawn_blocking(move || audio_device_options(&current_for_enumeration))
+            .await
+        {
+            Ok(devices) => devices,
+            Err(error) => {
+                return ApiError::internal(format!(
+                    "Audio device enumeration task failed: {error}"
+                ));
+            }
+        };
 
     ApiResponse::ok(AudioDevicesResponse { devices, current })
 }
@@ -89,10 +100,6 @@ pub async fn set_brightness(
     ApiResponse::ok(BrightnessSettingsResponse {
         brightness: body.brightness,
     })
-}
-
-pub(crate) fn audio_input_available() -> bool {
-    enumerate_audio_input_devices().is_ok()
 }
 
 pub(crate) fn capture_input_available() -> bool {

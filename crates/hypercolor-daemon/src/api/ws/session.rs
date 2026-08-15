@@ -1367,7 +1367,12 @@ async fn handle_client_message(
                 height,
                 format,
             };
-            let result = match ensure_control_tier(auth_context) {
+            // Opening a preview raises real screen, audio, and interaction
+            // capture demand, so it rides the protected-capture credential
+            // like every other capture actuation; the remaining preview
+            // verbs manage an already-authorized session and stay at the
+            // control tier.
+            let result = match ensure_protected_control(auth_context) {
                 Ok(()) => browser_previews.open(preview_id, config).await,
                 Err(error) => Err(error),
             }
@@ -1416,6 +1421,17 @@ fn ensure_control_tier(auth_context: RequestAuthContext) -> Result<(), WsProtoco
         Err(WsProtocolError::forbidden(
             "Read-only API key cannot perform write operations",
             serde_json::json!({"required_tier": "control"}),
+        ))
+    }
+}
+
+fn ensure_protected_control(auth_context: RequestAuthContext) -> Result<(), WsProtocolError> {
+    if auth_context.can_protected_control() {
+        Ok(())
+    } else {
+        Err(WsProtocolError::forbidden(
+            "Protected capture access requires a control credential",
+            serde_json::json!({"required_tier": "protected_control"}),
         ))
     }
 }
