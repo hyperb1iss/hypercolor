@@ -358,9 +358,68 @@ fn macos_packaging_and_installers_cover_both_architectures() {
 
 #[test]
 fn macos_launchers_identify_their_daemon_topology() {
-    assert!(MACOS_LAUNCHD_PLIST.contains("<string>--macos-owner</string>"));
-    assert!(MACOS_LAUNCHD_PLIST.contains("<string>direct-launchd</string>"));
-    assert!(HOMEBREW_FORMULA.contains(r#""--macos-owner", "homebrew""#));
+    let (_, launchd_arguments) = MACOS_LAUNCHD_PLIST
+        .split_once("<key>ProgramArguments</key>")
+        .expect("launchd plist should declare program arguments");
+    let (launchd_arguments, _) = launchd_arguments
+        .split_once("</array>")
+        .expect("launchd argument array should close");
+    assert_eq!(
+        launchd_arguments
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("<string>"))
+            .filter_map(|line| line.strip_suffix("</string>"))
+            .collect::<Vec<_>>(),
+        [
+            "@BIN_DIR@/hypercolor-daemon",
+            "--macos-owner",
+            "direct-launchd",
+            "--ui-dir",
+            "@UI_DIR@",
+        ]
+    );
+
+    let (_, launchd_environment) = MACOS_LAUNCHD_PLIST
+        .split_once("<key>EnvironmentVariables</key>")
+        .expect("launchd plist should declare environment variables");
+    let (launchd_environment, _) = launchd_environment
+        .split_once("</dict>")
+        .expect("launchd environment dictionary should close");
+    let launchd_environment = launchd_environment
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != "<dict>")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        launchd_environment,
+        [
+            "<key>HYPERCOLOR_MACOS_OWNER</key>",
+            "<string>direct-launchd</string>",
+            "<key>HYPERCOLOR_LOG</key>",
+            "<string>info</string>",
+            "<key>PATH</key>",
+            "<string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:@BIN_DIR@</string>",
+        ]
+    );
+
+    let (_, homebrew_service) = HOMEBREW_FORMULA
+        .split_once("  service do\n")
+        .expect("Homebrew formula should declare a service");
+    let (homebrew_service, _) = homebrew_service
+        .split_once("\n  end")
+        .expect("Homebrew service block should close");
+    assert_eq!(
+        homebrew_service,
+        concat!(
+            "    run [opt_bin/\"hypercolor-daemon\", \"--macos-owner\", \"homebrew\", ",
+            "\"--ui-dir\", share/\"hypercolor/ui\"]\n",
+            "    keep_alive successful_exit: false\n",
+            "    log_path var/\"log/hypercolor/hypercolor.log\"\n",
+            "    error_log_path var/\"log/hypercolor/hypercolor.log\"\n",
+            "    environment_variables HYPERCOLOR_LOG: \"info\", ",
+            "HYPERCOLOR_MACOS_OWNER: \"homebrew\"",
+        )
+    );
 }
 
 #[test]
