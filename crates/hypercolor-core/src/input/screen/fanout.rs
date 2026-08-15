@@ -598,7 +598,7 @@ impl PreparedCpuPublicationFanout {
         self.tone_map_epoch = captured_at;
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "macos-capture-fixtures"))]
     pub(crate) fn active_tone_map_transition_count(&self) -> usize {
         self.physical
             .iter()

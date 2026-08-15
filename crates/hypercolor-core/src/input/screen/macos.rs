@@ -415,15 +415,11 @@ impl MacosCaptureControl for NativeCaptureControl {
     }
 
     fn begin_stream_request(&self, request: MacosStreamRequest) -> anyhow::Result<StreamRequest> {
-        let (generation, completion) = self.session.begin_stream_request(request)?;
+        let transaction = self.session.begin_stream_request(request)?;
+        let generation = transaction.generation();
         Ok(StreamRequest {
             generation,
-            completion: Box::new(move || {
-                completion
-                    .recv()
-                    .map_err(|_| anyhow!("native stream request generation was lost"))?
-                    .map_err(anyhow::Error::from)
-            }),
+            completion: Box::new(move || transaction.wait().map_err(anyhow::Error::from)),
         })
     }
 

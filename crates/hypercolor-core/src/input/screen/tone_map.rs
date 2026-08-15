@@ -503,7 +503,7 @@ impl LedToneMapCurveTransition {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "macos-capture-fixtures"))]
     pub(super) const fn is_active(&self) -> bool {
         self.active
     }

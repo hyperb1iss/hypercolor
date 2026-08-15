@@ -1211,8 +1211,17 @@ fn execute_screen_capabilities(
         let diagnostic = authorization_session.begin_post_authorization_stream_diagnostic();
         let outcome = diagnostic
             .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-            .and_then(|receiver| {
-                receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .and_then(|transaction| {
+                transaction.wait_until(deadline).map_err(|error| {
+                    if matches!(
+                        error,
+                        hypercolor_macos_capture::MacosNativeTransactionError::TimedOut { .. }
+                    ) {
+                        mpsc::RecvTimeoutError::Timeout
+                    } else {
+                        mpsc::RecvTimeoutError::Disconnected
+                    }
+                })
             });
         match outcome {
             Ok(MacosProtectedSourceState::ReadyIdle) => {}

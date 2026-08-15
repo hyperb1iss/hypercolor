@@ -19,7 +19,10 @@ mod stream_contract;
 mod worker;
 
 #[cfg(target_os = "macos")]
-pub use native::MacosScreenCaptureSession;
+pub use native::{
+    MacosNativeTransactionError, MacosNativeTransactionPhase, MacosScreenCaptureSession,
+    MacosStreamDiagnosticTransaction, MacosStreamRequestTransaction,
+};
 #[cfg(target_os = "macos")]
 pub use screenshot::{
     MAX_MACOS_SCREENSHOT_REFERENCE_BYTES, MacosScreenshotPixelCopy,

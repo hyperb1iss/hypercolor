@@ -2,7 +2,8 @@ use std::ffi::{CStr, c_char, c_void};
 use std::fmt;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained, MainThreadBound};
@@ -70,6 +71,19 @@ use crate::{
     MacosTransferFunction, MacosValidatedStreamDelivery, MacosYuvMatrix,
 };
 
+mod lifecycle;
+mod transactions;
+
+use lifecycle::{CompletionFence, CompletionWitness, NativeLifecycle};
+pub use transactions::{
+    MacosNativeTransactionError, MacosNativeTransactionPhase, MacosStreamDiagnosticTransaction,
+    MacosStreamRequestTransaction,
+};
+use transactions::{
+    TransactionCompleter, TransactionIdentity, TransactionSettlement,
+    stream_diagnostic_transaction, stream_request_transaction,
+};
+
 type PoolBackingLifetime = Arc<dyn Send + Sync>;
 type PoolObservation =
     Arc<dyn Fn(u32, u64) -> Result<PoolBackingLifetime, MacosCaptureError> + Send + Sync>;
@@ -79,6 +93,10 @@ type PoolReservationFactory =
 const MACOS_IOSURFACE_ROW_ALIGNMENT: u64 = 256;
 const MACOS_IOSURFACE_ALLOCATION_ALIGNMENT: u64 = 16 * 1024;
 const HYPERCOLOR_UI_BUNDLE_IDENTIFIER: &str = "tech.hyperbliss.hypercolor";
+const MACOS_NATIVE_SOURCE_TIMEOUT: Duration = Duration::from_secs(5);
+const MACOS_NATIVE_START_TIMEOUT: Duration = Duration::from_secs(5);
+const MACOS_NATIVE_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+const MACOS_NATIVE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn is_hypercolor_ui_bundle_identifier(bundle_identifier: &str) -> bool {
     bundle_identifier == HYPERCOLOR_UI_BUNDLE_IDENTIFIER
@@ -124,6 +142,11 @@ enum SourceResolution {
     Diagnostic(PostAuthorizationStreamDiagnosticResolution),
 }
 
+struct SourceTransaction {
+    resolution: SourceResolution,
+    completion: TransactionCompleter<()>,
+}
+
 impl SourceResolution {
     fn selector(&self) -> &MacosCaptureSelector {
         match self {
@@ -139,7 +162,7 @@ struct PostAuthorizationStreamDiagnostic {
     authorization_granted: bool,
     resolution_epoch: Option<u64>,
     stream_epoch: Option<u64>,
-    completion: mpsc::SyncSender<MacosProtectedSourceState>,
+    completion: TransactionCompleter<MacosProtectedSourceState>,
 }
 
 #[derive(Debug, Default)]
@@ -190,12 +213,11 @@ impl SessionShared {
     ) -> Result<
         (
             PostAuthorizationStreamDiagnosticResolution,
-            mpsc::Receiver<MacosProtectedSourceState>,
+            MacosStreamDiagnosticTransaction,
         ),
         MacosCaptureError,
     > {
-        let (completion, receiver) = mpsc::sync_channel(1);
-        let (attempt, superseded) = {
+        let (attempt, superseded, transaction) = {
             let mut state = lock(&self.restart_diagnostic);
             let attempt_id = state
                 .next_attempt_id
@@ -207,7 +229,13 @@ impl SessionShared {
                 selection_revision,
             };
             let resolution_epoch = self.allocate_resolution_epoch()?;
-            let superseded = state.active.replace(PostAuthorizationStreamDiagnostic {
+            let (transaction, completion) = stream_diagnostic_transaction(attempt_id);
+            let superseded = state.active.as_ref().and_then(|active| {
+                active
+                    .completion
+                    .claim(Ok(MacosProtectedSourceState::Failed))
+            });
+            state.active = Some(PostAuthorizationStreamDiagnostic {
                 attempt,
                 authorization_granted,
                 resolution_epoch: Some(resolution_epoch),
@@ -221,12 +249,11 @@ impl SessionShared {
                     selector: MacosCaptureSelector::PrimaryDisplay,
                 },
                 superseded,
+                transaction,
             )
         };
         if let Some(superseded) = superseded {
-            let _ = superseded
-                .completion
-                .send(MacosProtectedSourceState::Failed);
+            superseded.publish();
         }
         if !authorization_granted {
             self.complete_restart_diagnostic_attempt(
@@ -234,7 +261,7 @@ impl SessionShared {
                 MacosProtectedSourceState::PermissionDenied,
             );
         }
-        Ok((attempt, receiver))
+        Ok((attempt, transaction))
     }
 
     fn diagnostic_resolution_is_current(
@@ -287,13 +314,41 @@ impl SessionShared {
         self.complete_restart_diagnostic_attempt(attempt, MacosProtectedSourceState::Failed);
     }
 
-    fn take_restart_diagnostic_completion(
+    fn claim_restart_diagnostic_completion(
         &self,
-    ) -> Option<mpsc::SyncSender<MacosProtectedSourceState>> {
+        outcome: MacosProtectedSourceState,
+    ) -> Option<TransactionSettlement<MacosProtectedSourceState>> {
+        let mut state = lock(&self.restart_diagnostic);
+        let settlement = state.active.as_ref()?.completion.claim(Ok(outcome))?;
+        state.active = None;
+        Some(settlement)
+    }
+
+    fn restart_diagnostic_completion(
+        &self,
+        attempt: PostAuthorizationStreamDiagnosticAttempt,
+    ) -> Option<TransactionCompleter<MacosProtectedSourceState>> {
         lock(&self.restart_diagnostic)
             .active
-            .take()
-            .map(|active| active.completion)
+            .as_ref()
+            .filter(|active| active.attempt == attempt)
+            .map(|active| active.completion.clone())
+    }
+
+    fn take_restart_diagnostic_attempt(
+        &self,
+        attempt: PostAuthorizationStreamDiagnosticAttempt,
+    ) -> Option<TransactionCompleter<MacosProtectedSourceState>> {
+        let mut state = lock(&self.restart_diagnostic);
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|active| active.attempt == attempt)
+        {
+            state.active.take().map(|active| active.completion)
+        } else {
+            None
+        }
     }
 
     fn record_stream_diagnostic_result(
@@ -301,7 +356,7 @@ impl SessionShared {
         stream_epoch: u64,
         state: MacosProtectedSourceState,
     ) -> MacosProtectedSourceState {
-        let completion = {
+        let settlement = {
             let mut diagnostic = lock(&self.restart_diagnostic);
             let Some(active) = diagnostic
                 .active
@@ -317,11 +372,14 @@ impl SessionShared {
             } else {
                 state
             };
-            let completion = diagnostic.active.take().map(|active| active.completion);
-            completion.map(|completion| (completion, state))
+            let settlement = active.completion.claim(Ok(state));
+            if settlement.is_some() {
+                diagnostic.active = None;
+            }
+            settlement.map(|settlement| (settlement, state))
         };
-        if let Some((completion, state)) = completion {
-            let _ = completion.send(state);
+        if let Some((settlement, state)) = settlement {
+            settlement.publish();
             state
         } else {
             state
@@ -333,20 +391,27 @@ impl SessionShared {
         attempt: PostAuthorizationStreamDiagnosticAttempt,
         outcome: MacosProtectedSourceState,
     ) {
-        let completion = {
+        let settlement = {
             let mut diagnostic = lock(&self.restart_diagnostic);
             if diagnostic
                 .active
                 .as_ref()
                 .is_some_and(|active| active.attempt == attempt)
             {
-                diagnostic.active.take().map(|active| active.completion)
+                let settlement = diagnostic
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.completion.claim(Ok(outcome)));
+                if settlement.is_some() {
+                    diagnostic.active = None;
+                }
+                settlement
             } else {
                 None
             }
         };
-        if let Some(completion) = completion {
-            let _ = completion.send(outcome);
+        if let Some(settlement) = settlement {
+            settlement.publish();
         }
     }
 
@@ -423,11 +488,18 @@ impl SessionShared {
     }
 
     fn begin_resolution(&self) -> Result<u64, MacosCaptureError> {
-        let superseded = lock(&self.restart_diagnostic).active.take();
+        let superseded = {
+            let mut state = lock(&self.restart_diagnostic);
+            let settlement = state.active.as_ref().and_then(|active| {
+                active
+                    .completion
+                    .claim(Ok(MacosProtectedSourceState::Failed))
+            });
+            state.active = None;
+            settlement
+        };
         if let Some(superseded) = superseded {
-            let _ = superseded
-                .completion
-                .send(MacosProtectedSourceState::Failed);
+            superseded.publish();
         }
         self.allocate_resolution_epoch()
     }
@@ -500,6 +572,10 @@ impl SessionShared {
     fn publish_recoverable_error(&self, error: MacosCaptureError) {
         self.mailbox
             .publish(Ok(MacosFrameEvent::RecoverableError(Box::new(error))));
+    }
+
+    fn record_retirement_error(&self, error: &MacosCaptureError) {
+        self.counters.record_drop(error);
     }
 }
 
@@ -1176,6 +1252,7 @@ struct NativeStream {
     request: MacosStreamRequest,
     reserve_pool: PoolReservationFactory,
     worker: LatestSampleWorker<RetainedNativeSample>,
+    start_completion: CompletionFence,
     _output: Retained<CaptureOutput>,
     _queue: DispatchRetained<DispatchQueue>,
 }
@@ -1193,6 +1270,7 @@ impl NativeStream {
         shared: Arc<SessionShared>,
         streams: Weak<StreamSlot>,
         reserve_pool: &PoolReservationFactory,
+        native_lifecycle: &NativeLifecycle,
     ) -> Result<Self, MacosCaptureError> {
         let filter = selection_filter.filter.system();
         let (configuration, display_filter, extent, configured_stream) =
@@ -1245,18 +1323,28 @@ impl NativeStream {
         let protocol: &ProtocolObject<dyn SCStreamOutput> = ProtocolObject::from_ref(&*output);
         // SAFETY: The protocol object and serial queue outlive their stream
         // registration through the NativeStream owner.
-        unsafe {
-            stream
-                .addStreamOutput_type_sampleHandlerQueue_error(
-                    protocol,
-                    SCStreamOutputType::Screen,
-                    Some(&queue),
-                )
-                .map_err(|error| {
-                    setup_shared
-                        .record_stream_diagnostic_result(epoch, classify_stream_error(&error));
-                    native_error("add ScreenCaptureKit output", &error)
-                })?;
+        let output_result = unsafe {
+            stream.addStreamOutput_type_sampleHandlerQueue_error(
+                protocol,
+                SCStreamOutputType::Screen,
+                Some(&queue),
+            )
+        };
+        if let Err(error) = output_result {
+            setup_shared.record_stream_diagnostic_result(epoch, classify_stream_error(&error));
+            let error = native_error("add ScreenCaptureKit output", &error);
+            let completion = CompletionFence::new();
+            drop(completion.witness());
+            let retirement_shared = Arc::clone(&setup_shared);
+            native_lifecycle.retire_without_native_stop(worker, completion, move |worker| {
+                worker.close();
+                if worker.join().is_err() {
+                    retirement_shared
+                        .counters
+                        .record_drop(&MacosCaptureError::CaptureWorkerPanicked);
+                }
+            });
+            return Err(error);
         }
         Ok(Self {
             stream,
@@ -1266,6 +1354,7 @@ impl NativeStream {
             request,
             reserve_pool: Arc::clone(reserve_pool),
             worker,
+            start_completion: CompletionFence::new(),
             _output: output,
             _queue: queue,
         })
@@ -1275,43 +1364,11 @@ impl NativeStream {
         self._output.ivars().epoch
     }
 
-    fn stop(mut self) -> Result<(), MacosCaptureError> {
-        self.worker.close();
-        let worker_result = self
-            .worker
-            .join()
-            .map_err(|_| MacosCaptureError::CaptureWorkerPanicked);
-        let (completion_tx, completion_rx) = std::sync::mpsc::sync_channel(1);
-        let completion = RcBlock::new(move |error: *mut NSError| {
-            // SAFETY: ScreenCaptureKit supplies either null or a live NSError
-            // for the duration of this completion invocation.
-            let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| {
-                Err(native_error("stop ScreenCaptureKit stream", error))
-            });
-            let _ = completion_tx.send(result);
-        });
-        // SAFETY: ScreenCaptureKit copies the completion block and the stream
-        // remains retained until the completion result is received.
-        unsafe {
-            self.stream
-                .stopCaptureWithCompletionHandler(Some(&completion));
-        }
-        let stop_result = completion_rx
-            .recv()
-            .map_err(|_| MacosCaptureError::StreamStopCompletionLost)
-            .and_then(std::convert::identity);
-        stop_result.and(worker_result)
-    }
-
-    fn retire_after_native_stop(mut self) -> Result<(), MacosCaptureError> {
+    fn finish_worker_retirement(&mut self) -> Result<(), MacosCaptureError> {
         self.worker.close();
         self.worker
             .join()
             .map_err(|_| MacosCaptureError::CaptureWorkerPanicked)
-    }
-
-    fn discard_unstarted(self) -> Result<(), MacosCaptureError> {
-        self.retire_after_native_stop()
     }
 
     fn interruption_restage(&self, selection_revision: u64) -> InterruptedRestagePlan {
@@ -1490,11 +1547,20 @@ struct CandidateStageIdentity {
 struct CandidatePreparationFailure {
     stage: CandidateStageIdentity,
     error: MacosCaptureError,
+    settlement: Option<Box<TransactionSettlement<()>>>,
 }
 
 impl CandidatePreparationFailure {
-    fn new(stage: CandidateStageIdentity, error: MacosCaptureError) -> Self {
-        Self { stage, error }
+    fn new(
+        stage: CandidateStageIdentity,
+        error: MacosCaptureError,
+        settlement: Option<TransactionSettlement<()>>,
+    ) -> Self {
+        Self {
+            stage,
+            error,
+            settlement: settlement.map(Box::new),
+        }
     }
 }
 
@@ -1508,36 +1574,7 @@ struct PendingStreamRequestIdentity {
 struct PendingStreamRequest {
     epoch: u64,
     request: MacosStreamRequest,
-    completion: mpsc::SyncSender<Result<(), MacosCaptureError>>,
-}
-
-struct StreamRequestTransaction {
-    generation: u64,
-    completion: mpsc::Receiver<Result<(), MacosCaptureError>>,
-}
-
-impl StreamRequestTransaction {
-    fn completed(generation: u64, result: Result<(), MacosCaptureError>) -> Self {
-        let (completion, receiver) = mpsc::sync_channel(1);
-        let _ = completion.send(result);
-        Self {
-            generation,
-            completion: receiver,
-        }
-    }
-
-    fn wait(self) -> Result<(), MacosCaptureError> {
-        self.completion.recv().unwrap_or_else(|_| {
-            Err(MacosCaptureError::CaptureWorkerStartFailed(format!(
-                "stream request transaction {} lost its completion",
-                self.generation
-            )))
-        })
-    }
-
-    fn into_parts(self) -> (u64, mpsc::Receiver<Result<(), MacosCaptureError>>) {
-        (self.generation, self.completion)
-    }
+    completion: TransactionCompleter<()>,
 }
 
 impl PendingStreamRequest {
@@ -1553,22 +1590,55 @@ struct StreamRemoval {
     role: StreamRole,
     stream: Option<NativeStream>,
     selection_revision: u64,
-    request_completion: Option<mpsc::SyncSender<Result<(), MacosCaptureError>>>,
+    request_settlement: Option<TransactionSettlement<()>>,
+}
+
+struct CandidatePublication {
+    previous: Option<NativeStream>,
+    previous_epoch: Option<u64>,
+    previous_status: MacosProtectedSourceState,
+    previous_selection: MacosCaptureSelection,
+    previous_request: MacosStreamRequest,
+    previous_selected_filter: Option<NativeSelectionFilter>,
+    previous_inactive_epochs: Vec<u64>,
+    previous_terminal_epochs: Vec<u64>,
+    request_settlement: TransactionSettlement<()>,
 }
 
 #[derive(Default)]
 struct PublicationSideEffects {
-    previous: Option<NativeStream>,
-    request_completion: Option<mpsc::SyncSender<Result<(), MacosCaptureError>>>,
+    candidate: Option<CandidatePublication>,
 }
 
-type CandidateReservation = (CandidateStage, NativeSelectionFilter, Option<NativeStream>);
+struct CandidateActivationAbort {
+    payload: Box<dyn std::any::Any + Send>,
+    stream: Option<NativeStream>,
+    request_settlement: TransactionSettlement<()>,
+}
+
+struct RestartDiagnosticReset {
+    current: Option<NativeStream>,
+    candidate: Option<NativeStream>,
+    candidate_settlement: Option<TransactionSettlement<()>>,
+}
+
+struct ClaimedSourceResolution {
+    resolution: SourceResolution,
+    settlement: Option<TransactionSettlement<()>>,
+}
+
+struct CandidateReservation {
+    stage: CandidateStage,
+    selection_filter: NativeSelectionFilter,
+    replaced: Option<NativeStream>,
+    replaced_settlement: Option<TransactionSettlement<()>>,
+}
 
 enum FilterAcceptance {
     Stale,
     Stored(Option<NativeStream>),
     Candidate {
-        reservation: CandidateReservation,
+        reservation: Box<CandidateReservation>,
         request: MacosStreamRequest,
     },
 }
@@ -1595,6 +1665,7 @@ struct StreamState {
     staging_epoch: Option<u64>,
     request: MacosStreamRequest,
     pending_request: Option<PendingStreamRequest>,
+    candidate_completion: Option<TransactionCompleter<()>>,
     inactive_epochs: Vec<u64>,
     terminal_epochs: Vec<u64>,
     #[cfg(test)]
@@ -1609,27 +1680,39 @@ struct StreamSlot {
     lifecycle_start: Mutex<()>,
     rejected_epochs: Mutex<Vec<u64>>,
     state: Mutex<StreamState>,
+    source_transaction: Mutex<Option<SourceTransaction>>,
     lifecycle_callbacks: DispatchRetained<DispatchQueue>,
+    native_lifecycle: NativeLifecycle,
     shared: Arc<SessionShared>,
     next_epoch: AtomicU64,
 }
 
 impl StreamSlot {
-    fn new(shared: Arc<SessionShared>, request: MacosStreamRequest) -> Arc<Self> {
-        Arc::new(Self {
+    fn new(
+        shared: Arc<SessionShared>,
+        request: MacosStreamRequest,
+    ) -> Result<Arc<Self>, MacosCaptureError> {
+        let native_lifecycle = NativeLifecycle::start().map_err(|error| {
+            MacosCaptureError::CaptureWorkerStartFailed(format!(
+                "start macOS native transaction scheduler: {error}"
+            ))
+        })?;
+        Ok(Arc::new(Self {
             lifecycle_start: Mutex::new(()),
             rejected_epochs: Mutex::new(Vec::new()),
             state: Mutex::new(StreamState {
                 request,
                 ..StreamState::default()
             }),
+            source_transaction: Mutex::new(None),
             lifecycle_callbacks: DispatchQueue::new(
                 "tech.hyperbliss.hypercolor.screen-capture-lifecycle",
                 DispatchQueueAttr::SERIAL,
             ),
+            native_lifecycle,
             shared,
             next_epoch: AtomicU64::new(1),
-        })
+        }))
     }
 
     fn allocate_epoch(&self) -> Result<u64, MacosCaptureError> {
@@ -1640,67 +1723,229 @@ impl StreamSlot {
             .map_err(|_| MacosCaptureError::SequenceExhausted)
     }
 
-    fn begin_resolution(&self) -> Result<SourceResolution, MacosCaptureError> {
-        let _lifecycle = lock(&self.lifecycle_start);
-        let resolution_epoch = self.shared.begin_resolution()?;
-        Ok(SourceResolution::General(GeneralSourceResolution {
-            resolution_epoch,
-            selector: self.shared.selector(),
-        }))
+    fn install_candidate_completion(
+        state: &mut StreamState,
+        epoch: u64,
+        request: Option<&PendingStreamRequest>,
+    ) -> Option<TransactionSettlement<()>> {
+        let completion = request.map_or_else(
+            || {
+                TransactionCompleter::new(TransactionIdentity {
+                    generation: epoch,
+                    phase: MacosNativeTransactionPhase::StreamStart,
+                })
+            },
+            |request| {
+                // An adopted in-flight request must follow the stage it now
+                // belongs to: every deadline arm, cancel, and claim filters
+                // on the live cell generation, and a cell left keyed to the
+                // superseded epoch would miss all of them, insta-cancelling
+                // the fresh candidate and stranding the core waiter.
+                let completion = request.completion.clone();
+                // A refused rekey means the cell was already claimed (a
+                // timeout won the race); installing it anyway is safe
+                // because the stage's own arm declines claimed cells and
+                // aborts the stage.
+                let _ = completion.rekey_generation(epoch);
+                completion
+            },
+        );
+        let replaced = state.candidate_completion.as_ref().and_then(|replaced| {
+            (!replaced.shares_cell(&completion)).then(|| {
+                let identity = replaced.identity();
+                replaced.claim(Err(MacosNativeTransactionError::Cancelled {
+                    phase: identity.phase,
+                    generation: identity.generation,
+                }))
+            })
+        });
+        state.candidate_completion = Some(completion);
+        replaced.flatten()
     }
 
-    fn begin_picker_resolution(&self) -> Result<SourceResolution, MacosCaptureError> {
+    fn cancel_candidate_completion(state: &mut StreamState) -> Option<TransactionSettlement<()>> {
+        let settlement = state.candidate_completion.as_ref().and_then(|completion| {
+            let identity = completion.identity();
+            completion.claim(Err(MacosNativeTransactionError::Cancelled {
+                phase: identity.phase,
+                generation: identity.generation,
+            }))
+        });
+        state.candidate_completion = None;
+        settlement
+    }
+
+    fn finish_replaced_candidate(settlement: Option<TransactionSettlement<()>>) {
+        if let Some(settlement) = settlement {
+            settlement.publish();
+        }
+    }
+
+    fn arm_candidate_deadline(
+        self: &Arc<Self>,
+        epoch: u64,
+        phase: MacosNativeTransactionPhase,
+        timeout: Duration,
+    ) -> Result<bool, MacosCaptureError> {
+        let completion = {
+            let state = lock(&self.state);
+            state
+                .candidate_completion
+                .as_ref()
+                .filter(|completion| completion.identity().generation == epoch)
+                .cloned()
+        };
+        let Some(completion) = completion else {
+            return Ok(false);
+        };
+        let streams = Arc::downgrade(self);
+        completion
+            .arm_for_generation(
+                self.native_lifecycle.deadlines(),
+                Instant::now() + timeout,
+                epoch,
+                phase,
+                move || {
+                    if let Some(streams) = streams.upgrade() {
+                        streams.timeout_candidate(epoch, phase);
+                    }
+                },
+            )
+            .map_err(|error| {
+                MacosCaptureError::CaptureWorkerStartFailed(format!(
+                    "schedule macOS {phase} deadline: {error}"
+                ))
+            })
+    }
+
+    fn timeout_candidate(&self, epoch: u64, phase: MacosNativeTransactionPhase) {
+        let stream = {
+            let _lifecycle = lock(&self.lifecycle_start);
+            let mut state = lock(&self.state);
+            let completion = state
+                .candidate_completion
+                .as_ref()
+                .filter(|completion| {
+                    let identity = completion.identity();
+                    identity.generation == epoch && identity.phase == phase
+                })
+                .cloned();
+            if state.candidate_epoch != Some(epoch) || completion.is_none() {
+                return;
+            }
+            state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
+            state.candidate_epoch = None;
+            Self::forget_epoch_activity(&mut state, epoch);
+            #[cfg(test)]
+            {
+                state
+                    .fixture_candidate_epoch
+                    .take_if(|candidate| *candidate == epoch);
+            }
+            state
+                .pending_selection
+                .take_if(|pending| pending.epoch == epoch);
+            state
+                .pending_request
+                .take_if(|request| request.epoch == epoch);
+            state.candidate_completion = None;
+            if state
+                .pending_interruption
+                .is_some_and(|recovery| recovery.matches(epoch))
+            {
+                state.pending_interruption = None;
+            }
+            state.candidate.take()
+        };
+        if let Some(stream) = stream {
+            self.stop_stream(stream);
+        }
+        let error = MacosCaptureError::CaptureWorkerStartFailed(format!(
+            "macOS {phase} transaction {epoch} timed out"
+        ));
+        if self.shared.current_epoch() == 0 {
+            self.shared.set_status(MacosProtectedSourceState::Failed);
+            self.shared.publish_error(error);
+        } else {
+            self.shared.set_status(MacosProtectedSourceState::Live);
+            self.shared.publish_recoverable_error(error);
+        }
+    }
+
+    fn begin_resolution(self: &Arc<Self>) -> Result<SourceResolution, MacosCaptureError> {
         let _lifecycle = lock(&self.lifecycle_start);
         let resolution_epoch = self.shared.begin_resolution()?;
         let resolution = SourceResolution::General(GeneralSourceResolution {
             resolution_epoch,
             selector: self.shared.selector(),
         });
+        self.install_source_transaction(resolution.clone(), Some(MACOS_NATIVE_SOURCE_TIMEOUT))?;
+        Ok(resolution)
+    }
+
+    fn begin_picker_resolution(self: &Arc<Self>) -> Result<SourceResolution, MacosCaptureError> {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let resolution_epoch = self.shared.begin_resolution()?;
+        let resolution = SourceResolution::General(GeneralSourceResolution {
+            resolution_epoch,
+            selector: self.shared.selector(),
+        });
+        self.install_source_transaction(resolution.clone(), None)?;
         self.shared.enable_picker_callbacks(resolution.clone());
         Ok(resolution)
     }
 
     fn set_selector(&self, selector: MacosCaptureSelector) {
         let _lifecycle = lock(&self.lifecycle_start);
+        let source_settlement = self.cancel_source_transaction_locked();
+        self.shared.disable_picker_callbacks();
         self.shared.set_selector(selector);
+        if let Some(settlement) = source_settlement {
+            settlement.publish();
+        }
     }
 
     fn set_selector_and_begin_resolution(
-        &self,
+        self: &Arc<Self>,
         selector: MacosCaptureSelector,
     ) -> Result<SourceResolution, MacosCaptureError> {
         let _lifecycle = lock(&self.lifecycle_start);
         self.shared.set_selector(selector.clone());
         let resolution_epoch = self.shared.begin_resolution()?;
-        Ok(SourceResolution::General(GeneralSourceResolution {
+        let resolution = SourceResolution::General(GeneralSourceResolution {
             resolution_epoch,
             selector,
-        }))
+        });
+        self.install_source_transaction(resolution.clone(), Some(MACOS_NATIVE_SOURCE_TIMEOUT))?;
+        Ok(resolution)
     }
 
     #[cfg(test)]
     fn begin_restart_diagnostic(
-        &self,
+        self: &Arc<Self>,
         authorization_granted: bool,
         selection_revision: u64,
     ) -> Result<
         (
             PostAuthorizationStreamDiagnosticResolution,
-            mpsc::Receiver<MacosProtectedSourceState>,
+            MacosStreamDiagnosticTransaction,
         ),
         MacosCaptureError,
     > {
         let _lifecycle = lock(&self.lifecycle_start);
         self.shared
             .set_selector(MacosCaptureSelector::PrimaryDisplay);
-        self.shared
-            .begin_restart_diagnostic(authorization_granted, selection_revision)
+        let (resolution, transaction) = self
+            .shared
+            .begin_restart_diagnostic(authorization_granted, selection_revision)?;
+        self.arm_restart_diagnostic(&resolution)?;
+        Ok((resolution, transaction))
     }
 
     fn reset_for_restart_diagnostic_locked(
         &self,
         state: &mut StreamState,
-    ) -> Result<(Option<NativeStream>, Option<NativeStream>), MacosCaptureError> {
+    ) -> Result<RestartDiagnosticReset, MacosCaptureError> {
         let selection_revision = state
             .selection_revision
             .checked_add(1)
@@ -1722,6 +1967,7 @@ impl StreamSlot {
         state.selected_filter = None;
         state.pending_selection = None;
         state.pending_interruption = None;
+        let candidate_settlement = Self::cancel_candidate_completion(state);
         state.pending_request = None;
         state.staging_epoch = None;
         state.candidate_epoch = None;
@@ -1732,16 +1978,20 @@ impl StreamSlot {
         self.shared
             .set_unconfirmed_selection(MacosCaptureSelection::None);
         self.shared.set_capture_active(true);
-        Ok((current, candidate))
+        Ok(RestartDiagnosticReset {
+            current,
+            candidate,
+            candidate_settlement,
+        })
     }
 
     fn setup_restart_diagnostic(
-        &self,
+        self: &Arc<Self>,
         authorization_granted: bool,
     ) -> Result<
         (
             PostAuthorizationStreamDiagnosticResolution,
-            mpsc::Receiver<MacosProtectedSourceState>,
+            MacosStreamDiagnosticTransaction,
         ),
         MacosCaptureError,
     > {
@@ -1749,21 +1999,26 @@ impl StreamSlot {
     }
 
     fn setup_restart_diagnostic_with(
-        &self,
+        self: &Arc<Self>,
         authorization_granted: bool,
         setup_installed: impl FnOnce(),
     ) -> Result<
         (
             PostAuthorizationStreamDiagnosticResolution,
-            mpsc::Receiver<MacosProtectedSourceState>,
+            MacosStreamDiagnosticTransaction,
         ),
         MacosCaptureError,
     > {
-        let (diagnostic, current, candidate) = {
+        let (diagnostic, current, candidate, candidate_settlement, source_settlement) = {
             let _lifecycle = lock(&self.lifecycle_start);
             self.shared.disable_picker_callbacks();
+            let source_settlement = self.cancel_source_transaction_locked();
             let mut state = lock(&self.state);
-            let (current, candidate) = self.reset_for_restart_diagnostic_locked(&mut state)?;
+            let RestartDiagnosticReset {
+                current,
+                candidate,
+                candidate_settlement,
+            } = self.reset_for_restart_diagnostic_locked(&mut state)?;
             self.shared
                 .set_selector(MacosCaptureSelector::PrimaryDisplay);
             let selection_revision = state.selection_revision;
@@ -1775,7 +2030,13 @@ impl StreamSlot {
             }
             drop(state);
             setup_installed();
-            (diagnostic, current, candidate)
+            (
+                diagnostic,
+                current,
+                candidate,
+                candidate_settlement,
+                source_settlement,
+            )
         };
         if let Some(candidate) = candidate {
             self.stop_stream(candidate);
@@ -1783,7 +2044,249 @@ impl StreamSlot {
         if let Some(current) = current {
             self.stop_stream(current);
         }
-        diagnostic
+        if let Some(settlement) = source_settlement {
+            settlement.publish();
+        }
+        Self::finish_replaced_candidate(candidate_settlement);
+        let (resolution, transaction) = diagnostic?;
+        self.arm_restart_diagnostic(&resolution)?;
+        Ok((resolution, transaction))
+    }
+
+    fn arm_restart_diagnostic(
+        self: &Arc<Self>,
+        resolution: &PostAuthorizationStreamDiagnosticResolution,
+    ) -> Result<(), MacosCaptureError> {
+        let Some(completion) = self
+            .shared
+            .restart_diagnostic_completion(resolution.attempt)
+        else {
+            return Ok(());
+        };
+        let cancel_streams = Arc::downgrade(self);
+        let attempt = resolution.attempt;
+        completion.set_cancel(move |_| {
+            if let Some(streams) = cancel_streams.upgrade() {
+                streams.finish_restart_diagnostic(attempt);
+            }
+        });
+        let timeout_streams = Arc::downgrade(self);
+        let result = completion.arm(
+            self.native_lifecycle.deadlines(),
+            Instant::now() + MACOS_NATIVE_SOURCE_TIMEOUT,
+            move || {
+                if let Some(streams) = timeout_streams.upgrade() {
+                    streams.finish_restart_diagnostic(attempt);
+                }
+            },
+        );
+        if let Err(source) = result {
+            let error = MacosCaptureError::CaptureWorkerStartFailed(format!(
+                "schedule macOS source resolution deadline: {source}"
+            ));
+            let settlement = {
+                let mut state = lock(&self.shared.restart_diagnostic);
+                let settlement = state
+                    .active
+                    .as_ref()
+                    .filter(|active| active.attempt == attempt)
+                    .and_then(|active| {
+                        active
+                            .completion
+                            .claim(Err(MacosNativeTransactionError::Capture(error.clone())))
+                    });
+                if settlement.is_some() {
+                    state.active = None;
+                }
+                settlement
+            };
+            self.shared.set_status(MacosProtectedSourceState::Failed);
+            if let Some(settlement) = settlement {
+                settlement.publish();
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn finish_restart_diagnostic(&self, attempt: PostAuthorizationStreamDiagnosticAttempt) {
+        let _lifecycle = lock(&self.lifecycle_start);
+        if self
+            .shared
+            .take_restart_diagnostic_attempt(attempt)
+            .is_none()
+        {
+            return;
+        }
+        let _ = self.shared.begin_resolution();
+        self.shared.set_status(MacosProtectedSourceState::Failed);
+    }
+
+    fn install_source_transaction(
+        self: &Arc<Self>,
+        resolution: SourceResolution,
+        timeout: Option<Duration>,
+    ) -> Result<(), MacosCaptureError> {
+        let generation = match &resolution {
+            SourceResolution::General(resolution) => resolution.resolution_epoch,
+            SourceResolution::Diagnostic(resolution) => resolution.resolution_epoch,
+        };
+        let completion = TransactionCompleter::new(TransactionIdentity {
+            generation,
+            phase: MacosNativeTransactionPhase::SourceResolution,
+        });
+        let replaced = {
+            let mut state = lock(&self.source_transaction);
+            let settlement = state.as_ref().and_then(|replaced| {
+                let identity = replaced.completion.identity();
+                replaced
+                    .completion
+                    .claim(Err(MacosNativeTransactionError::Cancelled {
+                        phase: identity.phase,
+                        generation: identity.generation,
+                    }))
+            });
+            *state = Some(SourceTransaction {
+                resolution: resolution.clone(),
+                completion: completion.clone(),
+            });
+            settlement
+        };
+        let Some(timeout) = timeout else {
+            if let Some(settlement) = replaced {
+                settlement.publish();
+            }
+            return Ok(());
+        };
+        let streams = Arc::downgrade(self);
+        let result = completion.arm(
+            self.native_lifecycle.deadlines(),
+            Instant::now() + timeout,
+            move || {
+                if let Some(streams) = streams.upgrade() {
+                    streams.timeout_source_resolution(resolution.clone());
+                }
+            },
+        );
+        if let Err(source) = result {
+            let error = MacosCaptureError::CaptureWorkerStartFailed(format!(
+                "schedule macOS source resolution deadline: {source}"
+            ));
+            let settlement = {
+                let mut state = lock(&self.source_transaction);
+                let settlement = state
+                    .as_ref()
+                    .filter(|transaction| transaction.completion.shares_cell(&completion))
+                    .and_then(|transaction| {
+                        transaction
+                            .completion
+                            .claim(Err(MacosNativeTransactionError::Capture(error.clone())))
+                    });
+                if settlement.is_some() {
+                    state.take();
+                }
+                settlement
+            };
+            if let Some(settlement) = settlement {
+                settlement.publish();
+            }
+            if let Some(settlement) = replaced {
+                settlement.publish();
+            }
+            return Err(error);
+        }
+        if let Some(settlement) = replaced {
+            settlement.publish();
+        }
+        Ok(())
+    }
+
+    fn claim_source_transaction(
+        &self,
+        resolution: &SourceResolution,
+    ) -> Option<TransactionSettlement<()>> {
+        let _lifecycle = lock(&self.lifecycle_start);
+        {
+            let mut state = lock(&self.source_transaction);
+            let settlement = state
+                .as_ref()
+                .filter(|transaction| transaction.resolution == *resolution)
+                .and_then(|transaction| transaction.completion.claim(Ok(())));
+            if settlement.is_some() {
+                state.take();
+            }
+            settlement
+        }
+    }
+
+    fn cancel_source_transaction(
+        &self,
+        resolution: &SourceResolution,
+    ) -> Option<TransactionSettlement<()>> {
+        let _lifecycle = lock(&self.lifecycle_start);
+        {
+            let mut state = lock(&self.source_transaction);
+            let settlement = state
+                .as_ref()
+                .filter(|transaction| transaction.resolution == *resolution)
+                .and_then(|transaction| {
+                    let identity = transaction.completion.identity();
+                    transaction
+                        .completion
+                        .claim(Err(MacosNativeTransactionError::Cancelled {
+                            phase: identity.phase,
+                            generation: identity.generation,
+                        }))
+                });
+            if settlement.is_some() {
+                state.take();
+            }
+            settlement
+        }
+    }
+
+    fn cancel_source_transaction_locked(&self) -> Option<TransactionSettlement<()>> {
+        {
+            let mut state = lock(&self.source_transaction);
+            let settlement = state.as_ref().and_then(|transaction| {
+                let identity = transaction.completion.identity();
+                transaction
+                    .completion
+                    .claim(Err(MacosNativeTransactionError::Cancelled {
+                        phase: identity.phase,
+                        generation: identity.generation,
+                    }))
+            });
+            state.take();
+            settlement
+        }
+    }
+
+    fn timeout_source_resolution(&self, resolution: SourceResolution) {
+        let _lifecycle = lock(&self.lifecycle_start);
+        let transaction = lock(&self.source_transaction)
+            .take_if(|transaction| transaction.resolution == resolution);
+        let Some(transaction) = transaction else {
+            return;
+        };
+        let generation = transaction.completion.identity().generation;
+        let _ = self.shared.allocate_resolution_epoch();
+        self.shared.consume_picker_resolution(&resolution);
+        let state = lock(&self.state);
+        let preserve_current = Self::current_epoch(&state).is_some();
+        let preserve_selection =
+            state.pending_selection.is_some() || state.selected_filter.is_some();
+        drop(state);
+        let error = MacosCaptureError::CaptureWorkerStartFailed(format!(
+            "macOS source resolution transaction {} timed out",
+            generation
+        ));
+        if preserve_current || preserve_selection {
+            self.shared.publish_recoverable_error(error);
+        } else {
+            self.shared.set_status(MacosProtectedSourceState::Failed);
+            self.shared.publish_error(error);
+        }
     }
 
     fn reserve_selection_candidate_locked(
@@ -1819,6 +2322,8 @@ impl StreamSlot {
             pending
         });
         let request_identity = request.as_ref().map(PendingStreamRequest::identity);
+        let replaced_settlement =
+            Self::install_candidate_completion(state, epoch, request.as_ref());
         state.pending_request = request;
         state.pending_selection = Some(PendingSelectionFilter {
             epoch,
@@ -1839,7 +2344,12 @@ impl StreamSlot {
             Self::forget_epoch_activity(state, replaced_epoch);
         }
         state.candidate_epoch = None;
-        Ok((stage, selection_filter, state.candidate.take()))
+        Ok(CandidateReservation {
+            stage,
+            selection_filter,
+            replaced: state.candidate.take(),
+            replaced_settlement,
+        })
     }
 
     fn accept_selection_filter_with(
@@ -1893,7 +2403,7 @@ impl StreamSlot {
             )?;
             (
                 FilterAcceptance::Candidate {
-                    reservation,
+                    reservation: Box::new(reservation),
                     request,
                 },
                 None,
@@ -2054,70 +2564,77 @@ impl StreamSlot {
 
     fn finalize_candidate_preparation_failure_with(
         &self,
-        failure: CandidatePreparationFailure,
+        mut failure: CandidatePreparationFailure,
         resolution: Option<&SourceResolution>,
         before_finalization: impl FnOnce(),
     ) -> bool {
         before_finalization();
-        let _lifecycle = lock(&self.lifecycle_start);
-        let mut state = lock(&self.state);
-        if resolution.is_some_and(|resolution| !self.resolution_is_current(&state, resolution)) {
-            return false;
-        }
-        let failed_stage_cleared = state.staging_epoch != Some(failure.stage.epoch)
-            && state.candidate_epoch != Some(failure.stage.epoch)
-            && state
-                .pending_selection
-                .as_ref()
-                .is_none_or(|pending| pending.epoch != failure.stage.epoch);
-        let lifecycle_matches = failed_stage_cleared
-            && state.selection_revision == failure.stage.selection_revision
-            && state.lifecycle_revision == failure.stage.lifecycle_revision
-            && Self::current_epoch(&state) == failure.stage.predecessor_epoch
-            && state.staging_epoch.is_none()
-            && state.candidate_epoch.is_none();
-        if !lifecycle_matches {
-            return false;
-        }
-        let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) else {
-            return false;
-        };
-        if let Some(SourceResolution::Diagnostic(diagnostic)) = resolution {
-            self.shared.record_non_stream_diagnostic_failure(
-                diagnostic,
-                MacosProtectedSourceState::Failed,
-            );
-        }
-        let current_epoch = Self::current_epoch(&state);
-        let current_inactive =
-            current_epoch.is_some_and(|epoch| state.inactive_epochs.contains(&epoch));
-        let preserve_current = current_epoch.is_some();
-        let preserve_selection = state.selected_filter.is_some();
-        let status = if preserve_current {
-            if current_inactive {
+        let finalized = (|| {
+            let _lifecycle = lock(&self.lifecycle_start);
+            let mut state = lock(&self.state);
+            if resolution.is_some_and(|resolution| !self.resolution_is_current(&state, resolution))
+            {
+                return false;
+            }
+            let failed_stage_cleared = state.staging_epoch != Some(failure.stage.epoch)
+                && state.candidate_epoch != Some(failure.stage.epoch)
+                && state
+                    .pending_selection
+                    .as_ref()
+                    .is_none_or(|pending| pending.epoch != failure.stage.epoch);
+            let lifecycle_matches = failed_stage_cleared
+                && state.selection_revision == failure.stage.selection_revision
+                && state.lifecycle_revision == failure.stage.lifecycle_revision
+                && Self::current_epoch(&state) == failure.stage.predecessor_epoch
+                && state.staging_epoch.is_none()
+                && state.candidate_epoch.is_none();
+            if !lifecycle_matches {
+                return false;
+            }
+            let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) else {
+                return false;
+            };
+            if let Some(SourceResolution::Diagnostic(diagnostic)) = resolution {
+                self.shared.record_non_stream_diagnostic_failure(
+                    diagnostic,
+                    MacosProtectedSourceState::Failed,
+                );
+            }
+            let current_epoch = Self::current_epoch(&state);
+            let current_inactive =
+                current_epoch.is_some_and(|epoch| state.inactive_epochs.contains(&epoch));
+            let preserve_current = current_epoch.is_some();
+            let preserve_selection = state.selected_filter.is_some();
+            let status = if preserve_current {
+                if current_inactive {
+                    MacosProtectedSourceState::NeedsSelection
+                } else {
+                    MacosProtectedSourceState::Live
+                }
+            } else if preserve_selection {
+                MacosProtectedSourceState::ReadyIdle
+            } else if matches!(
+                &failure.error,
+                MacosCaptureError::DisplaySourceUnavailable(_)
+            ) {
                 MacosProtectedSourceState::NeedsSelection
             } else {
-                MacosProtectedSourceState::Live
+                MacosProtectedSourceState::Failed
+            };
+            state.lifecycle_revision = lifecycle_revision;
+            drop(state);
+            self.shared.set_status(status);
+            if preserve_current || preserve_selection {
+                self.shared.publish_recoverable_error(failure.error.clone());
+            } else {
+                self.shared.publish_error(failure.error.clone());
             }
-        } else if preserve_selection {
-            MacosProtectedSourceState::ReadyIdle
-        } else if matches!(
-            &failure.error,
-            MacosCaptureError::DisplaySourceUnavailable(_)
-        ) {
-            MacosProtectedSourceState::NeedsSelection
-        } else {
-            MacosProtectedSourceState::Failed
-        };
-        state.lifecycle_revision = lifecycle_revision;
-        drop(state);
-        self.shared.set_status(status);
-        if preserve_current || preserve_selection {
-            self.shared.publish_recoverable_error(failure.error);
-        } else {
-            self.shared.publish_error(failure.error);
+            true
+        })();
+        if let Some(settlement) = failure.settlement.take() {
+            (*settlement).publish();
         }
-        true
+        finalized
     }
 
     fn stage_candidate_with_selection(
@@ -2154,6 +2671,7 @@ impl StreamSlot {
             .map_err(|error| CandidatePreparationFailure {
                 stage: failure_stage,
                 error,
+                settlement: None,
             })?
         else {
             return Ok(false);
@@ -2163,13 +2681,20 @@ impl StreamSlot {
 
     fn prepare_and_start_candidate(
         self: &Arc<Self>,
-        (stage, selection_filter, replaced): CandidateReservation,
+        reservation: CandidateReservation,
         request: MacosStreamRequest,
         reserve_pool: &PoolReservationFactory,
     ) -> Result<bool, CandidatePreparationFailure> {
+        let CandidateReservation {
+            stage,
+            selection_filter,
+            replaced,
+            replaced_settlement,
+        } = reservation;
         if let Some(replaced) = replaced {
             self.stop_stream(replaced);
         }
+        Self::finish_replaced_candidate(replaced_settlement);
         let candidate = match NativeStream::prepare(
             selection_filter,
             request,
@@ -2177,11 +2702,15 @@ impl StreamSlot {
             Arc::clone(&self.shared),
             Arc::downgrade(self),
             reserve_pool,
+            &self.native_lifecycle,
         ) {
             Ok(candidate) => candidate,
             Err(error) => {
-                let identity = self.cancel_candidate_stage(stage, Some(error.clone()));
-                return Err(CandidatePreparationFailure::new(identity, error));
+                let (identity, settlement) =
+                    self.cancel_candidate_stage(stage, Some(error.clone()));
+                return Err(CandidatePreparationFailure::new(
+                    identity, error, settlement,
+                ));
             }
         };
         self.start_candidate_stage(candidate, stage)
@@ -2199,11 +2728,13 @@ impl StreamSlot {
         let mut state = lock(&self.state);
         if !self.shared.capture_active() {
             if let Some(request) = request_transaction {
+                let Some(settlement) = request.completion.claim(Ok(())) else {
+                    return Ok(None);
+                };
                 state.request = request.request;
                 state.pending_request = None;
-                let completion = request.completion;
                 drop(state);
-                let _ = completion.send(Ok(()));
+                settlement.publish();
             }
             return Ok(None);
         }
@@ -2241,11 +2772,13 @@ impl StreamSlot {
                     "candidate has no authoritative selection filter".to_owned(),
                 ));
             };
+            let Some(settlement) = request.completion.claim(Ok(())) else {
+                return Ok(None);
+            };
             state.request = request.request;
             state.pending_request = None;
-            let completion = request.completion;
             drop(state);
-            let _ = completion.send(Ok(()));
+            settlement.publish();
             return Ok(None);
         };
         let lifecycle_revision = state
@@ -2285,6 +2818,8 @@ impl StreamSlot {
             })
         });
         let request_identity = request.as_ref().map(PendingStreamRequest::identity);
+        let replaced_settlement =
+            Self::install_candidate_completion(&mut state, epoch, request.as_ref());
         state.pending_request = request;
         state.pending_selection = Some(PendingSelectionFilter {
             epoch,
@@ -2305,19 +2840,35 @@ impl StreamSlot {
             Self::forget_epoch_activity(&mut state, replaced_epoch);
         }
         state.candidate_epoch = None;
-        Ok(Some((stage, selection_filter, state.candidate.take())))
+        Ok(Some(CandidateReservation {
+            stage,
+            selection_filter,
+            replaced: state.candidate.take(),
+            replaced_settlement,
+        }))
     }
 
     fn cancel_candidate_stage(
         &self,
         stage: CandidateStage,
         error: Option<MacosCaptureError>,
-    ) -> CandidateStageIdentity {
+    ) -> (CandidateStageIdentity, Option<TransactionSettlement<()>>) {
         let _lifecycle = lock(&self.lifecycle_start);
         let mut state = lock(&self.state);
         let mut identity = stage.identity();
         let current = state.lifecycle_revision == stage.lifecycle_revision
             && state.staging_epoch == Some(stage.epoch);
+        let settlement = current.then(|| {
+            error.as_ref().and_then(|error| {
+                state
+                    .candidate_completion
+                    .as_ref()
+                    .filter(|completion| completion.identity().generation == stage.epoch)
+                    .and_then(|completion| {
+                        completion.claim(Err(MacosNativeTransactionError::Capture(error.clone())))
+                    })
+            })
+        });
         if current {
             state.staging_epoch = None;
             state
@@ -2334,26 +2885,21 @@ impl StreamSlot {
                 identity.lifecycle_revision = lifecycle_revision;
             }
         }
-        let completion = current
+        if current {
+            state.candidate_completion = None;
+        }
+        if current
             && stage.request.is_some_and(|request| {
                 state
                     .pending_request
                     .as_ref()
                     .is_some_and(|pending| pending.identity() == request)
-            });
-        let completion = completion
-            .then(|| {
-                state
-                    .pending_request
-                    .take()
-                    .map(|pending| pending.completion)
             })
-            .flatten();
-        drop(state);
-        if let (Some(completion), Some(error)) = (completion, error) {
-            let _ = completion.send(Err(error));
+        {
+            state.pending_request = None;
         }
-        identity
+        drop(state);
+        (identity, settlement.flatten())
     }
 
     #[cfg(test)]
@@ -2362,8 +2908,8 @@ impl StreamSlot {
         stage: CandidateStage,
         error: MacosCaptureError,
     ) -> CandidatePreparationFailure {
-        let identity = self.cancel_candidate_stage(stage, Some(error.clone()));
-        CandidatePreparationFailure::new(identity, error)
+        let (identity, settlement) = self.cancel_candidate_stage(stage, Some(error.clone()));
+        CandidatePreparationFailure::new(identity, error, settlement)
     }
 
     fn start_candidate_stage(
@@ -2371,7 +2917,34 @@ impl StreamSlot {
         candidate: NativeStream,
         stage: CandidateStage,
     ) -> Result<bool, CandidatePreparationFailure> {
+        match self.arm_candidate_deadline(
+            stage.epoch,
+            MacosNativeTransactionPhase::StreamStart,
+            MACOS_NATIVE_START_TIMEOUT,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                let error = MacosCaptureError::CaptureWorkerStartFailed(
+                    "stream request candidate was superseded before start".to_owned(),
+                );
+                let (_, settlement) = self.cancel_candidate_stage(stage, Some(error));
+                self.retire_unstarted_stream(candidate);
+                if let Some(settlement) = settlement {
+                    settlement.publish();
+                }
+                return Ok(false);
+            }
+            Err(error) => {
+                let (identity, settlement) =
+                    self.cancel_candidate_stage(stage, Some(error.clone()));
+                self.retire_unstarted_stream(candidate);
+                return Err(CandidatePreparationFailure::new(
+                    identity, error, settlement,
+                ));
+            }
+        }
         let stream = candidate.stream.clone();
+        let start_completion = candidate.start_completion.witness();
         let mut candidate = Some(candidate);
         let started = self.invoke_candidate_start(
             stage,
@@ -2382,6 +2955,7 @@ impl StreamSlot {
                     stage.epoch,
                     Arc::downgrade(self),
                     Arc::clone(&self.shared),
+                    start_completion,
                 );
             },
         );
@@ -2389,12 +2963,10 @@ impl StreamSlot {
             let error = MacosCaptureError::CaptureWorkerStartFailed(
                 "stream request candidate was superseded before start".to_owned(),
             );
-            let identity = self.cancel_candidate_stage(stage, Some(error));
-            if let Err(error) = candidate
-                .expect("uninstalled candidate remains owned")
-                .discard_unstarted()
-            {
-                return Err(CandidatePreparationFailure::new(identity, error));
+            let (_, settlement) = self.cancel_candidate_stage(stage, Some(error));
+            self.retire_unstarted_stream(candidate.expect("uninstalled candidate remains owned"));
+            if let Some(settlement) = settlement {
+                settlement.publish();
             }
             return Ok(false);
         }
@@ -2440,39 +3012,42 @@ impl StreamSlot {
 
     #[cfg(test)]
     fn activate_candidate_fixture(&self, epoch: u64) -> bool {
-        let completion = {
-            let _lifecycle = lock(&self.lifecycle_start);
-            let rejected = lock(&self.rejected_epochs);
-            let mut state = lock(&self.state);
-            if !Self::candidate_is_activatable(&state, &rejected, epoch) {
-                return false;
-            }
-            let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) else {
-                return false;
-            };
-            state.lifecycle_revision = lifecycle_revision;
-            state.candidate_epoch = None;
-            state.fixture_candidate_epoch = None;
-            state.fixture_current_epoch = Some(epoch);
-            Self::commit_pending_selection(&mut state, epoch);
-            let completion = Self::commit_pending_request(&mut state, epoch);
-            self.shared.activate_epoch(epoch);
-            completion
-        };
-        if let Some(completion) = completion {
-            let _ = completion.send(Ok(()));
+        let _lifecycle = lock(&self.lifecycle_start);
+        let rejected = lock(&self.rejected_epochs);
+        let mut state = lock(&self.state);
+        if !Self::candidate_is_activatable(&state, &rejected, epoch) {
+            return false;
         }
+        let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) else {
+            return false;
+        };
+        let Some(completion) = state.candidate_completion.as_ref().cloned() else {
+            return false;
+        };
+        let Some(settlement) = completion.claim(Ok(())) else {
+            return false;
+        };
+        state.lifecycle_revision = lifecycle_revision;
+        state.candidate_epoch = None;
+        state.fixture_candidate_epoch = None;
+        state.fixture_current_epoch = Some(epoch);
+        Self::commit_pending_selection(&mut state, epoch);
+        state.candidate_completion = None;
+        Self::commit_pending_request(&mut state, epoch);
+        self.shared.activate_epoch(epoch);
+        drop(state);
+        settlement.publish();
         true
     }
 
     #[cfg(test)]
     fn fail_candidate_fixture(&self, epoch: u64, error: MacosCaptureError) -> bool {
-        let mut removal = self.remove(epoch);
+        let removal = self.remove(epoch, Some(MacosNativeTransactionError::Capture(error)));
         if removal.role != StreamRole::Candidate {
             return false;
         }
-        if let Some(completion) = removal.request_completion.take() {
-            let _ = completion.send(Err(error));
+        if let Some(settlement) = removal.request_settlement {
+            settlement.publish();
         }
         true
     }
@@ -2558,63 +3133,129 @@ impl StreamSlot {
         rejected: &[u64],
         epoch: u64,
         confirmed_delivery: Option<MacosValidatedStreamDelivery>,
-    ) -> Option<PublicationSideEffects> {
+        after_claim: impl FnOnce(),
+    ) -> Result<Option<PublicationSideEffects>, Box<CandidateActivationAbort>> {
         if !Self::candidate_is_activatable(state, rejected, epoch) {
-            return None;
+            return Ok(None);
         }
-        let lifecycle_revision = state.lifecycle_revision.checked_add(1)?;
-        let candidate = state.candidate.take();
-        #[cfg(test)]
-        let fixture_candidate = state
-            .fixture_candidate_epoch
-            .take_if(|candidate| *candidate == epoch);
-        #[cfg(not(test))]
-        candidate.as_ref()?;
-        #[cfg(test)]
-        if candidate.is_none() && fixture_candidate.is_none() {
-            return None;
-        }
+        let Some(lifecycle_revision) = state.lifecycle_revision.checked_add(1) else {
+            return Ok(None);
+        };
         let Some(confirmed_delivery) = confirmed_delivery else {
-            state.candidate = candidate;
-            #[cfg(test)]
-            {
-                state.fixture_candidate_epoch = fixture_candidate;
-            }
-            return None;
+            return Ok(None);
+        };
+        #[cfg(not(test))]
+        if state.candidate.is_none() {
+            return Ok(None);
+        }
+        #[cfg(test)]
+        let fixture_candidate = state.fixture_candidate_epoch == Some(epoch);
+        #[cfg(test)]
+        if state.candidate.is_none() && !fixture_candidate {
+            return Ok(None);
+        }
+        let Some(request_completion) = state.candidate_completion.as_ref().cloned() else {
+            return Ok(None);
         };
         let previous_epoch = Self::current_epoch(state);
+        let previous_status = self.shared.status();
+        let previous_selection = self.shared.selection();
+        let previous_request = state.request;
+        let previous_selected_filter = state.selected_filter.clone();
+        let previous_inactive_epochs = state.inactive_epochs.clone();
+        let previous_terminal_epochs = state.terminal_epochs.clone();
+        let confirmed_selection = state.candidate.as_ref().map(|candidate| {
+            (
+                candidate.selection.clone(),
+                Arc::clone(&candidate.source_id),
+            )
+        });
+        let Some(request_settlement) = request_completion.claim(Ok(())) else {
+            return Ok(None);
+        };
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(after_claim)) {
+            let removal = Self::remove_candidate_locked(state, epoch, None)
+                .expect("claimed candidate remains tracked until activation commits");
+            return Err(Box::new(CandidateActivationAbort {
+                payload,
+                stream: removal.stream,
+                request_settlement,
+            }));
+        }
+        let candidate = state.candidate.take();
+        #[cfg(test)]
+        state
+            .fixture_candidate_epoch
+            .take_if(|candidate| *candidate == epoch);
         state.lifecycle_revision = lifecycle_revision;
         state.candidate_epoch = None;
         let previous = candidate.and_then(|candidate| state.current.replace(candidate));
         #[cfg(test)]
-        if fixture_candidate.is_some() {
+        if fixture_candidate {
             state.fixture_current_epoch = Some(epoch);
         }
         if let Some(previous_epoch) = previous_epoch {
             Self::forget_epoch_activity(state, previous_epoch);
         }
         Self::commit_pending_selection(state, epoch);
-        let request_completion = Self::commit_pending_request(state, epoch);
+        state.candidate_completion = None;
+        Self::commit_pending_request(state, epoch);
         let recovered = state
             .pending_interruption
             .take_if(|recovery| recovery.matches(epoch))
             .is_some();
-        if let Some(current) = &state.current {
-            self.shared.confirm_selection(
-                current.selection.clone(),
-                Arc::clone(&current.source_id),
-                epoch,
-                confirmed_delivery,
-            );
+        if let Some((selection, source_id)) = confirmed_selection {
+            self.shared
+                .confirm_selection(selection, source_id, epoch, confirmed_delivery);
         }
         self.shared.activate_epoch(epoch);
         if recovered {
             self.shared.set_status(MacosProtectedSourceState::Live);
         }
-        Some(PublicationSideEffects {
-            previous,
-            request_completion,
-        })
+        Ok(Some(PublicationSideEffects {
+            candidate: Some(CandidatePublication {
+                previous,
+                previous_epoch,
+                previous_status,
+                previous_selection,
+                previous_request,
+                previous_selected_filter,
+                previous_inactive_epochs,
+                previous_terminal_epochs,
+                request_settlement,
+            }),
+        }))
+    }
+
+    fn rollback_candidate_publication(
+        &self,
+        epoch: u64,
+        candidate: &mut CandidatePublication,
+    ) -> Option<NativeStream> {
+        let mut state = lock(&self.state);
+        let failed = Self::current_is_epoch(&state, epoch)
+            .then(|| state.current.take())
+            .flatten();
+        state.current = candidate.previous.take();
+        state.request = candidate.previous_request;
+        state.selected_filter = candidate.previous_selected_filter.take();
+        state.pending_selection = None;
+        state.pending_request = None;
+        state.pending_interruption = None;
+        state.candidate_completion = None;
+        state.inactive_epochs = std::mem::take(&mut candidate.previous_inactive_epochs);
+        state.terminal_epochs = std::mem::take(&mut candidate.previous_terminal_epochs);
+        #[cfg(test)]
+        {
+            state.fixture_current_epoch = candidate.previous_epoch;
+            state.fixture_candidate_epoch = None;
+        }
+        self.shared
+            .activate_epoch(candidate.previous_epoch.unwrap_or_default());
+        self.shared
+            .set_unconfirmed_selection(candidate.previous_selection.clone());
+        self.shared.set_status(candidate.previous_status);
+        failed
     }
 
     fn publish_decoded_sample(
@@ -2692,6 +3333,43 @@ impl StreamSlot {
         publication_is_current: impl FnOnce() -> bool,
         publish: impl FnOnce(),
     ) -> bool {
+        self.publish_decoded_event_if_with_claim_hook(
+            epoch,
+            is_frame,
+            confirmed_delivery,
+            publication_is_current,
+            || {},
+            publish,
+        )
+    }
+
+    #[cfg(test)]
+    fn publish_decoded_event_with_claim_hook(
+        &self,
+        epoch: u64,
+        confirmed_delivery: MacosValidatedStreamDelivery,
+        after_claim: impl FnOnce(),
+        publish: impl FnOnce(),
+    ) -> bool {
+        self.publish_decoded_event_if_with_claim_hook(
+            epoch,
+            true,
+            Some(confirmed_delivery),
+            || true,
+            after_claim,
+            publish,
+        )
+    }
+
+    fn publish_decoded_event_if_with_claim_hook(
+        &self,
+        epoch: u64,
+        is_frame: bool,
+        confirmed_delivery: Option<MacosValidatedStreamDelivery>,
+        publication_is_current: impl FnOnce() -> bool,
+        after_candidate_claim: impl FnOnce(),
+        publish: impl FnOnce(),
+    ) -> bool {
         let lifecycle = lock(&self.lifecycle_start);
         if !publication_is_current() {
             return false;
@@ -2707,43 +3385,67 @@ impl StreamSlot {
         let side_effects = if Self::current_is_epoch(&state, epoch) {
             PublicationSideEffects::default()
         } else if is_frame {
-            let Some(side_effects) = self.activate_candidate_for_publication(
+            match self.activate_candidate_for_publication(
                 &mut state,
                 &rejected,
                 epoch,
                 confirmed_delivery,
-            ) else {
-                return false;
-            };
-            side_effects
+                after_candidate_claim,
+            ) {
+                Ok(Some(side_effects)) => side_effects,
+                Ok(None) => return false,
+                Err(abort) => {
+                    let CandidateActivationAbort {
+                        payload,
+                        stream,
+                        request_settlement,
+                    } = *abort;
+                    if let Some(stream) = stream {
+                        self.stop_stream(stream);
+                    }
+                    drop(request_settlement);
+                    drop(state);
+                    drop(rejected);
+                    drop(lifecycle);
+                    std::panic::resume_unwind(payload);
+                }
+            }
         } else {
             return false;
         };
         drop(state);
-        publish();
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(publish)) {
+            let mut side_effects = side_effects;
+            if let Some(mut candidate) = side_effects.candidate.take() {
+                if let Some(stream) = self.rollback_candidate_publication(epoch, &mut candidate) {
+                    self.stop_stream(stream);
+                }
+                drop(candidate.request_settlement);
+            }
+            drop(rejected);
+            drop(lifecycle);
+            std::panic::resume_unwind(payload);
+        }
+        let previous = if let Some(candidate) = side_effects.candidate {
+            candidate.request_settlement.publish();
+            candidate.previous
+        } else {
+            None
+        };
         drop(rejected);
         drop(lifecycle);
-        if let Some(completion) = side_effects.request_completion {
-            let _ = completion.send(Ok(()));
-        }
-        if let Some(previous) = side_effects.previous {
+        if let Some(previous) = previous {
             self.stop_stream(previous);
         }
         true
     }
 
-    fn commit_pending_request(
-        state: &mut StreamState,
-        epoch: u64,
-    ) -> Option<mpsc::SyncSender<Result<(), MacosCaptureError>>> {
+    fn commit_pending_request(state: &mut StreamState, epoch: u64) {
         if let Some(request) = state
             .pending_request
             .take_if(|request| request.epoch == epoch)
         {
             state.request = request.request;
-            Some(request.completion)
-        } else {
-            None
         }
     }
 
@@ -2765,38 +3467,17 @@ impl StreamSlot {
             })
     }
 
-    fn remove(&self, epoch: u64) -> StreamRemoval {
+    fn remove(
+        &self,
+        epoch: u64,
+        request_error: Option<MacosNativeTransactionError>,
+    ) -> StreamRemoval {
         let _lifecycle = lock(&self.lifecycle_start);
         let mut state = lock(&self.state);
-        if state.candidate_epoch == Some(epoch) {
-            state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
-            state.candidate_epoch = None;
-            Self::forget_epoch_activity(&mut state, epoch);
-            #[cfg(test)]
-            {
-                state
-                    .fixture_candidate_epoch
-                    .take_if(|candidate| *candidate == epoch);
-            }
-            state
-                .pending_selection
-                .take_if(|pending| pending.epoch == epoch);
-            let request_completion = state
-                .pending_request
-                .take_if(|request| request.epoch == epoch)
-                .map(|request| request.completion);
-            if state
-                .pending_interruption
-                .is_some_and(|recovery| recovery.matches(epoch))
-            {
-                state.pending_interruption = None;
-            }
-            return StreamRemoval {
-                role: StreamRole::Candidate,
-                stream: state.candidate.take(),
-                selection_revision: state.selection_revision,
-                request_completion,
-            };
+        if let Some(removal) =
+            Self::remove_candidate_locked(&mut state, epoch, request_error.as_ref())
+        {
+            return removal;
         }
         if Self::current_is_epoch(&state, epoch) {
             state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
@@ -2814,15 +3495,79 @@ impl StreamSlot {
                 role: StreamRole::Current,
                 stream: current,
                 selection_revision: state.selection_revision,
-                request_completion: None,
+                request_settlement: None,
             };
         }
         StreamRemoval {
             role: StreamRole::Stale,
             stream: None,
             selection_revision: state.selection_revision,
-            request_completion: None,
+            request_settlement: None,
         }
+    }
+
+    fn remove_candidate_locked(
+        state: &mut StreamState,
+        epoch: u64,
+        request_error: Option<&MacosNativeTransactionError>,
+    ) -> Option<StreamRemoval> {
+        if state.candidate_epoch != Some(epoch) {
+            return None;
+        }
+        let request_settlement = request_error.and_then(|error| {
+            state
+                .candidate_completion
+                .as_ref()
+                .filter(|completion| completion.identity().generation == epoch)
+                .and_then(|completion| completion.claim(Err(error.clone())))
+        });
+        state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
+        state.candidate_epoch = None;
+        Self::forget_epoch_activity(state, epoch);
+        #[cfg(test)]
+        {
+            state
+                .fixture_candidate_epoch
+                .take_if(|candidate| *candidate == epoch);
+        }
+        state
+            .pending_selection
+            .take_if(|pending| pending.epoch == epoch);
+        state.candidate_completion = None;
+        state
+            .pending_request
+            .take_if(|request| request.epoch == epoch);
+        if state
+            .pending_interruption
+            .is_some_and(|recovery| recovery.matches(epoch))
+        {
+            state.pending_interruption = None;
+        }
+        Some(StreamRemoval {
+            role: StreamRole::Candidate,
+            stream: state.candidate.take(),
+            selection_revision: state.selection_revision,
+            request_settlement,
+        })
+    }
+
+    fn cancel_candidate_transaction(&self, epoch: u64) {
+        let removal = {
+            let _lifecycle = lock(&self.lifecycle_start);
+            let mut state = lock(&self.state);
+            let Some(removal) = Self::remove_candidate_locked(&mut state, epoch, None) else {
+                return;
+            };
+            removal
+        };
+        if let Some(stream) = removal.stream {
+            self.stop_stream(stream);
+        }
+        self.shared.set_status(if self.shared.current_epoch() == 0 {
+            MacosProtectedSourceState::ReadyIdle
+        } else {
+            MacosProtectedSourceState::Live
+        });
     }
 
     fn accepts_epoch(&self, epoch: u64) -> bool {
@@ -2951,12 +3696,14 @@ impl StreamSlot {
         state.selected_filter = None;
         state.pending_selection = None;
         state.pending_interruption = None;
+        let candidate_settlement = Self::cancel_candidate_completion(&mut state);
         state.pending_request = None;
         state.staging_epoch = None;
         state.candidate_epoch = None;
         state.inactive_epochs.clear();
         state.terminal_epochs.clear();
         drop(state);
+        Self::finish_replaced_candidate(candidate_settlement);
         self.shared
             .set_unconfirmed_selection(MacosCaptureSelection::None);
         Ok(())
@@ -3041,7 +3788,7 @@ impl StreamSlot {
         self: &Arc<Self>,
         request: MacosStreamRequest,
         reserve_pool: &PoolReservationFactory,
-    ) -> Result<StreamRequestTransaction, MacosCaptureError> {
+    ) -> Result<MacosStreamRequestTransaction, MacosCaptureError> {
         let (transaction, reservation) = self.begin_request_candidate(request)?;
         if let Some(reservation) = reservation
             && let Err(failure) =
@@ -3055,9 +3802,10 @@ impl StreamSlot {
     }
 
     fn begin_request_candidate(
-        &self,
+        self: &Arc<Self>,
         request: MacosStreamRequest,
-    ) -> Result<(StreamRequestTransaction, Option<CandidateReservation>), MacosCaptureError> {
+    ) -> Result<(MacosStreamRequestTransaction, Option<CandidateReservation>), MacosCaptureError>
+    {
         {
             let _lifecycle = lock(&self.lifecycle_start);
             let state = lock(&self.state);
@@ -3067,14 +3815,16 @@ impl StreamSlot {
                 ));
             }
             if state.request == request {
-                return Ok((
-                    StreamRequestTransaction::completed(self.shared.current_epoch(), Ok(())),
-                    None,
-                ));
+                let generation = self.shared.current_epoch();
+                let (transaction, completion) = stream_request_transaction(generation);
+                if let Some(settlement) = completion.claim(Ok(())) {
+                    settlement.publish();
+                }
+                return Ok((transaction, None));
             }
         }
         let epoch = self.allocate_epoch()?;
-        let (completion, receiver) = mpsc::sync_channel(1);
+        let (transaction, completion) = stream_request_transaction(epoch);
         let reservation = self.reserve_candidate_stage(
             epoch,
             request,
@@ -3083,27 +3833,43 @@ impl StreamSlot {
             Some(PendingStreamRequest {
                 epoch,
                 request,
-                completion,
+                completion: completion.clone(),
             }),
         )?;
-        Ok((
-            StreamRequestTransaction {
-                generation: epoch,
-                completion: receiver,
-            },
-            reservation,
-        ))
+        let cancel_streams = Arc::downgrade(self);
+        completion.set_cancel(move |generation| {
+            if let Some(streams) = cancel_streams.upgrade() {
+                streams.cancel_candidate_transaction(generation);
+            }
+        });
+        Ok((transaction, reservation))
     }
 
     #[cfg(test)]
     fn begin_request_candidate_fixture(
-        &self,
+        self: &Arc<Self>,
         request: MacosStreamRequest,
-    ) -> Result<(StreamRequestTransaction, Option<NativeStream>), MacosCaptureError> {
+    ) -> Result<(MacosStreamRequestTransaction, Option<NativeStream>), MacosCaptureError> {
         let (transaction, reservation) = self.begin_request_candidate(request)?;
-        let Some((stage, _selection_filter, replaced)) = reservation else {
+        let Some(reservation) = reservation else {
             return Ok((transaction, None));
         };
+        let CandidateReservation {
+            stage,
+            replaced,
+            replaced_settlement,
+            ..
+        } = reservation;
+        Self::finish_replaced_candidate(replaced_settlement);
+        if !self.arm_candidate_deadline(
+            stage.epoch,
+            MacosNativeTransactionPhase::StreamStart,
+            MACOS_NATIVE_START_TIMEOUT,
+        )? {
+            return Err(MacosCaptureError::CaptureWorkerStartFailed(
+                "fixture request deadline was superseded before start".to_owned(),
+            ));
+        }
         if !self.start_candidate_fixture(stage) {
             return Err(MacosCaptureError::CaptureWorkerStartFailed(
                 "fixture request candidate was superseded before start".to_owned(),
@@ -3134,6 +3900,7 @@ impl StreamSlot {
                     predecessor_epoch: None,
                 },
                 error,
+                settlement: None,
             })?;
         self.stage_candidate_with_selection(
             Some(plan.selection_filter),
@@ -3171,18 +3938,23 @@ impl StreamSlot {
 
     fn set_capture_active(&self, active: bool) -> bool {
         let _lifecycle = lock(&self.lifecycle_start);
-        let (current, candidate, selection, diagnostic_completion) = {
+        if self.shared.set_capture_active(active) == active {
+            return false;
+        }
+        if active {
+            return true;
+        }
+        self.shared.disable_picker_callbacks();
+        let source_settlement = self.cancel_source_transaction_locked();
+        let (current, candidate, selection, candidate_settlement, diagnostic_settlement) = {
             let mut state = lock(&self.state);
-            if self.shared.set_capture_active(active) == active {
-                return false;
-            }
-            if active {
-                return true;
-            }
-            let diagnostic_completion = self.shared.take_restart_diagnostic_completion();
+            let diagnostic_settlement = self
+                .shared
+                .claim_restart_diagnostic_completion(MacosProtectedSourceState::Failed);
             state.selection_revision = state.selection_revision.saturating_add(1);
             state.lifecycle_revision = state.lifecycle_revision.saturating_add(1);
             state.pending_interruption = None;
+            let candidate_settlement = Self::cancel_candidate_completion(&mut state);
             state.staging_epoch = None;
             state.pending_request = None;
             state.candidate_epoch = None;
@@ -3214,7 +3986,8 @@ impl StreamSlot {
                 state.current.take(),
                 state.candidate.take(),
                 selection,
-                diagnostic_completion,
+                candidate_settlement,
+                diagnostic_settlement,
             )
         };
         self.shared.activate_epoch(0);
@@ -3223,22 +3996,84 @@ impl StreamSlot {
             self.shared.set_unconfirmed_selection(selection);
         }
         drop(_lifecycle);
-        if let Some(completion) = diagnostic_completion {
-            let _ = completion.send(MacosProtectedSourceState::Failed);
-        }
         if let Some(candidate) = candidate {
             self.stop_stream(candidate);
         }
         if let Some(current) = current {
             self.stop_stream(current);
         }
+        Self::finish_replaced_candidate(candidate_settlement);
+        if let Some(settlement) = source_settlement {
+            settlement.publish();
+        }
+        if let Some(settlement) = diagnostic_settlement {
+            settlement.publish();
+        }
         true
     }
 
     fn stop_stream(&self, stream: NativeStream) {
-        if let Err(error) = stream.stop() {
-            self.shared.publish_recoverable_error(error);
-        }
+        let start_completion = stream.start_completion.clone();
+        let shared = Arc::clone(&self.shared);
+        let stop_shared = Arc::clone(&shared);
+        let timeout_shared = Arc::clone(&shared);
+        self.native_lifecycle.retire(
+            stream,
+            start_completion,
+            Instant::now() + MACOS_NATIVE_STOP_TIMEOUT,
+            move |stream, stop_completion| {
+                stream.worker.close();
+                let completion = RcBlock::new(move |error: *mut NSError| {
+                    // SAFETY: ScreenCaptureKit supplies either null or a live
+                    // NSError for the duration of this callback.
+                    if let Some(error) = unsafe { error.as_ref() } {
+                        stop_shared.record_retirement_error(&native_error(
+                            "stop ScreenCaptureKit stream",
+                            error,
+                        ));
+                    }
+                    let _ = stop_completion.complete();
+                });
+                // SAFETY: ScreenCaptureKit copies the completion block. The
+                // retirement registry retains the stream until it invokes or
+                // destroys that block and the decode worker has retired.
+                unsafe {
+                    stream
+                        .stream
+                        .stopCaptureWithCompletionHandler(Some(&completion));
+                }
+                if let Err(error) = stream.finish_worker_retirement() {
+                    shared.record_retirement_error(&error);
+                }
+            },
+            move || {
+                timeout_shared
+                    .record_retirement_error(&MacosCaptureError::StreamStopCompletionLost);
+            },
+        );
+    }
+
+    fn retire_stream_after_native_error(&self, stream: NativeStream) {
+        let start_completion = stream.start_completion.clone();
+        let shared = Arc::clone(&self.shared);
+        self.native_lifecycle
+            .retire_without_native_stop(stream, start_completion, move |stream| {
+                if let Err(error) = stream.finish_worker_retirement() {
+                    shared.counters.record_drop(&error);
+                }
+            });
+    }
+
+    fn retire_unstarted_stream(&self, stream: NativeStream) {
+        let start_completion = stream.start_completion.clone();
+        drop(start_completion.witness());
+        let shared = Arc::clone(&self.shared);
+        self.native_lifecycle
+            .retire_without_native_stop(stream, start_completion, move |stream| {
+                if let Err(error) = stream.finish_worker_retirement() {
+                    shared.counters.record_drop(&error);
+                }
+            });
     }
 }
 
@@ -3261,8 +4096,10 @@ fn start_stream(
     epoch: u64,
     streams: Weak<StreamSlot>,
     shared: Arc<SessionShared>,
+    start_completion: CompletionWitness,
 ) {
     let completion = RcBlock::new(move |error: *mut NSError| {
+        let _ = start_completion.complete();
         // SAFETY: ScreenCaptureKit supplies either null or a live NSError for
         // the duration of this completion invocation.
         if let Some(error) = unsafe { error.as_ref() } {
@@ -3280,6 +4117,25 @@ fn dispatch_stream_start_success(streams: &Weak<StreamSlot>, epoch: u64) {
     let Some(streams) = streams.upgrade() else {
         return;
     };
+    match streams.arm_candidate_deadline(
+        epoch,
+        MacosNativeTransactionPhase::FirstCompleteFrame,
+        MACOS_NATIVE_FIRST_FRAME_TIMEOUT,
+    ) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            let shared = Arc::clone(&streams.shared);
+            dispatch_owned_stream_error(
+                streams,
+                epoch,
+                shared,
+                MacosProtectedSourceState::Failed,
+                error,
+            );
+            return;
+        }
+    }
     let callbacks = streams.lifecycle_callbacks.clone();
     callbacks.exec_async(move || streams.record_stream_start_success(epoch));
 }
@@ -3331,16 +4187,16 @@ fn handle_owned_stream_error_with(
     error: MacosCaptureError,
     after_retirement: impl FnOnce(),
 ) {
-    let mut removal = streams.remove(epoch);
+    let mut removal = streams.remove(
+        epoch,
+        Some(MacosNativeTransactionError::Capture(error.clone())),
+    );
     streams.clear_rejected_epoch(epoch);
     let state = if removal.role == StreamRole::Stale {
         state
     } else {
         shared.record_stream_diagnostic_result(epoch, state)
     };
-    if let Some(completion) = removal.request_completion.take() {
-        let _ = completion.send(Err(error.clone()));
-    }
     let role = removal.role;
     let selection_revision = removal.selection_revision;
     let recovery = (removal.role == StreamRole::Current
@@ -3352,10 +4208,8 @@ fn handle_owned_stream_error_with(
                 .map(|stream| stream.interruption_restage(removal.selection_revision))
         })
         .flatten();
-    if let Some(retired) = removal.stream
-        && let Err(worker_error) = retired.retire_after_native_stop()
-    {
-        shared.counters.record_drop(&worker_error);
+    if let Some(retired) = removal.stream {
+        streams.retire_stream_after_native_error(retired);
     }
     after_retirement();
     if let Some(recovery) = recovery {
@@ -3372,9 +4226,15 @@ fn handle_owned_stream_error_with(
                 streams.finalize_candidate_preparation_failure(stage_error, None);
             }
         }
+        if let Some(settlement) = removal.request_settlement.take() {
+            settlement.publish();
+        }
         return;
     }
     streams.finalize_stream_error(role, selection_revision, state, error);
+    if let Some(settlement) = removal.request_settlement.take() {
+        settlement.publish();
+    }
 }
 
 fn handle_fatal_stream_error(
@@ -3410,21 +4270,18 @@ fn handle_owned_fatal_stream_error_with(
     error: MacosCaptureError,
     after_retirement: impl FnOnce(),
 ) {
-    let mut removal = streams.remove(epoch);
+    let mut removal = streams.remove(
+        epoch,
+        Some(MacosNativeTransactionError::Capture(error.clone())),
+    );
     streams.clear_rejected_epoch(epoch);
     if removal.role != StreamRole::Stale {
         shared.record_stream_diagnostic_result(epoch, MacosProtectedSourceState::Failed);
     }
-    if let Some(completion) = removal.request_completion.take() {
-        let _ = completion.send(Err(error.clone()));
-    }
     let role = removal.role;
     let selection_revision = removal.selection_revision;
-    if let Some(retired) = removal.stream
-        && let Err(stop_error) = retired.stop()
-    {
-        shared.counters.record_drop(&stop_error);
-        shared.publish_recoverable_error(stop_error);
+    if let Some(retired) = removal.stream {
+        streams.stop_stream(retired);
     }
     after_retirement();
     streams.finalize_stream_error(
@@ -3433,6 +4290,9 @@ fn handle_owned_fatal_stream_error_with(
         MacosProtectedSourceState::Failed,
         error,
     );
+    if let Some(settlement) = removal.request_settlement.take() {
+        settlement.publish();
+    }
 }
 
 struct PickerObserverIvars {
@@ -3461,7 +4321,11 @@ define_class!(
             let Some(resolution) = self.ivars().shared.picker_resolution() else {
                 return;
             };
+            let settlement = self.ivars().streams.cancel_source_transaction(&resolution);
             self.ivars().streams.finalize_picker_cancel(&resolution);
+            if let Some(settlement) = settlement {
+                settlement.publish();
+            }
         }
 
         #[allow(non_snake_case)]
@@ -3475,14 +4339,18 @@ define_class!(
             let Some(resolution) = self.ivars().shared.picker_resolution() else {
                 return;
             };
+            let settlement = self.ivars().streams.claim_source_transaction(&resolution);
             accept_filter(
                 &self.ivars().streams,
                 &self.ivars().shared,
                 self.ivars().streams.request(),
                 &self.ivars().reserve_pool,
                 filter,
-                resolution,
                 true,
+                ClaimedSourceResolution {
+                    resolution,
+                    settlement,
+                },
             );
         }
 
@@ -3492,10 +4360,14 @@ define_class!(
             let Some(resolution) = self.ivars().shared.picker_resolution() else {
                 return;
             };
+            let settlement = self.ivars().streams.claim_source_transaction(&resolution);
             let error = native_error("ScreenCaptureKit picker", error);
             self.ivars()
                 .streams
                 .finalize_picker_failure(&resolution, error);
+            if let Some(settlement) = settlement {
+                settlement.publish();
+            }
         }
     }
 );
@@ -3506,8 +4378,8 @@ impl PickerObserver {
         request: MacosStreamRequest,
         shared: Arc<SessionShared>,
         reserve_pool: PoolReservationFactory,
-    ) -> Retained<Self> {
-        let streams = StreamSlot::new(Arc::clone(&shared), request);
+    ) -> Result<Retained<Self>, MacosCaptureError> {
+        let streams = StreamSlot::new(Arc::clone(&shared), request)?;
         let this = mtm.alloc::<Self>().set_ivars(PickerObserverIvars {
             shared,
             streams,
@@ -3515,7 +4387,7 @@ impl PickerObserver {
         });
         // SAFETY: NSObject has no additional initialization requirements for
         // this main-thread observer subclass.
-        unsafe { msg_send![super(this), init] }
+        Ok(unsafe { msg_send![super(this), init] })
     }
 
     fn request(&self) -> MacosStreamRequest {
@@ -3525,7 +4397,7 @@ impl PickerObserver {
     fn set_request(
         &self,
         request: MacosStreamRequest,
-    ) -> Result<StreamRequestTransaction, MacosCaptureError> {
+    ) -> Result<MacosStreamRequestTransaction, MacosCaptureError> {
         self.ivars()
             .streams
             .set_request(request, &self.ivars().reserve_pool)
@@ -3591,55 +4463,67 @@ fn accept_filter(
     request: MacosStreamRequest,
     reserve_pool: &PoolReservationFactory,
     filter: &SCContentFilter,
-    resolution: SourceResolution,
     picker: bool,
+    claimed: ClaimedSourceResolution,
 ) {
-    let diagnostic = matches!(resolution, SourceResolution::Diagnostic(_));
-    let selection_filter = match NativeSelectionFilter::retain(filter) {
-        Ok(selection_filter) => selection_filter,
-        Err(error) => {
-            streams.finalize_resolution_error(&resolution, picker, error);
-            return;
-        }
-    };
-    let epoch = match streams.allocate_epoch() {
-        Ok(epoch) => epoch,
-        Err(error) => {
-            streams.finalize_resolution_error(&resolution, picker, error);
-            return;
-        }
-    };
-    match streams.accept_selection_filter(
-        selection_filter,
-        request,
-        epoch,
-        resolution.clone(),
-        picker,
-    ) {
-        Ok(FilterAcceptance::Stale) => {}
-        Ok(FilterAcceptance::Stored(replaced)) => {
-            if let Some(replaced) = replaced {
-                streams.stop_stream(replaced);
+    let ClaimedSourceResolution {
+        resolution,
+        settlement,
+    } = claimed;
+    let commit = || {
+        let diagnostic = matches!(resolution, SourceResolution::Diagnostic(_));
+        let selection_filter = match NativeSelectionFilter::retain(filter) {
+            Ok(selection_filter) => selection_filter,
+            Err(error) => {
+                streams.finalize_resolution_error(&resolution, picker, error);
+                return;
             }
-            if diagnostic {
-                shared.record_stream_diagnostic_result(epoch, MacosProtectedSourceState::Failed);
+        };
+        let epoch = match streams.allocate_epoch() {
+            Ok(epoch) => epoch,
+            Err(error) => {
+                streams.finalize_resolution_error(&resolution, picker, error);
+                return;
             }
-        }
-        Ok(FilterAcceptance::Candidate {
-            reservation,
+        };
+        match streams.accept_selection_filter(
+            selection_filter,
             request,
-        }) => match streams.prepare_and_start_candidate(reservation, request, reserve_pool) {
-            Ok(true) => {}
-            Ok(false) => {
-                shared.record_stream_diagnostic_result(epoch, MacosProtectedSourceState::Failed);
+            epoch,
+            resolution.clone(),
+            picker,
+        ) {
+            Ok(FilterAcceptance::Stale) => {}
+            Ok(FilterAcceptance::Stored(replaced)) => {
+                if let Some(replaced) = replaced {
+                    streams.stop_stream(replaced);
+                }
+                if diagnostic {
+                    shared
+                        .record_stream_diagnostic_result(epoch, MacosProtectedSourceState::Failed);
+                }
             }
-            Err(failure) => {
-                streams.finalize_candidate_preparation_failure(failure, Some(&resolution));
+            Ok(FilterAcceptance::Candidate {
+                reservation,
+                request,
+            }) => match streams.prepare_and_start_candidate(*reservation, request, reserve_pool) {
+                Ok(true) => {}
+                Ok(false) => {
+                    shared
+                        .record_stream_diagnostic_result(epoch, MacosProtectedSourceState::Failed);
+                }
+                Err(failure) => {
+                    streams.finalize_candidate_preparation_failure(failure, Some(&resolution));
+                }
+            },
+            Err(error) => {
+                streams.finalize_resolution_error(&resolution, false, error);
             }
-        },
-        Err(error) => {
-            streams.finalize_resolution_error(&resolution, false, error);
         }
+    };
+    commit();
+    if let Some(settlement) = settlement {
+        settlement.publish();
     }
 }
 
@@ -3704,7 +4588,7 @@ impl MacosScreenCaptureSession {
             MacosProtectedSourceState::NeedsUserAction
         };
         let shared = Arc::new(SessionShared::new(status, selector, capabilities.tahoe));
-        let observer = PickerObserver::new(mtm, request, Arc::clone(&shared), reserve_pool);
+        let observer = PickerObserver::new(mtm, request, Arc::clone(&shared), reserve_pool)?;
         let streams = Arc::clone(&observer.ivars().streams);
         // SAFETY: These are main-thread ScreenCaptureKit setup calls. The
         // observer remains retained by this session until it is removed.
@@ -3780,7 +4664,7 @@ impl MacosScreenCaptureSession {
 
     pub fn begin_post_authorization_stream_diagnostic(
         &self,
-    ) -> Result<mpsc::Receiver<MacosProtectedSourceState>, MacosCaptureError> {
+    ) -> Result<MacosStreamDiagnosticTransaction, MacosCaptureError> {
         if !CGPreflightScreenCaptureAccess() {
             return Err(MacosCaptureError::ScreenCapturePermissionRequired);
         }
@@ -3880,26 +4764,22 @@ impl MacosScreenCaptureSession {
         }
     }
 
-    pub fn set_stream_request(&self, request: MacosStreamRequest) -> Result<(), MacosCaptureError> {
-        let (generation, completion) = self.begin_stream_request(request)?;
-        StreamRequestTransaction {
-            generation,
-            completion,
-        }
-        .wait()
+    pub fn set_stream_request(
+        &self,
+        request: MacosStreamRequest,
+    ) -> Result<(), MacosNativeTransactionError> {
+        self.begin_stream_request(request)?.wait()
     }
 
     pub fn begin_stream_request(
         &self,
         request: MacosStreamRequest,
-    ) -> Result<(u64, mpsc::Receiver<Result<(), MacosCaptureError>>), MacosCaptureError> {
+    ) -> Result<MacosStreamRequestTransaction, MacosCaptureError> {
         request.cadence.timescale()?;
         self.capabilities
             .validate_dynamic_range(request.dynamic_range)?;
-        let transaction = self
-            .main
-            .get_on_main(|main| main.observer.set_request(request))?;
-        Ok(transaction.into_parts())
+        self.main
+            .get_on_main(|main| main.observer.set_request(request))
     }
 
     pub fn stream_request(&self) -> MacosStreamRequest {
@@ -3917,7 +4797,11 @@ impl MacosScreenCaptureSession {
     ) -> Result<(), MacosCaptureError> {
         let selector = resolution.selector().clone();
         if selector == MacosCaptureSelector::SessionScoped {
+            let settlement = self.streams.claim_source_transaction(&resolution);
             self.streams.finalize_session_scoped_resolution(&resolution);
+            if let Some(settlement) = settlement {
+                settlement.publish();
+            }
             return Ok(());
         }
         resolve_display_selector(
@@ -3945,6 +4829,7 @@ fn resolve_display_selector(
             if !source_resolution_is_current(&streams, &shared, &resolution) {
                 return;
             }
+            let settlement = streams.claim_source_transaction(&resolution);
             // SAFETY: ScreenCaptureKit supplies callback objects for the
             // duration of this invocation. Derived owners are retained before
             // the callback returns.
@@ -3959,6 +4844,9 @@ fn resolve_display_selector(
                 }
             };
             if !source_resolution_is_current(&streams, &shared, &resolution) {
+                if let Some(settlement) = settlement {
+                    settlement.publish();
+                }
                 return;
             }
             match result {
@@ -3969,12 +4857,18 @@ fn resolve_display_selector(
                         request,
                         &reserve_pool,
                         &filter,
-                        resolution.clone(),
                         false,
+                        ClaimedSourceResolution {
+                            resolution: resolution.clone(),
+                            settlement,
+                        },
                     );
                 }
                 Err(error) => {
                     streams.finalize_resolution_error(&resolution, false, error);
+                    if let Some(settlement) = settlement {
+                        settlement.publish();
+                    }
                 }
             }
         },
@@ -5047,22 +5941,24 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        CandidateStage, InterruptedRestage, InterruptionRecoveryPhase, MacosCaptureColorimetry,
-        MacosCaptureDynamicRange, MacosCaptureError, MacosCapturePixelFormat, MacosColorPrimaries,
-        MacosColorRange, MacosConfiguredStream, MacosDeliveredFrameMetadata, MacosFrameEvent,
-        MacosFrameStatus, MacosHostArchitecture, MacosPixelExtent, MacosProtectedSourceState,
-        MacosRuntimeCapability, MacosStreamDeliveryRejection, MacosStreamDeliveryState,
-        MacosStreamDeliveryValidator, MacosStreamPreset, MacosTahoeCapabilities,
-        MacosTahoeRuntimeProbes, MacosTransferFunction, MacosValidatedStreamDelivery,
-        NativeSelectionFilter, NativeStream, PendingStreamRequest, PoolBackingLifetime,
-        PoolObservation, SCCaptureDynamicRange, SCStreamConfiguration, SCStreamConfigurationPreset,
-        ScreenshotCaptureBackend, ScreenshotFilterHandle, ScreenshotIdentityFence,
-        ScreenshotImageCompletion, ScreenshotTransactionSnapshot, SessionShared, SourceResolution,
-        StreamSlot, SysctlI32Value, capture_capabilities_from_probes, capture_dynamic_range,
-        classify_delivery_error, color_range_from_fourcc, conservative_pool_quote,
-        execute_screenshot_transaction, is_hypercolor_ui_bundle_identifier,
-        route_retained_delivery, route_stream_activity, route_stream_lifecycle,
-        session_selection_source_id, with_admitted_surface,
+        CandidateReservation, CandidateStage, InterruptedRestage, InterruptionRecoveryPhase,
+        MacosCaptureColorimetry, MacosCaptureDynamicRange, MacosCaptureError,
+        MacosCapturePixelFormat, MacosColorPrimaries, MacosColorRange, MacosConfiguredStream,
+        MacosDeliveredFrameMetadata, MacosFrameEvent, MacosFrameStatus, MacosHostArchitecture,
+        MacosNativeTransactionError, MacosNativeTransactionPhase, MacosPixelExtent,
+        MacosProtectedSourceState, MacosRuntimeCapability, MacosStreamDeliveryRejection,
+        MacosStreamDeliveryState, MacosStreamDeliveryValidator, MacosStreamPreset,
+        MacosStreamRequestTransaction, MacosTahoeCapabilities, MacosTahoeRuntimeProbes,
+        MacosTransferFunction, MacosValidatedStreamDelivery, NativeSelectionFilter, NativeStream,
+        PendingStreamRequest, PoolBackingLifetime, PoolObservation, SCCaptureDynamicRange,
+        SCStreamConfiguration, SCStreamConfigurationPreset, ScreenshotCaptureBackend,
+        ScreenshotFilterHandle, ScreenshotIdentityFence, ScreenshotImageCompletion,
+        ScreenshotTransactionSnapshot, SessionShared, SourceResolution, StreamSlot, SysctlI32Value,
+        capture_capabilities_from_probes, capture_dynamic_range, classify_delivery_error,
+        color_range_from_fourcc, conservative_pool_quote, execute_screenshot_transaction,
+        is_hypercolor_ui_bundle_identifier, route_retained_delivery, route_stream_activity,
+        route_stream_lifecycle, session_selection_source_id, stream_request_transaction,
+        with_admitted_surface,
     };
     use crate::worker::{LatestSampleWorker, SamplePublishOutcome};
     use crate::{
@@ -5189,7 +6085,8 @@ mod tests {
             super::MacosCaptureSelector::Auto,
             MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
         ));
-        let streams = StreamSlot::new(shared, MacosStreamRequest::default());
+        let streams = StreamSlot::new(shared, MacosStreamRequest::default())
+            .expect("fixture native lifecycle starts");
         assert_eq!(streams.selection_revision(), 0);
 
         assert!(streams.set_capture_active(true));
@@ -5227,7 +6124,8 @@ mod tests {
         ));
         shared.set_capture_active(true);
         shared.activate_epoch(current_epoch);
-        let streams = StreamSlot::new(shared, MacosStreamRequest::default());
+        let streams = StreamSlot::new(shared, MacosStreamRequest::default())
+            .expect("fixture native lifecycle starts");
         {
             let mut state = super::lock(&streams.state);
             state.selection_revision = selection_revision;
@@ -5252,7 +6150,10 @@ mod tests {
                 None,
             )
             .map(|reservation| {
-                reservation.map(|(stage, _selection_filter, replaced)| (stage, replaced))
+                reservation.map(|reservation| {
+                    StreamSlot::finish_replaced_candidate(reservation.replaced_settlement);
+                    (reservation.stage, reservation.replaced)
+                })
             })
     }
 
@@ -5265,25 +6166,25 @@ mod tests {
         streams
             .reserve_candidate_stage(epoch, request, None, None, Some(pending))
             .map(|reservation| {
-                reservation.map(|(stage, _selection_filter, replaced)| (stage, replaced))
+                reservation.map(|reservation| {
+                    StreamSlot::finish_replaced_candidate(reservation.replaced_settlement);
+                    (reservation.stage, reservation.replaced)
+                })
             })
     }
 
     fn pending_request(
         epoch: u64,
         request: MacosStreamRequest,
-    ) -> (
-        PendingStreamRequest,
-        std::sync::mpsc::Receiver<Result<(), MacosCaptureError>>,
-    ) {
-        let (completion, receiver) = std::sync::mpsc::sync_channel(1);
+    ) -> (PendingStreamRequest, MacosStreamRequestTransaction) {
+        let (transaction, completion) = stream_request_transaction(epoch);
         (
             PendingStreamRequest {
                 epoch,
                 request,
                 completion,
             },
-            receiver,
+            transaction,
         )
     }
 
@@ -5640,11 +6541,11 @@ mod tests {
     #[test]
     fn retired_preparation_failure_cannot_overwrite_live_successor() {
         let streams = stream_slot_fixture(41, 9);
-        let removal = streams.remove(41);
+        let removal = streams.remove(41, None);
         assert_eq!(removal.role, super::StreamRole::Current);
         assert_eq!(streams.shared.current_epoch(), 0);
         let recovery = InterruptedRestage::interrupted(41, 9);
-        let (stage, _selection, replaced) = streams
+        let reservation = streams
             .reserve_candidate_stage(
                 42,
                 MacosStreamRequest::default(),
@@ -5654,6 +6555,13 @@ mod tests {
             )
             .expect("interrupted restage should reserve")
             .expect("active capture should admit interrupted restage");
+        let CandidateReservation {
+            stage,
+            replaced,
+            replaced_settlement,
+            ..
+        } = reservation;
+        StreamSlot::finish_replaced_candidate(replaced_settlement);
         assert!(replaced.is_none());
         let failure = streams.fail_candidate_preparation_fixture(
             stage,
@@ -5746,12 +6654,7 @@ mod tests {
         );
         assert!(failure_a.stage.lifecycle_revision > revision_a);
         let failure_a_revision = failure_a.stage.lifecycle_revision;
-        assert!(
-            completion_a
-                .recv()
-                .expect("first request should complete")
-                .is_err()
-        );
+        assert_eq!(completion_a.try_recv(), Err(mpsc::TryRecvError::Empty));
 
         let (paused_tx, paused_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
@@ -5775,6 +6678,7 @@ mod tests {
         paused_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("first finalizer should pause before lifecycle validation");
+        assert_eq!(completion_a.try_recv(), Err(mpsc::TryRecvError::Empty));
 
         let (pending_b, completion_b) = pending_request(43, request_b);
         let (stage_b, _) = reserve_request_candidate_fixture(&streams, 43, request_b, pending_b)
@@ -5788,13 +6692,14 @@ mod tests {
         let failure_b = streams.fail_candidate_preparation_fixture(stage_b, error_b.clone());
         assert!(failure_b.stage.lifecycle_revision > stage_b.lifecycle_revision);
         let failure_b_revision = failure_b.stage.lifecycle_revision;
+        assert_eq!(completion_b.try_recv(), Err(mpsc::TryRecvError::Empty));
+        assert!(streams.finalize_candidate_preparation_failure(failure_b, None));
         assert!(
             completion_b
                 .recv()
-                .expect("second request should complete")
+                .expect("second request should complete after finalization")
                 .is_err()
         );
-        assert!(streams.finalize_candidate_preparation_failure(failure_b, None));
         assert!(super::lock(&streams.state).lifecycle_revision > failure_b_revision);
         assert_eq!(streams.selection_revision(), 9);
         assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
@@ -5808,6 +6713,12 @@ mod tests {
                 .expect("stale first finalizer should finish")
         );
         finalizer_a.join().expect("first finalizer should join");
+        assert!(
+            completion_a
+                .recv()
+                .expect("first request should complete after stale finalization")
+                .is_err()
+        );
 
         assert_eq!(streams.shared.status(), MacosProtectedSourceState::Live);
         assert!(matches!(
@@ -6101,6 +7012,81 @@ mod tests {
             state.pending_request.as_ref().map(|request| request.epoch),
             Some(42)
         );
+    }
+
+    #[test]
+    fn selection_stage_adopting_a_pending_request_keeps_deadline_authority() {
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("candidate request should be valid");
+        let streams = stream_slot_fixture(41, 9);
+        super::lock(&streams.state).request = MacosStreamRequest::default();
+        let (pending, transaction) = pending_request(42, next);
+        reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("request reservation should succeed")
+            .expect("active capture should admit the candidate");
+
+        reserve_selection_candidate_fixture(&streams, 43, next, 43)
+            .expect("selection reservation should succeed")
+            .expect("the selection stage should adopt the in-flight request");
+
+        let armed = streams
+            .arm_candidate_deadline(
+                43,
+                MacosNativeTransactionPhase::StreamStart,
+                Duration::from_secs(5),
+            )
+            .expect("deadline arming should not error");
+        assert!(
+            armed,
+            "the adopted transaction must answer to the stage that owns it now"
+        );
+        assert_eq!(transaction.try_recv(), Err(mpsc::TryRecvError::Empty));
+        let state = super::lock(&streams.state);
+        assert_eq!(
+            state
+                .candidate_completion
+                .as_ref()
+                .map(|completion| completion.identity().generation),
+            Some(43)
+        );
+        assert_eq!(
+            state.pending_request.as_ref().map(|request| request.epoch),
+            Some(43)
+        );
+    }
+
+    #[test]
+    fn cancelling_an_adopted_request_tears_down_the_adopting_stage() {
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("candidate request should be valid");
+        let streams = stream_slot_fixture(41, 9);
+        super::lock(&streams.state).request = MacosStreamRequest::default();
+        let (pending, transaction) = pending_request(42, next);
+        reserve_request_candidate_fixture(&streams, 42, next, pending)
+            .expect("request reservation should succeed")
+            .expect("active capture should admit the candidate");
+        let (stage, _) = reserve_selection_candidate_fixture(&streams, 43, next, 43)
+            .expect("selection reservation should succeed")
+            .expect("the selection stage should adopt the in-flight request");
+        assert!(streams.start_candidate_fixture(stage));
+        let cancel_streams = Arc::clone(&streams);
+        {
+            let state = super::lock(&streams.state);
+            state
+                .candidate_completion
+                .as_ref()
+                .expect("candidate completion is installed")
+                .set_cancel(move |generation| {
+                    cancel_streams.cancel_candidate_transaction(generation);
+                });
+        }
+
+        assert!(transaction.cancel());
+
+        let state = super::lock(&streams.state);
+        assert_eq!(state.candidate_epoch, None);
+        assert!(state.candidate_completion.is_none());
+        assert!(state.pending_request.is_none());
     }
 
     #[test]
@@ -6455,9 +7441,16 @@ mod tests {
         let super::CaptureActivation::Candidate { reservation, .. } = activation_result else {
             panic!("activation should stage the accepted filter");
         };
-        assert_eq!(reservation.1.fixture_id(), 2);
-        assert!(streams.start_candidate_fixture(reservation.0));
-        assert!(streams.activate_candidate_fixture(reservation.0.epoch));
+        let CandidateReservation {
+            stage,
+            selection_filter,
+            replaced_settlement,
+            ..
+        } = *reservation;
+        StreamSlot::finish_replaced_candidate(replaced_settlement);
+        assert_eq!(selection_filter.fixture_id(), 2);
+        assert!(streams.start_candidate_fixture(stage));
+        assert!(streams.activate_candidate_fixture(stage.epoch));
         assert_eq!(selection_filter_ids(&streams), (Some(2), None));
     }
 
@@ -6519,7 +7512,13 @@ mod tests {
         let super::FilterAcceptance::Candidate { reservation, .. } = acceptance else {
             panic!("active acceptance should stage the delivered filter");
         };
-        assert!(!streams.start_candidate_fixture(reservation.0));
+        let CandidateReservation {
+            stage,
+            replaced_settlement,
+            ..
+        } = *reservation;
+        StreamSlot::finish_replaced_candidate(replaced_settlement);
+        assert!(!streams.start_candidate_fixture(stage));
         assert_eq!(selection_filter_ids(&streams), (Some(2), None));
         assert!(!streams.shared.capture_active());
     }
@@ -6811,7 +7810,7 @@ mod tests {
             .fail_restart_diagnostic_attempt(diagnostic.attempt);
         assert_eq!(
             diagnostic_completion.try_recv(),
-            Err(mpsc::TryRecvError::Disconnected)
+            Ok(MacosProtectedSourceState::Failed)
         );
     }
 
@@ -6857,7 +7856,7 @@ mod tests {
         assert!(streams.set_capture_active(false));
         assert_eq!(
             diagnostic_completion
-                .recv_timeout(Duration::from_secs(1))
+                .recv()
                 .expect("deactivation should terminally complete the diagnostic"),
             MacosProtectedSourceState::Failed
         );
@@ -6985,21 +7984,15 @@ mod tests {
             .begin_request_candidate_fixture(next)
             .expect("request restages the repick selection");
         assert!(replaced.is_none());
-        assert_eq!(transaction.generation, 43);
+        assert_eq!(transaction.generation(), 43);
         assert_eq!(selection_filter_ids(&streams), (Some(1), Some((43, 2))));
-        assert_eq!(
-            transaction.completion.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        );
+        assert_eq!(transaction.try_recv(), Err(mpsc::TryRecvError::Empty));
         assert!(!streams.activate_candidate_fixture(42));
-        assert_eq!(
-            transaction.completion.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        );
+        assert_eq!(transaction.try_recv(), Err(mpsc::TryRecvError::Empty));
         assert_eq!(streams.shared.current_epoch(), 41);
 
         assert!(streams.activate_candidate_fixture(43));
-        assert_eq!(transaction.completion.recv(), Ok(Ok(())));
+        assert_eq!(transaction.recv(), Ok(Ok(())));
         assert_eq!(selection_filter_ids(&streams), (Some(2), None));
         assert_eq!(streams.committed_request(), next);
         assert_eq!(streams.shared.current_epoch(), 43);
@@ -7024,14 +8017,11 @@ mod tests {
             .expect("request restages the only selection");
         assert!(replaced.is_none());
         assert_eq!(selection_filter_ids(&streams), (None, Some((43, 7))));
-        assert_eq!(
-            transaction.completion.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        );
+        assert_eq!(transaction.try_recv(), Err(mpsc::TryRecvError::Empty));
         assert!(!streams.activate_candidate_fixture(42));
 
         assert!(streams.activate_candidate_fixture(43));
-        assert_eq!(transaction.completion.recv(), Ok(Ok(())));
+        assert_eq!(transaction.recv(), Ok(Ok(())));
         assert_eq!(selection_filter_ids(&streams), (Some(7), None));
         assert_eq!(streams.committed_request(), next);
         assert_eq!(streams.shared.current_epoch(), 43);
@@ -7055,13 +8045,10 @@ mod tests {
         assert!(replaced.is_none());
         assert_eq!(selection_filter_ids(&streams), (Some(1), Some((43, 8))));
         assert!(!streams.start_candidate_fixture(uninstalled));
-        assert_eq!(
-            transaction.completion.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        );
+        assert_eq!(transaction.try_recv(), Err(mpsc::TryRecvError::Empty));
 
         assert!(streams.activate_candidate_fixture(43));
-        assert_eq!(transaction.completion.recv(), Ok(Ok(())));
+        assert_eq!(transaction.recv(), Ok(Ok(())));
         assert_eq!(selection_filter_ids(&streams), (Some(8), None));
         assert_eq!(streams.committed_request(), next);
     }
@@ -7288,6 +8275,432 @@ mod tests {
     }
 
     #[test]
+    fn missing_start_completion_times_out_without_retiring_the_current_stream() {
+        let original = MacosStreamRequest::default();
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        super::lock(&streams.state).request = original;
+        streams.next_epoch.store(12, Ordering::Release);
+        let (transaction, _) = streams
+            .begin_request_candidate_fixture(next)
+            .expect("candidate transaction starts");
+        let deadline = transaction
+            .current_deadline()
+            .expect("start transaction has a deadline");
+
+        streams
+            .native_lifecycle
+            .deadlines()
+            .expire_through(deadline);
+
+        assert_eq!(
+            transaction.wait(),
+            Err(MacosNativeTransactionError::TimedOut {
+                phase: MacosNativeTransactionPhase::StreamStart,
+                generation: 12,
+            })
+        );
+        let state = super::lock(&streams.state);
+        assert_eq!(StreamSlot::current_epoch(&state), Some(7));
+        assert_eq!(state.candidate_epoch, None);
+        assert_eq!(state.request, original);
+    }
+
+    #[test]
+    fn missing_source_callback_times_out_and_fences_the_exact_resolution() {
+        let streams = stream_slot_fixture(7, 3);
+        let resolution = streams
+            .begin_resolution()
+            .expect("general source resolution starts");
+        let completion = super::lock(&streams.source_transaction)
+            .as_ref()
+            .expect("source transaction is installed")
+            .completion
+            .clone();
+        let deadline = completion
+            .current_deadline()
+            .expect("general source resolution is bounded");
+
+        streams
+            .native_lifecycle
+            .deadlines()
+            .expire_through(deadline);
+
+        assert!(!completion.is_open());
+        assert!(!streams.shared.source_resolution_is_current(&resolution));
+        assert!(super::lock(&streams.source_transaction).is_none());
+        assert_eq!(streams.shared.current_epoch(), 7);
+    }
+
+    #[test]
+    fn picker_selection_has_cancellation_without_a_wall_clock_deadline() {
+        let streams = stream_slot_fixture(7, 3);
+        let resolution = streams
+            .begin_picker_resolution()
+            .expect("picker resolution starts");
+        let completion = super::lock(&streams.source_transaction)
+            .as_ref()
+            .expect("picker transaction is installed")
+            .completion
+            .clone();
+
+        assert_eq!(completion.current_deadline(), None);
+        assert!(completion.is_open());
+        let settlement = streams.cancel_source_transaction(&resolution);
+        settlement
+            .expect("picker cancellation claims the source transaction")
+            .publish();
+
+        assert!(!completion.is_open());
+        assert!(super::lock(&streams.source_transaction).is_none());
+    }
+
+    #[test]
+    fn source_success_remains_unpublished_until_resolution_commit() {
+        let streams = stream_slot_fixture(7, 3);
+        let resolution = streams
+            .begin_picker_resolution()
+            .expect("picker resolution starts");
+        let completion = super::lock(&streams.source_transaction)
+            .as_ref()
+            .expect("source transaction is installed")
+            .completion
+            .clone();
+
+        let settlement = streams
+            .claim_source_transaction(&resolution)
+            .expect("source callback claims success");
+        assert_eq!(completion.outcome(), None);
+        assert!(super::lock(&streams.source_transaction).is_none());
+
+        streams
+            .shared
+            .set_status(MacosProtectedSourceState::ReadyIdle);
+        assert_eq!(completion.outcome(), None);
+        settlement.publish();
+
+        assert_eq!(completion.outcome(), Some(Ok(())));
+        assert_eq!(
+            streams.shared.status(),
+            MacosProtectedSourceState::ReadyIdle
+        );
+    }
+
+    #[test]
+    fn missing_first_complete_frame_rearms_and_times_out_the_candidate() {
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        streams.next_epoch.store(12, Ordering::Release);
+        let (transaction, _) = streams
+            .begin_request_candidate_fixture(next)
+            .expect("candidate transaction starts");
+
+        super::dispatch_stream_start_success(&Arc::downgrade(&streams), 12);
+        streams.drain_lifecycle_callbacks();
+        let deadline = transaction
+            .current_deadline()
+            .expect("first frame transaction has a deadline");
+        streams
+            .native_lifecycle
+            .deadlines()
+            .expire_through(deadline);
+
+        assert_eq!(
+            transaction.wait(),
+            Err(MacosNativeTransactionError::TimedOut {
+                phase: MacosNativeTransactionPhase::FirstCompleteFrame,
+                generation: 12,
+            })
+        );
+        assert_eq!(streams.shared.current_epoch(), 7);
+        assert_eq!(super::lock(&streams.state).candidate_epoch, None);
+    }
+
+    #[test]
+    fn observed_start_callback_retires_start_deadline_before_lifecycle_queue_delivery() {
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        streams.next_epoch.store(12, Ordering::Release);
+        let (transaction, _) = streams
+            .begin_request_candidate_fixture(next)
+            .expect("candidate transaction starts");
+        let stale_start_deadline = transaction
+            .current_deadline()
+            .expect("start transaction has a deadline");
+        let (blocked_tx, blocked_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        streams.lifecycle_callbacks.exec_async(move || {
+            blocked_tx
+                .send(())
+                .expect("lifecycle queue block is observable");
+            release_rx
+                .recv()
+                .expect("lifecycle queue block is released");
+        });
+        blocked_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("lifecycle queue is blocked");
+
+        super::dispatch_stream_start_success(&Arc::downgrade(&streams), 12);
+        streams
+            .native_lifecycle
+            .deadlines()
+            .expire_through(stale_start_deadline);
+
+        assert_eq!(transaction.try_recv(), Err(mpsc::TryRecvError::Empty));
+        release_tx.send(()).expect("lifecycle queue should resume");
+        streams.drain_lifecycle_callbacks();
+        assert!(streams.activate_candidate_fixture(12));
+        assert_eq!(transaction.wait(), Ok(()));
+    }
+
+    #[test]
+    fn first_frame_and_timeout_commit_exactly_one_candidate_result() {
+        let next = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let winner = stream_slot_fixture(7, 3);
+        winner.next_epoch.store(12, Ordering::Release);
+        let (committed, _) = winner
+            .begin_request_candidate_fixture(next)
+            .expect("winning candidate starts");
+        let stale_deadline = committed
+            .current_deadline()
+            .expect("winning candidate has a deadline");
+        assert!(winner.activate_candidate_fixture(12));
+        winner
+            .native_lifecycle
+            .deadlines()
+            .expire_through(stale_deadline);
+        assert_eq!(committed.wait(), Ok(()));
+        assert_eq!(winner.shared.current_epoch(), 12);
+
+        let timed_out = stream_slot_fixture(7, 3);
+        timed_out.next_epoch.store(12, Ordering::Release);
+        let (rejected, _) = timed_out
+            .begin_request_candidate_fixture(next)
+            .expect("losing candidate starts");
+        let deadline = rejected
+            .current_deadline()
+            .expect("losing candidate has a deadline");
+        timed_out
+            .native_lifecycle
+            .deadlines()
+            .expire_through(deadline);
+        assert!(!timed_out.activate_candidate_fixture(12));
+        assert!(matches!(
+            rejected.wait(),
+            Err(MacosNativeTransactionError::TimedOut { .. })
+        ));
+        assert_eq!(timed_out.shared.current_epoch(), 7);
+    }
+
+    #[test]
+    fn claimed_cancellation_retires_only_the_candidate_before_publishing() {
+        let request = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        let (transaction, _) = streams
+            .begin_request_candidate_fixture(request)
+            .expect("request candidate starts");
+        let epoch = transaction.generation();
+        let completion = super::lock(&streams.state)
+            .candidate_completion
+            .as_ref()
+            .cloned()
+            .expect("candidate completion is installed");
+        let cancel_selected = Arc::new(std::sync::Barrier::new(2));
+        let selected = Arc::clone(&cancel_selected);
+        let resume_cancel = Arc::new(std::sync::Barrier::new(2));
+        let resume = Arc::clone(&resume_cancel);
+        let cancel_streams = Arc::clone(&streams);
+        completion.set_cancel(move |generation| {
+            selected.wait();
+            resume.wait();
+            cancel_streams.cancel_candidate_transaction(generation);
+        });
+        let cancel = thread::spawn(move || transaction.cancel());
+        cancel_selected.wait();
+
+        assert_eq!(completion.current_deadline(), None);
+        assert!(!completion.has_deadline_ticket());
+        assert_eq!(completion.outcome(), None);
+        assert!(!streams.activate_candidate_fixture(epoch));
+        assert_eq!(streams.shared.current_epoch(), 7);
+
+        resume_cancel.wait();
+        assert!(cancel.join().expect("cancellation attempt exits"));
+        assert!(matches!(
+            completion.outcome(),
+            Some(Err(MacosNativeTransactionError::Cancelled { .. }))
+        ));
+
+        let state = super::lock(&streams.state);
+        assert_eq!(state.fixture_current_epoch, Some(7));
+        assert_eq!(state.fixture_candidate_epoch, None);
+        assert_eq!(state.candidate_epoch, None);
+        assert!(state.candidate_completion.is_none());
+        assert!(state.pending_request.is_none());
+        assert_eq!(state.request, MacosStreamRequest::default());
+        drop(state);
+        assert_eq!(streams.shared.current_epoch(), 7);
+    }
+
+    #[test]
+    fn successful_claim_wakes_only_after_current_and_first_publication_commit() {
+        let request = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        let (transaction, _) = streams
+            .begin_request_candidate_fixture(request)
+            .expect("request candidate starts");
+        let epoch = transaction.generation();
+        let completion = super::lock(&streams.state)
+            .candidate_completion
+            .as_ref()
+            .cloned()
+            .expect("candidate completion is installed");
+        let published = Arc::new(AtomicBool::new(false));
+        let observed_publication = Arc::clone(&published);
+        let observer_streams = Arc::clone(&streams);
+        let (observed_tx, observed_rx) = mpsc::sync_channel(1);
+        let waiter = thread::spawn(move || {
+            let result = transaction.wait();
+            let state = super::lock(&observer_streams.state);
+            observed_tx
+                .send((
+                    result,
+                    observer_streams.shared.current_epoch(),
+                    state.fixture_current_epoch,
+                    state.pending_selection.is_none(),
+                    state.request,
+                    observed_publication.load(Ordering::Acquire),
+                ))
+                .expect("waiter observation is delivered");
+        });
+        let claim_reached = Arc::new(std::sync::Barrier::new(2));
+        let claimed = Arc::clone(&claim_reached);
+        let resume_commit = Arc::new(std::sync::Barrier::new(2));
+        let resume = Arc::clone(&resume_commit);
+        let publish_streams = Arc::clone(&streams);
+        let publish_flag = Arc::clone(&published);
+        let publisher = thread::spawn(move || {
+            publish_streams.publish_decoded_event_with_claim_hook(
+                epoch,
+                sdr_delivery_fixture(),
+                move || {
+                    claimed.wait();
+                    resume.wait();
+                },
+                move || publish_flag.store(true, Ordering::Release),
+            )
+        });
+        claim_reached.wait();
+
+        assert_eq!(completion.current_deadline(), None);
+        assert!(!completion.has_deadline_ticket());
+        assert_eq!(completion.outcome(), None);
+        assert_eq!(observed_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+        assert!(!completion.cancel());
+
+        resume_commit.wait();
+        assert!(publisher.join().expect("first publication exits"));
+        let observation = observed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("successful transaction wakes after publication");
+        waiter.join().expect("request waiter exits");
+
+        assert_eq!(observation.0, Ok(()));
+        assert_eq!(observation.1, epoch);
+        assert_eq!(observation.2, Some(epoch));
+        assert!(observation.3);
+        assert_eq!(observation.4, request);
+        assert!(observation.5);
+        assert!(!completion.is_open());
+    }
+
+    #[test]
+    fn panic_after_success_claim_cleans_candidate_before_failure_publication() {
+        let request = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        let (transaction, _) = streams
+            .begin_request_candidate_fixture(request)
+            .expect("request candidate starts");
+        let epoch = transaction.generation();
+        let completion = super::lock(&streams.state)
+            .candidate_completion
+            .as_ref()
+            .cloned()
+            .expect("candidate completion is installed");
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            streams.publish_decoded_event_with_claim_hook(
+                epoch,
+                sdr_delivery_fixture(),
+                || panic!("abort after reserving transaction success"),
+                || panic!("publication must not run after claim abort"),
+            )
+        }));
+
+        assert!(unwind.is_err());
+        assert!(matches!(
+            transaction.wait(),
+            Err(MacosNativeTransactionError::Cancelled { .. })
+        ));
+        let state = super::lock(&streams.state);
+        assert_eq!(state.fixture_current_epoch, Some(7));
+        assert_eq!(state.fixture_candidate_epoch, None);
+        assert_eq!(state.candidate_epoch, None);
+        assert!(state.candidate_completion.is_none());
+        assert!(state.pending_request.is_none());
+        assert_eq!(state.request, MacosStreamRequest::default());
+        drop(state);
+        assert_eq!(streams.shared.current_epoch(), 7);
+        assert!(!completion.has_deadline_ticket());
+    }
+
+    #[test]
+    fn panic_before_first_publication_restores_prior_current_before_failure_wakes() {
+        let request = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+            .expect("fixture request is valid");
+        let streams = stream_slot_fixture(7, 3);
+        let (transaction, _) = streams
+            .begin_request_candidate_fixture(request)
+            .expect("request candidate starts");
+        let epoch = transaction.generation();
+        let completion = super::lock(&streams.state)
+            .candidate_completion
+            .as_ref()
+            .cloned()
+            .expect("candidate completion is installed");
+        let previous_status = streams.shared.status();
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            streams.publish_decoded_event_with(epoch, true, Some(sdr_delivery_fixture()), || {
+                panic!("abort before first publication commits")
+            })
+        }));
+
+        assert!(unwind.is_err());
+        assert!(matches!(
+            transaction.wait(),
+            Err(MacosNativeTransactionError::Cancelled { .. })
+        ));
+        let state = super::lock(&streams.state);
+        assert_eq!(state.fixture_current_epoch, Some(7));
+        assert_eq!(state.fixture_candidate_epoch, None);
+        assert_eq!(state.candidate_epoch, None);
+        assert_eq!(state.request, MacosStreamRequest::default());
+        assert!(state.pending_selection.is_none());
+        assert!(state.pending_request.is_none());
+        drop(state);
+        assert_eq!(streams.shared.current_epoch(), 7);
+        assert_eq!(streams.shared.status(), previous_status);
+        assert!(!completion.has_deadline_ticket());
+    }
+
+    #[test]
     fn stream_slot_serializes_request_transactions_while_a_candidate_is_pending() {
         let original = MacosStreamRequest::default();
         let first = MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
@@ -7319,6 +8732,66 @@ mod tests {
         assert!(streams.activate_candidate_fixture(stage.epoch));
         assert_eq!(completion.recv(), Ok(Ok(())));
         assert_eq!(streams.committed_request(), first);
+    }
+
+    #[test]
+    fn repeated_activate_deactivate_cancels_every_pending_transaction() {
+        let streams = stream_slot_fixture(7, 3);
+        let requests = [
+            MacosStreamRequest::new(MacosCaptureCadence::FramesPerSecond(30), false)
+                .expect("first fixture request is valid"),
+            MacosStreamRequest::new_hdr(MacosCaptureCadence::NativeRefresh, true)
+                .expect("second fixture request is valid"),
+        ];
+
+        for request in requests {
+            streams
+                .begin_picker_resolution()
+                .expect("picker resolution begins");
+            let (transaction, _) = streams
+                .begin_request_candidate_fixture(request)
+                .expect("request candidate starts");
+            assert!(transaction.current_deadline().is_some());
+
+            assert!(streams.set_capture_active(false));
+            assert!(transaction.current_deadline().is_none());
+            assert!(matches!(
+                transaction.wait(),
+                Err(MacosNativeTransactionError::Cancelled { .. })
+            ));
+            assert!(super::lock(&streams.source_transaction).is_none());
+            let state = super::lock(&streams.state);
+            assert!(state.pending_request.is_none());
+            assert!(state.candidate_completion.is_none());
+            assert_eq!(state.candidate_epoch, None);
+            assert_eq!(state.staging_epoch, None);
+            drop(state);
+
+            assert!(!streams.set_capture_active(false));
+            assert!(streams.set_capture_active(true));
+        }
+    }
+
+    #[test]
+    fn timed_out_old_stop_error_cannot_degrade_a_live_successor() {
+        let shared = SessionShared::new(
+            MacosProtectedSourceState::Live,
+            super::MacosCaptureSelector::Auto,
+            MacosTahoeCapabilities::from_probes(ABSENT_TAHOE_PROBES),
+        );
+        shared.activate_epoch(41);
+        shared.record_retirement_error(&MacosCaptureError::StreamStopCompletionLost);
+
+        shared.activate_epoch(42);
+        shared.set_status(MacosProtectedSourceState::Live);
+        shared.record_retirement_error(&MacosCaptureError::CaptureWorkerStartFailed(
+            "late stop callback failed".to_owned(),
+        ));
+
+        assert_eq!(shared.current_epoch(), 42);
+        assert_eq!(shared.status(), MacosProtectedSourceState::Live);
+        assert!(!shared.mailbox.has_pending());
+        assert_eq!(shared.diagnostics().total_dropped(), 2);
     }
 
     #[test]
@@ -7378,6 +8851,62 @@ mod tests {
     }
 
     #[test]
+    fn claimed_diagnostic_cancellation_cannot_be_overwritten_by_stream_success() {
+        let streams = stream_slot_fixture(0, 7);
+        let (resolution, transaction) = streams
+            .begin_restart_diagnostic(true, 7)
+            .expect("diagnostic transaction begins");
+        streams.shared.record_filter_enumerated(&resolution, 42);
+        let completion = streams
+            .shared
+            .restart_diagnostic_completion(resolution.attempt)
+            .expect("diagnostic completion remains active");
+        let cancel_selected = Arc::new(std::sync::Barrier::new(2));
+        let selected = Arc::clone(&cancel_selected);
+        let resume_cancel = Arc::new(std::sync::Barrier::new(2));
+        let resume = Arc::clone(&resume_cancel);
+        let cancel_streams = Arc::clone(&streams);
+        let attempt = resolution.attempt;
+        completion.set_cancel(move |_| {
+            selected.wait();
+            resume.wait();
+            cancel_streams.finish_restart_diagnostic(attempt);
+        });
+        let cancellation = thread::spawn(move || transaction.cancel());
+        cancel_selected.wait();
+
+        assert_eq!(completion.current_deadline(), None);
+        assert_eq!(completion.outcome(), None);
+        assert_eq!(
+            streams
+                .shared
+                .record_stream_diagnostic_result(42, MacosProtectedSourceState::PermissionDenied,),
+            MacosProtectedSourceState::PermissionDenied
+        );
+        assert!(
+            streams
+                .shared
+                .restart_diagnostic_completion(resolution.attempt)
+                .is_some()
+        );
+
+        resume_cancel.wait();
+        assert!(cancellation.join().expect("diagnostic cancellation exits"));
+        assert!(matches!(
+            completion.outcome(),
+            Some(Err(MacosNativeTransactionError::Cancelled { .. }))
+        ));
+        assert!(
+            streams
+                .shared
+                .restart_diagnostic_completion(resolution.attempt)
+                .is_none()
+        );
+        assert_eq!(streams.shared.status(), MacosProtectedSourceState::Failed);
+        assert!(!completion.has_deadline_ticket());
+    }
+
+    #[test]
     fn ordinary_resolution_supersedes_the_diagnostic_without_stranding_its_receiver() {
         let shared = SessionShared::new(
             MacosProtectedSourceState::Starting,
@@ -7411,7 +8940,8 @@ mod tests {
         shared.set_unconfirmed_selection(super::MacosCaptureSelection::SessionScoped {
             content_style: super::MacosCaptureContentStyle::Window,
         });
-        let streams = StreamSlot::new(Arc::clone(&shared), MacosStreamRequest::default());
+        let streams = StreamSlot::new(Arc::clone(&shared), MacosStreamRequest::default())
+            .expect("fixture native lifecycle starts");
         {
             let mut state = super::lock(&streams.state);
             state.staging_epoch = Some(8);
