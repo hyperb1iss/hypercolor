@@ -8,11 +8,13 @@ use std::time::{Duration, Instant};
 
 use objc2_app_kit::NSEvent;
 use objc2_core_foundation::{
-    CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, kCFRunLoopCommonModes,
+    CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, CFRunLoopSourceContext,
+    kCFRunLoopCommonModes,
 };
 use objc2_core_graphics::{
-    CGDisplayBounds, CGError, CGEvent, CGEventField, CGEventTapInformation, CGEventTapLocation,
-    CGEventTapOptions, CGEventTapPlacement, CGEventType, CGGetActiveDisplayList, CGGetEventTapList,
+    CGDirectDisplayID, CGDisplayBounds, CGError, CGEvent, CGEventField, CGEventTapInformation,
+    CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
+    CGGetActiveDisplayList, CGGetEventTapList, CGGetOnlineDisplayList,
     CGPreflightListenEventAccess, CGRequestListenEventAccess,
 };
 
@@ -46,49 +48,77 @@ impl TapKind {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct RunLoopHandles {
+    run_loop: usize,
+    stop_source: usize,
+}
+
 struct RunLoopControl {
     stopping: AtomicBool,
-    address: Mutex<usize>,
+    handles: Mutex<RunLoopHandles>,
 }
 
 impl RunLoopControl {
     fn new() -> Self {
         Self {
             stopping: AtomicBool::new(false),
-            address: Mutex::new(0),
+            handles: Mutex::new(RunLoopHandles::default()),
         }
     }
 
-    fn install(&self, run_loop: &CFRunLoop) {
+    fn install(&self, run_loop: &CFRunLoop, stop_source: &CFRunLoopSource) {
         *self
-            .address
+            .handles
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            std::ptr::from_ref(run_loop).expose_provenance();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = RunLoopHandles {
+            run_loop: std::ptr::from_ref(run_loop).expose_provenance(),
+            stop_source: std::ptr::from_ref(stop_source).expose_provenance(),
+        };
     }
 
     fn clear(&self) {
         *self
-            .address
+            .handles
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = 0;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = RunLoopHandles::default();
     }
 
     fn request_stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        let address = self
-            .address
+        let handles = self
+            .handles
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *address == 0 {
+        if handles.run_loop == 0 {
             return;
         }
-        // SAFETY: the run-loop worker owns the retained object and clears this
-        // address under the same mutex before releasing it. Core Foundation
-        // permits stopping and waking a run loop from another thread.
-        let run_loop = unsafe { &*std::ptr::with_exposed_provenance::<CFRunLoop>(*address) };
+        // SAFETY: the run-loop worker owns the retained objects and clears
+        // these addresses under the same mutex before releasing them. Core
+        // Foundation permits stopping and waking a run loop from another
+        // thread.
+        let run_loop =
+            unsafe { &*std::ptr::with_exposed_provenance::<CFRunLoop>(handles.run_loop) };
+        if handles.stop_source != 0 {
+            // Signaling the dedicated stop source closes the startup race:
+            // a `CFRunLoopStop` that lands after the worker's stopping
+            // check but before `CFRunLoopRun` begins is a no-op, while a
+            // signaled source is serviced as soon as the loop enters and
+            // its perform callback stops the loop from inside.
+            // SAFETY: same ownership discipline as the run-loop address.
+            let stop_source = unsafe {
+                &*std::ptr::with_exposed_provenance::<CFRunLoopSource>(handles.stop_source)
+            };
+            stop_source.signal();
+        }
         run_loop.stop();
         run_loop.wake_up();
+    }
+}
+
+unsafe extern "C-unwind" fn stop_run_loop_perform(_info: *mut c_void) {
+    if let Some(run_loop) = CFRunLoop::current() {
+        run_loop.stop();
     }
 }
 
@@ -307,6 +337,22 @@ pub fn input_monitoring_granted() -> bool {
     CGPreflightListenEventAccess()
 }
 
+/// Whether any process currently holds the macOS secure-input assertion
+/// (Secure Keyboard Entry). While held, an event tap receives no keyboard
+/// events even though pointer events keep flowing, so held-key state must
+/// be cleared through an ordered gap.
+#[must_use]
+pub fn secure_event_input_enabled() -> bool {
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        /// `Boolean IsSecureEventInputEnabled(void)` from HIToolbox.
+        fn IsSecureEventInputEnabled() -> u8;
+    }
+    // SAFETY: the function takes no arguments, has no side effects, and
+    // reads a session-global flag maintained by the window server.
+    (unsafe { IsSecureEventInputEnabled() }) != 0
+}
+
 /// Ask macOS to grant Input Monitoring to the current signed process.
 #[must_use]
 pub fn request_input_monitoring() -> bool {
@@ -319,26 +365,10 @@ pub fn current_virtual_desktop() -> MacosInputResult<MacosVirtualDesktop> {
 }
 
 fn query_virtual_desktop(generation: u64) -> MacosInputResult<MacosVirtualDesktop> {
-    let mut count = 0;
-    // SAFETY: the first call writes only the display count because both the
-    // capacity and display pointer are zero.
-    let error = unsafe { CGGetActiveDisplayList(0, std::ptr::null_mut(), &raw mut count) };
-    if error != CGError::Success {
-        return Err(MacosInputError::DisplayTopology(error.0));
+    let mut displays = query_display_ids(false)?;
+    if displays.is_empty() {
+        displays = query_display_ids(true)?;
     }
-    if count == 0 {
-        return Err(MacosInputError::NoActiveDisplays);
-    }
-
-    let mut displays = vec![0; usize::try_from(count).unwrap_or(usize::MAX)];
-    let mut written = count;
-    // SAFETY: `displays` has capacity for `count` identifiers and `written`
-    // points to initialized writable storage.
-    let error = unsafe { CGGetActiveDisplayList(count, displays.as_mut_ptr(), &raw mut written) };
-    if error != CGError::Success {
-        return Err(MacosInputError::DisplayTopology(error.0));
-    }
-    displays.truncate(usize::try_from(written).unwrap_or(displays.len()));
     let mut bounds = displays.into_iter().map(|display| CGDisplayBounds(display));
     let first = bounds.next().ok_or(MacosInputError::NoActiveDisplays)?;
     let mut min_x = first.origin.x;
@@ -354,6 +384,42 @@ fn query_virtual_desktop(generation: u64) -> MacosInputResult<MacosVirtualDeskto
     MacosVirtualDesktop::new(min_x, min_y, max_x - min_x, max_y - min_y, generation)
 }
 
+fn query_display_ids(online: bool) -> MacosInputResult<Vec<CGDirectDisplayID>> {
+    let mut count = 0;
+    // SAFETY: both Core Graphics count-only forms write only the display count
+    // because the capacity and display pointer are zero.
+    let error = unsafe {
+        if online {
+            CGGetOnlineDisplayList(0, std::ptr::null_mut(), &raw mut count)
+        } else {
+            CGGetActiveDisplayList(0, std::ptr::null_mut(), &raw mut count)
+        }
+    };
+    if error != CGError::Success {
+        return Err(MacosInputError::DisplayTopology(error.0));
+    }
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut displays = vec![0; usize::try_from(count).unwrap_or(usize::MAX)];
+    let mut written = count;
+    // SAFETY: both Core Graphics list forms write at most `count` identifiers
+    // into `displays` and report the initialized length through `written`.
+    let error = unsafe {
+        if online {
+            CGGetOnlineDisplayList(count, displays.as_mut_ptr(), &raw mut written)
+        } else {
+            CGGetActiveDisplayList(count, displays.as_mut_ptr(), &raw mut written)
+        }
+    };
+    if error != CGError::Success {
+        return Err(MacosInputError::DisplayTopology(error.0));
+    }
+    displays.truncate(usize::try_from(written).unwrap_or(displays.len()));
+    Ok(displays)
+}
+
 fn run_event_taps(
     masks: EffectiveEventMasks,
     queue: &Arc<EventQueue>,
@@ -367,7 +433,32 @@ fn run_event_taps(
         )));
         return;
     };
-    control.install(&run_loop);
+    let mut stop_context = CFRunLoopSourceContext {
+        version: 0,
+        info: std::ptr::null_mut(),
+        retain: None,
+        release: None,
+        copyDescription: None,
+        equal: None,
+        hash: None,
+        schedule: None,
+        cancel: None,
+        perform: Some(stop_run_loop_perform),
+    };
+    // SAFETY: the context pointer is valid for the duration of the call and
+    // Core Foundation copies the structure; the perform callback uses no
+    // context state.
+    let Some(stop_source) = (unsafe { CFRunLoopSource::new(None, 0, &raw mut stop_context) })
+    else {
+        let _ = ready.send(Err(MacosInputError::WorkerSpawn(
+            "Core Foundation refused the run-loop stop source".to_owned(),
+        )));
+        return;
+    };
+    // SAFETY: Core Foundation exports this process-lifetime static mode.
+    let common_modes = unsafe { kCFRunLoopCommonModes };
+    run_loop.add_source(Some(&stop_source), common_modes);
+    control.install(&run_loop, &stop_source);
 
     let mut taps = Vec::with_capacity(2);
     let result = (|| {
@@ -395,6 +486,7 @@ fn run_event_taps(
             tap.teardown(&run_loop);
         }
         control.clear();
+        run_loop.remove_source(Some(&stop_source), common_modes);
         let _ = ready.send(Err(error));
         return;
     }
@@ -408,6 +500,7 @@ fn run_event_taps(
         tap.teardown(&run_loop);
     }
     control.clear();
+    run_loop.remove_source(Some(&stop_source), common_modes);
 
     if !control.stopping.load(Ordering::Acquire) {
         set_worker_state(
@@ -514,9 +607,13 @@ fn handle_tap_disable(context: &TapContext, reason: MacosInputGapReason, callbac
     context
         .queue
         .enqueue_at(MacosInputEvent::StateGap { reason }, callback_entry);
-    if repeated {
-        return;
-    }
+    // Always re-enable, including on repeated disables. A disabled tap
+    // fires no callbacks, so refusing here would be permanent capture
+    // death with no recovery trigger anywhere. The retry cadence is
+    // bounded by macOS itself: each re-enable requires the window server
+    // to deliver a fresh disable event before another cycle can happen,
+    // and repeated disables stay observable through the diagnostics
+    // counters and the Degraded worker state.
     let tap = context.tap.load(Ordering::Acquire);
     if tap.is_null() {
         return;
@@ -557,26 +654,31 @@ fn decode_native_event(
         });
     }
     if event_type == SYSTEM_DEFINED_EVENT {
-        let Some(native) = NSEvent::eventWithCGEvent(event) else {
+        // The tap thread never spins an autorelease pool of its own, and
+        // the NSEvent bridge autoreleases; without this scope every media
+        // key leaks the bridged event and spams the console.
+        return objc2::rc::autoreleasepool(|_| {
+            let Some(native) = NSEvent::eventWithCGEvent(event) else {
+                context
+                    .queue
+                    .diagnostics()
+                    .record_unsupported_system_event();
+                return None;
+            };
+            let data1 = i64::try_from(native.data1()).ok()?;
+            if let Some(media) = decode_media_key(native.subtype().0, data1) {
+                return Some(MacosInputEvent::MediaKey {
+                    nx_key_type: media.nx_key_type,
+                    pressed: media.pressed,
+                    repeat: media.repeat,
+                });
+            }
             context
                 .queue
                 .diagnostics()
                 .record_unsupported_system_event();
-            return None;
-        };
-        let data1 = i64::try_from(native.data1()).ok()?;
-        if let Some(media) = decode_media_key(native.subtype().0, data1) {
-            return Some(MacosInputEvent::MediaKey {
-                nx_key_type: media.nx_key_type,
-                pressed: media.pressed,
-                repeat: media.repeat,
-            });
-        }
-        context
-            .queue
-            .diagnostics()
-            .record_unsupported_system_event();
-        return None;
+            None
+        });
     }
     if let Some((button, pressed)) = decode_button_event(
         event_type.0,
@@ -638,20 +740,36 @@ fn decode_native_event(
             MacosScrollUnit::Notches
         };
         return Some(MacosInputEvent::Wheel {
-            fixed_delta_x: CGEvent::integer_value_field(
-                Some(event),
-                CGEventField::ScrollWheelEventFixedPtDeltaAxis2,
-            ),
-            fixed_delta_y: CGEvent::integer_value_field(
-                Some(event),
-                CGEventField::ScrollWheelEventFixedPtDeltaAxis1,
-            ),
+            fixed_delta_x: q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis2),
+            fixed_delta_y: q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis1),
             unit,
             phase,
             momentum_phase,
         });
     }
     None
+}
+
+/// Read a 16.16 fixed-point scroll field as raw Q16.16 bits.
+///
+/// The integer accessor rounds fixed-point fields to the nearest whole
+/// unit, discarding the fractional 16 bits (one notch reads as 1, not
+/// 65536). The double accessor applies the documented 1/65536 scaling, so
+/// multiplying back yields the raw representation the fold pipeline
+/// expects.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "the scaled value is clamped to the i64 range before conversion"
+)]
+fn q16_16_field(event: &CGEvent, field: CGEventField) -> i64 {
+    const Q16_16_SCALE: f64 = 65536.0;
+    let scaled = CGEvent::double_value_field(Some(event), field) * Q16_16_SCALE;
+    if scaled.is_finite() {
+        scaled.round().clamp(i64::MIN as f64, i64::MAX as f64) as i64
+    } else {
+        0
+    }
 }
 
 fn decode_phase(
@@ -676,6 +794,7 @@ fn drain_batches(
     let mut events = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY + 2);
     let mut callback_entries = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY);
     let mut next_topology_check = Instant::now() + TOPOLOGY_INTERVAL;
+    let mut secure_input_active = false;
     loop {
         queue.wait(HEALTH_INTERVAL);
         let now = Instant::now();
@@ -690,6 +809,19 @@ fn drain_batches(
             queue.request_gap(MacosInputGapReason::PermissionRevoked);
             control.request_stop();
             queue.close();
+        }
+        // Secure Keyboard Entry starves the tap of keyboard events while
+        // pointer events keep flowing; without an ordered gap on the
+        // rising edge, keys held at that moment stay pressed forever.
+        if config.keyboard {
+            let secure_now = secure_event_input_enabled();
+            if secure_now != secure_input_active {
+                secure_input_active = secure_now;
+                queue.diagnostics().set_secure_input_active(secure_now);
+                if secure_now {
+                    queue.request_gap(MacosInputGapReason::SessionInterrupted);
+                }
+            }
         }
         if config.pointer && now >= next_topology_check {
             match query_virtual_desktop(desktop.topology_generation) {

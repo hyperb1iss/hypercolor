@@ -168,6 +168,7 @@ pub(crate) struct Diagnostics {
     last_point_delta_y: AtomicI64,
     callback_to_publication: AtomicLatencyHistogram,
     repeated_tap_disable: AtomicU8,
+    secure_input_active: AtomicBool,
 }
 
 impl Diagnostics {
@@ -193,7 +194,15 @@ impl Diagnostics {
             callback_to_publication_max_ns: callback_to_publication.max_ns,
             callback_to_publication_p95_ns: callback_to_publication.p95_ns,
             callback_to_publication_p99_ns: callback_to_publication.p99_ns,
+            secure_input_active: self.secure_input_active.load(Ordering::Relaxed),
         }
+    }
+
+    /// Publish the health tick's secure-input observation so status
+    /// snapshots read this cached value instead of calling Carbon from
+    /// other threads at frame rate.
+    pub(crate) fn set_secure_input_active(&self, active: bool) {
+        self.secure_input_active.store(active, Ordering::Relaxed);
     }
 
     fn record_received(&self) {

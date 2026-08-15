@@ -551,6 +551,11 @@ impl MacosHostInput {
                     keyboard,
                     pointer,
                     keyboard_tcc: self.keyboard_tcc,
+                    // Read from the session's health-tick cache: probing
+                    // Carbon here would put an FFI call on the render
+                    // thread at frame rate.
+                    secure_input_active: native
+                        .is_some_and(|diagnostics| diagnostics.secure_input_active),
                     keyboard_owner: self.owner,
                     pointer_owner: self.owner,
                     owner_conflict: self.owner_conflict.clone(),
@@ -1222,8 +1227,13 @@ fn fold_modifier(
     };
     let held = state.pressed_keys.contains(key);
     let active = flags.contains(mask);
-    let pressed = if key == "CapsLock" || active != held {
+    let pressed = if active != held {
         active
+    } else if key == "CapsLock" {
+        // The CapsLock flag carries the lock state rather than key travel:
+        // the physical release re-reports the unchanged flag. Not an edge
+        // and not an anomaly, so it neither emits nor counts.
+        return;
     } else if active && counterpart.is_some_and(|other| state.pressed_keys.contains(other)) {
         false
     } else {

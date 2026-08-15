@@ -230,6 +230,10 @@ pub struct MacosInputPlatformStatus {
     pub pointer: MacosProtectedSourceState,
     /// Input Monitoring authorization evidence.
     pub keyboard_tcc: MacosAuthorizationState,
+    /// Whether another process holds the secure-input assertion (Secure
+    /// Keyboard Entry). While true, keyboard events are withheld from the
+    /// event tap and held-key state has been cleared through a gap.
+    pub secure_input_active: bool,
     /// Process topology owning keyboard capture.
     pub keyboard_owner: MacosCapabilityOwner,
     /// Process topology owning pointer capture.

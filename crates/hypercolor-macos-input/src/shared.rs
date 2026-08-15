@@ -230,6 +230,9 @@ pub struct MacosInputDiagnostics {
     pub callback_to_publication_max_ns: u64,
     pub callback_to_publication_p95_ns: u64,
     pub callback_to_publication_p99_ns: u64,
+    /// Whether the health tick last observed the session-global
+    /// secure-input assertion (Secure Keyboard Entry) as held.
+    pub secure_input_active: bool,
 }
 
 /// Event masks actually requested for one session.

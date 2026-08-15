@@ -50,6 +50,11 @@ pub const fn input_monitoring_granted() -> bool {
 }
 
 #[must_use]
+pub const fn secure_event_input_enabled() -> bool {
+    false
+}
+
+#[must_use]
 pub const fn request_input_monitoring() -> bool {
     false
 }

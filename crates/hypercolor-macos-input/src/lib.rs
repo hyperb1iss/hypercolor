@@ -26,6 +26,7 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{
     MacosInputSession, current_virtual_desktop, input_monitoring_granted, request_input_monitoring,
+    secure_event_input_enabled,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -33,4 +34,5 @@ mod stubs;
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
     MacosInputSession, current_virtual_desktop, input_monitoring_granted, request_input_monitoring,
+    secure_event_input_enabled,
 };

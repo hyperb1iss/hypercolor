@@ -475,6 +475,7 @@ pub enum InputSourcePlatformStatus {
         keyboard: MacosProtectedSourceStateApi,
         pointer: MacosProtectedSourceStateApi,
         keyboard_tcc: MacosAuthorizationStateApi,
+        secure_input_active: bool,
         keyboard_owner: MacosCapabilityOwnerApi,
         pointer_owner: MacosCapabilityOwnerApi,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -966,6 +967,7 @@ fn macos_input_platform_status(
         keyboard: macos_protected_source_state(status.keyboard),
         pointer: macos_protected_source_state(status.pointer),
         keyboard_tcc: macos_authorization_state(status.keyboard_tcc),
+        secure_input_active: status.secure_input_active,
         keyboard_owner: macos_capability_owner(status.keyboard_owner),
         pointer_owner: macos_capability_owner(status.pointer_owner),
         owner_conflict: status
@@ -1574,6 +1576,11 @@ async fn get_status_with_privacy(
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
     let input_status = input_status_snapshot_with_privacy(&state, include_private_selection_ids);
+    let audio_available = input_status.sources.iter().any(|source| {
+        source.kind == "audio"
+            && !source.retired
+            && !matches!(source.state.as_str(), "unavailable" | "failed")
+    });
     let screen_capture_capacity = {
         let capacity_snapshot = state.screen_capacity_status.snapshot();
         let policy = capacity_snapshot.policy();
@@ -1645,7 +1652,7 @@ async fn get_status_with_privacy(
         active_scene,
         active_scene_snapshot_locked,
         global_brightness: brightness_percent(current_global_brightness(&state.power_state)),
-        audio_available: settings::audio_input_available(),
+        audio_available,
         capture_available: settings::capture_input_available(),
         screen_capture_capacity,
         input: input_status,
@@ -2483,6 +2490,7 @@ mod tests {
             keyboard: MacosProtectedSourceState::NeedsProcessRestart,
             pointer: MacosProtectedSourceState::Live,
             keyboard_tcc: MacosAuthorizationState::Authorized,
+            secure_input_active: true,
             keyboard_owner: MacosCapabilityOwner::AppSidecar,
             pointer_owner: MacosCapabilityOwner::Broker,
             owner_conflict: Some(Arc::new(MacosDaemonOwnerConflict {
@@ -2521,6 +2529,7 @@ mod tests {
                 "keyboard": "needs_process_restart",
                 "pointer": "live",
                 "keyboard_tcc": "authorized",
+                "secure_input_active": true,
                 "keyboard_owner": "app_sidecar",
                 "pointer_owner": "broker",
                 "owner_conflict": {
