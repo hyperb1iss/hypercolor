@@ -116,16 +116,27 @@ mkdir -p "$MOZBUILD_STATE_PATH" "$TOOLCHAIN_DIR"
 
 portable_lock_helper() {
   local source="$SCRIPT_DIR/cargo-cache-lock.rs"
-  local version helper_dir helper temp
+  local version helper_dir helper build_dir temp
   version="$(cksum "$source" | awk '{print $1 "-" $2}')"
   helper_dir="$TOOLCHAIN_DIR/portable-lock-$version"
   helper="$helper_dir/cargo-cache-lock"
   if [ ! -x "$helper" ]; then
-    mkdir -p "$helper_dir"
-    temp="$helper.$$"
-    rustc --edition=2024 -O "$source" -o "$temp"
-    chmod +x "$temp"
-    mv "$temp" "$helper"
+    if ! mkdir -p "$helper_dir"; then
+      return 1
+    fi
+    if ! build_dir="$(mktemp -d "$helper_dir/build.XXXXXX")"; then
+      return 1
+    fi
+    temp="$build_dir/cargo-cache-lock"
+    if ! rustc --edition=2024 -O "$source" -o "$temp"; then
+      rm -rf "$build_dir"
+      return 1
+    fi
+    if ! chmod +x "$temp" || ! mv "$temp" "$helper"; then
+      rm -rf "$build_dir"
+      return 1
+    fi
+    rmdir "$build_dir"
   fi
   printf '%s\n' "$helper"
 }
