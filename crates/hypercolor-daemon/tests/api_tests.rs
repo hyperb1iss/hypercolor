@@ -839,8 +839,10 @@ struct DisconnectRecordingBackend {
     connected: bool,
 }
 
+type StaticOutputWrites = Arc<StdMutex<Vec<(DeviceId, Vec<[u8; 3]>)>>>;
+
 struct StaticOutputRecordingBackend {
-    writes: Arc<StdMutex<Vec<(DeviceId, Vec<[u8; 3]>)>>>,
+    writes: StaticOutputWrites,
 }
 
 struct IdentifyRecordingBackend {

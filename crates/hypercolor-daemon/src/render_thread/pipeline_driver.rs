@@ -110,6 +110,21 @@ async fn handle_inactive_render_loop(
     runtime.frame_policy.inactive_loop_execution(loop_state)
 }
 
+async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
+    let active_group_count = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_render_groups()
+            .iter()
+            .filter(|group| group.enabled && group.effect_id.is_some())
+            .count()
+    };
+
+    if active_group_count == 0 {
+        runtime.render.clear_inactive_groups();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hypercolor_core::engine::RenderLoopState;
@@ -158,20 +173,5 @@ mod tests {
             },
         ));
         assert!(!pending_rebase);
-    }
-}
-
-async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
-    let active_group_count = {
-        let manager = state.scene_manager.read().await;
-        manager
-            .active_render_groups()
-            .iter()
-            .filter(|group| group.enabled && group.effect_id.is_some())
-            .count()
-    };
-
-    if active_group_count == 0 {
-        runtime.render.clear_inactive_groups();
     }
 }
