@@ -997,13 +997,14 @@ impl CpuReductionExecutor {
             .thread_name(|index| format!("hypercolor-capture-{index}"))
             .build()
             .map_err(|error| CpuReductionError::ThreadPoolBuild(error.to_string()))?;
-        Ok(Self {
-            inner: Arc::new(CpuReductionExecutorInner {
-                pool,
-                worker_count,
-                tile_rows,
-            }),
-        })
+        let inner = Arc::new(CpuReductionExecutorInner {
+            pool,
+            worker_count,
+            tile_rows,
+        });
+        // Return only after every worker has initialized its thread-local runtime.
+        drop(inner.pool.broadcast(|_| ()));
+        Ok(Self { inner })
     }
 
     /// Number of workers owned by the local pool.
