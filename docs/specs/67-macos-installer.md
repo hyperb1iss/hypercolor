@@ -52,12 +52,13 @@ Prerequisites it asserts: `cargo`, `rustc`, `bun`, `trunk`, `xcrun`, `cargo-taur
 
 ### 1.3 Icon ladder
 
-`scripts/generate-mac-icons.sh` rasterizes `packaging/icons/hypercolor.svg`
-through Quick Look (WebKit-based, ships with macOS) at 1024px, downscales the
-full Apple iconset (16/32/128/256/512 at @1x and @2x) via `sips`, and assembles
-`icon.icns` with `iconutil`. The text wordmark is stripped from the source SVG
-before rasterizing because it is illegible below 128px and macOS HIG recommends
-against text inside dock icons; the Finder/Dock label already names the app.
+`scripts/generate-mac-icons.sh` delegates to the canonical brand pipeline
+(`assets/brand/build.py app-icon`), which renders the app icon set from the
+checked-in brand masters with a ~5% safe-margin inset and writes the six
+Tauri assets plus `icon.icns` into `crates/hypercolor-app/icons/`. The icon
+carries no wordmark because text is illegible below 128px and macOS HIG
+recommends against text inside dock icons; the Finder/Dock label already
+names the app.
 
 Generated files committed under `crates/hypercolor-app/icons/`:
 

@@ -52,6 +52,7 @@ crates/
   hypercolor-macos-capture/        # macOS ScreenCaptureKit acquisition and retained frame ownership
   hypercolor-macos-gpu-interop/    # macOS IOSurface/Metal texture import boundary
   hypercolor-macos-input/          # macOS CGEventTap keyboard and pointer capture
+  hypercolor-macos-owner/          # Shared durable macOS daemon ownership and handover coordination
   hypercolor-windows-gpu-interop/  # Windows D3D11/Vulkan texture import boundary
   hypercolor-windows-pawnio/       # Windows SMBus access via the PawnIO kernel driver, with a broker service; stubbed on other platforms
   hypercolor-windows-capture/      # Windows DXGI Desktop Duplication screen capture
@@ -96,6 +97,7 @@ graph TD
     MC[hypercolor-macos-capture] --> CORE
     MGI[hypercolor-macos-gpu-interop] --> CORE
     MI[hypercolor-macos-input] --> CORE
+    MO[hypercolor-macos-owner] --> D[hypercolor-daemon] & CLI[hypercolor-cli] & APP[hypercolor-app]
     WGI[hypercolor-windows-gpu-interop] --> CORE
     WPI[hypercolor-windows-pawnio] --> CORE
     WC[hypercolor-windows-capture] --> CORE & WGI

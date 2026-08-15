@@ -28,6 +28,13 @@ Sibyl mirror the identifiers below.
 
 ## Non-negotiable invariants
 
+Invariants 1 and 3 describe the target capture plane and become binding when
+H3.5 lands. Until then one named temporary mitigation remains: production
+capture still carries the legacy CPU publication fallback
+(`hypercolor-core/src/input/screen/macos.rs`), kept only so capture degrades
+instead of dying where the GPU path cannot run. H3.5 removes it; no new code
+may depend on it.
+
 1. Production macOS screen capture never materializes a full frame on the CPU for
    composition, transformation, reduction, recovery, or fallback.
 2. Explicit egress may read completed GPU output for a transport payload, such as
