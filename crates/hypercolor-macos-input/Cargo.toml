@@ -20,6 +20,7 @@ crossbeam-queue = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, features = ["std"] }
 objc2-app-kit = { workspace = true, features = ["std", "NSEvent", "objc2-core-graphics"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFMachPort", "CFRunLoop"] }
 objc2-core-graphics = { workspace = true, features = [

@@ -200,6 +200,21 @@ fn build_daemon_command_includes_bind_ui_dir_and_effects_dir() {
         .map(str::to_owned)
         .collect::<Vec<_>>()
     );
+    assert_eq!(
+        command.environment,
+        [
+            #[cfg(unix)]
+            (
+                "HYPERCOLOR_SUPERVISED_PARENT_PID".to_owned(),
+                std::process::id().to_string(),
+            ),
+            #[cfg(target_os = "macos")]
+            (
+                "HYPERCOLOR_MACOS_OWNER".to_owned(),
+                "app-sidecar".to_owned(),
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -223,6 +238,21 @@ fn build_daemon_command_allows_missing_asset_dirs() {
     .map(str::to_owned)
     .collect::<Vec<_>>();
     assert_eq!(command.args, expected);
+    assert_eq!(
+        command.environment,
+        [
+            #[cfg(unix)]
+            (
+                "HYPERCOLOR_SUPERVISED_PARENT_PID".to_owned(),
+                std::process::id().to_string(),
+            ),
+            #[cfg(target_os = "macos")]
+            (
+                "HYPERCOLOR_MACOS_OWNER".to_owned(),
+                "app-sidecar".to_owned(),
+            ),
+        ]
+    );
 }
 
 #[test]

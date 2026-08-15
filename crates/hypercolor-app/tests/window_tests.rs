@@ -1,7 +1,7 @@
 use hypercolor_app::window::{
     SETTINGS_ROUTE, WINDOW_VISIBILITY_EVENT, WINDOW_VISIBILITY_GLOBAL, macos_system_settings_url,
-    route_navigation_script, should_open_in_system_browser, system_browser_url,
-    visibility_state_script,
+    navigation_is_trusted, route_navigation_script, should_open_in_system_browser,
+    system_browser_url, visibility_state_script,
 };
 
 #[test]
@@ -34,6 +34,31 @@ fn system_browser_handoff_allows_only_web_urls() {
     assert!(should_open_in_system_browser(&https));
     assert!(should_open_in_system_browser(&http));
     assert!(!should_open_in_system_browser(&file));
+}
+
+#[test]
+fn webview_navigation_allows_only_the_bundled_app_origin() {
+    for allowed in [
+        "tauri://localhost/index.html",
+        "tauri://localhost/settings",
+        "http://tauri.localhost/index.html",
+        "https://tauri.localhost/",
+    ] {
+        let url = allowed.parse().expect("fixture URL should parse");
+        assert!(navigation_is_trusted(&url), "{allowed}");
+    }
+    for denied in [
+        "https://github.com/hyperb1iss",
+        "http://127.0.0.1:9420/api/v1/devices",
+        "http://localhost/index.html",
+        "file:///etc/passwd",
+        "https://tauri.localhost.attacker.example/",
+        "javascript:alert(1)",
+        "about:blank",
+    ] {
+        let url = denied.parse().expect("fixture URL should parse");
+        assert!(!navigation_is_trusted(&url), "{denied}");
+    }
 }
 
 #[test]

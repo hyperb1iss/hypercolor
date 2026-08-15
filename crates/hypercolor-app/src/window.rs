@@ -108,6 +108,61 @@ pub fn open_new_window_in_system_browser<R: Runtime>(
     NewWindowResponse::Deny
 }
 
+/// Whether a main-frame navigation may proceed inside the trusted webview.
+///
+/// The webview holds `window.__TAURI__` and the per-session protected
+/// control credential, so only the bundled app origin may load in it: the
+/// custom `tauri:` scheme on macOS and Linux, and the `tauri.localhost`
+/// host on Windows. Everything else is denied; new-window requests
+/// already route to the system browser.
+#[must_use]
+pub fn navigation_is_trusted(url: &Url) -> bool {
+    if url.scheme() == "tauri" {
+        return true;
+    }
+    matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost")
+}
+
+/// Release a secure-input assertion retained by the embedded macOS webview.
+///
+/// # Errors
+///
+/// Returns a Tauri error when the webview cannot be accessed on its UI thread.
+pub fn release_webview_secure_input<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    window.with_webview(|platform_webview| {
+        use objc2::{msg_send, runtime::AnyObject, sel};
+
+        // SAFETY: Tauri documents this pointer as a live WKWebView for the
+        // duration of the closure. The private selector is checked before a
+        // no-argument, void-returning message is sent.
+        unsafe {
+            let webview = &*platform_webview.inner().cast::<AnyObject>();
+            let reset = sel!(_resetSecureInputState);
+            let responds: bool = msg_send![webview, respondsToSelector: reset];
+            if responds {
+                let _: () = msg_send![webview, _resetSecureInputState];
+            } else {
+                // The private selector is the only release mechanism; if
+                // WebKit renames it the workaround dies silently, so say
+                // so once instead of never.
+                static MISSING_SELECTOR_WARNED: std::sync::Once = std::sync::Once::new();
+                MISSING_SELECTOR_WARNED.call_once(|| {
+                    tracing::warn!(
+                        "WKWebView no longer responds to _resetSecureInputState; \
+                         secure-input release after focus loss is inoperative"
+                    );
+                });
+            }
+        }
+    })?;
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+
+    Ok(())
+}
+
 /// Build the JavaScript that mirrors native window visibility into the web UI.
 #[must_use]
 pub fn visibility_state_script(visible: bool) -> String {

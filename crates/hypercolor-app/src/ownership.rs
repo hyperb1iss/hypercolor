@@ -1,7 +1,7 @@
 //! Local-only macOS daemon ownership coordination.
 
 use hypercolor_macos_owner::{
-    MACOS_APP_PRODUCT_NAME, MacosDaemonOwner, MacosOwnerCoordinatorOutcome,
+    MACOS_APP_PRODUCT_NAME, MacosDaemonOwner, MacosHandoverPhase, MacosOwnerCoordinatorOutcome,
     MacosOwnerExecutionError, MacosOwnerRemedy,
 };
 use tauri::{AppHandle, Runtime, State};
@@ -424,11 +424,33 @@ pub(crate) fn recover_daemon_owner_before_supervisor<R: Runtime>(
     store: hypercolor_macos_owner::MacosOwnerStore,
 ) -> Result<MacosStartupRecoveryDisposition, anyhow::Error> {
     let mut executor = AppOwnerExecutor::new(app.clone(), state, daemon_url, store.clone())?;
+    if store.load_handover_journal()?.is_some_and(|journal| {
+        app_sidecar_recovery_needs_rearm(journal.requested_owner, journal.phase)
+    }) {
+        hypercolor_macos_owner::MacosOwnerExecutor::start(
+            &mut executor,
+            MacosDaemonOwner::AppSidecar,
+        )?;
+    }
     let outcome = hypercolor_macos_owner::recover_daemon_owner(&store, &mut executor)?;
     Ok(startup_recovery_disposition(
         outcome.as_ref(),
         executor.app_sidecar_supervisor_started,
     ))
+}
+
+#[cfg(target_os = "macos")]
+const fn app_sidecar_recovery_needs_rearm(
+    requested_owner: MacosDaemonOwner,
+    phase: MacosHandoverPhase,
+) -> bool {
+    matches!(
+        (requested_owner, phase),
+        (
+            MacosDaemonOwner::AppSidecar,
+            MacosHandoverPhase::RequestedOwnerStarted
+        )
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -838,13 +860,13 @@ mod tests {
     use super::{
         AppOwnerStopAuthority, MacosCaptureOwner, MacosCaptureOwnerRestartOutcome,
         MacosDaemonOwnerRemedyOutcome, MacosStartupRecoveryDisposition, app_owner_stop_authority,
-        apply_owner_choice_outcome, complete_offline_remedy_with, execute_offline_remedy_with,
-        hold_app_sidecar_supervisor, launchctl_service_disabled, release_app_sidecar_supervisor,
-        restart_capture_owner_with, service_label, startup_recovery_disposition,
-        update_app_sidecar_gate_for_autostart,
+        app_sidecar_recovery_needs_rearm, apply_owner_choice_outcome, complete_offline_remedy_with,
+        execute_offline_remedy_with, hold_app_sidecar_supervisor, launchctl_service_disabled,
+        release_app_sidecar_supervisor, restart_capture_owner_with, service_label,
+        startup_recovery_disposition, update_app_sidecar_gate_for_autostart,
     };
     use hypercolor_macos_owner::{
-        MacosDaemonOwner, MacosHandoverOperation, MacosOwnerCoordinatorOutcome,
+        MacosDaemonOwner, MacosHandoverOperation, MacosHandoverPhase, MacosOwnerCoordinatorOutcome,
         MacosOwnerExecutionError, MacosOwnerExecutor, MacosOwnerIdentity, MacosOwnerIncarnation,
         MacosOwnerRemedy, MacosOwnerStore,
     };
@@ -1012,6 +1034,22 @@ mod tests {
         assert!(!state.owner_handover_stop());
         update_app_sidecar_gate_for_autostart(&state, false);
         assert!(state.owner_handover_stop());
+    }
+
+    #[test]
+    fn requested_app_sidecar_recovery_rearms_the_supervisor() {
+        assert!(app_sidecar_recovery_needs_rearm(
+            MacosDaemonOwner::AppSidecar,
+            MacosHandoverPhase::RequestedOwnerStarted,
+        ));
+        assert!(!app_sidecar_recovery_needs_rearm(
+            MacosDaemonOwner::AppSidecar,
+            MacosHandoverPhase::StartRequested,
+        ));
+        assert!(!app_sidecar_recovery_needs_rearm(
+            MacosDaemonOwner::DirectLaunchd,
+            MacosHandoverPhase::RequestedOwnerStarted,
+        ));
     }
 
     #[test]

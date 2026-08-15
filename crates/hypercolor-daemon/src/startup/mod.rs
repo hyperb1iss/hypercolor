@@ -77,7 +77,7 @@ pub use config::{default_config, load_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
-pub use signals::install_signal_handlers;
+pub use signals::{SUPERVISED_PARENT_PID_ENV, install_signal_handlers};
 
 /// The top-level daemon state, holding all subsystems.
 ///

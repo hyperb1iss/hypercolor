@@ -84,6 +84,8 @@ pub struct DaemonCommand {
     pub program: PathBuf,
     /// Daemon command-line arguments.
     pub args: Vec<String>,
+    /// Explicit launcher metadata inherited by the daemon process.
+    pub environment: Vec<(String, String)>,
 }
 
 /// Current state of the Linux systemd user service from the app supervisor's perspective.
@@ -368,6 +370,79 @@ impl SupervisorState {
         hypercolor_macos_owner::request_macos_child_termination(child)
     }
 
+    /// Reap the managed daemon child on app exit.
+    ///
+    /// Tray quit runs `app.exit(0)`, which terminates the process without
+    /// unwinding, so `ManagedDaemon::Drop` never fires on its own. This is
+    /// called from the `RunEvent::Exit` handler while the process is still
+    /// alive: it suppresses the watchdog, requests graceful termination,
+    /// and escalates to a hard kill if the daemon lingers. The daemon's
+    /// own parent-death watch is the backstop for exit paths that skip
+    /// even this (crash, SIGKILL).
+    pub fn terminate_managed_daemon_for_exit(&self) {
+        self.set_owner_handover_stop(true);
+        #[cfg(target_os = "macos")]
+        {
+            let authority = self
+                .app_sidecar_child
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let Some(authority) = authority else {
+                // Quit before the child was bound (still starting, or a
+                // reclaim in flight): no retained handle exists, so fall
+                // back to a best-effort SIGTERM by pid. The daemon's own
+                // parent-death watch is the backstop either way.
+                if let Some(pid) = self.child_pid() {
+                    if let Err(error) = hypercolor_macos_owner::request_macos_pid_termination(pid) {
+                        tracing::warn!(pid, %error, "unbound daemon termination failed on app exit");
+                    } else {
+                        tracing::info!(pid, "unbound daemon asked to terminate on app exit");
+                    }
+                }
+                return;
+            };
+            let mut daemon = authority
+                .daemon
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let Some(child) = daemon.child.as_mut() else {
+                return;
+            };
+            let pid = child.id();
+            if let Err(error) = hypercolor_macos_owner::request_macos_child_termination(child) {
+                tracing::warn!(pid, %error, "graceful daemon termination failed on app exit");
+            }
+            // The daemon's own shutdown budget is ~8s worst case (3s API
+            // drain, device teardown, 5s persistence flush); killing at 2s
+            // would routinely lose LED blanking and shutdown persistence.
+            // Ten seconds matches the managed-handover allotment.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        tracing::info!(pid, ?status, "managed daemon reaped on app exit");
+                        daemon.child = None;
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(pid, %error, "managed daemon wait failed on app exit");
+                        break;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            daemon.child = None;
+            tracing::info!(pid, "managed daemon force-killed on app exit");
+        }
+    }
+
     fn mark_permanent_failure(&self) {
         self.permanent_failure
             .store(true, std::sync::atomic::Ordering::Release);
@@ -417,8 +492,10 @@ impl ManagedDaemon {
 
 impl Drop for ManagedDaemon {
     fn drop(&mut self) {
+        // Kill unless the child has provably exited: a try_wait error
+        // (EINTR, ECHILD) must not leak a live process.
         if let Some(mut child) = self.child.take()
-            && matches!(child.try_wait(), Ok(None))
+            && !matches!(child.try_wait(), Ok(Some(_)))
         {
             let _ = child.kill();
             let _ = child.wait();
@@ -626,9 +703,26 @@ pub fn build_daemon_command(
     effects_dir: Option<&Path>,
 ) -> DaemonCommand {
     let mut args = vec!["--bind".to_owned(), bind.to_owned()];
+    let mut environment = Vec::new();
+
+    // Arms the daemon's parent-death watch (the daemon's
+    // SUPERVISED_PARENT_PID_ENV): if this app dies without reaping its
+    // child, the daemon observes the reparent and shuts itself down
+    // instead of orphaning on the port and the ownership guard.
+    #[cfg(unix)]
+    environment.push((
+        "HYPERCOLOR_SUPERVISED_PARENT_PID".to_owned(),
+        std::process::id().to_string(),
+    ));
 
     #[cfg(target_os = "macos")]
-    args.extend(["--macos-owner".to_owned(), "app-sidecar".to_owned()]);
+    {
+        args.extend(["--macos-owner".to_owned(), "app-sidecar".to_owned()]);
+        environment.push((
+            "HYPERCOLOR_MACOS_OWNER".to_owned(),
+            "app-sidecar".to_owned(),
+        ));
+    }
 
     if let Some(ui_dir) = ui_dir {
         args.push("--ui-dir".to_owned());
@@ -643,6 +737,7 @@ pub fn build_daemon_command(
     DaemonCommand {
         program: program.into(),
         args,
+        environment,
     }
 }
 
@@ -746,18 +841,42 @@ async fn verify_macos_daemon_connection(
     expected_owner: MacosDaemonOwner,
 ) -> Option<VerifiedDaemonConnection> {
     if !daemon_base_is_loopback(base) {
+        tracing::warn!("macOS daemon verification rejected a non-loopback endpoint");
         return None;
     }
-    let record = store.load_owner_record().ok().flatten()?;
-    let attestation = store.load_daemon_session_attestation().ok().flatten()?;
+    let record = match store.load_owner_record() {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            tracing::warn!("macOS daemon verification found no owner record");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "macOS daemon verification could not load the owner record");
+            return None;
+        }
+    };
+    let attestation = match store.load_daemon_session_attestation() {
+        Ok(Some(attestation)) => attestation,
+        Ok(None) => {
+            tracing::warn!("macOS daemon verification found no session attestation");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "macOS daemon verification could not load the session attestation");
+            return None;
+        }
+    };
     if !attestation_matches_record(&attestation, &record, expected_owner) {
+        tracing::warn!("macOS daemon verification found mismatched owner artifacts");
         return None;
     }
     let incarnation = record.incarnation();
     if expected_owner == MacosDaemonOwner::AppSidecar && !state.app_sidecar_is_live(&incarnation) {
+        tracing::warn!("macOS daemon verification found no live retained sidecar child");
         return None;
     }
     if !daemon_guard_is_contended(guard_path) {
+        tracing::warn!("macOS daemon verification found an unclaimed daemon guard");
         return None;
     }
 
@@ -765,30 +884,53 @@ async fn verify_macos_daemon_connection(
         .get(server_identity_url(base))
         .timeout(HEALTH_PROBE_TIMEOUT)
         .send()
-        .await
-        .ok()?;
+        .await;
+    let Ok(response) = response else {
+        tracing::warn!("macOS daemon verification could not read the server identity");
+        return None;
+    };
     if !response.status().is_success() {
+        tracing::warn!(status = %response.status(), "macOS daemon verification received a failed server identity response");
         return None;
     }
-    let observed_session = response
-        .json::<ServerIdentityEnvelope>()
-        .await
-        .ok()?
-        .data
-        .server_session_id?;
+    let Ok(envelope) = response.json::<ServerIdentityEnvelope>().await else {
+        tracing::warn!("macOS daemon verification could not decode the server identity");
+        return None;
+    };
+    let Some(observed_session) = envelope.data.server_session_id else {
+        tracing::warn!("macOS daemon verification found no server session identifier");
+        return None;
+    };
 
     if !daemon_guard_is_contended(guard_path) {
+        tracing::warn!("macOS daemon verification lost the daemon guard during verification");
         return None;
     }
-    let current_record = store.load_owner_record().ok().flatten()?;
-    let current_attestation = store.load_daemon_session_attestation().ok().flatten()?;
+    let current_record = match store.load_owner_record() {
+        Ok(Some(record)) => record,
+        _ => {
+            tracing::warn!("macOS daemon verification lost the owner record during verification");
+            return None;
+        }
+    };
+    let current_attestation = match store.load_daemon_session_attestation() {
+        Ok(Some(attestation)) => attestation,
+        _ => {
+            tracing::warn!(
+                "macOS daemon verification lost the session attestation during verification"
+            );
+            return None;
+        }
+    };
     if current_record != record
         || current_attestation != attestation
         || observed_session != attestation.server_session_id
     {
+        tracing::warn!("macOS daemon verification observed session drift");
         return None;
     }
     if expected_owner == MacosDaemonOwner::AppSidecar && !state.app_sidecar_is_live(&incarnation) {
+        tracing::warn!("macOS daemon verification lost the retained sidecar child");
         return None;
     }
 
@@ -1359,6 +1501,22 @@ async fn run_watchdog_loop(
                     "daemon ownership contender exited; supervisor will not restart it"
                 );
                 state.clear_child();
+                drop(daemon);
+                // A conflict exit is the primary "someone else holds our
+                // guard" signal: when a same-owner contender loses guard
+                // arbitration it exits terminally within a few hundred
+                // milliseconds, often before the orphan even answers a
+                // health probe. Reclaim covers the orphaned-app-sidecar
+                // holder; a legitimate external owner declines inside.
+                // Reclaims charge the restart budget so a pathological
+                // reclaim loop (say, two live app instances fighting)
+                // still trips the circuit breaker instead of ping-ponging
+                // forever; the budget resets after stable uptime.
+                #[cfg(target_os = "macos")]
+                if reclaim_stale_app_sidecar(pid).await {
+                    record_failure(&mut restart_count, &mut window_anchor);
+                    continue;
+                }
                 return;
             }
             Ok(DaemonStartupOutcome::Exited(status)) => {
@@ -1406,7 +1564,15 @@ async fn run_watchdog_loop(
             tracing::error!(pid, %error, "healthy app sidecar did not publish its exact owner identity");
             drop(daemon);
             state.clear_child();
+            // The classic cause: an orphaned daemon from a dead app
+            // instance still holds the guard and answered the health
+            // probe on behalf of our child. A successful reclaim skips
+            // the backoff but still charges the restart budget, so a
+            // pathological reclaim loop trips the circuit breaker.
             record_failure(&mut restart_count, &mut window_anchor);
+            if reclaim_stale_app_sidecar(pid).await {
+                continue;
+            }
             tokio::time::sleep(restart_backoff(restart_count)).await;
             continue;
         }
@@ -1426,6 +1592,9 @@ async fn run_watchdog_loop(
                 state.clear_child();
                 drop(daemon);
                 record_failure(&mut restart_count, &mut window_anchor);
+                if reclaim_stale_app_sidecar(pid).await {
+                    continue;
+                }
                 tokio::time::sleep(restart_backoff(restart_count)).await;
                 continue;
             };
@@ -1477,6 +1646,114 @@ async fn run_watchdog_loop(
         }
         tokio::time::sleep(restart_backoff(restart_count)).await;
     }
+}
+
+/// Attempt to reclaim ownership from an orphaned app-sidecar daemon.
+///
+/// A previous app instance that died without reaping leaves its daemon
+/// holding the port, the flock guard, and an owner record naming a pid this
+/// supervisor never spawned. The single-instance plugin guarantees no other
+/// live app owns that child, so after verifying the live process matches
+/// the recorded identity the orphan is asked to terminate, and the guard
+/// release is awaited so the next spawn can win it cleanly. Returns true
+/// when the guard was reclaimed and a respawn should proceed immediately.
+///
+/// Spec 77 invariant 8 (managed owners stop through the topology that
+/// launched them) holds here: the recorded owner is AppSidecar, this app is
+/// the single live instance of that topology, and the launching instance no
+/// longer exists, so this is the owning topology reaping its own orphan,
+/// not a handover signaling a foreign pid.
+#[cfg(target_os = "macos")]
+async fn reclaim_stale_app_sidecar(current_child_pid: u32) -> bool {
+    let record = match MacosOwnerStore::new(data_dir()).load_owner_record() {
+        Ok(Some(record)) => record,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(%error, "owner record unreadable during stale-sidecar reclaim");
+            return false;
+        }
+    };
+    if record.active_owner != MacosDaemonOwner::AppSidecar {
+        return false;
+    }
+    let stale_pid = record.active_identity.pid;
+    if stale_pid == current_child_pid || stale_pid == std::process::id() {
+        return false;
+    }
+    let guard_path = canonical_daemon_guard_path();
+    if !daemon_guard_is_contended(&guard_path) {
+        // The flock dies with its holder: an uncontended guard means the
+        // recorded daemon is already gone and there is nothing to reclaim.
+        return false;
+    }
+    if !process_matches_identity(stale_pid, &record.active_identity.executable_path) {
+        tracing::warn!(
+            stale_pid,
+            "recorded app-sidecar owner does not match the live process; refusing to signal"
+        );
+        return false;
+    }
+    tracing::warn!(
+        stale_pid,
+        "orphaned app-sidecar daemon holds the guard; requesting termination"
+    );
+    if let Err(error) = hypercolor_macos_owner::request_macos_pid_termination(stale_pid) {
+        tracing::warn!(stale_pid, %error, "stale app-sidecar termination failed");
+        return false;
+    }
+    let released = tokio::task::spawn_blocking(move || {
+        hypercolor_macos_owner::wait_for_macos_guard_release(
+            Duration::from_secs(10),
+            &guard_path.to_string_lossy(),
+        )
+    })
+    .await;
+    match released {
+        Ok(Ok(true)) => {
+            tracing::info!(stale_pid, "stale app-sidecar guard reclaimed");
+            true
+        }
+        Ok(Ok(false)) => {
+            tracing::warn!(
+                stale_pid,
+                "stale app-sidecar ignored termination; guard still held"
+            );
+            false
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(stale_pid, %error, "guard release wait failed during reclaim");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(stale_pid, %error, "guard release task failed during reclaim");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_matches_identity(pid: u32, executable: &Path) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+    );
+    system
+        .process(Pid::from_u32(pid))
+        .and_then(sysinfo::Process::exe)
+        .is_some_and(|exe| {
+            // The live exe comes from proc_pidpath (resolved) while the
+            // record stores current_exe() (unresolved); canonicalize both
+            // so symlinked installs still match. Resolution failure means
+            // the identity cannot be attested, which declines the reclaim.
+            match (exe.canonicalize(), executable.canonicalize()) {
+                (Ok(live), Ok(recorded)) => live == recorded,
+                _ => false,
+            }
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -2303,6 +2580,7 @@ pub fn spawn_daemon(command: &DaemonCommand) -> Result<ManagedDaemon> {
     let mut process = Command::new(&command.program);
     process
         .args(&command.args)
+        .envs(command.environment.iter().map(|(key, value)| (key, value)))
         .stdin(Stdio::null())
         .stdout(Stdio::from(daemon_log_file()?.try_clone()?))
         .stderr(Stdio::from(daemon_log_file()?));

@@ -913,6 +913,28 @@ pub fn request_macos_child_termination(
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))
 }
 
+/// Request graceful termination of a recorded owner process by pid.
+///
+/// The caller must have verified the live process identity against the
+/// owner record (executable path and guard contention) before calling:
+/// this function delivers `SIGTERM` to whatever currently holds the pid.
+///
+/// # Errors
+///
+/// Returns an error when the identifier cannot be represented by the
+/// platform API or `SIGTERM` cannot be delivered.
+#[cfg(target_os = "macos")]
+pub fn request_macos_pid_termination(pid: u32) -> Result<(), MacosOwnerExecutionError> {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+
+    let pid = i32::try_from(pid).map_err(|_| {
+        MacosOwnerExecutionError::new("recorded owner identifier exceeds the macOS process range")
+    })?;
+    kill(Pid::from_raw(pid), Signal::SIGTERM)
+        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))
+}
+
 /// Wait until the final single-instance guard can be acquired.
 #[cfg(target_os = "macos")]
 pub fn wait_for_macos_guard_release(

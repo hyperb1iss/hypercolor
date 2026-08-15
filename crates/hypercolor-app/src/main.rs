@@ -5,7 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, webview::WebviewWindowBuilder};
 
 fn maybe_open_devtools<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     #[cfg(debug_assertions)]
@@ -86,6 +86,13 @@ fn main() -> anyhow::Result<()> {
                         !cli.start_minimized,
                     ))
                     .on_new_window(hypercolor_app::window::open_new_window_in_system_browser)
+                    .on_navigation(|url| {
+                        let trusted = hypercolor_app::window::navigation_is_trusted(url);
+                        if !trusted {
+                            tracing::warn!(%url, "blocked untrusted navigation in the app webview");
+                        }
+                        trusted
+                    })
                     .visible(!cli.start_minimized)
                     .build()?;
 
@@ -106,6 +113,17 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(false) = event
+                && let Some(webview_window) = window.app_handle().get_webview_window(window.label())
+                && let Err(error) =
+                    hypercolor_app::window::release_webview_secure_input(&webview_window)
+            {
+                tracing::warn!(
+                    %error,
+                    label = %window.label(),
+                    "failed to release webview secure input"
+                );
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 tracing::info!(label = %window.label(), "hiding window instead of closing");
                 if let Err(error) = hypercolor_app::window::hide(window) {
@@ -114,8 +132,17 @@ fn main() -> anyhow::Result<()> {
                 api.prevent_close();
             }
         })
-        .run(tauri::generate_context!())
-        .map_err(|e| anyhow::anyhow!("tauri runtime error: {e}"))?;
+        .build(tauri::generate_context!())
+        .map_err(|e| anyhow::anyhow!("tauri build error: {e}"))?
+        .run(|app_handle, event| {
+            // app.exit() terminates without unwinding, so the managed
+            // daemon must be reaped here, while the process still lives.
+            if matches!(event, tauri::RunEvent::Exit) {
+                app_handle
+                    .state::<hypercolor_app::supervisor::SupervisorState>()
+                    .terminate_managed_daemon_for_exit();
+            }
+        });
 
     Ok(())
 }

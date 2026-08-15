@@ -67,6 +67,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 sha2 = { workspace = true }
+subtle = { workspace = true }
 single-instance = "0.3.3"
 socket2 = "0.6.3"
 tokio = { workspace = true }
@@ -109,6 +110,8 @@ dispatch2 = "0.3.1"
 hypercolor-macos-capture = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-input = { workspace = true }
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }
 security-framework = "3.7.0"
 sysinfo = { workspace = true }

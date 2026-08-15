@@ -59,5 +59,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, features = ["std"] }
+sysinfo = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
