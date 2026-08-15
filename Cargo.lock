@@ -4935,7 +4935,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-app"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4966,7 +4966,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -4991,7 +4991,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5066,7 +5066,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-daemon"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5126,7 +5126,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-driver-api"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -5144,7 +5144,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-driver-builtin"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "hypercolor-core",
@@ -5162,7 +5162,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-driver-govee"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5179,7 +5179,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-driver-hue"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5199,7 +5199,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-driver-nanoleaf"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5216,7 +5216,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-driver-openrgb"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5231,7 +5231,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-driver-wled"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5250,7 +5250,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-hal"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "alsa",
  "async-hid",
@@ -5276,7 +5276,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-leptos-ext"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -5305,7 +5305,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-leptos-ext-macros"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5314,7 +5314,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-linux-gpu-interop"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ash",
  "dpi",
@@ -5332,7 +5332,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-macos-gpu-interop"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "cgl",
  "dpi",
@@ -5357,7 +5357,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-network"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5371,7 +5371,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-openrgb-sdk"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
@@ -5379,7 +5379,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-platform-fs"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
@@ -5387,7 +5387,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-tray"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -5413,7 +5413,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-tui"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -5447,7 +5447,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-types"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -5460,7 +5460,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-windows-capture"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "criterion",
  "image",
@@ -5471,7 +5471,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-windows-gpu-interop"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "dpi",
  "euclid",
@@ -5494,7 +5494,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-windows-helper"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -5508,7 +5508,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-windows-input"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "stats_alloc",
  "thiserror 2.0.18",
@@ -5518,7 +5518,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-windows-pawnio"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "libloading 0.8.9",

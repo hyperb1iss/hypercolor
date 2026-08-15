@@ -5,6 +5,74 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-08-15
+
+This release unifies bundled and saved presets into a single effect-scoped stack, adds a non-destructive global output power contract that preserves live effect state across pause, and introduces a trusted in-process API bridge for daemon extensions. Build caching and the documentation site both got substantial repair work.
+
+### Added
+
+- Add **effect-scoped preset stack**: `GET /api/v1/effects/{id}/presets` and `POST /api/v1/effects/{id}/presets/{preset_id}/apply` return and apply bundled and saved presets through one surface, backed by new `EffectPresetSummary`, `EffectPresetOrigin`, `EffectPresetListResponse` and `ApplyEffectPresetRequest` types (3c52120)
+- Add **stable identifiers for bundled presets**: authored `id` attributes survive HTML metadata parsing and older effects get deterministic UUIDs via `PresetId::stable`, exposed through shared Rust types, TUI decoding and SDK tooling (ea42c20)
+- Add **global output power endpoints** `GET`/`PUT /api/v1/output/power` with `OutputPowerMode` (`Running`, `Paused`) and `OutputPowerStatus` (`Running`, `Paused`, `Stopped`); pausing freezes the render loop and holds outputs at their off frame without discarding effect state (978096e)
+- Add **trusted local execution bridge** (`crates/hypercolor-daemon/src/api/local.rs`): `TrustedLocalApi::execute` and `open_websocket` let already-authenticated in-process extensions run the same handlers as a local client, confined to `/api/v1/*` and `/api/v1/ws` (e057ce3)
+- Add Python client methods `get_effect_presets()`, `apply_effect_preset()`, `get_output_power()`, `set_output_power()`, `pause_rendering()` and `resume_rendering()` on both the async and sync clients (ac2a201, d642543)
+- Add **Cargo target garbage collection**: `scripts/cargo-target-gc.sh` with pressure hysteresis, age gating and lock-aware coordination, plus `hypercolor-cargo-target-gc.service`/`.timer` and `scripts/install-cargo-target-gc.sh` (4b3c4ee)
+- Add `scripts/cargo-cache-lock.rs`, a compiled cross-platform build lock helper with process-group and signal handling (c8689c3)
+- Add `scripts/tests/cargo-target-gc-tests.sh` and `scripts/tests/cargo-cache-build-tests.sh`, wired into the `verify` recipe on Unix
+
+### Changed
+
+- Route the UI's preset panel through the unified stack: `fetch_effect_presets` and `apply_effect_preset` in `crates/hypercolor-ui/src/api/effects.rs` replace the old bundled-preset fetch plus the separate library apply call (7e2d927)
+- Point UI pause and resume at `PUT /api/v1/output/power` (`{"state": "paused"}` / `{"state": "running"}`) instead of the effect pause routes
+- Add `active_preset_id` to the WebSocket `hello` state payload and `active_preset_modified` to `ActiveEffectResponse`, so clients can tell a clean preset from an edited one
+- Rebrand the docs site on the app's assets and motion tokens: trinity mark favicon, touch icon and og:image, and all 67 motion declarations moved to the canonical `--ease-silk` / `--duration-normal` tokens (455c3ed)
+- Theme docs code blocks with dual `github-light` / `one-dark-pro` stylesheets that swap with the site theme instead of hardcoded inline One Dark (5a02ca5)
+- Replace Zola's default heading anchor emoji with a styled `#` gutter marker revealed on hover and focus, hidden below the 768px breakpoint (9ff82d1)
+- Route Trunk and Tauri compiles through `scripts/cargo-cache-build.sh` with a shared target root and persistent per-repo sccache server, so isolated targets keep cache hits (64e14a6, 9d7bdb1, 71c62d4)
+- Anchor the native-app CI job to `${{ github.workspace }}/target` so the Tauri bundle step reuses the build step's artifacts (d1559f8)
+- Skip UI, SDK and compatibility matrix rebuilds on docs-only merges (3921d75)
+- Split the Cargo profile set so dependencies drop debug info while Hypercolor crates keep line tables, with an explicit `debugging` profile for full symbols (36e8e30, 0ea4e63)
+- Bump the `sdk-bun` dependency group (4 updates) and the `e2e-npm` group (2 updates) via Dependabot (#130, #131)
+
+### Fixed
+
+- Make native sync materialization durable: favorite and config updates acknowledge only after persistence commits, the exact installed snapshot is returned, and deleted tombstones survive favorite revisions (05f98f6, 78b7df7)
+- Sync the parent directory for relative config paths after atomic replacement and retain predecessor state for uncertain favorite replays (e75e33a)
+- Accept media uploads above Axum's 2 MiB default multipart limit by sizing the route limit from the library's 2 GiB hard cap plus bounded framing overhead (1d66f43)
+- Keep RAF-driven Servo capture clocks moving by publishing compact frame timing for every admitted frame, so quiet capture pages still advance daemon time (238f53f)
+- Reject duplicate bundled preset identities across SDK validation, daemon upload, HTML loading and the native catalog so effect-scoped resolution stays unambiguous (d26cbe8)
+- Normalize preset control whitespace by treating U+001C–U+001F as separators before collapsing, without regex escapes (d96e1fe, 25067d6)
+- Restore device vendor marks by sizing embedded SVG roots to their container and falling back to a vendor monogram when a raster mark fails (43f23f9)
+- Retry Windows delete-pending lock failures in WLED tests instead of treating them as hard permission errors (a9f8c94)
+- Make docs site search work: bind the search button, drive modal visibility from the `hidden` attribute, fix overlay positioning and CSS class mismatches, and actually load `elasticlunr.min.js` (f253b40)
+- Bind the mobile hamburger to `nav-hamburger`, add top-level section links to the drawer, and extend it to the home page (cf77e7d)
+- Stop wide tables and the nav bar from overflowing the page at 1280px (241d2f1)
+- Render the Agents/MCP mermaid diagram and give all 118 docs images intrinsic width and height to prevent lazy-load reflow (31f9484)
+- Enforce the reclaim grace period before artifact sweeps and avoid oversized Cargo GC fallback deletions (54e07bd, 4317a44, 2b71a61)
+- Place the nextest target directory after its subcommand in the build wrapper (cc7b9e0)
+- Satisfy Rust 1.95 daemon lints (33782c0)
+
+### Removed
+
+- Remove `crates/hypercolor-ui/src/components/preset_matching.rs` and its test module; preset provenance now comes from `EffectPresetOrigin` on the server response instead of client-side heuristic matching
+- Remove the UI's local `apply_preset` wrapper from `crates/hypercolor-ui/src/api/library.rs` and `fetch_bundled_presets` from `crates/hypercolor-ui/src/api/effects.rs`
+
+### Breaking Changes
+
+- **Effect-scoped preset routes are the new canonical path.** `GET /api/v1/effects/{id}/presets` and `POST /api/v1/effects/{id}/presets/{preset_id}/apply` are additive; the existing REST surface is still served at HEAD, including `GET`/`POST /api/v1/library/presets`, `GET`/`PUT`/`DELETE /api/v1/library/presets/{id}`, `POST /api/v1/library/presets/{id}/apply`, and `POST /api/v1/effects/pause`|`resume` (the latter two retained as compatibility responses). No REST caller breaks.
+  - The actual break is client-side and internal to this repo: the UI dropped its `library::apply_preset` wrapper and `effects::fetch_bundled_presets`, and now calls the effect-scoped routes. Any fork carrying UI patches against those functions must migrate.
+  - Upgrade note: new integrations should use the effect-scoped routes. Python SDK users get `get_effect_presets()` and `apply_effect_preset()` on both `HypercolorClient` and `SyncHypercolorClient`; the older `get_presets()` / `apply_preset()` methods remain.
+- **`PresetTemplate` gains a required `id` field.** Rust consumers constructing `PresetTemplate` literals must supply an id (use `hypercolor_types::library::PresetId::stable(name)` for the derived value), and the generated Python `preset_template` model changed shape. Regenerate SDK clients against the updated OpenAPI document.
+- **WebSocket `hello` payload gains `active_preset_id`.** `HelloState` in `crates/hypercolor-daemon/src/api/ws/protocol.rs` adds an optional `active_preset_id` string; clients that reject unknown fields on the hello frame need updating. Note that `StateUpdate::Snapshot` is a tray-app internal enum variant in `crates/hypercolor-app/src/state.rs` used to rebuild local state, not a field on the wire.
+
+### Metrics
+
+- Total Commits: 71
+- Files Changed: 252
+- Insertions: +13,310
+- Deletions: -1,917
+<!-- -------------------------------------------------------------- -->
+
 ## [0.3.1] - 2026-08-11
 
 A cross-platform input and capture release. Host keyboard and mouse capture lands behind an explicit consent gate on Linux (evdev) and Windows (Raw Input), Windows gains a Desktop Duplication screen-capture crate, and the screen pipeline is rebuilt around exact publication plans with transactional capacity admission. The web UI collapses to Studio-only navigation with a mobile-responsive shell, and daemon persistence becomes transactional and durable on Windows.
