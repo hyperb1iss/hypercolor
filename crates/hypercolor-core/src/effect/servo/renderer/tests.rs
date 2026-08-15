@@ -857,7 +857,7 @@ fn display_frame_payloads_keep_fixed_animation_cap() {
 }
 
 #[test]
-fn html_effects_use_host_driven_animation() {
+fn html_effects_use_the_platform_animation_driver() {
     let html = html_metadata(PathBuf::from("effect.html"));
     let display = display_html_metadata(PathBuf::from("display.html"));
     let mut webgl = html_metadata(PathBuf::from("webgl.html"));
@@ -867,8 +867,8 @@ fn html_effects_use_host_driven_animation() {
 
     assert!(host_driven_animation(&html));
     assert!(host_driven_animation(&display));
-    assert!(!host_driven_animation(&webgl));
-    assert!(!host_driven_animation(&canvas2d));
+    assert_eq!(host_driven_animation(&webgl), cfg!(target_os = "macos"));
+    assert_eq!(host_driven_animation(&canvas2d), cfg!(target_os = "macos"));
 }
 
 #[test]
