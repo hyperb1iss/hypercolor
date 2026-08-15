@@ -35,6 +35,8 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>HYPERCOLOR_MACOS_OWNER</key>
+        <string>direct-launchd</string>
         <key>HYPERCOLOR_LOG</key>
         <string>info</string>
         <key>PATH</key>

@@ -5,6 +5,8 @@
 // the GUI shell path also stays clean without forcing GUI subsystem here.
 
 use anyhow::{Context, Result};
+#[cfg(target_os = "macos")]
+use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use clap::{Parser, ValueEnum};
 #[cfg(target_os = "macos")]
 use hypercolor_core::config::ConfigManager;
@@ -31,6 +33,9 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Command;
+
+#[cfg(target_os = "macos")]
+mod macos_launcher_authority;
 
 #[cfg(target_os = "macos")]
 const MACOS_OWNER_ARBITRATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -178,6 +183,44 @@ impl From<MacosDaemonOwnerArg> for MacosDaemonOwner {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl From<MacosDaemonOwner> for MacosDaemonOwnerArg {
+    fn from(value: MacosDaemonOwner) -> Self {
+        match value {
+            MacosDaemonOwner::AppSidecar => Self::AppSidecar,
+            MacosDaemonOwner::DirectLaunchd => Self::DirectLaunchd,
+            MacosDaemonOwner::Homebrew => Self::Homebrew,
+            MacosDaemonOwner::Standalone => Self::Standalone,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl MacosDaemonOwnerArg {
+    const fn is_app_sidecar(self) -> bool {
+        matches!(self, Self::AppSidecar)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_activation_policy(owner: MacosDaemonOwnerArg) -> Result<()> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    if !owner.is_app_sidecar() {
+        return Ok(());
+    }
+
+    let main_thread =
+        MainThreadMarker::new().context("daemon entrypoint is not on the main thread")?;
+    let application = NSApplication::sharedApplication(main_thread);
+    anyhow::ensure!(
+        application.setActivationPolicy(NSApplicationActivationPolicy::Prohibited),
+        "failed to suppress the app-sidecar daemon Dock icon"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum RenderAccelerationModeArg {
     Cpu,
@@ -213,7 +256,38 @@ impl From<ServoGpuImportModeArg> for ServoGpuImportMode {
 }
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let (mut args, macos_owner_argument) = {
+        let matches = DaemonArgs::command().get_matches();
+        let argument_was_supplied =
+            matches.value_source("macos_owner") == Some(ValueSource::CommandLine);
+        let args = DaemonArgs::from_arg_matches(&matches)
+            .context("failed to parse daemon command-line arguments")?;
+        let argument = argument_was_supplied.then_some(args.macos_owner.into());
+        (args, argument)
+    };
+    #[cfg(not(target_os = "macos"))]
     let args = DaemonArgs::parse();
+    #[cfg(target_os = "macos")]
+    let macos_daemon_executable =
+        std::env::current_exe().context("failed to resolve the current daemon executable")?;
+    #[cfg(target_os = "macos")]
+    let macos_daemon_requirement = designated_requirement(&macos_daemon_executable)?;
+    #[cfg(target_os = "macos")]
+    {
+        let evidence = macos_launcher_authority::inspect_macos_launcher_authority(
+            &macos_daemon_executable,
+            &macos_daemon_requirement,
+        )?;
+        let owner = macos_launcher_authority::resolve_macos_launcher_owner(
+            std::env::var_os(macos_launcher_authority::MACOS_OWNER_ENV).as_deref(),
+            macos_owner_argument,
+            evidence,
+        )?;
+        args.macos_owner = owner.into();
+    }
+    #[cfg(target_os = "macos")]
+    configure_macos_activation_policy(args.macos_owner)?;
     #[cfg(target_os = "macos")]
     let macos_owner = args.macos_owner.into();
     #[cfg(target_os = "macos")]
@@ -257,7 +331,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
-    let macos_owner_identity = current_macos_owner_identity()?;
+    let macos_owner_identity =
+        current_macos_owner_identity(&macos_daemon_executable, &macos_daemon_requirement)?;
     #[cfg(target_os = "macos")]
     let macos_instance_guard = match try_acquire_macos_daemon_guard(&daemon_instance_name())
         .map_err(anyhow::Error::msg)
@@ -671,10 +746,10 @@ fn record_macos_owner_conflict(
 }
 
 #[cfg(target_os = "macos")]
-fn current_macos_owner_identity() -> Result<MacosOwnerIdentity> {
-    let executable_path =
-        std::env::current_exe().context("failed to resolve the current daemon executable")?;
-    let requirement = designated_requirement(&executable_path)?;
+fn current_macos_owner_identity(
+    executable_path: &std::path::Path,
+    requirement: &str,
+) -> Result<MacosOwnerIdentity> {
     let digest = Sha256::digest(requirement.as_bytes());
     let mut designated_requirement_hash = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -1137,6 +1212,15 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn only_the_app_sidecar_uses_background_activation_policy() {
+        assert!(MacosDaemonOwnerArg::AppSidecar.is_app_sidecar());
+        assert!(!MacosDaemonOwnerArg::DirectLaunchd.is_app_sidecar());
+        assert!(!MacosDaemonOwnerArg::Homebrew.is_app_sidecar());
+        assert!(!MacosDaemonOwnerArg::Standalone.is_app_sidecar());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn daemon_error_remains_primary_when_session_cleanup_also_fails() {
         let daemon_error = combine_macos_daemon_result(
             Err(anyhow::anyhow!("daemon failed")),
@@ -1184,8 +1268,7 @@ mod tests {
                 Ok(store.publish_daemon_session_attestation(&guard, &record.incarnation())?)
             },
         )
-        .err()
-        .expect("occupied final API port must fail preparation");
+        .expect_err("occupied final API port must fail preparation");
 
         assert_eq!(publication_count.get(), 0);
         assert_eq!(

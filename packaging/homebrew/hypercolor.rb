@@ -89,7 +89,7 @@ class Hypercolor < Formula
     keep_alive successful_exit: false
     log_path var/"log/hypercolor/hypercolor.log"
     error_log_path var/"log/hypercolor/hypercolor.log"
-    environment_variables HYPERCOLOR_LOG: "info"
+    environment_variables HYPERCOLOR_LOG: "info", HYPERCOLOR_MACOS_OWNER: "homebrew"
   end
 
   test do
