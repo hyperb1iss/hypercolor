@@ -236,7 +236,11 @@ if script --version 2>&1 | grep -Fq 'util-linux'; then
   redirected_status=0
   {
     printf '%s\n' "$redirected_command"
-    sleep 0.4
+    for _ in {1..300}; do
+      [ -s "$SANDBOX/redirected-child.pid" ] && break
+      sleep 0.01
+    done
+    test -s "$SANDBOX/redirected-child.pid"
     printf '\003'
     sleep 0.3
     printf 'exit\n'
