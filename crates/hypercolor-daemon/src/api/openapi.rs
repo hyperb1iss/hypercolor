@@ -837,6 +837,18 @@ pub const ROUTES: &[RouteSpec] = &[
         "effects",
         "Apply effect",
     ),
+    RouteSpec::get(
+        "/api/v1/effects/{id}/presets",
+        "list_effect_presets",
+        "effects",
+        "List effect presets",
+    ),
+    RouteSpec::post(
+        "/api/v1/effects/{id}/presets/{preset_id}/apply",
+        "apply_effect_preset",
+        "effects",
+        "Apply effect preset",
+    ),
     RouteSpec::patch(
         "/api/v1/effects/{id}/controls",
         "update_effect_controls",
