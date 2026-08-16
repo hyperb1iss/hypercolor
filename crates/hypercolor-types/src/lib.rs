@@ -8,6 +8,7 @@ pub mod attachment;
 pub mod audio;
 pub mod canvas;
 pub mod config;
+pub mod config_registry;
 pub mod control;
 pub mod controls;
 pub mod device;
