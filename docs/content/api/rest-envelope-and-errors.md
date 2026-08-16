@@ -79,7 +79,7 @@ The `error` object has three fields:
 | --- | --- | --- |
 | `code` | string | A machine-readable `ErrorCode`, serialized `snake_case`. See the table below. |
 | `message` | string | A human-readable description. Safe to surface in a UI, not meant for branching logic. |
-| `details` | object or null | Optional structured context: the offending field, conflicting IDs, validation bounds, retry timing. Present only when the daemon has extra context to attach. |
+| `details` | object | Optional structured context: the offending field, conflicting IDs, validation bounds, retry timing. The key is **omitted entirely** when the error carries no context, so treat an absent `details` and an empty one the same way. |
 
 Branch on `code`, render `message`, and read `details` when you need the
 specifics. Never parse `message` to decide control flow; it is prose and can
@@ -112,28 +112,30 @@ independently.
 
 Every error maps to exactly one HTTP status. The `code` string in the body and
 the HTTP status line always agree, so a client can switch on either. The full set
-of codes lives in the `ErrorCode` enum in `api/envelope.rs`; this is the complete
-mapping.
+of codes lives in the `DomainError` enum in `domain/mod.rs`, which is the
+daemon's only error rendering; this is the complete mapping.
 
 | `code` | HTTP status | Meaning |
 | --- | --- | --- |
-| `bad_request` | `400 Bad Request` | Malformed request: bad JSON, missing required field, unparseable parameter. |
+| `malformed_request` | `400 Bad Request` | The request could not be parsed: bad JSON, an unreadable header value, a path segment that is not a valid identifier. |
 | `unauthorized` | `401 Unauthorized` | Missing or invalid credentials. See [auth & security](@/api/auth-and-security.md). |
 | `forbidden` | `403 Forbidden` | Credentials are valid but lack the permission for this operation (for example, a read-only key attempting a write). |
 | `not_found` | `404 Not Found` | The resource does not exist: unknown effect ID, scene ID, device ID. |
-| `conflict` | `409 Conflict` | A state conflict, including optimistic-concurrency failures where a revision token no longer matches. |
+| `conflict` | `409 Conflict` | A state conflict: a duplicate name, an ambiguous lookup, a mutation the current state refuses. |
+| `precondition_failed` | `412 Precondition Failed` | An `If-Match` version precondition failed. `details` carries `expected` and `current`, and the response repeats `current` in its `ETag`. |
 | `payload_too_large` | `413 Payload Too Large` | The request body exceeds the size limit (asset and attachment uploads). |
 | `unsupported_media_type` | `415 Unsupported Media Type` | The `Content-Type` is not accepted for this endpoint. |
 | `validation_error` | `422 Unprocessable Entity` | The request was well-formed but semantically invalid: a value out of range, an incompatible combination of fields. |
 | `rate_limited` | `429 Too Many Requests` | The request was throttled by the rate limiter. See below for retry headers. |
 | `internal_error` | `500 Internal Server Error` | An unexpected daemon-side failure. The `message` is intentionally generic; the `request_id` is your key to the daemon logs. |
+| `device_unavailable` | `503 Service Unavailable` | The device exists but cannot serve the request right now. |
 
 {% callout(type="danger") %}
 `validation_error` maps to **422**, not 400. A well-formed request that fails a
 semantic check (a speed outside its bounds, a zone that cannot accept an output)
-is a 422. Reserve 400 (`bad_request`) for requests the daemon could not parse at
-all. Clients that treat every client-side error as 400 will mis-handle validation
-failures.
+is a 422. 400 (`malformed_request`) is reserved for requests the daemon could not
+parse at all. Clients that treat every client-side error as 400 will mis-handle
+validation failures.
 {% end %}
 
 ### Status flow

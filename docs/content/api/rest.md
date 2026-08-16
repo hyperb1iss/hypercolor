@@ -60,8 +60,7 @@ Error bodies replace `data` with `error`:
 {
   "error": {
     "code": "validation_error",
-    "message": "brightness must be between 0 and 100",
-    "details": null
+    "message": "brightness must be between 0 and 100"
   },
   "meta": {
     "api_version": "1.0",
@@ -75,22 +74,24 @@ The `code` is a `snake_case` string that maps to an HTTP status. The full set:
 
 | `code` | HTTP status |
 | --- | --- |
-| `bad_request` | 400 |
+| `malformed_request` | 400 |
 | `unauthorized` | 401 |
 | `forbidden` | 403 |
 | `not_found` | 404 |
 | `conflict` | 409 |
+| `precondition_failed` | 412 |
 | `payload_too_large` | 413 |
 | `unsupported_media_type` | 415 |
 | `validation_error` | **422** |
 | `rate_limited` | 429 |
 | `internal_error` | 500 |
+| `device_unavailable` | 503 |
 
 {% callout(type="info") %}
 `validation_error` is **422 Unprocessable Entity**, not 400. A well-formed
 request that fails a business rule (out-of-range brightness, an effect that
 isn't runnable) lands here, while a structurally malformed request is
-`bad_request` / 400.
+`malformed_request` / 400.
 {% end %}
 
 ## Authentication

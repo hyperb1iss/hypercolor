@@ -228,14 +228,24 @@ Content-Type: application/json
 
 When the precondition still matches, the mutation applies, persists, and the
 daemon publishes a change event on the bus so every connected client converges.
-When it does not match, the daemon replies `412 Precondition Failed` with a body
-carrying the authoritative current value, plus an `ETag` of that value:
+When it does not match, the daemon replies `412 Precondition Failed` with the
+standard error envelope, carrying both versions in `details` and repeating the
+authoritative one in an `ETag`:
 
 ```json
-{ "error": "groups_revision mismatch", "current": 9 }
+{
+  "error": {
+    "code": "precondition_failed",
+    "message": "version mismatch: expected 8, current 9",
+    "details": { "expected": 8, "current": 9 }
+  },
+  "meta": { "api_version": "1.0", "request_id": "req_…", "timestamp": "…" }
+}
 ```
 
-Layer routes use the same shape with `"error": "layers_version mismatch"`.
+Layer and effect-control routes render identically. Which counter a 412 is about
+is a property of the route you called, not of the body, so rebase off
+`error.details.current` (or the `ETag`, which carries the same value).
 
 {% callout(type="warning") %}
 `If-Match` is optional on the wire: a request with no `If-Match` header skips

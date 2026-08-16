@@ -72,8 +72,7 @@ Errors swap the top-level key from `data` to `error` and keep the same `meta`:
 {
   "error": {
     "code": "validation_error",
-    "message": "canvas_width must be positive",
-    "details": null
+    "message": "canvas_width must be positive"
   },
   "meta": { "api_version": "1.0", "request_id": "req_...", "timestamp": "..." }
 }
