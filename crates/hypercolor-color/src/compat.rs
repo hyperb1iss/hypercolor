@@ -1,12 +1,22 @@
 //! Transitional names carried over from `hypercolor-types::canvas`.
 //!
-//! Every item here delegates to a kernel operation defined elsewhere in
-//! this crate — no new math lives in this module. The deprecated ones
-//! name operations whose behavior is misleading (direct byte scaling
-//! dressed as linear light) or whose canonical spelling changed
-//! (`to_srgba` → `to_encoded`); they exist so the canvas absorption is a
-//! type swap rather than a rewrite, and they retire one release later
-//! per Spec 76 §1.2.
+//! Almost everything here delegates to a kernel operation defined
+//! elsewhere in this crate, either under a spelling that changed
+//! (`to_srgba` → `to_encoded`) or as a convenience over one that did
+//! not. The exceptions are [`Rgba::to_f32`] and [`LinearRgba::to_rgba`],
+//! which carry canvas's direct byte-scaling formula inline. There is
+//! deliberately no kernel function for scaling bytes without a transfer
+//! decode, because doing so produces a value that claims to be linear
+//! light and is not — which is exactly why those two are deprecated
+//! rather than promoted.
+//!
+//! Whether an item delegates or carries its formula, none of it is new
+//! math: both inline formulas are canvas's, character for character,
+//! and `compat_tests.rs` pins them against the baseline across their
+//! full domain.
+//!
+//! These names exist so the canvas absorption is a type swap rather
+//! than a rewrite, and they retire one release later per Spec 76 §1.2.
 
 use crate::transfer::lut::srgb_u8_to_linear;
 use crate::types::{LinearRgba, Oklab, Oklch, Rgba};
@@ -34,8 +44,11 @@ impl Rgba {
     /// decode, producing a [`LinearRgba`] that does not hold linear
     /// light.
     ///
-    /// The type is a lie the canvas module told for years; it is kept
-    /// only so absorbing call sites is a mechanical swap.
+    /// This one carries canvas's formula inline rather than delegating.
+    /// No kernel operation scales bytes without decoding them, and none
+    /// should: the result is mislabelled by its own type. The type is a
+    /// lie the canvas module told for years, kept only so absorbing call
+    /// sites is a mechanical swap.
     #[must_use]
     #[deprecated(note = "direct-scaled bytes are not linear light; use to_linear")]
     pub fn to_f32(self) -> LinearRgba {
@@ -84,8 +97,11 @@ impl LinearRgba {
     /// Scale each channel by 255 and clamp, **skipping** the sRGB
     /// transfer encode and truncating rather than rounding.
     ///
-    /// Sinks that consume linear-light bytes used this; it is not the
-    /// inverse of [`Rgba::to_linear`] and never was.
+    /// The reverse of [`Rgba::to_f32`], and like it, this carries
+    /// canvas's formula inline instead of delegating — the truncating
+    /// direct scale has no kernel equivalent and is not meant to gain
+    /// one. Sinks that consume linear-light bytes used this; it is not
+    /// the inverse of [`Rgba::to_linear`] and never was.
     #[must_use]
     #[deprecated(note = "direct-scaled bytes are not encoded sRGB; use to_encoded")]
     #[expect(
