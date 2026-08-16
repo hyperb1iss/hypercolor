@@ -170,6 +170,12 @@ pub fn SettingsPage() -> impl IntoView {
                     .lock()
                     .expect("config apply tracker lock poisoned")
                     .finish_if_current(&key, generation);
+                // Driver entries are masked on the generic config read,
+                // so the inventory is what tells this page whether a
+                // driver is enabled — re-read it after writing one.
+                if key.starts_with("drivers.") {
+                    drivers_resource.refetch();
+                }
             }
         });
     });

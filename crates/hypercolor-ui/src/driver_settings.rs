@@ -8,6 +8,9 @@ pub struct DiscoveryDriverSetting {
     pub id: String,
     pub label: String,
     pub key: String,
+    /// Whether the driver is enabled, read from the driver inventory:
+    /// the generic config surface masks the whole `drivers` namespace.
+    pub enabled: bool,
     pub transport_labels: Vec<String>,
     pub supports_pairing: bool,
 }
@@ -28,6 +31,7 @@ fn discovery_driver_setting(driver: &DriverSummary) -> DiscoveryDriverSetting {
         id: descriptor.id.clone(),
         label: label.clone(),
         key: format!("{}.enabled", driver.config_key),
+        enabled: driver.enabled,
         transport_labels: transport_labels(&descriptor.transports),
         supports_pairing: descriptor.capabilities.pairing,
     }
