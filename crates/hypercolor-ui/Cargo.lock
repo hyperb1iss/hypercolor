@@ -769,6 +769,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-color"
+version = "0.3.2"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "utoipa",
+]
+
+[[package]]
 name = "hypercolor-leptos-ext"
 version = "0.3.2"
 dependencies = [
@@ -802,6 +811,7 @@ dependencies = [
 name = "hypercolor-types"
 version = "0.3.2"
 dependencies = [
+ "hypercolor-color",
  "serde",
  "serde_json",
  "strum",
@@ -819,6 +829,7 @@ dependencies = [
  "console_error_panic_hook",
  "console_log",
  "gloo-net 0.7.0",
+ "hypercolor-color",
  "hypercolor-leptos-ext",
  "hypercolor-types",
  "icondata",

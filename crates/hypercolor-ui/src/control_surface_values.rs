@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use hypercolor_types::canvas::Rgba;
 use hypercolor_types::controls::{
     ControlObjectField, ControlValue as DynamicControlValue, ControlValueType,
 };
@@ -187,17 +188,17 @@ fn json_to_color<const N: usize>(value: JsonValue) -> Result<[u8; N], String> {
 
 fn parse_color_hex_channels<const N: usize>(raw: &str) -> Result<[u8; N], String> {
     let hex = raw.trim().trim_start_matches('#');
+    // The digit count is this surface's contract, not the kernel's: a
+    // 3-channel field must reject an 8-digit value rather than quietly
+    // dropping its alpha, so the length gate stays ahead of the parse.
     if hex.len() != N * 2 {
         return Err(format!("Expected {}-digit hex color", N * 2));
     }
 
+    let color = Rgba::from_hex(hex).map_err(|_| "Expected hex color channels".to_string())?;
+    let channels = [color.r, color.g, color.b, color.a];
     let mut out = [0_u8; N];
-    for (index, channel) in out.iter_mut().enumerate() {
-        let start = index * 2;
-        let end = start + 2;
-        *channel = u8::from_str_radix(&hex[start..end], 16)
-            .map_err(|_| "Expected hex color channels".to_string())?;
-    }
+    out.copy_from_slice(&channels[..N]);
     Ok(out)
 }
 

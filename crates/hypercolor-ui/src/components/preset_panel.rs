@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use crate::api;
 use crate::control_value_json::controls_to_json;
 use crate::toasts;
+use hypercolor_color::Hsl;
 use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
 use hypercolor_types::effect::ControlValue;
 
@@ -61,21 +62,13 @@ fn djb2_hash_reversed(s: &str) -> u32 {
 
 /// Plain HSL → sRGB triplet string — vivid but still within a readable
 /// neon band once the saturation/lightness are pre-clamped by caller.
+///
+/// The kernel clamps saturation and lightness and wraps hue, so a
+/// caller that drifts out of range now degrades to the nearest legal
+/// color instead of relying on the byte cast to saturate for it.
 fn hsl_to_rgb_triplet(h: f32, s: f32, l: f32) -> String {
-    let c = (1.0 - (2.0f32 * l - 1.0).abs()) * s;
-    let h_prime = h / 60.0;
-    let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
-    let (r1, g1, b1) = match h_prime as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    let to_byte = |v: f32| -> u8 { ((v + m) * 255.0).round() as u8 };
-    format!("{}, {}, {}", to_byte(r1), to_byte(g1), to_byte(b1))
+    let rgb = Hsl::new(h, s, l).to_rgb();
+    format!("{}, {}, {}", rgb.r, rgb.g, rgb.b)
 }
 
 /// Compact preset toolbar for the effect detail sidebar.
