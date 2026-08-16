@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode, ServoGpuImportMode};
 use hypercolor_types::config_registry::{ApplyPolicy, KeyPattern, registry};
+use tracing::warn;
 
 use super::ConfigManager;
 
@@ -111,6 +112,19 @@ impl ConfigSources {
 pub struct BootConfig(HypercolorConfig);
 
 impl BootConfig {
+    /// Wrap a config the caller already holds, bypassing the pipeline.
+    ///
+    /// Skips everything [`ConfigManager::load_with_sources`] does around
+    /// the config itself: no file resolution, no daemon seeding hook, no
+    /// env or CLI overlay, no capture validation, and no provenance. Only
+    /// callers that already own a fully materialized config — the tests
+    /// that drive initialization directly — have any business with it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_config_unchecked(config: HypercolorConfig) -> Self {
+        Self(config)
+    }
+
     /// Consume into the inner config.
     #[must_use]
     pub fn into_inner(self) -> HypercolorConfig {
@@ -193,6 +207,10 @@ impl ConfigManager {
             let config = if default_path.exists() {
                 Self::load(&default_path)?
             } else {
+                warn!(
+                    path = %default_path.display(),
+                    "No config file found, using built-in defaults"
+                );
                 // Defaults run the same normalize as file loads, so
                 // the single-pipeline contract holds even when
                 // normalization grows rules the defaults don't

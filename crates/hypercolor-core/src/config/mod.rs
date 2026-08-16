@@ -161,12 +161,17 @@ impl ConfigManager {
     /// Build a manager over a config the caller already materialized,
     /// running the same normalize every load runs.
     ///
-    /// The pipeline in [`load_with_sources`](Self::load_with_sources) is
-    /// the daemon's load path; this is the door for callers that hold a
-    /// config in memory and need a manager whose live snapshot is exactly
-    /// that config.
+    /// Everything else the pipeline in
+    /// [`load_with_sources`](Self::load_with_sources) does is skipped:
+    /// the daemon's driver-seeding hook never runs, capture config is
+    /// never validated, no env or CLI overlay is applied, and no
+    /// provenance or boot fingerprint is recorded — so a manager built
+    /// this way reports no pending restarts. It exists for callers that
+    /// already own a fully materialized config, which in practice means
+    /// tests driving daemon initialization directly.
+    #[doc(hidden)]
     #[must_use]
-    pub fn from_config(config_path: PathBuf, config: HypercolorConfig) -> Self {
+    pub fn from_config_unchecked(config_path: PathBuf, config: HypercolorConfig) -> Self {
         Self::with_config(config_path, normalize_config(config))
     }
 
@@ -193,6 +198,7 @@ impl ConfigManager {
             .with_context(|| format!("failed to read config from {}", path.display()))?;
 
         Self::parse_toml(&contents)
+            .with_context(|| format!("failed to load config from {}", path.display()))
     }
 
     /// Returns a snapshot of the current configuration.

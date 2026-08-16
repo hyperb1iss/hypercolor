@@ -16,7 +16,9 @@ use tracing::{info, warn};
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::config::{CapturePersistenceEpoch, CapturePersistenceSource, ConfigManager};
+use hypercolor_core::config::{
+    BootConfig, CapturePersistenceEpoch, CapturePersistenceSource, ConfigManager,
+};
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
@@ -88,9 +90,12 @@ fn open_persisted_library_store(
 impl DaemonState {
     /// Initialize all subsystems from a loaded configuration.
     ///
-    /// `config` carries the boot values subsystems freeze at construction;
-    /// `config_manager` is the live authority the load pipeline already
-    /// built, so nothing here re-reads or re-parses the config file.
+    /// `boot` is **consumed by value** (Spec 76 §3.2): subsystems freeze
+    /// the boot values they need during construction, and the config dies
+    /// with this call, so no live handle to a [`BootConfig`] can outlast
+    /// initialization. `config_manager` is the live authority the load
+    /// pipeline already built, so nothing here re-reads or re-parses the
+    /// config file.
     ///
     /// This wires together the bus, registry, engines, and render loop
     /// but does **not** start any background tasks. Call [`start`](Self::start)
@@ -104,10 +109,8 @@ impl DaemonState {
         clippy::too_many_lines,
         reason = "initialization is inherently sequential; splitting would scatter related setup across helpers"
     )]
-    pub fn initialize(
-        config: &HypercolorConfig,
-        config_manager: Arc<ConfigManager>,
-    ) -> Result<Self> {
+    pub fn initialize(boot: BootConfig, config_manager: Arc<ConfigManager>) -> Result<Self> {
+        let config: &HypercolorConfig = &boot;
         info!("Initializing daemon subsystems");
         config
             .capture

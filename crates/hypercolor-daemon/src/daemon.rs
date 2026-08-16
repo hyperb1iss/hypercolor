@@ -174,10 +174,10 @@ pub async fn run_with_extensions(
         .local_addr()
         .context("failed to read API listener address")?;
 
-    let mut daemon_state = DaemonState::initialize(&config, config_manager)?;
-    // Boot values are frozen into the subsystems that need them; anything
-    // read past this point reads live (Spec 76 §3.2).
-    drop(config);
+    // Boot values are frozen into the subsystems that need them by this
+    // call, which consumes the config; anything read past this point
+    // reads live (Spec 76 §3.2).
+    let mut daemon_state = DaemonState::initialize(config, config_manager)?;
     for installer in extension_installers {
         installer.install(&mut daemon_state)?;
     }
@@ -744,7 +744,7 @@ fn unbracket_host(host: &str) -> &str {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use hypercolor_core::config::ConfigManager;
+    use hypercolor_core::config::{BootConfig, ConfigManager};
     use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
     use super::{default_env_filter, notify_api_ready_extensions, resolve_log_level};
@@ -833,12 +833,13 @@ mod tests {
         let _data_dir = DataDirOverride::install(directory.path().join("data"));
         let mut config = default_config();
         config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
-        let config_manager = Arc::new(ConfigManager::from_config(
+        let config_manager = Arc::new(ConfigManager::from_config_unchecked(
             directory.path().join("hypercolor.toml"),
             config.clone(),
         ));
-        let mut daemon = DaemonState::initialize(&config, config_manager)
-            .expect("daemon test state should initialize");
+        let mut daemon =
+            DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
+                .expect("daemon test state should initialize");
         let state = Arc::new(AppState::new_with_data_dir(directory.path().join("api")));
         let calls = Arc::new(Mutex::new(Vec::new()));
         for name in ["first", "second"] {

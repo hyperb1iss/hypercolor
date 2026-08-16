@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use hypercolor_core::config::ConfigManager;
+use hypercolor_core::config::{BootConfig, ConfigManager};
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::screen::ResolvedCaptureSource;
 use hypercolor_core::input::screen::{PixelExtent, ScreenAdmissionCapacity, ScreenCaptureDemand};
@@ -277,11 +277,11 @@ fn daemon_initialization_rejects_invalid_capture_config_before_startup() {
         ..hypercolor_types::config::HypercolorConfig::default()
     };
 
-    let manager = Arc::new(ConfigManager::from_config(
+    let manager = Arc::new(ConfigManager::from_config_unchecked(
         directory.path().join("hypercolor.toml"),
         config.clone(),
     ));
-    let result = super::DaemonState::initialize(&config, manager);
+    let result = super::DaemonState::initialize(BootConfig::from_config_unchecked(config), manager);
     let Err(error) = result else {
         panic!("invalid capture config must stop daemon initialization");
     };
