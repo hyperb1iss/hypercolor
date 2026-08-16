@@ -302,7 +302,7 @@ Canonical routes adopt these; **v1 paths keep emitting the current `pagination {
 
 One canonical value algebra in `types::control`; both current systems become projections of it. Canonical decisions, made once:
 
-The canonical algebra is the **typed union of both real algebras — variant identity is preserved**, so every driver-surface and effect-control value round-trips losslessly. (The driver algebra verified at `controls.rs`: `Null, Bool, Integer(i64), Float(f64), String, SecretRef(String), ColorRgb([u8;3]), ColorRgba([u8;4]), IpAddress, MacAddress, DurationMs(u64), Enum, Flags(Vec<String>), List, Object, Unknown`.)
+The canonical algebra is the **typed union of both real algebras — variant identity is preserved**, so every VALID driver-surface and effect-control value round-trips byte-identically on its own wire (legacy values that fail canonical validation stay readable as raw legacy values per §0 — kept, surfaced as diagnostics, never dropped). (The driver algebra verified at `controls.rs`: `Null, Bool, Integer(i64), Float(f64), String, SecretRef(String), ColorRgb([u8;3]), ColorRgba([u8;4]), IpAddress, MacAddress, DurationMs(u64), Enum, Flags(Vec<String>), List, Object, Unknown`.)
 
 ```rust
 pub enum ControlValue {
@@ -324,7 +324,7 @@ pub enum ControlValue {
     Flags(Vec<String>),                // driver algebra is ordered — Vec, not a set
     List(Vec<ControlValue>),
     Map(BTreeMap<String, ControlValue>),
-    Unknown,                           // unit, matching the driver wire — round-trips as-is
+    Unknown,                           // unit — round-trips at enum identity; the legacy deserializer already drops unrecognized payloads at the wire
 }
 ```
 

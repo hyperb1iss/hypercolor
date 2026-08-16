@@ -1,4 +1,4 @@
-import { canvas, color, combo, num, scaleContext } from 'hypercolor'
+import { canvas, clamp, color, combo, num, hexToRgb as parseHexColor, scaleContext } from 'hypercolor'
 
 const POISONOUS_DESIGN_BASIS = { height: 200, width: 320 } as const
 
@@ -51,30 +51,10 @@ const THEME_PALETTES: Record<Exclude<(typeof THEMES)[number], 'Custom'>, ThemePa
     },
 }
 
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
+const WHITE: RGB = { b: 255, g: 255, r: 255 }
 
 function hexToRgb(hex: string): RGB {
-    const normalized = hex.trim().replace('#', '')
-    const expanded =
-        normalized.length === 3
-            ? normalized
-                  .split('')
-                  .map((char) => `${char}${char}`)
-                  .join('')
-            : normalized
-
-    if (!/^[0-9a-fA-F]{6}$/.test(expanded)) {
-        return { b: 255, g: 255, r: 255 }
-    }
-
-    const value = Number.parseInt(expanded, 16)
-    return {
-        b: value & 255,
-        g: (value >> 8) & 255,
-        r: (value >> 16) & 255,
-    }
+    return parseHexColor(hex.trim(), WHITE)
 }
 
 function rgba(color: RGB, alpha: number): string {

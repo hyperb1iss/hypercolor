@@ -1,4 +1,4 @@
-import { canvas, color, combo, num, scaleContext, toggle } from 'hypercolor'
+import { canvas, color, combo, num, rgbToHsl, scaleContext, toggle } from 'hypercolor'
 
 import { BUILTIN_DESIGN_BASIS, clamp01, hexToRgb, hslCss, mixRgb, rgbToCss, scaleRgb } from '../_builtin/common'
 
@@ -19,29 +19,9 @@ function ease(value: number, mode: string): number {
     return t
 }
 
-function rgbToHsl(rgb: { r: number; g: number; b: number }): [number, number, number] {
-    const r = rgb.r / 255
-    const g = rgb.g / 255
-    const b = rgb.b / 255
-    const max = Math.max(r, g, b)
-    const min = Math.min(r, g, b)
-    const delta = max - min
-    const lightness = (max + min) / 2
-
-    if (delta === 0) return [0, 0, lightness]
-
-    const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min)
-    let hue = 0
-    if (max === r) hue = (g - b) / delta + (g < b ? 6 : 0)
-    else if (max === g) hue = (b - r) / delta + 2
-    else hue = (r - g) / delta + 4
-
-    return [hue * 60, saturation, lightness]
-}
-
 function saturateRgb(rgb: { r: number; g: number; b: number }, saturation: number): string {
-    const [hue, sat, lightness] = rgbToHsl(rgb)
-    return hslCss(hue, clamp01(sat * saturation) * 100, lightness * 100)
+    const { h, s, l } = rgbToHsl(rgb)
+    return hslCss(h, clamp01(s * saturation) * 100, l * 100)
 }
 
 // ── Oklab interpolation for the Smooth blend mode ───────────────────────────

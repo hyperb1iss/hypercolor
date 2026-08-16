@@ -1,4 +1,4 @@
-import { canvas, clamp, combo, num } from 'hypercolor'
+import { canvas, clamp, combo, hsvToRgb, num } from 'hypercolor'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -29,44 +29,6 @@ function hash(n: number): number {
 
 function hash2(a: number, b: number): number {
     return hash(a * 73.13 + b * 113.97)
-}
-
-function hsvToRgb(h: number, s: number, v: number): Rgb {
-    const hue = ((h % 360) + 360) % 360
-    const sat = clamp(s, 0, 1)
-    const val = clamp(v, 0, 1)
-    const c = val * sat
-    const x = c * (1 - Math.abs(((hue / 60) % 2) - 1))
-    const m = val - c
-
-    let r = 0
-    let g = 0
-    let b = 0
-    if (hue < 60) {
-        r = c
-        g = x
-    } else if (hue < 120) {
-        r = x
-        g = c
-    } else if (hue < 180) {
-        g = c
-        b = x
-    } else if (hue < 240) {
-        g = x
-        b = c
-    } else if (hue < 300) {
-        r = x
-        b = c
-    } else {
-        r = c
-        b = x
-    }
-
-    return {
-        b: Math.round((b + m) * 255),
-        g: Math.round((g + m) * 255),
-        r: Math.round((r + m) * 255),
-    }
 }
 
 function toRgba(c: Rgb, a: number): string {
