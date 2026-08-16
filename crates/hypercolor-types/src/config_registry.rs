@@ -142,6 +142,13 @@ pub struct ConfigKeyDescriptor {
 
 /// Declares the registry table plus the closed-section root list the
 /// completeness test checks against the real config struct.
+///
+/// Two constraints the tests rely on: top-level config sections must
+/// not be `skip_serializing_if` (the completeness check enumerates the
+/// serialized default's keys; `extensions` is the one exception and is
+/// the declared catch-all), and exact-key rows carry no validator and
+/// `Plain` redaction — an exact override exists to change the apply
+/// policy only. Grow the macro when an exact row first needs more.
 macro_rules! config_key_registry {
     (
         sections: [ $( $sroot:literal => $sapply:expr, $sredact:expr $(, validate: $svalidate:expr)? ; )* ]
@@ -223,6 +230,9 @@ config_key_registry! {
         // The running render and display threads freeze their copies;
         // the API reading live is reporting, not application.
         "display" => ApplyPolicy::Restart, Redaction::Plain;
+        // web.cors_origins is mixed in the tree (HTTP layer frozen,
+        // WS handshake live); Restart is the conservative truth for
+        // the section until the HTTP layer re-reads.
         "discovery" => ApplyPolicy::NextScan, Redaction::Plain;
         "network" => ApplyPolicy::Restart, Redaction::Plain;
         "dbus" => ApplyPolicy::Inert, Redaction::Plain;
@@ -242,10 +252,26 @@ config_key_registry! {
         "discovery.mdns_enabled" => ApplyPolicy::Restart;
         "discovery.background_enabled" => ApplyPolicy::Restart;
         "discovery.scan_interval_secs" => ApplyPolicy::Restart;
+        // The session watcher only spawns at boot: enabling after a
+        // disabled start needs a restart even though the policy reads
+        // live once running. Restart is the conservative truth.
+        "session.enabled" => ApplyPolicy::Restart;
+        // Read from the manager on every effect-error event, unlike
+        // the rest of its boot-frozen section.
+        "effect_engine.effect_error_fallback" => ApplyPolicy::LiveOnRead;
     ]
     namespaces: [
         "drivers" => ApplyPolicy::LiveOnRead;
     ]
+}
+
+/// Whether `key` is a well-formed dotted path: non-empty, with no
+/// empty segments. Lookup itself is total (the catch-all matches
+/// anything), so surfaces that accept caller-supplied keys gate on
+/// this first (wave 4.3's set path).
+#[must_use]
+pub fn is_valid_key(key: &str) -> bool {
+    !key.is_empty() && key.split('.').all(|segment| !segment.is_empty())
 }
 
 /// The most specific descriptor matching `key`. Total: the

@@ -97,7 +97,29 @@ fn restart_classification_matches_reality() {
     assert!(requires_restart("daemon.listen_address"));
     assert!(!requires_restart("daemon.target_fps"));
     assert!(!requires_restart("audio.device"));
-    assert!(!requires_restart("session.enabled"));
+    // The session watcher only spawns at boot; enabling after a
+    // disabled start needs a restart.
+    assert!(requires_restart("session.enabled"));
+    assert!(!requires_restart("session.sleep_behavior"));
+    // Read per effect-error event, unlike its frozen section.
+    assert_eq!(
+        descriptor_for("effect_engine.effect_error_fallback").apply,
+        ApplyPolicy::LiveOnRead
+    );
+    assert_eq!(
+        descriptor_for("effect_engine.compositor_acceleration_mode").apply,
+        ApplyPolicy::Restart
+    );
+}
+
+#[test]
+fn key_grammar_rejects_empty_segments() {
+    use hypercolor_types::config_registry::is_valid_key;
+    assert!(is_valid_key("daemon.port"));
+    assert!(is_valid_key("drivers.wled.known_ips"));
+    for bad in ["", ".", "audio.", ".audio", "a..b"] {
+        assert!(!is_valid_key(bad), "{bad:?} must be rejected");
+    }
 }
 
 #[test]

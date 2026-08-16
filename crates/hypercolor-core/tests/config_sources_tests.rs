@@ -107,6 +107,16 @@ fn invalid_env_overlay_key_fails_the_load() {
 }
 
 #[test]
+fn malformed_overlay_keys_are_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_config(&dir, "");
+    let mut sources = sources_for(path);
+    sources.env.values = vec![("audio.".to_owned(), serde_json::json!("x"))];
+    let error = ConfigManager::load_with_sources(sources).expect_err("trailing dot must fail");
+    assert!(format!("{error:#}").contains("malformed config key"));
+}
+
+#[test]
 fn boot_config_is_consumed_by_value() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = write_config(&dir, "");

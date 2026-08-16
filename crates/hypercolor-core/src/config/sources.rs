@@ -193,7 +193,11 @@ impl ConfigManager {
             let config = if default_path.exists() {
                 Self::load(&default_path)?
             } else {
-                HypercolorConfig::default()
+                // Defaults run the same normalize as file loads, so
+                // the single-pipeline contract holds even when
+                // normalization grows rules the defaults don't
+                // already satisfy.
+                Self::default_config()
             };
             (default_path, config)
         };
@@ -225,7 +229,8 @@ impl ConfigManager {
             .context("capture configuration is invalid")?;
 
         let manager = Self::with_config(path, config.clone());
-        let fingerprint = restart_fingerprint(&config);
+        let fingerprint =
+            restart_fingerprint(&config).context("boot config does not project to JSON")?;
         manager
             .boot_state
             .set(BootState {
@@ -251,18 +256,29 @@ impl ConfigManager {
             return Vec::new();
         };
         let mut desired = self.live().clone_inner();
+        let mut pending = std::collections::BTreeSet::new();
         for (key, value) in &boot.sticky_overlays {
-            // A failed re-apply means the overlay key no longer fits
-            // the schema; the bare persisted value is then the honest
-            // comparison basis.
-            let _ = set_dotted(&mut desired, key, value.clone());
+            // A sticky overlay that no longer re-applies means the
+            // next start genuinely differs from this one — that IS a
+            // pending restart, not a value to compare around.
+            if set_dotted(&mut desired, key, value.clone()).is_err() {
+                pending.insert(root_of(key).to_owned());
+            }
         }
-        let desired_fingerprint = restart_fingerprint(&desired);
-        boot.fingerprint
-            .iter()
-            .filter(|(root, booted)| desired_fingerprint.get(*root) != Some(booted))
-            .map(|(root, _)| root.clone())
-            .collect()
+        match restart_fingerprint(&desired) {
+            Ok(desired_fingerprint) => {
+                for (root, booted) in &boot.fingerprint {
+                    if desired_fingerprint.get(root) != Some(booted) {
+                        pending.insert(root.clone());
+                    }
+                }
+            }
+            // If the desired state no longer projects, every
+            // restart-classified root is honestly unknown — report
+            // all of them rather than silently none.
+            Err(_) => pending.extend(boot.fingerprint.keys().cloned()),
+        }
+        pending.into_iter().collect()
     }
 }
 
@@ -306,6 +322,9 @@ fn record_cli(
 /// Set a dotted key inside the config via its JSON projection,
 /// re-validating through deserialization.
 fn set_dotted(config: &mut HypercolorConfig, key: &str, value: serde_json::Value) -> Result<()> {
+    if !hypercolor_types::config_registry::is_valid_key(key) {
+        bail!("malformed config key: {key:?}");
+    }
     let mut root = serde_json::to_value(&*config)?;
     let mut cursor = &mut root;
     let mut segments = key.split('.').peekable();
@@ -334,8 +353,8 @@ fn set_dotted(config: &mut HypercolorConfig, key: &str, value: serde_json::Value
 /// specific descriptor is not restart-classified (the live render
 /// knobs inside the otherwise-frozen `daemon` section), so changing
 /// those never flags a restart.
-fn restart_fingerprint(config: &HypercolorConfig) -> BTreeMap<String, serde_json::Value> {
-    let root = serde_json::to_value(config).unwrap_or(serde_json::Value::Null);
+fn restart_fingerprint(config: &HypercolorConfig) -> Result<BTreeMap<String, serde_json::Value>> {
+    let root = serde_json::to_value(config).context("config does not project to JSON")?;
     let mut fingerprint = BTreeMap::new();
     for descriptor in registry() {
         if !matches!(descriptor.apply, ApplyPolicy::Restart) {
@@ -369,7 +388,11 @@ fn restart_fingerprint(config: &HypercolorConfig) -> BTreeMap<String, serde_json
             fingerprint.insert(key.to_owned(), value.clone());
         }
     }
-    fingerprint
+    Ok(fingerprint)
+}
+
+fn root_of(key: &str) -> &str {
+    key.split('.').next().unwrap_or(key)
 }
 
 fn lookup_dotted<'v>(root: &'v serde_json::Value, key: &str) -> Option<&'v serde_json::Value> {
