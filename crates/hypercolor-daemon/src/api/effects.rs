@@ -20,7 +20,6 @@ use hypercolor_core::effect::{
     parse_html_effect_metadata,
 };
 use hypercolor_core::engine::RenderLoopState;
-use hypercolor_core::scene::ControlsVersionMismatch;
 use hypercolor_types::api::output::OutputPowerMode;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
@@ -29,8 +28,7 @@ use hypercolor_types::effect::{
     EffectSource,
 };
 use hypercolor_types::event::{
-    ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
-    ZoneChangeKind, ZoneColors,
+    EffectRef, EventControlValue, FrameData, HypercolorEvent, ZoneColors,
 };
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{Zone, ZoneId};
@@ -40,10 +38,6 @@ use hypercolor_types::spatial::SpatialLayout;
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{
-    ActiveSceneMutationError, active_scene_id_for_runtime_mutation, admit_scene_store_snapshot,
-    publish_render_group_changed, save_admitted_scene_store_snapshot, scene_store_coordinator,
-};
 use crate::discovery;
 use crate::domain;
 use crate::domain::MutationContext;
@@ -59,8 +53,9 @@ const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 
 pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
-    let mut scene_manager = state.scene_manager.write().await;
-    scene_manager.invalidate_active_render_groups();
+    if let Err(error) = domain::effect::invalidate_active_zones(state).await {
+        warn!(%error, "Failed to refresh active zones after an effect registry update");
+    }
 }
 
 // Wire contracts live in hypercolor-types::api::effects — shared with the
@@ -90,26 +85,6 @@ enum ResolveLayoutLinkError {
     AmbiguousName(String),
 }
 
-#[derive(Debug)]
-pub(crate) struct StopActiveEffectResult {
-    pub effect: EffectRef,
-    pub released_network_devices: usize,
-}
-
-#[derive(Debug)]
-pub(crate) enum StopActiveEffectError {
-    NoActiveEffect,
-    ActiveScene(ActiveSceneMutationError),
-    ActiveGroupMissing,
-    Persistence(String),
-}
-
-impl From<ActiveSceneMutationError> for StopActiveEffectError {
-    fn from(value: ActiveSceneMutationError) -> Self {
-        Self::ActiveScene(value)
-    }
-}
-
 pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
     let output_sleeping = state.power_state.borrow().sleeping();
     let render_paused = state.render_loop.read().await.state() == RenderLoopState::Paused;
@@ -117,51 +92,6 @@ pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
         return;
     }
     super::output::set_output_power(state, OutputPowerMode::Running).await;
-}
-
-pub(crate) async fn stop_active_effect_and_quiesce_output(
-    state: &AppState,
-) -> Result<StopActiveEffectResult, StopActiveEffectError> {
-    let Some((group, previous_effect)) = active_primary_effect(state).await else {
-        return Err(StopActiveEffectError::NoActiveEffect);
-    };
-
-    let coordinator = scene_store_coordinator(state).await;
-    let (scene_id, cleared_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
-        let rollback = scene_manager.clone();
-        let Some(cleared_group) = scene_manager.clear_group_effect(group.id).cloned() else {
-            return Err(StopActiveEffectError::ActiveGroupMissing);
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return Err(StopActiveEffectError::Persistence(error.to_string()));
-            }
-        };
-        (scene_id, cleared_group, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state, pending).await {
-        warn!(%error, "Failed to persist stopped effect; retry remains active");
-    }
-
-    let effect = effect_ref(&previous_effect);
-    state.event_bus.publish(HypercolorEvent::EffectStopped {
-        effect: effect.clone(),
-        reason: EffectStopReason::Stopped,
-        group_id: Some(cleared_group.id),
-        group_name: Some(cleared_group.name.clone()),
-    });
-    publish_render_group_changed(state, scene_id, &cleared_group, ZoneChangeKind::Updated);
-
-    let released_network_devices = quiesce_output_after_effect_stop(state).await;
-    super::save_runtime_session_snapshot(state).await;
-
-    Ok(StopActiveEffectResult {
-        effect,
-        released_network_devices,
-    })
 }
 
 pub(crate) fn schedule_network_output_reconnect(state: &AppState) {
@@ -221,7 +151,7 @@ fn schedule_output_reconnect(state: &AppState, network_only: bool) {
     );
 }
 
-async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
+pub(crate) async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
     let _transition_guard = state.output_power_transition.lock().await;
     {
         let mut render_loop = state.render_loop.write().await;
@@ -987,20 +917,15 @@ pub async fn resume_effect(State(state): State<Arc<AppState>>) -> Response {
 
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.
 pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
-    let stop_result = match stop_active_effect_and_quiesce_output(state.as_ref()).await {
-        Ok(result) => result,
-        Err(StopActiveEffectError::NoActiveEffect | StopActiveEffectError::ActiveGroupMissing) => {
-            return ApiError::not_found("No effect is currently active");
-        }
-        Err(StopActiveEffectError::ActiveScene(error)) => {
-            return error.api_response("stopping the active effect");
-        }
-        Err(StopActiveEffectError::Persistence(error)) => return ApiError::internal(error),
+    let stopped = match domain::effect::stop_effect(state.as_ref(), MutationContext::api()).await {
+        Ok(Some(stopped)) => stopped,
+        Ok(None) => return ApiError::not_found("No effect is currently active"),
+        Err(error) => return domain::legacy::scene_family_error_response(error),
     };
 
     ApiResponse::ok(serde_json::json!({
         "stopped": true,
-        "released_network_devices": stop_result.released_network_devices,
+        "released_network_devices": stopped.released_network_devices,
     }))
 }
 
@@ -1020,51 +945,39 @@ pub async fn update_current_controls(
         return ApiError::bad_request("controls payload must include at least one key");
     }
 
-    let mut rejected: Vec<String> = Vec::new();
-    let mut applied: HashMap<String, ControlValue> = HashMap::new();
     let Some((group, active_meta)) = active_primary_effect(state.as_ref()).await else {
         return ApiError::not_found("No effect is currently active");
     };
     let effect_name = active_meta.name.clone();
-    let (normalized, invalid) = normalize_control_payload(&active_meta, &controls);
-    rejected.extend(invalid);
-    applied.extend(normalized.clone());
-    let previous_values = resolved_control_values(&active_meta, &group);
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, updated_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("updating active effect controls"),
-        };
-        let rollback = scene_manager.clone();
-        let updated_group = match scene_manager.patch_effect_controls_with_precondition(
-            group.id,
-            Some(active_meta.id),
-            normalized,
-            None,
-        ) {
-            Ok((updated, _version)) => updated.clone(),
-            Err(ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing) => {
-                return ApiError::not_found("No effect is currently active");
-            }
-            Err(ControlsVersionMismatch::Stale { .. }) => {
-                return ApiError::conflict("active effect controls changed concurrently");
-            }
-            Err(ControlsVersionMismatch::AmbiguousLayerStack) => {
-                return ApiError::validation(
-                    "active group has multiple effect layers; use the layer controls endpoint",
-                );
-            }
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (scene_id, updated_group, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
+    let (applied, rejected) = normalize_control_payload(&active_meta, &controls);
+
+    let outcome = domain::effect::update_controls(
+        state.as_ref(),
+        domain::effect::UpdateControls {
+            zone_id: group.id,
+            expected_effect_id: Some(active_meta.id),
+            effect: active_meta,
+            controls: applied.clone(),
+            expected_version: None,
+        },
+        MutationContext::api(),
+    )
+    .await;
+
+    match outcome {
+        Ok(Ok(_)) => {}
+        Ok(Err(domain::effect::ControlsRefusal::ZoneMissing)) => {
+            return ApiError::not_found("No effect is currently active");
+        }
+        Ok(Err(domain::effect::ControlsRefusal::Stale { .. })) => {
+            return ApiError::conflict("active effect controls changed concurrently");
+        }
+        Ok(Err(domain::effect::ControlsRefusal::AmbiguousLayerStack)) => {
+            return ApiError::validation(
+                "active group has multiple effect layers; use the layer controls endpoint",
+            );
+        }
+        Err(error) => return domain::legacy::scene_family_error_response(error),
     }
 
     if !rejected.is_empty() {
@@ -1074,21 +987,6 @@ pub async fn update_current_controls(
             "Rejected one or more control updates"
         );
     }
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &updated_group,
-        ZoneChangeKind::ControlsPatched,
-    );
-    publish_primary_control_changed_events(
-        state.as_ref(),
-        &active_meta,
-        &previous_values,
-        &resolved_control_values(&active_meta, &updated_group),
-        applied.keys().map(String::as_str),
-        ChangeTrigger::Api,
-    );
-    super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "effect": effect_name,
@@ -1143,54 +1041,40 @@ pub async fn update_effect_controls(
         return ApiError::not_found("No zone loads that effect");
     };
     let effect_name = active_meta.name.clone();
-    let (normalized, invalid) = normalize_control_payload(&active_meta, &controls);
-    let mut rejected: Vec<String> = Vec::new();
-    rejected.extend(invalid);
-    let applied = normalized.clone();
-    let previous_values = resolved_control_values(&active_meta, &group);
+    let (applied, rejected) = normalize_control_payload(&active_meta, &controls);
 
-    // Resolve -> verify -> patch is one write-lock section so the
-    // TOCTOU window between "I looked up this effect" and "I'm
-    // patching the group that used to load it" is closed. Passing
-    // `expected_effect_id` to the scene manager turns a concurrent
-    // effect-swap into a `GroupMissing` error instead of a silent
-    // overwrite. See `SceneManager::patch_effect_controls_with_precondition`.
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, updated_group, new_version, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("updating effect controls"),
-        };
-        let rollback = scene_manager.clone();
-        let result = match scene_manager.patch_effect_controls_with_precondition(
-            group.id,
-            Some(effect_id),
-            normalized,
+    // Passing `expected_effect_id` through to the candidate turns a
+    // concurrent effect swap into a not-found instead of a patch landing
+    // on whatever moved into the zone, closing the window between "I
+    // looked up this effect" and "I am patching the zone that loaded it".
+    let outcome = domain::effect::update_controls(
+        state.as_ref(),
+        domain::effect::UpdateControls {
+            zone_id: group.id,
+            expected_effect_id: Some(effect_id),
+            effect: active_meta,
+            controls: applied.clone(),
             expected_version,
-        ) {
-            Ok((updated, version)) => (scene_id, updated.clone(), version),
-            Err(ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing) => {
-                return ApiError::not_found("zone no longer loads that effect");
-            }
-            Err(ControlsVersionMismatch::Stale { current }) => {
-                return controls_version_mismatch_response(current);
-            }
-            Err(ControlsVersionMismatch::AmbiguousLayerStack) => {
-                return ApiError::validation(
-                    "zone has multiple matching effect layers; use the layer controls endpoint",
-                );
-            }
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (result.0, result.1, result.2, pending)
+        },
+        MutationContext::api(),
+    )
+    .await;
+
+    let new_version = match outcome {
+        Ok(Ok(written)) => written.controls_version,
+        Ok(Err(domain::effect::ControlsRefusal::ZoneMissing)) => {
+            return ApiError::not_found("zone no longer loads that effect");
+        }
+        Ok(Err(domain::effect::ControlsRefusal::Stale { current })) => {
+            return controls_version_mismatch_response(current);
+        }
+        Ok(Err(domain::effect::ControlsRefusal::AmbiguousLayerStack)) => {
+            return ApiError::validation(
+                "zone has multiple matching effect layers; use the layer controls endpoint",
+            );
+        }
+        Err(error) => return domain::legacy::scene_family_error_response(error),
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
-    }
 
     if !rejected.is_empty() {
         warn!(
@@ -1199,21 +1083,6 @@ pub async fn update_effect_controls(
             "Rejected one or more control updates"
         );
     }
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &updated_group,
-        ZoneChangeKind::ControlsPatched,
-    );
-    publish_primary_control_changed_events(
-        state.as_ref(),
-        &active_meta,
-        &previous_values,
-        &resolved_control_values(&active_meta, &updated_group),
-        applied.keys().map(String::as_str),
-        ChangeTrigger::Api,
-    );
-    super::persist_runtime_session(&state).await;
 
     let body = ApiResponse::ok(serde_json::json!({
         "effect": effect_name,
@@ -1322,39 +1191,21 @@ pub async fn set_current_control_binding(
         Ok(normalized) => normalized,
         Err(error) => return ApiError::validation(error),
     };
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, updated_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => {
-                return error.api_response("updating an active effect control binding");
-            }
-        };
-        let rollback = scene_manager.clone();
-        let Some(updated_group) = scene_manager
-            .set_group_control_binding(group.id, control_id.clone(), normalized.clone())
-            .cloned()
-        else {
-            return ApiError::not_found("No effect is currently active");
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (scene_id, updated_group, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
-    }
-
-    publish_render_group_changed(
+    let outcome = domain::effect::set_control_binding(
         state.as_ref(),
-        scene_id,
-        &updated_group,
-        ZoneChangeKind::Updated,
-    );
-    super::persist_runtime_session(&state).await;
+        domain::effect::SetControlBinding {
+            zone_id: group.id,
+            control_id: control_id.clone(),
+            binding: normalized.clone(),
+        },
+        MutationContext::api(),
+    )
+    .await;
+    match outcome {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => return ApiError::not_found("No effect is currently active"),
+        Err(error) => return domain::legacy::scene_family_error_response(error),
+    }
 
     ApiResponse::ok(serde_json::json!({
         "effect": {
@@ -1386,57 +1237,30 @@ pub async fn reset_controls(
     let Some((group, meta)) = resolved else {
         return ApiError::not_found("No effect is active in the target zone");
     };
-    let previous_values = resolved_control_values(&meta, &group);
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, updated_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("resetting active effect controls"),
-        };
-        let rollback = scene_manager.clone();
-        let Some(updated_group) = scene_manager
-            .reset_group_controls(group.id, default_control_values(&meta))
-            .cloned()
-        else {
-            return ApiError::not_found("No effect is currently active");
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (scene_id, updated_group, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
-    }
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &updated_group,
-        ZoneChangeKind::ControlsPatched,
-    );
-    let control_ids = meta
-        .controls
-        .iter()
-        .map(|control| control.control_id().to_owned())
-        .collect::<Vec<_>>();
-    publish_primary_control_changed_events(
-        state.as_ref(),
-        &meta,
-        &previous_values,
-        &resolved_control_values(&meta, &updated_group),
-        control_ids.iter().map(String::as_str),
-        ChangeTrigger::Api,
-    );
-    super::persist_runtime_session(&state).await;
+    let effect_id = meta.id;
+    let effect_name = meta.name.clone();
 
-    info!(effect = %meta.name, "Controls reset to defaults");
+    let outcome = domain::effect::reset_controls(
+        state.as_ref(),
+        domain::effect::ResetControls {
+            zone_id: group.id,
+            effect: meta,
+        },
+        MutationContext::api(),
+    )
+    .await;
+    match outcome {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => return ApiError::not_found("No effect is currently active"),
+        Err(error) => return domain::legacy::scene_family_error_response(error),
+    }
+
+    info!(effect = %effect_name, "Controls reset to defaults");
 
     ApiResponse::ok(serde_json::json!({
         "effect": {
-            "id": meta.id.to_string(),
-            "name": meta.name,
+            "id": effect_id.to_string(),
+            "name": effect_name,
         },
         "reset": true,
     }))
@@ -1711,42 +1535,7 @@ async fn active_preset_modified(state: &AppState, metadata: &EffectMetadata, gro
     preset_baseline != resolved_control_values(metadata, group)
 }
 
-fn publish_primary_control_changed_events<'a>(
-    state: &AppState,
-    metadata: &EffectMetadata,
-    previous_values: &HashMap<String, ControlValue>,
-    next_values: &HashMap<String, ControlValue>,
-    changed_control_ids: impl IntoIterator<Item = &'a str>,
-    trigger: ChangeTrigger,
-) {
-    for control_id in changed_control_ids {
-        let Some(previous) = previous_values.get(control_id) else {
-            continue;
-        };
-        let Some(next) = next_values.get(control_id) else {
-            continue;
-        };
-        if previous == next {
-            continue;
-        }
-        let (Some(old_value), Some(new_value)) =
-            (event_control_value(previous), event_control_value(next))
-        else {
-            continue;
-        };
-        state
-            .event_bus
-            .publish(HypercolorEvent::EffectControlChanged {
-                effect_id: metadata.id.to_string(),
-                control_id: control_id.to_owned(),
-                old_value,
-                new_value,
-                trigger: trigger.clone(),
-            });
-    }
-}
-
-fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
+pub(crate) fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
     match value {
         ControlValue::Float(_) | ControlValue::Integer(_) => {
             value.as_f32().map(EventControlValue::Number)
