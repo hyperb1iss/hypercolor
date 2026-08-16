@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use hypercolor_color::{Hsl, Rgb};
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::lighting::LightingState;
@@ -1089,40 +1090,22 @@ fn padded_normalized_i8_vec(values: &[f32], expected_len: usize) -> Vec<i8> {
     padded
 }
 
+/// LightScript's wire form for a color: hue in whole degrees, then
+/// saturation and lightness as whole percentages. The quantization is
+/// the protocol's, so it stays here; the conversion underneath is the
+/// kernel's. Both forms were compared across all 16,777,216 byte
+/// triples and agree exactly.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::as_conversions
 )]
 fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (i16, i8, i8) {
-    let rf = f32::from(r) / 255.0;
-    let gf = f32::from(g) / 255.0;
-    let bf = f32::from(b) / 255.0;
-    let max = rf.max(gf).max(bf);
-    let min = rf.min(gf).min(bf);
-    let delta = max - min;
-    let lightness = (max + min) * 0.5;
-
-    let saturation = if delta <= f32::EPSILON {
-        0.0
-    } else {
-        delta / (1.0 - (2.0 * lightness - 1.0).abs())
-    };
-
-    let hue = if delta <= f32::EPSILON {
-        0.0
-    } else if (max - rf).abs() <= f32::EPSILON {
-        60.0 * ((gf - bf) / delta).rem_euclid(6.0)
-    } else if (max - gf).abs() <= f32::EPSILON {
-        60.0 * (((bf - rf) / delta) + 2.0)
-    } else {
-        60.0 * (((rf - gf) / delta) + 4.0)
-    };
-
+    let hsl = Hsl::from_rgb(Rgb::new(r, g, b));
     (
-        hue.round() as i16,
-        (saturation.clamp(0.0, 1.0) * 100.0).round() as i8,
-        (lightness.clamp(0.0, 1.0) * 100.0).round() as i8,
+        hsl.h.round() as i16,
+        (hsl.s.clamp(0.0, 1.0) * 100.0).round() as i8,
+        (hsl.l.clamp(0.0, 1.0) * 100.0).round() as i8,
     )
 }
 

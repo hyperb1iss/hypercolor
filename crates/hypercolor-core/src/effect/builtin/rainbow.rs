@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use hypercolor_color::Hsv;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
@@ -96,10 +97,10 @@ impl EffectRenderer for RainbowRenderer {
                 for (x, pixel) in first_row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
                     let pos_hue = (x as f32 / width) * 360.0 * self.scale;
                     let hue = (pos_hue + time_offset).rem_euclid(360.0);
-                    let (r, g, b) = hsv_to_rgb(hue, self.saturation, self.brightness);
-                    pixel[0] = r;
-                    pixel[1] = g;
-                    pixel[2] = b;
+                    let rgb = Hsv::new(hue, self.saturation, self.brightness).to_rgb();
+                    pixel[0] = rgb.r;
+                    pixel[1] = rgb.g;
+                    pixel[2] = rgb.b;
                     pixel[3] = u8::MAX;
                 }
 
@@ -112,11 +113,11 @@ impl EffectRenderer for RainbowRenderer {
                 for (y, row) in pixels.chunks_exact_mut(row_len).enumerate() {
                     let pos_hue = (y as f32 / height) * 360.0 * self.scale;
                     let hue = (pos_hue + time_offset).rem_euclid(360.0);
-                    let (r, g, b) = hsv_to_rgb(hue, self.saturation, self.brightness);
+                    let rgb = Hsv::new(hue, self.saturation, self.brightness).to_rgb();
                     for pixel in row.chunks_exact_mut(BYTES_PER_PIXEL) {
-                        pixel[0] = r;
-                        pixel[1] = g;
-                        pixel[2] = b;
+                        pixel[0] = rgb.r;
+                        pixel[1] = rgb.g;
+                        pixel[2] = rgb.b;
                         pixel[3] = u8::MAX;
                     }
                 }
@@ -130,10 +131,10 @@ impl EffectRenderer for RainbowRenderer {
                         let nx = x as f32 / width;
                         let pos_hue = (nx + ny) * 0.5 * 360.0 * self.scale;
                         let hue = (pos_hue + time_offset).rem_euclid(360.0);
-                        let (r, g, b) = hsv_to_rgb(hue, self.saturation, self.brightness);
-                        pixel[0] = r;
-                        pixel[1] = g;
-                        pixel[2] = b;
+                        let rgb = Hsv::new(hue, self.saturation, self.brightness).to_rgb();
+                        pixel[0] = rgb.r;
+                        pixel[1] = rgb.g;
+                        pixel[2] = rgb.b;
                         pixel[3] = u8::MAX;
                     }
                 }
@@ -175,41 +176,6 @@ impl EffectRenderer for RainbowRenderer {
     }
 
     fn destroy(&mut self) {}
-}
-
-/// Simple HSV to RGB conversion. H in [0, 360), S and V in [0, 1].
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::many_single_char_names
-)]
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-    let c = v * s;
-    let h_prime = h / 60.0;
-    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
-    let m = v - c;
-
-    #[allow(clippy::cast_precision_loss)]
-    let (r1, g1, b1) = if h_prime < 1.0 {
-        (c, x, 0.0)
-    } else if h_prime < 2.0 {
-        (x, c, 0.0)
-    } else if h_prime < 3.0 {
-        (0.0, c, x)
-    } else if h_prime < 4.0 {
-        (0.0, x, c)
-    } else if h_prime < 5.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-
-    (
-        ((r1 + m) * 255.0).round() as u8,
-        ((g1 + m) * 255.0).round() as u8,
-        ((b1 + m) * 255.0).round() as u8,
-    )
 }
 
 fn controls() -> Vec<ControlDefinition> {
