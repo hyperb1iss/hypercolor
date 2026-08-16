@@ -7,6 +7,9 @@ use crate::client::DaemonClient;
 use crate::config::{self, Profile};
 use crate::output::{OutputContext, OutputFormat, urlencoded};
 
+/// File name the daemon reads its configuration from.
+const DAEMON_CONFIG_FILE_NAME: &str = "hypercolor.toml";
+
 /// Configuration management.
 #[derive(Debug, Args)]
 pub struct ConfigArgs {
@@ -264,20 +267,18 @@ fn execute_path(ctx: &OutputContext) -> Result<()> {
 }
 
 /// Resolve the daemon config file path.
+///
+/// Uses the daemon's own directory resolution so `hypercolor config path`
+/// reports the file the daemon actually reads.
 fn config_file_path() -> String {
     if let Ok(path) = std::env::var("HYPERCOLOR_CONFIG") {
         return path;
     }
 
-    dirs::config_dir().map_or_else(
-        || "~/.config/hypercolor/hypercolor.toml".to_string(),
-        |d| {
-            d.join("hypercolor")
-                .join("hypercolor.toml")
-                .to_string_lossy()
-                .into_owned()
-        },
-    )
+    hypercolor_core::config::paths::config_dir()
+        .join(DAEMON_CONFIG_FILE_NAME)
+        .to_string_lossy()
+        .into_owned()
 }
 
 // ── Profile management ──────────────────────────────────────────────────
@@ -457,4 +458,32 @@ fn profile_default(args: &ProfileDefaultArgs, ctx: &OutputContext) -> Result<()>
     config::save(&cfg)?;
     ctx.success(&format!("Default profile set to {:?}", args.name));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{DAEMON_CONFIG_FILE_NAME, config_file_path};
+
+    #[test]
+    fn daemon_config_path_is_absolute_and_tilde_free() {
+        // The env override is caller-owned and cannot be cleared from a test:
+        // edition 2024 makes `std::env::set_var` unsafe and this crate forbids
+        // unsafe code.
+        if std::env::var_os("HYPERCOLOR_CONFIG").is_some() {
+            return;
+        }
+        let reported = config_file_path();
+        let path = Path::new(&reported);
+        assert!(path.is_absolute(), "reported {reported} is not absolute");
+        assert!(
+            !path.components().any(|part| part.as_os_str() == "~"),
+            "reported {reported} contains a literal tilde component"
+        );
+        assert_eq!(
+            path,
+            hypercolor_core::config::paths::config_dir().join(DAEMON_CONFIG_FILE_NAME)
+        );
+    }
 }
