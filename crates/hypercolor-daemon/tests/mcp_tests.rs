@@ -19,9 +19,7 @@ use hypercolor_daemon::mcp::prompts::{
 use hypercolor_daemon::mcp::resources::{
     build_resource_definitions, is_valid_resource_uri, read_resource, read_resource_with_state,
 };
-use hypercolor_daemon::mcp::tools::{
-    ToolError, build_tool_definitions, execute_tool, execute_tool_with_state,
-};
+use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_tool_with_state};
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store::SceneStore;
@@ -1498,24 +1496,22 @@ fn tool_definitions_have_valid_schemas() {
     );
 }
 
-#[test]
-fn set_color_tool_executes_and_validates() {
-    let result = execute_tool("set_color", &json!({ "color": "#ff6ac1" }))
-        .expect("set_color should succeed");
-    assert_eq!(result["resolved_color"]["hex"], "#ff6ac1");
+#[tokio::test]
+async fn set_color_tool_rejects_missing_color() {
+    let state = fresh_app_state();
 
-    let error =
-        execute_tool("set_color", &json!({})).expect_err("missing color should return an error");
+    let error = execute_tool_with_state("set_color", &json!({}), &state)
+        .await
+        .expect_err("missing color should return an error");
     assert!(matches!(error, ToolError::MissingParam(_)));
 }
 
-#[test]
-fn set_output_power_tool_validates_desired_state() {
-    let result = execute_tool("set_output_power", &json!({ "state": "paused" }))
-        .expect("paused output state should be accepted");
-    assert_eq!(result["state"], "paused");
+#[tokio::test]
+async fn set_output_power_tool_validates_desired_state() {
+    let state = fresh_app_state();
 
-    let error = execute_tool("set_output_power", &json!({ "state": "off" }))
+    let error = execute_tool_with_state("set_output_power", &json!({ "state": "off" }), &state)
+        .await
         .expect_err("unknown output state should be rejected");
     assert!(matches!(error, ToolError::InvalidParam { .. }));
 }

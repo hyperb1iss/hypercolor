@@ -73,58 +73,7 @@ pub(super) fn build_set_brightness() -> ToolDefinition {
     }
 }
 
-// ── Stateless Handlers ────────────────────────────────────────────────────
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "will return errors when wired to device manager"
-)]
-pub(super) fn handle_get_devices(params: &Value) -> Result<Value, ToolError> {
-    let _status = params
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("all");
-
-    // Would query device manager
-    Ok(json!({
-        "devices": [],
-        "summary": {
-            "total": 0,
-            "connected": 0,
-            "total_leds": 0
-        }
-    }))
-}
-
-pub(super) fn handle_set_brightness(params: &Value) -> Result<Value, ToolError> {
-    let brightness = params
-        .get("brightness")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| ToolError::MissingParam("brightness".into()))?;
-
-    if brightness > 100 {
-        return Err(ToolError::InvalidParam {
-            param: "brightness".into(),
-            reason: "must be between 0 and 100".into(),
-        });
-    }
-
-    let device_id = params.get("device_id").and_then(Value::as_str);
-    let scope = if device_id.is_some() {
-        "device"
-    } else {
-        "global"
-    };
-
-    Ok(json!({
-        "brightness": brightness,
-        "scope": scope,
-        "device_id": device_id,
-        "previous_brightness": 100
-    }))
-}
-
-// ── Stateful Handlers ─────────────────────────────────────────────────────
+// ── Handlers ──────────────────────────────────────────────────────────────
 
 pub(super) async fn handle_get_devices_with_state(
     params: &Value,

@@ -1,8 +1,8 @@
 //! MCP tool definitions — the daemon tools exposed to AI assistants.
 //!
 //! Each tool is a `ToolDefinition` with a JSON Schema input spec. Tool execution
-//! is handled by `execute_tool`, which dispatches to the appropriate handler in
-//! a per-cluster submodule.
+//! is handled by `execute_tool_with_state`, which dispatches to the appropriate
+//! handler in a per-cluster submodule.
 
 use serde_json::{Value, json};
 
@@ -62,30 +62,6 @@ pub(super) fn default_output_schema() -> Value {
         "type": "object",
         "description": "Structured JSON result returned by this tool. Field-level schemas are intentionally broad for now and should be tightened as the MCP surface stabilizes."
     })
-}
-
-/// Execute a tool by name with the given arguments. Returns the result as JSON.
-pub fn execute_tool(name: &str, params: &Value) -> Result<Value, ToolError> {
-    match name {
-        "set_effect" => effects::handle_set_effect(params),
-        "list_effects" => effects::handle_list_effects(params),
-        "set_output_power" => system::handle_set_output_power(params),
-        "stop_effect" => effects::handle_stop_effect(params),
-        "set_color" => effects::handle_set_color(params),
-        "get_devices" => devices::handle_get_devices(params),
-        "set_brightness" => devices::handle_set_brightness(params),
-        "get_status" => system::handle_get_status(params),
-        "activate_scene" => scenes::handle_activate_scene(params),
-        "list_scenes" => scenes::handle_list_scenes(params),
-        "create_scene" => scenes::handle_create_scene(params),
-        "get_audio_state" => system::handle_get_audio_state(params),
-        "get_sensor_data" => system::handle_get_sensor_data(params),
-        "set_display_face" => displays::handle_set_display_face(params),
-        "set_profile" => library::handle_set_profile(params),
-        "get_layout" => system::handle_get_layout(params),
-        "diagnose" => system::handle_diagnose(params),
-        _ => Err(ToolError::NotFound(name.to_owned())),
-    }
 }
 
 /// Execute a tool with live daemon state access.
