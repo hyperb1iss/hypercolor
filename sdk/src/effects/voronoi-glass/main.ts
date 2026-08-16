@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from 'hypercolor'
+import { canvas, clamp, color, combo, hsvToRgb, num, hexToRgb as parseHexColor } from 'hypercolor'
 
 interface GlassSeed {
     baseX: number
@@ -80,59 +80,13 @@ const PALETTES: Record<Exclude<PaletteName, 'Custom'>, GlassPalette> = {
     },
 }
 
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
-
 function hash(value: number): number {
     const x = Math.sin(value * 127.1 + 311.7) * 43758.5453123
     return x - Math.floor(x)
 }
 
-function hsvToRgb(h: number, s: number, v: number): Rgb {
-    const hue = ((h % 360) + 360) % 360
-    const sat = clamp(s, 0, 1)
-    const val = clamp(v, 0, 1)
-    const chroma = val * sat
-    const x = chroma * (1 - Math.abs(((hue / 60) % 2) - 1))
-    const m = val - chroma
-
-    let r = 0
-    let g = 0
-    let b = 0
-
-    if (hue < 60) [r, g, b] = [chroma, x, 0]
-    else if (hue < 120) [r, g, b] = [x, chroma, 0]
-    else if (hue < 180) [r, g, b] = [0, chroma, x]
-    else if (hue < 240) [r, g, b] = [0, x, chroma]
-    else if (hue < 300) [r, g, b] = [x, 0, chroma]
-    else [r, g, b] = [chroma, 0, x]
-
-    return {
-        b: Math.round((b + m) * 255),
-        g: Math.round((g + m) * 255),
-        r: Math.round((r + m) * 255),
-    }
-}
-
 function hexToRgb(hex: string, fallback: Rgb): Rgb {
-    const normalized = hex.trim().replace('#', '')
-    const full =
-        normalized.length === 3
-            ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}`
-            : normalized
-
-    if (!/^[0-9a-fA-F]{6}$/.test(full)) {
-        return fallback
-    }
-
-    const value = Number.parseInt(full, 16)
-
-    return {
-        b: value & 255,
-        g: (value >> 8) & 255,
-        r: (value >> 16) & 255,
-    }
+    return parseHexColor(hex.trim(), fallback)
 }
 
 function mixRgb(a: Rgb, b: Rgb, amount: number): Rgb {

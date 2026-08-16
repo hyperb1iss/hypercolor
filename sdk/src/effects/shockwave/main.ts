@@ -1,5 +1,5 @@
 import type { AudioData } from 'hypercolor'
-import { audio, canvas, combo, num } from 'hypercolor'
+import { audio, canvas, clamp, combo, num } from 'hypercolor'
 
 type SceneName = (typeof SCENES)[number]
 type PaletteName = (typeof PALETTE_NAMES)[number]
@@ -74,10 +74,6 @@ const LED_PALETTES: Record<PaletteName, readonly Rgb[]> = {
         { r: 255, g: 106, b: 193 },
         { r: 224, g: 92, b: 255 },
     ],
-}
-
-function clamp(v: number, lo: number, hi: number): number {
-    return Math.max(lo, Math.min(hi, v))
 }
 
 function fract(v: number): number {

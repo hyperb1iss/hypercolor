@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from 'hypercolor'
+import { canvas, color, combo, num, hexToRgb as parseHexColor } from 'hypercolor'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -41,18 +41,10 @@ const SCENES = ['Aurora', 'Night']
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+const WHITE: Rgb = { b: 255, g: 255, r: 255 }
+
 function hexToRgb(hex: string): Rgb {
-    const normalized = hex.trim().replace('#', '')
-    const expanded =
-        normalized.length === 3
-            ? normalized
-                  .split('')
-                  .map((char) => `${char}${char}`)
-                  .join('')
-            : normalized
-    if (!/^[0-9a-fA-F]{6}$/.test(expanded)) return { b: 255, g: 255, r: 255 }
-    const value = Number.parseInt(expanded, 16)
-    return { b: value & 255, g: (value >> 8) & 255, r: (value >> 16) & 255 }
+    return parseHexColor(hex.trim(), WHITE)
 }
 
 /** sRGB → Oklab (ported from the SDK palette runtime). */

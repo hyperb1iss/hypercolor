@@ -1,4 +1,4 @@
-import { canvas, combo, getScreenZoneData, hslToRgb, num, rect } from 'hypercolor'
+import { canvas, clamp, combo, getScreenZoneData, hslToRgb, num, rect } from 'hypercolor'
 
 interface RectValue {
     x: number
@@ -8,10 +8,6 @@ interface RectValue {
 }
 
 const MIN_VIEWPORT_EDGE = 0.02
-
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
 
 function clampViewport(viewport: RectValue): RectValue {
     const width = clamp(Number.isFinite(viewport.width) ? viewport.width : 1, MIN_VIEWPORT_EDGE, 1)
