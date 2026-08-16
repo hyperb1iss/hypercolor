@@ -6,7 +6,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.api_error_response import ApiErrorResponse
+from ...models.api_error_body import ApiErrorBody
 from ...models.api_response_apply_effect_response import ApiResponseApplyEffectResponse
 from ...models.apply_effect_request import ApplyEffectRequest
 from ...types import UNSET, Response, Unset
@@ -39,29 +39,29 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorResponse | ApiResponseApplyEffectResponse | None:
+) -> ApiErrorBody | ApiResponseApplyEffectResponse | None:
     if response.status_code == 200:
         response_200 = ApiResponseApplyEffectResponse.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 400:
-        response_400 = ApiErrorResponse.from_dict(response.json())
+        response_400 = ApiErrorBody.from_dict(response.json())
 
         return response_400
 
     if response.status_code == 404:
-        response_404 = ApiErrorResponse.from_dict(response.json())
+        response_404 = ApiErrorBody.from_dict(response.json())
 
         return response_404
 
     if response.status_code == 422:
-        response_422 = ApiErrorResponse.from_dict(response.json())
+        response_422 = ApiErrorBody.from_dict(response.json())
 
         return response_422
 
     if response.status_code == 500:
-        response_500 = ApiErrorResponse.from_dict(response.json())
+        response_500 = ApiErrorBody.from_dict(response.json())
 
         return response_500
 
@@ -73,7 +73,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorResponse | ApiResponseApplyEffectResponse]:
+) -> Response[ApiErrorBody | ApiResponseApplyEffectResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -87,7 +87,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ApplyEffectRequest | None | Unset = UNSET,
-) -> Response[ApiErrorResponse | ApiResponseApplyEffectResponse]:
+) -> Response[ApiErrorBody | ApiResponseApplyEffectResponse]:
     """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
 
     Args:
@@ -99,7 +99,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseApplyEffectResponse]
+        Response[ApiErrorBody | ApiResponseApplyEffectResponse]
     """
 
     kwargs = _get_kwargs(
@@ -119,7 +119,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ApplyEffectRequest | None | Unset = UNSET,
-) -> ApiErrorResponse | ApiResponseApplyEffectResponse | None:
+) -> ApiErrorBody | ApiResponseApplyEffectResponse | None:
     """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
 
     Args:
@@ -131,7 +131,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseApplyEffectResponse
+        ApiErrorBody | ApiResponseApplyEffectResponse
     """
 
     return sync_detailed(
@@ -146,7 +146,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ApplyEffectRequest | None | Unset = UNSET,
-) -> Response[ApiErrorResponse | ApiResponseApplyEffectResponse]:
+) -> Response[ApiErrorBody | ApiResponseApplyEffectResponse]:
     """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
 
     Args:
@@ -158,7 +158,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseApplyEffectResponse]
+        Response[ApiErrorBody | ApiResponseApplyEffectResponse]
     """
 
     kwargs = _get_kwargs(
@@ -176,7 +176,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ApplyEffectRequest | None | Unset = UNSET,
-) -> ApiErrorResponse | ApiResponseApplyEffectResponse | None:
+) -> ApiErrorBody | ApiResponseApplyEffectResponse | None:
     """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
 
     Args:
@@ -188,7 +188,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseApplyEffectResponse
+        ApiErrorBody | ApiResponseApplyEffectResponse
     """
 
     return (

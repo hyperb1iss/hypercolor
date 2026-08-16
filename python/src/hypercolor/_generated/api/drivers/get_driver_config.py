@@ -6,7 +6,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.api_error_response import ApiErrorResponse
+from ...models.api_error_body import ApiErrorBody
 from ...models.api_response_driver_config_response import (
     ApiResponseDriverConfigResponse,
 )
@@ -29,14 +29,14 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorResponse | ApiResponseDriverConfigResponse | None:
+) -> ApiErrorBody | ApiResponseDriverConfigResponse | None:
     if response.status_code == 200:
         response_200 = ApiResponseDriverConfigResponse.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 404:
-        response_404 = ApiErrorResponse.from_dict(response.json())
+        response_404 = ApiErrorBody.from_dict(response.json())
 
         return response_404
 
@@ -48,7 +48,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorResponse | ApiResponseDriverConfigResponse]:
+) -> Response[ApiErrorBody | ApiResponseDriverConfigResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -61,7 +61,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorResponse | ApiResponseDriverConfigResponse]:
+) -> Response[ApiErrorBody | ApiResponseDriverConfigResponse]:
     """`GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
 
     Args:
@@ -72,7 +72,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseDriverConfigResponse]
+        Response[ApiErrorBody | ApiResponseDriverConfigResponse]
     """
 
     kwargs = _get_kwargs(
@@ -90,7 +90,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorResponse | ApiResponseDriverConfigResponse | None:
+) -> ApiErrorBody | ApiResponseDriverConfigResponse | None:
     """`GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
 
     Args:
@@ -101,7 +101,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseDriverConfigResponse
+        ApiErrorBody | ApiResponseDriverConfigResponse
     """
 
     return sync_detailed(
@@ -114,7 +114,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorResponse | ApiResponseDriverConfigResponse]:
+) -> Response[ApiErrorBody | ApiResponseDriverConfigResponse]:
     """`GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
 
     Args:
@@ -125,7 +125,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseDriverConfigResponse]
+        Response[ApiErrorBody | ApiResponseDriverConfigResponse]
     """
 
     kwargs = _get_kwargs(
@@ -141,7 +141,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorResponse | ApiResponseDriverConfigResponse | None:
+) -> ApiErrorBody | ApiResponseDriverConfigResponse | None:
     """`GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
 
     Args:
@@ -152,7 +152,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseDriverConfigResponse
+        ApiErrorBody | ApiResponseDriverConfigResponse
     """
 
     return (
