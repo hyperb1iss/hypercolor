@@ -17,7 +17,6 @@
 //!   the `serde` feature, OpenAPI schemas behind `schema`.
 
 mod blend;
-mod compat;
 mod convert;
 mod encode;
 mod hex;
@@ -26,11 +25,6 @@ mod types;
 
 pub use blend::PixelBlendMode;
 pub use convert::linear_to_output_u8;
-#[allow(
-    deprecated,
-    reason = "the compat surface re-exports its own deprecations"
-)]
-pub use compat::{RgbaF32, linear_srgb_to_oklab, oklab_to_linear_srgb};
 pub use encode::{DevicePixelLayout, EncodedChannels};
 pub use hex::ColorParseError;
 pub use transfer::{linear_to_srgb, lut, srgb_to_linear};
