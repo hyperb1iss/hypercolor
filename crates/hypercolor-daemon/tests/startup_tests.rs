@@ -491,7 +491,22 @@ fn parse_config_toml_refuses_an_outdated_schema() {
     let rendered = format!("{error:#}");
 
     assert!(rendered.contains("schema_version 3"), "{rendered}");
-    assert!(rendered.contains("release notes"), "{rendered}");
+    assert!(rendered.contains("schema_version = 4"), "{rendered}");
+    assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
+    assert!(
+        rendered.contains(r#"preview_route = "browser""#),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn parse_config_toml_refuses_a_newer_schema() {
+    let error = parse_config_toml("schema_version = 5\n")
+        .expect_err("a future schema must be refused, not read");
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("schema_version 5"), "{rendered}");
+    assert!(rendered.contains("newer hypercolor"), "{rendered}");
 }
 
 #[test]
@@ -1217,8 +1232,11 @@ async fn a_stale_runtime_snapshot_never_blocks_startup() {
     let mut config = default_config();
     config.daemon.start_profile = "last".into();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
-        .expect("a stale snapshot must not block initialization");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("a stale snapshot must not block initialization");
 
     state
         .start()

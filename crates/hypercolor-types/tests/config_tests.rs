@@ -577,21 +577,6 @@ fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
 }
 
 #[test]
-fn legacy_render_acceleration_mode_deserializes_as_compositor_acceleration_mode() {
-    let toml = r#"
-preferred_renderer = "auto"
-render_acceleration_mode = "gpu"
-"#;
-    let restored: EffectEngineConfig =
-        toml::from_str(toml).expect("legacy acceleration key should deserialize");
-
-    assert_eq!(
-        restored.compositor_acceleration_mode,
-        RenderAccelerationMode::Gpu
-    );
-}
-
-#[test]
 fn unknown_fields_ignored() {
     let toml_with_future_field = r#"
 schema_version = 4

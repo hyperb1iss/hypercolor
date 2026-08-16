@@ -208,8 +208,14 @@ mod tests {
         assert!(loaded.is_none());
     }
 
+    /// Fields added to the snapshot default when absent.
+    ///
+    /// This is forward evolution, not legacy-shape support: a new field
+    /// lands with a default so the running daemon keeps reading the file
+    /// it wrote last boot. Removing a field is the other direction and is
+    /// a refusal, covered above.
     #[test]
-    fn older_snapshot_defaults_manual_pause_to_false() {
+    fn an_absent_field_defaults_rather_than_failing_the_snapshot() {
         let tempdir = TempDir::new().expect("tempdir");
         let path = tempdir.path().join("runtime-state.json");
         std::fs::write(

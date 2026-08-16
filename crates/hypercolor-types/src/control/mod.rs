@@ -126,8 +126,8 @@ impl IpText {
 /// preserved. Accepts every encoding established in the wild —
 /// colon (`aa:bb:cc:dd:ee:ff`), hyphen (`aa-bb-cc-dd-ee-ff`), bare
 /// (`aabbccddeeff`, as Govee emits), and dotted (`aabb.ccdd.eeff`) —
-/// because persisted driver settings carry all of them and §0 requires
-/// old shapes stay readable. Spelling is preserved byte-for-byte.
+/// because drivers and their persisted settings legitimately speak all
+/// four today. Spelling is preserved byte-for-byte.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MacText(String);
 

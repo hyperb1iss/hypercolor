@@ -53,7 +53,7 @@ pub async fn get_config_value(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetConfigQuery>,
 ) -> Response {
-    let key = normalize_config_key(&query.key);
+    let key = query.key.clone();
     let config = config_snapshot(&state);
     let value = match serde_json::to_value(config) {
         Ok(v) => v,
@@ -86,7 +86,7 @@ pub async fn set_config_value(
         Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
     };
 
-    let key = normalize_config_key(&body.key);
+    let key = body.key.clone();
     let parsed_value = serde_json::from_str::<serde_json::Value>(&body.value)
         .unwrap_or_else(|_| serde_json::Value::String(body.value.clone()));
     let parsed_value = canonicalize_config_value(&key, parsed_value);
@@ -258,8 +258,8 @@ pub async fn reset_config_value(
     };
 
     let current_snapshot = Arc::clone(&manager.get());
-    let normalized_key = body.key.as_deref().map(normalize_config_key);
-    let updated: HypercolorConfig = if let Some(key) = normalized_key.as_deref() {
+    let requested_key = body.key.clone();
+    let updated: HypercolorConfig = if let Some(key) = requested_key.as_deref() {
         let mut current = match serde_json::to_value(&*current_snapshot) {
             Ok(v) => v,
             Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
@@ -271,10 +271,7 @@ pub async fn reset_config_value(
             }
         };
         let Some(default_value) = get_json_path(&defaults, key) else {
-            return ApiError::not_found(format!(
-                "Unknown config key: {}",
-                body.key.as_deref().unwrap_or(key)
-            ));
+            return ApiError::not_found(format!("Unknown config key: {}", key));
         };
 
         if !set_json_path(&mut current, key, default_value.clone()) {
@@ -291,7 +288,7 @@ pub async fn reset_config_value(
     // A full reset carries the driver entries through untouched, so gating
     // it on their validity would reject the one request a user makes to
     // recover from a config they can no longer edit by hand.
-    if let Some(key) = normalized_key.as_deref()
+    if let Some(key) = requested_key.as_deref()
         && let Err(error) = validate_driver_config_scope(&state, Some(key), &updated)
     {
         return ApiError::validation(error);
@@ -300,7 +297,7 @@ pub async fn reset_config_value(
         return ApiError::validation(error.to_string());
     }
 
-    let capture_live_applied = if normalized_key
+    let capture_live_applied = if requested_key
         .as_deref()
         .is_none_or(|key| should_reconfigure_capture(Some(key)))
     {
@@ -331,12 +328,12 @@ pub async fn reset_config_value(
         false
     };
 
-    if normalized_key
+    if requested_key
         .as_deref()
         .is_some_and(|key| should_reconfigure_capture(Some(key)))
     {
         return ApiResponse::ok(serde_json::json!({
-            "key": normalized_key,
+            "key": requested_key,
             "reset": true,
             "live": true,
             "path": manager.path().display().to_string(),
@@ -346,7 +343,7 @@ pub async fn reset_config_value(
     // Both shapes re-derive against the freshest config under the write
     // lock (same race protection as set), so a driver credential write that
     // landed since the snapshot is preserved rather than clobbered.
-    let reset_key = normalized_key.clone();
+    let reset_key = requested_key.clone();
     manager.modify(move |config| {
         let Some(key) = reset_key.as_deref() else {
             *config = full_reset_config(config);
@@ -369,14 +366,14 @@ pub async fn reset_config_value(
 
     let audio_live_applied = maybe_apply_audio_config_change(
         &state,
-        normalized_key.as_deref(),
+        requested_key.as_deref(),
         body.live.unwrap_or(false),
     )
     .await;
     let render_live_applied =
-        maybe_apply_render_config_change(&state, normalized_key.as_deref()).await;
+        maybe_apply_render_config_change(&state, requested_key.as_deref()).await;
     let input_live_applied =
-        maybe_apply_input_config_change(&state, normalized_key.as_deref()).await;
+        maybe_apply_input_config_change(&state, requested_key.as_deref()).await;
     let live_applied =
         audio_live_applied || render_live_applied || capture_live_applied || input_live_applied;
 
@@ -384,7 +381,7 @@ pub async fn reset_config_value(
     // consumers re-read everything rather than diffing per field. It carries
     // no payload because the preserved driver and extension sections hold
     // credentials, and this event fans out to every `events` subscriber.
-    let reset_event_key = normalized_key.clone().unwrap_or_default();
+    let reset_event_key = requested_key.clone().unwrap_or_default();
     let new_value = if reset_event_key.is_empty() {
         serde_json::Value::Null
     } else {
@@ -402,7 +399,7 @@ pub async fn reset_config_value(
         });
 
     ApiResponse::ok(serde_json::json!({
-        "key": normalized_key,
+        "key": requested_key,
         "reset": true,
         "live": live_applied,
         "path": manager.path().display().to_string(),
@@ -466,15 +463,6 @@ fn validate_driver_config_scope(
     }
 
     Ok(())
-}
-
-fn normalize_config_key(key: &str) -> String {
-    match key {
-        "effect_engine.render_acceleration_mode" => {
-            "effect_engine.compositor_acceleration_mode".to_owned()
-        }
-        _ => key.to_owned(),
-    }
 }
 
 fn get_json_path<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {

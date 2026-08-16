@@ -46,7 +46,36 @@ fn outdated_schema_is_refused_and_names_the_file_and_the_fix() {
         "{rendered}"
     );
     assert!(rendered.contains("schema_version 3"), "{rendered}");
-    assert!(rendered.contains("release notes"), "{rendered}");
+    // Every edit the hand-migration needs, verbatim. Bumping the version
+    // without the routes silently adopts the new daemon_route default.
+    assert!(rendered.contains("schema_version = 4"), "{rendered}");
+    assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
+    assert!(
+        rendered.contains(r#"preview_route = "browser""#),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn newer_schema_is_refused_as_written_by_a_newer_hypercolor() {
+    let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+    fs::write(tmp.path(), "schema_version = 5\n").expect("failed to write future config");
+
+    let error = ConfigManager::load(tmp.path())
+        .expect_err("a future schema must be refused, never guessed at");
+    let rendered = format!("{error:#}");
+
+    assert!(
+        rendered.contains(&tmp.path().display().to_string()),
+        "{rendered}"
+    );
+    assert!(rendered.contains("schema_version 5"), "{rendered}");
+    assert!(rendered.contains("newer hypercolor"), "{rendered}");
+    // A future file is not an old file: no hand-migration is offered.
+    assert!(
+        !rendered.contains(r#"daemon_route = "merge""#),
+        "{rendered}"
+    );
 }
 
 #[test]

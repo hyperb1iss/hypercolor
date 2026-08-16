@@ -1956,7 +1956,7 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
 }
 
 #[tokio::test]
-async fn config_set_legacy_render_acceleration_key_updates_compositor_acceleration() {
+async fn config_set_compositor_acceleration_key_updates_and_persists() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
     let config_manager =
@@ -1973,7 +1973,7 @@ async fn config_set_legacy_render_acceleration_key_updates_compositor_accelerati
                 .uri("/api/v1/config/set")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"key":"effect_engine.render_acceleration_mode","value":"\"cpu\""}"#,
+                    r#"{"key":"effect_engine.compositor_acceleration_mode","value":"\"cpu\""}"#,
                 ))
                 .expect("failed to build request"),
         )

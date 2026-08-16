@@ -693,28 +693,22 @@ impl ConfigManager {
     ///
     /// This is THE config parser: file loads, tooling, and tests all run
     /// the same parse and normalize, so no caller can materialize a
-    /// config that skips them. Schema versions older than
-    /// [`CURRENT_SCHEMA_VERSION`] are refused rather than migrated —
-    /// migration is one-time-forward, so old shapes are named in release
-    /// notes and hand-migrated, never read by a legacy path here.
+    /// config that skips them. Only [`CURRENT_SCHEMA_VERSION`] is read:
+    /// older files are refused rather than migrated (migration is
+    /// one-time-forward, so old shapes are hand-migrated per the release
+    /// notes, never read by a legacy path here), and newer files are
+    /// refused rather than guessed at.
     ///
     /// # Errors
     ///
     /// Returns an error if the TOML is malformed, does not deserialize
-    /// into [`HypercolorConfig`], or declares an outdated schema version.
+    /// into [`HypercolorConfig`], or declares any schema version other
+    /// than the current one.
     pub fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
         let config = toml::from_str::<HypercolorConfig>(toml_str)
             .context("failed to parse configuration TOML")?;
-        if config.schema_version < CURRENT_SCHEMA_VERSION {
-            bail!(
-                "config declares schema_version {} but this build reads \
-                 schema {CURRENT_SCHEMA_VERSION}; hypercolor no longer \
-                 migrates older config files. Update the file by hand as \
-                 described in the release notes, then set schema_version = \
-                 {CURRENT_SCHEMA_VERSION}, or move it aside to start from \
-                 defaults.",
-                config.schema_version
-            );
+        if config.schema_version != CURRENT_SCHEMA_VERSION {
+            bail!(schema_mismatch_message(config.schema_version));
         }
         Ok(normalize_config(config))
     }
@@ -757,6 +751,33 @@ fn parent_directory(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
+}
+
+/// The refusal text for a config file this build cannot read.
+///
+/// Old files get the exact hand-migration; new files get told to upgrade.
+/// Both name the version they declared, and the caller adds the path.
+fn schema_mismatch_message(found: u32) -> String {
+    if found > CURRENT_SCHEMA_VERSION {
+        return format!(
+            "config declares schema_version {found} but this build reads \
+             schema {CURRENT_SCHEMA_VERSION}: the file was written by a \
+             newer hypercolor. Upgrade hypercolor, or move the file aside \
+             to start from defaults. This build will not guess at a shape \
+             it does not know."
+        );
+    }
+    format!(
+        "config declares schema_version {found} but this build reads \
+         schema {CURRENT_SCHEMA_VERSION}; hypercolor no longer migrates \
+         older config files. Edit the file by hand, setting\n\n    \
+         schema_version = {CURRENT_SCHEMA_VERSION}\n\nand, when the file \
+         predates the interaction-route split, adding both routes under \
+         [input]:\n\n    daemon_route = \"merge\"\n    preview_route = \
+         \"browser\"\n\nWithout those two lines the version bump \
+         silently adopts the new \"host\" default for daemon_route. \
+         Moving the file aside starts from defaults instead."
+    )
 }
 
 fn normalize_config(mut config: HypercolorConfig) -> HypercolorConfig {
