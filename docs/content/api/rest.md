@@ -1146,35 +1146,47 @@ dropdown and the portal picker button.
 
 {% api_endpoint(method="GET", path="/api/v1/config") %}
 Show the full current configuration.
+
+Secret-classified sections render masked as `{"redacted": true}`: every
+`drivers` entry, plus any top-level section this build does not model. Driver
+settings are read and edited through `/api/v1/drivers/{id}/config`.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/config/get?key=path.to.key") %}
-Get one configuration value by dotted key path.
+{% api_endpoint(method="GET", path="/api/v1/config/keys/{key}") %}
+Read one configuration value. The dotted key is a single path segment.
 {% end %}
 
-{% api_endpoint(method="POST", path="/api/v1/config/set") %}
-Set a configuration value.
-
-**Request body:**
+{% api_endpoint(method="PUT", path="/api/v1/config/keys/{key}") %}
+Write one configuration value and persist it. The request body is the value
+itself:
 
 ```json
-{
-  "key": "audio.enabled",
-  "value": true
-}
+true
 ```
+
+Add `?live=false` to persist without re-applying the change to the running
+daemon; the default re-applies every live-classified key.
+
+The response carries the effective value, whether the daemon applied it live,
+whether the key is boot-frozen (`requires_restart`), and which sections are
+currently waiting on a restart (`pending_restart`).
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/config/keys/{key}") %}
+Restore one configuration value to its default. Takes the same `?live=` query
+parameter as the write.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/config/reset") %}
-Reset a configuration value to its default.
+Restore the whole configuration to defaults. The `drivers` map, unmodeled
+extension sections, and the include list survive the reset.
+{% end %}
 
-**Request body:**
-
-```json
-{
-  "key": "audio.device_name"
-}
-```
+{% api_endpoint(method="GET", path="/api/v1/config/schema") %}
+Describe every configuration key: how a change applies (`live` with a section,
+`live_on_read`, `next_scan`, `restart`, or `inert`), how it renders on read
+surfaces, and whether the daemon validates it beyond type checking. Clients
+derive their live and restart affordances from this table.
 {% end %}
 
 ## Diagnostics

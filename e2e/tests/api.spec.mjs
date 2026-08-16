@@ -191,27 +191,24 @@ test.describe("REST API", () => {
       expect(brightnessAfter.brightness).toBe(37);
 
       expect((await api.get("/api/v1/config")).ok()).toBeTruthy();
+      expect((await api.get("/api/v1/config/schema")).ok()).toBeTruthy();
       expect((await api.get("/api/v1/audio/devices")).ok()).toBeTruthy();
 
+      // The value is the body itself, and `live=false` keeps the write
+      // off the running daemon.
       expect(
         (
-          await api.post("/api/v1/config/set", {
-            data: {
-              key: "network.mdns_publish",
-              value: "false",
-              live: false,
-            },
+          await api.put("/api/v1/config/keys/network.mdns_publish?live=false", {
+            headers: { "content-type": "application/json" },
+            data: JSON.stringify(false),
           })
         ).ok(),
       ).toBeTruthy();
       expect(
         (
-          await api.post("/api/v1/config/reset", {
-            data: {
-              key: "network.mdns_publish",
-              live: false,
-            },
-          })
+          await api.delete(
+            "/api/v1/config/keys/network.mdns_publish?live=false",
+          )
         ).ok(),
       ).toBeTruthy();
 

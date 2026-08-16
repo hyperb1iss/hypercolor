@@ -481,15 +481,17 @@ are dotted paths into the config tree (for example `daemon.fps`, `audio.gain`,
 hypercolor config show
 hypercolor config get daemon.canvas_width
 hypercolor config set audio.gain 1.5
-hypercolor config set daemon.fps 60 --live    # Hot-reload into the running daemon
+hypercolor config set daemon.fps 60 --no-live  # Persist without touching the daemon
 hypercolor config reset audio.gain
 hypercolor config reset --yes                  # Full reset
 hypercolor config path                         # Print the config file location
 ```
 
-`config set --live` applies the change to the running daemon immediately rather
-than only on next restart. The full configuration schema is documented in the
-[Guide](@/guide/_index.md).
+A write applies to the running daemon immediately whenever the key registry
+says the daemon can re-apply it; `--no-live` persists the value and leaves the
+running daemon alone, and `--live` states the default request explicitly. Ask
+`GET /api/v1/config/schema` how any key behaves. The full configuration schema
+is documented in the [Guide](@/guide/_index.md).
 
 Connection profiles for the CLI itself live under `config profile`:
 
