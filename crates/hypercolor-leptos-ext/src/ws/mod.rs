@@ -7,7 +7,6 @@ pub mod transport;
 pub const HYPERCOLOR_WS_PROTOCOL: &str = "hypercolor-v1";
 
 pub use backoff::{ExponentialBackoff, Jitter};
-pub use hypercolor_leptos_ext_macros::BinaryFrame;
 pub use input_event::{
     INPUT_EVENT_PAYLOAD_SCHEMA, InputEventPayloadDecodeError, TimedInputEventPayload,
 };
@@ -42,9 +41,3 @@ pub use preview::{
 pub use spectrum::{
     SPECTRUM_FRAME_HEADER_LEN, SPECTRUM_FRAME_TAG, SpectrumFrame, SpectrumFrameDecodeError,
 };
-
-pub trait BinaryFrameSchema {
-    const TAG: u8;
-    const SCHEMA: u8;
-    const NAME: &'static str;
-}

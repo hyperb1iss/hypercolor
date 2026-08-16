@@ -72,7 +72,6 @@ crates/
   hypercolor-tray/                 # System tray applet binary
   hypercolor-app/                  # Unified desktop app shell: supervises the daemon, owns the tray, handles autostart and single-instance
   hypercolor-leptos-ext/           # Leptos 0.8 extension helpers for the web UI
-  hypercolor-leptos-ext-macros/    # Proc macros powering hypercolor-leptos-ext
   hypercolor-ui/                   # Leptos 0.8 CSR web UI (WASM, Trunk), EXCLUDED from workspace
 sdk/                       # TypeScript SDK for HTML effects (Bun monorepo)
 data/drivers/vendors/      # Canonical device database (32 vendor TOMLs, consumed by `just compat`)

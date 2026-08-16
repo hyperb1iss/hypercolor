@@ -24,10 +24,6 @@ available for real load testing.
 Default features are empty. Consumers opt into exactly the runtime surface they
 need.
 
-The `#[derive(BinaryFrame)]` proc macro is provided by the companion crate
-`hypercolor-leptos-ext-macros`, which is automatically pulled in as a
-dependency. Users do not need to add it separately.
-
 ## Current Extraction Target
 
 The generic stream layer this crate originally prototyped (a transport trait,

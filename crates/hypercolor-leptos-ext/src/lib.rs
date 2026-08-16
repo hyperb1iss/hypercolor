@@ -1,7 +1,5 @@
 #![forbid(unsafe_code)]
 
-extern crate self as hypercolor_leptos_ext;
-
 #[cfg(feature = "ws-core")]
 pub mod ws;
 

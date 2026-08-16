@@ -157,7 +157,6 @@ jobs:
             ui:
               - 'crates/hypercolor-ui/**'
               - 'crates/hypercolor-leptos-ext/**'
-              - 'crates/hypercolor-leptos-ext-macros/**'
               - 'protocol/**'
               - 'justfile'
               - '.github/actions/bun-cache/**'

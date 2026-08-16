@@ -5303,7 +5303,6 @@ dependencies = [
  "axum",
  "bytes",
  "gloo-events",
- "hypercolor-leptos-ext-macros",
  "js-sys",
  "leptos",
  "leptos-use",
@@ -5316,15 +5315,6 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "wgpu",
-]
-
-[[package]]
-name = "hypercolor-leptos-ext-macros"
-version = "0.3.2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]

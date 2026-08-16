@@ -80,7 +80,6 @@ leptos = ["dep:leptos", "dep:leptos-use"]
 devtools = []
 
 [dependencies]
-hypercolor-leptos-ext-macros = { path = "../hypercolor-leptos-ext-macros" }
 axum = { workspace = true, optional = true }
 bytes = "1.11"
 gloo-events = { version = "0.3", optional = true }
