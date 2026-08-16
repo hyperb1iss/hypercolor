@@ -136,6 +136,7 @@ webrtc-util = "0.11.0"
 windows-native-keyring-store = "1.0.0"
 
 # Workspace crates
+hypercolor-color = { path = "crates/hypercolor-color" }
 hypercolor-types = { path = "crates/hypercolor-types" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }

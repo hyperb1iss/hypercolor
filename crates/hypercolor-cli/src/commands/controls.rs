@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
+use hypercolor_color::{Rgb, Rgba};
 use serde_json::{Map, Value, json};
 
 use crate::client::DaemonClient;
@@ -450,14 +451,22 @@ fn typed_control_value(kind: &str, value: &str) -> Result<Value> {
             "kind": "flags",
             "value": split_list(value),
         })),
-        "rgb" | "colorrgb" => Ok(json!({
-            "kind": "color_rgb",
-            "value": parse_hex_color(value, 3)?,
-        })),
-        "rgba" | "colorrgba" => Ok(json!({
-            "kind": "color_rgba",
-            "value": parse_hex_color(value, 4)?,
-        })),
+        "rgb" | "colorrgb" => {
+            let color =
+                Rgb::from_hex(value).with_context(|| format!("invalid rgb color: {value}"))?;
+            Ok(json!({
+                "kind": "color_rgb",
+                "value": [color.r, color.g, color.b],
+            }))
+        }
+        "rgba" | "colorrgba" => {
+            let color =
+                Rgba::from_hex(value).with_context(|| format!("invalid rgba color: {value}"))?;
+            Ok(json!({
+                "kind": "color_rgba",
+                "value": [color.r, color.g, color.b, color.a],
+            }))
+        }
         "json" => json_to_control_value(value),
         _ => bail!("unknown control value kind: {kind}"),
     }
@@ -507,20 +516,6 @@ fn json_value_to_control_value(value: Value) -> Result<Value> {
                 .collect::<Result<BTreeMap<_, _>>>()?,
         })),
     }
-}
-
-fn parse_hex_color(value: &str, channels: usize) -> Result<Vec<u8>> {
-    let hex = value.strip_prefix('#').unwrap_or(value);
-    let expected_len = channels.saturating_mul(2);
-    if hex.len() != expected_len {
-        bail!("{channels}-channel color must have {expected_len} hex digits");
-    }
-    (0..channels)
-        .map(|channel| {
-            u8::from_str_radix(&hex[channel * 2..channel * 2 + 2], 16)
-                .with_context(|| format!("invalid hex color: {value}"))
-        })
-        .collect()
 }
 
 fn split_list(value: &str) -> Vec<String> {

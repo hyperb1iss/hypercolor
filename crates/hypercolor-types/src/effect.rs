@@ -9,7 +9,8 @@ use strum::{Display, EnumString};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::canvas::srgb_to_linear;
+use hypercolor_color::LinearRgba;
+
 use crate::viewport::ViewportRect;
 
 // ── EffectId ──────────────────────────────────────────────────────────────────
@@ -353,21 +354,8 @@ fn control_value_kind(value: &ControlValue) -> &'static str {
 }
 
 fn parse_hex_color(text: &str) -> Option<[f32; 4]> {
-    let hex = text.trim().trim_start_matches('#');
-    if hex.len() != 6 {
-        return None;
-    }
-
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-
-    Some([
-        srgb_to_linear(f32::from(r) / 255.0),
-        srgb_to_linear(f32::from(g) / 255.0),
-        srgb_to_linear(f32::from(b) / 255.0),
-        1.0,
-    ])
+    let color = LinearRgba::from_hex_srgb(text.trim()).ok()?;
+    Some([color.r, color.g, color.b, color.a])
 }
 
 // ── ControlBinding ────────────────────────────────────────────────────────────

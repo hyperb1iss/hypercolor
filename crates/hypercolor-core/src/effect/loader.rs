@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use hypercolor_types::canvas::srgb_to_linear;
+use hypercolor_color::LinearRgba;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectId, EffectMetadata,
     EffectSource, EffectState, PresetTemplate,
@@ -561,20 +561,8 @@ fn color_default(raw: Option<&str>) -> ControlValue {
 }
 
 fn parse_hex_color(hex: &str) -> Option<ControlValue> {
-    let hex = hex.trim_start_matches('#');
-    if hex.len() == 6 {
-        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-        Some(ControlValue::Color([
-            srgb_to_linear(f32::from(r) / 255.0),
-            srgb_to_linear(f32::from(g) / 255.0),
-            srgb_to_linear(f32::from(b) / 255.0),
-            1.0,
-        ]))
-    } else {
-        None
-    }
+    let color = LinearRgba::from_hex_srgb(hex).ok()?;
+    Some(ControlValue::Color([color.r, color.g, color.b, color.a]))
 }
 
 fn text_default(raw: Option<&str>, fallback: &str) -> ControlValue {

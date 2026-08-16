@@ -36,6 +36,7 @@ default = ["builtin-drivers", "wgpu", "servo", "servo-gpu-import"]
 servo = ["hypercolor-core/servo"]
 
 [dependencies]
+hypercolor-color = { workspace = true }
 hypercolor-types = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-platform-fs = { workspace = true }

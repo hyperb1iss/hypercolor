@@ -20,6 +20,7 @@ use axum::response::Response;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+use hypercolor_color::Rgb;
 use hypercolor_core::device::{BackendIo, DeviceLifecycleManager, DirectControlGuard};
 use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot};
@@ -438,10 +439,6 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
 }
 
 /// `POST /api/v1/devices/:id/identify` — Flash identification pattern.
-#[expect(
-    clippy::too_many_lines,
-    reason = "identify setup validates request state, acquires direct backend access, and launches the flash task in one API entrypoint"
-)]
 pub async fn identify_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -460,17 +457,15 @@ pub async fn identify_device(
     if duration_ms == 0 || duration_ms > 120_000 {
         return ApiError::validation("duration_ms must be between 1 and 120000");
     }
-    let color = match body.as_ref().and_then(|b| b.color.as_deref()) {
-        Some(color) => match parse_hex_color(color) {
-            Some(normalized) => Some(normalized),
-            None => return ApiError::validation("color must be a 6-digit hex value (RRGGBB)"),
+    let requested_color = match body.as_ref().and_then(|b| b.color.as_deref()) {
+        Some(color) => match Rgb::from_hex(color.trim()) {
+            Ok(color) => Some(color),
+            Err(_) => return ApiError::validation("color must be a hex value (RRGGBB or RGB)"),
         },
         None => None,
     };
-    let identify_rgb = color
-        .as_deref()
-        .and_then(parse_hex_rgb)
-        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let color = requested_color.map(identify_color_echo);
+    let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
     let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
@@ -590,17 +585,15 @@ pub async fn identify_zone(
     if duration_ms == 0 || duration_ms > 120_000 {
         return ApiError::validation("duration_ms must be between 1 and 120000");
     }
-    let color = match body.as_ref().and_then(|b| b.color.as_deref()) {
-        Some(color) => match parse_hex_color(color) {
-            Some(normalized) => Some(normalized),
-            None => return ApiError::validation("color must be a 6-digit hex value (RRGGBB)"),
+    let requested_color = match body.as_ref().and_then(|b| b.color.as_deref()) {
+        Some(color) => match Rgb::from_hex(color.trim()) {
+            Ok(color) => Some(color),
+            Err(_) => return ApiError::validation("color must be a hex value (RRGGBB or RGB)"),
         },
         None => None,
     };
-    let identify_rgb = color
-        .as_deref()
-        .and_then(parse_hex_rgb)
-        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let color = requested_color.map(identify_color_echo);
+    let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
     let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
@@ -701,17 +694,15 @@ pub async fn identify_attachment(
     if duration_ms == 0 || duration_ms > 120_000 {
         return ApiError::validation("duration_ms must be between 1 and 120000");
     }
-    let color = match body.as_ref().and_then(|b| b.base.color.as_deref()) {
-        Some(color) => match parse_hex_color(color) {
-            Some(normalized) => Some(normalized),
-            None => return ApiError::validation("color must be a 6-digit hex value (RRGGBB)"),
+    let requested_color = match body.as_ref().and_then(|b| b.base.color.as_deref()) {
+        Some(color) => match Rgb::from_hex(color.trim()) {
+            Ok(color) => Some(color),
+            Err(_) => return ApiError::validation("color must be a hex value (RRGGBB or RGB)"),
         },
         None => None,
     };
-    let identify_rgb = color
-        .as_deref()
-        .and_then(parse_hex_rgb)
-        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let color = requested_color.map(identify_color_echo);
+    let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
     let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
@@ -1459,25 +1450,14 @@ async fn prepare_identify_backend(
     Ok((direct_backend, disconnect_after_identify, direct_control))
 }
 
-fn parse_hex_color(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    let color = trimmed.strip_prefix('#').unwrap_or(trimmed);
-    if color.len() != 6 || !color.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some(format!("#{}", color.to_ascii_uppercase()))
+/// The identify responses echo the requested color back as uppercase
+/// `#RRGGBB`, whatever casing or shorthand the request used.
+fn identify_color_echo(color: Rgb) -> String {
+    format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b)
 }
 
-fn parse_hex_rgb(raw: &str) -> Option<[u8; 3]> {
-    let color = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
-    if color.len() != 6 {
-        return None;
-    }
-
-    let red = u8::from_str_radix(&color[0..2], 16).ok()?;
-    let green = u8::from_str_radix(&color[2..4], 16).ok()?;
-    let blue = u8::from_str_radix(&color[4..6], 16).ok()?;
-    Some([red, green, blue])
+fn identify_color_channels(color: Rgb) -> [u8; 3] {
+    [color.r, color.g, color.b]
 }
 
 // ── Identify helpers ─────────────────────────────────────────────────────
