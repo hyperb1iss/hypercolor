@@ -19,7 +19,8 @@ use hypercolor_types::attachment::{
 
 use crate::api::AppState;
 use crate::api::devices::Pagination;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
+use crate::domain::DomainError;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ListTemplatesQuery {
@@ -111,7 +112,7 @@ pub async fn list_templates(
 
     let filter = match build_filter(&query) {
         Ok(filter) => filter,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let registry = state.attachment_registry.read().await;
@@ -164,8 +165,8 @@ pub async fn create_template(
         ));
     }
 
-    if let Err(response) = register_and_persist_template(&mut registry, &template) {
-        return response;
+    if let Err(error) = register_and_persist_template(&mut registry, &template) {
+        return into_v1_response(error);
     }
 
     ApiResponse::created(template_detail(&template))
@@ -190,8 +191,8 @@ pub async fn update_template(
         return ApiError::forbidden(format!("Built-in template cannot be updated: {id}"));
     }
 
-    if let Err(response) = register_and_persist_template(&mut registry, &template) {
-        return response;
+    if let Err(error) = register_and_persist_template(&mut registry, &template) {
+        return into_v1_response(error);
     }
 
     ApiResponse::ok(template_detail(&template))
@@ -261,19 +262,16 @@ pub async fn list_vendors(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(VendorListResponse { items })
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on validation failure"
-)]
-fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, Response> {
+fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, DomainError> {
     let category = query.category.as_deref().map(ComponentCategory::from_raw);
     let origin = match query.origin.as_deref() {
         Some("built_in") => Some(ComponentOrigin::BuiltIn),
         Some("user") => Some(ComponentOrigin::User),
         Some(other) => {
-            return Err(ApiError::validation(format!(
-                "invalid origin filter: {other}"
-            )));
+            return Err(DomainError::validation_field(
+                "origin",
+                format!("invalid origin filter: {other}"),
+            ));
         }
         None => None,
     };
@@ -326,34 +324,31 @@ fn template_detail(template: &ComponentTemplate) -> TemplateDetail {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on persistence failure"
-)]
 fn register_and_persist_template(
     registry: &mut RwLockWriteGuard<'_, ComponentRegistry>,
     template: &ComponentTemplate,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     if let Err(error) = registry.register(template.clone()) {
-        return Err(ApiError::validation(error.to_string()));
+        return Err(DomainError::validation(error.to_string()));
     }
 
     let manifest = ComponentTemplateManifest {
         schema_version: 1,
         template: template.clone(),
     };
-    let payload = toml::to_string_pretty(&manifest)
-        .map_err(|error| ApiError::internal(format!("failed to serialize template: {error}")))?;
+    let payload = toml::to_string_pretty(&manifest).map_err(|error| {
+        DomainError::Internal(anyhow::anyhow!("failed to serialize template: {error}"))
+    })?;
     let output_path = user_template_path(&template.id);
     if let Some(parent) = output_path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
-        return Err(ApiError::internal(format!(
+        return Err(DomainError::Internal(anyhow::anyhow!(
             "failed to create user attachment directory: {error}"
         )));
     }
     if let Err(error) = std::fs::write(&output_path, payload) {
-        return Err(ApiError::internal(format!(
+        return Err(DomainError::Internal(anyhow::anyhow!(
             "failed to persist user template {}: {error}",
             output_path.display()
         )));
