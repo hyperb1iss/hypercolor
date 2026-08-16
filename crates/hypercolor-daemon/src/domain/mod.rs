@@ -366,69 +366,55 @@ pub fn with_etag<R: Versioned>(response: Response, resource: &R) -> Response {
 
 /// Frozen legacy error projections for v1 paths (Spec 76 §0).
 ///
-/// This module is the single home for them. The v1 compat matrix pins
+/// This module is the single index for them. The v1 compat matrix pins
 /// these shapes and canonical routes never use them.
 ///
-/// There is deliberately **more than one** `DomainError` projection
-/// here, one per v1 path family, because the families do not agree on
-/// their frozen bytes. A single universal adapter would have to pick
-/// one family's rendering and would silently falsify the others, so
-/// each projection is named for the family it reproduces and says so in
-/// its own doc comment. Adding a family means adding a projection, not
-/// widening an existing one.
+/// There is deliberately **more than one** `DomainError` projection,
+/// because v1 path families do not agree on their frozen bytes. A
+/// single universal adapter would have to pick one family's rendering
+/// and would silently falsify the others. The two that exist:
 ///
-/// Wave 2.2's `api::envelope::into_v1_response` reproduces the
-/// **effect/library/device helper family** and belongs beside these
-/// once both waves are in one tree; it is on a separate branch as this
-/// lands, so the move is mechanical rather than done here.
+/// - [`into_v1_response`] is the **helper family** — the device,
+///   layer, template, simulator, and control-surface helpers that wave
+///   2.2 typed. It is the default: sentence-cased not-found, the
+///   internal message spelled out, `details` always serialized, and
+///   `PreconditionFailed`/`DeviceUnavailable` rendered canonically
+///   because no helper in that family produces them. It still lives in
+///   `api::envelope` next to the `ApiError` factory it is built from,
+///   and is re-exported here so both families are found in one place.
+/// - [`scene_family_error_response`] is the **scene-mutation family** —
+///   `POST /effects/{id}/apply`, `POST /scenes/{id}/activate`, and the
+///   library activation they share. It differs in exactly one arm, and
+///   defers to the helper family for the rest so the two cannot drift.
+///
+/// Adding a family means adding a projection, not widening one.
 pub mod legacy {
     use super::{DomainError, HeaderValue, IntoResponse, Json, Response, StatusCode, header, json};
     use crate::api::envelope::ApiError;
+    pub(crate) use crate::api::envelope::into_v1_response;
 
     /// Render a [`DomainError`] in the frozen v1 shapes of the
     /// **scene-mutation family**: `POST /effects/{id}/apply` and
     /// `POST /scenes/{id}/activate`, plus the library activation they
     /// share.
     ///
-    /// These paths kept their own `ApiError` bodies and status codes
-    /// long before the canonical envelope existed, so a service lifted
-    /// underneath one of them renders here rather than through
-    /// `DomainError`'s own `IntoResponse`.
+    /// Exactly one arm differs from the helper family, and every other
+    /// arm defers to it so the two renderings cannot drift apart.
     ///
-    /// Two arms are worth naming. `NotFound` is sentence-cased, which
-    /// is how every v1 not-found message on these paths reads; today
-    /// both handlers resolve their own identifiers and answer 404
-    /// before the service runs, so the arm exists to keep the casing
-    /// right for whoever makes it live. And `PreconditionFailed` is the
-    /// one variant with no v1 precedent here at all: these paths carry
-    /// no `If-Match`, so before the commit compare-and-swap existed
-    /// they could not produce one. It renders as a 409 naming the
-    /// revision that won, which is what a caller needs in order to
-    /// retry.
+    /// `PreconditionFailed` is the difference. These paths carry no
+    /// `If-Match`, so before the commit compare-and-swap existed they
+    /// could not produce one, and the helper family renders it as a
+    /// canonical 412 with an envelope this family has never emitted.
+    /// Here it is a 409 naming the revision that won, which is both a
+    /// v1-shaped body and what a caller needs in order to retry.
     #[must_use]
-    pub fn scene_family_error_response(error: &DomainError) -> Response {
+    pub fn scene_family_error_response(error: DomainError) -> Response {
         match error {
-            DomainError::NotFound { .. } => ApiError::not_found(sentence_case(&error.to_string())),
-            DomainError::Validation { .. } => ApiError::validation(error.to_string()),
-            DomainError::Conflict { .. } | DomainError::DeviceUnavailable { .. } => {
-                ApiError::conflict(error.to_string())
-            }
             DomainError::PreconditionFailed { current, .. } => ApiError::conflict(format!(
                 "Scene state changed while applying this request; current revision is {current}"
             )),
-            DomainError::Internal(source) => {
-                tracing::error!(chain = format!("{source:#}"), "domain internal error (v1)");
-                ApiError::internal(error.to_string())
-            }
+            other => into_v1_response(other),
         }
-    }
-
-    /// Uppercase the first character, leaving the rest untouched.
-    fn sentence_case(message: &str) -> String {
-        let mut chars = message.chars();
-        chars.next().map_or_else(String::new, |first| {
-            first.to_uppercase().chain(chars).collect()
-        })
     }
 
     /// The frozen v1 412 body: `{ "error": "<label> mismatch",
@@ -544,7 +530,7 @@ mod tests {
     async fn the_scene_family_projection_keeps_its_own_frozen_renderings() {
         // Sentence case, because that is how every v1 not-found message
         // on these paths reads.
-        let response = legacy::scene_family_error_response(&DomainError::NotFound {
+        let response = legacy::scene_family_error_response(DomainError::NotFound {
             kind: ResourceKind::Effect,
             id: "aurora".to_owned(),
         });
@@ -557,7 +543,7 @@ mod tests {
         // A commit compare-and-swap loss is a 409 here, not the
         // canonical 412: these paths carry no `If-Match` and never
         // spoke 412 before the swap existed.
-        let response = legacy::scene_family_error_response(&DomainError::PreconditionFailed {
+        let response = legacy::scene_family_error_response(DomainError::PreconditionFailed {
             resource: ResourceKind::Scene,
             expected: 4,
             current: 7,
@@ -572,9 +558,9 @@ mod tests {
         );
 
         // Internal messages stay on the wire, as v1 has always sent them.
-        let response = legacy::scene_family_error_response(&DomainError::Internal(
-            anyhow::anyhow!("Failed to persist scene: disk on fire"),
-        ));
+        let response = legacy::scene_family_error_response(DomainError::Internal(anyhow::anyhow!(
+            "Failed to persist scene: disk on fire"
+        )));
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(
             body_json(response).await["error"]["message"],

@@ -827,7 +827,7 @@ pub async fn apply_effect(
     .await
     {
         Ok(applied) => applied,
-        Err(error) => return domain::legacy::scene_family_error_response(&error),
+        Err(error) => return domain::legacy::scene_family_error_response(error),
     };
 
     if let Some(error) = applied.commit.retry_error() {

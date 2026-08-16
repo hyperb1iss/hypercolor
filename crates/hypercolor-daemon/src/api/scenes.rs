@@ -361,7 +361,7 @@ pub async fn activate_scene(
     .await
     {
         Ok(activated) => activated,
-        Err(error) => return crate::domain::legacy::scene_family_error_response(&error),
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
     };
 
     ApiResponse::ok(serde_json::json!({
