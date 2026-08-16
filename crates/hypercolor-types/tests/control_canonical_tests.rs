@@ -150,6 +150,7 @@ fn invalid_ip_and_mac_are_rejected_at_canonicalization() {
         "0011223344",
         "0011.2233.4455.66",
         "aa bb cc dd ee ff",
+        "aaaaaaaaaéa",
     ] {
         assert_eq!(
             ControlValue::try_from(driver::ControlValue::MacAddress(bad_mac.into())),

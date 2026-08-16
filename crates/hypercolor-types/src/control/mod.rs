@@ -153,6 +153,11 @@ impl MacText {
     }
 
     fn parse(text: &str) -> Option<[u8; 6]> {
+        // Length gates below are byte counts; non-ASCII input would
+        // slice mid-codepoint in from_hex_groups and can never be hex.
+        if !text.is_ascii() {
+            return None;
+        }
         let bytes = text.as_bytes();
         match bytes.len() {
             12 => Self::from_hex_groups(text, None),
