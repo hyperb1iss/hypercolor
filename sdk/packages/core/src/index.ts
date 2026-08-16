@@ -99,6 +99,32 @@ export {
     smoothValue,
 } from './audio'
 
+// ── Color ───────────────────────────────────────────────────────────────
+
+export type { Hsl, Hsv, LinearRgba, Oklab, Rgb, Rgba } from './color'
+export {
+    hexToRgb,
+    hexToRgba,
+    hslToRgbUnit,
+    hsvToRgb,
+    LUMA_B,
+    LUMA_G,
+    LUMA_R,
+    linearLuma,
+    linearToOklab,
+    linearToRgba,
+    linearToSrgb,
+    oklabToLinear,
+    rgbToHex,
+    rgbToHsl,
+    rgbToHsv,
+    rgbToLinear,
+    scaleRgb,
+    srgbToLinear,
+    unitToByte,
+    wrapHue,
+} from './color'
+
 // ── Input ───────────────────────────────────────────────────────────────
 
 export type {
