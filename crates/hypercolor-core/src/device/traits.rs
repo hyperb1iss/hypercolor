@@ -5,5 +5,5 @@
 pub use hypercolor_driver_api::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, HealthStatus, OutputCadence,
+    DeviceLifecyclePolicy, DeviceWriteOutcome, OutputCadence,
 };

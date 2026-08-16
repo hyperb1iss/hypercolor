@@ -641,26 +641,4 @@ pub trait DeviceBackend: Send + Sync {
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
         self.target_fps(id).map(OutputCadence::from_fps)
     }
-
-    /// Non-destructive health probe for a connected device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if probing fails unexpectedly.
-    async fn health_check(&self, id: &DeviceId) -> Result<HealthStatus> {
-        let _ = id;
-        Ok(HealthStatus::Healthy)
-    }
-}
-
-/// High-level connectivity state reported by [`DeviceBackend::health_check`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HealthStatus {
-    /// Device is reachable and behaving normally.
-    Healthy,
-    /// Device is reachable but exhibiting partial failure.
-    Degraded,
-    /// Device is currently unreachable.
-    Unreachable,
 }
