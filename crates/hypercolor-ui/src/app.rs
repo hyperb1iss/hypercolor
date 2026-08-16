@@ -21,7 +21,7 @@ use crate::color::CanvasFrameAnalysis;
 use crate::components::modal::Modal;
 use crate::components::shell::Shell;
 use crate::components::welcome_overlay::WelcomeOverlay;
-use crate::config_state::ConfigContext;
+use crate::config_state::{ConfigContext, ConfigSchemaContext};
 use crate::control_value_json::controls_to_json;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
@@ -564,6 +564,20 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
     provide_context(CapabilitiesContext {
         capabilities: capabilities.into(),
+    });
+
+    // The daemon's config key registry. Fetched once per connection —
+    // the table is fixed per daemon build — so every settings control
+    // can ask how its key applies instead of mirroring the rules.
+    let config_schema_resource = api::daemon_resource(api::fetch_config_schema);
+    let config_schema_entries = Memo::new(move |_| {
+        config_schema_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    });
+    provide_context(ConfigSchemaContext {
+        entries: config_schema_entries.into(),
     });
 
     Effect::new(move |_| {

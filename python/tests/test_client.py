@@ -1366,7 +1366,7 @@ async def test_get_audio_devices(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/config/set").mock(
+    route = respx.put("http://hyperia.test:9420/api/v1/config/keys/audio.device").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
@@ -1374,6 +1374,8 @@ async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> Non
                     "key": "audio.device",
                     "value": "default",
                     "live": True,
+                    "requires_restart": False,
+                    "pending_restart": [],
                     "path": "/var/lib/hypercolor/hypercolor.toml",
                 }
             ),
@@ -1383,9 +1385,9 @@ async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> Non
     result = await client.set_audio_device("default")
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {
-        "key": "audio.device",
-        "value": '"default"',
-        "live": True,
-    }
+    request = route.calls[0].request
+    assert json.loads(request.content) == "default"
+    assert request.url.params["live"] == "true"
     assert result.key == "audio.device"
+    assert result.requires_restart is False
+    assert result.pending_restart == []

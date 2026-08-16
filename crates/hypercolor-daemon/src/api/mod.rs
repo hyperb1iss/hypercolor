@@ -1445,12 +1445,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── Config ───────────────────────────────────────────────────
         .route("/config", axum::routing::get(config::show_config))
-        .route("/config/get", axum::routing::get(config::get_config_value))
-        .route("/config/set", axum::routing::post(config::set_config_value))
+        .route("/config/schema", axum::routing::get(config::get_config_schema))
         .route(
-            "/config/reset",
-            axum::routing::post(config::reset_config_value),
+            "/config/keys/{key}",
+            axum::routing::get(config::get_config_key)
+                .put(config::put_config_key)
+                .delete(config::delete_config_key),
         )
+        .route("/config/reset", axum::routing::post(config::reset_config))
         // ── Control Surfaces ────────────────────────────────────────
         .route(
             "/control-surfaces",

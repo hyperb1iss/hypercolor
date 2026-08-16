@@ -12,7 +12,7 @@ use crate::tauri_bridge::{
 };
 use crate::toasts;
 
-use super::{driver_enabled, read_config};
+use super::read_config;
 
 // ── Device Discovery ───────────────────────────────────────────────────────
 
@@ -38,16 +38,23 @@ pub fn DiscoverySection(
                 key="discovery.mdns_enabled"
                 value=mdns
                 on_change=on_change
-                restart_required=true
             />
             <div class="pt-2 space-y-2">
                 <For
                     each=move || discovery_drivers.get()
                     key=|setting| setting.id.clone()
                     children=move |setting| {
+                        // Read through the inventory signal rather than
+                        // the row's snapshot: a keyed `For` keeps the
+                        // view when only the item's data changes, so a
+                        // snapshot would freeze at its first value.
                         let driver_id = setting.id.clone();
                         let enabled = Signal::derive(move || {
-                            read_config(config, |cfg| driver_enabled(cfg, &driver_id))
+                            driver_modules
+                                .get()
+                                .iter()
+                                .find(|driver| driver.descriptor.id == driver_id)
+                                .is_some_and(|driver| driver.enabled)
                         });
                         view! {
                             <DiscoveryDriverRow

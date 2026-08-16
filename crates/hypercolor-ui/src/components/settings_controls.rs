@@ -6,6 +6,7 @@ use leptos_icons::Icon;
 
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
+use crate::config_state::ConfigSchemaContext;
 use crate::icons::*;
 
 // ── Section Header ─────────────────────────────────────────────────────────
@@ -23,6 +24,23 @@ pub fn SectionHeader(title: &'static str, icon: icondata_core::Icon) -> impl Int
 }
 
 // ── Restart Badge ──────────────────────────────────────────────────────────
+
+/// The restart badge for a control, derived from the daemon's config
+/// key registry.
+///
+/// `policy_key` names the real key to ask about when the control's own
+/// key is a UI-local composite that fans out to several real ones. No
+/// badge renders until the schema arrives, so the row states what the
+/// daemon reports rather than what the UI guesses.
+fn restart_badge_for(policy_key: Option<String>, key: &str) -> impl IntoView + use<> {
+    let key = policy_key.unwrap_or_else(|| key.to_owned());
+    let schema = use_context::<ConfigSchemaContext>();
+    move || {
+        schema
+            .filter(|schema| schema.requires_restart(&key))
+            .map(|_| restart_badge())
+    }
+}
 
 fn restart_badge() -> impl IntoView {
     view! {
@@ -44,15 +62,16 @@ pub fn SettingToggle(
     #[prop(into)] key: String,
     #[prop(into)] value: Signal<bool>,
     on_change: Callback<(String, serde_json::Value)>,
-    #[prop(default = false)] restart_required: bool,
+    #[prop(into, optional)] policy_key: Option<String>,
 ) -> impl IntoView {
+    let badge = restart_badge_for(policy_key, &key);
     let key_owned = key;
     view! {
         <div class="flex items-start justify-between gap-4 py-3 setting-row">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(restart_badge)}
+                    {badge}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -94,10 +113,11 @@ pub fn SettingSlider(
     min: f64,
     max: f64,
     step: f64,
-    #[prop(default = false)] restart_required: bool,
+    #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = 2)] decimals: usize,
     #[prop(default = false)] integer: bool,
 ) -> impl IntoView {
+    let badge = restart_badge_for(policy_key, key);
     let key_owned = key.to_string();
     let fmt = move || {
         let v = value.get();
@@ -114,7 +134,7 @@ pub fn SettingSlider(
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(restart_badge)}
+                    {badge}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -160,16 +180,17 @@ pub fn SettingSegmented(
     #[prop(into)] value: Signal<String>,
     #[prop(into)] options: Signal<Vec<(String, String)>>,
     on_change: Callback<(String, serde_json::Value)>,
-    #[prop(default = false)] restart_required: bool,
+    #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = false)] numeric: bool,
 ) -> impl IntoView {
+    let badge = restart_badge_for(policy_key, key);
     let key_owned = key.to_string();
     view! {
         <div class="flex items-start justify-between gap-4 py-3 setting-row">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(restart_badge)}
+                    {badge}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -224,16 +245,17 @@ pub fn SettingDropdown(
     on_change: Callback<(String, serde_json::Value)>,
     #[prop(into, optional)] placeholder: MaybeProp<String>,
     #[prop(into, optional)] disabled: MaybeProp<bool>,
-    #[prop(default = false)] restart_required: bool,
+    #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = false)] numeric: bool,
 ) -> impl IntoView {
+    let badge = restart_badge_for(policy_key, key);
     let key_owned = key.to_string();
     view! {
         <div class="flex flex-col gap-3 py-3 setting-row md:flex-row md:items-start md:justify-between">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(restart_badge)}
+                    {badge}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -269,16 +291,17 @@ pub fn SettingTextInput(
     key: &'static str,
     #[prop(into)] value: Signal<String>,
     on_change: Callback<(String, serde_json::Value)>,
-    #[prop(default = false)] restart_required: bool,
+    #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = "")] placeholder: &'static str,
 ) -> impl IntoView {
+    let badge = restart_badge_for(policy_key, key);
     let key_owned = key.to_string();
     view! {
         <div class="flex items-start justify-between gap-4 py-3 setting-row">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(restart_badge)}
+                    {badge}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -311,9 +334,10 @@ pub fn SettingNumberInput(
     min: f64,
     max: f64,
     step: f64,
-    #[prop(default = false)] restart_required: bool,
+    #[prop(into, optional)] policy_key: Option<String>,
     #[prop(default = true)] integer: bool,
 ) -> impl IntoView {
+    let badge = restart_badge_for(policy_key, key);
     let key_owned = key.to_string();
     let key_dec = key.to_string();
     let key_inc = key.to_string();
@@ -330,7 +354,7 @@ pub fn SettingNumberInput(
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(restart_badge)}
+                    {badge}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>

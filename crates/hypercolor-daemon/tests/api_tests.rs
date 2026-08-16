@@ -1907,6 +1907,38 @@ fn audio_device_filter_hides_synthetic_outputs_from_named_input_list() {
     );
 }
 
+/// A `PUT /api/v1/config/keys/{key}` request.
+///
+/// `live` gates whether the daemon re-applies the live sections the key
+/// touches; omitting it takes the route's default, which is to apply.
+fn config_put_request(key: &str, value: &serde_json::Value, live: Option<bool>) -> Request<Body> {
+    let uri = match live {
+        Some(live) => format!("/api/v1/config/keys/{key}?live={live}"),
+        None => format!("/api/v1/config/keys/{key}"),
+    };
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(value.to_string()))
+        .expect("failed to build request")
+}
+
+/// A `DELETE /api/v1/config/keys/{key}` request: reset one key.
+fn config_delete_request(key: &str) -> Request<Body> {
+    Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/config/keys/{key}"))
+        .body(Body::empty())
+        .expect("failed to build request")
+}
+
+/// Read a table-driven test value the way a human types it: JSON when it
+/// parses, a JSON string otherwise.
+fn config_test_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()))
+}
+
 #[tokio::test]
 async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
@@ -1920,16 +1952,11 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"microphone\""}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "audio.device",
+            &serde_json::json!("microphone"),
+            Some(false),
+        ))
         .await
         .expect("failed to execute request");
 
@@ -1967,16 +1994,11 @@ async fn config_set_compositor_acceleration_key_updates_and_persists() {
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"effect_engine.compositor_acceleration_mode","value":"\"cpu\""}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "effect_engine.compositor_acceleration_mode",
+            &serde_json::json!("cpu"),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2010,16 +2032,11 @@ async fn config_set_driver_registry_key_updates_driver_config() {
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"drivers.wled.known_ips","value":"[\"192.168.1.50\"]"}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "drivers.wled.known_ips",
+            &serde_json::json!(["192.168.1.50"]),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2027,7 +2044,11 @@ async fn config_set_driver_registry_key_updates_driver_config() {
 
     let json = body_json(response).await;
     assert_eq!(json["data"]["key"], "drivers.wled.known_ips");
-    assert_eq!(json["data"]["value"], serde_json::json!(["192.168.1.50"]));
+    assert_eq!(
+        json["data"]["value"],
+        serde_json::json!({ "redacted": true }),
+        "secret-classified keys mask on every read surface, echoes included"
+    );
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
     let config: HypercolorConfig =
@@ -2050,31 +2071,110 @@ async fn config_set_driver_registry_key_rejects_non_routable_ip() {
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"drivers.wled.known_ips","value":"[\"127.0.0.1\"]"}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "drivers.wled.known_ips",
+            &serde_json::json!(["127.0.0.1"]),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(message.contains("drivers.wled"));
+    assert!(message.contains("driver validation"));
     assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message should be a string")
-            .contains("invalid WLED known IP")
+        !message.contains("127.0.0.1"),
+        "a secret-classified key must not echo the value it refused: {message}"
     );
     assert!(
         !config_path.exists(),
         "invalid driver config should not be persisted"
+    );
+}
+
+/// A rejected write must not hand the submitted value back.
+///
+/// Serde quotes the value it refused, so a wrong-typed write to a
+/// secret-classified key would put a credential in the error body and
+/// in whatever logs it.
+#[tokio::test]
+async fn config_write_rejection_does_not_echo_a_secret_value() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let secret = "sk-live-do-not-echo-me";
+    let response = app
+        .oneshot(config_put_request(
+            "drivers.wled.enabled",
+            &serde_json::json!(secret),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(
+        message.contains("drivers.wled.enabled"),
+        "the caller still learns which key failed: {message}"
+    );
+    assert!(
+        !message.contains(secret),
+        "a secret-classified key must not echo the value it refused: {message}"
+    );
+    assert!(
+        !serde_json::to_string(&json)
+            .expect("error body should serialize")
+            .contains(secret),
+        "the value must not survive anywhere in the error body"
+    );
+}
+
+/// Plain keys keep the detail that makes a rejection actionable.
+#[tokio::test]
+async fn config_write_rejection_keeps_detail_for_a_plain_key() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!("not-a-number"),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(message.contains("daemon.target_fps"));
+    assert!(
+        message.contains("invalid type"),
+        "a plain key keeps the serde detail: {message}"
     );
 }
 
@@ -2091,16 +2191,7 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
     ] {
         let response = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/config/set")
-                    .header("content-type", "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"key":"{key}","value":"{value}"}}"#
-                    )))
-                    .expect("failed to build request"),
-            )
+            .oneshot(config_put_request(key, &config_test_value(value), None))
             .await
             .expect("failed to execute request");
 
@@ -2123,16 +2214,11 @@ async fn config_set_rejects_capture_resource_plan_before_persistence() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"capture.publication_memory_bytes","value":"1"}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "capture.publication_memory_bytes",
+            &serde_json::json!(1),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2159,16 +2245,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     ] {
         let response = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/config/set")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "key": key, "value": value }).to_string(),
-                    ))
-                    .expect("failed to build request"),
-            )
+            .oneshot(config_put_request(key, &config_test_value(&value), None))
             .await
             .expect("failed to execute request");
 
@@ -2179,14 +2256,11 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     }
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"key":"capture.enabled","value":"false"}"#))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "capture.enabled",
+            &serde_json::json!(false),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2216,16 +2290,11 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"microphone\"","live":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "audio.device",
+            &serde_json::json!("microphone"),
+            Some(true),
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2271,16 +2340,11 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"mic\"","live":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "audio.device",
+            &serde_json::json!("mic"),
+            Some(true),
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2321,16 +2385,11 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"auto\"","live":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "audio.device",
+            &serde_json::json!("auto"),
+            Some(true),
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2369,16 +2428,11 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"default\"","live":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "audio.device",
+            &serde_json::json!("default"),
+            Some(true),
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2439,14 +2493,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     ] {
         let (response, applied) = request_with_layout_ack(
             app.clone(),
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"key":"{key}","value":"{value}"}}"#
-                )))
-                .expect("failed to build request"),
+            config_put_request(key, &config_test_value(value), None),
             &state,
         )
         .await;
@@ -2503,14 +2550,11 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"key":"daemon.target_fps","value":"45"}"#))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!(45),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2627,31 +2671,48 @@ fn reset_fixture_state_from(
     (Arc::new(state), config_manager)
 }
 
-fn reset_fixture_app(config_path: &Path) -> (axum::Router, Arc<ConfigManager>) {
+fn reset_fixture_app(config_path: &Path) -> (axum::Router, Arc<AppState>, Arc<ConfigManager>) {
     let (state, config_manager) = reset_fixture_state(config_path);
-    (test_app_with_state(state), config_manager)
+    (
+        test_app_with_state(Arc::clone(&state)),
+        state,
+        config_manager,
+    )
 }
 
-async fn post_config_reset(app: axum::Router, body: &'static str) -> axum::response::Response {
-    app.oneshot(
+/// Drive a whole-config reset, standing in for the render loop.
+///
+/// A reset re-applies every live section now, and the render section
+/// queues a canvas transaction that waits on a pipeline acknowledgment.
+/// The test state's layout starts at 320x200 against a 640x480 config
+/// default, so the reset genuinely resizes and needs the ack pump.
+async fn post_config_reset(app: axum::Router, state: &Arc<AppState>) -> axum::response::Response {
+    request_with_layout_ack(
+        app,
         Request::builder()
             .method("POST")
             .uri("/api/v1/config/reset")
-            .header("content-type", "application/json")
-            .body(Body::from(body))
+            .body(Body::empty())
             .expect("failed to build request"),
+        state,
     )
     .await
-    .expect("failed to execute request")
+    .0
+}
+
+async fn delete_config_key(app: axum::Router, key: &str) -> axum::response::Response {
+    app.oneshot(config_delete_request(key))
+        .await
+        .expect("failed to execute request")
 }
 
 #[tokio::test]
 async fn config_full_reset_preserves_driver_settings_and_seeds_builtin_entries() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
-    let (app, config_manager) = reset_fixture_app(&config_path);
+    let (app, state, config_manager) = reset_fixture_app(&config_path);
 
-    let response = post_config_reset(app, "{}").await;
+    let response = post_config_reset(app, &state).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
@@ -2709,9 +2770,9 @@ async fn config_full_reset_preserves_driver_settings_and_seeds_builtin_entries()
 async fn config_full_reset_preserves_extension_sections_and_the_include_list() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
-    let (app, config_manager) = reset_fixture_app(&config_path);
+    let (app, state, config_manager) = reset_fixture_app(&config_path);
 
-    let response = post_config_reset(app, "{}").await;
+    let response = post_config_reset(app, &state).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
@@ -2744,13 +2805,17 @@ async fn config_full_reset_preserves_extension_sections_and_the_include_list() {
 async fn config_keyed_reset_restores_one_key_and_leaves_the_rest_intact() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
-    let (app, _config_manager) = reset_fixture_app(&config_path);
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
 
-    let response = post_config_reset(app, r#"{"key":"daemon.target_fps"}"#).await;
+    let response = delete_config_key(app, "daemon.target_fps").await;
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["key"], "daemon.target_fps");
-    assert_eq!(json["data"]["reset"], true);
+    assert_eq!(
+        json["data"]["value"],
+        serde_json::json!(HypercolorConfig::default().daemon.target_fps)
+    );
+    assert_eq!(json["data"]["requires_restart"], false);
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
     let saved: HypercolorConfig =
@@ -2782,21 +2847,300 @@ async fn config_keyed_reset_restores_one_key_and_leaves_the_rest_intact() {
 async fn config_reset_rejects_an_unknown_key() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
-    let (app, _config_manager) = reset_fixture_app(&config_path);
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
 
-    let response = post_config_reset(app, r#"{"key":"daemon.not_a_real_key"}"#).await;
+    let response = delete_config_key(app, "daemon.not_a_real_key").await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn config_schema_route_serves_the_key_registry() {
+    let app = test_app_with_state(Arc::new(isolated_state()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config/schema")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let entries = json["data"]
+        .as_array()
+        .expect("the schema is served as a list of entries");
+    assert_eq!(
+        entries.len(),
+        hypercolor_types::config_registry::schema_entries().len()
+    );
+
+    let render = entries
+        .iter()
+        .find(|entry| entry["pattern"] == "daemon.target_fps")
+        .expect("the render override is published");
+    assert_eq!(render["apply"]["kind"], "live");
+    assert_eq!(render["apply"]["section"], "render");
+    assert_eq!(render["redaction"], "plain");
+
+    let drivers = entries
+        .iter()
+        .find(|entry| entry["pattern"] == "drivers.*")
+        .expect("the dynamic driver namespace is published");
+    assert_eq!(drivers["redaction"], "secret");
+
+    let capture = entries
+        .iter()
+        .find(|entry| entry["pattern"] == "capture")
+        .expect("the capture section is published");
+    assert_eq!(capture["has_validator"], true);
+}
+
+#[tokio::test]
+async fn config_read_masks_secret_namespaces_and_keeps_plain_sections() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["daemon"]["target_fps"], 45);
+    assert_eq!(json["data"]["audio"]["device"], "microphone");
+    assert_eq!(
+        json["data"]["drivers"]["acme_cloud"],
+        serde_json::json!({ "redacted": true }),
+        "driver entries carry credentials, so the generic read masks them"
+    );
+    assert_eq!(
+        json["data"]["drivers"]["wled"],
+        serde_json::json!({ "redacted": true })
+    );
+    assert_eq!(
+        json["data"]["cloud"],
+        serde_json::json!({ "redacted": true }),
+        "unmodeled extension sections are deny-by-default"
+    );
+}
+
+#[tokio::test]
+async fn config_key_read_answers_one_key_and_masks_the_secret_ones() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config/keys/daemon.target_fps")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "daemon.target_fps");
+    assert_eq!(json["data"]["value"], 45);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config/keys/drivers.acme_cloud.api_key")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["value"],
+        serde_json::json!({ "redacted": true })
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config/keys/daemon.not_a_real_key")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn config_key_routes_reject_a_malformed_key() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
+
+    for request in [
+        Request::builder()
+            .uri("/api/v1/config/keys/daemon..target_fps")
+            .body(Body::empty())
+            .expect("failed to build request"),
+        config_put_request("daemon..target_fps", &serde_json::json!(45), None),
+        config_delete_request("daemon..target_fps"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "bad_request");
+    }
+}
+
+#[tokio::test]
+async fn config_write_reports_restart_classification_and_pending_restart() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    fs::write(&config_path, RESET_FIXTURE_CONFIG).expect("fixture config should be written");
+    let loaded = ConfigManager::load_with_sources(hypercolor_core::config::ConfigSources {
+        file: Some(config_path.clone()),
+        ..hypercolor_core::config::ConfigSources::default_path()
+    })
+    .expect("fixture config should load");
+    let mut state = isolated_state();
+    state.config_manager = Some(Arc::new(loaded.manager));
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .clone()
+        .oneshot(config_put_request(
+            "daemon.port",
+            &serde_json::json!(9430),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["value"], 9430);
+    assert_eq!(
+        json["data"]["live"], false,
+        "a boot-frozen key has no subsystem to re-apply"
+    );
+    assert_eq!(json["data"]["requires_restart"], true);
+    assert_eq!(
+        json["data"]["pending_restart"],
+        serde_json::json!(["daemon"]),
+        "the persisted daemon section now differs from the booted one"
+    );
+
+    let response = app
+        .oneshot(config_put_request(
+            "session.on_suspend",
+            &serde_json::json!("dim"),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["requires_restart"], false,
+        "a read-fresh key takes effect without a restart"
+    );
+}
+
+#[tokio::test]
+async fn config_write_declining_live_persists_without_re_applying() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+    let mut state = isolated_state();
+    state.config_manager = Some(Arc::clone(&config_manager));
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!(20),
+            Some(false),
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["live"], false);
+    assert_eq!(config_manager.get().daemon.target_fps, 20);
+    assert_ne!(
+        state.render_loop.read().await.stats().max_tier.fps(),
+        20,
+        "declining the live apply leaves the running loop alone"
+    );
+}
+
+/// A whole-config reset re-applies every live section, render included.
+///
+/// The hand predicate this replaced matched three exact keys and ignored
+/// the whole-config case, so a reset persisted a new target FPS and left
+/// the render loop running at the old one until the next restart.
+#[tokio::test]
+async fn config_full_reset_retunes_the_render_loop() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (state, config_manager) = reset_fixture_state(&config_path);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    // Retune the running loop away from the default first. The fixture
+    // already carries the config's 45, so the write has to name a
+    // different tier or the unchanged-value short circuit skips it.
+    let response = app
+        .clone()
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!(20),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(state.render_loop.read().await.stats().max_tier.fps(), 20);
+
+    let response = post_config_reset(app, &state).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["live"], true);
+
+    let default_fps = HypercolorConfig::default().daemon.target_fps;
+    assert_eq!(config_manager.get().daemon.target_fps, default_fps);
+    let expected_tier = hypercolor_core::engine::FpsTier::from_fps(default_fps);
+    let stats = state.render_loop.read().await.stats();
+    assert_eq!(stats.max_tier, expected_tier);
+    assert_eq!(stats.tier, expected_tier);
 }
 
 #[tokio::test]
 async fn config_full_reset_round_trips_a_nested_extension_document() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
-    let (app, config_manager) = {
-        let (state, manager) =
-            reset_fixture_state_from(&config_path, RESET_NESTED_EXTENSION_CONFIG);
-        (test_app_with_state(Arc::clone(&state)), manager)
-    };
+    let (state, config_manager) =
+        reset_fixture_state_from(&config_path, RESET_NESTED_EXTENSION_CONFIG);
+    let app = test_app_with_state(Arc::clone(&state));
     let authored: HypercolorConfig =
         toml::from_str(RESET_NESTED_EXTENSION_CONFIG).expect("fixture should parse");
     let authored_telemetry = authored
@@ -2804,7 +3148,7 @@ async fn config_full_reset_round_trips_a_nested_extension_document() {
         .get("telemetry")
         .expect("the nested fixture section lands in the catch-all");
 
-    let response = post_config_reset(app, "{}").await;
+    let response = post_config_reset(app, &state).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
@@ -2851,7 +3195,7 @@ async fn config_full_reset_event_carries_no_config_payload() {
     let app = test_app_with_state(Arc::clone(&state));
     let mut events = state.event_bus.subscribe_all();
 
-    let response = post_config_reset(app, "{}").await;
+    let response = post_config_reset(app, &state).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let (key, new_value) = tokio::time::timeout(Duration::from_secs(2), async {
@@ -2886,10 +3230,9 @@ async fn config_full_reset_event_carries_no_config_payload() {
 async fn config_full_reset_is_not_blocked_by_an_invalid_driver_entry() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
-    let (app, config_manager) = {
-        let (state, manager) = reset_fixture_state_from(&config_path, RESET_INVALID_DRIVER_CONFIG);
-        (test_app_with_state(Arc::clone(&state)), manager)
-    };
+    let (state, config_manager) =
+        reset_fixture_state_from(&config_path, RESET_INVALID_DRIVER_CONFIG);
+    let app = test_app_with_state(Arc::clone(&state));
 
     // Writing a loopback address through `set` is rejected, so the seeded
     // entry is genuinely one the driver refuses rather than an inert
@@ -2897,21 +3240,16 @@ async fn config_full_reset_is_not_blocked_by_an_invalid_driver_entry() {
     // short-circuits an unchanged value before it reaches validation.
     let rejected = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"drivers.wled.known_ips","value":"[\"127.0.0.2\"]"}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "drivers.wled.known_ips",
+            &serde_json::json!(["127.0.0.2"]),
+            None,
+        ))
         .await
         .expect("failed to execute request");
     assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let response = post_config_reset(app, "{}").await;
+    let response = post_config_reset(app, &state).await;
     assert_eq!(
         response.status(),
         StatusCode::OK,
@@ -11167,14 +11505,7 @@ async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
     let request = tokio::spawn(async move {
         request_with_layout_ack(
             app,
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"daemon.canvas_width","value":"1024"}"#,
-                ))
-                .expect("failed to build request"),
+            config_put_request("daemon.canvas_width", &serde_json::json!(1024), None),
             &request_state,
         )
         .await
@@ -11338,14 +11669,7 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
     let resize = tokio::spawn(async move {
         request_with_layout_ack(
             app,
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"daemon.canvas_width","value":"1024"}"#,
-                ))
-                .expect("failed to build request"),
+            config_put_request("daemon.canvas_width", &serde_json::json!(1024), None),
             &resize_state,
         )
         .await

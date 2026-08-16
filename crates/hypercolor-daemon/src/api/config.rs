@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
@@ -18,6 +18,9 @@ use hypercolor_core::input::{
 };
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
+use hypercolor_types::config_registry::{
+    self, ApplyPolicy, ConfigKeyDescriptor, KeyPattern, LiveSection, Redaction,
+};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -25,55 +28,125 @@ use crate::scene_transactions::{
     PreparedLayoutUpdate, SceneTransaction, apply_prepared_layout_update_under_guard,
 };
 
+/// Whether a mutation re-applies the live sections it touches.
+///
+/// Live application is the default: a client that wants the value on
+/// disk without disturbing the running daemon asks for `?live=false`.
 #[derive(Debug, Deserialize)]
-pub struct GetConfigQuery {
-    pub key: String,
+pub struct ConfigApplyQuery {
+    #[serde(default = "live_apply_default")]
+    pub live: bool,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct SetConfigRequest {
-    pub key: String,
-    pub value: String,
-    pub live: Option<bool>,
+const fn live_apply_default() -> bool {
+    true
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ResetConfigRequest {
+/// The outcome of a config write, reset, or whole-config reset.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConfigMutationResponse {
+    /// The mutated key, or null for a whole-config reset.
     pub key: Option<String>,
-    pub live: Option<bool>,
+    /// The effective value after the write, rendered like any read.
+    /// Null for a whole-config reset, whose payload spans every key.
+    pub value: Option<serde_json::Value>,
+    /// Whether the daemon re-applied the change to a running subsystem.
+    pub live: bool,
+    /// Whether the registry classifies this key as boot-frozen, so the
+    /// persisted value only takes effect at the next daemon start.
+    pub requires_restart: bool,
+    /// Restart-classified roots whose persisted value now differs from
+    /// the one the daemon booted with.
+    pub pending_restart: Vec<String>,
+    /// The config file the write landed in.
+    pub path: String,
 }
 
-/// `GET /api/v1/config` — Show full effective config.
+/// `GET /api/v1/config` — the effective config, rendered for reading.
 pub async fn show_config(State(state): State<Arc<AppState>>) -> Response {
-    ApiResponse::ok(config_snapshot(&state))
-}
-
-/// `GET /api/v1/config/get?key=...` — Read a dotted config key.
-pub async fn get_config_value(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<GetConfigQuery>,
-) -> Response {
-    let key = query.key.clone();
     let config = config_snapshot(&state);
     let value = match serde_json::to_value(config) {
-        Ok(v) => v,
-        Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
+        Ok(value) => value,
+        Err(error) => return ApiError::internal(format!("Failed to serialize config: {error}")),
+    };
+
+    ApiResponse::ok(redact_document(value))
+}
+
+/// `GET /api/v1/config/schema` — the key registry clients read to learn
+/// how each key applies, renders, and validates.
+pub async fn get_config_schema() -> Response {
+    ApiResponse::ok(config_registry::schema_entries())
+}
+
+/// `GET /api/v1/config/keys/{key}` — read one dotted config key.
+pub async fn get_config_key(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> Response {
+    if !config_registry::is_valid_key(&key) {
+        return ApiError::bad_request(format!("Malformed config key: {key}"));
+    }
+
+    let config = config_snapshot(&state);
+    let value = match serde_json::to_value(config) {
+        Ok(value) => value,
+        Err(error) => return ApiError::internal(format!("Failed to serialize config: {error}")),
     };
 
     let Some(found) = get_json_path(&value, &key) else {
-        return ApiError::not_found(format!("Unknown config key: {}", query.key));
+        return ApiError::not_found(format!("Unknown config key: {key}"));
     };
 
     ApiResponse::ok(serde_json::json!({
         "key": key,
-        "value": found,
+        "value": redact_key(&key, found.clone()),
     }))
 }
 
-/// `POST /api/v1/config/set` — Set a dotted config key and persist.
-pub async fn set_config_value(
+/// `PUT /api/v1/config/keys/{key}` — write one dotted key and persist.
+///
+/// The request body is the value itself, so a section writes as a JSON
+/// object and a string writes as a JSON string.
+pub async fn put_config_key(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<SetConfigRequest>,
+    Path(key): Path<String>,
+    Query(apply): Query<ConfigApplyQuery>,
+    Json(value): Json<serde_json::Value>,
+) -> Response {
+    if !config_registry::is_valid_key(&key) {
+        return ApiError::bad_request(format!("Malformed config key: {key}"));
+    }
+
+    write_config_key(&state, &key, value, apply.live).await
+}
+
+/// `DELETE /api/v1/config/keys/{key}` — restore one key to its default.
+pub async fn delete_config_key(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Query(apply): Query<ConfigApplyQuery>,
+) -> Response {
+    if !config_registry::is_valid_key(&key) {
+        return ApiError::bad_request(format!("Malformed config key: {key}"));
+    }
+
+    reset_config_state(&state, Some(&key), apply.live).await
+}
+
+/// `POST /api/v1/config/reset` — restore the whole config to defaults.
+pub async fn reset_config(
+    State(state): State<Arc<AppState>>,
+    Query(apply): Query<ConfigApplyQuery>,
+) -> Response {
+    reset_config_state(&state, None, apply.live).await
+}
+
+async fn write_config_key(
+    state: &Arc<AppState>,
+    raw_key: &str,
+    value: serde_json::Value,
+    live_requested: bool,
 ) -> Response {
     let Some(manager) = state.config_manager.as_ref() else {
         return ApiError::internal("Config manager unavailable in this runtime");
@@ -86,15 +159,15 @@ pub async fn set_config_value(
         Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
     };
 
-    let key = body.key.clone();
-    let parsed_value = serde_json::from_str::<serde_json::Value>(&body.value)
-        .unwrap_or_else(|_| serde_json::Value::String(body.value.clone()));
-    let parsed_value = canonicalize_config_value(&key, parsed_value);
+    let key = raw_key.to_owned();
+    let parsed_value = canonicalize_config_value(&key, value);
+    let sections = live_sections_for(Some(&key));
+    let apply_capture = sections.capture && live_requested;
 
     let value_is_unchanged =
         get_json_path(&root, &key).is_some_and(|current| current == &parsed_value);
-    let capture_runtime_matches = if value_is_unchanged && should_reconfigure_capture(Some(&key)) {
-        capture_runtime_matches(&state, &current_snapshot).await
+    let capture_runtime_matches = if value_is_unchanged && apply_capture {
+        capture_runtime_matches(state, &current_snapshot).await
     } else {
         true
     };
@@ -102,39 +175,35 @@ pub async fn set_config_value(
     if value_is_unchanged && capture_runtime_matches {
         info!(
             key,
-            live_requested = body.live.unwrap_or(false),
-            "Skipping config update because value is unchanged"
+            live_requested, "Skipping config update because value is unchanged"
         );
-        return ApiResponse::ok(serde_json::json!({
-            "key": key,
-            "value": parsed_value,
-            "live": false,
-            "path": manager.path().display().to_string(),
-        }));
+        return ApiResponse::ok(mutation_result(
+            manager,
+            Some(key.clone()),
+            Some(redact_key(&key, parsed_value)),
+            false,
+        ));
     }
 
     if !set_json_path(&mut root, &key, parsed_value.clone()) {
-        return ApiError::validation(format!("Invalid config key path: {}", body.key));
+        return ApiError::validation(format!("Invalid config key path: {raw_key}"));
     }
 
     let updated: HypercolorConfig = match serde_json::from_value(root) {
         Ok(cfg) => cfg,
-        Err(e) => {
-            return ApiError::validation(format!(
-                "Config update failed validation for '{}': {e}",
-                key
-            ));
+        Err(error) => {
+            return rejected_value(&key, "type validation", &error.to_string());
         }
     };
-    if let Err(error) = validate_driver_config_scope(&state, Some(&key), &updated) {
-        return ApiError::validation(error);
+    if let Err(rejection) = validate_driver_config_scope(state, Some(&key), &updated) {
+        return rejected_value(&rejection.key, "driver validation", &rejection.detail);
     }
     if let Err(error) = updated.capture.validate() {
         return ApiError::validation(error.to_string());
     }
 
-    if should_reconfigure_capture(Some(&key)) {
-        match apply_capture_config_transaction(&state, &current_snapshot, updated.capture.clone())
+    if apply_capture {
+        match apply_capture_config_transaction(state, &current_snapshot, updated.capture.clone())
             .await
         {
             Ok(()) => {
@@ -152,12 +221,12 @@ pub async fn set_config_value(
                         "Canonicalized config is missing expected key: {key}"
                     ));
                 };
-                return ApiResponse::ok(serde_json::json!({
-                    "key": key,
-                    "value": effective_value,
-                    "live": true,
-                    "path": manager.path().display().to_string(),
-                }));
+                return ApiResponse::ok(mutation_result(
+                    manager,
+                    Some(key.clone()),
+                    Some(redact_key(&key, effective_value)),
+                    true,
+                ));
             }
             Err(CaptureConfigTransactionError::Conflict) => {
                 return ApiError::conflict(
@@ -211,31 +280,52 @@ pub async fn set_config_value(
         ));
     };
 
-    let audio_live_applied =
-        maybe_apply_audio_config_change(&state, Some(&key), body.live.unwrap_or(false)).await;
-    let render_live_applied = maybe_apply_render_config_change(&state, Some(&key)).await;
-    let input_live_applied = maybe_apply_input_config_change(&state, Some(&key)).await;
-    let live_applied = audio_live_applied || render_live_applied || input_live_applied;
+    let live_applied = apply_live_sections(state, sections, Some(&key), live_requested).await;
 
     // Published only after the save succeeded: consumers (sync intake,
-    // UI hints) treat this as "the persisted config changed".
+    // UI hints) treat this as "the persisted config changed". The
+    // payload renders like any other read surface, so a secret-
+    // classified key fans out masked.
     let old_value = serde_json::to_value(&current)
         .ok()
-        .and_then(|previous| get_json_path(&previous, &key).cloned());
+        .and_then(|previous| get_json_path(&previous, &key).cloned())
+        .map(|value| redact_key(&key, value));
     state
         .event_bus
         .publish(hypercolor_types::event::HypercolorEvent::ConfigChanged {
             key: key.clone(),
             old_value,
-            new_value: effective_value.clone(),
+            new_value: redact_key(&key, effective_value.clone()),
         });
 
-    ApiResponse::ok(serde_json::json!({
-        "key": key,
-        "value": effective_value,
-        "live": live_applied,
-        "path": manager.path().display().to_string(),
-    }))
+    ApiResponse::ok(mutation_result(
+        manager,
+        Some(key.clone()),
+        Some(redact_key(&key, effective_value)),
+        live_applied,
+    ))
+}
+
+/// Build the shared mutation payload.
+///
+/// `requires_restart` reports the registry's classification of the
+/// mutated key; a whole-config reset spans every section, including the
+/// boot-frozen ones, so it always reports true.
+fn mutation_result(
+    manager: &Arc<hypercolor_core::config::ConfigManager>,
+    key: Option<String>,
+    value: Option<serde_json::Value>,
+    live: bool,
+) -> ConfigMutationResponse {
+    let requires_restart = key.as_deref().is_none_or(config_registry::requires_restart);
+    ConfigMutationResponse {
+        key,
+        value,
+        live,
+        requires_restart,
+        pending_restart: manager.pending_restart(),
+        path: manager.path().display().to_string(),
+    }
 }
 
 fn canonicalize_config_value(key: &str, value: serde_json::Value) -> serde_json::Value {
@@ -248,17 +338,170 @@ fn canonicalize_config_value(key: &str, value: serde_json::Value) -> serde_json:
     }
 }
 
-/// `POST /api/v1/config/reset` — Reset one key or the full config to defaults.
-pub async fn reset_config_value(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<ResetConfigRequest>,
+// ── Registry dispatch ───────────────────────────────────────────────
+
+/// The live subsystems one mutation has to re-apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LiveSections {
+    audio: bool,
+    capture: bool,
+    input: bool,
+    render: bool,
+}
+
+impl LiveSections {
+    const fn is_empty(self) -> bool {
+        !(self.audio || self.capture || self.input || self.render)
+    }
+
+    const fn add(&mut self, apply: ApplyPolicy) {
+        match apply {
+            ApplyPolicy::Live(LiveSection::Audio) => self.audio = true,
+            ApplyPolicy::Live(LiveSection::Capture) => self.capture = true,
+            ApplyPolicy::Live(LiveSection::Input) => self.input = true,
+            ApplyPolicy::Live(LiveSection::Render) => self.render = true,
+            ApplyPolicy::LiveOnRead
+            | ApplyPolicy::NextScan
+            | ApplyPolicy::Restart
+            | ApplyPolicy::Inert => {}
+        }
+    }
+}
+
+/// The live subsystems a write at `key` touches, straight from the
+/// registry. `None` is a whole-config write, which touches every one.
+///
+/// The key's own policy comes from its most specific descriptor. Every
+/// descriptor nested *below* the key contributes too, because writing a
+/// section overwrites the keys inside it: a write to `daemon` carries
+/// the render knobs `daemon.target_fps` and friends with it.
+fn live_sections_for(key: Option<&str>) -> LiveSections {
+    let mut sections = LiveSections::default();
+    let Some(key) = key else {
+        for descriptor in config_registry::registry() {
+            sections.add(descriptor.apply);
+        }
+        return sections;
+    };
+
+    sections.add(config_registry::descriptor_for(key).apply);
+    let prefix = format!("{key}.");
+    for descriptor in config_registry::registry()
+        .iter()
+        .filter(|descriptor| descriptor.pattern.root().starts_with(&prefix))
+    {
+        sections.add(descriptor.apply);
+    }
+    sections
+}
+
+/// Whether a write at `key` covers `target` — the same containment the
+/// section dispatch uses, narrowed to one knob an applier retunes.
+fn write_covers(key: Option<&str>, target: &str) -> bool {
+    key.is_none_or(|key| key == target || target.starts_with(&format!("{key}.")))
+}
+
+/// Re-apply the live sections a write touched.
+///
+/// Capture is absent by design: its applier is a transaction that
+/// persists the config itself, so callers run it before the generic
+/// save rather than here.
+async fn apply_live_sections(
+    state: &Arc<AppState>,
+    sections: LiveSections,
+    key: Option<&str>,
+    live_requested: bool,
+) -> bool {
+    if !live_requested {
+        if !sections.is_empty() {
+            info!(
+                key = key.unwrap_or("<all>"),
+                "Persisted config change without live apply; restart the daemon to activate it"
+            );
+        }
+        return false;
+    }
+
+    let mut applied = false;
+    if sections.audio {
+        applied |= apply_audio_config_change(state, key).await;
+    }
+    if sections.render {
+        applied |= apply_render_config_change(state, key).await;
+    }
+    if sections.input {
+        applied |= apply_input_config_change(state, key).await;
+    }
+    applied
+}
+
+// ── Read-surface redaction ──────────────────────────────────────────
+
+/// What a masked value renders as.
+fn redacted_marker() -> serde_json::Value {
+    serde_json::json!({ "redacted": true })
+}
+
+/// Render a whole config document for a read surface.
+///
+/// Sections the registry classifies `Secret` are masked. A dynamic
+/// namespace masks per entry, so the entry names — already public
+/// through their own resource routes — survive while every value inside
+/// them is hidden.
+fn redact_document(mut document: serde_json::Value) -> serde_json::Value {
+    let Some(root) = document.as_object_mut() else {
+        return document;
+    };
+
+    for (key, value) in root.iter_mut() {
+        let descriptor = config_registry::descriptor_for(key);
+        if matches!(descriptor.redaction, Redaction::Secret) {
+            *value = mask_section(descriptor, std::mem::take(value));
+        }
+    }
+    document
+}
+
+/// Render one key's value for a read surface.
+fn redact_key(key: &str, value: serde_json::Value) -> serde_json::Value {
+    let descriptor = config_registry::descriptor_for(key);
+    if !matches!(descriptor.redaction, Redaction::Secret) {
+        return value;
+    }
+
+    if key == descriptor.pattern.root() {
+        mask_section(descriptor, value)
+    } else {
+        redacted_marker()
+    }
+}
+
+fn mask_section(descriptor: &ConfigKeyDescriptor, value: serde_json::Value) -> serde_json::Value {
+    if let KeyPattern::Namespace(_) = descriptor.pattern
+        && let Some(entries) = value.as_object()
+    {
+        return serde_json::Value::Object(
+            entries
+                .keys()
+                .map(|entry| (entry.clone(), redacted_marker()))
+                .collect(),
+        );
+    }
+    redacted_marker()
+}
+
+/// Restore one key, or the whole config, to defaults.
+async fn reset_config_state(
+    state: &Arc<AppState>,
+    raw_key: Option<&str>,
+    live_requested: bool,
 ) -> Response {
     let Some(manager) = state.config_manager.as_ref() else {
         return ApiError::internal("Config manager unavailable in this runtime");
     };
 
     let current_snapshot = Arc::clone(&manager.get());
-    let requested_key = body.key.clone();
+    let requested_key = raw_key.map(ToOwned::to_owned);
     let updated: HypercolorConfig = if let Some(key) = requested_key.as_deref() {
         let mut current = match serde_json::to_value(&*current_snapshot) {
             Ok(v) => v,
@@ -271,7 +514,7 @@ pub async fn reset_config_value(
             }
         };
         let Some(default_value) = get_json_path(&defaults, key) else {
-            return ApiError::not_found(format!("Unknown config key: {}", key));
+            return ApiError::not_found(format!("Unknown config key: {key}"));
         };
 
         if !set_json_path(&mut current, key, default_value.clone()) {
@@ -280,7 +523,10 @@ pub async fn reset_config_value(
 
         match serde_json::from_value(current) {
             Ok(cfg) => cfg,
-            Err(e) => return ApiError::internal(format!("Failed to build reset config: {e}")),
+            // The default this rebuilds around is the daemon's, but the
+            // document it lands in still holds the neighbors a secret
+            // key keeps company with.
+            Err(error) => return rejected_value(key, "type validation", &error.to_string()),
         }
     } else {
         full_reset_config(&current_snapshot)
@@ -289,19 +535,18 @@ pub async fn reset_config_value(
     // it on their validity would reject the one request a user makes to
     // recover from a config they can no longer edit by hand.
     if let Some(key) = requested_key.as_deref()
-        && let Err(error) = validate_driver_config_scope(&state, Some(key), &updated)
+        && let Err(rejection) = validate_driver_config_scope(state, Some(key), &updated)
     {
-        return ApiError::validation(error);
+        return rejected_value(&rejection.key, "driver validation", &rejection.detail);
     }
     if let Err(error) = updated.capture.validate() {
         return ApiError::validation(error.to_string());
     }
 
-    let capture_live_applied = if requested_key
-        .as_deref()
-        .is_none_or(|key| should_reconfigure_capture(Some(key)))
-    {
-        match apply_capture_config_transaction(&state, &current_snapshot, updated.capture.clone())
+    let sections = live_sections_for(requested_key.as_deref());
+    let apply_capture = sections.capture && live_requested;
+    let capture_live_applied = if apply_capture {
+        match apply_capture_config_transaction(state, &current_snapshot, updated.capture.clone())
             .await
         {
             Ok(()) => true,
@@ -328,16 +573,19 @@ pub async fn reset_config_value(
         false
     };
 
-    if requested_key
-        .as_deref()
-        .is_some_and(|key| should_reconfigure_capture(Some(key)))
-    {
-        return ApiResponse::ok(serde_json::json!({
-            "key": requested_key,
-            "reset": true,
-            "live": true,
-            "path": manager.path().display().to_string(),
-        }));
+    // A key-scoped capture reset persisted inside the transaction, so
+    // the generic re-derive below would rewrite what it just committed.
+    if apply_capture && let Some(key) = requested_key.as_deref() {
+        let effective_value = serde_json::to_value(&**manager.get())
+            .ok()
+            .and_then(|root| get_json_path(&root, key).cloned())
+            .map(|value| redact_key(key, value));
+        return ApiResponse::ok(mutation_result(
+            manager,
+            Some(key.to_owned()),
+            effective_value,
+            true,
+        ));
     }
 
     // Both shapes re-derive against the freshest config under the write
@@ -364,18 +612,9 @@ pub async fn reset_config_value(
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
 
-    let audio_live_applied = maybe_apply_audio_config_change(
-        &state,
-        requested_key.as_deref(),
-        body.live.unwrap_or(false),
-    )
-    .await;
-    let render_live_applied =
-        maybe_apply_render_config_change(&state, requested_key.as_deref()).await;
-    let input_live_applied =
-        maybe_apply_input_config_change(&state, requested_key.as_deref()).await;
     let live_applied =
-        audio_live_applied || render_live_applied || capture_live_applied || input_live_applied;
+        apply_live_sections(state, sections, requested_key.as_deref(), live_requested).await
+            || capture_live_applied;
 
     // One event per reset; a whole-config reset publishes the empty key so
     // consumers re-read everything rather than diffing per field. It carries
@@ -383,27 +622,27 @@ pub async fn reset_config_value(
     // credentials, and this event fans out to every `events` subscriber.
     let reset_event_key = requested_key.clone().unwrap_or_default();
     let new_value = if reset_event_key.is_empty() {
-        serde_json::Value::Null
+        None
     } else {
         serde_json::to_value(&**manager.get())
             .ok()
             .and_then(|root| get_json_path(&root, &reset_event_key).cloned())
-            .unwrap_or(serde_json::Value::Null)
+            .map(|value| redact_key(&reset_event_key, value))
     };
     state
         .event_bus
         .publish(hypercolor_types::event::HypercolorEvent::ConfigChanged {
             key: reset_event_key,
             old_value: None,
-            new_value,
+            new_value: new_value.clone().unwrap_or(serde_json::Value::Null),
         });
 
-    ApiResponse::ok(serde_json::json!({
-        "key": requested_key,
-        "reset": true,
-        "live": live_applied,
-        "path": manager.path().display().to_string(),
-    }))
+    ApiResponse::ok(mutation_result(
+        manager,
+        requested_key,
+        new_value,
+        live_applied,
+    ))
 }
 
 /// Build the whole-config reset result: defaults, plus the sections the
@@ -435,11 +674,18 @@ fn config_snapshot(state: &AppState) -> HypercolorConfig {
     }
 }
 
+/// A driver's own validator rejecting an entry, with the key it names
+/// kept apart from the detail so the caller can decide what to render.
+struct DriverConfigRejection {
+    key: String,
+    detail: String,
+}
+
 fn validate_driver_config_scope(
     state: &AppState,
     key: Option<&str>,
     config: &HypercolorConfig,
-) -> Result<(), String> {
+) -> Result<(), DriverConfigRejection> {
     let driver_ids = match key {
         None | Some("drivers") => state.driver_registry.ids(),
         Some(value) => value
@@ -457,12 +703,30 @@ fn validate_driver_config_scope(
             continue;
         };
         let entry = config.drivers.get(&driver_id).cloned().unwrap_or_default();
-        provider.validate_config(&entry).map_err(|error| {
-            format!("Config update failed validation for 'drivers.{driver_id}': {error}")
-        })?;
+        provider
+            .validate_config(&entry)
+            .map_err(|error| DriverConfigRejection {
+                key: format!("drivers.{driver_id}"),
+                detail: error.to_string(),
+            })?;
     }
 
     Ok(())
+}
+
+/// Render a rejected value without echoing it back on a secret key.
+///
+/// Serde and driver validators quote the value they refused, so a
+/// secret-classified key would put the submitted credential in the
+/// response body and in whatever logs that body. Those keys report the
+/// key and the class of failure; plain keys keep the detail that makes
+/// the error actionable.
+fn rejected_value(key: &str, class: &str, detail: &str) -> Response {
+    if config_registry::is_redacted(key) {
+        ApiError::validation(format!("Value for '{key}' failed {class}"))
+    } else {
+        ApiError::validation(format!("Value for '{key}' failed {class}: {detail}"))
+    }
 }
 
 fn get_json_path<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
@@ -497,27 +761,7 @@ fn set_json_path(root: &mut serde_json::Value, key: &str, value: serde_json::Val
     false
 }
 
-fn should_reconfigure_audio_inputs(key: Option<&str>) -> bool {
-    key.is_none_or(|value| value == "audio" || value.starts_with("audio."))
-}
-
-async fn maybe_apply_audio_config_change(
-    state: &Arc<AppState>,
-    key: Option<&str>,
-    live_requested: bool,
-) -> bool {
-    if !should_reconfigure_audio_inputs(key) {
-        return false;
-    }
-
-    if !live_requested {
-        info!(
-            key = key.unwrap_or("<all>"),
-            "Persisted audio config change without live apply; restart the daemon to activate it"
-        );
-        return false;
-    }
-
+async fn apply_audio_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
     info!(
         key = key.unwrap_or("<all>"),
         "Applying live audio config change"
@@ -678,10 +922,6 @@ fn audio_source_from_device(device: &str, enabled: bool) -> AudioSourceType {
 fn noise_gate_to_db(noise_gate: f32) -> f32 {
     let linear = noise_gate.clamp(0.000_001, 1.0);
     20.0 * linear.log10()
-}
-
-fn should_reconfigure_capture(key: Option<&str>) -> bool {
-    key.is_none_or(|value| value == "capture" || value.starts_with("capture."))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -992,21 +1232,13 @@ async fn stop_prepared_capture_source(source: Option<Box<dyn InputSource>>) {
     let _ = tokio::task::spawn_blocking(move || source.stop()).await;
 }
 
-fn should_reconfigure_input(key: Option<&str>) -> bool {
-    key.is_none_or(|value| value == "input" || value.starts_with("input."))
-}
-
 /// Apply host-input config changes live.
 ///
 /// Enable/disable adds or removes the interaction source on the running
 /// input manager. Activation converges on the next frame through the
 /// uncached interaction demand reconcile, so a source added while an
 /// interactive effect is already running starts capturing immediately.
-async fn maybe_apply_input_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
-    if !should_reconfigure_input(key) {
-        return false;
-    }
-
+async fn apply_input_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
     let Some(manager) = state.config_manager.as_ref() else {
         return false;
     };
@@ -1054,23 +1286,12 @@ async fn maybe_apply_input_config_change(state: &Arc<AppState>, key: Option<&str
     true
 }
 
-fn should_reconfigure_render(key: Option<&str>) -> bool {
-    matches!(
-        key,
-        Some("daemon.target_fps" | "daemon.canvas_width" | "daemon.canvas_height")
-    )
-}
-
 /// Apply render config changes live: FPS retune and canvas resize.
 ///
 /// FPS changes go directly to the `RenderLoop`. Canvas dimension changes
 /// are queued as an acknowledged layout transaction and take effect at the
 /// next frame boundary without blocking the pipeline.
-async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
-    if !should_reconfigure_render(key) {
-        return false;
-    }
-
+async fn apply_render_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
     let Some(manager) = state.config_manager.as_ref() else {
         return false;
     };
@@ -1078,7 +1299,7 @@ async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&st
     let config = manager.get();
     let mut applied = false;
 
-    if key.is_none_or(|k| k == "daemon.target_fps") {
+    if write_covers(key, "daemon.target_fps") {
         let tier = FpsTier::from_fps(config.daemon.target_fps);
         state.configured_max_fps_tier.set(tier);
         let mut loop_guard = state.render_loop.write().await;
@@ -1092,7 +1313,7 @@ async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&st
         applied = true;
     }
 
-    if key.is_none_or(|k| k == "daemon.canvas_width" || k == "daemon.canvas_height") {
+    if write_covers(key, "daemon.canvas_width") || write_covers(key, "daemon.canvas_height") {
         let resize_queued = sync_active_layout_canvas_size(
             state,
             config.daemon.canvas_width,
@@ -1243,9 +1464,10 @@ mod tests {
     use hypercolor_types::config::InteractionRoutePolicy;
 
     use super::{
-        CaptureConfigTransactionError, SetConfigRequest, apply_capture_config_transaction,
-        canvas_dimensions_differ, capture_statuses_match, maybe_apply_input_config_change,
-        set_config_value, validate_prepared_capture_status,
+        CaptureConfigTransactionError, ConfigApplyQuery, LiveSections,
+        apply_capture_config_transaction, apply_input_config_change, canvas_dimensions_differ,
+        capture_statuses_match, live_sections_for, put_config_key,
+        validate_prepared_capture_status, write_covers,
     };
     use crate::api::AppState;
 
@@ -1361,6 +1583,155 @@ mod tests {
     }
 
     #[test]
+    fn registry_dispatch_routes_one_section_per_live_key() {
+        assert_eq!(
+            live_sections_for(Some("audio.device")),
+            LiveSections {
+                audio: true,
+                ..LiveSections::default()
+            }
+        );
+        assert_eq!(
+            live_sections_for(Some("capture.enabled")),
+            LiveSections {
+                capture: true,
+                ..LiveSections::default()
+            }
+        );
+        assert_eq!(
+            live_sections_for(Some("input.enabled")),
+            LiveSections {
+                input: true,
+                ..LiveSections::default()
+            }
+        );
+        assert_eq!(
+            live_sections_for(Some("daemon.target_fps")),
+            LiveSections {
+                render: true,
+                ..LiveSections::default()
+            }
+        );
+    }
+
+    #[test]
+    fn registry_dispatch_applies_nothing_for_non_live_policies() {
+        // Restart, NextScan, LiveOnRead, and Inert keys all persist
+        // without a live subsystem to re-apply.
+        for key in [
+            "daemon.port",
+            "discovery.scan_interval_secs",
+            "session.sleep_behavior",
+            "tui.theme",
+            "drivers.wled.known_ips",
+        ] {
+            assert!(
+                live_sections_for(Some(key)).is_empty(),
+                "{key} should not dispatch a live section"
+            );
+        }
+    }
+
+    #[test]
+    fn writing_a_section_carries_the_live_keys_nested_under_it() {
+        // The exact render overrides live under a Restart-classified
+        // section, so a whole-section write still retunes the loop.
+        let daemon = live_sections_for(Some("daemon"));
+        assert!(daemon.render);
+        assert!(!daemon.audio);
+        assert!(write_covers(Some("daemon"), "daemon.target_fps"));
+        assert!(!write_covers(Some("daemon.port"), "daemon.target_fps"));
+        assert!(write_covers(None, "daemon.canvas_width"));
+    }
+
+    #[test]
+    fn a_whole_config_write_touches_every_live_section() {
+        let sections = live_sections_for(None);
+        assert!(sections.audio);
+        assert!(sections.capture);
+        assert!(sections.input);
+        // The regression this fixes: the old hand predicate matched
+        // three exact keys and ignored the whole-config case, so a full
+        // reset persisted a new target FPS without ever retuning.
+        assert!(sections.render);
+    }
+
+    #[test]
+    fn read_surfaces_mask_secret_namespaces_and_leave_plain_keys_alone() {
+        let document = serde_json::json!({
+            "audio": { "device": "default" },
+            "drivers": {
+                "wled": { "enabled": true, "known_ips": ["192.168.1.50"] },
+            },
+            "cloud": { "api_key": "secret" },
+        });
+
+        let redacted = super::redact_document(document);
+
+        assert_eq!(redacted["audio"]["device"], serde_json::json!("default"));
+        assert_eq!(
+            redacted["drivers"]["wled"],
+            serde_json::json!({ "redacted": true })
+        );
+        assert_eq!(redacted["cloud"], serde_json::json!({ "redacted": true }));
+    }
+
+    #[test]
+    fn a_masked_document_still_parses_as_a_config() {
+        // Clients type this response as the config struct, so the mask
+        // has to keep the document readable rather than break the read
+        // surface it protects.
+        let mut config = hypercolor_types::config::HypercolorConfig::default();
+        config.drivers.insert(
+            "wled".to_owned(),
+            hypercolor_types::config::DriverConfigEntry::enabled(
+                [("known_ips".to_owned(), serde_json::json!(["192.168.1.50"]))]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        config
+            .extensions
+            .insert("cloud".to_owned(), serde_json::json!({ "token": "secret" }));
+
+        let document =
+            super::redact_document(serde_json::to_value(&config).expect("config projects to JSON"));
+        let parsed: hypercolor_types::config::HypercolorConfig =
+            serde_json::from_value(document).expect("a masked config still deserializes");
+
+        assert!(parsed.drivers.contains_key("wled"));
+        assert_eq!(
+            parsed.drivers["wled"].settings.get("known_ips"),
+            None,
+            "the masked entry keeps its name and drops its settings"
+        );
+        assert_eq!(parsed.daemon.port, config.daemon.port);
+    }
+
+    #[test]
+    fn key_reads_mask_at_every_depth_of_a_secret_namespace() {
+        assert_eq!(
+            super::redact_key("drivers.wled.known_ips", serde_json::json!(["10.0.0.1"])),
+            serde_json::json!({ "redacted": true })
+        );
+        assert_eq!(
+            super::redact_key("drivers.wled", serde_json::json!({ "enabled": true })),
+            serde_json::json!({ "redacted": true })
+        );
+        assert_eq!(
+            super::redact_key(
+                "drivers",
+                serde_json::json!({ "wled": { "enabled": true }, "hue": {} })
+            ),
+            serde_json::json!({ "wled": { "redacted": true }, "hue": { "redacted": true } })
+        );
+        assert_eq!(
+            super::redact_key("daemon.port", serde_json::json!(9420)),
+            serde_json::json!(9420)
+        );
+    }
+
+    #[test]
     fn canvas_dimensions_differ_only_when_size_changes() {
         assert!(!canvas_dimensions_differ(800, 600, 800, 600));
         assert!(canvas_dimensions_differ(800, 600, 801, 600));
@@ -1386,13 +1757,13 @@ mod tests {
         let graph_generation = state.input_manager.lock().await.source_graph_generation();
 
         manager.modify(|config| config.input.daemon_route = InteractionRoutePolicy::Merge);
-        assert!(maybe_apply_input_config_change(&state, Some("input.daemon_route")).await);
+        assert!(apply_input_config_change(&state, Some("input.daemon_route")).await);
         let first = state.interaction_routing.snapshot();
         assert_eq!(first.daemon_policy, InteractionRoutePolicy::Merge);
         assert_eq!(first.config_generation, 2);
 
         manager.modify(|config| config.input.preview_route = InteractionRoutePolicy::Host);
-        assert!(maybe_apply_input_config_change(&state, Some("input.preview_route")).await);
+        assert!(apply_input_config_change(&state, Some("input.preview_route")).await);
         let second = state.interaction_routing.snapshot();
         assert_eq!(second.preview_policy, InteractionRoutePolicy::Host);
         assert_eq!(second.config_generation, 3);
@@ -1704,13 +2075,11 @@ mod tests {
             input_manager.add_source(extra);
         }
 
-        let response = set_config_value(
+        let response = put_config_key(
             axum::extract::State(Arc::clone(&state)),
-            axum::Json(SetConfigRequest {
-                key: "capture.enabled".to_owned(),
-                value: "false".to_owned(),
-                live: None,
-            }),
+            axum::extract::Path("capture.enabled".to_owned()),
+            axum::extract::Query(ConfigApplyQuery { live: true }),
+            axum::Json(serde_json::json!(false)),
         )
         .await;
 
@@ -1745,13 +2114,11 @@ mod tests {
         let request_state = Arc::clone(&state);
         let unchanged_fps = initial.capture.capture_fps;
         let request = tokio::spawn(async move {
-            set_config_value(
+            put_config_key(
                 axum::extract::State(request_state),
-                axum::Json(SetConfigRequest {
-                    key: "capture.capture_fps".to_owned(),
-                    value: unchanged_fps.to_string(),
-                    live: None,
-                }),
+                axum::extract::Path("capture.capture_fps".to_owned()),
+                axum::extract::Query(ConfigApplyQuery { live: true }),
+                axum::Json(serde_json::json!(unchanged_fps)),
             )
             .await
         });

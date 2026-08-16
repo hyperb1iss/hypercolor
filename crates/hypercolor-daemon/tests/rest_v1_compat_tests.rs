@@ -793,45 +793,74 @@ async fn legacy_scene_groups_layer_paths_stay_routed() {
 }
 
 #[tokio::test]
-async fn legacy_config_get_path_keeps_its_key_value_body() {
+async fn config_key_reads_keep_their_key_value_body() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
-    let response = send(&app, get("/api/v1/config/get?key=daemon.port")).await;
+    let response = send(&app, get("/api/v1/config/keys/daemon.port")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_envelope(&json);
-    assert_keys(&json["data"], &["key", "value"], "legacy /config/get body");
+    assert_keys(&json["data"], &["key", "value"], "config key read body");
     assert_eq!(json["data"]["key"], json!("daemon.port"));
 }
 
 #[tokio::test]
-async fn legacy_config_get_path_reports_unknown_keys_through_the_error_envelope() {
+async fn config_key_reads_report_unknown_keys_through_the_error_envelope() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
-    let response = send(&app, get("/api/v1/config/get?key=nope.not.a.key")).await;
+    let response = send(&app, get("/api/v1/config/keys/nope.not.a.key")).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_error_envelope(&body_json(response).await, "not_found");
 }
 
 #[tokio::test]
-async fn legacy_config_set_path_stays_routed() {
+async fn config_schema_is_served_as_a_list_of_entries() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
-    // Without a live `ConfigManager` this state cannot persist, and the frozen
-    // behavior of that case is a 500 through the standard error envelope
-    // rather than a routing failure.
+    let response = send(&app, get("/api/v1/config/schema")).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_envelope(&json);
+    let entries = json["data"].as_array().expect("schema is a list");
+    assert_keys(
+        &entries[0],
+        &["pattern", "apply", "redaction", "has_validator"],
+        "config schema entry",
+    );
+}
+
+#[tokio::test]
+async fn config_key_writes_take_the_value_as_the_body() {
+    let (state, _tmp) = isolated_state();
+    let app = test_app(&state);
+
+    // Without a live `ConfigManager` this state cannot persist, and the
+    // frozen behavior of that case is a 500 through the standard error
+    // envelope rather than a routing failure.
     let response = send(
         &app,
-        json_request(
-            "POST",
-            "/api/v1/config/set",
-            &json!({ "key": "daemon.port", "value": "9420" }),
-        ),
+        json_request("PUT", "/api/v1/config/keys/daemon.port", &json!(9420)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_error_envelope(&body_json(response).await, "internal_error");
+}
+
+#[tokio::test]
+async fn config_key_deletes_reset_one_key() {
+    let (state, _tmp) = isolated_state();
+    let app = test_app(&state);
+
+    let response = send(
+        &app,
+        empty_request("DELETE", "/api/v1/config/keys/daemon.port"),
     )
     .await;
 
