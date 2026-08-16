@@ -19,30 +19,53 @@ interface PreludeFunction {
     source: string
 }
 
+/**
+ * Index just past the `)` closing the parameter list that opens at `open`,
+ * or `-1` if it never closes.
+ */
+function closingParen(source: string, open: number): number {
+    let depth = 0
+    for (let index = open; index < source.length; index++) {
+        if (source[index] === '(') depth++
+        else if (source[index] === ')') {
+            depth--
+            if (depth === 0) return index + 1
+        }
+    }
+    return -1
+}
+
+/** Index just past the `}` closing the block that opens at `open`. */
+function closingBrace(source: string, open: number): number {
+    let depth = 0
+    for (let index = open; index < source.length; index++) {
+        if (source[index] === '{') depth++
+        else if (source[index] === '}') {
+            depth--
+            if (depth === 0) return index + 1
+        }
+    }
+    return -1
+}
+
 /** Split a GLSL source into its top-level function definitions. */
 function parseFunctions(source: string): PreludeFunction[] {
     // Built per call: the scan drives lastIndex to skip over function bodies,
     // so a shared instance would carry one parse's cursor into the next.
-    const head = /^([a-zA-Z_]\w*)[ \t]+([a-zA-Z_]\w*)[ \t]*\(/gm
+    // A return type may carry a precision qualifier, and GLSL lets any of the
+    // tokens sit on separate lines.
+    const head = /^(?:(?:lowp|mediump|highp)\s+)?[a-zA-Z_]\w*\s+([a-zA-Z_]\w*)\s*\(/gm
     const functions: PreludeFunction[] = []
     let match = head.exec(source)
     while (match !== null) {
-        const open = source.indexOf('{', match.index)
-        if (open !== -1) {
-            let depth = 0
-            let end = -1
-            for (let index = open; index < source.length; index++) {
-                if (source[index] === '{') depth++
-                else if (source[index] === '}') {
-                    depth--
-                    if (depth === 0) {
-                        end = index + 1
-                        break
-                    }
-                }
-            }
+        const paramsEnd = closingParen(source, source.indexOf('(', match.index))
+        // Only a body makes it a definition. A prototype ends in `;`, and a
+        // bare call at column zero would otherwise read as one.
+        const body = paramsEnd === -1 ? -1 : source.slice(paramsEnd).search(/\S/)
+        if (body !== -1 && source[paramsEnd + body] === '{') {
+            const end = closingBrace(source, paramsEnd + body)
             if (end !== -1) {
-                functions.push({ name: match[2], source: source.slice(match.index, end) })
+                functions.push({ name: match[1], source: source.slice(match.index, end) })
                 head.lastIndex = end
             }
         }

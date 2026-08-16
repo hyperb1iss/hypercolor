@@ -17,6 +17,29 @@ describe('prelude selection', () => {
         expect(names(shader)).toEqual([])
     })
 
+    test('skips a definition carrying a precision qualifier', () => {
+        for (const qualifier of ['lowp', 'mediump', 'highp']) {
+            const shader = `${HEADER}${qualifier} vec3 hsv2rgb(vec3 c) {\n    return c;\n}\nvoid main() { hsv2rgb(vec3(0.5)); }`
+            expect(names(shader)).toEqual([])
+            expect(injectColorPrelude(shader).split(/\bvec3\s+hsv2rgb\s*\(/)).toHaveLength(2)
+        }
+    })
+
+    test('skips a definition whose tokens straddle lines', () => {
+        const shader = `${HEADER}vec3\nhsv2rgb(vec3 c)\n{\n    return c;\n}\nvoid main() { hsv2rgb(vec3(0.5)); }`
+        expect(names(shader)).toEqual([])
+    })
+
+    test('a call at column zero is a call, not a definition', () => {
+        const shader = `${HEADER}void main() {\nvec3 x = hsv2rgb(vec3(0.5));\n}`
+        expect(names(shader)).toEqual(['hsv2rgb'])
+    })
+
+    test('a prototype alone does not count as a definition', () => {
+        const shader = `${HEADER}vec3 hsv2rgb(vec3 c);\nvoid main() { hsv2rgb(vec3(0.5)); }`
+        expect(names(shader)).toEqual(['hsv2rgb'])
+    })
+
     test('keeps a local override and still supplies what it calls', () => {
         const shader = `${HEADER}vec3 saturateColor(vec3 c, float f) {\n    return hsv2rgb(rgb2hsv(c) * f);\n}\nvoid main() { saturateColor(vec3(1.0), 2.0); }`
         expect(names(shader)).toEqual(['hsv2rgb', 'rgb2hsv'])
