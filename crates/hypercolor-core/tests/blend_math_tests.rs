@@ -1,15 +1,15 @@
 use hypercolor_core::blend_math::{RgbaBlendMode, blend_rgba_pixel, blend_rgba_pixels_in_place};
-use hypercolor_types::canvas::{BlendMode, Rgba, RgbaF32};
+use hypercolor_types::canvas::{BlendMode, LinearRgba, Rgba};
 
 fn expected_blend(dst: Rgba, src: Rgba, mode: BlendMode, opacity: f32) -> [u8; 4] {
-    let dst = dst.to_linear_f32();
-    let src = src.to_linear_f32();
+    let dst = dst.to_linear();
+    let src = src.to_linear();
     let blended = mode.blend(
         [dst.r, dst.g, dst.b, dst.a],
         [src.r, src.g, src.b, src.a],
         opacity,
     );
-    let pixel = RgbaF32::new(blended[0], blended[1], blended[2], blended[3]).to_srgba();
+    let pixel = LinearRgba::new(blended[0], blended[1], blended[2], blended[3]).to_encoded();
     [pixel.r, pixel.g, pixel.b, pixel.a]
 }
 

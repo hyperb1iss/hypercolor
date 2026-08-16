@@ -2,7 +2,7 @@ use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
     screen_blend,
 };
-use hypercolor_core::types::canvas::{BlendMode, Canvas, PublishedSurface, Rgba, RgbaF32};
+use hypercolor_core::types::canvas::{BlendMode, Canvas, LinearRgba, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::scene::DisplayFaceBlendMode;
 use hypercolor_types::spatial::NormalizedPosition;
@@ -88,14 +88,14 @@ fn compose_transformed_source(source: Canvas, width: u32, height: u32, fit: FitM
 }
 
 fn expected_blend(dst: Rgba, src: Rgba, mode: BlendMode, opacity: f32) -> Rgba {
-    let dst = dst.to_linear_f32();
-    let src = src.to_linear_f32();
+    let dst = dst.to_linear();
+    let src = src.to_linear();
     let blended = mode.blend(
         [dst.r, dst.g, dst.b, dst.a],
         [src.r, src.g, src.b, src.a],
         opacity,
     );
-    RgbaF32::new(blended[0], blended[1], blended[2], blended[3]).to_srgba()
+    LinearRgba::new(blended[0], blended[1], blended[2], blended[3]).to_encoded()
 }
 
 fn patterned_surface(seed: u8) -> PublishedSurface {

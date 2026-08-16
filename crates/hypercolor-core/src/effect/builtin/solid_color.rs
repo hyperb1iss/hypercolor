@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
 };
@@ -129,8 +129,8 @@ impl EffectRenderer for SolidColorRenderer {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         let width = input.canvas_width.max(1) as f32;
         let height = input.canvas_height.max(1) as f32;
-        let primary = RgbaF32::new(self.color[0], self.color[1], self.color[2], self.color[3]);
-        let secondary = RgbaF32::new(
+        let primary = LinearRgba::new(self.color[0], self.color[1], self.color[2], self.color[3]);
+        let secondary = LinearRgba::new(
             self.secondary_color[0],
             self.secondary_color[1],
             self.secondary_color[2],
@@ -142,7 +142,7 @@ impl EffectRenderer for SolidColorRenderer {
             pixel.r *= self.brightness;
             pixel.g *= self.brightness;
             pixel.b *= self.brightness;
-            canvas.fill(pixel.to_srgba());
+            canvas.fill(pixel.to_encoded());
             return Ok(());
         }
 
@@ -160,7 +160,7 @@ impl EffectRenderer for SolidColorRenderer {
             for (x, pixel_bytes) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
                 let nx = (x as f32 + 0.5) / width;
                 let mix = self.pattern_mix(nx, ny, width, height);
-                let mut pixel = RgbaF32::lerp(&primary, &secondary, mix);
+                let mut pixel = primary.lerp(secondary, mix);
                 pixel.r *= self.brightness;
                 pixel.g *= self.brightness;
                 pixel.b *= self.brightness;

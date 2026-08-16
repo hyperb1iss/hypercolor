@@ -1,223 +1,144 @@
-//! Comprehensive tests for canvas, color, blend mode, and color space types.
+//! Tests for the canvas surface, its pooling, the authored blend modes,
+//! and the canvas-facing re-export of the color kernel.
+//!
+//! Color math itself is tested in `hypercolor-color`. What is tested
+//! here is that canvas's public paths still resolve to the kernel's
+//! types and that their serialized shapes did not move.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hypercolor_types::canvas::{
-    BYTES_PER_PIXEL, BlendMode, Canvas, ColorFormat, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH,
-    Oklab, Oklch, PublishedSurface, RenderSurfacePool, Rgb, Rgba, RgbaF32, SamplingMethod,
-    SurfaceDescriptor, SurfaceResourceError, SurfaceState, linear_srgb_to_oklab, linear_to_srgb,
-    oklab_to_linear_srgb, srgb_to_linear,
+    BYTES_PER_PIXEL, BlendMode, Canvas, Color, ColorFormat, DEFAULT_CANVAS_HEIGHT,
+    DEFAULT_CANVAS_WIDTH, LinearRgba, Oklab, Oklch, PublishedSurface, RenderSurfacePool, Rgb, Rgba,
+    SamplingMethod, SurfaceDescriptor, SurfaceResourceError, SurfaceState, linear_to_srgb,
+    srgb_to_linear,
 };
 
-// ── Rgba ───────────────────────────────────────────────────────────────────
+// ── Kernel re-export identity ──────────────────────────────────────────────
+
+/// The canvas paths are the kernel's types, not copies of them. Each
+/// assignment below fails to compile if the identity is ever broken by a
+/// re-introduced local definition.
+#[test]
+fn canvas_color_paths_are_the_kernel_types() {
+    let rgb: hypercolor_color::Rgb = Rgb::new(1, 2, 3);
+    let rgba: hypercolor_color::Rgba = Rgba::new(1, 2, 3, 4);
+    let linear: hypercolor_color::LinearRgba = LinearRgba::new(0.1, 0.2, 0.3, 0.4);
+    let color: Color = linear;
+    let lab: hypercolor_color::Oklab = Oklab::new(0.5, 0.0, 0.0, 1.0);
+    let lch: hypercolor_color::Oklch = Oklch::new(0.5, 0.1, 90.0, 1.0);
+
+    assert_eq!(rgb, hypercolor_color::Rgb::new(1, 2, 3));
+    assert_eq!(rgba, hypercolor_color::Rgba::new(1, 2, 3, 4));
+    assert_eq!(color, linear);
+    assert_eq!(lab.l, 0.5);
+    assert_eq!(lch.h, 90.0);
+}
+
+/// The transfer functions and LUT entry points keep their canvas paths.
+#[test]
+fn canvas_transfer_paths_still_resolve() {
+    use hypercolor_types::canvas::{
+        linear_to_output_u8, linear_to_srgb, linear_to_srgb_u8, srgb_to_linear, srgb_u8_to_linear,
+    };
+
+    assert_eq!(srgb_u8_to_linear(0), 0.0);
+    assert_eq!(linear_to_srgb_u8(1.0), 255);
+    assert_eq!(linear_to_output_u8(1.0), 255);
+    assert!((linear_to_srgb(srgb_to_linear(0.5)) - 0.5).abs() < 0.001);
+}
+
+// ── Serialized shape stability ─────────────────────────────────────────────
+
+/// Byte colors serialize as struct maps with `r`/`g`/`b`/`a` keys. The
+/// kernel gates serde behind a feature while canvas derived it
+/// unconditionally, so this pins the shape across the swap. Persisted
+/// scenes, profiles, and presets read these bytes.
+#[test]
+fn byte_color_json_shape_is_unchanged() {
+    let rgba = Rgba::new(42, 128, 255, 200);
+    assert_eq!(
+        serde_json::to_string(&rgba).expect("serialize"),
+        r#"{"r":42,"g":128,"b":255,"a":200}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Rgba>(r#"{"r":42,"g":128,"b":255,"a":200}"#).expect("deserialize"),
+        rgba
+    );
+
+    let rgb = Rgb::new(7, 8, 9);
+    assert_eq!(
+        serde_json::to_string(&rgb).expect("serialize"),
+        r#"{"r":7,"g":8,"b":9}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Rgb>(r#"{"r":7,"g":8,"b":9}"#).expect("deserialize"),
+        rgb
+    );
+}
+
+/// The float color keeps its `r`/`g`/`b`/`a` map under both its
+/// canonical name and the canvas `Color` alias.
+#[test]
+fn linear_color_json_shape_is_unchanged() {
+    let linear = LinearRgba::new(0.25, 0.5, 0.75, 1.0);
+    let json = serde_json::to_string(&linear).expect("serialize");
+    assert_eq!(json, r#"{"r":0.25,"g":0.5,"b":0.75,"a":1.0}"#);
+    assert_eq!(
+        serde_json::from_str::<Color>(&json).expect("deserialize"),
+        linear
+    );
+}
+
+/// The perceptual types keep their alpha-bearing field names.
+#[test]
+fn perceptual_color_json_shape_is_unchanged() {
+    let lab = Oklab::new(0.5, 0.1, -0.2, 0.75);
+    assert_eq!(
+        serde_json::to_string(&lab).expect("serialize"),
+        r#"{"l":0.5,"a":0.1,"b":-0.2,"alpha":0.75}"#
+    );
+
+    let lch = Oklch::new(0.65, 0.2, 180.0, 0.95);
+    assert_eq!(
+        serde_json::to_string(&lch).expect("serialize"),
+        r#"{"l":0.65,"c":0.2,"h":180.0,"alpha":0.95}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Oklch>(r#"{"l":0.65,"c":0.2,"h":180.0,"alpha":0.95}"#)
+            .expect("deserialize"),
+        lch
+    );
+}
+
+// ── Canvas-facing color constants ──────────────────────────────────────────
 
 #[test]
-fn rgba_constants() {
+fn rgba_constants_and_default() {
     assert_eq!(Rgba::BLACK, Rgba::new(0, 0, 0, 255));
     assert_eq!(Rgba::WHITE, Rgba::new(255, 255, 255, 255));
     assert_eq!(Rgba::TRANSPARENT, Rgba::new(0, 0, 0, 0));
-}
-
-#[test]
-fn rgba_default_is_black() {
     assert_eq!(Rgba::default(), Rgba::BLACK);
+    assert_eq!(Rgb::default(), Rgb::new(0, 0, 0));
 }
 
 #[test]
-fn rgba_to_f32_roundtrip() {
-    let original = Rgba::new(128, 64, 200, 255);
-    let float = original.to_f32();
-    let back = float.to_rgba();
-    assert_eq!(original, back);
+fn byte_color_promotion_and_demotion() {
+    assert_eq!(
+        Rgb::new(100, 150, 200).to_rgba(),
+        Rgba::new(100, 150, 200, 255)
+    );
+    assert_eq!(
+        Rgba::new(100, 150, 200, 128).to_rgb(),
+        Rgb::new(100, 150, 200)
+    );
 }
 
 #[test]
-fn rgba_to_linear_f32_decodes_srgb() {
-    let encoded = Rgba::new(128, 64, 200, 255);
-    let linear = encoded.to_linear_f32();
-
-    assert!((linear.r - srgb_to_linear(128.0 / 255.0)).abs() < 0.0001);
-    assert!((linear.g - srgb_to_linear(64.0 / 255.0)).abs() < 0.0001);
-    assert!((linear.b - srgb_to_linear(200.0 / 255.0)).abs() < 0.0001);
-    assert!((linear.a - 1.0).abs() < f32::EPSILON);
-}
-
-#[test]
-fn rgba_to_f32_boundaries() {
-    let black = Rgba::BLACK.to_f32();
-    assert!((black.r).abs() < f32::EPSILON);
-    assert!((black.g).abs() < f32::EPSILON);
-    assert!((black.b).abs() < f32::EPSILON);
-    assert!((black.a - 1.0).abs() < f32::EPSILON);
-
-    let white = Rgba::WHITE.to_f32();
-    assert!((white.r - 1.0).abs() < f32::EPSILON);
-    assert!((white.g - 1.0).abs() < f32::EPSILON);
-    assert!((white.b - 1.0).abs() < f32::EPSILON);
-}
-
-#[test]
-fn rgba_to_rgb() {
-    let pixel = Rgba::new(100, 150, 200, 128);
-    let rgb = pixel.to_rgb();
-    assert_eq!(rgb, Rgb::new(100, 150, 200));
-}
-
-#[test]
-fn rgba_serde_roundtrip() {
-    let color = Rgba::new(42, 128, 255, 200);
-    let json = serde_json::to_string(&color).expect("serialize");
-    let back: Rgba = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(color, back);
-}
-
-// ── Rgb ────────────────────────────────────────────────────────────────────
-
-#[test]
-fn rgb_to_rgba() {
-    let rgb = Rgb::new(100, 150, 200);
-    let rgba = rgb.to_rgba();
-    assert_eq!(rgba, Rgba::new(100, 150, 200, 255));
-}
-
-#[test]
-fn rgb_default_is_zero() {
-    let d = Rgb::default();
-    assert_eq!(d, Rgb::new(0, 0, 0));
-}
-
-// ── RgbaF32 / Color ────────────────────────────────────────────────────────
-
-#[test]
-fn rgbaf32_default_is_opaque_black() {
-    let c = RgbaF32::default();
-    assert!((c.r).abs() < f32::EPSILON);
-    assert!((c.g).abs() < f32::EPSILON);
-    assert!((c.b).abs() < f32::EPSILON);
-    assert!((c.a - 1.0).abs() < f32::EPSILON);
-}
-
-#[test]
-fn rgbaf32_lerp_midpoint() {
-    let a = RgbaF32::new(0.0, 0.0, 0.0, 1.0);
-    let b = RgbaF32::new(1.0, 1.0, 1.0, 1.0);
-    let mid = RgbaF32::lerp(&a, &b, 0.5);
-    assert!((mid.r - 0.5).abs() < f32::EPSILON);
-    assert!((mid.g - 0.5).abs() < f32::EPSILON);
-    assert!((mid.b - 0.5).abs() < f32::EPSILON);
-}
-
-#[test]
-fn rgbaf32_lerp_endpoints() {
-    let a = RgbaF32::new(0.2, 0.4, 0.6, 0.8);
-    let b = RgbaF32::new(0.8, 0.6, 0.4, 0.2);
-
-    let at_zero = RgbaF32::lerp(&a, &b, 0.0);
-    assert!((at_zero.r - a.r).abs() < f32::EPSILON);
-
-    let at_one = RgbaF32::lerp(&a, &b, 1.0);
-    assert!((at_one.r - b.r).abs() < f32::EPSILON);
-}
-
-#[test]
-fn rgbaf32_to_rgba_clamps() {
-    let oob = RgbaF32::new(1.5, -0.5, 0.5, 2.0);
-    let clamped = oob.to_rgba();
-    assert_eq!(clamped.r, 255);
-    assert_eq!(clamped.g, 0);
-    assert_eq!(clamped.b, 127); // 0.5 * 255.0 = 127.5, truncated to 127 by `as u8`
-    assert_eq!(clamped.a, 255);
-}
-
-#[test]
-fn rgbaf32_serde_roundtrip() {
-    let color = RgbaF32::new(0.123, 0.456, 0.789, 1.0);
-    let json = serde_json::to_string(&color).expect("serialize");
-    let back: RgbaF32 = serde_json::from_str(&json).expect("deserialize");
-    assert!((color.r - back.r).abs() < f32::EPSILON);
-    assert!((color.g - back.g).abs() < f32::EPSILON);
-    assert!((color.b - back.b).abs() < f32::EPSILON);
-}
-
-// ── sRGB Transfer Functions ────────────────────────────────────────────────
-
-#[test]
-fn srgb_roundtrip() {
-    for i in 0..=255u16 {
-        let srgb = f32::from(i) / 255.0;
-        let linear = srgb_to_linear(srgb);
-        let back = linear_to_srgb(linear);
-        assert!(
-            (srgb - back).abs() < 0.002,
-            "sRGB roundtrip failed for {i}/255: {srgb} -> {linear} -> {back}"
-        );
-    }
-}
-
-#[test]
-fn srgb_boundaries() {
-    assert!((srgb_to_linear(0.0)).abs() < f32::EPSILON);
-    assert!((srgb_to_linear(1.0) - 1.0).abs() < 0.001);
-    assert!((linear_to_srgb(0.0)).abs() < f32::EPSILON);
-    assert!((linear_to_srgb(1.0) - 1.0).abs() < 0.001);
-}
-
-#[test]
-fn srgb_midpoint_is_darker_linearly() {
-    // sRGB 0.5 should map to a linear value less than 0.5
-    // (gamma encoding makes midtones brighter in sRGB)
-    let linear = srgb_to_linear(0.5);
-    assert!(linear < 0.5, "sRGB 0.5 should be < 0.5 in linear: {linear}");
-    assert!(linear > 0.1, "sRGB 0.5 should be > 0.1 in linear: {linear}");
-}
-
-#[test]
-fn from_srgb_u8_and_to_srgb_u8_roundtrip() {
-    let color = RgbaF32::from_srgb_u8(128, 64, 200, 255);
-    let bytes = color.to_srgb_u8();
-    // Allow +-1 for rounding
-    assert!((i16::from(bytes[0]) - 128).unsigned_abs() <= 1);
-    assert!((i16::from(bytes[1]) - 64).unsigned_abs() <= 1);
-    assert!((i16::from(bytes[2]) - 200).unsigned_abs() <= 1);
-    assert_eq!(bytes[3], 255);
-}
-
-#[test]
-fn from_srgb_u8_and_to_srgba_roundtrip() {
-    let color = RgbaF32::from_srgb_u8(128, 64, 200, 255);
-    let rgba = color.to_srgba();
-    assert!((i16::from(rgba.r) - 128).unsigned_abs() <= 1);
-    assert!((i16::from(rgba.g) - 64).unsigned_abs() <= 1);
-    assert!((i16::from(rgba.b) - 200).unsigned_abs() <= 1);
-    assert_eq!(rgba.a, 255);
-}
-
-#[test]
-fn srgb_u8_linear_lut_roundtrip_holds_across_every_byte() {
-    // Every u8 sRGB value should survive a lossy linear round-trip through
-    // the LUTs within 1 LSB. Guards against accidentally shrinking the
-    // linear→srgb table below the resolution needed to recover the input.
-    for byte in 0_u8..=255 {
-        let rgba = RgbaF32::from_srgb_u8(byte, byte, byte, 255);
-        let out = rgba.to_srgb_u8();
-        assert!(
-            i16::from(out[0]).abs_diff(i16::from(byte)) <= 1,
-            "byte {byte} roundtripped to {out:?}"
-        );
-    }
-}
-
-#[test]
-fn linear_to_srgb_u8_clamps_out_of_range_inputs() {
-    use hypercolor_types::canvas::linear_to_srgb_u8;
-
-    // Below zero and NaN collapse to 0; above 1 saturates to 255.
-    assert_eq!(linear_to_srgb_u8(-1.0), 0);
-    assert_eq!(linear_to_srgb_u8(f32::NAN), 0);
-    assert_eq!(linear_to_srgb_u8(0.0), 0);
-    assert_eq!(linear_to_srgb_u8(1.0), 255);
-    assert_eq!(linear_to_srgb_u8(5.0), 255);
+fn linear_color_default_is_opaque_black() {
+    let c = Color::default();
+    assert_eq!(c, LinearRgba::new(0.0, 0.0, 0.0, 1.0));
 }
 
 // ── Canvas Construction ────────────────────────────────────────────────────
@@ -1245,15 +1166,65 @@ fn blend_mode_serde_snake_case() {
     assert_eq!(json, "\"color_dodge\"");
 }
 
-// ── RgbaF32 blend method ──────────────────────────────────────────────────
+// ── Blend delegation ───────────────────────────────────────────────────────
+
+/// `BlendMode::blend` takes `(dst, src)` while the kernel's `blend_over`
+/// takes the source as its receiver. Every mode is checked against the
+/// kernel called with the orientation spelled out, so a swapped
+/// delegation fails here instead of silently recoloring frames.
+#[test]
+fn blend_delegation_preserves_source_over_destination_orientation() {
+    let dst = [0.25_f32, 0.6, 0.9, 0.8];
+    let src = [0.7_f32, 0.2, 0.45, 0.6];
+    let modes = [
+        BlendMode::Normal,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::Multiply,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::ColorDodge,
+        BlendMode::Difference,
+    ];
+
+    for opacity in [0.0_f32, 0.35, 1.0] {
+        for mode in modes {
+            let source = LinearRgba::new(src[0], src[1], src[2], src[3]);
+            let destination = LinearRgba::new(dst[0], dst[1], dst[2], dst[3]);
+            let expected = source.blend_over(destination, mode.pixel_mode(), opacity);
+            assert_eq!(
+                mode.blend(dst, src, opacity),
+                [expected.r, expected.g, expected.b, expected.a],
+                "{mode:?} at opacity {opacity}"
+            );
+        }
+    }
+}
+
+/// Asymmetric modes prove the orientation empirically: blending a bright
+/// source over a dark destination must not equal the reverse.
+#[test]
+fn asymmetric_blend_modes_are_orientation_sensitive() {
+    let dark = [0.1_f32, 0.1, 0.1, 1.0];
+    let bright = [0.9_f32, 0.8, 0.7, 1.0];
+    for mode in [
+        BlendMode::ColorDodge,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+    ] {
+        assert_ne!(
+            mode.blend(dark, bright, 1.0),
+            mode.blend(bright, dark, 1.0),
+            "{mode:?} lost its orientation"
+        );
+    }
+}
 
 #[test]
-fn rgbaf32_blend_method() {
-    let src = RgbaF32::new(1.0, 0.0, 0.0, 1.0);
-    let dst = RgbaF32::new(0.0, 0.0, 1.0, 1.0);
-    let result = src.blend(dst, BlendMode::Add, 1.0);
-    assert!((result.r - 1.0).abs() < 0.01);
-    assert!((result.b - 1.0).abs() < 0.01);
+fn additive_blend_saturates_both_contributing_channels() {
+    let result = BlendMode::Add.blend([0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0], 1.0);
+    assert!((result[0] - 1.0).abs() < 0.01);
+    assert!((result[2] - 1.0).abs() < 0.01);
 }
 
 // ── ColorFormat ────────────────────────────────────────────────────────────
@@ -1284,190 +1255,6 @@ fn sampling_method_serde() {
     let json = serde_json::to_string(&area).expect("serialize");
     let back: SamplingMethod = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back, area);
-}
-
-// ── Oklab ──────────────────────────────────────────────────────────────────
-
-#[test]
-fn oklab_roundtrip_white() {
-    let white = RgbaF32::new(1.0, 1.0, 1.0, 1.0);
-    let lab = white.to_oklab();
-    let back = RgbaF32::from_oklab(lab);
-    assert!((back.r - 1.0).abs() < 0.01, "r = {}", back.r);
-    assert!((back.g - 1.0).abs() < 0.01, "g = {}", back.g);
-    assert!((back.b - 1.0).abs() < 0.01, "b = {}", back.b);
-}
-
-#[test]
-fn oklab_roundtrip_black() {
-    let black_rgb = RgbaF32::new(0.0, 0.0, 0.0, 1.0);
-    let lab = black_rgb.to_oklab();
-    assert!(lab.l.abs() < 0.01, "L should be ~0 for black: {}", lab.l);
-    let roundtrip = RgbaF32::from_oklab(lab);
-    assert!(roundtrip.r.abs() < 0.01);
-    assert!(roundtrip.g.abs() < 0.01);
-    assert!(roundtrip.b.abs() < 0.01);
-}
-
-#[test]
-fn oklab_roundtrip_colors() {
-    let colors = [
-        RgbaF32::new(1.0, 0.0, 0.0, 1.0), // red
-        RgbaF32::new(0.0, 1.0, 0.0, 1.0), // green
-        RgbaF32::new(0.0, 0.0, 1.0, 1.0), // blue
-        RgbaF32::new(0.5, 0.3, 0.7, 0.8), // arbitrary
-    ];
-    for color in &colors {
-        let lab = color.to_oklab();
-        let back = RgbaF32::from_oklab(lab);
-        assert!(
-            (color.r - back.r).abs() < 0.02,
-            "r mismatch: {} vs {}",
-            color.r,
-            back.r
-        );
-        assert!(
-            (color.g - back.g).abs() < 0.02,
-            "g mismatch: {} vs {}",
-            color.g,
-            back.g
-        );
-        assert!(
-            (color.b - back.b).abs() < 0.02,
-            "b mismatch: {} vs {}",
-            color.b,
-            back.b
-        );
-        assert!((color.a - back.a).abs() < f32::EPSILON, "alpha mismatch");
-    }
-}
-
-#[test]
-fn oklab_lerp_midpoint() {
-    let black = Oklab::new(0.0, 0.0, 0.0, 1.0);
-    let white = Oklab::new(1.0, 0.0, 0.0, 1.0);
-    let mid = black.lerp(white, 0.5);
-    assert!((mid.l - 0.5).abs() < f32::EPSILON);
-}
-
-#[test]
-fn oklab_preserves_alpha() {
-    let color = RgbaF32::new(0.5, 0.3, 0.7, 0.42);
-    let lab = color.to_oklab();
-    assert!((lab.alpha - 0.42).abs() < f32::EPSILON);
-    let back = lab.to_linear_srgb();
-    assert!((back.a - 0.42).abs() < f32::EPSILON);
-}
-
-#[test]
-fn oklab_default() {
-    let d = Oklab::default();
-    assert!(d.l.abs() < f32::EPSILON);
-    assert!((d.alpha - 1.0).abs() < f32::EPSILON);
-}
-
-// ── Oklch ──────────────────────────────────────────────────────────────────
-
-#[test]
-fn oklch_roundtrip_via_oklab() {
-    let original = Oklch::new(0.7, 0.15, 120.0, 1.0);
-    let lab = original.to_oklab();
-    let back = lab.to_oklch();
-    assert!((original.l - back.l).abs() < 0.001);
-    assert!((original.c - back.c).abs() < 0.001);
-    assert!((original.h - back.h).abs() < 0.5);
-}
-
-#[test]
-fn oklch_to_linear_srgb_roundtrip() {
-    let lch = Oklch::new(0.6, 0.1, 240.0, 0.9);
-    let rgb = lch.to_linear_srgb();
-    let back_lch = rgb.to_oklch();
-    assert!((lch.l - back_lch.l).abs() < 0.02);
-    assert!((lch.c - back_lch.c).abs() < 0.02);
-}
-
-#[test]
-fn oklch_lerp_shortest_hue_path() {
-    // 350 -> 10 should go through 0, not 180
-    let a = Oklch::new(0.5, 0.1, 350.0, 1.0);
-    let b = Oklch::new(0.5, 0.1, 10.0, 1.0);
-    let mid = a.lerp(b, 0.5);
-    // Midpoint should be near 0/360, not near 180
-    assert!(
-        mid.h < 10.0 || mid.h > 350.0,
-        "hue should be near 0/360: {}",
-        mid.h
-    );
-}
-
-#[test]
-fn oklch_lerp_same_direction() {
-    let a = Oklch::new(0.5, 0.1, 30.0, 1.0);
-    let b = Oklch::new(0.5, 0.1, 60.0, 1.0);
-    let mid = a.lerp(b, 0.5);
-    assert!((mid.h - 45.0).abs() < 0.1);
-}
-
-#[test]
-fn oklch_default() {
-    let d = Oklch::default();
-    assert!(d.l.abs() < f32::EPSILON);
-    assert!(d.c.abs() < f32::EPSILON);
-    assert!(d.h.abs() < f32::EPSILON);
-    assert!((d.alpha - 1.0).abs() < f32::EPSILON);
-}
-
-#[test]
-fn oklch_serde_roundtrip() {
-    let lch = Oklch::new(0.65, 0.2, 180.0, 0.95);
-    let json = serde_json::to_string(&lch).expect("serialize");
-    let back: Oklch = serde_json::from_str(&json).expect("deserialize");
-    assert!((lch.l - back.l).abs() < f32::EPSILON);
-    assert!((lch.c - back.c).abs() < f32::EPSILON);
-    assert!((lch.h - back.h).abs() < f32::EPSILON);
-}
-
-// ── RgbaF32 color space convenience methods ────────────────────────────────
-
-#[test]
-fn rgbaf32_to_oklab_and_back() {
-    let color = RgbaF32::new(0.8, 0.2, 0.5, 1.0);
-    let lab = color.to_oklab();
-    let back = RgbaF32::from_oklab(lab);
-    assert!((color.r - back.r).abs() < 0.02);
-    assert!((color.g - back.g).abs() < 0.02);
-    assert!((color.b - back.b).abs() < 0.02);
-}
-
-#[test]
-fn rgbaf32_to_oklch_and_back() {
-    let color = RgbaF32::new(0.3, 0.6, 0.9, 1.0);
-    let lch = color.to_oklch();
-    let back = RgbaF32::from_oklch(lch);
-    assert!((color.r - back.r).abs() < 0.02);
-    assert!((color.g - back.g).abs() < 0.02);
-    assert!((color.b - back.b).abs() < 0.02);
-}
-
-// ── Standalone conversion functions ────────────────────────────────────────
-
-#[test]
-fn linear_srgb_to_oklab_known_values() {
-    // White should have L ~= 1.0, a ~= 0, b ~= 0
-    let white = linear_srgb_to_oklab(1.0, 1.0, 1.0, 1.0);
-    assert!((white.l - 1.0).abs() < 0.01);
-    assert!(white.a.abs() < 0.01);
-    assert!(white.b.abs() < 0.01);
-}
-
-#[test]
-fn oklab_to_linear_srgb_known_values() {
-    // L=0 should give black
-    let black = oklab_to_linear_srgb(Oklab::new(0.0, 0.0, 0.0, 1.0));
-    assert!(black.r.abs() < 0.01);
-    assert!(black.g.abs() < 0.01);
-    assert!(black.b.abs() < 0.01);
 }
 
 #[derive(Debug)]

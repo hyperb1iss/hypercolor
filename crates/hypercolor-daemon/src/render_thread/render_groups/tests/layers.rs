@@ -25,7 +25,7 @@ fn static_layer_surfaces_reuse_final_srgba_storage() {
         color_fill_frame(&mut cache, 3, 2, rgba).expect("static layer surface should allocate");
     let second =
         color_fill_frame(&mut cache, 3, 2, rgba).expect("static layer surface should allocate");
-    let expected = RgbaF32::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_srgba();
+    let expected = LinearRgba::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_encoded();
 
     assert_eq!(
         static_surface(&first).storage_identity(),
