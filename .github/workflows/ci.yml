@@ -138,6 +138,10 @@ jobs:
               - '.gitattributes'
               # Embedded with include_str! and asserted on by the HAL tests.
               - 'data/drivers/**'
+              # Embedded with include_str! by hypercolor-color's vector tests.
+              # Without this the Rust half of the cross-language color fence
+              # skips a pull request that only edits the shared table.
+              - 'sdk/shared/color-vectors.json'
             python:
               - 'python/**'
               - 'protocol/**'
