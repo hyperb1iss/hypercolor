@@ -579,75 +579,142 @@ not incidental praise:
 
 ---
 
-## 5. Sequencing 🦋
+## 5. Implementation plan and goal state 🦋
 
-Ordered by dependency, not just by wave; the cross-model round showed
-the original ordering hid prerequisites. PR #158 is in flight and owned
-by its own lane; the extractions get *cheaper* after it lands (the
-branch aligned the fold and capture surfaces), so nothing below races
-it.
+### Goal state
 
-**Wave 0, on PR #158 itself (in addition to doc 71's blockers):**
+When the build is done, all of the following hold, each checkable
+mechanically:
 
-1. Define the neutral seams the strip depends on FIRST: the rule-2
-   status envelope and the `ManagedSourceRole` storage shape (types
-   only, no engine work).
-2. Then strip `Macos*` from shared vocabulary (status, events,
-   `InputSource` verbs, unconditional deps) onto those seams.
+1. **Crate graph delta.** Added: `hypercolor-worker-retention` (leaf),
+   `hypercolor-gpu-frame` (the shared GPU frame vocabulary),
+   `hypercolor-pipewire-interop` (spec 74 wave 1). Deleted:
+   `hypercolor-tray` (per design 46). Every platform crate keeps its
+   role; no platform crate is a dependency of a neutral crate except
+   behind `[target.'cfg(target_os = ...)']`.
+2. **The cfg budget.** `grep -rl 'cfg(target_os' crates/hypercolor-core/src
+   crates/hypercolor-daemon/src` returns composition roots only
+   (`startup/services.rs`, source builders, supervisor construction,
+   plus their tests): at most ten files, from 43 today.
+3. **No platform nouns in shared code.** `grep -rn 'Macos\|Windows\|Linux'`
+   over `hypercolor-types/src`, `core/src/input/status.rs`, and
+   `core/src/input/traits.rs` hits only the rule-2 diagnostics envelope
+   and doc comments. The four `Macos*Owner` enums are collapsed onto
+   `ServiceIdentity`; `hypercolor-macos-owner` is a macOS-only
+   dependency.
+4. **No mirrored vocabulary.** Exactly one definition each of
+   `ImportedEffectFrame`, `ImportedFrameFormat`, `ImportedFrameTimings`,
+   `FrameOrigin`; the cfg re-export in `core/src/effect/traits.rs` is
+   gone; orientation and `content_generation` are frame data, and the
+   compositor's per-OS flip tables are deleted.
+5. **One engine per capability.** The §2 table is live: one
+   `ScreenCaptureAdapter<B>`, one `host_fold`, one supervisor with
+   `LauncherPlan` payloads and three tenants, one launchd adapter, one
+   `SessionMonitor` engine with Linux+Windows monitors (macOS monitor
+   scheduled), one path authority, one fs-hygiene home. Conformance
+   suites (fold, capture backend) run the same canonical streams
+   through every platform impl and assert identical outputs.
+6. **Adding platform N+1** to any capability = one seam impl + one
+   composition-root arm, zero edits to other platforms' files. This is
+   the review test for every package below.
+7. **Specs match the code.** Specs 71/72/74/76 and designs 25/46 are
+   amended where §1 caught them ratifying the old shape, in the same PR
+   as the code that changes the shape.
+
+### Execution model
+
+Three tiers, fixed responsibilities:
+
+- **Fable (orchestrator, this session and its successors):** owns this
+  plan, writes each worker brief (scope, files, acceptance criteria,
+  no-touch zones, verbatim excerpts of the relevant §2 contract),
+  gates dependencies between packages, reviews every package PR
+  adversarially with receipts, and runs final validation per phase
+  (goal-state greps, `just verify`, `cargo check --workspace`, CI
+  matrix). Fable does not implement packages.
+- **Opus workers (one per package):** implement in a dedicated worktree
+  at `~/dev/worktrees/hypercolor/nova/<branch>` on branch
+  `nova/platform-<id>-<slug>`. Cadence per the implement skill: 2-3
+  edits then check, atomic conventional commits with bodies, `just
+  verify` green before every handoff. A worker owns only its package's
+  files; shared-file packages are serialized, never parallel.
+- **Codex (per-package reviewer):** every package gets a cross-model
+  review (scoped `codex review --base main` from the worktree) before
+  the PR is marked ready; NEEDS_CHANGES loops until PASS, findings
+  triaged not obeyed. Workers run it; Fable spot-checks the verdicts.
+
+Package gates, in order: worker self-verify (`just verify` +
+package-specific tests) → codex PASS recorded in the PR body → Fable
+review (including the cfg budget and platform-noun greps scoped to the
+diff) → merge. Phase gates: Phase A packages may merge to main
+immediately; Phase B does not start until PR #158 merges; each phase
+ends with Fable running the full goal-state checklist and recording
+results here.
+
+Coordination state lives in Sibyl: one epic for the build, one task per
+package, claimed `doing` at start, completed with learnings. Worker
+briefs point at this document section and the package row; nothing
+load-bearing lives only in a chat transcript.
+
+### Phase 0 (PR #158 lane, not this team)
+
+These remain with the PR #158 lane, delivered as requirements via doc
+71 and this document; the worker team does not touch that branch:
+
+1. Neutral seams before the strip: the rule-2 status envelope and the
+   `ManagedSourceRole` storage shape (types only).
+2. Strip `Macos*` from shared vocabulary onto those seams.
 3. Fill the unix lifetime guard (pdeathsig / `EVFILT_PROC`).
-4. Route ownership through the launcher seam: `LauncherPlan` payloads +
-   owner-preference policy + unified `StopAuthority`; the 1 Hz verify
-   poll retires in favor of the notify watch.
-5. Relocate the TCC canary; daemon `main.rs` returns to platform-clean.
-6. No macOS media/audio cfg patches in shared files (implement a
-   provider or leave the seam alone).
-7. The doc-71 flock-file collapse is withdrawn as a wave item (see
-   §3 Supervision finding 3); any artifact consolidation needs its own
-   file-protocol design reviewed on that lane.
+4. Route ownership through the launcher seam; retire the 1 Hz poll.
+5. Relocate the TCC canary; daemon `main.rs` platform-clean.
+6. No macOS media/audio cfg patches in shared files.
+7. The doc-71 flock-file collapse stays withdrawn (§3 Supervision
+   finding 3); artifact consolidation needs its own reviewed protocol.
 
-**Wave 1, immediately after merge (the platform layer proper), in
-dependency order:**
+### Phase A: parallel now, conflict-free with PR #158
 
-1. Shared `worker-retention` crate (leaf, unblocks everything).
-2. `InputSource` role split onto `ManagedSourceRole` + typed
-   registration (the wave-0 types grow their engines).
-3. GPU vocabulary crate with `origin` and `content_generation` as data;
-   screen bridges move out of `gpu.rs`; `NativeScreenCacheLease`
-   everywhere.
-4. `hypercolor-pipewire-interop` (spec 74 wave 1), aligning Linux with
-   the crate-per-platform shape.
-5. `host_fold` extraction with the conformance-suite macro (same
-   canonical stream through all backends, identical snapshots
-   asserted).
-6. `ScreenCaptureAdapter<B>` extraction, keeping the temporary legacy
-   screen mirror above `CaptureBackend` so spec 73 wave 4's later
-   deletion does not force a second backend-contract rewrite.
-7. `ServiceIdentity`/`DaemonRunMode` vocabulary + launcher declaration
-   + daemon self-report; the mode probes and the four owner enums
-   retire.
+Verified against the branch diff: none of these packages touch files
+the branch modifies, except where noted. All can run concurrently, one
+worker each.
 
-**Wave 2, scheduled, independent:**
+| ID | Package | Scope and key files | Acceptance |
+|---|---|---|---|
+| A1 | `hypercolor-worker-retention` crate | Extract `core/src/input/worker_retention.rs` into a leaf crate; core re-exports it unchanged; `hypercolor-windows-input` drops its verbatim twin (`src/worker_retention.rs`) and consumes the crate; one reaper thread per process | Twin deleted; core API unchanged (`cargo check --workspace`); existing retention tests pass from the new crate |
+| A2 | Driver/HAL transport resolver | Descriptors declare HID intent; one hal-owned `resolve_transport(intent, os)`; `TransportError::UnsupportedPlatform`; platform-aware transports in `DriverModuleDescriptor`; delete the four dead `hypercolor-core` manifest deps (hue/wled/govee/nanoleaf); fix the CLAUDE.md mermaid edge | ASUS resolves to hidapi off-Linux (the §3 hole closed); Nollie's three-way cfg deleted; zero `cfg(target_os)` added outside hal; `just compat` output unchanged |
+| A3 | Filesystem and paths | `hypercolor-platform-fs`: `durable_replace` syncs parent on unix, `write_secret` (0600/owner), `open_no_follow`; driver-api credential store consumes it; `core/config/paths.rs` documents macOS and becomes the imported authority for CLI (`config_path()` tilde bug) and daemon call sites. App call sites deferred to B7 (branch conflict) | New API unit-tested incl. parent-sync; CLI config path resolves through core on all three OSes; grep shows no `dirs::config_dir` outside `paths.rs` except app (deferred) |
+| A4 | Windows session monitor | Implement `SessionMonitor` for Windows inside core/daemon (message-only window standalone; `SERVICE_CONTROL_POWEREVENT` + session-change in SCM mode, `windows_service.rs`); wire into the existing watcher; app-side nudge retirement deferred to B7 | Suspend/resume/lock produce `SessionEvent`s through the existing dedup path on Windows; sleep policy engine activates; zero new cfg outside the platform module and composition root |
+| A5 | Tray consolidation | Execute design 46: delete `crates/hypercolor-tray`; specs 61 + AUR + Homebrew updated in the same change; design 25 gets its superseded banner; `hypercolor-open` documented as the no-Tauri path. Known one-hunk conflict with branch spec 76 signing list: acceptable, flagged | Workspace builds without the crate; packaging lists contain no `hypercolor-tray`; app tray behavior unchanged |
 
-spec 73 wave 4 (delete the legacy screen mirror path); hal transport
-resolver plus `UnsupportedPlatform`; sensors as a source; audio backend
-seam plus a macOS loopback decision; media provider for macOS; router
-catalog unification; session/power monitors for Windows and macOS
-daemon-side, app nudge retired; tray deletion per design 46 with specs
-61/76 and packaging updated in the same change; one launchd adapter;
-platform-fs growth and the paths.rs consolidation; spec updates
-recording the fold and vocabulary decisions so the specs stop ratifying
-the old shape.
+### Phase B: after PR #158 merges, dependency-ordered
 
-**Anytime, trivial:** four dead manifest deps; mermaid edge; stale
-module docs; duplicate `CaptureDomain` name; test-only sampler gating;
-the CLI `~/.config` literal.
+Serialized where they share files (B1 → B4 → B5 all touch
+`core/src/input/`); B2, B3, B6 can run parallel to that spine once B1
+lands.
 
-The test of success is mechanical: after wave 1, adding a platform to
-any capability means one seam impl, one composition-root arm, zero edits
-to any other platform's files, and `grep -r 'cfg(target_os'
-crates/hypercolor-core/src crates/hypercolor-daemon/src` returns only
-composition roots. That grep currently hits 43 files; it should end
-under ten.
+| ID | Package | Scope | Depends on |
+|---|---|---|---|
+| B1 | `InputSource` role split | `ManagedSourceRole` + role traits per §2 sketch; typed registration; `CaptureDomain`/`is_*` inference deleted; one generic generation-fenced swap replaces the three plan/commit/retire lanes; sensors join as `Data` + `SourceKind::Sensors`; entry-point nits (stale docs, duplicate enum name, test-only gating) | Phase 0 types (or B1 defines them if the PR lane didn't) |
+| B2 | `hypercolor-gpu-frame` adoption | The vocabulary crate per §2; interop crates produce it; cfg re-export deleted; `origin`/`content_generation` as data, flip tables deleted; fallback-reason trait replaces the 220-line classifier; screen bridges move to `gpu/screen_native/{windows,macos}.rs`; `NativeScreenCacheLease` on all platforms | PR #158 merge |
+| B3 | `hypercolor-pipewire-interop` | Spec 74 wave 1: Linux capture native code moves out of `wayland.rs` into the crate, aligning the crate-per-platform shape and stating the placement rule (pooling core-side, native identity crate-side) | PR #158 merge |
+| B4 | `host_fold` extraction | One fold owning all semantics; backends become pure producers of the neutral pre-fold event vocabulary (§2 sketch); `conformance_tests!` macro stamping the canonical-stream suite across evdev/windows/macos backends; router catalog unification (`pipeline_runtime` vs `interactive_preview`) | B1 |
+| B5 | `ScreenCaptureAdapter<B>` | The generic adapter per §2; wayland/windows/macos shrink to backends + native crates; legacy screen mirror kept above `CaptureBackend`; the three curated `screen::` facades replace the 248-name flat namespace | B1, B3 |
+| B6 | Service identity + launcher | `ServiceIdentity`/`DaemonRunMode` in types; launcher-declared on all three OSes (generalize spec 77 H1.5); daemon self-reports in status API; `LauncherPlan` payloads + owner-preference policy + unified `StopAuthority`; one launchd adapter (modern verbs, one agent filename); mode probes and `detect_windows_daemon_service` retire; SCM Start arm added; four owner enums collapse | PR #158 merge |
+| B7 | App-side cleanup | App call sites onto `paths.rs`; power-events nudge retired onto A4's monitor; bridge types (`WindowsDaemonServiceStatus`, helper `Verb`) into `hypercolor-types` as data | A3, A4, B6 |
+
+### Phase C: scheduled, independent
+
+Spec 73 wave 4 (delete the legacy screen mirror path, after B5 soaks);
+`AudioCaptureBackend` with Pulse behind it plus the macOS loopback
+decision (ScreenCaptureKit audio tap vs virtual device: a decision
+brief, then a package); macOS media provider under the existing trait;
+macOS `SessionMonitor` (NSWorkspace/IOKit); `platform_modules!` and
+`#[derive(SourceStatus)]` macros once their residue is visible
+post-extraction; spec amendments recording the fold and vocabulary
+decisions (71/72/74/76) so the specs stop ratifying the old shape.
+
+Each phase ends with Fable validating the goal-state list against main
+and recording the result in Review History. Goal-state items 2, 3, and
+4 are the non-negotiable exit bars for Phase B.
 
 ---
 
