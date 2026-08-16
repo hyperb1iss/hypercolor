@@ -16,10 +16,14 @@
 
 **Non-goals:** no rendering behavior changes except where divergence is itself the bug (named per wave); no performance regressions (baselines are product contracts; engine waves are benchmark-gated).
 
-**Compat doctrine (normative for every wave):**
-- **Persisted files** (`scenes.json`, profiles, presets, `hypercolor.toml`, device settings): the on-disk serialization never changes silently. A shape change ships as an explicit versioned migration with before/after fixtures, and old shapes stay readable for one release minimum. **Writers keep emitting the legacy representation until every supported reader (daemon, UI, TUI, CLI within the pinned compat window) accepts the new one; the write-side flip is its own reviewed wave** — read-both/write-old first, flip second, never both at once.
-- **REST v1:** a compatibility matrix artifact (method, path, request, success body, error body, headers, status) is produced before Phase 2 and kept green by tests. Legacy paths (`/effects/{id}/apply`, `/effects/current/*`, `/scenes/{id}/groups/*`, `/config/get|set`) remain routed and **serve legacy projections** — top-level `current` on 412s, the old `pagination` block — while canonical routes serve the new contracts. Serde aliases are a reader tool only; they never justify changing what the server emits on a v1 path.
-- **WS:** every binary tag and byte layout is frozen by golden fixtures before any WS refactor. JSON message changes ship dual-accept (old and new forms) behind a version field in the subscribe handshake; `interval_ms` vs `fps` is a **unit conversion**, normalized internally into one cadence type, both accepted on v1.
+**Lockstep doctrine (normative for every wave — replaced the original compat doctrine by owner directive, 2026-08-16):**
+
+Hypercolor is pre-1.0 greenfield with a user count of one. The daemon and every in-repo client (UI, TUI, CLI, app, tray) ship in lockstep, and the Python client is generated. Compat glue is therefore debt with no creditor, and this codebase does not accumulate it.
+
+- **Wire shapes change freely.** A shape change updates every in-repo consumer AND its pinned tests in the same PR. No route aliases, no legacy projections, no dual-accept handshakes, no deprecation windows, no serde aliases kept for old emissions. External consumers (the generated Python client, MCP clients) track releases; breaking changes are named in release notes and generated clients regenerate.
+- **Pinned-shape tests are intentionality fences, not freezes.** The REST matrix and WS golden fixtures exist so a wire change is deliberate: changing a shape means updating the pin in the same PR, and an unintended byte shift still fails CI.
+- **Persisted user state is never destroyed — and never dual-read.** No legacy readers live in the tree. When an on-disk shape changes: prefer a one-time forward migration through the path-migration harness when it is cheap; otherwise bump the schema version, refuse the old shape with a clear error, and name the hand-migration in release notes. The harness is the durable system for future moves; per-change legacy readers are not. Reset never wipes user-authored state.
+- **No compat layer merges without a scheduled deletion.** Anything that exists purely to keep an old surface alive (deprecated aliases, legacy modules, dual codepaths) either has a named removal wave in §8.2 or it does not merge.
 
 ---
 
@@ -50,7 +54,7 @@ pub struct Oklab  { pub l: f32, pub a: f32, pub b: f32, pub alpha: f32 }   // al
 pub struct Oklch  { pub l: f32, pub c: f32, pub h: f32, pub alpha: f32 }
 ```
 
-Alpha is carried through every perceptual conversion and interpolation — round-tripping `LinearRgba → Oklab → LinearRgba` is lossless in opacity (today's `canvas.rs` types already do this; rev 1 regressed it). `RgbaF32` is renamed `LinearRgba` with a deprecated alias for one release.
+Alpha is carried through every perceptual conversion and interpolation — round-tripping `LinearRgba → Oklab → LinearRgba` is lossless in opacity (today's `canvas.rs` types already do this; rev 1 regressed it). `RgbaF32` is renamed `LinearRgba`; the transitional compat layer (`compat.rs`: the alias plus the old method names) is deleted in wave C1 once the remaining callers migrate to canonical names.
 
 ### 1.3 Conversions
 
@@ -119,7 +123,7 @@ Buffer length lives in the type (`EncodedChannels`), not in caller discipline. R
 
 ### 1.6 TypeScript mirror + shared vectors
 
-- `sdk/packages/core/src/color/index.ts`, exported from the `hypercolor` barrel: `hexToRgb(s, fallback)` (explicit fallback, 3/4/6/8-digit), `hslToRgb`, `hsvToRgb`, `rgbToHsl`, `rgbToHsv`, `rgbToHex`; re-exports `clamp`/`mix`/`saturate` from `math/lerp.ts`. `audio/helpers.ts` re-exports from here (deprecated path).
+- `sdk/packages/core/src/color/index.ts`, exported from the `hypercolor` barrel: `hexToRgb(s, fallback)` (explicit fallback, 3/4/6/8-digit), `hslToRgb`, `hsvToRgb`, `rgbToHsl`, `rgbToHsv`, `rgbToHex`; re-exports `clamp`/`mix`/`saturate` from `math/lerp.ts`. `audio/helpers.ts`'s re-export is transitional and dies in wave C1 (importers move to the color module).
 - **`sdk/shared/color-vectors.json`**: ~200 `(op, input, expected)` triples: hex parse incl. malformed, HSL/HSV↔RGB incl. hue wrap and negatives, sRGB transfer, Oklab round-trips. Rust test `include_str!`s it; Bun test imports it; drift fails CI in both languages.
 - GLSL: `sdk/shared/glsl/color.glsl` gets injected by the effect build (prelude concat in `tooling/build.ts`); the four inline `hsv2rgb` copies die. GLSL is a fourth implementation covered only by effect snapshot tests — accepted looseness.
 
@@ -147,9 +151,9 @@ pub enum DomainError {
 }
 ```
 
-- `impl IntoResponse for DomainError` — the codebase's first. Canonical routes render the single error envelope `{ error: { code, message, details }, meta }`; `PreconditionFailed` → 412 with `ETag` set by the REST adapter. **Legacy paths keep their legacy error projections** (top-level `current`) via a thin per-path shim, per §0.
-- `impl From<DomainError> for McpToolError`; WS command results serialize the same `ApiErrorBody` on the v2 handshake, legacy string form on v1.
-- `ApiError` (the `Response` factory) is deleted; `Result<T, Response>` is forbidden and lint-gated post-migration.
+- `impl IntoResponse for DomainError` — the codebase's first, and after wave C1 the ONLY error rendering: every route serves the canonical envelope `{ error: { code, message, details }, meta }`; `PreconditionFailed` → 412 with `ETag` set by the REST adapter. The transitional per-path legacy shims (`domain::legacy`, `into_v1_response`) exist only so the service lift could land without coupled client changes, and are deleted in C1 with all clients updated in the same PR.
+- `impl From<DomainError> for McpToolError`; WS command results serialize the same `ApiErrorBody` — one form, no handshake versioning.
+- `ApiError` (the `Response` factory) is deleted in C1; `Result<T, Response>` is forbidden and lint-gated post-migration.
 
 ### 2.2 Service signatures
 
@@ -237,7 +241,7 @@ pub struct ConfigKeyDescriptor {
 
 - Completeness test inspects **generated schema metadata** (every closed section resolves to descriptors; every dynamic namespace has a wildcard owner), not a serialized default instance.
 - Daemon live-apply dispatch, `requires_restart`, and redaction all derive from descriptors; the four hand predicates and the UI mirror are deleted; clients read `GET /api/v1/config/schema`.
-- Config REST becomes resource-shaped on canonical routes (`GET /config`, `GET/PUT/DELETE /config/keys/{key}`, `POST /config/reset`, `GET /config/schema`); `/config/get|set` remain as legacy aliases serving legacy shapes.
+- Config REST becomes resource-shaped (`GET /config`, `GET/PUT/DELETE /config/keys/{key}`, `POST /config/reset`, `GET /config/schema`); `/config/get|set` are deleted outright, with CLI and UI updated in the same PR.
 
 ### 3.4 Storage tiers, path migration contract, persistence primitives
 
@@ -278,7 +282,7 @@ uuid_id!(DeviceId, SceneId, ZoneId, EffectId, SceneLayerId, AssetId, PresetId, P
 string_id!(LayoutId, ProfileId, LayoutDeviceId, BackendId);
 ```
 
-Both macros give `Display + FromStr + serde + ToSchema(feature)`; uuid ids expose `AsRef<Uuid>` (no `AsRef<str>` — a Uuid newtype cannot lend a string). `string_id!` takes a **per-identity validator and canonicalization policy** (grammar, trimming, case, forbidden delimiters): `FromStr` enforces it for newly minted ids, while legacy persisted forms load through a migration reader — constructors are never weakened to admit history. Physical routing gets `pub struct OutputRef { pub backend: BackendId, pub device: DeviceId }` with `Display`/`FromStr` for the `"backend:device"` wire form — `FromStr` splits on the first `:` only and `BackendId`'s grammar forbids `:`, so the form is unambiguous. Layout identity keeps `LayoutDeviceId` and is **not** rewritten to OutputRef.
+Both macros give `Display + FromStr + serde + ToSchema(feature)`; uuid ids expose `AsRef<Uuid>` (no `AsRef<str>` — a Uuid newtype cannot lend a string). `string_id!` takes a **per-identity validator and canonicalization policy** (grammar, trimming, case, forbidden delimiters): `FromStr` enforces it for newly minted ids; `from_persisted` is the one-time forward-migration door only — nothing dual-reads legacy forms at runtime, and constructors are never weakened to admit history. Physical routing gets `pub struct OutputRef { pub backend: BackendId, pub device: DeviceId }` with `Display`/`FromStr` for the `"backend:device"` wire form — `FromStr` splits on the first `:` only and `BackendId`'s grammar forbids `:`, so the form is unambiguous. Layout identity keeps `LayoutDeviceId` and is **not** rewritten to OutputRef.
 
 ### 4.3 Envelope, pagination, errors — canonical routes only
 
@@ -289,20 +293,20 @@ pub struct ListResponse<T> { pub items: Vec<T>, pub total: u64, pub page: Option
 pub struct PageInfo { pub offset: u64, pub limit: u64, pub has_more: bool }
 ```
 
-Canonical routes adopt these; **v1 paths keep emitting the current `pagination { offset, limit, total, has_more }` block and current error shapes** until deprecation, enforced by the compat matrix tests. `/health` keeps its bare probe shape.
+All routes adopt these at the C1 flip — the fabricated `pagination` blocks and bespoke error shapes go, the matrix tests are rewritten in the same PR to pin the canonical shapes, and every in-repo client updates alongside. `/health` keeps its bare probe shape.
 
 ### 4.4 Naming
 
 - `apply` vs `activate` is a real semantic split and both stay: `apply` = layer a thing onto current state (effects, layouts, profiles, presets); `activate` = switch the exclusive current (scenes, playlists). Documented, not renamed.
-- `current` → `active`: new canonical routes use `active`; `/effects/current/*` remains a legacy alias.
-- Scene render groups are `zones` in every canonical path and message; `/groups/` paths remain legacy aliases.
+- `current` → `active`: routes RENAME (`/effects/current/*` is deleted, not aliased).
+- Scene render groups are `zones` in every path and message; `/groups/` paths are deleted, not aliased.
 - Path params: `{id}` for the resource's own id; children as `{zone_id}`-style.
 
 ### 4.5 Unified `ControlValue` — canonical semantic contract
 
 One canonical value algebra in `types::control`; both current systems become projections of it. Canonical decisions, made once:
 
-The canonical algebra is the **typed union of both real algebras — variant identity is preserved**, so every VALID driver-surface and effect-control value round-trips byte-identically on its own wire (legacy values that fail canonical validation stay readable as raw legacy values per §0 — kept, surfaced as diagnostics, never dropped). (The driver algebra verified at `controls.rs`: `Null, Bool, Integer(i64), Float(f64), String, SecretRef(String), ColorRgb([u8;3]), ColorRgba([u8;4]), IpAddress, MacAddress, DurationMs(u64), Enum, Flags(Vec<String>), List, Object, Unknown`.)
+The canonical algebra is the **typed union of both real algebras — variant identity is preserved**, so every VALID driver-surface and effect-control value round-trips byte-identically on its own wire (persisted values that fail canonical validation are migrated forward once or refused with a clear error naming the key — never silently dropped, and never kept alive behind a legacy reader; the control module's keep-raw doc paragraph updates in C1c). (The driver algebra verified at `controls.rs`: `Null, Bool, Integer(i64), Float(f64), String, SecretRef(String), ColorRgb([u8;3]), ColorRgba([u8;4]), IpAddress, MacAddress, DurationMs(u64), Enum, Flags(Vec<String>), List, Object, Unknown`.)
 
 ```rust
 pub enum ControlValue {
@@ -333,7 +337,7 @@ pub enum ControlValue {
 - canonical → **effect wire** (externally tagged snake_case, f32/i32): fails on width overflow, `Null`, and driver-only variants (`SecretRef`, `Ip`, `Mac`, `Duration`, `ColorRgb`, `ColorRgba`, `Flags`, `List`, `Map`, `Unknown`). Effect "color" maps to `ColorLinear`.
 - canonical → **driver wire** (`kind`/`value` tagged, f64/i64): fails on effect-only variants (`ColorLinear`, `Gradient`, `Rect`). Each driver variant projects to its existing `kind` tag byte-identically.
 - **Color conversions between the three color variants** are explicit methods through `hypercolor-color` (`ColorRgb ↔ ColorLinear` etc.); `u8 → linear f32 → u8` round-trips exactly (property-tested in the color vectors). Projections never convert color space implicitly — variant identity is what round-trips.
-- **Persisted files** (scenes, profiles, presets, device-settings) keep their current encodings as projections; the write side flips per §0 doctrine only after all supported readers accept canonical.
+- **Persisted files** (scenes, profiles, presets, device-settings) move to the canonical encoding via one-time forward migration (harness where cheap, hand-migration otherwise per §0); the two existing enums then become internal adapters that die with their last consumer (waves 3.x/6.5b).
 
 The full per-variant validation table (ranges, defaults, widget mapping) is authored by Fable in wave 2.0 before any worker consumes it.
 
@@ -363,9 +367,9 @@ pub struct Subscription<T: WsTopic> { pub key: T::Key, pub config: T::Config }  
 ```
 
 - Registry entries declare the **full** associated-type set: `Key`, `Config`, `Patch` (with transactional tri-state application — a patch validates completely before any field lands), `Item` (relay payload), the relay source, and the ack projection — so the macro generates dispatch and validation with no hand-unrolled blocks left.
-- A codec owns its complete tag set (preview topics legitimately span multiple tags); a registry-wide assertion enforces **unique wire-tag ownership** across topics — display and interactive preview share `PreviewCodec` mechanics but own disjoint tag subsets. Every tag and byte layout is frozen by golden fixtures **before** extraction. The hand-written spectrum header is replaced by `SpectrumFrame::encode` (layout already proven equal by test).
-- Cadence: one internal `Cadence` type; v1 accepts both `fps` and `interval_ms`, v2 subscribe (negotiated via a version field in the handshake) speaks `fps` only.
-- Keyed subscriptions unify `display_preview` (today 1-per-connection) and `interactive_preview` (today a bespoke session protocol) into N-concurrent keyed subscriptions on v2; v1 message forms stay dual-accepted through deprecation.
+- A codec owns its complete tag set (preview topics legitimately span multiple tags); a registry-wide assertion enforces **unique wire-tag ownership** across topics — display and interactive preview share `PreviewCodec` mechanics but own disjoint tag subsets. Every tag and byte layout is pinned by golden fixtures **before** extraction — updated deliberately in the same PR whenever a layout intentionally changes. The hand-written spectrum header is replaced by `SpectrumFrame::encode` (layout already proven equal by test).
+- Cadence: one internal `Cadence` type speaking `fps` only — `interval_ms` is deleted with both in-repo clients updated in the same PR. No handshake versioning, no dual-accept.
+- Keyed subscriptions unify `display_preview` (today 1-per-connection) and `interactive_preview` (today a bespoke session protocol) into N-concurrent keyed subscriptions, replacing the old message forms outright.
 - Adding a topic = one `define_ws_topics!` entry + one relay fn.
 
 ---
@@ -468,7 +472,7 @@ pub trait DeviceBackendFactory: Send + Sync {
 ### 7.2 Discovery
 
 - `TransportScanner`, `DriverDiscoveredDevice`, `DriverModuleScanner`, `DeviceBackend::discover` — deleted. `DiscoveryCapability` produces `DiscoveredDevice`; the registry is the only inventory; backends learn devices via `fn adopt_device(&self, d: &DiscoveredDevice) -> Result<(), DeviceError>` (required, fallible).
-- One fingerprint constructor: `Fingerprint::mint(ns: FingerprintNamespace /* Usb|SmBus|Net|Cloud|Bridge */, driver: &str, key: &str)`. Existing persisted fingerprints are grandfathered; per-driver compat is documented.
+- One fingerprint constructor: `Fingerprint::mint(ns: FingerprintNamespace /* Usb|SmBus|Net|Cloud|Bridge */, driver: &str, key: &str)`. Existing fingerprints remint under the canonical constructor (single-user reality: a one-time remap ships only if it is nearly free; otherwise re-adoption is acceptable and named in release notes).
 
 ### 7.3 Typed errors, whole boundary
 
@@ -498,8 +502,8 @@ pub trait DeviceBackendFactory: Send + Sync {
 0.4 Delete dead MCP stateless dispatch (17 stubs + `execute_tool`).
 0.5 Delete `DevicePlugin` and `health_check`; delete `types/palette.rs` (zero consumers).
 0.6 Fix literal-`~` config fallback (CLI/TUI adopt `core::config::paths`).
-0.7 **REST v1 compat matrix** artifact + tests freezing current v1 shapes (pagination block, 412 bodies, legacy paths).
-0.8 **WS golden fixtures** freezing every binary tag (0x01, 0x02, 0x03, 0x05–0x11, and the leptos-ext RPC tags 0x80/0x81; 0x04 is deliberately unassigned) and byte layout.
+0.7 **REST wire matrix** artifact + tests pinning current shapes (intentionality fence — rewritten in-PR when shapes deliberately change).
+0.8 **WS golden fixtures** pinning every binary tag (0x01, 0x02, 0x03, 0x05–0x11, and the leptos-ext RPC tags 0x80/0x81; 0x04 is deliberately unassigned) and byte layout.
 0.9 **Path-migration harness** (old→new path, precedence, backup, idempotence) modeled on `driver_inventory.rs:98`.
 
 **Phase 1 — color** (after 0.3; independent otherwise)
@@ -510,17 +514,23 @@ pub trait DeviceBackendFactory: Send + Sync {
 1.5 Worker: `color-vectors.json` population + dual-language CI.
 
 **Phase 2 — contract conventions + domain services** (conventions FIRST — consumers after foundations)
-2.0 Fable: `types::api` conventions (`ApiResponse`, `ApiErrorBody`, `ListResponse`, `uuid_id!`/`string_id!`, `OutputRef`) **and** unified `types::control` ControlValue (internal type + legacy wire projections per §0 compat doctrine; persisted-file migration with fixtures).
-2.1 Fable: `DomainError` + `IntoResponse` + `Versioned` + `MutationContext` + adapter conventions + legacy-projection shims.
+2.0 Fable: `types::api` conventions (`ApiResponse`, `ApiErrorBody`, `ListResponse`, `uuid_id!`/`string_id!`, `OutputRef`) **and** unified `types::control` ControlValue (shipped pre-C1 with transitional wire projections; waves 3.x/6.5b delete the adapters with their last consumers).
+2.1 Fable: `DomainError` + `IntoResponse` + `Versioned` + `MutationContext` + adapter conventions (shipped pre-C1 with transitional legacy shims; C1a deletes them).
 2.2 Worker: kill `Result<T, Response>` (~28 sites) and unify error shapes on canonical routes.
 2.3a Worker: `SceneMutation`/`commit_scene` + lift `apply_effect` + `activate_scene`; delete their MCP twins.
 2.3b Worker: lift `create_scene`, zone mutation, `set_display_face`; migrate the remaining ritual sites (49 total across a+b).
 2.4 Worker: name the 44 untyped payloads into `types::api`; CLI gains `hypercolor-types` (~130 typed sites).
 
+**Wave C1 — the compat-ectomy** (after 2.3a/4.1 merge; before or interleaved with Phase 3; each an atomic PR with all in-repo clients updated in-PR)
+C1a **Error-surface flip**: every route renders the canonical `DomainError` envelope; delete `domain::legacy`, `into_v1_response`, and `ApiError` entirely; rewrite the matrix tests to pin canonical shapes; unblocks wave 2.2's nine deferred helpers (bespoke 404 prose normalizes, `ResourceKind::Driver` exists).
+C1b **Naming flip**: `current`→`active`, `groups`→`zones`, `/config/get|set`→resource routes — old routes deleted, not aliased.
+C1c **Persisted-legacy deletion**: delete core's `migrate_config` (schema ≤3 path) and driver-inventory's legacy runtime-state import entry (already completed on the only install); update `types::control`'s keep-raw doc paragraph; schema bumps + release notes where shapes require it. (The legacy Zone codec deletes in 5.1, where its consumers restructure.)
+C1d **Deprecated-surface deletion**: migrate remaining callers off `hypercolor-color`'s `compat.rs` and delete it; delete the TS `audio/helpers` color re-export.
+
 **Phase 3 — contract rollout** (after 2)
 3.1 Worker(s): grow `types::api` to full coverage **in per-domain batches** (devices+scenes; effects+library; layouts+displays+assets; drivers+system), daemon + UI + TUI mirrors deleted in the same PR per batch.
-3.2 Fable: `define_ws_topics!` registry + codec/tag contracts. Worker: promote WS types to leptos-ext, migrate subscribes, keyed v2 subscriptions with v1 dual-accept — split extraction / topics / clients into separate PRs.
-3.3 Worker: honest pagination + naming aliases on canonical routes (legacy projections stay); registration-helper OpenAPI catalog (142-entry table dies).
+3.2 Fable: `define_ws_topics!` registry + codec/tag contracts. Worker: promote WS types to leptos-ext, migrate subscribes, keyed subscriptions replacing the old message forms outright (clients in the same PRs) — split extraction / topics / clients into separate PRs.
+3.3 Worker: honest pagination everywhere (absorbed by C1a where it lands first) + registration-helper OpenAPI catalog (142-entry table dies).
 
 **Phase 4 — config** (after 0.9)
 4.1 Fable: `ConfigSources`/`LoadedConfig`, Boot/Live types, descriptor macro + completeness design.
@@ -529,7 +539,7 @@ pub trait DeviceBackendFactory: Send + Sync {
 4.4 Worker(s): storage tiers **per-store batches** behind the migration harness; `flush_all` totality; `servers.toml` unification; dead sections removed.
 
 **Phase 5 — types restructure** (after 3)
-5.1 Worker: evictions (surface pool → daemon; DeviceHandle → core; SerialNormalizerRegistry → core; capture validation → core; Zone legacy codec → migration layer).
+5.1 Worker: evictions (surface pool → daemon; DeviceHandle → core; SerialNormalizerRegistry → core; capture validation → core); the legacy Zone serde codec is DELETED outright (schema bump + release note, per §0).
 5.2 Worker: merges (authored BlendMode; topology; `Rect<T>`; ColorFormat; audio configs; telemetry); `config.rs` → per-section files; gate `utoipa`; single import path.
 
 **Phase 6 — engine** (after 2; benchmark-gated)
@@ -552,8 +562,9 @@ Dependency graph: 0 → everything; **1.1 → 2.0** (the canonical ControlValue'
 ## 9. Decisions resolved at lock
 
 1. **Spec number:** 76 — confirmed against `docs/specs/` (highest existing: 75). Internal-repo numbering is independent; the internal repo consumes this repo as the `oss/` submodule.
-2. **Legacy Zone serde codec retirement:** migrate-on-load rewrite plus one release of read compatibility, then delete. Wave 5.1 executes the move to the migration layer; the deletion rides the release after the rewrite ships.
+2. **Legacy Zone serde codec retirement:** superseded by decision 4 — deleted outright in wave 5.1.
 3. **RGBW white extraction:** out of scope for this program. It ships as its own feature with its own `DevicePixelLayout` variant after Phase 1; `RgbwZeroWhite` names today's behavior honestly until then.
+4. **Compat doctrine replaced (owner directive, 2026-08-16):** the original §0 compat doctrine (frozen v1, read-both/write-old, dual-accept, deprecation windows) is replaced by the lockstep doctrine. Already-merged transitional glue is scheduled for deletion in wave C1.
 
 ## 10. Review history
 
@@ -562,4 +573,5 @@ Dependency graph: 0 → everything; **1.1 → 2.0** (the canonical ControlValue'
 - **Round 3 (2026-08-15):** certification pass over rev 3. Ledger: 11/12 round-2 items ADDRESSED; two residues, both adopted in rev 4: §4.5's canonical enum rebuilt as the typed union of both real algebras (verified against `controls.rs` — `SecretRef` reference semantics, `ColorRgb`/`ColorRgba`/`ColorLinear` identity preservation, `Ip`/`Mac`/`Duration`/unit-`Unknown`), and the missing `1.1 → 2.0` dependency edge added.
 - **Round 4 (2026-08-15):** narrow check on the two rev-4 fixes. Dependency edge PASS; §4.5 two residues fixed in rev 5: `Ip`/`Mac` become validated-string wrappers preserving original text for byte-equal round-trips, and finite-only floats documented as a wire invariant with sanitization at sensor resolution.
 - **Round 5 (2026-08-15):** final micro-check. `IpText`/`MacText` PASS; one factual correction adopted verbatim from the reviewer (serde_json emits `null` for non-finite floats rather than erroring — the invariant holds, with the corrected mechanism). **Converged: rev 5 locked.** Convergence trajectory: 29 findings → 12 → 2 → 2 sub-points → 1 factual citation.
-- **Round 6 (2026-08-16, implementation reconciliation):** corrections forced by the tree during wave 0.8 and wave 1.1, folded back so spec and code agree. §1: `std` feature dropped (std-only until a no_std consumer exists). §1.3: `Oklch::{to_linear, lerp}` and `LinearRgba::to_oklch` added — shortest-path Oklch interpolation exists in-tree and is load-bearing. §1.4: per-type accepted hex digit counts made explicit. §1.5: `PixelBlendMode` is the kernel's real alpha-composable set (`ColorDodge`/`Difference`, not the sketch's `Lighten`/`Darken`). §5/§8.2: WS tag inventory corrected to the code's enumeration (0x04 unassigned; RPC tags 0x80/0x81 exist in leptos-ext and are frozen). Phase 0 execution rulings folded into contracts: §3.1's preserved set gains the `include` list plus the validation-skip escape-hatch rule (wave 0.1); §3.4 gains the residue-by-design retirement contract and superseded-import-yields-the-winner rule (wave 0.9).
+- **Round 7 (2026-08-16, doctrine replacement):** owner directive replaced the §0 compat doctrine with the lockstep doctrine — hypercolor is pre-1.0 greenfield with one user; in-repo clients ship in lockstep, wire shapes change freely with pins and clients updated in-PR, persisted state migrates forward once (harness or hand-migration) with no legacy readers in the tree, and no compat layer merges without a scheduled deletion. Wave C1 schedules the deletion of every transitional shim merged under the old doctrine (`domain::legacy`, `into_v1_response`, `ApiError` legacy rendering, color `compat.rs`, TS audio re-export, `migrate_config`, driver-inventory legacy import; the legacy Zone codec deletes in 5.1). §§1.2, 1.6, 2.1, 3.3, 4.3–4.5, 5, 5.1, 7.2 updated accordingly.
+- **Round 6 (2026-08-16, implementation reconciliation):** corrections forced by the tree during wave 0.8 and wave 1.1, folded back so spec and code agree. §1: `std` feature dropped (std-only until a no_std consumer exists). §1.3: `Oklch::{to_linear, lerp}` and `LinearRgba::to_oklch` added — shortest-path Oklch interpolation exists in-tree and is load-bearing. §1.4: per-type accepted hex digit counts made explicit. §1.5: `PixelBlendMode` is the kernel's real alpha-composable set (`ColorDodge`/`Difference`, not the sketch's `Lighten`/`Darken`). §5/§8.2: WS tag inventory corrected to the code's enumeration (0x04 unassigned; RPC tags 0x80/0x81 exist in leptos-ext and are pinned). Phase 0 execution rulings folded into contracts: §3.1's preserved set gains the `include` list plus the validation-skip escape-hatch rule (wave 0.1); §3.4 gains the residue-by-design retirement contract and superseded-import-yields-the-winner rule (wave 0.9).
