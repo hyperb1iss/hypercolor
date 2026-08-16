@@ -19,16 +19,15 @@ interface PreludeFunction {
     source: string
 }
 
-/** Matches a top-level `<type> <name>(` at the start of a line. */
-const FUNCTION_HEAD = /^([a-zA-Z_]\w*)[ \t]+([a-zA-Z_]\w*)[ \t]*\(/gm
-
 /** Split a GLSL source into its top-level function definitions. */
 function parseFunctions(source: string): PreludeFunction[] {
+    // Built per call: the scan drives lastIndex to skip over function bodies,
+    // so a shared instance would carry one parse's cursor into the next.
+    const head = /^([a-zA-Z_]\w*)[ \t]+([a-zA-Z_]\w*)[ \t]*\(/gm
     const functions: PreludeFunction[] = []
-    FUNCTION_HEAD.lastIndex = 0
-    let head = FUNCTION_HEAD.exec(source)
-    while (head !== null) {
-        const open = source.indexOf('{', head.index)
+    let match = head.exec(source)
+    while (match !== null) {
+        const open = source.indexOf('{', match.index)
         if (open !== -1) {
             let depth = 0
             let end = -1
@@ -43,11 +42,11 @@ function parseFunctions(source: string): PreludeFunction[] {
                 }
             }
             if (end !== -1) {
-                functions.push({ name: head[2], source: source.slice(head.index, end) })
-                FUNCTION_HEAD.lastIndex = end
+                functions.push({ name: match[2], source: source.slice(match.index, end) })
+                head.lastIndex = end
             }
         }
-        head = FUNCTION_HEAD.exec(source)
+        match = head.exec(source)
     }
     return functions
 }

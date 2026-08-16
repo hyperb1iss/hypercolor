@@ -81,6 +81,14 @@
             "assist": { "enabled": false }
         },
         {
+            // Vendored copies of sdk/shared, rewritten verbatim by
+            // packages/core/build-package.ts on every build.
+            "includes": ["**/*.gen.ts"],
+            "formatter": { "enabled": false },
+            "linter": { "enabled": false },
+            "assist": { "enabled": false }
+        },
+        {
             "includes": ["**/package.json", "**/biome.jsonc"],
             "assist": {
                 "actions": {
