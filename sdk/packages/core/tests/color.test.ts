@@ -197,8 +197,14 @@ describe('oklab', () => {
 })
 
 // ── Shared-vector agreement ──────────────────────────────────────────────
-// The Rust kernel and this module run the same table. Every op the module
-// implements is fenced here; wave 1.5 grows the table itself.
+// The Rust kernel and this module run the same table, so a divergence fails
+// CI on both sides instead of shipping as a subtle rendering mismatch. Every
+// op the module implements is fenced here.
+//
+// The table excludes byte-output inputs that land on a rounding tie, because
+// Rust computes in f32 and this module in f64 and the two round to opposite
+// sides there. Ties are covered by each language's own unit tests above and
+// by the Rust palette oracle; see the vector file's notes before adding one.
 
 interface Vector {
     op: string
@@ -308,7 +314,10 @@ describe('shared color vectors', () => {
     const defaultTolerance = vectorFile.default_tolerance
 
     test('the whole table is covered by an op handler', () => {
-        expect(vectors.length).toBeGreaterThan(60)
+        // Spec 76 §1.6 sizes the table at roughly 200 vectors. The floor
+        // catches a truncated or half-written file, which would otherwise
+        // pass every remaining assertion by having nothing to assert.
+        expect(vectors.length).toBeGreaterThan(200)
         for (const vector of vectors) {
             expect(() => runVector(vector)).not.toThrow()
         }
