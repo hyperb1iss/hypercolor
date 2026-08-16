@@ -460,10 +460,13 @@ app-bundle-assets *args='': app-bundle-binaries
 app-bundle-assets *args='': app-bundle-binaries
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/stage-app-bundle-assets.ps1 {{ args }}
 
-# Build native Tauri bundles for the unified desktop app
+# Build native Tauri bundles for the unified desktop app. On macOS the
+# bundle signs with APPLE_SIGNING_IDENTITY, falling back to the local
+# "Hypercolor Dev" certificate so TCC grants survive rebuilds (ad-hoc
+# signatures change identity every build); see docs/development/DEV_SETUP.md.
 [unix]
 app-bundle *args='': app-assets app-bundle-assets
-    cd crates/hypercolor-app && HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
+    cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
 
 [windows]
 app-bundle *args='': app-assets app-bundle-assets

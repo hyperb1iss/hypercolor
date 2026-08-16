@@ -21,6 +21,10 @@ just verify        # fmt + lint + test: run this after every change
 - Linux, Windows, and macOS are all supported; Linux additionally integrates
   udev rules and systemd user services
 
+Platform-specific setup (system libraries, udev rules, the macOS dev
+signing certificate, Windows hardware support) lives in
+[docs/development/DEV_SETUP.md](docs/development/DEV_SETUP.md).
+
 ## What to Work On
 
 **Effects** are the easiest way to contribute. The SDK makes it straightforward to create something

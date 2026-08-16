@@ -1,0 +1,139 @@
+# Development Environment Setup
+
+Per-platform setup for building and running Hypercolor from source. The
+common workflow (`just verify`, per-area gates, PR expectations) lives in
+[CONTRIBUTING.md](../../CONTRIBUTING.md); this document covers what each
+operating system needs before those commands work.
+
+## All platforms
+
+- **Rust** via [rustup](https://rustup.rs). `rust-toolchain.toml` pins the
+  toolchain (currently 1.95.0); rustup installs it automatically on first
+  build. Edition 2024, minimum supported Rust 1.94.
+- **[just](https://github.com/casey/just)**, the command runner every
+  workflow goes through.
+- **[Bun](https://bun.sh)** for the TypeScript effect SDK and bundled
+  effects (`just sdk-install` once, then `just effects-build`).
+- **Trunk** and the `wasm32-unknown-unknown` target for the web UI
+  (`just ui-dev` prints what it needs if something is missing).
+
+Every `just` build routes through `scripts/cargo-cache-build.sh`, which
+wires up sccache or ccache automatically when installed. Neither is
+required, but Servo builds are dramatically faster with a warm cache; see
+[SERVO_BUILD_CACHING.md](SERVO_BUILD_CACHING.md).
+
+## Linux
+
+Install the system libraries the daemon, app shell, and Servo renderer
+link against. On Debian/Ubuntu:
+
+```bash
+sudo apt install \
+  libudev-dev libdbus-1-dev libasound2-dev libpulse0 \
+  libpipewire-0.3-dev \
+  ccache clang cmake jq nasm pkg-config lld \
+  libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+  libxdo-dev libfontconfig1-dev libegl1 libssl-dev \
+  libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev
+```
+
+The last line (GTK, WebKitGTK, appindicator, rsvg) is only needed for the
+desktop app shell and tray; daemon-only work can skip it. `clang` and
+`lld` are load-bearing: the build wrapper selects them for linking.
+
+USB and HID device access needs the udev rules:
+
+```bash
+sudo just udev-install
+```
+
+Screen capture uses the Wayland XDG portal and prompts per session; no
+extra setup.
+
+## macOS
+
+- **Xcode Command Line Tools** (`xcode-select --install`). Full Xcode is
+  not required.
+- Minimum deployment target is macOS 15.2 (Sequoia).
+
+### Code signing for local bundles
+
+`just app-bundle` signs the app with the identity from
+`APPLE_SIGNING_IDENTITY`, falling back to a local certificate named
+**Hypercolor Dev**, and finally to ad-hoc signing.
+
+The fallback matters because of how macOS permissions work. TCC keys
+Screen Recording and Input Monitoring grants to the app's code-signing
+identity. An ad-hoc signature has a per-build identity (its designated
+requirement is the build's cdhash), so every rebuild is a brand-new app
+to macOS: System Settings keeps showing the old build's toggle as
+enabled while the new build reads `not_determined` and has to be granted
+again. A certificate-anchored signature is stable across builds, so
+grants stick.
+
+One-time setup:
+
+1. Open **Keychain Access**, then from the menu bar choose
+   **Keychain Access → Certificate Assistant → Create a Certificate**.
+2. Name: `Hypercolor Dev`. Identity type: Self-Signed Root.
+   Certificate type: **Code Signing**. Create.
+3. Trust it for code signing (macOS asks for your password):
+
+   ```bash
+   security find-certificate -c "Hypercolor Dev" -p > /tmp/hypercolor-dev.pem
+   security add-trusted-cert -p codeSign \
+     -k ~/Library/Keychains/login.keychain-db /tmp/hypercolor-dev.pem
+   ```
+
+4. Verify: `security find-identity -v -p codesigning` lists
+   `"Hypercolor Dev"` as a valid identity.
+
+The first signed build pops a keychain dialog asking whether `codesign`
+may use the key; choose **Always Allow**. After granting Screen
+Recording or Input Monitoring to a bundle signed this way, the grants
+survive rebuilds. Stale rows from earlier ad-hoc builds can be removed
+in System Settings with the minus button.
+
+Release DMGs use a real Developer ID plus notarization through
+`just mac-installer`; see [RELEASING.md](RELEASING.md). The dev
+certificate is for local iteration only and never ships.
+
+### Permission model
+
+The daemon asks for Microphone, Screen Recording, or Input Monitoring
+only when the matching feature is enabled. After a grant, macOS
+requires a process restart before capture APIs see it; the Settings
+page offers that restart when it applies.
+
+## Windows
+
+- **Visual Studio Build Tools** with the C++ workload (MSVC linker), or a
+  full Visual Studio install.
+- **WebView2 runtime** for the app shell. Preinstalled on Windows 11;
+  the packaged installer bootstraps it on Windows 10.
+- All `just` recipes have Windows variants and run through PowerShell.
+
+Optional hardware support:
+
+- Motherboard and DRAM RGB (SMBus) goes through the PawnIO kernel
+  driver and a broker service. `scripts/install-windows-hardware-support.ps1`
+  installs both; the individual scripts it wraps live next to it in
+  `scripts/`.
+- Running the daemon as a Windows service uses
+  `scripts/install-windows-service.ps1`. Keyboard and mouse capture
+  requires an interactive session, so prefer the foreground app while
+  developing input features.
+
+## Smoke test
+
+Any platform, once set up:
+
+```bash
+just verify     # fmt + lint + test
+just daemon     # daemon on :9420
+just ui-dev     # web UI on :9430, proxying to the daemon
+```
+
+macOS and Windows app-shell work uses `just app` for the iteration
+build and `just app-bundle` for a native bundle.
