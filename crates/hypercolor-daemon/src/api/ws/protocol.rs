@@ -406,13 +406,13 @@ pub(super) struct FramesConfig {
 }
 
 #[derive(Debug, Clone)]
-pub(super) enum FrameZoneSelection {
+pub enum FrameZoneSelection {
     All,
     Named(HashSet<String>),
 }
 
 impl FrameZoneSelection {
-    pub(super) fn new(selected: &[String]) -> Self {
+    pub fn new(selected: &[String]) -> Self {
         if selected.iter().any(|zone| zone == "all") {
             Self::All
         } else {

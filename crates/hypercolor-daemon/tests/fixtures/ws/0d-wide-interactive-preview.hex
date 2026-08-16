@@ -1,0 +1,21 @@
+# hypercolor websocket golden fixture
+# fixture: 0d-wide-interactive-preview
+# tag: 0x0d (WIDE_INTERACTIVE_PREVIEW_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::InteractivePreviewFrame::encode
+# input: preview_id "golden-wide-preview", 65536x1 rgb (wide layout)
+# total-bytes: 196646
+# stored-bytes: 54
+# note: the remaining 196592 payload bytes are a deterministic fill and are
+#       asserted by the test rather than committed here.
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+0d                                              # tag (wide interactive preview)
+13                                              # preview_id length u8
+78 56 34 12                                     # frame_number u32le
+4e 61 bc 00                                     # timestamp_ms u32le
+00 00 01 00                                     # width u32le
+01 00 00 00                                     # height u32le
+00                                              # format u8
+67 6f 6c 64 65 6e 2d 77 69 64 65 2d 70 72 65 76 # preview_id utf8 [+0x000]
+69 65 77                                        # preview_id utf8 [+0x010]
+80 87 8e 95 9c a3 aa b1 b8 bf c6 cd d4 db e2 e9 # payload (first 16 bytes)

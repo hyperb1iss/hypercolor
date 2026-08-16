@@ -1,0 +1,16 @@
+# hypercolor websocket golden fixture
+# fixture: 10-preview-cancel
+# tag: 0x10 (PREVIEW_CANCEL_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::PreviewCancelFrame::try_encode
+# input: interactive stream "golden-preview"
+# total-bytes: 28
+# stored-bytes: 28
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+10                                              # tag
+01                                              # schema u8
+02                                              # stream_kind u8
+0a                                              # channel tag u8
+0e 00                                           # stream_identity_len u16le
+08 07 06 05 04 03 02 01                         # publication_id u64le
+67 6f 6c 64 65 6e 2d 70 72 65 76 69 65 77       # stream identity (preview_id utf8)

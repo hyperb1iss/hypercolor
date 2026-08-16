@@ -1,0 +1,28 @@
+# hypercolor websocket golden fixture
+# fixture: 0f-preview-chunk
+# tag: 0x0f (PREVIEW_CHUNK_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::PreviewChunkFrame::try_encode
+# input: zone stream, chunk 0 of 2, 32 byte slice of a 64 byte publication
+# total-bytes: 119
+# stored-bytes: 119
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+0f                                              # tag
+01                                              # schema u8
+01                                              # stream_kind u8 (0=passive, 1=zone, 2=interactive, 3=screen_zones)
+08                                              # channel tag u8
+00                                              # format u8
+20 00                                           # stream_identity_len u16le
+08 07 06 05 04 03 02 01                         # publication_id u64le
+78 56 34 12                                     # frame_number u32le
+4e 61 bc 00                                     # timestamp_ms u32le
+02 00 00 00                                     # width u32le
+02 00 00 00                                     # height u32le
+40 00 00 00 00 00 00 00                         # total_encoded_bytes u64le
+00 00 00 00 00 00 00 00                         # chunk_offset u64le
+00 00 00 00                                     # chunk_index u32le
+02 00 00 00                                     # chunk_count u32le
+01 23 45 67 89 ab cd ef 10 32 54 76 98 ba dc fe # stream identity (scene_id, zone_id) [+0x000]
+fe dc ba 98 76 54 32 10 ef cd ab 89 67 45 23 01 # stream identity (scene_id, zone_id) [+0x010]
+c0 c7 ce d5 dc e3 ea f1 f8 ff 06 0d 14 1b 22 29 # chunk payload [+0x000]
+30 37 3e 45 4c 53 5a 61 68 6f 76 7d 84 8b 92 99 # chunk payload [+0x010]

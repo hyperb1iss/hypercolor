@@ -1,0 +1,20 @@
+# hypercolor websocket golden fixture
+# fixture: 0c-wide-zone-preview
+# tag: 0x0c (WIDE_ZONE_PREVIEW_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::ZonePreviewFrame::try_encode
+# input: 65536x1 rgb (wide layout)
+# total-bytes: 196658
+# stored-bytes: 66
+# note: the remaining 196592 payload bytes are a deterministic fill and are
+#       asserted by the test rather than committed here.
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+0c                                              # tag (wide zone preview)
+78 56 34 12                                     # frame_number u32le
+4e 61 bc 00                                     # timestamp_ms u32le
+01 23 45 67 89 ab cd ef 10 32 54 76 98 ba dc fe # scene_id uuid bytes
+fe dc ba 98 76 54 32 10 ef cd ab 89 67 45 23 01 # zone_id uuid bytes
+00 00 01 00                                     # width u32le
+01 00 00 00                                     # height u32le
+00                                              # format u8
+60 67 6e 75 7c 83 8a 91 98 9f a6 ad b4 bb c2 c9 # payload (first 16 bytes)

@@ -1,0 +1,17 @@
+# hypercolor websocket golden fixture
+# fixture: 03-preview-canvas
+# tag: 0x03 (PreviewFrameChannel::Canvas)
+# encoder: hypercolor_leptos_ext::ws::PreviewFrame::try_encode
+# input: 4x2 Rgb
+# total-bytes: 38
+# stored-bytes: 38
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+03                                              # tag (channel)
+78 56 34 12                                     # frame_number u32le
+4e 61 bc 00                                     # timestamp_ms u32le
+04 00                                           # width u16le
+02 00                                           # height u16le
+00                                              # format u8 (0=rgb, 1=rgba, 2=jpeg)
+10 17 1e 25 2c 33 3a 41 48 4f 56 5d 64 6b 72 79 # payload [+0x000]
+80 87 8e 95 9c a3 aa b1                         # payload [+0x010]

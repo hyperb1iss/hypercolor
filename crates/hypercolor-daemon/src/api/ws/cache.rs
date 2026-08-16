@@ -346,7 +346,7 @@ pub(super) fn encode_frame_binary(frame: &hypercolor_types::event::FrameData) ->
     encode_frame_binary_selected(frame, &FrameZoneSelection::All)
 }
 
-pub(super) fn encode_frame_binary_selected(
+pub fn encode_frame_binary_selected(
     frame: &hypercolor_types::event::FrameData,
     selection: &FrameZoneSelection,
 ) -> Vec<u8> {
@@ -501,7 +501,7 @@ fn encode_frame_json_selected(
     .into()
 }
 
-pub(super) fn encode_spectrum_binary(
+pub fn encode_spectrum_binary(
     spectrum: &hypercolor_types::event::SpectrumData,
     requested_bins: u16,
 ) -> Vec<u8> {

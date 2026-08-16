@@ -1,0 +1,15 @@
+# hypercolor websocket golden fixture
+# fixture: 80-rpc-request
+# tag: 0x80 (RPC_REQUEST_TAG)
+# encoder: hypercolor_leptos_ext::ws::RpcRequest::encode
+# input: method "preview.open", 4 byte payload
+# total-bytes: 28
+# stored-bytes: 28
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+80                                              # tag
+01                                              # schema u8
+77 66 55 44 33 22 11 00                         # request id u64le
+0c 00                                           # method length u16le
+70 72 65 76 69 65 77 2e 6f 70 65 6e             # method utf8
+01 02 03 04                                     # payload
