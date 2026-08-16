@@ -54,13 +54,8 @@ use crate::persistence::AtomicWriteOutcome;
 /// Nothing here is shared. The candidate is a full [`SceneManager`]
 /// clone, so intent methods are ordinary `&mut self` calls with no
 /// locking, and abandoning the mutation costs a drop.
-///
-/// The pristine `base` is kept beside the candidate as the comparand
-/// for the divergence check in [`commit_scene`]. It costs a second
-/// clone per mutation, paid at commit rate rather than frame rate.
 #[derive(Debug)]
 pub struct SceneMutation {
-    base: SceneManager,
     candidate: SceneManager,
     base_revision: SceneRevision,
     events: Vec<HypercolorEvent>,
@@ -637,7 +632,6 @@ impl AppState {
         let manager = self.scene_manager.read().await;
         let base_revision = self.scene_commits.revision();
         SceneMutation {
-            base: manager.clone(),
             candidate: manager.clone(),
             base_revision,
             events: Vec::new(),
@@ -652,19 +646,15 @@ impl AppState {
 ///
 /// The compare-and-swap on the base revision refuses a candidate built
 /// from a revision that no longer exists, rather than letting it
-/// silently overwrite whatever landed in between.
-///
-/// **The swap only sees commits.** The revision advances in
-/// [`SceneCommitSequencer::admit`], which nothing but this function
-/// calls, so a candidate is protected against another `commit_scene`
-/// and against nothing else. Roughly fifty other sites still take
-/// `scene_manager.write()` directly and mutate live scene state without
-/// touching the revision — the zone, layer, display, preset, profile,
-/// and layout-transaction paths that wave 2.3b migrates. Because the
-/// install below replaces the whole manager, a direct write that lands
-/// inside a candidate's window is discarded with no error to either
-/// caller. Every such site must route through here before the swap is
-/// a general guarantee rather than a guarantee between commits.
+/// silently overwrite whatever landed in between. That swap is the
+/// whole concurrency story: the revision advances in
+/// [`SceneCommitSequencer::admit`](crate::domain::commit::SceneCommitSequencer),
+/// which nothing but this function calls, and every scene mutation the
+/// daemon serves comes through here. The three writers that do not are
+/// named and fenced by `no_scene_writer_lives_outside_the_commit_path`
+/// in the service tests: the render thread's per-frame transition tick,
+/// its frame-boundary layout activation, and the startup and shutdown
+/// paths where no `AppState` exists to commit through.
 ///
 /// # Errors
 ///
@@ -678,7 +668,6 @@ pub async fn commit_scene(
     mutation: SceneMutation,
 ) -> Result<SceneCommit, DomainError> {
     let SceneMutation {
-        base,
         candidate,
         base_revision,
         events,
@@ -703,26 +692,6 @@ pub async fn commit_scene(
                 expected: base_revision,
                 current: current_revision,
             });
-        }
-
-        // TEMPORARY BRIDGE — remove in wave 2.3b.
-        //
-        // The revision above only moves on commit, so it cannot see the
-        // scene writers that still take `scene_manager.write()`
-        // directly. Since the install below replaces the whole manager,
-        // one of those landing inside this candidate's window would be
-        // discarded with no error to anyone. Comparing the live state
-        // against the pristine base turns that silent lost update into
-        // a retryable conflict.
-        //
-        // Wave 2.3b routes the last direct writer through here, at
-        // which point the revision is the only mutation path and this
-        // check reduces to always-true. Delete it then.
-        if !scene_state_matches(&manager, &base) {
-            return Err(DomainError::conflict(
-                "Scene state changed underneath this request; a concurrent writer \
-                 modified it. Retry against current state.",
-            ));
         }
 
         let previous = std::mem::replace(&mut *manager, candidate);
@@ -804,76 +773,6 @@ pub async fn commit_scene(
             ))
         }
     }
-}
-
-/// Whether two scene managers hold the same scene state, for the
-/// divergence bridge above.
-///
-/// Deliberately narrower than whole-manager equality, and not merely
-/// for cost. The render thread takes `scene_manager.write()` on every
-/// frame of a running transition to call `tick_transition`
-/// (`render_thread/scene_snapshot.rs`), so any comparand including
-/// transition progress would report divergence on nearly every commit
-/// made during a transition — which is exactly when `activate_scene`
-/// runs. Progress is render-local and no commit means to own it.
-///
-/// Everything else a candidate replaces is compared, and each member
-/// exists because some direct writer can move it alone:
-///
-/// - the scene set, as a map, for scene content;
-/// - the **whole** priority stack as an ordered `(scene, priority)`
-///   sequence, not just its winner, because a mutation to a shadowed
-///   entry leaves the active scene identical while still being work
-///   this install would erase;
-/// - the render-group revision as a **number**, because a direct
-///   `invalidate_active_render_groups` bumps the counter without
-///   necessarily changing the resolved zones, and comparing only the
-///   zones would miss it;
-/// - the resolved zones themselves, for content;
-/// - the runtime default display groups as a full set, because a
-///   default hidden behind an assigned display zone never appears in
-///   the resolved zones at all.
-///
-/// `entered_at` is excluded from the stack comparison: it is an
-/// `Instant` stamped at push time, so it carries no state a commit
-/// could lose.
-fn scene_state_matches(live: &SceneManager, base: &SceneManager) -> bool {
-    if live.active_scene_id() != base.active_scene_id()
-        || live.activation_history() != base.activation_history()
-        || live.active_render_groups_revision() != base.active_render_groups_revision()
-        || live.active_render_groups().as_ref() != base.active_render_groups().as_ref()
-        || live.default_display_groups() != base.default_display_groups()
-        || !priority_stacks_match(live, base)
-    {
-        return false;
-    }
-
-    // `list` walks a HashMap, so the order is not stable between calls
-    // and the scenes are compared as a set keyed by id.
-    let live_scenes = live.list();
-    let base_scenes = base.list();
-    if live_scenes.len() != base_scenes.len() {
-        return false;
-    }
-    let base_by_id: HashMap<SceneId, &Scene> = base_scenes
-        .into_iter()
-        .map(|scene| (scene.id, scene))
-        .collect();
-    live_scenes
-        .into_iter()
-        .all(|scene| base_by_id.get(&scene.id) == Some(&scene))
-}
-
-/// The priority stack as the ordered identity sequence a commit can
-/// lose, ignoring the push timestamps.
-fn priority_stacks_match(live: &SceneManager, base: &SceneManager) -> bool {
-    let live_entries = live.priority_stack().entries();
-    let base_entries = base.priority_stack().entries();
-    live_entries.len() == base_entries.len()
-        && live_entries
-            .iter()
-            .zip(base_entries)
-            .all(|(live, base)| live.scene_id == base.scene_id && live.priority == base.priority)
 }
 
 // ── Scene media admission ────────────────────────────────────────────────

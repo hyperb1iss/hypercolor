@@ -249,6 +249,11 @@ async fn current_scene_runtime_snapshot(
     };
 
     if transitioning {
+        // RENDER-LOCAL WRITER (Spec 76 §2.3). Transition progress
+        // advances every frame and belongs to the render thread, not to
+        // any commit — routing it through the commit path would mint a
+        // scene revision per frame and invalidate every in-flight
+        // candidate. It moves no state a commit means to own.
         let mut manager = state.scene_manager.write().await;
         manager.tick_transition(delta_secs);
         return snapshot_scene_runtime(state, scene_snapshot_cache, &manager).await;

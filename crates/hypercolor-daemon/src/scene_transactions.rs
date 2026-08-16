@@ -488,6 +488,15 @@ pub(crate) async fn publish_prepared_layout_activation<F>(
 where
     F: FnOnce(SpatialEngine),
 {
+    // FRAME-BOUNDARY WRITER (Spec 76 §2.3, §6.1). This runs on the
+    // render thread and must hold the scene lock and the spatial lock
+    // together, so the renderer never observes a layout and a zone set
+    // that disagree. `commit_scene` takes neither the spatial lock nor
+    // an `AppState` the render thread could reach, so it cannot serve
+    // this swap; §6.1 re-points commit at this transaction instead. The
+    // source-is-current check below is this writer's own
+    // compare-and-swap, and it refuses whenever a commit has moved the
+    // active scene, its resolved zones, or the authoritative layout.
     let mut manager = scene_manager.write().await;
     let mut authoritative_spatial_engine = spatial_engine.write().await;
     let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
