@@ -344,15 +344,12 @@ A robust client validates the header before allocating for the payload. Every co
 here checks its declared length against the actual message length, so a truncated or
 malformed frame fails cleanly instead of reading past the buffer.
 
-## Schema negotiation
+## Schema bytes
 
-The `SchemaRange` and `negotiate_highest_common_schema` helpers exist for versioned
-frames that carry a schema byte. A client advertises the inclusive range of schema
-versions it understands, the server does the same, and the negotiated version is the
-highest value in the intersection of the two ranges. If the ranges do not overlap,
-negotiation returns `None` and the two peers have no common version to speak. Every
-schema byte on the wire today is `1`, on both preview transport control frames, so
-this machinery is headroom rather than something any frame currently exercises.
+Every schema byte on the wire today is `1`, on both preview transport control
+frames. The byte exists so a control frame's layout can be revised without
+burning a new tag; a decoder rejects a schema value it does not recognize rather
+than guessing at the body.
 
 The preview transport's own `v1` and `v2` capability strings are a separate
 mechanism, and they never reach the binary wire. They negotiate the memory
@@ -364,11 +361,9 @@ reading the bytes on this page never needs to know which one was negotiated.
 
 | Concern | File |
 |---|---|
-| Frame prefix, encode/decode traits, `DecodeError` | `ws/frame.rs` |
-| `BinaryFrameSchema` trait, public re-exports | `ws/mod.rs` |
+| Tag constants and public re-exports | `ws/mod.rs` |
 | Preview, zone-preview, screen-zones codecs | `ws/preview.rs` |
 | Spectrum codec | `ws/spectrum.rs` |
-| Schema range negotiation | `ws/schema.rs` |
 | Codec round-trip tests | `crates/hypercolor-leptos-ext/tests/ws_preview_frame_tests.rs` |
 | Daemon conformance tests | `daemon/src/api/ws/tests.rs` |
 | Machine-checked frame manifest | `protocol/websocket-v1.json` |

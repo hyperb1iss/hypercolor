@@ -1,23 +1,12 @@
-mod channel;
-mod frame;
+mod backoff;
 mod input_event;
 mod preview;
-mod reconnect;
-mod replay;
-mod schema;
 mod spectrum;
 pub mod transport;
 
 pub const HYPERCOLOR_WS_PROTOCOL: &str = "hypercolor-v1";
 
-pub use channel::{
-    BackpressurePolicy, BackpressureQueue, BinaryChannel, BinaryChannelRecvError, BlockOnFull,
-    Channel, DropNewest, DropOldest, Latest, OverflowAction, Queue,
-};
-pub use frame::{
-    BinaryFrame, BinaryFrameDecode, BinaryFrameEncode, DecodeError, validate_frame_prefix,
-    write_frame_prefix,
-};
+pub use backoff::{ExponentialBackoff, Jitter};
 pub use hypercolor_leptos_ext_macros::BinaryFrame;
 pub use input_event::{
     INPUT_EVENT_PAYLOAD_SCHEMA, InputEventPayloadDecodeError, TimedInputEventPayload,
@@ -50,15 +39,6 @@ pub use preview::{
     ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
     split_preview_publication, split_preview_publication_with_capability,
 };
-pub use reconnect::{
-    Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,
-    ReconnectRecvError, ReconnectSendError, Reconnecting,
-};
-pub use replay::{
-    ChannelDescriptor, Direction, ReplayEntry, SessionPlayer, SessionRecord, SessionRecorder,
-    SessionTape,
-};
-pub use schema::{SchemaRange, negotiate_highest_common_schema};
 pub use spectrum::{
     SPECTRUM_FRAME_HEADER_LEN, SPECTRUM_FRAME_TAG, SpectrumFrame, SpectrumFrameDecodeError,
 };
@@ -68,7 +48,3 @@ pub trait BinaryFrameSchema {
     const SCHEMA: u8;
     const NAME: &'static str;
 }
-
-pub trait BinaryFrameMetadata: BinaryFrameSchema {}
-
-impl<T: BinaryFrameSchema> BinaryFrameMetadata for T {}

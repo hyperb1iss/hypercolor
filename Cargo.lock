@@ -5300,12 +5300,8 @@ dependencies = [
 name = "hypercolor-leptos-ext"
 version = "0.3.2"
 dependencies = [
- "async-trait",
  "axum",
  "bytes",
- "futures-channel",
- "futures-core",
- "futures-util",
  "gloo-events",
  "hypercolor-leptos-ext-macros",
  "js-sys",
@@ -5315,9 +5311,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tokio-tungstenite 0.26.2",
- "tower",
- "tower-http",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

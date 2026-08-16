@@ -2,9 +2,6 @@
 
 extern crate self as hypercolor_leptos_ext;
 
-pub mod utils;
-pub use utils::MaybeSend;
-
 #[cfg(feature = "ws-core")]
 pub mod ws;
 
