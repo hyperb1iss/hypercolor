@@ -12,6 +12,7 @@ pub mod discovery;
 pub mod display_frames;
 pub mod display_output;
 pub mod display_preferences;
+pub mod domain;
 pub mod driver_inventory;
 pub mod effect_layouts;
 pub mod extensions;
