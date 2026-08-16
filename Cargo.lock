@@ -5167,7 +5167,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
- "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-types",
  "reqwest 0.12.28",
@@ -5183,7 +5182,6 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-types",
  "reqwest 0.12.28",
@@ -5203,7 +5201,6 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-types",
  "reqwest 0.12.28",
@@ -5235,7 +5232,6 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-types",
  "log",
