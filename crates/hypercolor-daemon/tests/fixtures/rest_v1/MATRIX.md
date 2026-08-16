@@ -87,6 +87,11 @@ when it does:
 | `validation_error` | **422**, not 400 | `Validation` | optional; `field` folds in |
 | `rate_limited` | 429 | `RateLimited` | `{limit, window_seconds, retry_after}` |
 | `device_unavailable` | 503 | `DeviceUnavailable` | none |
+
+`device_unavailable` is the one row no route emits today. The variant is
+contract (Spec 76 §2.1) and the MCP projection consumes it, but every device
+refusal currently reaches the wire as a `conflict`. It is listed so the closed
+set is complete, not because a client will see it.
 | `internal_error` | 500 | `Internal` | none |
 
 Two message rules are contract:

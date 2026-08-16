@@ -226,9 +226,7 @@ impl DaemonClient {
         }
 
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Simulator frame request failed ({status}): {body}");
+            return Err(daemon_error("Simulator frame request failed", response).await);
         }
 
         let bytes = response.bytes().await?;

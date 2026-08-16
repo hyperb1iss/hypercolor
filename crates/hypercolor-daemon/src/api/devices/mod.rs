@@ -1536,20 +1536,7 @@ fn build_attachment_identify_frame(
         .slots
         .iter()
         .find(|s| s.id == slot_id)
-        .ok_or_else(|| {
-            DomainError::validation_field(
-                "slot_id",
-                format!(
-                    "Slot '{slot_id}' not found (available: {})",
-                    profile
-                        .slots
-                        .iter()
-                        .map(|s| s.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            )
-        })?;
+        .ok_or_else(|| DomainError::not_found(ResourceKind::AttachmentSlot, slot_id))?;
 
     let slot_bindings: Vec<(usize, &ComponentBinding)> = profile
         .bindings

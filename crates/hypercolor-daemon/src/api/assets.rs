@@ -243,8 +243,10 @@ async fn parse_upload(
     }
 
     let Some(bytes) = file_bytes else {
-        return Err(DomainError::validation_field(
-            "file",
+        // A multipart body missing a required part is structurally
+        // incomplete, so it reads the same here as it does on the effect
+        // upload route.
+        return Err(DomainError::malformed(
             "Missing multipart file field named \"file\".",
         ));
     };
