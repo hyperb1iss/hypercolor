@@ -1188,6 +1188,50 @@ async fn shutdown_is_idempotent() {
 }
 
 #[tokio::test]
+async fn a_stale_runtime_snapshot_never_blocks_startup() {
+    let guard = TestDataDirGuard::new().await;
+    // A snapshot written before `driver_runtime_cache` was retired. The
+    // snapshot denies unknown fields, so this one no longer parses; the
+    // daemon must log it and start fresh rather than refuse to boot.
+    std::fs::create_dir_all(
+        guard
+            .runtime_state_path()
+            .parent()
+            .expect("runtime state path has a parent"),
+    )
+    .expect("data directory should be created");
+    std::fs::write(
+        guard.runtime_state_path(),
+        serde_json::json!({
+            "active_scene_id": null,
+            "default_scene_groups": [],
+            "active_layout_id": "layout_gone",
+            "global_brightness": 0.25,
+            "manual_paused": true,
+            "driver_runtime_cache": {},
+        })
+        .to_string(),
+    )
+    .expect("stale snapshot should be written");
+
+    let mut config = default_config();
+    config.daemon.start_profile = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
+        .expect("a stale snapshot must not block initialization");
+
+    state
+        .start()
+        .await
+        .expect("a stale snapshot must not block startup");
+
+    // Nothing from the unreadable snapshot was restored.
+    assert!((current_global_brightness(&state.power_state) - 1.0).abs() < f32::EPSILON);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn daemon_start_restores_persisted_active_layout_from_disk() {
     let guard = TestDataDirGuard::new().await;
     let mut layouts = std::collections::HashMap::new();
@@ -1214,7 +1258,6 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             active_layout_id: Some(restored_layout.id.clone()),
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -1400,7 +1443,6 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
         Some(metadata.id)
     );
     assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
-    assert!(snapshot.driver_runtime_cache.is_empty());
     let wled_cache = state.driver_host.driver_inventory().driver_cache("wled");
     let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
         .expect("probe IP inventory should deserialize");
@@ -1456,7 +1498,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
             active_layout_id: None,
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -1544,7 +1585,6 @@ async fn default_scene_contents_restore_on_restart() {
             active_layout_id: None,
             global_brightness: 1.0,
             manual_paused: false,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");

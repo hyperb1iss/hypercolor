@@ -10038,7 +10038,6 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
         persisted.active_layout_id.as_deref(),
         Some(candidate.id.as_str())
     );
-    assert!(persisted.driver_runtime_cache.is_empty());
     assert_eq!(
         state
             .driver_host
