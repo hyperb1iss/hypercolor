@@ -191,15 +191,12 @@ async fn write_config_key(
 
     let updated: HypercolorConfig = match serde_json::from_value(root) {
         Ok(cfg) => cfg,
-        Err(e) => {
-            return ApiError::validation(format!(
-                "Config update failed validation for '{}': {e}",
-                key
-            ));
+        Err(error) => {
+            return rejected_value(&key, "type validation", &error.to_string());
         }
     };
-    if let Err(error) = validate_driver_config_scope(state, Some(&key), &updated) {
-        return ApiError::validation(error);
+    if let Err(rejection) = validate_driver_config_scope(state, Some(&key), &updated) {
+        return rejected_value(&rejection.key, "driver validation", &rejection.detail);
     }
     if let Err(error) = updated.capture.validate() {
         return ApiError::validation(error.to_string());
@@ -526,7 +523,10 @@ async fn reset_config_state(
 
         match serde_json::from_value(current) {
             Ok(cfg) => cfg,
-            Err(e) => return ApiError::internal(format!("Failed to build reset config: {e}")),
+            // The default this rebuilds around is the daemon's, but the
+            // document it lands in still holds the neighbors a secret
+            // key keeps company with.
+            Err(error) => return rejected_value(key, "type validation", &error.to_string()),
         }
     } else {
         full_reset_config(&current_snapshot)
@@ -535,9 +535,9 @@ async fn reset_config_state(
     // it on their validity would reject the one request a user makes to
     // recover from a config they can no longer edit by hand.
     if let Some(key) = requested_key.as_deref()
-        && let Err(error) = validate_driver_config_scope(state, Some(key), &updated)
+        && let Err(rejection) = validate_driver_config_scope(state, Some(key), &updated)
     {
-        return ApiError::validation(error);
+        return rejected_value(&rejection.key, "driver validation", &rejection.detail);
     }
     if let Err(error) = updated.capture.validate() {
         return ApiError::validation(error.to_string());
@@ -674,11 +674,18 @@ fn config_snapshot(state: &AppState) -> HypercolorConfig {
     }
 }
 
+/// A driver's own validator rejecting an entry, with the key it names
+/// kept apart from the detail so the caller can decide what to render.
+struct DriverConfigRejection {
+    key: String,
+    detail: String,
+}
+
 fn validate_driver_config_scope(
     state: &AppState,
     key: Option<&str>,
     config: &HypercolorConfig,
-) -> Result<(), String> {
+) -> Result<(), DriverConfigRejection> {
     let driver_ids = match key {
         None | Some("drivers") => state.driver_registry.ids(),
         Some(value) => value
@@ -696,12 +703,30 @@ fn validate_driver_config_scope(
             continue;
         };
         let entry = config.drivers.get(&driver_id).cloned().unwrap_or_default();
-        provider.validate_config(&entry).map_err(|error| {
-            format!("Config update failed validation for 'drivers.{driver_id}': {error}")
-        })?;
+        provider
+            .validate_config(&entry)
+            .map_err(|error| DriverConfigRejection {
+                key: format!("drivers.{driver_id}"),
+                detail: error.to_string(),
+            })?;
     }
 
     Ok(())
+}
+
+/// Render a rejected value without echoing it back on a secret key.
+///
+/// Serde and driver validators quote the value they refused, so a
+/// secret-classified key would put the submitted credential in the
+/// response body and in whatever logs that body. Those keys report the
+/// key and the class of failure; plain keys keep the detail that makes
+/// the error actionable.
+fn rejected_value(key: &str, class: &str, detail: &str) -> Response {
+    if config_registry::is_redacted(key) {
+        ApiError::validation(format!("Value for '{key}' failed {class}"))
+    } else {
+        ApiError::validation(format!("Value for '{key}' failed {class}: {detail}"))
+    }
 }
 
 fn get_json_path<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {

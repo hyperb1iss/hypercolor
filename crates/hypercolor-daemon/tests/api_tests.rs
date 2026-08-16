@@ -2082,15 +2082,99 @@ async fn config_set_driver_registry_key_rejects_non_routable_ip() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(message.contains("drivers.wled"));
+    assert!(message.contains("driver validation"));
     assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message should be a string")
-            .contains("invalid WLED known IP")
+        !message.contains("127.0.0.1"),
+        "a secret-classified key must not echo the value it refused: {message}"
     );
     assert!(
         !config_path.exists(),
         "invalid driver config should not be persisted"
+    );
+}
+
+/// A rejected write must not hand the submitted value back.
+///
+/// Serde quotes the value it refused, so a wrong-typed write to a
+/// secret-classified key would put a credential in the error body and
+/// in whatever logs it.
+#[tokio::test]
+async fn config_write_rejection_does_not_echo_a_secret_value() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let secret = "sk-live-do-not-echo-me";
+    let response = app
+        .oneshot(config_put_request(
+            "drivers.wled.enabled",
+            &serde_json::json!(secret),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(
+        message.contains("drivers.wled.enabled"),
+        "the caller still learns which key failed: {message}"
+    );
+    assert!(
+        !message.contains(secret),
+        "a secret-classified key must not echo the value it refused: {message}"
+    );
+    assert!(
+        !serde_json::to_string(&json)
+            .expect("error body should serialize")
+            .contains(secret),
+        "the value must not survive anywhere in the error body"
+    );
+}
+
+/// Plain keys keep the detail that makes a rejection actionable.
+#[tokio::test]
+async fn config_write_rejection_keeps_detail_for_a_plain_key() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!("not-a-number"),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(message.contains("daemon.target_fps"));
+    assert!(
+        message.contains("invalid type"),
+        "a plain key keeps the serde detail: {message}"
     );
 }
 
