@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use hypercolor_macos_owner::{MACOS_APP_PRODUCT_NAME, MacosDaemonOwner};
+use hypercolor_macos_owner::{MACOS_APP_BUNDLE_BINARY_NAMES, MacosDaemonOwner};
 use security_framework::os::macos::code_signing::{
     Flags as CodeSigningFlags, GuestAttributes, SecCode, SecRequirement,
 };
@@ -163,11 +163,10 @@ fn app_sidecar_parent_is_valid(
     if !app_sidecar_layout_is_valid(current_executable) {
         return Ok(false);
     }
-    let expected_parent = current_executable
+    let daemon_directory = current_executable
         .parent()
-        .expect("validated app sidecar path has a parent")
-        .join(MACOS_APP_PRODUCT_NAME);
-    if !paths_are_equal(parent_executable, &expected_parent) {
+        .expect("validated app sidecar path has a parent");
+    if !parent_is_adjacent_app_binary(parent_executable, daemon_directory) {
         return Ok(false);
     }
 
@@ -195,6 +194,22 @@ fn app_sidecar_parent_is_valid(
 
 fn is_adhoc_requirement(requirement: &str) -> bool {
     requirement.starts_with("cdhash ")
+}
+
+/// Whether the observed parent executable is one of the bundle's app
+/// binaries sitting in the same `Contents/MacOS` directory as the daemon.
+///
+/// The canonical file name must match the candidate byte-for-byte: on the
+/// default case-insensitive APFS volume, a product-cased candidate would
+/// otherwise resolve onto the lowercase CLI binary in the same directory.
+fn parent_is_adjacent_app_binary(parent_executable: &Path, daemon_directory: &Path) -> bool {
+    MACOS_APP_BUNDLE_BINARY_NAMES.iter().any(|name| {
+        paths_are_equal(parent_executable, &daemon_directory.join(name))
+            && parent_executable
+                .canonicalize()
+                .ok()
+                .is_some_and(|path| path.file_name() == Some(OsStr::new(name)))
+    })
 }
 
 fn live_process_path_matches(pid: u32, expected: &Path) -> Result<bool> {
@@ -407,8 +422,9 @@ mod tests {
     use super::{
         APP_REQUIREMENT_PREFIX, MacosLauncherAuthorityEvidence, SIDECAR_REQUIREMENT_PREFIX,
         app_parent_requirement, app_sidecar_layout_is_valid, app_sidecar_parent_is_valid,
-        code_path_matches, is_adhoc_requirement, parse_launchctl_service_pid,
-        parse_macos_owner_claim, paths_are_equal, resolve_macos_launcher_owner,
+        code_path_matches, is_adhoc_requirement, parent_is_adjacent_app_binary,
+        parse_launchctl_service_pid, parse_macos_owner_claim, paths_are_equal,
+        resolve_macos_launcher_owner,
     };
     use hypercolor_macos_owner::MacosDaemonOwner;
 
@@ -530,6 +546,31 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn adjacent_app_binary_check_accepts_the_real_bundle_binary_name() {
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let macos_dir = directory.path().join("Hypercolor.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos_dir).expect("bundle directories should build");
+        for name in ["hypercolor-app", "hypercolor", "hypercolor-daemon"] {
+            std::fs::write(macos_dir.join(name), b"fixture").expect("fixture binary should write");
+        }
+
+        // Tauri bundles ship the cargo binary name, not the product name.
+        assert!(parent_is_adjacent_app_binary(
+            &macos_dir.join("hypercolor-app"),
+            &macos_dir
+        ));
+        // The CLI living in the same directory is not an app launcher.
+        assert!(!parent_is_adjacent_app_binary(
+            &macos_dir.join("hypercolor"),
+            &macos_dir
+        ));
+        // A same-named binary outside the daemon's directory does not count.
+        let elsewhere = directory.path().join("hypercolor-app");
+        std::fs::write(&elsewhere, b"fixture").expect("outside fixture should write");
+        assert!(!parent_is_adjacent_app_binary(&elsewhere, &macos_dir));
     }
 
     #[test]

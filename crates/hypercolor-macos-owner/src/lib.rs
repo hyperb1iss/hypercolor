@@ -29,6 +29,11 @@ pub const MACOS_APP_PRODUCT_NAME: &str = "Hypercolor";
 pub const MACOS_APP_LAUNCH_AGENT_PLIST_FILE_NAME: &str = "Hypercolor.plist";
 /// Main executable location within the signed Tauri app bundle.
 pub const MACOS_APP_BUNDLE_EXECUTABLE_RELATIVE_PATH: &str = "Contents/MacOS/Hypercolor";
+/// Binary names the app bundle's main executable may carry. Tauri names
+/// the `.app` folder after the product but keeps the cargo binary name
+/// for the executable, so real bundles ship `hypercolor-app`; the
+/// product-named form is accepted for a future renamed bundle.
+pub const MACOS_APP_BUNDLE_BINARY_NAMES: [&str; 2] = ["hypercolor-app", MACOS_APP_PRODUCT_NAME];
 /// Maximum UTF-8 byte length for an audit-token identity.
 pub const MAX_MACOS_AUDIT_TOKEN_IDENTITY_BYTES: usize = 256;
 /// Maximum UTF-8 byte length for a diagnostic executable path.
