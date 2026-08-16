@@ -319,59 +319,55 @@ pub async fn activate_scene(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let asset_mime_types = asset_mime_types(state.as_ref()).await;
-    let media_config = current_media_config(state.as_ref());
-    let mut manager = state.scene_manager.write().await;
-    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
-        return ApiError::not_found(format!("Scene not found: {id}"));
+    // The media-cap violation body is a frozen v1 shape, so the adapter
+    // renders it from the shared evaluation rather than from the service's
+    // error text. The service enforces the same rule regardless.
+    let (scene_id, admission) = {
+        let asset_mime_types = asset_mime_types(state.as_ref()).await;
+        let media_config = current_media_config(state.as_ref());
+        let manager = state.scene_manager.read().await;
+        let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+            return ApiError::not_found(format!("Scene not found: {id}"));
+        };
+        let Some(scene) = manager.get(&scene_id) else {
+            return ApiError::not_found(format!("Scene not found: {id}"));
+        };
+        let admission = crate::domain::scene::evaluate_scene_media_admission(
+            scene,
+            &asset_mime_types,
+            &media_config,
+        );
+        (scene_id, admission)
     };
-    let previous_active_scene = manager.active_scene_id().copied();
-
-    let (scene_name, media_admission) = match manager.get(&scene_id) {
-        Some(scene) => {
-            let media_admission = scene_media_admission_counts(scene, &asset_mime_types);
-            if let Some(response) = validate_scene_media_admission(&media_admission, &media_config)
-            {
-                return response;
-            }
-            (scene.name.clone(), media_admission)
-        }
-        None => return ApiError::not_found(format!("Scene not found: {id}")),
-    };
-
-    if let Err(e) = manager.activate(&scene_id, None) {
-        return ApiError::internal(format!("Failed to activate scene: {e}"));
-    }
-    let current_active_scene = manager.active_scene().cloned();
-    drop(manager);
-
-    apply_scene_media_soft_admission(
-        state.as_ref(),
-        scene_id,
-        &scene_name,
-        media_admission.estimated_cost_us,
-    )
-    .await;
-
-    persist_runtime_session(&state).await;
-    if previous_active_scene != current_active_scene.as_ref().map(|scene| scene.id)
-        && let Some(current_active_scene) = current_active_scene.as_ref()
-    {
-        publish_active_scene_changed(
-            state.as_ref(),
-            previous_active_scene,
-            current_active_scene,
-            hypercolor_types::event::SceneChangeReason::UserActivate,
+    if let Some(violation) = admission.violation.as_ref() {
+        return ApiError::validation_with_details(
+            violation.message.clone(),
+            serde_json::json!({
+                "caps": violation.caps,
+                "counts": violation.counts,
+                "layers": violation.layers,
+            }),
         );
     }
 
-    // Which scene is active decides which devices are worth connecting.
-    crate::api::sync_connectivity(state.as_ref()).await;
+    let activated = match crate::domain::scene::activate_scene(
+        state.as_ref(),
+        crate::domain::scene::ActivateScene {
+            scene_id,
+            transition: None,
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        Ok(activated) => activated,
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+    };
 
     ApiResponse::ok(serde_json::json!({
         "scene": {
-            "id": scene_id.to_string(),
-            "name": scene_name,
+            "id": activated.scene_id.to_string(),
+            "name": activated.scene_name,
         },
         "activated": true,
     }))
@@ -474,7 +470,8 @@ pub(crate) fn validate_scene_media_admission(
     ))
 }
 
-pub(crate) struct MediaAdmissionViolationDetails {
+#[derive(Debug)]
+pub struct MediaAdmissionViolationDetails {
     pub message: String,
     pub caps: serde_json::Value,
     pub counts: serde_json::Value,
@@ -534,6 +531,13 @@ pub(crate) struct MediaAdmissionCounts {
     livestream_layers: Vec<serde_json::Value>,
 }
 
+impl MediaAdmissionCounts {
+    /// Estimated per-frame producer cost in microseconds.
+    pub(crate) const fn estimated_cost_us(&self) -> u64 {
+        self.estimated_cost_us
+    }
+}
+
 pub(crate) fn scene_media_admission_counts(
     scene: &Scene,
     asset_mime_types: &HashMap<AssetId, String>,
@@ -587,7 +591,7 @@ pub(crate) fn scene_media_admission_counts(
     counts
 }
 
-async fn apply_scene_media_soft_admission(
+pub(crate) async fn apply_scene_media_soft_admission(
     state: &AppState,
     scene_id: SceneId,
     scene_name: &str,

@@ -582,6 +582,7 @@ impl DaemonState {
             effect_registry,
             scene_manager,
             scene_store,
+            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
             event_bus,
             asset_library,
             library_store,

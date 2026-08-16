@@ -1957,6 +1957,16 @@ impl SceneManager {
         removed
     }
 
+    /// Every runtime default face zone, in insertion order.
+    ///
+    /// A default hidden behind an assigned display zone never reaches
+    /// the resolved render groups, so a caller comparing scene state
+    /// for concurrent modification has to read the set directly.
+    #[must_use]
+    pub fn default_display_groups(&self) -> &[Zone] {
+        &self.default_display_groups
+    }
+
     /// The runtime default face zone registered for a display, if any.
     #[must_use]
     pub fn default_display_group_for(&self, device_id: DeviceId) -> Option<&Zone> {

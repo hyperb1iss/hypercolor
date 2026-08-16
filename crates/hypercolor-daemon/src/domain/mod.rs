@@ -32,6 +32,10 @@
 //! canonical error envelope; legacy v1 paths keep their frozen error
 //! projections via the [`legacy`] shims.
 
+pub mod commit;
+pub mod effect;
+pub mod scene;
+
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -52,6 +56,7 @@ pub enum ResourceKind {
     Effect,
     Device,
     Display,
+    Driver,
     Profile,
     Layout,
     Preset,
@@ -70,6 +75,7 @@ impl std::fmt::Display for ResourceKind {
             Self::Effect => "effect",
             Self::Device => "device",
             Self::Display => "display",
+            Self::Driver => "driver",
             Self::Profile => "profile",
             Self::Layout => "layout",
             Self::Preset => "preset",
@@ -358,13 +364,71 @@ pub fn with_etag<R: Versioned>(response: Response, resource: &R) -> Response {
     attach_version_etag(response, resource.version())
 }
 
-/// Frozen legacy error projections for v1 paths (Spec 76 §0).
+/// Frozen legacy error projections for v1 paths.
 ///
-/// The v1 compat matrix pins these shapes; canonical routes never use
-/// them. The three byte-identical hand copies in the scene/zone
-/// handlers collapse onto this module as waves 2.2/2.3 migrate.
+/// **This whole module is scheduled for deletion.** Hypercolor is
+/// pre-1.0 and the program removes compat glue rather than accumulating
+/// it: in-repo clients move in lockstep with wire changes and persisted
+/// files migrate forward once. These projections exist only so the
+/// service lift could land without changing wire bytes in the same PR;
+/// the route-flip wave deletes them along with the legacy shapes they
+/// reproduce. Do not build on them, and do not add a family — if you
+/// are here because a new path needs a legacy rendering, that path
+/// should be emitting the canonical envelope instead.
+///
+/// Until then this module is the single index for them, and the v1
+/// compat matrix pins these shapes.
+///
+/// There is deliberately **more than one** `DomainError` projection,
+/// because v1 path families do not agree on their frozen bytes. A
+/// single universal adapter would have to pick one family's rendering
+/// and would silently falsify the others. The two that exist:
+///
+/// - [`into_v1_response`] is the **helper family** — the device,
+///   layer, template, simulator, and control-surface helpers that wave
+///   2.2 typed. It is the default: sentence-cased not-found, the
+///   internal message spelled out, `details` always serialized, and
+///   `PreconditionFailed`/`DeviceUnavailable` rendered canonically
+///   because no helper in that family produces them. It still lives in
+///   `api::envelope` next to the `ApiError` factory it is built from,
+///   and is re-exported here so both families are found in one place.
+/// - [`scene_family_error_response`] is the **scene-mutation family** —
+///   `POST /effects/{id}/apply`, `POST /scenes/{id}/activate`, and the
+///   library activation they share. It differs in exactly one arm, and
+///   defers to the helper family for the rest so the two cannot drift.
+///
+/// They are separate because the families genuinely disagree on their
+/// bytes, so one universal adapter would have to pick a rendering and
+/// silently falsify the other. That is a property of the legacy shapes
+/// being frozen, not a pattern worth keeping past their deletion.
 pub mod legacy {
-    use super::{HeaderValue, IntoResponse, Json, Response, StatusCode, header, json};
+    use super::{DomainError, HeaderValue, IntoResponse, Json, Response, StatusCode, header, json};
+    use crate::api::envelope::ApiError;
+    pub(crate) use crate::api::envelope::into_v1_response;
+
+    /// Render a [`DomainError`] in the frozen v1 shapes of the
+    /// **scene-mutation family**: `POST /effects/{id}/apply` and
+    /// `POST /scenes/{id}/activate`, plus the library activation they
+    /// share.
+    ///
+    /// Exactly one arm differs from the helper family, and every other
+    /// arm defers to it so the two renderings cannot drift apart.
+    ///
+    /// `PreconditionFailed` is the difference. These paths carry no
+    /// `If-Match`, so before the commit compare-and-swap existed they
+    /// could not produce one, and the helper family renders it as a
+    /// canonical 412 with an envelope this family has never emitted.
+    /// Here it is a 409 naming the revision that won, which is both a
+    /// v1-shaped body and what a caller needs in order to retry.
+    #[must_use]
+    pub fn scene_family_error_response(error: DomainError) -> Response {
+        match error {
+            DomainError::PreconditionFailed { current, .. } => ApiError::conflict(format!(
+                "Scene state changed while applying this request; current revision is {current}"
+            )),
+            other => into_v1_response(other),
+        }
+    }
 
     /// The frozen v1 412 body: `{ "error": "<label> mismatch",
     /// "current": N }` with the current version as `ETag` — top-level
@@ -473,6 +537,54 @@ mod tests {
             expected,
             "the frozen v1 412 body, byte for byte against the builder construction"
         );
+    }
+
+    #[tokio::test]
+    async fn the_scene_family_projection_keeps_its_own_frozen_renderings() {
+        // Sentence case, because that is how every v1 not-found message
+        // on these paths reads.
+        let response = legacy::scene_family_error_response(DomainError::NotFound {
+            kind: ResourceKind::Effect,
+            id: "aurora".to_owned(),
+        });
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            body_json(response).await["error"]["message"],
+            "Effect not found: aurora"
+        );
+
+        // A commit compare-and-swap loss is a 409 here, not the
+        // canonical 412: these paths carry no `If-Match` and never
+        // spoke 412 before the swap existed.
+        let response = legacy::scene_family_error_response(DomainError::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            expected: 4,
+            current: 7,
+        });
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let json = body_json(response).await;
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("current revision is 7")),
+            "the 409 must name the revision that won: {json}"
+        );
+
+        // Internal messages stay on the wire, as v1 has always sent them.
+        let response = legacy::scene_family_error_response(DomainError::Internal(anyhow::anyhow!(
+            "Failed to persist scene: disk on fire"
+        )));
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body_json(response).await["error"]["message"],
+            "Failed to persist scene: disk on fire"
+        );
+    }
+
+    #[test]
+    fn every_resource_kind_renders_a_label() {
+        assert_eq!(ResourceKind::Driver.to_string(), "driver");
+        assert_eq!(ResourceKind::Scene.to_string(), "scene");
     }
 
     #[tokio::test]

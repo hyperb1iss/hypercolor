@@ -1083,6 +1083,83 @@ async fn stateful_set_effect_rejects_display_faces() {
     assert!(format!("{error}").contains("display face"));
 }
 
+/// `transition_ms` used to be accepted, echoed back, and never applied.
+/// Routing through the shared service gives it the rule REST has always
+/// enforced: a zero-duration cut applies, anything else is refused.
+#[tokio::test]
+async fn stateful_set_effect_refuses_a_transition_it_cannot_apply() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let error = execute_tool_with_state(
+        "set_effect",
+        &json!({
+            "query": "aurora",
+            "transition_ms": 500
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("effect transitions are not implemented");
+    assert!(
+        format!("{error}").contains("not implemented yet"),
+        "unexpected error: {error}"
+    );
+
+    // The scene is untouched, because the refusal happens before any
+    // mutation.
+    let manager = state.scene_manager.read().await;
+    assert!(
+        manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .and_then(|zone| zone.effect_id)
+            .is_none(),
+        "a refused apply must not load the effect"
+    );
+}
+
+#[tokio::test]
+async fn stateful_set_effect_echoes_the_transition_it_actually_applied() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let result =
+        execute_tool_with_state("set_effect", &json!({ "query": "aurora" }), state.as_ref())
+            .await
+            .expect("an apply with no transition should succeed");
+
+    assert_eq!(result["applied"], true);
+    assert_eq!(
+        result["transition_ms"], 0,
+        "the echoed duration is the one the daemon applied, not a default it ignored"
+    );
+}
+
+#[tokio::test]
+async fn stateful_set_color_refuses_a_transition_it_cannot_apply() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Solid Color").await;
+
+    let error = execute_tool_with_state(
+        "set_color",
+        &json!({
+            "color": "#ff6ac1",
+            "transition_ms": 400
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("effect transitions are not implemented");
+    assert!(
+        format!("{error}").contains("not implemented yet"),
+        "unexpected error: {error}"
+    );
+}
+
 #[tokio::test]
 async fn stateful_set_effect_conflicts_when_snapshot_scene_is_active() {
     let (state, _tmp) = isolated_state_with_tempdir();
