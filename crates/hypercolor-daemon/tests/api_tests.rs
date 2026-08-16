@@ -2533,13 +2533,15 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
     assert_eq!(config.daemon.target_fps, 45);
 }
 
-/// A config carrying driver settings, a secret, and a foreign section.
+/// A config carrying an include list, driver settings, a secret, and a
+/// foreign section.
 ///
 /// `acme_cloud` is deliberately not a registered driver module, so its
 /// settings stand in for anything a driver may persist without the host
 /// modelling the shape.
 const RESET_FIXTURE_CONFIG: &str = r#"
 schema_version = 4
+include = ["desk-overrides.toml", "travel.toml"]
 
 [daemon]
 target_fps = 45
@@ -2659,7 +2661,7 @@ async fn config_full_reset_preserves_driver_settings_and_seeds_builtin_entries()
 }
 
 #[tokio::test]
-async fn config_full_reset_preserves_unknown_extension_sections() {
+async fn config_full_reset_preserves_extension_sections_and_the_include_list() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
     let (app, config_manager) = reset_fixture_app(&config_path);
@@ -2684,6 +2686,13 @@ async fn config_full_reset_preserves_unknown_extension_sections() {
         config_manager.get().extensions.get("cloud"),
         saved.extensions.get("cloud")
     );
+
+    assert_eq!(
+        saved.include,
+        vec!["desk-overrides.toml".to_owned(), "travel.toml".to_owned()],
+        "the include list names files only the user knows about"
+    );
+    assert_eq!(config_manager.get().include, saved.include);
 }
 
 #[tokio::test]
@@ -2721,6 +2730,7 @@ async fn config_keyed_reset_restores_one_key_and_leaves_the_rest_intact() {
             .and_then(|section| section.get("refresh_token")),
         Some(&serde_json::json!("rt-do-not-lose-me"))
     );
+    assert_eq!(saved.include.len(), 2);
 }
 
 #[tokio::test]
