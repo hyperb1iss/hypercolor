@@ -474,7 +474,8 @@ pub(crate) fn validate_scene_media_admission(
     ))
 }
 
-pub(crate) struct MediaAdmissionViolationDetails {
+#[derive(Debug)]
+pub struct MediaAdmissionViolationDetails {
     pub message: String,
     pub caps: serde_json::Value,
     pub counts: serde_json::Value,
@@ -534,6 +535,13 @@ pub(crate) struct MediaAdmissionCounts {
     livestream_layers: Vec<serde_json::Value>,
 }
 
+impl MediaAdmissionCounts {
+    /// Estimated per-frame producer cost in microseconds.
+    pub(crate) const fn estimated_cost_us(&self) -> u64 {
+        self.estimated_cost_us
+    }
+}
+
 pub(crate) fn scene_media_admission_counts(
     scene: &Scene,
     asset_mime_types: &HashMap<AssetId, String>,
@@ -587,7 +595,7 @@ pub(crate) fn scene_media_admission_counts(
     counts
 }
 
-async fn apply_scene_media_soft_admission(
+pub(crate) async fn apply_scene_media_soft_admission(
     state: &AppState,
     scene_id: SceneId,
     scene_name: &str,

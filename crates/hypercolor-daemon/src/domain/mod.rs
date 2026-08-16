@@ -32,6 +32,10 @@
 //! canonical error envelope; legacy v1 paths keep their frozen error
 //! projections via the [`legacy`] shims.
 
+pub mod commit;
+pub mod effect;
+pub mod scene;
+
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};

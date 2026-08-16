@@ -133,6 +133,10 @@ pub struct AppState {
     /// Persisted named-scene store.
     pub scene_store: Arc<RwLock<SceneStore>>,
 
+    /// Ordered publication chain and revision counter for scene commits
+    /// (Spec 76 §2.3).
+    pub scene_commits: Arc<crate::domain::commit::SceneCommitSequencer>,
+
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
 
@@ -569,6 +573,7 @@ impl AppState {
             effect_registry,
             scene_manager,
             scene_store,
+            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
             event_bus,
             asset_library: Arc::new(RwLock::new(asset_library)),
             preview_runtime,
@@ -653,6 +658,7 @@ impl AppState {
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: Arc::clone(&daemon.scene_manager),
             scene_store: Arc::clone(&daemon.scene_store),
+            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
             event_bus: Arc::clone(&daemon.event_bus),
             asset_library: Arc::clone(&daemon.asset_library),
             preview_runtime: Arc::clone(&daemon.preview_runtime),
