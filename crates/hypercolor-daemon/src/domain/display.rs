@@ -99,7 +99,7 @@ pub struct DisplayZoneWritten {
 ///
 /// [`DomainError::Conflict`] when the active scene is snapshot-locked,
 /// [`DomainError::Internal`] when the scene refuses the display zone,
-/// and [`DomainError::PreconditionFailed`] when a concurrent scene
+/// and [`DomainError::Conflict`] when a concurrent scene
 /// mutation lands first.
 pub async fn set_display_face(
     state: &AppState,
@@ -269,7 +269,7 @@ pub async fn patch_display_face_controls(
 ///
 /// # Errors
 ///
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn sync_display_surfaces(
     state: &AppState,
@@ -312,7 +312,7 @@ pub async fn sync_display_surfaces(
 ///
 /// # Errors
 ///
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn prune_display_zones_for_device(
     state: &AppState,
@@ -384,7 +384,7 @@ impl PrunedDisplayZones {
 ///
 /// # Errors
 ///
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn set_default_display_overlay(
     state: &AppState,
@@ -421,7 +421,7 @@ pub async fn set_default_display_overlay(
 ///
 /// # Errors
 ///
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn remove_default_display_overlay(
     state: &AppState,

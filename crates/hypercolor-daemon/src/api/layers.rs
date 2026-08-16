@@ -209,7 +209,6 @@ pub async fn create_layer(
                 scene: &scene_id_raw,
                 zone: Some(group_id),
             },
-            expected_version.as_slice(),
         ),
         Err(error) => error.into_response(),
     }
@@ -235,11 +234,6 @@ pub async fn broadcast_media_layer(
     {
         return error.into_response();
     }
-    let expected_versions: Vec<u64> = body
-        .targets
-        .iter()
-        .filter_map(|target| target.expected_layers_version)
-        .collect();
     let inserts = {
         let manager = state.scene_manager.read().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
@@ -263,7 +257,6 @@ pub async fn broadcast_media_layer(
                 scene: &scene_id_raw,
                 zone: None,
             },
-            &expected_versions,
         ),
         Err(error) => error.into_response(),
     }
@@ -318,7 +311,6 @@ pub async fn update_layer(
                 scene: &scene_id_raw,
                 zone: Some(group_id),
             },
-            expected_version.as_slice(),
         ),
         Err(error) => error.into_response(),
     }
@@ -360,7 +352,6 @@ pub async fn delete_layer(
                 scene: &scene_id_raw,
                 zone: Some(group_id),
             },
-            expected_version.as_slice(),
         ),
         Err(error) => error.into_response(),
     }
@@ -400,7 +391,6 @@ pub async fn reorder_layers(
                 scene: &scene_id_raw,
                 zone: Some(group_id),
             },
-            expected_version.as_slice(),
         ),
         Err(error) => error.into_response(),
     }
@@ -485,7 +475,6 @@ pub async fn patch_layer_controls(
                 scene: &scene_id_raw,
                 zone: Some(group_id),
             },
-            expected_version.as_slice(),
         ),
         Err(error) => error.into_response(),
     }
@@ -645,19 +634,7 @@ struct LayerTarget<'a> {
 }
 
 /// Project a layer-stack refusal onto the canonical error envelope.
-///
-/// `expected_versions` carries the `layers_version` preconditions the
-/// request supplied, in target order. A stale refusal names only the
-/// zone's current version, and the mutation stops at the first target
-/// whose precondition misses, so the expectation that failed is the
-/// first supplied version that differs from `current`. The list is
-/// empty only when no precondition was supplied, which is the one case
-/// a stale refusal cannot arise from.
-fn layer_mutation_error(
-    error: LayerMutationError,
-    target: LayerTarget<'_>,
-    expected_versions: &[u64],
-) -> Response {
+fn layer_mutation_error(error: LayerMutationError, target: LayerTarget<'_>) -> Response {
     match error {
         LayerMutationError::NoActiveScene => {
             DomainError::not_found(ResourceKind::Scene, "active").into_response()
@@ -667,7 +644,9 @@ fn layer_mutation_error(
         }
         LayerMutationError::GroupMissing => match target.zone {
             Some(zone) => DomainError::not_found(ResourceKind::Zone, zone).into_response(),
-            None => DomainError::not_found(ResourceKind::Scene, target.scene).into_response(),
+            // The broadcast route validates every target zone before it
+            // commits, so reaching here means one was removed mid-flight.
+            None => DomainError::not_found(ResourceKind::Zone, "requested").into_response(),
         },
         LayerMutationError::LayerMissing { layer_id } => {
             DomainError::not_found(ResourceKind::Layer, layer_id).into_response()
@@ -675,13 +654,9 @@ fn layer_mutation_error(
         LayerMutationError::DuplicateLayer { layer_id } => {
             DomainError::validation(format!("Layer already exists: {layer_id}")).into_response()
         }
-        LayerMutationError::Stale { current } => DomainError::PreconditionFailed {
+        LayerMutationError::Stale { expected, current } => DomainError::PreconditionFailed {
             resource: ResourceKind::Layer,
-            expected: expected_versions
-                .iter()
-                .copied()
-                .find(|expected| *expected != current)
-                .unwrap_or(current),
+            expected,
             current,
         }
         .into_response(),

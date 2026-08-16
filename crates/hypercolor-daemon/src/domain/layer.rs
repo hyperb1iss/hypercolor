@@ -57,7 +57,7 @@ pub type LayerResult = Result<LayerStackWritten, LayerMutationError>;
 ///
 /// # Errors
 ///
-/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn insert_layer(
     state: &AppState,

@@ -417,7 +417,7 @@ pub(crate) async fn apply_profile_snapshot(
             .map_err(|error| match error {
                 // A concurrent scene write is something the caller can
                 // retry, not a daemon fault.
-                crate::domain::DomainError::PreconditionFailed { .. } => ProfileApplyError::Conflict(
+                crate::domain::DomainError::Conflict { .. } => ProfileApplyError::Conflict(
                     "scene state changed while applying this profile; retry against current state"
                         .to_owned(),
                 ),

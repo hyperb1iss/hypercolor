@@ -73,6 +73,7 @@ pub enum ResourceKind {
     Favorite,
     Asset,
     AttachmentTemplate,
+    AttachmentSlot,
     Control,
     ControlSurface,
     Sensor,
@@ -102,6 +103,7 @@ impl std::fmt::Display for ResourceKind {
             Self::Favorite => "favorite",
             Self::Asset => "asset",
             Self::AttachmentTemplate => "attachment template",
+            Self::AttachmentSlot => "attachment slot",
             Self::Control => "control",
             Self::ControlSurface => "control surface",
             Self::Sensor => "sensor",
@@ -737,9 +739,90 @@ mod tests {
     }
 
     #[test]
-    fn every_resource_kind_renders_a_label() {
-        assert_eq!(ResourceKind::Driver.to_string(), "driver");
-        assert_eq!(ResourceKind::Scene.to_string(), "scene");
+    fn every_resource_kind_renders_a_distinct_label() {
+        // Not-found prose is derived from the kind, so a kind without a
+        // label, or two kinds sharing one, is a wire defect. The match
+        // below is exhaustive: a new variant stops compiling here until
+        // it also joins `ALL`.
+        const fn is_listed(kind: ResourceKind) -> bool {
+            match kind {
+                ResourceKind::Scene
+                | ResourceKind::Zone
+                | ResourceKind::Layer
+                | ResourceKind::Effect
+                | ResourceKind::Device
+                | ResourceKind::LogicalDevice
+                | ResourceKind::Display
+                | ResourceKind::DisplayPreview
+                | ResourceKind::SimulatedDisplay
+                | ResourceKind::Driver
+                | ResourceKind::Profile
+                | ResourceKind::Layout
+                | ResourceKind::Preset
+                | ResourceKind::Playlist
+                | ResourceKind::Favorite
+                | ResourceKind::Asset
+                | ResourceKind::AttachmentTemplate
+                | ResourceKind::AttachmentSlot
+                | ResourceKind::Control
+                | ResourceKind::ControlSurface
+                | ResourceKind::Sensor
+                | ResourceKind::Diagnostic
+                | ResourceKind::Config
+                | ResourceKind::ConfigKey
+                | ResourceKind::Session => true,
+            }
+        }
+
+        const ALL: [ResourceKind; 25] = [
+            ResourceKind::Scene,
+            ResourceKind::Zone,
+            ResourceKind::Layer,
+            ResourceKind::Effect,
+            ResourceKind::Device,
+            ResourceKind::LogicalDevice,
+            ResourceKind::Display,
+            ResourceKind::DisplayPreview,
+            ResourceKind::SimulatedDisplay,
+            ResourceKind::Driver,
+            ResourceKind::Profile,
+            ResourceKind::Layout,
+            ResourceKind::Preset,
+            ResourceKind::Playlist,
+            ResourceKind::Favorite,
+            ResourceKind::Asset,
+            ResourceKind::AttachmentTemplate,
+            ResourceKind::AttachmentSlot,
+            ResourceKind::Control,
+            ResourceKind::ControlSurface,
+            ResourceKind::Sensor,
+            ResourceKind::Diagnostic,
+            ResourceKind::Config,
+            ResourceKind::ConfigKey,
+            ResourceKind::Session,
+        ];
+
+        let mut seen: Vec<String> = Vec::new();
+        for kind in ALL {
+            assert!(is_listed(kind));
+            let label = kind.to_string();
+            assert!(!label.is_empty(), "{kind:?} renders an empty label");
+            assert_eq!(
+                label,
+                label.to_lowercase(),
+                "{kind:?} must render lowercase so derived prose reads as a sentence"
+            );
+            assert!(
+                !seen.contains(&label),
+                "two resource kinds share the label {label:?}"
+            );
+            seen.push(label);
+        }
+        assert_eq!(
+            DomainError::not_found(ResourceKind::Scene, "sc_1").to_string(),
+            "scene not found: sc_1",
+            "the not-found message is derived from the kind, never hand-written"
+        );
     }
 
     #[tokio::test]

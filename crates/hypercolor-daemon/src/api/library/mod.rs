@@ -95,9 +95,7 @@ pub(crate) async fn activate_effect_with_controls(
             // A competing scene commit is a state conflict, not an
             // activation failure, and this path already has a shape for
             // one.
-            DomainError::PreconditionFailed { .. } => {
-                ActivateEffectError::Conflict(error.to_string())
-            }
+            DomainError::Conflict { .. } => ActivateEffectError::Conflict(error.to_string()),
             other => ActivateEffectError::Activation(other.to_string()),
         })?;
     if let Some(error) = commit.retry_error() {

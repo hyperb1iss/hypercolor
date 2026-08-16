@@ -463,14 +463,18 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
     let error = commit_scene(&state, stale)
         .await
         .expect_err("a candidate built from a dead revision must not land");
+    // Losing the commit compare-and-swap is a conflict, not a failed
+    // caller precondition: no request carries a scene commit revision, so
+    // a 412 here would be indistinguishable from the `If-Match` failures
+    // the zone and layer routes serve.
     match error {
-        DomainError::PreconditionFailed {
-            expected, current, ..
-        } => {
-            assert_eq!(expected, commit.revision() - 1);
-            assert_eq!(current, commit.revision());
+        DomainError::Conflict { details, .. } => {
+            let details = details.expect("the conflict names the revisions");
+            assert_eq!(details["kind"], "scene_commit_superseded");
+            assert_eq!(details["expected_revision"], commit.revision() - 1);
+            assert_eq!(details["current_revision"], commit.revision());
         }
-        other => panic!("expected PreconditionFailed, got {other:?}"),
+        other => panic!("expected Conflict, got {other:?}"),
     }
 }
 
