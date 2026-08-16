@@ -17,7 +17,7 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
     EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
-use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind, ZoneChangeKind};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
     SceneLayerId,
@@ -33,7 +33,10 @@ use uuid::Uuid;
 use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::domain::commit::CommitDurability;
 use hypercolor_daemon::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
-use hypercolor_daemon::domain::scene::{ActivateScene, activate_scene, commit_scene};
+use hypercolor_daemon::domain::scene::{
+    ActivateScene, CreateScene, UpdateScene, activate_scene, commit_scene, create_scene,
+    deactivate_scene, delete_scene, update_scene,
+};
 use hypercolor_daemon::domain::{DomainError, MutationContext};
 
 // ── Harness ──────────────────────────────────────────────────────────────
@@ -836,4 +839,267 @@ async fn commit_generations_advance_the_scene_revision_in_order() {
         generations.windows(2).all(|pair| pair[0] < pair[1]),
         "generations must be strictly increasing: {generations:?}"
     );
+}
+
+// ── Scene library CRUD ───────────────────────────────────────────────────
+
+fn create_command(name: &str) -> CreateScene {
+    CreateScene {
+        name: name.to_owned(),
+        description: Some(format!("{name} scene")),
+        enabled: None,
+        mutation_mode: None,
+        metadata: HashMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn create_scene_seeds_a_default_zone_and_announces_the_scene() {
+    let (state, _tempdir) = isolated_state();
+    let mut events = state.event_bus.subscribe_all();
+
+    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+        .await
+        .expect("scene should be created");
+
+    assert_eq!(created.scene.name, "evening");
+    assert!(created.scene.enabled);
+    assert_eq!(created.scene.mutation_mode, SceneMutationMode::Live);
+    assert_eq!(
+        created.scene.groups.len(),
+        1,
+        "every scene is born with a Default zone to select"
+    );
+    assert_eq!(created.scene.groups[0].role, ZoneRole::Primary);
+    assert_eq!(created.commit.durability(), CommitDurability::Written);
+
+    let manager = state.scene_manager.read().await;
+    assert!(manager.get(&created.scene.id).is_some());
+    drop(manager);
+
+    assert_eq!(
+        library_events(&mut events),
+        vec![(created.scene.id, SceneLibraryChangeKind::Created)]
+    );
+}
+
+/// MCP used to mint scenes with no zones and announce nothing, so a
+/// scene created through the tool was unselectable in Studio and
+/// invisible to every event-driven client until a refetch. One service
+/// means one behavior.
+#[tokio::test]
+async fn create_scene_behaves_identically_for_both_transports() {
+    let (state, _tempdir) = isolated_state();
+
+    let via_api = create_scene(&state, create_command("api-made"), MutationContext::api())
+        .await
+        .expect("api create should succeed");
+    let via_mcp = create_scene(&state, create_command("mcp-made"), MutationContext::mcp())
+        .await
+        .expect("mcp create should succeed");
+
+    assert_eq!(via_api.scene.groups.len(), via_mcp.scene.groups.len());
+    assert_eq!(via_api.scene.kind, via_mcp.scene.kind);
+    assert_eq!(via_api.scene.priority, via_mcp.scene.priority);
+    assert_eq!(
+        via_api.scene.transition.duration_ms,
+        via_mcp.scene.transition.duration_ms
+    );
+}
+
+#[tokio::test]
+async fn create_scene_carries_adapter_metadata_onto_the_scene() {
+    let (state, _tempdir) = isolated_state();
+    let mut command = create_command("triggered");
+    command.metadata = HashMap::from([("trigger_type".to_owned(), "sunset".to_owned())]);
+    command.mutation_mode = Some(SceneMutationMode::Snapshot);
+    command.enabled = Some(false);
+
+    let created = create_scene(&state, command, MutationContext::mcp())
+        .await
+        .expect("scene should be created");
+
+    assert_eq!(
+        created.scene.metadata.get("trigger_type").map(String::as_str),
+        Some("sunset")
+    );
+    assert_eq!(created.scene.mutation_mode, SceneMutationMode::Snapshot);
+    assert!(!created.scene.enabled);
+}
+
+#[tokio::test]
+async fn update_scene_rewrites_the_named_fields_and_keeps_the_rest() {
+    let (state, _tempdir) = isolated_state();
+    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+        .await
+        .expect("scene should be created");
+    let mut events = state.event_bus.subscribe_all();
+
+    let updated = update_scene(
+        &state,
+        UpdateScene {
+            scene_id: created.scene.id,
+            name: "midnight".to_owned(),
+            description: None,
+            enabled: Some(false),
+            mutation_mode: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("scene should update");
+
+    assert_eq!(updated.scene.name, "midnight");
+    assert!(!updated.scene.enabled);
+    assert_eq!(updated.scene.mutation_mode, created.scene.mutation_mode);
+    assert_eq!(
+        updated.scene.groups.len(),
+        created.scene.groups.len(),
+        "an update must not drop the scene's zones"
+    );
+    assert_eq!(
+        library_events(&mut events),
+        vec![(created.scene.id, SceneLibraryChangeKind::Updated)]
+    );
+}
+
+#[tokio::test]
+async fn update_scene_refuses_an_unknown_scene() {
+    let (state, _tempdir) = isolated_state();
+    let error = update_scene(
+        &state,
+        UpdateScene {
+            scene_id: SceneId::new(),
+            name: "ghost".to_owned(),
+            description: None,
+            enabled: None,
+            mutation_mode: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect_err("an unknown scene has nothing to update");
+    assert!(
+        matches!(error, DomainError::NotFound { .. }),
+        "expected NotFound, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_scene_deactivates_it_and_announces_both_changes() {
+    let (state, _tempdir) = isolated_state();
+    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+        .await
+        .expect("scene should be created");
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id: created.scene.id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("scene should activate");
+    let mut events = state.event_bus.subscribe_all();
+
+    let deleted = delete_scene(&state, created.scene.id, MutationContext::api())
+        .await
+        .expect("scene should be deleted");
+
+    assert_eq!(deleted.scene.id, created.scene.id);
+    assert_eq!(deleted.previous_scene_id, Some(created.scene.id));
+    assert_eq!(
+        deleted.current_scene.as_ref().map(|scene| scene.id),
+        Some(SceneId::DEFAULT),
+        "deleting the active scene must fall back to Default"
+    );
+
+    let manager = state.scene_manager.read().await;
+    assert!(manager.get(&created.scene.id).is_none());
+    drop(manager);
+
+    let seen = drain_events(&mut events);
+    assert!(
+        seen.iter()
+            .any(|event| matches!(event, HypercolorEvent::ActiveSceneChanged { .. })),
+        "the fallback to Default must be announced: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            HypercolorEvent::SceneLibraryChanged {
+                kind: SceneLibraryChangeKind::Deleted,
+                ..
+            }
+        )),
+        "the removal must be announced: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_scene_refuses_the_default_scene() {
+    let (state, _tempdir) = isolated_state();
+    let error = delete_scene(&state, SceneId::DEFAULT, MutationContext::api())
+        .await
+        .expect_err("the default scene is not deletable");
+    assert!(
+        matches!(error, DomainError::Conflict { .. }),
+        "expected Conflict, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn deactivate_scene_returns_to_default_and_reports_both_ends() {
+    let (state, _tempdir) = isolated_state();
+    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+        .await
+        .expect("scene should be created");
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id: created.scene.id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("scene should activate");
+
+    let deactivated = deactivate_scene(&state, MutationContext::api())
+        .await
+        .expect("deactivation should succeed");
+
+    assert_eq!(
+        deactivated.previous_scene.map(|scene| scene.id),
+        Some(created.scene.id)
+    );
+    assert_eq!(
+        deactivated.current_scene.map(|scene| scene.id),
+        Some(SceneId::DEFAULT)
+    );
+    let manager = state.scene_manager.read().await;
+    assert_eq!(manager.active_scene_id().copied(), Some(SceneId::DEFAULT));
+}
+
+fn drain_events(
+    receiver: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<HypercolorEvent> {
+    let mut seen = Vec::new();
+    while let Ok(timestamped) = receiver.try_recv() {
+        seen.push(timestamped.event);
+    }
+    seen
+}
+
+fn library_events(
+    receiver: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<(SceneId, SceneLibraryChangeKind)> {
+    drain_events(receiver)
+        .into_iter()
+        .filter_map(|event| match event {
+            HypercolorEvent::SceneLibraryChanged { scene_id, kind, .. } => Some((scene_id, kind)),
+            _ => None,
+        })
+        .collect()
 }

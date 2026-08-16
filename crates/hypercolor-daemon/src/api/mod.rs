@@ -75,9 +75,9 @@ use hypercolor_types::config::{
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::event::{
-    EffectRef, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
+    EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind,
 };
-use hypercolor_types::scene::{Scene, SceneId, Zone};
+use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 use uuid::Uuid;
@@ -1020,25 +1020,6 @@ pub(crate) async fn prune_scene_display_groups_for_device(
         );
     }
     persist_runtime_session(state).await;
-}
-
-pub(crate) fn publish_active_scene_changed(
-    state: &AppState,
-    previous: Option<SceneId>,
-    current_scene: &Scene,
-    reason: SceneChangeReason,
-) {
-    state
-        .event_bus
-        .publish(HypercolorEvent::ActiveSceneChanged {
-            previous,
-            current: current_scene.id,
-            current_name: current_scene.name.clone(),
-            current_kind: current_scene.kind,
-            current_mutation_mode: current_scene.mutation_mode,
-            current_snapshot_locked: current_scene.blocks_runtime_mutation(),
-            reason,
-        });
 }
 
 /// Persist discovery auto-sync exclusions to disk.

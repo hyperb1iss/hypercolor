@@ -8,22 +8,14 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use tracing::warn;
 
-use hypercolor_core::scene::{SceneManager, default_primary_group};
+use hypercolor_core::scene::SceneManager;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
-use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
-use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone,
-};
+use hypercolor_types::scene::{Scene, SceneId, SceneKind, Zone};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{
-    admit_scene_store_snapshot, persist_runtime_session, publish_active_scene_changed,
-    save_admitted_scene_store_snapshot, scene_store_coordinator,
-};
 
 const MEDIA_SOFT_PRODUCER_COST_US: u64 = 60_000;
 const LOTTIE_PRODUCER_COST_US: u64 = 8_000;
@@ -38,21 +30,6 @@ pub use hypercolor_types::api::scenes::{
     ActiveSceneResponse, CreateSceneRequest, SceneListResponse, SceneSummary, UpdateSceneRequest,
 };
 
-fn publish_scene_library_changed(
-    state: &AppState,
-    scene_id: SceneId,
-    kind: SceneLibraryChangeKind,
-    name: Option<String>,
-) {
-    state
-        .event_bus
-        .publish(HypercolorEvent::SceneLibraryChanged {
-            scene_id,
-            kind,
-            name,
-        });
-}
-
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/scenes` — List all scenes.
@@ -63,14 +40,7 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
     let items: Vec<SceneSummary> = scenes
         .iter()
         .filter(|scene| scene.kind != SceneKind::Ephemeral)
-        .map(|s| SceneSummary {
-            id: s.id.to_string(),
-            name: s.name.clone(),
-            description: s.description.clone(),
-            enabled: s.enabled,
-            priority: s.priority.0,
-            mutation_mode: s.mutation_mode,
-        })
+        .map(|scene| scene_summary(scene))
         .collect();
 
     let total = items.len();
@@ -96,14 +66,7 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
         return ApiError::not_found(format!("Scene not found: {id}"));
     };
 
-    ApiResponse::ok(SceneSummary {
-        id: scene.id.to_string(),
-        name: scene.name.clone(),
-        description: scene.description.clone(),
-        enabled: scene.enabled,
-        priority: scene.priority.0,
-        mutation_mode: scene.mutation_mode,
-    })
+    ApiResponse::ok(scene_summary(scene))
 }
 
 /// `GET /api/v1/scenes/active` — Get the currently active scene, including Default.
@@ -134,68 +97,24 @@ pub async fn create_scene(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateSceneRequest>,
 ) -> Response {
-    // Every scene is born with a Default zone holding the current device
-    // output roster, so the Studio scene selector always has a zone to
-    // select (§5.2). The zone is `Primary`; the user renames it freely.
-    let default_layout = crate::api::effects::resolve_full_scope_layout(state.as_ref()).await;
-    let default_zone = default_primary_group(default_layout);
-
-    let scene = Scene {
-        id: SceneId::new(),
-        name: body.name,
-        description: body.description,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: vec![default_zone],
-        groups_revision: 0,
-        transition: TransitionSpec {
-            duration_ms: 1000,
-            easing: EasingFunction::Linear,
-            color_interpolation: ColorInterpolation::Oklab,
-        },
-        priority: ScenePriority::USER,
-        enabled: body.enabled.unwrap_or(true),
-        metadata: HashMap::new(),
-        unassigned_behavior: UnassignedBehavior::Off,
-        kind: SceneKind::Named,
-        mutation_mode: body.mutation_mode.unwrap_or(SceneMutationMode::Live),
-    };
-
-    let summary = SceneSummary {
-        id: scene.id.to_string(),
-        name: scene.name.clone(),
-        description: scene.description.clone(),
-        enabled: scene.enabled,
-        priority: scene.priority.0,
-        mutation_mode: scene.mutation_mode,
-    };
-
-    let scene_id = scene.id;
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let pending = {
-        let mut manager = state.scene_manager.write().await;
-        let rollback = manager.clone();
-        if let Err(e) = manager.create(scene) {
-            return ApiError::conflict(format!("Failed to create scene: {e}"));
-        }
-        match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scenes: {error}")),
-        }
-    };
-
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scenes: {error}"));
-    }
-
-    publish_scene_library_changed(
+    let created = match crate::domain::scene::create_scene(
         state.as_ref(),
-        scene_id,
-        SceneLibraryChangeKind::Created,
-        Some(summary.name.clone()),
-    );
+        crate::domain::scene::CreateScene {
+            name: body.name,
+            description: body.description,
+            enabled: body.enabled,
+            mutation_mode: body.mutation_mode,
+            metadata: HashMap::new(),
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        Ok(created) => created,
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+    };
 
-    ApiResponse::created(summary)
+    ApiResponse::created(scene_summary(&created.scene))
 }
 
 /// `PUT /api/v1/scenes/:id` — Update a scene.
@@ -204,109 +123,53 @@ pub async fn update_scene(
     Path(id): Path<String>,
     Json(body): Json<UpdateSceneRequest>,
 ) -> Response {
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let mut manager = state.scene_manager.write().await;
-    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+    let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
     };
 
-    let Some(existing) = manager.get(&scene_id).cloned() else {
-        return ApiError::not_found(format!("Scene not found: {id}"));
-    };
-
-    let updated = Scene {
-        id: existing.id,
-        name: body.name,
-        description: body.description,
-        scope: existing.scope,
-        zone_assignments: existing.zone_assignments,
-        groups: existing.groups,
-        groups_revision: existing.groups_revision,
-        transition: existing.transition,
-        priority: existing.priority,
-        enabled: body.enabled.unwrap_or(existing.enabled),
-        metadata: existing.metadata,
-        unassigned_behavior: existing.unassigned_behavior,
-        kind: existing.kind,
-        mutation_mode: body.mutation_mode.unwrap_or(existing.mutation_mode),
-    };
-
-    let summary = SceneSummary {
-        id: updated.id.to_string(),
-        name: updated.name.clone(),
-        description: updated.description.clone(),
-        enabled: updated.enabled,
-        priority: updated.priority.0,
-        mutation_mode: updated.mutation_mode,
-    };
-
-    let rollback = manager.clone();
-    if let Err(e) = manager.update(updated) {
-        return ApiError::internal(format!("Failed to update scene: {e}"));
-    }
-    let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-        Ok(pending) => pending,
-        Err(error) => return ApiError::internal(format!("Failed to persist scenes: {error}")),
-    };
-    drop(manager);
-
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scenes: {error}"));
-    }
-
-    publish_scene_library_changed(
+    let updated = match crate::domain::scene::update_scene(
         state.as_ref(),
-        scene_id,
-        SceneLibraryChangeKind::Updated,
-        Some(summary.name.clone()),
-    );
+        crate::domain::scene::UpdateScene {
+            scene_id,
+            name: body.name,
+            description: body.description,
+            enabled: body.enabled,
+            mutation_mode: body.mutation_mode,
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        Ok(updated) => updated,
+        Err(crate::domain::DomainError::NotFound { .. }) => {
+            return ApiError::not_found(format!("Scene not found: {id}"));
+        }
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+    };
 
-    ApiResponse::ok(summary)
+    ApiResponse::ok(scene_summary(&updated.scene))
 }
 
 /// `DELETE /api/v1/scenes/:id` — Delete a scene.
 pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let mut manager = state.scene_manager.write().await;
-    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+    let Some(scene_id) = resolve_scene_id(&*state.scene_manager.read().await, &id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
     };
-    if scene_id.is_default() {
-        return ApiError::conflict("Default scene cannot be deleted".to_owned());
-    }
-    let previous_active_scene = manager.active_scene_id().copied();
-    let rollback = manager.clone();
 
-    if let Err(e) = manager.delete(&scene_id) {
-        return ApiError::not_found(format!("Scene not found: {e}"));
-    }
-    let current_active_scene = manager.active_scene().cloned();
-    let pending = match admit_scene_store_snapshot(&coordinator, &mut manager, rollback) {
-        Ok(pending) => pending,
-        Err(error) => return ApiError::internal(format!("Failed to persist scenes: {error}")),
-    };
-    drop(manager);
-
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scenes: {error}"));
-    }
-    persist_runtime_session(&state).await;
-    if previous_active_scene != current_active_scene.as_ref().map(|scene| scene.id)
-        && let Some(current_active_scene) = current_active_scene.as_ref()
-    {
-        publish_active_scene_changed(
-            state.as_ref(),
-            previous_active_scene,
-            current_active_scene,
-            hypercolor_types::event::SceneChangeReason::UserDeactivate,
-        );
-    }
-    publish_scene_library_changed(
+    if let Err(error) = crate::domain::scene::delete_scene(
         state.as_ref(),
         scene_id,
-        SceneLibraryChangeKind::Deleted,
-        None,
-    );
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        return match error {
+            crate::domain::DomainError::NotFound { .. } => {
+                ApiError::not_found(format!("Scene not found: {id}"))
+            }
+            other => crate::domain::legacy::scene_family_error_response(other),
+        };
+    }
 
     ApiResponse::ok(serde_json::json!({
         "id": id,
@@ -375,49 +238,33 @@ pub async fn activate_scene(
 
 /// `POST /api/v1/scenes/deactivate` — Return to the synthesized default scene.
 pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
-    let mut manager = state.scene_manager.write().await;
-    let previous_active_scene_id = manager.active_scene_id().copied();
-    let previous_scene = manager.active_scene().map(|scene| SceneSummary {
-        id: scene.id.to_string(),
-        name: scene.name.clone(),
-        description: scene.description.clone(),
-        enabled: scene.enabled,
-        priority: scene.priority.0,
-        mutation_mode: scene.mutation_mode,
-    });
-    manager.deactivate_current();
-    let current_active_scene = manager.active_scene().cloned();
-    let current_active_scene_id = current_active_scene.as_ref().map(|scene| scene.id);
-    let current_scene = manager.active_scene().map(|scene| SceneSummary {
-        id: scene.id.to_string(),
-        name: scene.name.clone(),
-        description: scene.description.clone(),
-        enabled: scene.enabled,
-        priority: scene.priority.0,
-        mutation_mode: scene.mutation_mode,
-    });
-    drop(manager);
-
-    persist_runtime_session(&state).await;
-    if previous_active_scene_id != current_active_scene_id
-        && let Some(current_active_scene) = current_active_scene.as_ref()
+    let deactivated = match crate::domain::scene::deactivate_scene(
+        state.as_ref(),
+        crate::domain::MutationContext::api(),
+    )
+    .await
     {
-        publish_active_scene_changed(
-            state.as_ref(),
-            previous_active_scene_id,
-            current_active_scene,
-            hypercolor_types::event::SceneChangeReason::UserDeactivate,
-        );
-    }
-
-    // Which scene is active decides which devices are worth connecting.
-    crate::api::sync_connectivity(state.as_ref()).await;
+        Ok(deactivated) => deactivated,
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+    };
 
     ApiResponse::ok(serde_json::json!({
         "deactivated": true,
-        "previous_scene": previous_scene,
-        "scene": current_scene,
+        "previous_scene": deactivated.previous_scene.as_ref().map(scene_summary),
+        "scene": deactivated.current_scene.as_ref().map(scene_summary),
     }))
+}
+
+/// The scene summary every scene-library response carries.
+fn scene_summary(scene: &Scene) -> SceneSummary {
+    SceneSummary {
+        id: scene.id.to_string(),
+        name: scene.name.clone(),
+        description: scene.description.clone(),
+        enabled: scene.enabled,
+        priority: scene.priority.0,
+        mutation_mode: scene.mutation_mode,
+    }
 }
 
 pub(crate) fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<SceneId> {

@@ -1,16 +1,16 @@
 //! Scene-related MCP tools: `activate_scene`, `list_scenes`, `create_scene`.
 
+use std::collections::HashMap;
+
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema};
+use crate::api::AppState;
 use crate::api::scenes::{asset_mime_types, current_media_config};
-use crate::api::{
-    AppState, admit_scene_store_snapshot, save_admitted_scene_store_snapshot,
-    scene_store_coordinator,
-};
 use crate::domain::MutationContext;
-use crate::domain::scene::{ActivateScene, activate_scene, evaluate_scene_media_admission};
-use hypercolor_core::scene::make_scene;
+use crate::domain::scene::{
+    ActivateScene, CreateScene, activate_scene, create_scene, evaluate_scene_media_admission,
+};
 use hypercolor_types::scene::TransitionSpec;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
@@ -285,39 +285,31 @@ pub(super) async fn handle_create_scene_with_state(
         }
     };
 
-    let mut scene = make_scene(name);
-    scene.description = params
-        .get("description")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    scene.enabled = enabled;
-    scene.mutation_mode = mutation_mode;
-    scene
-        .metadata
-        .insert("profile_id".to_owned(), profile_id.to_owned());
-    scene
-        .metadata
-        .insert("trigger_type".to_owned(), trigger_type.to_owned());
+    let metadata = HashMap::from([
+        ("profile_id".to_owned(), profile_id.to_owned()),
+        ("trigger_type".to_owned(), trigger_type.to_owned()),
+    ]);
 
-    let scene_id = scene.id.to_string();
-    let coordinator = scene_store_coordinator(state).await;
-    let pending = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let rollback = scene_manager.clone();
-        scene_manager
-            .create(scene)
-            .map_err(|error| ToolError::Internal(format!("failed to create scene: {error}")))?;
-        admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?
-    };
-    save_admitted_scene_store_snapshot(state, pending)
-        .await
-        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
+    let created = create_scene(
+        state,
+        CreateScene {
+            name: name.to_owned(),
+            description: params
+                .get("description")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            enabled: Some(enabled),
+            mutation_mode: Some(mutation_mode),
+            metadata,
+        },
+        MutationContext::mcp(),
+    )
+    .await?;
 
     Ok(json!({
-        "scene_id": scene_id,
-        "name": name,
-        "enabled": enabled,
-        "mutation_mode": mutation_mode
+        "scene_id": created.scene.id.to_string(),
+        "name": created.scene.name,
+        "enabled": created.scene.enabled,
+        "mutation_mode": created.scene.mutation_mode
     }))
 }
