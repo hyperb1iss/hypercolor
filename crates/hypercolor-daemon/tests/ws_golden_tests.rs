@@ -5,11 +5,10 @@
 //! annotated hex file. A refactor that shifts a field, widens an integer, or
 //! renumbers a tag fails here before any client sees the drift.
 //!
-//! The preview family (`0x03`–`0x11`) and the RPC pair (`0x80`/`0x81`) encode
-//! through `hypercolor-leptos-ext`, which owns the wire format. The `frames`
-//! (`0x01`) and `spectrum` (`0x02`) tags are still written by the daemon, so
-//! those fixtures call the daemon's own encoders through
-//! `hypercolor_daemon::api::ws::wire`.
+//! The preview family (`0x03`–`0x11`) encodes through `hypercolor-leptos-ext`,
+//! which owns the wire format. The `frames` (`0x01`) and `spectrum` (`0x02`)
+//! tags are still written by the daemon, so those fixtures call the daemon's
+//! own encoders through `hypercolor_daemon::api::ws::wire`.
 //!
 //! `tests/fixtures/ws/README.md` documents the file format, the regeneration
 //! procedure, and what changing a fixture means for wire compatibility.
@@ -22,14 +21,12 @@ use hypercolor_daemon::api::ws::wire::{
     FrameZoneSelection, encode_frame_binary_selected, encode_spectrum_binary,
 };
 use hypercolor_leptos_ext::ws::{
-    BinaryFrameDecode, BinaryFrameEncode, EXTENDED_SCREEN_ZONES_FRAME_TAG,
-    INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame, PREVIEW_CANCEL_FRAME_TAG,
-    PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkFrame, PreviewFrame,
-    PreviewFrameChannel, PreviewPixelFormat, PreviewPublicationMetadata, PreviewStreamId,
-    RPC_REQUEST_TAG, RPC_RESPONSE_TAG, RpcRequest, RpcResponse, SCREEN_ZONES_FRAME_TAG,
-    SPECTRUM_FRAME_TAG, ScreenZonesFrame, SpectrumFrame, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
-    WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
+    EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame,
+    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkFrame,
+    PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, PreviewPublicationMetadata,
+    PreviewStreamId, SCREEN_ZONES_FRAME_TAG, SPECTRUM_FRAME_TAG, ScreenZonesFrame, SpectrumFrame,
+    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG,
+    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
 };
 use hypercolor_types::event::{FrameData, SpectrumData, ZoneColors};
 
@@ -45,7 +42,6 @@ const HEX_COLUMN_WIDTH: usize = BYTES_PER_LINE * 3;
 const GOLDEN_FRAME_NUMBER: u32 = 0x1234_5678;
 const GOLDEN_TIMESTAMP_MS: u32 = 12_345_678;
 const GOLDEN_PUBLICATION_ID: u64 = 0x0102_0304_0506_0708;
-const GOLDEN_RPC_ID: u64 = 0x0011_2233_4455_6677;
 const GOLDEN_SCENE_ID: [u8; 16] = [
     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe,
 ];
@@ -59,9 +55,9 @@ const GOLDEN_WIDE_PREVIEW_ID: &str = "golden-wide-preview";
 const WIDE_AXIS: u32 = 65_536;
 
 /// Wire tags declared by `hypercolor-leptos-ext`: ten preview constants, four
-/// preview channels, spectrum, and the RPC pair. The `frames` tag is daemon-
-/// local and counted separately.
-const EXPECTED_DECLARED_TAG_COUNT: usize = 17;
+/// preview channels, and spectrum. The `frames` tag is daemon-local and counted
+/// separately.
+const EXPECTED_DECLARED_TAG_COUNT: usize = 15;
 
 /// Bytes of a wide frame's payload stored in its fixture file. The rest is a
 /// deterministic fill that would bloat the repository without freezing any
@@ -560,18 +556,6 @@ fn golden_preview_cancel() -> PreviewCancelFrame {
     }
 }
 
-fn golden_rpc_request() -> RpcRequest {
-    RpcRequest::new(
-        GOLDEN_RPC_ID,
-        "preview.open",
-        Bytes::from_static(&[0x01, 0x02, 0x03, 0x04]),
-    )
-}
-
-fn golden_rpc_response() -> RpcResponse {
-    RpcResponse::ok(GOLDEN_RPC_ID, Bytes::from_static(&[0x0a, 0x0b, 0x0c]))
-}
-
 // ── Fixture table ────────────────────────────────────────────────────────
 
 fn preview_segments(frame: &PreviewFrame) -> Vec<Segment> {
@@ -991,41 +975,6 @@ fn goldens() -> Vec<Golden> {
         extended.encode().to_vec(),
     ));
 
-    let request = golden_rpc_request();
-    goldens.push(Golden::new(
-        "80-rpc-request",
-        RPC_REQUEST_TAG,
-        "RPC_REQUEST_TAG",
-        "hypercolor_leptos_ext::ws::RpcRequest::encode",
-        format!("method \"{}\", 4 byte payload", request.method),
-        vec![
-            seg(1, "tag"),
-            seg(1, "schema u8"),
-            seg(8, "request id u64le"),
-            seg(2, "method length u16le"),
-            seg(request.method.len(), "method utf8"),
-            seg(request.payload.len(), "payload"),
-        ],
-        request.encode().to_vec(),
-    ));
-
-    let response = golden_rpc_response();
-    goldens.push(Golden::new(
-        "81-rpc-response",
-        RPC_RESPONSE_TAG,
-        "RPC_RESPONSE_TAG",
-        "hypercolor_leptos_ext::ws::RpcResponse::encode",
-        "status 200, 3 byte payload".to_owned(),
-        vec![
-            seg(1, "tag"),
-            seg(1, "schema u8"),
-            seg(8, "request id u64le"),
-            seg(2, "status u16le"),
-            seg(response.payload.len(), "payload"),
-        ],
-        response.encode().to_vec(),
-    ));
-
     goldens
 }
 
@@ -1121,9 +1070,7 @@ fn every_fixture_starts_with_its_declared_tag() {
 #[test]
 fn golden_fixtures_cover_the_whole_known_tag_space() {
     let manifest = protocol_manifest_tags();
-    let mut expected: BTreeSet<u8> = manifest.keys().copied().collect();
-    expected.insert(RPC_REQUEST_TAG);
-    expected.insert(RPC_RESPONSE_TAG);
+    let expected: BTreeSet<u8> = manifest.keys().copied().collect();
 
     let covered: BTreeSet<u8> = goldens().iter().map(|golden| golden.tag).collect();
 
@@ -1132,7 +1079,9 @@ fn golden_fixtures_cover_the_whole_known_tag_space() {
         .map(|tag| {
             format!(
                 "0x{tag:02x} ({})",
-                manifest.get(tag).map_or("rpc", std::string::String::as_str)
+                manifest
+                    .get(tag)
+                    .map_or("unnamed", std::string::String::as_str)
             )
         })
         .collect();
@@ -1204,8 +1153,6 @@ fn wire_tag_constants_are_frozen() {
     assert_eq!(PREVIEW_CHUNK_FRAME_TAG, 0x0f);
     assert_eq!(PREVIEW_CANCEL_FRAME_TAG, 0x10);
     assert_eq!(EXTENDED_SCREEN_ZONES_FRAME_TAG, 0x11);
-    assert_eq!(RPC_REQUEST_TAG, 0x80);
-    assert_eq!(RPC_RESPONSE_TAG, 0x81);
 }
 
 #[test]
@@ -1286,13 +1233,6 @@ fn fixtures_round_trip_through_the_leptos_ext_decoders() {
 
     let spectrum = SpectrumFrame::decode(&bytes_for("02-spectrum")).expect("spectrum decodes");
     assert_eq!(spectrum, golden_spectrum_frame());
-
-    let request = RpcRequest::decode(&bytes_for("80-rpc-request")).expect("rpc request decodes");
-    assert_eq!(request, golden_rpc_request());
-
-    let response =
-        RpcResponse::decode(&bytes_for("81-rpc-response")).expect("rpc response decodes");
-    assert_eq!(response, golden_rpc_response());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 +++
 title = "Binary frame format"
-description = "The wire format for Hypercolor's binary WebSocket frames: tag bytes, header layouts, and the preview, spectrum, zone, screen-zones, and RPC codecs."
+description = "The wire format for Hypercolor's binary WebSocket frames: tag bytes, header layouts, and the preview, spectrum, zone, and screen-zones codecs."
 weight = 40
 +++
 
@@ -28,9 +28,9 @@ boundary. Publications larger than one message use the `0x0F` chunk envelope,
 which carries explicit total length, offset, and chunk-count fields.
 {% end %}
 
-## Three framing conventions ⚡
+## Two framing conventions ⚡
 
-Hypercolor uses three binary framing conventions on the wire, and the first
+Hypercolor uses two binary framing conventions on the wire, and the first
 byte tells you which one you are looking at. Do not assume a uniform header.
 
 The **streaming data frames** (preview canvases, the audio spectrum, zone
@@ -42,18 +42,13 @@ The **preview transport control frames** use a tag byte at offset 0 and schema
 `1` at offset 1. The chunk envelope (`0x0F`) carries routing, publication, and
 reassembly metadata before one slice of a larger encoded preview, and the
 cancellation frame (`0x10`) retires a publication a client may still be
-reassembling.
-
-The **RPC frames** (request and response) use a **two-byte prefix**: a tag byte
-at offset 0 followed by a schema byte at offset 1. This is the `BinaryFrameSchema`
-contract (`TAG`, `SCHEMA`, `NAME`), and decoders validate both bytes with
-`validate_frame_prefix` before touching the body.
+reassembling. Both validate the schema byte before touching the body.
 
 {% callout(type="warning") %}
 Direct streaming frames do **not** carry a schema byte. Preview transport control
-frames and RPC frames do. A decoder that blindly skips two bytes on a spectrum
-frame will read its `timestamp_ms` one byte short. Branch on the first byte
-first, then apply the right convention.
+frames do. A decoder that blindly skips two bytes on a spectrum frame will read
+its `timestamp_ms` one byte short. Branch on the first byte first, then apply the
+right convention.
 {% end %}
 
 ## Tag byte map
@@ -79,8 +74,6 @@ magic numbers, taken straight from the source constants.
 | `0x0F` | Preview chunk envelope | tag + schema | `PREVIEW_CHUNK_FRAME_TAG` |
 | `0x10` | Preview publication cancellation | tag + schema | `PREVIEW_CANCEL_FRAME_TAG` |
 | `0x11` | Extended screen zones | single byte | `EXTENDED_SCREEN_ZONES_FRAME_TAG` |
-| `0x80` | RPC request | tag + schema | `RPC_REQUEST_TAG` |
-| `0x81` | RPC response | tag + schema | `RPC_RESPONSE_TAG` |
 
 {% callout(type="info") %}
 `0x04` is intentionally unused in the current channel set. Treat any unknown tag
@@ -335,77 +328,28 @@ read it from the JSON metrics channel instead. The binary frame stays lean so it
 stream at audio rate without dragging slow-moving fields along on every packet.
 {% end %}
 
-## RPC frames (`0x80`, `0x81`)
-
-RPC is the one binary surface that uses the two-byte `BinaryFrameSchema` prefix:
-a tag byte then a schema byte (`RPC_SCHEMA = 1`), both validated by
-`validate_frame_prefix` before the body is read. A request carries a correlation
-`id`, a method name, and an opaque payload; a response echoes the `id`, returns a
-status code, and carries its own payload.
-
-### Request (`0x80`)
-
-```text
-offset  size  field
-0       1     tag (0x80)
-1       1     schema (0x01)
-2       8     id           u64
-10      2     method_len   u16
-12      ..    method       method_len bytes (UTF-8)
-12+ml   ..    payload      runs to end of message
-```
-
-### Response (`0x81`)
-
-```text
-offset  size  field
-0       1     tag (0x81)
-1       1     schema (0x01)
-2       8     id           u64   (echoes the request id)
-10      2     status       u16
-12      ..    payload      runs to end of message
-```
-
-The `id` is a monotonic per-client correlation counter; the client starts at 1, and
-`RpcClient::call_raw` loops over incoming responses until it sees the matching `id`,
-so out-of-order or interleaved responses are handled. The `status` field maps to
-`RpcStatus`, which follows HTTP conventions: `200` OK, `400` bad request, `404` not
-found, `500` internal error, and `2xx` counts as success via `RpcStatus::is_success`.
-The `method` is plain UTF-8; a non-UTF-8 method byte sequence is rejected as a decode
-error rather than lossily coerced.
-
 ## Decode errors
 
-Two error enums cover the two framing conventions. The streaming codecs return
-`PreviewFrameDecodeError`, and the RPC codecs return `DecodeError`.
+Every codec on this page reports failures through `PreviewFrameDecodeError`.
 
-| Variant | Convention | Meaning |
-|---|---|---|
-| `TooShort` | streaming | message shorter than the fixed header |
-| `UnknownChannel` | streaming | tag byte is not a known channel |
-| `UnknownPixelFormat` | streaming | `format` byte is not 0/1/2 |
-| `DimensionsOverflow` | streaming | `width × height × bpp` overflows `usize` |
-| `PayloadTooShort` | streaming | header valid but payload truncated |
-| `Truncated` | RPC | body shorter than the fixed field block |
-| `WrongTag` | RPC | tag byte does not match the expected frame |
-| `WrongSchema` | RPC | schema byte does not match `RPC_SCHEMA` |
-| `InvalidHeader` | RPC | method length overflows the buffer |
-| `InvalidBody` | RPC | method bytes are not valid UTF-8 |
+| Variant | Meaning |
+|---|---|
+| `TooShort` | message shorter than the fixed header |
+| `UnknownChannel` | tag byte is not a known channel |
+| `UnknownPixelFormat` | `format` byte is not 0/1/2 |
+| `DimensionsOverflow` | `width × height × bpp` overflows `usize` |
+| `PayloadTooShort` | header valid but payload truncated |
 
 A robust client validates the header before allocating for the payload. Every codec
 here checks its declared length against the actual message length, so a truncated or
 malformed frame fails cleanly instead of reading past the buffer.
 
-## Schema negotiation
+## Schema bytes
 
-The `SchemaRange` and `negotiate_highest_common_schema` helpers exist for versioned
-frames that carry a schema byte. A client advertises the inclusive range of schema
-versions it understands, the server does the same, and the negotiated version is the
-highest value in the intersection of the two ranges. If the ranges do not overlap,
-negotiation returns `None` and the two peers have no common version to speak. Every
-schema byte on the wire today is `1`, on the RPC frames and on the two preview
-transport control frames alike, so this machinery is headroom rather than something
-any frame currently exercises.
+Every schema byte on the wire today is `1`, on both preview transport control
+frames. The byte exists so a control frame's layout can be revised without
+burning a new tag; a decoder rejects a schema value it does not recognize rather
+than guessing at the body.
 
 The preview transport's own `v1` and `v2` capability strings are a separate
 mechanism, and they never reach the binary wire. They negotiate the memory
@@ -417,12 +361,9 @@ reading the bytes on this page never needs to know which one was negotiated.
 
 | Concern | File |
 |---|---|
-| Frame prefix, encode/decode traits, `DecodeError` | `ws/frame.rs` |
-| `BinaryFrameSchema` trait, public re-exports | `ws/mod.rs` |
+| Tag constants and public re-exports | `ws/mod.rs` |
 | Preview, zone-preview, screen-zones codecs | `ws/preview.rs` |
 | Spectrum codec | `ws/spectrum.rs` |
-| RPC request/response, `RpcStatus`, client/server | `ws/rpc.rs` |
-| Schema range negotiation | `ws/schema.rs` |
 | Codec round-trip tests | `crates/hypercolor-leptos-ext/tests/ws_preview_frame_tests.rs` |
 | Daemon conformance tests | `daemon/src/api/ws/tests.rs` |
 | Machine-checked frame manifest | `protocol/websocket-v1.json` |
