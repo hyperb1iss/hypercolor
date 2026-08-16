@@ -186,12 +186,9 @@ fn MacosDaemonOwnershipPanel() -> impl IntoView {
                     set_result_message.set(Some(message));
                 }
                 Ok(None) => set_result_message.set(Some(
-                    "requires_app_ui: open this page in Hypercolor.app to change daemon ownership."
-                        .to_owned(),
+                    "Open this page in Hypercolor.app to make this change.".to_owned(),
                 )),
-                Err(error) => {
-                    set_result_message.set(Some(format!("Daemon owner change failed: {error}")))
-                }
+                Err(error) => set_result_message.set(Some(format!("The switch failed: {error}"))),
             }
             set_switching.set(None);
             ownership.refetch();
@@ -207,20 +204,15 @@ fn MacosDaemonOwnershipPanel() -> impl IntoView {
         leptos::task::spawn_local(async move {
             match tauri_bridge::execute_macos_daemon_owner_offline_remedy(&remedy).await {
                 Ok(Some(outcome)) => {
-                    let message = format!(
-                        "{} started successfully.",
-                        humanize_owner(&outcome.owner),
-                    );
+                    let message =
+                        format!("{} started successfully.", humanize_owner(&outcome.owner),);
                     toasts::toast_success(&message);
                     set_offline_message.set(Some(message));
                 }
                 Ok(None) => set_offline_message.set(Some(
-                    "requires_app_ui: open this page in Hypercolor.app to start the selected owner."
-                        .to_owned(),
+                    "Open this page in Hypercolor.app to start it.".to_owned(),
                 )),
-                Err(error) => set_offline_message.set(Some(format!(
-                    "Selected daemon owner could not start: {error}"
-                ))),
+                Err(error) => set_offline_message.set(Some(format!("It could not start: {error}"))),
             }
             set_starting_offline.set(false);
             ownership.refetch();
@@ -230,15 +222,20 @@ fn MacosDaemonOwnershipPanel() -> impl IntoView {
 
     view! {
         {move || match ownership.get() {
-            Some(Ok(Some(status))) => view! {
-                <MacosDaemonOwnershipStatusPanel
-                    status=status
-                    native_available=native_available
-                    switching=switching
-                    result_message=result_message
-                    on_choose=choose_owner
-                />
-            }.into_any(),
+            Some(Ok(Some(status)))
+                if status.conflict.is_some() || status.recovery_required.is_some() =>
+            {
+                view! {
+                    <MacosDaemonOwnershipStatusPanel
+                        status=status
+                        native_available=native_available
+                        switching=switching
+                        result_message=result_message
+                        on_choose=choose_owner
+                    />
+                }
+                .into_any()
+            }
             _ => ().into_any(),
         }}
         {move || match offline.get() {
@@ -254,7 +251,7 @@ fn MacosDaemonOwnershipPanel() -> impl IntoView {
             Some(Err(error)) if native_available => view! {
                 <NativeStartupFrame>
                     <div class="text-xs text-status-error">
-                        {format!("Daemon owner status unavailable: {error}")}
+                        {format!("Could not read the engine status: {error}")}
                     </div>
                 </NativeStartupFrame>
             }.into_any(),
@@ -285,7 +282,7 @@ fn MacosDaemonOwnerOfflinePanel(
                 <div class="flex items-start gap-2 text-status-warning">
                     <Icon icon=LuTriangleAlert width="14px" height="14px" />
                     <div>
-                        <div class="font-medium">"Selected daemon owner is offline"</div>
+                        <div class="font-medium">"Hypercolor's lighting engine isn't running"</div>
                         <div class="mt-0.5 text-fg-secondary">
                             {format!(
                                 "{} is selected. {}",
@@ -321,56 +318,37 @@ fn MacosDaemonOwnershipStatusPanel(
     #[prop(into)] result_message: Signal<Option<String>>,
     on_choose: Callback<MacosDaemonOwnerChoice>,
 ) -> impl IntoView {
-    let owner = status
-        .active_owner
-        .as_deref()
-        .map_or_else(|| "Unknown owner".to_owned(), humanize_owner);
-    let epoch = status
-        .owner_epoch
-        .map(|epoch| format!("epoch {epoch}"))
-        .unwrap_or_else(|| "epoch pending".to_owned());
     let conflict = status.conflict.clone();
     let choices = macos_owner_choices(&status);
     let has_choices = !choices.is_empty();
-    let recovery = status.recovery_required.clone();
+    let recovery_pending = status.recovery_required.is_some();
 
     view! {
         <NativeStartupFrame>
             <div class="space-y-2.5">
-                <div class="flex items-center justify-between gap-3">
-                    <div>
-                        <div class="text-sm font-medium text-fg-primary">"macOS daemon owner"</div>
-                        <div class="text-xs text-fg-tertiary">{format!("{owner} · {epoch}")}</div>
-                    </div>
-                    <span class="rounded border border-edge-subtle bg-surface-overlay px-2 py-1 text-[10px] text-fg-secondary">
-                        "local only"
-                    </span>
-                </div>
                 {conflict.map(|conflict| view! {
                     <div class="rounded-md border border-status-warning/30 bg-status-warning/8 px-3 py-2 text-xs text-status-warning">
-                        {format!(
-                            "{} is active; {} also attempted startup.",
-                            conflict.active.as_deref().map_or_else(
-                                || "Unknown".to_owned(),
-                                humanize_owner,
-                            ),
-                            conflict.contender.as_deref().map_or_else(
-                                || "Unknown".to_owned(),
-                                humanize_owner,
-                            ),
-                        )}
+                        <div class="font-medium">"Two copies of Hypercolor are trying to run your lights."</div>
+                        <div class="mt-0.5 text-fg-secondary">
+                            {format!(
+                                "{} is running now; {} also tried to start. Pick which one should own your lighting.",
+                                conflict.active.as_deref().map_or_else(
+                                    || "An unknown install".to_owned(),
+                                    humanize_owner,
+                                ),
+                                conflict.contender.as_deref().map_or_else(
+                                    || "another install".to_owned(),
+                                    humanize_owner,
+                                ),
+                            )}
+                        </div>
                     </div>
                 })}
-                {recovery.map(|recovery| view! {
+                <Show when=move || recovery_pending>
                     <div class="rounded-md border border-status-warning/30 bg-status-warning/8 px-3 py-2 text-xs text-status-warning">
-                        {format!(
-                            "Owner recovery is pending at {} while moving from {} to {}.",
-                            recovery.phase.as_deref().map_or("an unknown phase".to_owned(), humanize_owner),
-                            recovery.prior_owner.as_deref().map_or("an unknown owner".to_owned(), humanize_owner),
-                            recovery.requested_owner.as_deref().map_or("an unknown owner".to_owned(), humanize_owner),
-                        )}
+                        "A switch between Hypercolor installs was interrupted. Hypercolor is recovering; check back in a moment."
                     </div>
-                })}
+                </Show>
                 <Show when=move || has_choices>
                     <div class="flex flex-wrap gap-2">
                         {choices.clone().into_iter().map(|choice| {
@@ -393,7 +371,7 @@ fn MacosDaemonOwnershipStatusPanel(
                     </div>
                     <Show when=move || !native_available>
                         <div class="text-xs text-fg-tertiary">
-                            "requires_app_ui: open Hypercolor.app to choose the active daemon owner."
+                            "Open Hypercolor.app to make this choice."
                         </div>
                     </Show>
                 </Show>
@@ -440,43 +418,28 @@ const fn owner_choice_label(owner: MacosDaemonOwnerChoice) -> &'static str {
         MacosDaemonOwnerChoice::AppSidecar => "Use Hypercolor.app",
         MacosDaemonOwnerChoice::DirectLaunchd => "Use launchd service",
         MacosDaemonOwnerChoice::Homebrew => "Use Homebrew service",
-        MacosDaemonOwnerChoice::Standalone => "Use terminal daemon",
+        MacosDaemonOwnerChoice::Standalone => "Use the terminal daemon",
     }
 }
 
 fn macos_owner_outcome_message(outcome: &MacosOwnerCoordinatorOutcome) -> String {
     match outcome {
-        MacosOwnerCoordinatorOutcome::Active { owner, owner_epoch } => format!(
-            "{} now owns the daemon at epoch {owner_epoch}.",
-            humanize_owner(owner),
-        ),
-        MacosOwnerCoordinatorOutcome::PendingStandalone {
-            requested_owner,
-            remedy,
-        } => format!(
-            "{} is pending. {}",
-            humanize_owner(requested_owner),
-            owner_remedy_label(remedy),
-        ),
-        MacosOwnerCoordinatorOutcome::RolledBack {
-            prior_owner,
-            failure,
-        } => format!(
-            "The handover failed and {} was restored: {failure}",
+        MacosOwnerCoordinatorOutcome::Active { owner, .. } => {
+            format!("{} now runs your lighting.", humanize_owner(owner))
+        }
+        MacosOwnerCoordinatorOutcome::PendingStandalone { remedy, .. } => {
+            format!("Almost there. {}", owner_remedy_label(remedy))
+        }
+        MacosOwnerCoordinatorOutcome::RolledBack { prior_owner, .. } => format!(
+            "The switch did not complete, so {} kept running your lighting.",
             humanize_owner(prior_owner),
         ),
-        MacosOwnerCoordinatorOutcome::RecoveryRequired {
-            requested_owner,
-            prior_owner,
-            phase,
-        } => format!(
-            "Recovery is required at {} while moving from {} to {}.",
-            humanize_owner(phase),
-            humanize_owner(prior_owner),
-            humanize_owner(requested_owner),
-        ),
+        MacosOwnerCoordinatorOutcome::RecoveryRequired { .. } => {
+            "The switch was interrupted. Hypercolor is recovering; check back in a moment."
+                .to_owned()
+        }
         MacosOwnerCoordinatorOutcome::Unknown => {
-            "The native app returned a newer owner result. Refresh status for the authoritative state."
+            "This version of Hypercolor.app could not read the result. Refresh to see the current state."
                 .to_owned()
         }
     }
@@ -485,14 +448,12 @@ fn macos_owner_outcome_message(outcome: &MacosOwnerCoordinatorOutcome) -> String
 fn owner_remedy_label(remedy: &MacosOwnerRemedy) -> String {
     match remedy {
         MacosOwnerRemedy::StopStandaloneOwner { pid } => {
-            format!("Stop standalone process {pid}, then retry the handover.")
+            format!("Quit the terminal-launched daemon (process {pid}), then try again.")
         }
         MacosOwnerRemedy::StartAppSidecar => "Start Hypercolor.app.".to_owned(),
         MacosOwnerRemedy::StartLaunchdService => "Start the launchd service.".to_owned(),
         MacosOwnerRemedy::StartHomebrewService => "Start the Homebrew service.".to_owned(),
-        MacosOwnerRemedy::Unknown => {
-            "Follow the action shown by a newer Hypercolor app.".to_owned()
-        }
+        MacosOwnerRemedy::Unknown => "Update Hypercolor.app to finish this step.".to_owned(),
     }
 }
 
@@ -508,10 +469,10 @@ const fn owner_remedy_button_label(remedy: &MacosOwnerRemedy) -> &'static str {
 
 fn humanize_owner(owner: &str) -> String {
     match owner {
-        "app_sidecar" => "Hypercolor.app sidecar".to_owned(),
+        "app_sidecar" => "Hypercolor.app".to_owned(),
         "launchd_service" | "direct_launchd" => "launchd service".to_owned(),
         "homebrew_service" | "homebrew" => "Homebrew service".to_owned(),
-        "standalone" => "terminal daemon".to_owned(),
+        "standalone" => "a terminal-launched daemon".to_owned(),
         value => {
             let mut value = value.replace('_', " ");
             if let Some(first) = value.get_mut(0..1) {
@@ -702,7 +663,7 @@ fn WindowsDaemonServiceStatusPanel(
                         </span>
                     </div>
                     <div class="text-xs text-fg-tertiary/70 mt-0.5">
-                        {format!("Using the {} SCM daemon service", status.service_name)}
+                        {format!("Hypercolor is running as the {} Windows service", status.service_name)}
                     </div>
                 </div>
                 <button
@@ -762,7 +723,7 @@ mod tests {
             recovery_required: None,
         };
 
-        assert_eq!(humanize_owner("standalone"), "terminal daemon");
+        assert_eq!(humanize_owner("standalone"), "a terminal-launched daemon");
         assert_eq!(
             macos_owner_choices(&status),
             vec![MacosDaemonOwnerChoice::DirectLaunchd]

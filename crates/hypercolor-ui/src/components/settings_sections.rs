@@ -9,12 +9,12 @@ use leptos_icons::Icon;
 
 use crate::components::settings_controls::*;
 use crate::icons::*;
-use crate::input_access::{input_status_epoch, primary_input_source_issue};
+use crate::input_access::{input_status_epoch, screen_status_line};
 use crate::render_presets::{
     CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
 };
 use crate::{
-    api::{InputSourcePlatformStatus, InputSourceStatus, InputStatus, SystemStatus},
+    api::{InputSourcePlatformStatus, InputStatus, SystemStatus},
     app::WsContext,
 };
 
@@ -310,20 +310,14 @@ pub fn CaptureSection(
                 </div>
             })}
 
-            <div class="mt-3 rounded-xl border border-edge-subtle bg-surface-sunken/40 px-4 py-3">
-                <div class="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-tertiary">
-                    "Capture health"
-                </div>
-                {move || match capture_status.get() {
-                    None => view! {
-                        <div class="text-xs text-fg-tertiary">"Reading capture health…"</div>
-                    }.into_any(),
-                    Some(Err(error)) => view! {
-                        <div class="text-xs text-status-error">{format!("Capture health unavailable: {error}")}</div>
-                    }.into_any(),
-                    Some(Ok(status)) => screen_status_view(status.input).into_any(),
-                }}
-            </div>
+            {move || {
+                let status = capture_status.get().and_then(Result::ok)?;
+                if !enabled.get() || macos_screen_needs_authorization(&status.input) {
+                    return None;
+                }
+                screen_status_line(&status.input)
+                    .map(|(tone, text)| input::status_line_view(tone, text))
+            }}
             <Show when=move || !has_monitor_picker.get()>
                 <div class="flex items-center justify-between gap-4 py-3 border-b border-edge-subtle/40">
                     <div class="min-w-0">
@@ -572,7 +566,8 @@ pub(super) fn MacosCaptureOwnerRestartAction(
                     owner,
                     ..
                 })) => {
-                    let message = format!("{} restarted.", input::humanize(&owner));
+                    let _ = owner;
+                    let message = "Capture service restarted.".to_owned();
                     crate::toasts::toast_success(&message);
                     set_result_message.set(Some(message));
                 }
@@ -593,7 +588,7 @@ pub(super) fn MacosCaptureOwnerRestartAction(
                     ));
                 }
                 Ok(None) => set_result_message.set(Some(
-                    "requires_app_ui: open Hypercolor.app to restart the capture owner.".to_owned(),
+                    "Open Hypercolor.app to finish this restart.".to_owned(),
                 )),
                 Err(error) => {
                     set_result_message.set(Some(format!("Capture owner restart failed: {error}")))
@@ -609,14 +604,11 @@ pub(super) fn MacosCaptureOwnerRestartAction(
             <div class="min-w-0">
                 <div class="text-[13px] text-fg-primary">"Restart capture owner"</div>
                 <div class="text-xs text-fg-tertiary">
-                    {format!(
-                        "The grant is active, but {} must restart before capture can resume.",
-                        input::humanize(&owner),
-                    )}
+                    "Permission granted. Hypercolor needs a quick restart of its capture service to start using it."
                 </div>
                 <Show when=move || !native_available>
                     <div class="mt-1 text-xs text-status-warning">
-                        "requires_app_ui: open Hypercolor.app to restart this process."
+                        "Open Hypercolor.app to restart it."
                     </div>
                 </Show>
                 {move || result_message.get().map(|message| view! {
@@ -635,82 +627,6 @@ pub(super) fn MacosCaptureOwnerRestartAction(
     }
 }
 
-fn screen_status_view(status: InputStatus) -> impl IntoView {
-    let screens = status
-        .sources
-        .into_iter()
-        .filter(|source| {
-            !source.retired
-                && (source.kind == "screen"
-                    || matches!(
-                        source.platform,
-                        Some(InputSourcePlatformStatus::MacosScreen { .. })
-                    ))
-        })
-        .collect::<Vec<_>>();
-    if screens.is_empty() {
-        view! {
-            <div class="text-xs text-fg-tertiary">
-                "No screen-capture source is registered for this platform session."
-            </div>
-        }
-        .into_any()
-    } else {
-        view! {
-            <div class="space-y-2">
-                {screens.into_iter().map(screen_source_view).collect_view()}
-            </div>
-        }
-        .into_any()
-    }
-}
-
-fn screen_source_view(source: InputSourceStatus) -> impl IntoView {
-    let issue = primary_input_source_issue(&source);
-    let warning = issue.is_some()
-        || matches!(source.state.as_str(), "failed" | "degraded" | "unavailable")
-        || (source.demanded && source.freshness == "stale");
-    let state_class = if warning {
-        "text-status-warning"
-    } else if source.demanded && source.state == "live" {
-        "text-status-success"
-    } else {
-        "text-fg-tertiary"
-    };
-    let issue_message = issue.map(|issue| issue.message.clone());
-    let source_remediation = issue.and_then(|issue| issue.remediation.clone());
-    let consumer_summary = screen_consumer_summary(source.active_consumer_count);
-
-    view! {
-        <div class="rounded-lg border border-edge-subtle/60 bg-surface-overlay/30 px-3 py-2.5">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-                <div class="min-w-0">
-                    <div class="truncate text-xs font-medium text-fg-primary">{source.source_id}</div>
-                    <div class="text-[11px] text-fg-tertiary">{format!("{} · {consumer_summary}", source.backend)}</div>
-                </div>
-                <span class=format!("text-[11px] font-medium {state_class}")>
-                    {input::humanize(&source.state)}
-                </span>
-            </div>
-            {issue_message.map(|message| view! {
-                <div class="mt-1.5 text-[11px] text-status-warning">{message}</div>
-            })}
-            {source_remediation.map(|message| view! {
-                <div class="mt-1 text-[11px] text-fg-secondary">{message}</div>
-            })}
-            {source.platform.map(input::platform_status_view)}
-        </div>
-    }
-}
-
-fn screen_consumer_summary(active_consumer_count: usize) -> String {
-    match active_consumer_count {
-        0 => "no active consumers".to_owned(),
-        1 => "1 active consumer".to_owned(),
-        count => format!("{count} active consumers"),
-    }
-}
-
 #[cfg(test)]
 mod macos_capture_tests {
     use crate::api::{
@@ -718,16 +634,7 @@ mod macos_capture_tests {
         SystemStatus,
     };
 
-    use super::{
-        macos_screen_restart_coordinates, screen_consumer_summary, validate_macos_restart_owner,
-    };
-
-    #[test]
-    fn screen_consumer_summary_reports_exact_committed_count() {
-        assert_eq!(screen_consumer_summary(0), "no active consumers");
-        assert_eq!(screen_consumer_summary(1), "1 active consumer");
-        assert_eq!(screen_consumer_summary(3), "3 active consumers");
-    }
+    use super::{macos_screen_restart_coordinates, validate_macos_restart_owner};
 
     fn system_status(
         input: InputStatus,

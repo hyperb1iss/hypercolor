@@ -2,16 +2,13 @@ use hypercolor_types::config::{HypercolorConfig, InteractionRoutePolicy};
 use leptos::prelude::*;
 
 use super::{MacosCaptureOwnerRestartAction, read_config, validate_macos_restart_owner};
-use crate::api::{self, InputSourcePlatformStatus, InputSourceStatus, InputStatus};
+use crate::api::{self, InputSourcePlatformStatus, InputStatus};
 use crate::app::WsContext;
 use crate::components::settings_controls::{
     AdvancedDisclosure, SectionHeader, SectionReset, SettingDropdown, SettingToggle,
 };
 use crate::icons::LuKeyboard;
-use crate::input_access::{
-    InputPipelineState, input_pipeline_state, input_status_epoch, input_status_remediation,
-    primary_input_source_issue,
-};
+use crate::input_access::{StatusLineTone, input_status_epoch, input_status_line};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct MacosSystemSettingsRemedy {
@@ -219,20 +216,14 @@ pub fn InputSection(
                 </div>
             })}
 
-            <div class="mt-3 rounded-xl border border-edge-subtle bg-surface-sunken/40 px-4 py-3">
-                <div class="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-tertiary">
-                    "Source health"
-                </div>
-                {move || match input_status.get() {
-                    None => view! {
-                        <div class="text-xs text-fg-tertiary">"Reading input health..."</div>
-                    }.into_any(),
-                    Some(Err(error)) => view! {
-                        <div class="text-xs text-status-error">{format!("Input health unavailable: {error}")}</div>
-                    }.into_any(),
-                    Some(Ok(status)) => input_status_view(status.input).into_any(),
-                }}
-            </div>
+            {move || {
+                let status = input_status.get().and_then(Result::ok)?;
+                if macos_keyboard_needs_authorization(&status.input) {
+                    return None;
+                }
+                input_status_line(&status.input)
+                    .map(|(tone, text)| status_line_view(tone, text))
+            }}
             <SectionReset
                 section_label="Input"
                 on_reset=Callback::new(move |()| on_reset.run("input".to_owned()))
@@ -241,281 +232,17 @@ pub fn InputSection(
     }
 }
 
-fn input_status_view(status: InputStatus) -> impl IntoView {
-    let pipeline_state = input_pipeline_state(&status);
-    let (label, detail, class) = match pipeline_state {
-        InputPipelineState::ConsentOff => (
-            "Consent off",
-            "No host input backend opens until access is enabled.",
-            "border-edge-subtle bg-surface-overlay/40 text-fg-tertiary",
-        ),
-        InputPipelineState::Live => (
-            "Capturing",
-            "A demanded input source is live.",
-            "border-status-success/30 bg-status-success/10 text-status-success",
-        ),
-        InputPipelineState::Ready => (
-            "Ready, idle",
-            "Permission is granted; capture starts only when an effect demands it.",
-            "border-status-info/30 bg-status-info/10 text-status-info",
-        ),
-        InputPipelineState::Degraded => (
-            "Needs attention",
-            "A configured or demanded source is degraded.",
-            "border-status-warning/30 bg-status-warning/10 text-status-warning",
-        ),
-        InputPipelineState::Unavailable => (
-            "Unavailable",
-            "No host input backend is available in this session.",
-            "border-status-error/30 bg-status-error/10 text-status-error",
-        ),
+pub(super) fn status_line_view(tone: StatusLineTone, text: String) -> impl IntoView {
+    let (dot_class, text_class) = match tone {
+        StatusLineTone::Active => ("bg-status-success", "text-fg-secondary"),
+        StatusLineTone::Ready => ("bg-fg-tertiary/50", "text-fg-tertiary"),
+        StatusLineTone::Warn => ("bg-status-warning", "text-status-warning"),
     };
-    let remediation = input_status_remediation(&status);
-    let sources = status
-        .sources
-        .into_iter()
-        .filter(|source| !source.retired && !is_screen_source(source))
-        .collect::<Vec<_>>();
-
     view! {
-        <div class="space-y-2.5">
-            <div class="flex flex-wrap items-center gap-2">
-                <span class=format!("rounded-md border px-2 py-1 text-[11px] font-medium {class}")>
-                    {label}
-                </span>
-                <span class="text-xs text-fg-secondary">{detail}</span>
-            </div>
-            {remediation.map(|message| view! {
-                <div class="rounded-lg border border-status-warning/24 bg-status-warning/8 px-3 py-2 text-xs text-status-warning">
-                    {message}
-                </div>
-            })}
-            {if sources.is_empty() {
-                view! {
-                    <div class="text-xs text-fg-tertiary">
-                        "No input sources are registered for this platform session."
-                    </div>
-                }.into_any()
-            } else {
-                view! {
-                    <div class="space-y-2">
-                        {sources.into_iter().map(input_source_view).collect_view()}
-                    </div>
-                }.into_any()
-            }}
+        <div class="mt-3 flex items-center gap-2 py-1 text-xs">
+            <span class=format!("h-1.5 w-1.5 shrink-0 rounded-full {dot_class}") />
+            <span class=text_class>{text}</span>
         </div>
-    }
-}
-
-pub(super) fn input_source_view(source: InputSourceStatus) -> impl IntoView {
-    let issue = primary_input_source_issue(&source);
-    let issue_message = issue.map(|issue| issue.message.clone());
-    let source_remediation = issue.and_then(|issue| issue.remediation.clone());
-    let state_class = if issue.is_some()
-        || matches!(source.state.as_str(), "failed" | "degraded" | "unavailable")
-        || (source.demanded && source.freshness == "stale")
-    {
-        "text-status-warning"
-    } else if source.demanded && source.state == "live" {
-        "text-status-success"
-    } else {
-        "text-fg-tertiary"
-    };
-    let demand = if source.demanded { "demanded" } else { "idle" };
-    let consent = if source.consented {
-        "consented"
-    } else {
-        "not consented"
-    };
-    let configured = if source.configured {
-        "configured"
-    } else {
-        "disabled"
-    };
-    let age = source
-        .last_sample_age_ms
-        .map(|age| format!(" · sample {age} ms ago"))
-        .unwrap_or_default();
-    let platform = source.platform.clone();
-
-    view! {
-        <div class="rounded-lg border border-edge-subtle/60 bg-surface-overlay/30 px-3 py-2.5">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-                <div class="min-w-0">
-                    <div class="truncate text-xs font-medium text-fg-primary">{source.source_id}</div>
-                    <div class="text-[11px] text-fg-tertiary">
-                        {format!("{} · {}", source.kind, source.backend)}
-                    </div>
-                </div>
-                <span class=format!("text-[11px] font-medium {state_class}")>
-                    {humanize(&source.state)}
-                </span>
-            </div>
-            <div class="mt-1.5 text-[11px] text-fg-tertiary">
-                {format!(
-                    "{configured} · {consent} · {demand} · freshness {}{age}",
-                    humanize(&source.freshness),
-                )}
-            </div>
-            {issue_message.map(|message| view! {
-                <div class="mt-1.5 text-[11px] text-status-warning">{message}</div>
-            })}
-            {source_remediation.map(|message| view! {
-                <div class="mt-1 text-[11px] text-fg-secondary">{message}</div>
-            })}
-            {platform.map(platform_status_view)}
-        </div>
-    }
-}
-
-pub(super) fn platform_status_view(platform: InputSourcePlatformStatus) -> impl IntoView {
-    match platform {
-        InputSourcePlatformStatus::MacosInput {
-            keyboard,
-            pointer,
-            keyboard_tcc,
-            keyboard_owner,
-            pointer_owner,
-            owner_conflict,
-        } => {
-            let state = format!(
-                "Keyboard {} · pointer {} · Input Monitoring {}",
-                humanize_optional(keyboard.as_deref()),
-                humanize_optional(pointer.as_deref()),
-                humanize_optional(keyboard_tcc.as_deref()),
-            );
-            let owners = format!(
-                "Keyboard owner {} · pointer owner {}",
-                humanize_optional(keyboard_owner.as_deref()),
-                humanize_optional(pointer_owner.as_deref()),
-            );
-            view! {
-                <div class="mt-2 border-t border-edge-subtle/40 pt-2 text-[11px] text-fg-secondary">
-                    <div>{state}</div>
-                    <div class="mt-0.5 text-fg-tertiary">{owners}</div>
-                    {owner_conflict.map(|conflict| view! {
-                        <div class="mt-1 text-status-warning">
-                            {format!(
-                                "Owner conflict: {} is active; {} also attempted startup.",
-                                humanize_optional(conflict.active.as_deref()),
-                                humanize_optional(conflict.contender.as_deref()),
-                            )}
-                        </div>
-                    })}
-                </div>
-            }
-            .into_any()
-        }
-        InputSourcePlatformStatus::MacosScreen {
-            state,
-            tcc,
-            owner,
-            selection,
-            tahoe,
-            tahoe_selection,
-            owner_conflict,
-        } => {
-            let selection = selection
-                .as_ref()
-                .map(screen_selection_label)
-                .unwrap_or_else(|| "Unknown selection".to_owned());
-            let range = tahoe_dynamic_range_label(tahoe.as_ref(), tahoe_selection.as_ref());
-            let host = tahoe.as_ref().map(tahoe_host_label);
-            view! {
-                <div class="mt-2 border-t border-edge-subtle/40 pt-2 text-[11px] text-fg-secondary">
-                    <div>{format!(
-                        "Screen {} · Screen Recording {} · owner {}",
-                        humanize_optional(state.as_deref()),
-                        humanize_optional(tcc.as_deref()),
-                        humanize_optional(owner.as_deref()),
-                    )}</div>
-                    <div class="mt-0.5 text-fg-tertiary">{format!("{selection} · {range}")}</div>
-                    {host.map(|host| view! {
-                        <div class="mt-0.5 text-fg-tertiary">{host}</div>
-                    })}
-                    {owner_conflict.map(|conflict| view! {
-                        <div class="mt-1 text-status-warning">
-                            {format!(
-                                "Owner conflict: {} is active; {} also attempted startup.",
-                                humanize_optional(conflict.active.as_deref()),
-                                humanize_optional(conflict.contender.as_deref()),
-                            )}
-                        </div>
-                    })}
-                </div>
-            }
-            .into_any()
-        }
-        InputSourcePlatformStatus::Unknown => view! {
-            <div class="mt-2 border-t border-edge-subtle/40 pt-2 text-[11px] text-fg-tertiary">
-                "Platform details require a newer Hypercolor app."
-            </div>
-        }
-        .into_any(),
-    }
-}
-
-fn screen_selection_label(selection: &crate::api::MacosSelectionStatus) -> String {
-    match selection {
-        crate::api::MacosSelectionStatus::None => "No source selected".to_owned(),
-        crate::api::MacosSelectionStatus::Display { source_id } => {
-            source_id.as_deref().map_or_else(
-                || "Display selected".to_owned(),
-                |id| format!("Display {id}"),
-            )
-        }
-        crate::api::MacosSelectionStatus::SessionScoped { content_style } => {
-            content_style.as_deref().map_or_else(
-                || "Session-scoped source".to_owned(),
-                |style| format!("Session-scoped {}", humanize(style)),
-            )
-        }
-        crate::api::MacosSelectionStatus::Unknown => "Unknown selection".to_owned(),
-    }
-}
-
-fn humanize_optional(value: Option<&str>) -> String {
-    value.map_or_else(|| "unknown".to_owned(), humanize)
-}
-
-const fn capability_label(value: Option<bool>) -> &'static str {
-    match value {
-        Some(true) => "available",
-        Some(false) => "unavailable",
-        None => "unknown",
-    }
-}
-
-const fn boolean_label(value: Option<bool>) -> &'static str {
-    match value {
-        Some(true) => "yes",
-        Some(false) => "no",
-        None => "unknown",
-    }
-}
-
-fn tahoe_host_label(capabilities: &crate::api::MacosTahoeStatus) -> String {
-    format!(
-        "Host {} · Rosetta translated {} · Core Graphics tone mapping {} · Metal 4 {}",
-        humanize_optional(capabilities.host_architecture.as_deref()),
-        boolean_label(capabilities.translated_process),
-        capability_label(capabilities.content_tone_mapping_info),
-        capability_label(capabilities.metal4),
-    )
-}
-
-fn tahoe_dynamic_range_label(
-    host: Option<&crate::api::MacosTahoeStatus>,
-    selection: Option<&crate::api::MacosTahoeSelectionStatus>,
-) -> &'static str {
-    let intel_host =
-        host.and_then(|capabilities| capabilities.host_architecture.as_deref()) == Some("intel");
-
-    match selection.and_then(|capabilities| capabilities.hdr_capture) {
-        Some(_) if intel_host => "HDR unsupported on Intel",
-        Some(true) => "HDR",
-        Some(false) => "SDR",
-        None => "Dynamic range pending",
     }
 }
 
@@ -564,14 +291,6 @@ fn macos_keyboard_restart_coordinates(status: &crate::api::SystemStatus) -> Opti
         })
 }
 
-fn is_screen_source(source: &InputSourceStatus) -> bool {
-    source.kind == "screen"
-        || matches!(
-            source.platform,
-            Some(InputSourcePlatformStatus::MacosScreen { .. })
-        )
-}
-
 fn route_value(route: InteractionRoutePolicy) -> String {
     match route {
         InteractionRoutePolicy::Host => "host",
@@ -581,24 +300,16 @@ fn route_value(route: InteractionRoutePolicy) -> String {
     .to_owned()
 }
 
-pub(super) fn humanize(value: &str) -> String {
-    let mut words = value.replace('_', " ");
-    if let Some(first) = words.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    words
-}
-
 #[cfg(test)]
 mod tests {
     use crate::api::{
         InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosDaemonOwnershipStatus,
-        MacosTahoeSelectionStatus, MacosTahoeStatus, SystemStatus,
+        SystemStatus,
     };
 
     use super::{
         macos_keyboard_needs_authorization, macos_keyboard_restart_coordinates,
-        macos_system_settings_remedy, tahoe_dynamic_range_label, tahoe_host_label,
+        macos_system_settings_remedy,
     };
 
     fn system_status(
@@ -694,21 +405,6 @@ mod tests {
     }
 
     #[test]
-    fn tahoe_host_label_reports_current_rosetta_translation_state() {
-        let capabilities = MacosTahoeStatus {
-            host_architecture: Some("apple_silicon".to_owned()),
-            translated_process: Some(false),
-            content_tone_mapping_info: Some(true),
-            metal4: Some(false),
-        };
-
-        assert_eq!(
-            tahoe_host_label(&capabilities),
-            "Host Apple silicon · Rosetta translated no · Core Graphics tone mapping available · Metal 4 unavailable"
-        );
-    }
-
-    #[test]
     fn macos_permission_remedies_keep_exact_labels_and_deep_links() {
         let input = macos_system_settings_remedy(
             crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring,
@@ -726,52 +422,6 @@ mod tests {
         assert_eq!(
             screen.pane,
             crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording
-        );
-    }
-
-    #[test]
-    fn tahoe_dynamic_range_label_marks_intel_hdr_unsupported_and_tolerates_absence() {
-        let intel = MacosTahoeStatus {
-            host_architecture: Some("intel".to_owned()),
-            ..MacosTahoeStatus::default()
-        };
-        let apple_silicon = MacosTahoeStatus {
-            host_architecture: Some("apple_silicon".to_owned()),
-            ..MacosTahoeStatus::default()
-        };
-        let hdr = MacosTahoeSelectionStatus {
-            hdr_capture: Some(true),
-            ..MacosTahoeSelectionStatus::default()
-        };
-
-        assert_eq!(
-            tahoe_dynamic_range_label(Some(&intel), Some(&hdr)),
-            "HDR unsupported on Intel"
-        );
-        let sdr = MacosTahoeSelectionStatus {
-            hdr_capture: Some(false),
-            ..MacosTahoeSelectionStatus::default()
-        };
-        assert_eq!(
-            tahoe_dynamic_range_label(Some(&intel), Some(&sdr)),
-            "HDR unsupported on Intel"
-        );
-        assert_eq!(
-            tahoe_dynamic_range_label(Some(&apple_silicon), Some(&hdr)),
-            "HDR"
-        );
-        assert_eq!(
-            tahoe_dynamic_range_label(Some(&apple_silicon), Some(&sdr)),
-            "SDR"
-        );
-        assert_eq!(tahoe_dynamic_range_label(None, Some(&hdr)), "HDR");
-        assert_eq!(
-            tahoe_dynamic_range_label(Some(&apple_silicon), None),
-            "Dynamic range pending"
-        );
-        assert_eq!(
-            tahoe_dynamic_range_label(None, None),
-            "Dynamic range pending"
         );
     }
 
