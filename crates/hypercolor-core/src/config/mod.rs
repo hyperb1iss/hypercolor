@@ -158,7 +158,19 @@ impl ConfigManager {
         })
     }
 
-    /// Build a manager over an already-materialized config (the
+    /// Build a manager over a config the caller already materialized,
+    /// running the same normalize every load runs.
+    ///
+    /// The pipeline in [`load_with_sources`](Self::load_with_sources) is
+    /// the daemon's load path; this is the door for callers that hold a
+    /// config in memory and need a manager whose live snapshot is exactly
+    /// that config.
+    #[must_use]
+    pub fn from_config(config_path: PathBuf, config: HypercolorConfig) -> Self {
+        Self::with_config(config_path, normalize_config(config))
+    }
+
+    /// Build a manager over an already-normalized config (the
     /// `load_with_sources` pipeline owns parse/overlay/validate).
     pub(super) fn with_config(config_path: PathBuf, config: HypercolorConfig) -> Self {
         Self {
@@ -672,10 +684,17 @@ impl ConfigManager {
         paths::cache_dir()
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────────
-
     /// Parses a TOML string into a [`HypercolorConfig`].
-    fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
+    ///
+    /// This is THE config parser: file loads, tooling, and tests all run
+    /// the same migrate and normalize, so no caller can materialize a
+    /// config that skips them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TOML is malformed or does not deserialize
+    /// into [`HypercolorConfig`].
+    pub fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
         let document = toml::from_str::<toml::Value>(toml_str)
             .context("failed to parse configuration TOML")?;
         let daemon_route_missing = input_field_missing(&document, "daemon_route");
@@ -691,7 +710,12 @@ impl ConfigManager {
     }
 
     /// Returns a default config suitable for first-run.
-    fn default_config() -> HypercolorConfig {
+    ///
+    /// Normalized like every other materialized config, so a daemon that
+    /// never found a file behaves exactly like one that loaded a file of
+    /// pure defaults.
+    #[must_use]
+    pub fn default_config() -> HypercolorConfig {
         normalize_config(HypercolorConfig::default())
     }
 }

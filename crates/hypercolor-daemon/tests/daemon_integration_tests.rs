@@ -4,7 +4,7 @@
 //! config loading, and graceful shutdown. Uses real subsystems (no mocks).
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -12,10 +12,10 @@ use std::time::Duration;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::InputManager;
 use hypercolor_daemon::extensions::DaemonLifecycleExtension;
-use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
+use hypercolor_daemon::startup::{DaemonState, config_sources, default_config};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
-    CURRENT_SCHEMA_VERSION, RenderAccelerationMode, ServoGpuImportMode,
+    CURRENT_SCHEMA_VERSION, HypercolorConfig, RenderAccelerationMode, ServoGpuImportMode,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -84,6 +84,18 @@ impl Drop for TestDataDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_data_dir_override(None);
     }
+}
+
+/// A config manager whose live snapshot is exactly the config under test.
+///
+/// The daemon's own manager comes from the load pipeline; tests that
+/// synthesize a config in memory materialize one over the same path the
+/// daemon would persist to.
+fn config_manager_for(config: &HypercolorConfig, path: &Path) -> Arc<ConfigManager> {
+    Arc::new(ConfigManager::from_config(
+        path.to_path_buf(),
+        config.clone(),
+    ))
 }
 
 fn temp_config_file() -> NamedTempFile {
@@ -160,7 +172,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
         .expect("initialization should succeed");
     *state.input_manager.lock().await = test_input_manager();
 
@@ -208,7 +220,7 @@ async fn daemon_shutdown_publishes_events() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
         .expect("initialization should succeed");
     *state.input_manager.lock().await = test_input_manager();
 
@@ -262,7 +274,7 @@ async fn daemon_double_shutdown_is_safe() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
         .expect("initialization should succeed");
     *state.input_manager.lock().await = test_input_manager();
 
@@ -290,7 +302,7 @@ async fn daemon_start_rolls_back_partial_startup() {
     config.daemon.start_profile = "none".to_owned();
 
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
         .expect("initialization should succeed");
     *state.input_manager.lock().await = test_input_manager();
 
@@ -316,7 +328,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
     let mut config = default_config();
     config.daemon.start_profile = "last".to_owned();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
         .expect("initialization should succeed");
     *state.input_manager.lock().await = test_input_manager();
 
@@ -368,7 +380,9 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
 #[tokio::test]
 async fn config_loading_defaults_have_correct_schema() {
     let _guard = TestConfigDirGuard::new().await;
-    let (config, _path) = load_config(None).await.expect("should load defaults");
+    let config = ConfigManager::load_with_sources(config_sources(None, None, None))
+        .expect("should load defaults")
+        .boot;
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(config.daemon.target_fps, 30);
@@ -382,7 +396,9 @@ async fn config_loading_defaults_have_correct_schema() {
 #[tokio::test]
 async fn config_loading_all_sub_configs_have_defaults() {
     let _guard = TestConfigDirGuard::new().await;
-    let (config, _path) = load_config(None).await.expect("should load defaults");
+    let config = ConfigManager::load_with_sources(config_sources(None, None, None))
+        .expect("should load defaults")
+        .boot;
 
     // Audio config defaults
     assert!(config.audio.enabled);
@@ -441,11 +457,15 @@ wasm_plugins = true
     temp.write_all(toml_str.as_bytes()).expect("write config");
     temp.flush().expect("flush");
 
-    let (config, path) = load_config(Some(temp.path()))
-        .await
-        .expect("should load custom config");
+    let loaded = ConfigManager::load_with_sources(config_sources(
+        Some(temp.path().to_path_buf()),
+        None,
+        None,
+    ))
+    .expect("should load custom config");
+    let config = loaded.boot;
 
-    assert_eq!(path, temp.path());
+    assert_eq!(loaded.manager.path(), temp.path());
     assert_eq!(config.daemon.target_fps, 45);
     assert_eq!(config.daemon.canvas_width, 640);
     assert_eq!(config.daemon.canvas_height, 400);
@@ -464,7 +484,7 @@ async fn api_state_device_list_starts_empty_and_grows() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
         .expect("initialization should succeed");
 
     // Initially empty
@@ -499,7 +519,7 @@ async fn api_state_default_scene_starts_with_default_zone() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
         .expect("initialization should succeed");
 
     // Verify the default scene is active with a selectable Default zone.
@@ -515,7 +535,7 @@ async fn api_state_scene_manager_accessible_through_rwlock() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
         .expect("initialization should succeed");
 
     // Write lock: create a scene
@@ -548,7 +568,8 @@ async fn api_state_config_snapshot_matches_init_config() {
     temp.write_all(toml_str.as_bytes()).expect("write");
     temp.flush().expect("flush");
 
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf()).expect("initialize");
+    let state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
+        .expect("initialize");
 
     let snapshot = state.config();
     assert_eq!(snapshot.daemon.target_fps, 45);
@@ -564,7 +585,8 @@ async fn api_state_event_bus_subscriber_works() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf()).expect("initialize");
+    let state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
+        .expect("initialize");
 
     // Subscribe to events
     let mut rx = state.event_bus.subscribe_all();
@@ -599,7 +621,8 @@ async fn daemon_render_loop_uses_configured_fps() {
     temp.write_all(toml_str.as_bytes()).expect("write");
     temp.flush().expect("flush");
 
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf()).expect("initialize");
+    let state = DaemonState::initialize(&config, config_manager_for(&config, temp.path()))
+        .expect("initialize");
 
     {
         let rl = state.render_loop.read().await;

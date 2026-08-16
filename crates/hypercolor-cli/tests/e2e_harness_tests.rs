@@ -90,7 +90,11 @@ impl DaemonHarness {
         config.discovery.blocks_scan = false;
         config.network.mdns_publish = false;
 
-        let mut daemon_state = DaemonState::initialize(&config, paths.config_path())
+        let config_manager = Arc::new(ConfigManager::from_config(
+            paths.config_path(),
+            config.clone(),
+        ));
+        let mut daemon_state = DaemonState::initialize(&config, config_manager)
             .context("failed to initialize daemon state")?;
         install_browser_only_input(&mut daemon_state);
         daemon_state

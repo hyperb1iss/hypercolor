@@ -277,7 +277,11 @@ fn daemon_initialization_rejects_invalid_capture_config_before_startup() {
         ..hypercolor_types::config::HypercolorConfig::default()
     };
 
-    let result = super::DaemonState::initialize(&config, directory.path().join("hypercolor.toml"));
+    let manager = Arc::new(ConfigManager::from_config(
+        directory.path().join("hypercolor.toml"),
+        config.clone(),
+    ));
+    let result = super::DaemonState::initialize(&config, manager);
     let Err(error) = result else {
         panic!("invalid capture config must stop daemon initialization");
     };
