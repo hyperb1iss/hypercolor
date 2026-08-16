@@ -11,7 +11,6 @@ export {
     getPitchClassName,
     getPitchEnergy,
     getTrebleLevel,
-    hslToRgb,
     isOnBeat,
     normalizeFrequencyBin,
     pitchClassToHue,
