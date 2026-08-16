@@ -1,7 +1,5 @@
 import { canvas, combo, getScreenZoneData, hslToRgb, num, rect } from 'hypercolor'
 
-import { wrapHue } from '../_builtin/common'
-
 interface RectValue {
     x: number
     y: number
@@ -95,11 +93,11 @@ export default canvas.stateful(
             for (let index = 0; index < cellCount; index++) {
                 const lightness = clamp(screen.lightness[index] * brightness, 0, 1)
                 const saturation = clamp(screen.saturation[index], 0, 1)
-                const [r, g, b] = hslToRgb(wrapHue(screen.hue[index]), saturation, lightness)
+                const cell = hslToRgb(screen.hue[index], saturation, lightness)
                 const offset = index * 4
-                pixels[offset] = Math.round(r * 255)
-                pixels[offset + 1] = Math.round(g * 255)
-                pixels[offset + 2] = Math.round(b * 255)
+                pixels[offset] = cell.r
+                pixels[offset + 1] = cell.g
+                pixels[offset + 2] = cell.b
                 pixels[offset + 3] = 255
             }
             sourceCtx.putImageData(frame, 0, 0)

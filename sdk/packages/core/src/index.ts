@@ -89,7 +89,6 @@ export {
     getPitchEnergy,
     getScreenZoneData,
     getTrebleLevel,
-    hslToRgb,
     isOnBeat,
     MEL_BANDS,
     normalizeAudioLevel,
@@ -105,6 +104,7 @@ export type { Hsl, Hsv, LinearRgba, Oklab, Rgb, Rgba } from './color'
 export {
     hexToRgb,
     hexToRgba,
+    hslToRgb,
     hslToRgbUnit,
     hsvToRgb,
     LUMA_B,
