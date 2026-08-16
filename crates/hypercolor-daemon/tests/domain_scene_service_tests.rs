@@ -13,6 +13,7 @@ use std::time::SystemTime;
 use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_types::asset::AssetId;
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
     EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
@@ -22,9 +23,11 @@ use hypercolor_types::layer::{
     SceneLayerId,
 };
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
+    ZoneRole,
 };
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
 use hypercolor_daemon::api::AppState;
@@ -128,9 +131,31 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
     }
 }
 
-fn apply_command(effect_id: EffectId) -> ApplyEffect {
+/// A display-face zone bound to `device`, for exercising the runtime
+/// default display groups.
+fn face_zone(device: DeviceId) -> Zone {
+    let layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 640,
+        canvas_height: 480,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let mut zone = hypercolor_core::scene::default_primary_group(layout);
+    zone.id = ZoneId::new();
+    zone.role = ZoneRole::Display;
+    zone.display_target = Some(DisplayFaceTarget::new(device));
+    zone
+}
+
+fn apply_command(effect: &EffectMetadata) -> ApplyEffect {
     ApplyEffect {
-        effect_id,
+        effect: effect.clone(),
         controls: HashMap::new(),
         preset_id: None,
         target_zone: None,
@@ -146,7 +171,7 @@ async fn apply_effect_loads_the_primary_zone_and_commits_durably() {
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
 
-    let applied = apply_effect(&state, apply_command(metadata.id), MutationContext::api())
+    let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
         .await
         .expect("apply should succeed");
 
@@ -174,10 +199,10 @@ async fn apply_effect_reports_the_outgoing_effect_of_the_target_zone() {
     insert_effect(&state, &first).await;
     insert_effect(&state, &second).await;
 
-    apply_effect(&state, apply_command(first.id), MutationContext::api())
+    apply_effect(&state, apply_command(&first), MutationContext::api())
         .await
         .expect("first apply should succeed");
-    let applied = apply_effect(&state, apply_command(second.id), MutationContext::api())
+    let applied = apply_effect(&state, apply_command(&second), MutationContext::api())
         .await
         .expect("second apply should succeed");
 
@@ -189,29 +214,13 @@ async fn apply_effect_reports_the_outgoing_effect_of_the_target_zone() {
 }
 
 #[tokio::test]
-async fn apply_effect_refuses_an_unknown_effect() {
-    let (state, _tempdir) = isolated_state();
-    let error = apply_effect(
-        &state,
-        apply_command(EffectId::new(Uuid::now_v7())),
-        MutationContext::api(),
-    )
-    .await
-    .expect_err("an unregistered effect should not apply");
-    assert!(
-        matches!(error, DomainError::NotFound { .. }),
-        "expected NotFound, got {error:?}"
-    );
-}
-
-#[tokio::test]
 async fn apply_effect_refuses_a_display_face() {
     let (state, _tempdir) = isolated_state();
     let mut metadata = test_effect_metadata("clock-face");
     metadata.category = EffectCategory::Display;
     insert_effect(&state, &metadata).await;
 
-    let error = apply_effect(&state, apply_command(metadata.id), MutationContext::api())
+    let error = apply_effect(&state, apply_command(&metadata), MutationContext::api())
         .await
         .expect_err("a display face should not reach the LED pipeline");
     assert!(
@@ -229,7 +238,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
     // This is the divergence the unified surface closes: MCP used to
     // accept a duration here, echo it back, and never apply it.
     for trigger in [MutationContext::api(), MutationContext::mcp()] {
-        let mut command = apply_command(metadata.id);
+        let mut command = apply_command(&metadata);
         command.transition = RequestedTransition::of_duration(500);
         let error = apply_effect(&state, command, trigger)
             .await
@@ -248,7 +257,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
         &state,
         ApplyEffect {
             transition: RequestedTransition::of_duration(0),
-            ..apply_command(metadata.id)
+            ..apply_command(&metadata)
         },
         MutationContext::mcp(),
     )
@@ -274,7 +283,7 @@ async fn apply_effect_conflicts_when_the_active_scene_is_snapshot_locked() {
             .expect("scene should activate");
     }
 
-    let error = apply_effect(&state, apply_command(metadata.id), MutationContext::mcp())
+    let error = apply_effect(&state, apply_command(&metadata), MutationContext::mcp())
         .await
         .expect_err("a snapshot scene refuses runtime rewriting");
     assert!(
@@ -543,6 +552,116 @@ async fn a_direct_scene_write_inside_the_window_conflicts_and_survives() {
     );
 }
 
+/// Each comparand member exists because some direct writer can move it
+/// *alone*, so each case moves only its member and must still conflict.
+/// Removing that member from the comparand makes its case commit, with
+/// the concurrent work erased — verified by reverting each one.
+///
+/// Isolation is the whole point and it takes setup. A shadowed stack
+/// entry needs a higher-priority winner already in place, since the
+/// default scene sits at `AMBIENT` and an equal-priority push would tie
+/// rather than shadow. A hidden default display group needs the active
+/// scene to already own a display zone for that device with an effect
+/// loaded, because otherwise `set_default_display_group` refreshes the
+/// resolved zones and the revision and the zone contents both move too.
+#[tokio::test]
+async fn every_comparand_member_catches_a_writer_that_moves_only_it() {
+    struct Case {
+        name: &'static str,
+        device: Option<DeviceId>,
+        mutate: fn(&mut hypercolor_core::scene::SceneManager, Option<DeviceId>),
+    }
+
+    let cases = [
+        Case {
+            name: "shadowed priority stack entry",
+            device: None,
+            mutate: |manager, _| {
+                // Below the active USER scene, so the winner and the
+                // active scene id are both unchanged.
+                manager
+                    .priority_stack_mut()
+                    .push(SceneId::new(), ScenePriority::AMBIENT);
+            },
+        },
+        Case {
+            name: "render group invalidation",
+            device: None,
+            // Bumps the counter without changing the resolved zones, so
+            // only the number can catch it.
+            mutate: |manager, _| manager.invalidate_active_render_groups(),
+        },
+        Case {
+            name: "hidden runtime default display group",
+            device: Some(DeviceId::new()),
+            mutate: |manager, device| {
+                let device = device.expect("this case supplies a device");
+                let mut zone = face_zone(device);
+                zone.name = "hidden default".to_owned();
+                manager.set_default_display_group(zone);
+            },
+        },
+    ];
+
+    for case in cases {
+        let (state, _tempdir) = isolated_state();
+        let metadata = test_effect_metadata("aurora");
+        insert_effect(&state, &metadata).await;
+        let layout = {
+            let spatial = state.spatial_engine.read().await;
+            spatial.layout().as_ref().clone()
+        };
+
+        // A USER-priority scene becomes the winner, and it owns a
+        // display zone with an effect for the case that needs one
+        // covered.
+        let mut scene = named_scene("evening");
+        if let Some(device) = case.device {
+            let mut covering = face_zone(device);
+            covering.effect_id = Some(metadata.id);
+            scene.groups.push(covering);
+        }
+        let scene_id = scene.id;
+        {
+            let mut manager = state.scene_manager.write().await;
+            manager.create(scene).expect("scene should be created");
+        }
+        activate_scene(
+            &state,
+            ActivateScene {
+                scene_id,
+                transition: None,
+            },
+            MutationContext::api(),
+        )
+        .await
+        .expect("setup activation should succeed");
+
+        let mut mutation = state.begin_scene_mutation().await;
+        mutation
+            .upsert_primary_zone(&metadata, HashMap::new(), None, layout)
+            .expect("candidate mutation should apply");
+
+        {
+            let mut manager = state.scene_manager.write().await;
+            (case.mutate)(&mut manager, case.device);
+        }
+
+        let error = match commit_scene(&state, mutation).await {
+            Ok(commit) => panic!(
+                "{} must be seen as divergence, but the commit landed: {commit:?}",
+                case.name
+            ),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, DomainError::Conflict { .. }),
+            "{} should conflict, got {error:?}",
+            case.name
+        );
+    }
+}
+
 /// A transition ticks the manager under a write lock on every frame, so
 /// the bridge must not read render-local progress as divergence.
 #[tokio::test]
@@ -607,7 +726,7 @@ async fn a_rejected_candidate_leaves_the_live_state_untouched() {
         .upsert_primary_zone(&other, HashMap::new(), None, layout)
         .expect("candidate mutation should apply");
 
-    apply_effect(&state, apply_command(metadata.id), MutationContext::api())
+    apply_effect(&state, apply_command(&metadata), MutationContext::api())
         .await
         .expect("the winning apply should succeed");
 
@@ -683,7 +802,7 @@ async fn a_non_durable_write_reports_retrying_and_publishes_nothing() {
     writer.set_injected_replace_failures(usize::MAX);
 
     let mut events = state.event_bus.subscribe_all();
-    let applied = apply_effect(&state, apply_command(metadata.id), MutationContext::api())
+    let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
         .await
         .expect("a non-durable write is not a rejection");
 
@@ -706,7 +825,7 @@ async fn commit_generations_advance_the_scene_revision_in_order() {
 
     let mut generations = Vec::new();
     for _ in 0..3 {
-        let applied = apply_effect(&state, apply_command(metadata.id), MutationContext::api())
+        let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
             .await
             .expect("apply should succeed");
         generations.push(applied.commit.generation());

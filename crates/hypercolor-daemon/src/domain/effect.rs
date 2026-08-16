@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use hypercolor_types::api::effects::EffectLayoutApplyResult;
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectId};
+use hypercolor_types::effect::{ControlValue, EffectCategory, EffectId, EffectMetadata};
 use hypercolor_types::event::{EffectRef, HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
@@ -19,7 +19,7 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
 use crate::domain::scene::{commit_scene, zone_changed_event};
-use crate::domain::{DomainError, MutationContext, ResourceKind};
+use crate::domain::{DomainError, MutationContext};
 
 /// A transition the caller asked for.
 ///
@@ -109,8 +109,16 @@ impl AppliedTransition {
 /// Load an effect into a zone of the active scene.
 #[derive(Debug, Clone)]
 pub struct ApplyEffect {
-    /// The effect to load. Adapters resolve names and fuzzy queries.
-    pub effect_id: EffectId,
+    /// The effect to load, already resolved.
+    ///
+    /// Adapters own identity resolution — a path segment for REST, a
+    /// fuzzy query for MCP — and hand over what they found. The service
+    /// does not look it up again: re-resolving would reintroduce a
+    /// window where a rescan between the adapter's lookup and the
+    /// service's turns a request the adapter already accepted into a
+    /// not-found, and it would give the domain a second opinion about
+    /// identity that MCP's fuzzy contract deliberately owns.
+    pub effect: EffectMetadata,
     /// Control values, already normalized against the effect's schema.
     pub controls: HashMap<String, ControlValue>,
     /// Preset provenance to record on the zone.
@@ -147,7 +155,6 @@ pub struct EffectApplied {
 ///
 /// # Errors
 ///
-/// [`DomainError::NotFound`] for an unknown effect,
 /// [`DomainError::Validation`] for a display face, an unimplemented
 /// transition, or a zone that refuses the effect,
 /// [`DomainError::Conflict`] when the active scene is snapshot-locked,
@@ -159,25 +166,18 @@ pub async fn apply_effect(
     meta: MutationContext,
 ) -> Result<EffectApplied, DomainError> {
     let transition = command.transition.resolve()?;
+    let metadata = command.effect;
 
-    let (metadata, effect_refs) = {
+    // Resolving the outgoing effect's name needs the registry, and the
+    // outgoing effect is not known until the scene snapshot is in hand.
+    // Taking the index now keeps every await out of the window between
+    // the snapshot and its compare-and-swap.
+    let effect_refs = {
         let registry = state.effect_registry.read().await;
-        let Some(entry) = registry.get(&command.effect_id) else {
-            return Err(DomainError::not_found(
-                ResourceKind::Effect,
-                command.effect_id,
-            ));
-        };
-        let metadata = entry.metadata.clone();
-        // Resolving the outgoing effect's name needs the registry, and
-        // the outgoing effect is not known until the scene snapshot is
-        // in hand. Taking the index now keeps every await out of the
-        // window between the snapshot and its compare-and-swap.
-        let effect_refs = registry
+        registry
             .iter()
             .map(|(id, entry)| (*id, crate::api::effects::effect_ref(&entry.metadata)))
-            .collect::<HashMap<EffectId, EffectRef>>();
-        (metadata, effect_refs)
+            .collect::<HashMap<EffectId, EffectRef>>()
     };
 
     if metadata.category == EffectCategory::Display {

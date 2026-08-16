@@ -816,7 +816,7 @@ pub async fn apply_effect(
     let applied = match domain::effect::apply_effect(
         state.as_ref(),
         domain::effect::ApplyEffect {
-            effect_id: metadata.id,
+            effect: metadata.clone(),
             controls: normalized_controls,
             preset_id: resolved_preset.as_ref().map(|preset| preset.id),
             target_zone: target_group,
@@ -831,7 +831,9 @@ pub async fn apply_effect(
     };
 
     if let Some(error) = applied.commit.retry_error() {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
+        // Admitted and converging, not failed: the retry supervisor
+        // owns the bytes. The caller gets its success.
+        warn!(%error, "Scene write has not proven durable yet; retry remains active");
     }
 
     log_effect_apply_completion(

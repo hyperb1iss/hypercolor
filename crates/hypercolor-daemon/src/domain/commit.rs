@@ -172,26 +172,37 @@ impl SceneCommitSequencer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Fill `generation`'s slot and return everything that became
+    /// Fill `generation`'s slot and publish everything that became
     /// publishable, in admission order.
-    fn fill(&self, generation: u64, events: Vec<HypercolorEvent>) -> Vec<HypercolorEvent> {
+    ///
+    /// Publication happens **inside** the guard, and that placement is
+    /// the whole ordering guarantee. Draining under the lock and
+    /// publishing after it would let two callers interleave between
+    /// their drain and their send, so a caller that drained an older
+    /// batch could lose the race to one that drained a newer batch and
+    /// the bus would see them reversed — the exact inversion the
+    /// sequencer exists to prevent. `HypercolorBus::publish` is a
+    /// synchronous, non-blocking broadcast send with no path back into
+    /// this type, so holding the mutex across it costs a few sends and
+    /// buys drain order == publish order by construction.
+    fn fill(&self, generation: u64, events: Vec<HypercolorEvent>, bus: &HypercolorBus) {
         let mut state = self.locked();
         if generation <= state.released_through {
             // The slot is already gone, so a strictly newer generation
             // has published. Replaying this payload now would walk the
             // published state backwards.
-            return Vec::new();
+            return;
         }
         state.parked.insert(generation, events);
 
-        let mut drained = Vec::new();
         let mut next = state.released_through.saturating_add(1);
         while let Some(ready) = state.parked.remove(&next) {
-            drained.extend(ready);
+            for event in ready {
+                bus.publish(event);
+            }
             next = next.saturating_add(1);
         }
         state.released_through = next.saturating_sub(1);
-        drained
     }
 }
 
@@ -219,10 +230,7 @@ impl CommitTicket {
     /// generation has released too.
     pub(super) fn release(mut self, events: Vec<HypercolorEvent>) {
         self.released = true;
-        let drained = self.sequencer.fill(self.generation, events);
-        for event in drained {
-            self.bus.publish(event);
-        }
+        self.sequencer.fill(self.generation, events, &self.bus);
     }
 
     /// Release the slot without publishing anything — the payload this
@@ -238,10 +246,7 @@ impl Drop for CommitTicket {
         if self.released {
             return;
         }
-        let drained = self.sequencer.fill(self.generation, Vec::new());
-        for event in drained {
-            self.bus.publish(event);
-        }
+        self.sequencer.fill(self.generation, Vec::new(), &self.bus);
     }
 }
 
@@ -363,7 +368,8 @@ mod tests {
         assert_eq!(drain(&mut events), vec![2]);
 
         // Nothing may replay into a slot the chain already passed.
-        assert!(sequencer.fill(generation, vec![marker(1)]).is_empty());
+        sequencer.fill(generation, vec![marker(1)], &bus);
+        assert!(drain(&mut events).is_empty());
     }
 
     /// The daemon builds five `AppState`s over one `DaemonState`, all
@@ -371,24 +377,76 @@ mod tests {
     /// sequencer hands it a private revision counter and a private
     /// publication chain over shared state, so the compare-and-swap
     /// stops seeing competing commits and two chains publish in
-    /// arbitrary order relative to each other. The property is
-    /// structural rather than observable — reproducing it behaviorally
-    /// means booting real subsystems, which segfaults on teardown — so
-    /// it is pinned at the one construction site that can regress it.
+    /// arbitrary order relative to each other.
+    ///
+    /// The property is structural rather than observable —
+    /// reproducing it behaviorally means booting real subsystems, which
+    /// segfaults on teardown — so it is pinned against the sources:
+    /// every mint is accounted for by name, and `from_daemon_state`
+    /// must clone rather than mint.
+    ///
+    /// There are two legitimate mints, not one, and each is a root with
+    /// nothing to clone from: `DaemonState` owns the daemon's, and
+    /// `AppState::new_with_data_dir` is the standalone constructor for
+    /// tests and embedders. A third is a bug, and so is any mint that
+    /// appears inside a constructor which was handed one.
     #[test]
-    fn app_state_takes_the_daemon_sequencer_rather_than_minting_one() {
-        let source = include_str!("../api/mod.rs");
-        let from_daemon = source
-            .split_once("pub fn from_daemon_state(")
-            .expect("from_daemon_state must exist")
-            .1;
-        let wiring = from_daemon
-            .lines()
-            .find(|line| line.contains("scene_commits:"))
-            .expect("from_daemon_state must wire scene_commits");
-        assert!(
-            wiring.contains("Arc::clone(&daemon.scene_commits)"),
-            "from_daemon_state must share the daemon's sequencer, not mint one: {wiring}"
+    fn every_commit_sequencer_mint_is_accounted_for() {
+        // Every place a struct field is given a sequencer, keyed by
+        // whether it mints a fresh one or shares an existing one. Two
+        // roots may mint, because they have nothing to clone from.
+        const EXPECTED: [(&str, &str); 3] = [
+            ("api/mod.rs", "mint"),          // AppState::new_with_data_dir
+            ("api/mod.rs", "clone"),         // AppState::from_daemon_state
+            ("startup/services.rs", "mint"), // DaemonState
+        ];
+
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found: Vec<(String, &str)> = Vec::new();
+        let mut pending = vec![src.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("source directory reads") {
+                let path = entry.expect("source entry reads").path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "rs") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(&src)
+                    .expect("paths are under src")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                for line in std::fs::read_to_string(&path)
+                    .expect("source file reads")
+                    .lines()
+                {
+                    // Field declarations carry a type, not a value.
+                    if !line.contains("scene_commits:") || line.contains("pub scene_commits:") {
+                        continue;
+                    }
+                    let kind = if line.contains("Arc::clone") {
+                        "clone"
+                    } else {
+                        "mint"
+                    };
+                    found.push((relative.clone(), kind));
+                }
+            }
+        }
+        found.sort();
+
+        let mut expected = EXPECTED
+            .iter()
+            .map(|(file, kind)| ((*file).to_owned(), *kind))
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(
+            found, expected,
+            "every sequencer must come from one of the two roots or be cloned; \
+             a new mint means some holder has its own chain over shared scene state"
         );
     }
 

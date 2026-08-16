@@ -337,11 +337,14 @@ pub async fn commit_scene(
         }
         Err(error) => {
             // The bytes stay the destination's newest admitted intent
-            // and the supervisor converges on them, but this attempt
-            // did not prove durable — adapters keep rendering that the
-            // way their frozen wire always has.
+            // and the retry supervisor converges on them, so this
+            // commit is authoritative and announces itself like any
+            // other. Withholding the events here would leave every
+            // client blind to a change that is going to land, and the
+            // web UI is event-driven with no polling to fall back on.
+            // `retry_error` carries the attempt's failure for logging.
             let message = format!("{error}");
-            ticket.discard();
+            ticket.release(events);
             Ok(SceneCommit::new(
                 generation,
                 generation,
@@ -363,16 +366,33 @@ pub async fn commit_scene(
 /// made during a transition — which is exactly when `activate_scene`
 /// runs. Progress is render-local and no commit means to own it.
 ///
-/// What is compared is the durable, semantic state a candidate
-/// replaces: the scene set, which scene is current, how the current one
-/// was reached, and the resolved zones (which fold in the runtime
-/// default display groups). The render-group revision counter is a
-/// cache generation, so its contents are compared instead of its
-/// number.
+/// Everything else a candidate replaces is compared, and each member
+/// exists because some direct writer can move it alone:
+///
+/// - the scene set, as a map, for scene content;
+/// - the **whole** priority stack as an ordered `(scene, priority)`
+///   sequence, not just its winner, because a mutation to a shadowed
+///   entry leaves the active scene identical while still being work
+///   this install would erase;
+/// - the render-group revision as a **number**, because a direct
+///   `invalidate_active_render_groups` bumps the counter without
+///   necessarily changing the resolved zones, and comparing only the
+///   zones would miss it;
+/// - the resolved zones themselves, for content;
+/// - the runtime default display groups as a full set, because a
+///   default hidden behind an assigned display zone never appears in
+///   the resolved zones at all.
+///
+/// `entered_at` is excluded from the stack comparison: it is an
+/// `Instant` stamped at push time, so it carries no state a commit
+/// could lose.
 fn scene_state_matches(live: &SceneManager, base: &SceneManager) -> bool {
     if live.active_scene_id() != base.active_scene_id()
         || live.activation_history() != base.activation_history()
+        || live.active_render_groups_revision() != base.active_render_groups_revision()
         || live.active_render_groups().as_ref() != base.active_render_groups().as_ref()
+        || live.default_display_groups() != base.default_display_groups()
+        || !priority_stacks_match(live, base)
     {
         return false;
     }
@@ -391,6 +411,18 @@ fn scene_state_matches(live: &SceneManager, base: &SceneManager) -> bool {
     live_scenes
         .into_iter()
         .all(|scene| base_by_id.get(&scene.id) == Some(&scene))
+}
+
+/// The priority stack as the ordered identity sequence a commit can
+/// lose, ignoring the push timestamps.
+fn priority_stacks_match(live: &SceneManager, base: &SceneManager) -> bool {
+    let live_entries = live.priority_stack().entries();
+    let base_entries = base.priority_stack().entries();
+    live_entries.len() == base_entries.len()
+        && live_entries
+            .iter()
+            .zip(base_entries)
+            .all(|(live, base)| live.scene_id == base.scene_id && live.priority == base.priority)
 }
 
 // ── Scene media admission ────────────────────────────────────────────────

@@ -11,7 +11,6 @@ use crate::api::effects::{
     StopActiveEffectError, normalize_control_payload, stop_active_effect_and_quiesce_output,
 };
 use crate::domain::MutationContext;
-use crate::domain::commit::SceneCommit;
 use crate::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 
@@ -228,7 +227,7 @@ pub(super) async fn handle_set_effect_with_state(
     let applied = apply_effect(
         state,
         ApplyEffect {
-            effect_id: best_match.effect.id,
+            effect: best_match.effect.clone(),
             controls: normalized_controls.clone(),
             preset_id: None,
             target_zone: None,
@@ -237,7 +236,6 @@ pub(super) async fn handle_set_effect_with_state(
         MutationContext::mcp(),
     )
     .await?;
-    persistence_failure(&applied.commit)?;
 
     Ok(json!({
         "matched_effect": {
@@ -259,17 +257,6 @@ pub(super) async fn handle_set_effect_with_state(
         "warnings": [],
         "layout": applied.applied_layout
     }))
-}
-
-/// Project a non-durable commit onto the failure the MCP tools have
-/// always reported for one.
-fn persistence_failure(commit: &SceneCommit) -> Result<(), ToolError> {
-    match commit.retry_error() {
-        Some(error) => Err(ToolError::Internal(format!(
-            "failed to persist scenes: {error}"
-        ))),
-        None => Ok(()),
-    }
 }
 
 pub(super) async fn handle_list_effects_with_state(
@@ -484,7 +471,7 @@ pub(super) async fn handle_set_color_with_state(
     let applied = apply_effect(
         state,
         ApplyEffect {
-            effect_id: solid_effect.id,
+            effect: solid_effect.clone(),
             controls: controls.clone(),
             preset_id: None,
             target_zone: None,
@@ -493,7 +480,6 @@ pub(super) async fn handle_set_color_with_state(
         MutationContext::mcp(),
     )
     .await?;
-    persistence_failure(&applied.commit)?;
 
     let device_count = state.device_registry.len().await;
     Ok(json!({

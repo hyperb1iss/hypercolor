@@ -100,7 +100,8 @@ pub(crate) async fn activate_effect_with_controls(
             other => ActivateEffectError::Activation(other.to_string()),
         })?;
     if let Some(error) = commit.retry_error() {
-        return Err(ActivateEffectError::Activation(error.to_owned()));
+        // Admitted and converging, not failed.
+        tracing::warn!(%error, "Scene write has not proven durable yet; retry remains active");
     }
     crate::api::persist_runtime_session(state).await;
 
