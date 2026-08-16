@@ -25,7 +25,7 @@ mod transfer;
 mod types;
 
 pub use blend::PixelBlendMode;
-pub use compat::linear_to_output_u8;
+pub use convert::linear_to_output_u8;
 #[allow(
     deprecated,
     reason = "the compat surface re-exports its own deprecations"

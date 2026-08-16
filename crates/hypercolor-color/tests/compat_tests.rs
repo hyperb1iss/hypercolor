@@ -13,11 +13,11 @@ use hypercolor_color::{
 /// Every byte quadruple round-trips through the direct scale exactly as
 /// canvas's `Rgba::to_f32` did: divide by 255, no transfer decode.
 #[test]
-fn to_f32_is_direct_scale_over_every_byte() {
+fn to_f32_direct_is_direct_scale_over_every_byte() {
     for byte in 0_u8..=255 {
         let color = Rgba::new(byte, byte, byte, byte);
         let expected = f32::from(byte) / 255.0;
-        let actual = color.to_f32();
+        let actual = color.to_f32_direct();
         assert_eq!(actual.r, expected, "red at {byte}");
         assert_eq!(actual.g, expected, "green at {byte}");
         assert_eq!(actual.b, expected, "blue at {byte}");
@@ -25,13 +25,13 @@ fn to_f32_is_direct_scale_over_every_byte() {
     }
 }
 
-/// `to_f32` deliberately differs from `to_linear` — it is the misleading
-/// operation the deprecation names. Anything but a mismatch here means
-/// the compat item is the wrong one.
+/// `to_f32_direct` deliberately differs from `to_linear` — the `direct`
+/// in the name is the whole point. Anything but a mismatch here means
+/// one of the two decodes when it should not.
 #[test]
-fn to_f32_and_to_linear_disagree_off_the_endpoints() {
+fn to_f32_direct_and_to_linear_disagree_off_the_endpoints() {
     let mid = Rgba::new(128, 128, 128, 255);
-    assert_ne!(mid.to_f32().r, mid.to_linear().r);
+    assert_ne!(mid.to_f32_direct().r, mid.to_linear().r);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn to_srgb_u8_and_to_srgba_match_to_encoded() {
 /// `to_encoded` rounds after a transfer encode. Both behaviors survive
 /// under their own names.
 #[test]
-fn to_rgba_is_truncating_direct_scale() {
+fn to_bytes_direct_is_truncating_direct_scale() {
     for step in 0_u32..=1024 {
         #[allow(clippy::cast_precision_loss)]
         let unit = step as f32 / 1024.0;
@@ -84,14 +84,14 @@ fn to_rgba_is_truncating_direct_scale() {
             reason = "reproducing the pre-absorption formula verbatim"
         )]
         let expected = (unit * 255.0).clamp(0.0, 255.0) as u8;
-        assert_eq!(color.to_rgba().r, expected, "at unit {unit}");
+        assert_eq!(color.to_bytes_direct().r, expected, "at unit {unit}");
     }
 }
 
 #[test]
-fn to_rgba_clamps_out_of_range_channels() {
+fn to_bytes_direct_clamps_out_of_range_channels() {
     let out_of_range = LinearRgba::new(-0.5, 1.5, 0.0, 2.0);
-    assert_eq!(out_of_range.to_rgba(), Rgba::new(0, 255, 0, 255));
+    assert_eq!(out_of_range.to_bytes_direct(), Rgba::new(0, 255, 0, 255));
 }
 
 #[test]

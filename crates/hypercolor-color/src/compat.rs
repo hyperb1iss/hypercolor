@@ -1,19 +1,9 @@
 //! Transitional names carried over from `hypercolor-types::canvas`.
 //!
-//! Almost everything here delegates to a kernel operation defined
-//! elsewhere in this crate, either under a spelling that changed
-//! (`to_srgba` → `to_encoded`) or as a convenience over one that did
-//! not. The exceptions are [`Rgba::to_f32`] and [`LinearRgba::to_rgba`],
-//! which carry canvas's direct byte-scaling formula inline. There is
-//! deliberately no kernel function for scaling bytes without a transfer
-//! decode, because doing so produces a value that claims to be linear
-//! light and is not — which is exactly why those two are deprecated
-//! rather than promoted.
-//!
-//! Whether an item delegates or carries its formula, none of it is new
-//! math: both inline formulas are canvas's, character for character,
-//! and `compat_tests.rs` pins them against the baseline across their
-//! full domain.
+//! Everything here delegates to a kernel operation defined elsewhere in
+//! this crate, either under a spelling that changed (`to_srgba` →
+//! `to_encoded`) or as a convenience over one that did not. None of it
+//! is new math.
 //!
 //! These names exist so the canvas absorption is a type swap rather
 //! than a rewrite, and they retire one release later per Spec 76 §1.2.
@@ -25,41 +15,7 @@ use crate::types::{LinearRgba, Oklab, Oklch, Rgba};
 #[deprecated(note = "renamed to LinearRgba")]
 pub type RgbaF32 = LinearRgba;
 
-/// The canonical unit-float → byte conversion, exposed as a free
-/// function for sinks that write linear-light bytes directly (LED PWM
-/// after any transfer correction the device itself applies).
-#[must_use]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions,
-    reason = "value is clamped into byte range before the cast"
-)]
-pub fn linear_to_output_u8(c: f32) -> u8 {
-    (c * 255.0).round().clamp(0.0, 255.0) as u8
-}
-
 impl Rgba {
-    /// Scale each byte channel into `0.0..=1.0` with **no** transfer
-    /// decode, producing a [`LinearRgba`] that does not hold linear
-    /// light.
-    ///
-    /// This one carries canvas's formula inline rather than delegating.
-    /// No kernel operation scales bytes without decoding them, and none
-    /// should: the result is mislabelled by its own type. The type is a
-    /// lie the canvas module told for years, kept only so absorbing call
-    /// sites is a mechanical swap.
-    #[must_use]
-    #[deprecated(note = "direct-scaled bytes are not linear light; use to_linear")]
-    pub fn to_f32(self) -> LinearRgba {
-        LinearRgba {
-            r: f32::from(self.r) / 255.0,
-            g: f32::from(self.g) / 255.0,
-            b: f32::from(self.b) / 255.0,
-            a: f32::from(self.a) / 255.0,
-        }
-    }
-
     /// Decode sRGB bytes into linear light.
     #[must_use]
     #[deprecated(note = "renamed to to_linear")]
@@ -92,31 +48,6 @@ impl LinearRgba {
     #[deprecated(note = "renamed to to_encoded")]
     pub fn to_srgba(self) -> Rgba {
         self.to_encoded()
-    }
-
-    /// Scale each channel by 255 and clamp, **skipping** the sRGB
-    /// transfer encode and truncating rather than rounding.
-    ///
-    /// The reverse of [`Rgba::to_f32`], and like it, this carries
-    /// canvas's formula inline instead of delegating — the truncating
-    /// direct scale has no kernel equivalent and is not meant to gain
-    /// one. Sinks that consume linear-light bytes used this; it is not
-    /// the inverse of [`Rgba::to_linear`] and never was.
-    #[must_use]
-    #[deprecated(note = "direct-scaled bytes are not encoded sRGB; use to_encoded")]
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::as_conversions,
-        reason = "channels are clamped into byte range before the cast"
-    )]
-    pub fn to_rgba(self) -> Rgba {
-        Rgba {
-            r: (self.r * 255.0).clamp(0.0, 255.0) as u8,
-            g: (self.g * 255.0).clamp(0.0, 255.0) as u8,
-            b: (self.b * 255.0).clamp(0.0, 255.0) as u8,
-            a: (self.a * 255.0).clamp(0.0, 255.0) as u8,
-        }
     }
 }
 
