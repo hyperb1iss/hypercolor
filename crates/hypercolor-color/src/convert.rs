@@ -173,22 +173,6 @@ impl Rgba {
             a: f32::from(self.a) / 255.0,
         }
     }
-
-    /// Scale each byte channel into `0.0..=1.0` with no transfer decode.
-    ///
-    /// Nothing is decoded here, so the returned [`LinearRgba`] holds
-    /// non-linear data in a linear-typed carrier. The name shouts
-    /// because the type cannot: anything wanting actual linear light
-    /// calls [`Rgba::to_linear`] instead.
-    #[must_use]
-    pub fn to_f32_direct(self) -> LinearRgba {
-        LinearRgba {
-            r: f32::from(self.r) / 255.0,
-            g: f32::from(self.g) / 255.0,
-            b: f32::from(self.b) / 255.0,
-            a: f32::from(self.a) / 255.0,
-        }
-    }
 }
 
 impl LinearRgba {
@@ -201,30 +185,6 @@ impl LinearRgba {
             g: linear_to_srgb_u8(self.g),
             b: linear_to_srgb_u8(self.b),
             a: unit_to_u8(self.a),
-        }
-    }
-
-    /// Scale each channel by 255 and clamp, skipping the sRGB transfer
-    /// encode and truncating rather than rounding.
-    ///
-    /// The reverse of [`Rgba::to_f32_direct`]: no encode happens, so the
-    /// bytes carry whatever the linear-typed value held rather than
-    /// encoded sRGB. Sinks consuming linear-light bytes want this; it is
-    /// not the inverse of [`Rgba::to_linear`] and never was, and
-    /// [`LinearRgba::to_encoded`] is what produces display-ready bytes.
-    #[must_use]
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::as_conversions,
-        reason = "channels are clamped into byte range before the cast"
-    )]
-    pub fn to_bytes_direct(self) -> Rgba {
-        Rgba {
-            r: (self.r * 255.0).clamp(0.0, 255.0) as u8,
-            g: (self.g * 255.0).clamp(0.0, 255.0) as u8,
-            b: (self.b * 255.0).clamp(0.0, 255.0) as u8,
-            a: (self.a * 255.0).clamp(0.0, 255.0) as u8,
         }
     }
 
