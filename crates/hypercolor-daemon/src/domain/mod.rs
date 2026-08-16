@@ -364,10 +364,20 @@ pub fn with_etag<R: Versioned>(response: Response, resource: &R) -> Response {
     attach_version_etag(response, resource.version())
 }
 
-/// Frozen legacy error projections for v1 paths (Spec 76 §0).
+/// Frozen legacy error projections for v1 paths.
 ///
-/// This module is the single index for them. The v1 compat matrix pins
-/// these shapes and canonical routes never use them.
+/// **This whole module is scheduled for deletion.** Hypercolor is
+/// pre-1.0 and the program removes compat glue rather than accumulating
+/// it: in-repo clients move in lockstep with wire changes and persisted
+/// files migrate forward once. These projections exist only so the
+/// service lift could land without changing wire bytes in the same PR;
+/// the route-flip wave deletes them along with the legacy shapes they
+/// reproduce. Do not build on them, and do not add a family — if you
+/// are here because a new path needs a legacy rendering, that path
+/// should be emitting the canonical envelope instead.
+///
+/// Until then this module is the single index for them, and the v1
+/// compat matrix pins these shapes.
 ///
 /// There is deliberately **more than one** `DomainError` projection,
 /// because v1 path families do not agree on their frozen bytes. A
@@ -387,7 +397,10 @@ pub fn with_etag<R: Versioned>(response: Response, resource: &R) -> Response {
 ///   library activation they share. It differs in exactly one arm, and
 ///   defers to the helper family for the rest so the two cannot drift.
 ///
-/// Adding a family means adding a projection, not widening one.
+/// They are separate because the families genuinely disagree on their
+/// bytes, so one universal adapter would have to pick a rendering and
+/// silently falsify the other. That is a property of the legacy shapes
+/// being frozen, not a pattern worth keeping past their deletion.
 pub mod legacy {
     use super::{DomainError, HeaderValue, IntoResponse, Json, Response, StatusCode, header, json};
     use crate::api::envelope::ApiError;
