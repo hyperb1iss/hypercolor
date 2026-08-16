@@ -746,6 +746,18 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
     }
 }
 
+/// Write the live scene set to the scene store.
+///
+/// SNAPSHOT WRITER (Spec 76 §2.3). This reads the manager rather than
+/// mutating it, so the scene state it captures is whatever a commit last
+/// installed — but the store write itself happens outside
+/// [`commit_scene`](crate::domain::scene::commit_scene) and outside the
+/// sequencer's ordering, so a snapshot racing a commit can write the
+/// older payload. The persistence layer converges regardless: both go
+/// through the same reserve-and-save admission, where the newer
+/// generation wins the destination and the loser reports `Superseded`.
+/// It predates the domain layer and moves inside the commit when §6.4
+/// gives the session snapshot a scene context to read from.
 pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Result<()> {
     let pending = {
         let manager = state.scene_manager.read().await;
@@ -848,7 +860,9 @@ async fn clear_active_scene_effect_groups(
         ));
     }
 
-    crate::domain::scene::commit_scene(state.as_ref(), mutation).await?;
+    crate::domain::scene::commit_scene(state.as_ref(), mutation)
+        .await?
+        .log_if_retrying("Failed to persist effect fallback");
     persist_runtime_session(state).await;
 
     Ok(Some(EffectErrorFallbackApplied {
@@ -883,17 +897,10 @@ pub(crate) async fn prune_scene_display_groups_for_device(
     state: &Arc<AppState>,
     device_id: DeviceId,
 ) {
-    let pruned =
-        match crate::domain::display::prune_display_zones_for_device(state.as_ref(), device_id)
-            .await
-        {
-            Ok(pruned) => pruned,
-            Err(error) => {
-                warn!(%error, %device_id, "Failed to prune display zones for deleted device");
-                return;
-            }
-        };
-
+    // The preference goes first and unconditionally. A deleted device
+    // must never keep a stored default face, and it can no longer be
+    // addressed through the displays API to clear one, so this must not
+    // ride on whether the scene commit lands.
     let removed_preference = {
         let mut store = state.display_preferences.write().await;
         match store.remove(device_id) {
@@ -904,6 +911,17 @@ pub(crate) async fn prune_scene_display_groups_for_device(
             }
         }
     };
+
+    let pruned =
+        match crate::domain::display::prune_display_zones_for_device(state.as_ref(), device_id)
+            .await
+        {
+            Ok(pruned) => pruned,
+            Err(error) => {
+                warn!(%error, %device_id, "Failed to prune display zones for deleted device");
+                crate::domain::display::PrunedDisplayZones::empty()
+            }
+        };
 
     if pruned.removed_zones.is_empty() && pruned.removed_default.is_none() && !removed_preference {
         return;

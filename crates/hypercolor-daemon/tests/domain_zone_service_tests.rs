@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use hypercolor_core::scene::{OutputPlacement, ZoneMetaPatch};
+use hypercolor_types::api::zones::OutputAssignment;
 use hypercolor_types::event::{HypercolorEvent, SceneSettingsChangeKind, ZoneChangeKind};
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
@@ -443,7 +444,10 @@ async fn assign_outputs_moves_them_into_the_target_zone() {
         AssignOutputs {
             scene_id,
             zone_id: created.zone.id,
-            outputs: vec![output("strimer"), output("fan-1")],
+            assignments: vec![
+                OutputAssignment::New(Box::new(output("strimer"))),
+                OutputAssignment::New(Box::new(output("fan-1"))),
+            ],
             placement: OutputPlacement::AutoGrid,
             expected_revision: None,
         },
@@ -475,7 +479,7 @@ async fn unassign_output_drops_it_out_of_the_zone() {
         AssignOutputs {
             scene_id,
             zone_id: created.zone.id,
-            outputs: vec![output("strimer")],
+            assignments: vec![OutputAssignment::New(Box::new(output("strimer")))],
             placement: OutputPlacement::AutoGrid,
             expected_revision: None,
         },
@@ -580,7 +584,7 @@ async fn set_zone_layout_repositions_the_outputs_the_zone_owns() {
         AssignOutputs {
             scene_id,
             zone_id: created.zone.id,
-            outputs: vec![output("strimer")],
+            assignments: vec![OutputAssignment::New(Box::new(output("strimer")))],
             placement: OutputPlacement::AutoGrid,
             expected_revision: None,
         },

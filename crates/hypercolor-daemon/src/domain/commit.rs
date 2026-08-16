@@ -109,6 +109,22 @@ impl SceneCommit {
     pub fn retry_error(&self) -> Option<&str> {
         self.retry_error.as_deref()
     }
+
+    /// Log a non-durable attempt on a path whose caller has no wire to
+    /// report it on.
+    ///
+    /// A background reconciliation cannot surface `Retrying` to anyone,
+    /// so without this the failed attempt is silent even though the
+    /// retry supervisor is now carrying the payload.
+    pub fn log_if_retrying(&self, what: &str) {
+        if self.durability != CommitDurability::Retrying {
+            return;
+        }
+        tracing::warn!(
+            error = self.retry_error.as_deref().unwrap_or("unknown"),
+            "{what}; retry remains active"
+        );
+    }
 }
 
 /// One ordered publication chain for scene commits.

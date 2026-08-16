@@ -396,7 +396,15 @@ pub(crate) async fn apply_profile_snapshot(
 
         crate::domain::scene::commit_scene(state, mutation)
             .await
-            .map_err(|error| ProfileApplyError::Internal(error.to_string()))?;
+            .map_err(|error| match error {
+                // A concurrent scene write is something the caller can
+                // retry, not a daemon fault.
+                crate::domain::DomainError::PreconditionFailed { .. } => ProfileApplyError::Conflict(
+                    "scene state changed while applying this profile; retry against current state"
+                        .to_owned(),
+                ),
+                other => ProfileApplyError::Internal(other.to_string()),
+            })?;
     }
 
     if let Some(layout) = layout {

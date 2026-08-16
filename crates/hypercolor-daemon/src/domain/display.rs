@@ -23,7 +23,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{commit_scene, zone_changed_event};
+use crate::domain::scene::{commit_retrying, commit_scene, zone_changed_event};
 use crate::domain::{DomainError, MutationContext};
 
 // ── Commands ─────────────────────────────────────────────────────────────
@@ -275,29 +275,31 @@ pub async fn sync_display_surfaces(
     state: &AppState,
     displays: Vec<(DeviceId, String, SpatialLayout)>,
 ) -> Result<bool, DomainError> {
-    let mut mutation = state.begin_scene_mutation().await;
-    let Some(active) = mutation.scenes().active_scene() else {
-        return Ok(false);
-    };
-    if active.blocks_runtime_mutation() {
-        return Ok(false);
-    }
+    let outcome = commit_retrying(state, |mutation| {
+        let Some(active) = mutation.scenes().active_scene() else {
+            return Ok(None);
+        };
+        if active.blocks_runtime_mutation() {
+            return Ok(None);
+        }
 
-    let mut changed = false;
-    for (device_id, device_name, layout) in displays {
-        match mutation.ensure_display_surface(device_id, &device_name, layout) {
-            Ok(moved) => changed |= moved,
-            Err(error) => {
-                tracing::warn!(%error, %device_id, "Failed to sync display screen surface");
+        let mut changed = false;
+        for (device_id, device_name, layout) in &displays {
+            match mutation.ensure_display_surface(*device_id, device_name, layout.clone()) {
+                Ok(moved) => changed |= moved,
+                Err(error) => {
+                    tracing::warn!(%error, %device_id, "Failed to sync display screen surface");
+                }
             }
         }
-    }
+        Ok(changed.then_some(()))
+    })
+    .await?;
 
-    if !changed {
-        return Ok(false);
+    if let Some(((), commit)) = outcome.as_ref() {
+        commit.log_if_retrying("Failed to persist display surfaces");
     }
-    commit_scene(state, mutation).await?;
-    Ok(true)
+    Ok(outcome.is_some())
 }
 
 /// Drop every scene's display zone for a device, and its runtime default
@@ -316,31 +318,39 @@ pub async fn prune_display_zones_for_device(
     state: &AppState,
     device_id: DeviceId,
 ) -> Result<PrunedDisplayZones, DomainError> {
-    let mut mutation = state.begin_scene_mutation().await;
-    let removed_zones = mutation.remove_display_zones_for_device(device_id);
-    let removed_default = mutation.remove_default_display_zone(device_id);
-    let active_scene_id = mutation
-        .scenes()
-        .active_scene()
-        .map_or(SceneId::DEFAULT, |scene| scene.id);
+    let outcome = commit_retrying(state, |mutation| {
+        let removed_zones = mutation.remove_display_zones_for_device(device_id);
+        let removed_default = mutation.remove_default_display_zone(device_id);
+        if removed_zones.is_empty() && removed_default.is_none() {
+            return Ok(None);
+        }
+        let active_scene_id = mutation
+            .scenes()
+            .active_scene()
+            .map_or(SceneId::DEFAULT, |scene| scene.id);
 
-    for (scene_id, zone) in &removed_zones {
-        mutation.record(zone_changed_event(*scene_id, zone, ZoneChangeKind::Removed));
-    }
-    if let Some(zone) = removed_default.as_ref() {
-        mutation.record(zone_changed_event(
-            active_scene_id,
-            zone,
-            ZoneChangeKind::Removed,
-        ));
-    }
+        for (scene_id, zone) in &removed_zones {
+            mutation.record(zone_changed_event(*scene_id, zone, ZoneChangeKind::Removed));
+        }
+        if let Some(zone) = removed_default.as_ref() {
+            mutation.record(zone_changed_event(
+                active_scene_id,
+                zone,
+                ZoneChangeKind::Removed,
+            ));
+        }
+        Ok(Some((removed_zones, removed_default)))
+    })
+    .await?;
 
-    let commit = commit_scene(state, mutation).await?;
+    let Some(((removed_zones, removed_default), commit)) = outcome else {
+        return Ok(PrunedDisplayZones::empty());
+    };
 
     Ok(PrunedDisplayZones {
         removed_zones,
         removed_default,
-        commit,
+        commit: Some(commit),
     })
 }
 
@@ -351,8 +361,21 @@ pub struct PrunedDisplayZones {
     pub removed_zones: Vec<(SceneId, Zone)>,
     /// The runtime default overlay, when one existed.
     pub removed_default: Option<Zone>,
-    /// The commit receipt.
-    pub commit: SceneCommit,
+    /// The commit receipt, absent when the device owned no display zone
+    /// on either layer and nothing was committed.
+    pub commit: Option<SceneCommit>,
+}
+
+impl PrunedDisplayZones {
+    /// The outcome of a prune that removed nothing.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            removed_zones: Vec::new(),
+            removed_default: None,
+            commit: None,
+        }
+    }
 }
 
 // ── Default-layer services ───────────────────────────────────────────────
@@ -368,14 +391,30 @@ pub async fn set_default_display_overlay(
     device_id: DeviceId,
     zone: Zone,
 ) -> Result<Option<Zone>, DomainError> {
-    let mut mutation = state.begin_scene_mutation().await;
-    mutation.set_default_display_zone(zone);
-    let installed = mutation
-        .scenes()
-        .default_display_group_for(device_id)
-        .cloned();
-    commit_scene(state, mutation).await?;
-    Ok(installed)
+    let mut already_installed = None;
+    let outcome = commit_retrying(state, |mutation| {
+        already_installed = None;
+        if !mutation.set_default_display_zone(zone.clone()) {
+            // The preference already resolves to exactly this overlay.
+            // Re-installing it would commit, and a commit invalidates
+            // every in-flight candidate — which is how a read path ends
+            // up failing a user's write.
+            already_installed = mutation
+                .scenes()
+                .default_display_group_for(device_id)
+                .cloned();
+            return Ok(None);
+        }
+        Ok(Some(
+            mutation
+                .scenes()
+                .default_display_group_for(device_id)
+                .cloned(),
+        ))
+    })
+    .await?;
+
+    Ok(outcome.map_or(already_installed, |(installed, _commit)| installed))
 }
 
 /// Remove a display's runtime default overlay zone.
@@ -388,10 +427,12 @@ pub async fn remove_default_display_overlay(
     state: &AppState,
     device_id: DeviceId,
 ) -> Result<Option<Zone>, DomainError> {
-    let mut mutation = state.begin_scene_mutation().await;
-    let removed = mutation.remove_default_display_zone(device_id);
-    commit_scene(state, mutation).await?;
-    Ok(removed)
+    let outcome = commit_retrying(state, |mutation| {
+        Ok(mutation.remove_default_display_zone(device_id))
+    })
+    .await?;
+
+    Ok(outcome.map(|(removed, _commit)| removed))
 }
 
 /// Whether the active scene already carries a display zone for a device.

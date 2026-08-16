@@ -14,8 +14,8 @@ use std::time::SystemTime;
 
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
+    EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::scene::{
@@ -26,8 +26,9 @@ use uuid::Uuid;
 
 use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::domain::effect::{
-    ApplyEffect, ControlsRefusal, RequestedTransition, ResetControls, UpdateControls, apply_effect,
-    reset_controls, stop_effect, update_controls,
+    ApplyEffect, ControlsRefusal, RequestedTransition, ResetControls, SetControlBinding,
+    UpdateControls, apply_effect, invalidate_active_zones, reset_controls, set_control_binding,
+    stop_effect, update_controls,
 };
 use hypercolor_daemon::domain::{DomainError, MutationContext};
 
@@ -165,6 +166,18 @@ fn drain_events(
         seen.push(timestamped.event);
     }
     seen
+}
+
+fn sensor_binding() -> ControlBinding {
+    ControlBinding {
+        sensor: "audio.bass".to_owned(),
+        sensor_min: 0.0,
+        sensor_max: 1.0,
+        target_min: 0.0,
+        target_max: 1.0,
+        deadband: 0.0,
+        smoothing: 0.5,
+    }
 }
 
 fn changed_control_ids(events: &[HypercolorEvent]) -> Vec<String> {
@@ -474,5 +487,121 @@ async fn reset_controls_conflicts_when_the_active_scene_is_snapshot_locked() {
     assert!(
         matches!(error, DomainError::Conflict { .. }),
         "expected Conflict, got {error:?}"
+    );
+}
+
+// ── set_control_binding ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn set_control_binding_attaches_the_binding_to_the_zone() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = controllable_effect("aurora");
+    let zone_id = running_effect(&state, &metadata).await;
+    let mut events = state.event_bus.subscribe_all();
+
+    let written = set_control_binding(
+        &state,
+        SetControlBinding {
+            zone_id,
+            control_id: "speed".to_owned(),
+            binding: sensor_binding(),
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("the binding should not fail")
+    .expect("the zone exists");
+
+    let binding = written
+        .zone
+        .control_bindings
+        .get("speed")
+        .expect("the zone carries the binding");
+    assert_eq!(binding.sensor, "audio.bass");
+
+    let seen = drain_events(&mut events);
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            HypercolorEvent::RenderGroupChanged {
+                kind: ZoneChangeKind::Updated,
+                ..
+            }
+        )),
+        "the zone change must be announced: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn set_control_binding_refuses_an_unknown_zone() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = controllable_effect("aurora");
+    running_effect(&state, &metadata).await;
+
+    let refusal = set_control_binding(
+        &state,
+        SetControlBinding {
+            zone_id: ZoneId::new(),
+            control_id: "speed".to_owned(),
+            binding: sensor_binding(),
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("an unknown zone is a refusal, not a failure")
+    .expect_err("there is no such zone");
+    assert_eq!(refusal, ControlsRefusal::ZoneMissing);
+}
+
+#[tokio::test]
+async fn set_control_binding_conflicts_when_the_active_scene_is_snapshot_locked() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = controllable_effect("aurora");
+    let scene_id = activate_named_scene(&state, "studio").await;
+    let zone_id = running_effect(&state, &metadata).await;
+    snapshot_lock(&state, scene_id).await;
+
+    let error = set_control_binding(
+        &state,
+        SetControlBinding {
+            zone_id,
+            control_id: "speed".to_owned(),
+            binding: sensor_binding(),
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect_err("a snapshot scene refuses runtime rewriting");
+    assert!(
+        matches!(error, DomainError::Conflict { .. }),
+        "expected Conflict, got {error:?}"
+    );
+}
+
+// ── invalidate_active_zones ──────────────────────────────────────────────
+
+/// A dropped invalidation would leave the resolved zones pointing at
+/// pre-reload effect metadata, so the reconciliation retries rather than
+/// surfacing a conflict nobody is listening for.
+#[tokio::test]
+async fn invalidating_the_active_zones_advances_the_revision_every_time() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = controllable_effect("aurora");
+    running_effect(&state, &metadata).await;
+
+    let before = {
+        let manager = state.scene_manager.read().await;
+        manager.active_render_groups_revision()
+    };
+    invalidate_active_zones(&state)
+        .await
+        .expect("the invalidation should land");
+    let after = {
+        let manager = state.scene_manager.read().await;
+        manager.active_render_groups_revision()
+    };
+    assert!(
+        after > before,
+        "the resolved zones must be recomputed: {before} -> {after}"
     );
 }

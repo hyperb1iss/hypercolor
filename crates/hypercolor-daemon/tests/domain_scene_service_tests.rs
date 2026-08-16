@@ -910,6 +910,15 @@ fn library_events(
 /// or be discarded by one. Route it through `commit_scene` instead of
 /// widening this list, unless it genuinely belongs to one of the three
 /// reasons above.
+///
+/// This scan matches the receiver by name, so it fences the idiom the
+/// tree actually uses rather than the type system. A future writer that
+/// binds the handle to a differently named local slips past it, which is
+/// why `the_scene_manager_handle_stays_where_it_is` pins the set of
+/// modules that can reach the handle at all: gaining one is the review
+/// event. The durable fence is Spec 76 §6.3's manager idiom, which moves
+/// the lock inside a `SceneService` and makes the write lock
+/// unreachable from outside the domain.
 #[test]
 fn no_scene_writer_lives_outside_the_commit_path() {
     /// Every file allowed to take the scene write lock, and how many
@@ -964,6 +973,67 @@ fn no_scene_writer_lives_outside_the_commit_path() {
         found, expected,
         "every scene write lock outside commit_scene can silently discard a \
          concurrent commit; route the new site through commit_scene"
+    );
+}
+
+/// Which modules can reach the scene handle at all.
+///
+/// A write lock has to come from somewhere, and every path to one starts
+/// with an `Arc<RwLock<SceneManager>>` in scope. Nine modules name the
+/// type; five of them only ever read or forward it, and pinning the set
+/// means a tenth cannot appear without a reviewer seeing it — including
+/// the case the sibling scan is blind to, where a new module binds the
+/// handle to a local named anything at all.
+///
+/// Widening this list is a decision about who may touch scene state, not
+/// a formality. Prefer handing the new module a domain service.
+#[test]
+fn the_scene_manager_handle_stays_where_it_is() {
+    const EXPECTED: [&str; 9] = [
+        "api/mod.rs",                  // AppState's field
+        "discovery/mod.rs",            // reads the active scene's targets
+        "interactive_preview.rs",      // reads zones for preview routing
+        "network/host.rs",             // forwards the handle to drivers
+        "render_thread.rs",            // render-thread state
+        "scene_transactions.rs",       // frame-boundary layout publish
+        "scene_transactions/tests.rs", // that transaction's own tests
+        "startup/discovery_worker.rs", // forwards the handle
+        "startup/mod.rs",              // DaemonState's field
+    ];
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut pending = vec![src.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("source directory reads") {
+            let path = entry.expect("source entry reads").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            if std::fs::read_to_string(&path)
+                .expect("source file reads")
+                .contains("RwLock<SceneManager>")
+            {
+                found.push(
+                    path.strip_prefix(&src)
+                        .expect("paths are under src")
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    found.sort();
+
+    let mut expected = EXPECTED.map(ToOwned::to_owned).to_vec();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "a module that holds the scene handle can take the write lock under any local name,          which the write-site scan cannot see; hand it a domain service instead"
     );
 }
 

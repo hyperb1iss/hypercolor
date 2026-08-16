@@ -428,6 +428,7 @@ async fn prune_display_zones_removes_both_layers_for_a_deleted_device() {
 
     assert_eq!(pruned.removed_zones.len(), 1);
     assert!(pruned.removed_default.is_some());
+    assert!(pruned.commit.is_some());
 
     let manager = state.scene_manager.read().await;
     assert!(manager.default_display_group_for(device_id).is_none());
@@ -472,4 +473,97 @@ async fn the_default_overlay_installs_and_retracts_without_persisting() {
             .all(|scene| scene.display_group_for(device_id).is_none()),
         "the default layer never writes into a stored scene"
     );
+}
+
+// ── Read paths must not burn the scene revision ──────────────────────────
+
+/// Re-materializing an unchanged preference used to commit, and a commit
+/// mints a scene revision that invalidates every in-flight candidate.
+/// `GET /api/v1/scenes/active` walks this path once per stored
+/// preference, so an unguarded install turned a plain read into the thing
+/// that fails a user's zone edit.
+#[tokio::test]
+async fn reinstalling_an_unchanged_default_overlay_mints_no_revision() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = DeviceId::new();
+    let effect = face_effect("clock");
+    insert_effect(&state, &effect).await;
+
+    let zone = overlay_zone(device_id, effect.id);
+    set_default_display_overlay(&state, device_id, zone.clone())
+        .await
+        .expect("the first install lands");
+    let after_install = state.scene_commits.revision();
+
+    for _ in 0..3 {
+        let installed = set_default_display_overlay(&state, device_id, zone.clone())
+            .await
+            .expect("a repeat install succeeds")
+            .expect("it reports the installed overlay");
+        assert_eq!(installed.effect_id, Some(effect.id));
+    }
+
+    assert_eq!(
+        state.scene_commits.revision(),
+        after_install,
+        "an unchanged overlay must not advance the scene revision"
+    );
+}
+
+#[tokio::test]
+async fn retracting_an_absent_default_overlay_mints_no_revision() {
+    let (state, _tempdir) = isolated_state();
+    let before = state.scene_commits.revision();
+
+    assert!(
+        remove_default_display_overlay(&state, DeviceId::new())
+            .await
+            .expect("retracting nothing succeeds")
+            .is_none()
+    );
+    assert_eq!(state.scene_commits.revision(), before);
+}
+
+/// A changed preference still has to land, or the display keeps
+/// rendering the face the user just replaced.
+#[tokio::test]
+async fn a_changed_default_overlay_still_commits() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = DeviceId::new();
+    let first = face_effect("clock");
+    let second = face_effect("weather");
+    insert_effect(&state, &first).await;
+    insert_effect(&state, &second).await;
+
+    set_default_display_overlay(&state, device_id, overlay_zone(device_id, first.id))
+        .await
+        .expect("the first install lands");
+    let after_first = state.scene_commits.revision();
+
+    let installed =
+        set_default_display_overlay(&state, device_id, overlay_zone(device_id, second.id))
+            .await
+            .expect("the replacement lands")
+            .expect("it reports the installed overlay");
+
+    assert_eq!(installed.effect_id, Some(second.id));
+    assert!(
+        state.scene_commits.revision() > after_first,
+        "a real change must advance the revision"
+    );
+}
+
+#[tokio::test]
+async fn pruning_a_device_that_owns_no_display_zones_mints_no_revision() {
+    let (state, _tempdir) = isolated_state();
+    let before = state.scene_commits.revision();
+
+    let pruned = prune_display_zones_for_device(&state, DeviceId::new())
+        .await
+        .expect("pruning nothing succeeds");
+
+    assert!(pruned.removed_zones.is_empty());
+    assert!(pruned.removed_default.is_none());
+    assert!(pruned.commit.is_none());
+    assert_eq!(state.scene_commits.revision(), before);
 }

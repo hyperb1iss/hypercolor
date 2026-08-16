@@ -15,6 +15,7 @@
 //! takes the [`SceneId`] it found.
 
 use hypercolor_core::scene::{OutputPlacement, ZoneMetaPatch, ZoneMutationError};
+use hypercolor_types::api::zones::OutputAssignment;
 use hypercolor_types::event::{HypercolorEvent, SceneSettingsChangeKind, ZoneChangeKind};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{Output, SpatialLayout};
@@ -76,8 +77,12 @@ pub struct AssignOutputs {
     pub scene_id: SceneId,
     /// Which zone receives the outputs.
     pub zone_id: ZoneId,
-    /// The outputs to move, already resolved against the scene.
-    pub outputs: Vec<Output>,
+    /// The outputs to move.
+    ///
+    /// An `Existing` reference names an output anywhere in the scene and
+    /// resolves against the candidate, so the `groups_revision`
+    /// precondition is checked before an unknown reference is reported.
+    pub assignments: Vec<OutputAssignment>,
     /// Whether moved outputs keep their coordinates or get re-gridded.
     pub placement: OutputPlacement,
     /// The `groups_revision` the caller last saw, when it sent one.
@@ -318,8 +323,9 @@ pub async fn assign_outputs(
     check_groups_revision(&mutation, command.scene_id, command.expected_revision)?;
     let previous_zones = scene_zones(&mutation, command.scene_id)?;
     zone_in_scene(&mutation, command.scene_id, command.zone_id)?;
+    let outputs = resolve_assignments(&mutation, command.scene_id, command.assignments)?;
 
-    for output in command.outputs {
+    for output in outputs {
         mutation
             .assign_output(command.scene_id, command.zone_id, output, command.placement)
             .map_err(|error| zone_error(error, command.scene_id, Some(command.zone_id), None))?;
@@ -539,6 +545,33 @@ fn scene_zones(mutation: &SceneMutation, scene_id: SceneId) -> Result<Vec<Zone>,
         .get(&scene_id)
         .map(|scene| scene.groups.clone())
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))
+}
+
+/// Resolve each assignment against the candidate: a `New` output is
+/// taken as written, an `Existing` reference names an output the scene
+/// already holds in some zone.
+fn resolve_assignments(
+    mutation: &SceneMutation,
+    scene_id: SceneId,
+    assignments: Vec<OutputAssignment>,
+) -> Result<Vec<Output>, DomainError> {
+    let scene = mutation
+        .scenes()
+        .get(&scene_id)
+        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
+    assignments
+        .into_iter()
+        .map(|assignment| match assignment {
+            OutputAssignment::Existing { id } => scene
+                .groups
+                .iter()
+                .flat_map(|zone| zone.layout.zones.iter())
+                .find(|output| output.id == id)
+                .cloned()
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Device, id)),
+            OutputAssignment::New(output) => Ok(*output),
+        })
+        .collect()
 }
 
 fn zone_in_scene(

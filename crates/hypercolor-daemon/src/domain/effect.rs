@@ -575,9 +575,16 @@ pub async fn set_control_binding(
 /// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
 /// lands first.
 pub async fn invalidate_active_zones(state: &AppState) -> Result<SceneCommit, DomainError> {
-    let mut mutation = state.begin_scene_mutation().await;
-    mutation.invalidate_active_zones();
-    commit_scene(state, mutation).await
+    // A dropped invalidation leaves the active scene's resolved zones
+    // pointing at pre-reload effect metadata until something else
+    // invalidates, so this reconciliation retries rather than losing.
+    let ((), commit) = crate::domain::scene::commit_retrying(state, |mutation| {
+        mutation.invalidate_active_zones();
+        Ok(Some(()))
+    })
+    .await?
+    .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("invalidation produced no commit")))?;
+    Ok(commit)
 }
 
 // ── Shared steps ─────────────────────────────────────────────────────────

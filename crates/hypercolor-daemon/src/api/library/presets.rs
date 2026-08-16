@@ -369,24 +369,17 @@ async fn apply_preset_to_zone(
     let (applied, rejected) =
         crate::api::effects::normalize_control_values(metadata, &preset.controls);
 
-    // The outgoing effect's name needs the registry, and the registry
-    // read has to happen before the candidate opens so no await sits
-    // between the snapshot and its compare-and-swap.
-    let previous_effect_id = {
-        let scene_manager = state.scene_manager.read().await;
-        scene_manager
-            .active_scene()
-            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .and_then(|group| group.effect_id)
-    };
-    let previous = match previous_effect_id.filter(|id| *id != metadata.id) {
-        Some(effect_id) => {
-            let registry = state.effect_registry.read().await;
-            registry
-                .get(&effect_id)
-                .map(|entry| crate::api::effects::effect_ref(&entry.metadata))
-        }
-        None => None,
+    // Naming the outgoing effect needs the registry, and the outgoing
+    // effect is not known until the candidate is in hand. Taking the
+    // whole index up front keeps every await out of the window between
+    // the snapshot and its compare-and-swap, the same way apply_effect
+    // does.
+    let effect_refs = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .iter()
+            .map(|(id, entry)| (*id, crate::api::effects::effect_ref(&entry.metadata)))
+            .collect::<HashMap<_, _>>()
     };
 
     let mut mutation = state.begin_scene_mutation().await;
@@ -426,6 +419,8 @@ async fn apply_preset_to_zone(
     };
 
     if previous_effect_id != Some(metadata.id) {
+        let previous =
+            previous_effect_id.and_then(|effect_id| effect_refs.get(&effect_id).cloned());
         mutation.record(HypercolorEvent::EffectStarted {
             effect: crate::api::effects::effect_ref(metadata),
             trigger: ChangeTrigger::Api,

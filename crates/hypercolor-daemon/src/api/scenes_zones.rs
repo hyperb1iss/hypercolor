@@ -9,7 +9,7 @@ use axum::response::Response;
 
 use hypercolor_core::scene::{OutputPlacement, ZoneMetaPatch};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone, ZoneId};
-use hypercolor_types::spatial::{Output, SpatialLayout};
+use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::layouts::{validate_layout_sampling_radii, validate_output_sampling_radii};
@@ -46,6 +46,9 @@ pub async fn create_zone(
     headers: HeaderMap,
     Json(body): Json<CreateZoneRequest>,
 ) -> Response {
+    if body.name.trim().is_empty() {
+        return ApiError::bad_request("zone name must not be empty");
+    }
     let expected_revision = match parse_if_match_groups_revision(&headers) {
         Ok(version) => version,
         Err(message) => return ApiError::bad_request(message),
@@ -208,23 +211,8 @@ pub async fn assign_devices(
         OutputPlacement::AutoGrid
     };
 
-    // Existing-output references name outputs anywhere in the scene, so
-    // they resolve against the scene the caller addressed before the
-    // mutation opens.
-    let (scene_id, outputs) = {
-        let manager = state.scene_manager.read().await;
-        let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
-            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
-        };
-        let Some(scene) = manager.get(&scene_id) else {
-            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
-        };
-        match resolve_device_zone_assignments(scene, body.device_zones) {
-            Ok(outputs) => (scene_id, outputs),
-            Err(output_id) => {
-                return ApiError::not_found(format!("Device zone not found: {output_id}"));
-            }
-        }
+    let Some(scene_id) = resolve_scene(&state, &scene_id_raw).await else {
+        return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
     };
 
     match zone::assign_outputs(
@@ -232,7 +220,7 @@ pub async fn assign_devices(
         zone::AssignOutputs {
             scene_id,
             zone_id,
-            outputs,
+            assignments: body.device_zones,
             placement,
             expected_revision,
         },
@@ -405,25 +393,6 @@ fn unassigned_behavior_response(behavior: UnassignedBehavior, groups_revision: u
         }),
         groups_revision,
     )
-}
-
-fn resolve_device_zone_assignments(
-    scene: &hypercolor_types::scene::Scene,
-    assignments: Vec<OutputAssignment>,
-) -> Result<Vec<Output>, String> {
-    assignments
-        .into_iter()
-        .map(|assignment| match assignment {
-            OutputAssignment::Existing { id } => scene
-                .groups
-                .iter()
-                .flat_map(|group| group.layout.zones.iter())
-                .find(|zone| zone.id == id)
-                .cloned()
-                .ok_or(id),
-            OutputAssignment::New(device_zone) => Ok(*device_zone),
-        })
-        .collect()
 }
 
 /// The zone family's frozen v1 error prose.

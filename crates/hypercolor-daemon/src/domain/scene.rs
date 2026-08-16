@@ -600,13 +600,38 @@ impl SceneMutation {
         removed
     }
 
-    /// Install the runtime overlay zone a display preference resolves to.
+    /// Install the runtime overlay zone a display preference resolves to,
+    /// reporting whether it moved anything.
     ///
     /// Default display zones are materialized from the preference store
     /// on every run, so they are runtime state rather than persisted
-    /// scene content.
-    pub fn set_default_display_zone(&mut self, zone: Zone) {
+    /// scene content — and re-materializing the same preference is the
+    /// common case, reached from device connects and from several read
+    /// paths. Reporting `false` there lets the caller skip a commit that
+    /// would mint a scene revision and invalidate every in-flight
+    /// candidate for no change at all.
+    ///
+    /// The comparison normalizes the zone id because
+    /// `set_default_display_group` reuses the installed zone's id, so a
+    /// freshly built overlay differs from an identical installed one in
+    /// that field alone.
+    pub fn set_default_display_zone(&mut self, zone: Zone) -> bool {
+        let Some(device_id) = zone.display_target.as_ref().map(|target| target.device_id) else {
+            return false;
+        };
+        let unchanged = self
+            .candidate
+            .default_display_group_for(device_id)
+            .is_some_and(|installed| {
+                let mut candidate = zone.clone();
+                candidate.id = installed.id;
+                *installed == candidate
+            });
+        if unchanged {
+            return false;
+        }
         self.candidate.set_default_display_group(zone);
+        true
     }
 
     /// Remove a display's runtime default overlay zone.
@@ -773,6 +798,52 @@ pub async fn commit_scene(
             ))
         }
     }
+}
+
+/// How many times an idempotent reconciliation rebuilds its candidate
+/// before giving up on the compare-and-swap.
+pub const COMMIT_ATTEMPTS: usize = 4;
+
+/// Build and commit an idempotent reconciliation, rebuilding the
+/// candidate whenever a concurrent commit wins the swap.
+///
+/// Only reconciliations belong here. A request the user made should
+/// surface the conflict so the caller can rebase against current state,
+/// but a sweep that recomputes its whole intent from live state has
+/// nothing to rebase and nobody to tell. `build` runs against a fresh
+/// candidate on every attempt, so it must not carry state forward from a
+/// previous one.
+///
+/// A `build` that returns `None` found nothing to do, and the
+/// reconciliation ends there without a commit — which matters, because
+/// a commit mints a scene revision and invalidates every in-flight
+/// candidate whether or not it changed anything.
+///
+/// # Errors
+///
+/// Whatever `build` returns, or the last
+/// [`DomainError::PreconditionFailed`] when every attempt loses.
+pub async fn commit_retrying<T>(
+    state: &AppState,
+    mut build: impl FnMut(&mut SceneMutation) -> Result<Option<T>, DomainError>,
+) -> Result<Option<(T, SceneCommit)>, DomainError> {
+    let mut last_conflict = None;
+    for _ in 0..COMMIT_ATTEMPTS {
+        let mut mutation = state.begin_scene_mutation().await;
+        let Some(value) = build(&mut mutation)? else {
+            return Ok(None);
+        };
+        match commit_scene(state, mutation).await {
+            Ok(commit) => return Ok(Some((value, commit))),
+            Err(conflict @ DomainError::PreconditionFailed { .. }) => {
+                last_conflict = Some(conflict);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_conflict.unwrap_or_else(|| {
+        DomainError::conflict("scene commit did not converge after repeated concurrent writes")
+    }))
 }
 
 // ── Scene media admission ────────────────────────────────────────────────

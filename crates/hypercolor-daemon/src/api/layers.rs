@@ -22,10 +22,10 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::normalize_control_payload;
-use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
+use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{AppState, scenes};
-use crate::domain::MutationContext;
 use crate::domain::layer;
+use crate::domain::{MutationContext, legacy};
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateLayerRequest {
@@ -204,7 +204,7 @@ pub async fn create_layer(
     {
         Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Created),
         Ok(Err(refusal)) => layer_mutation_error(refusal),
-        Err(error) => into_v1_response(error),
+        Err(error) => legacy::scene_family_error_response(error),
     }
 }
 
@@ -245,7 +245,7 @@ pub async fn broadcast_media_layer(
     match layer::insert_layers(state.as_ref(), inserts.0, inserts.1, MutationContext::api()).await {
         Ok(Ok(written)) => broadcast_media_layer_response(&written.zones),
         Ok(Err(refusal)) => layer_mutation_error(refusal),
-        Err(error) => into_v1_response(error),
+        Err(error) => legacy::scene_family_error_response(error),
     }
 }
 
@@ -293,7 +293,7 @@ pub async fn update_layer(
     {
         Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Ok),
         Ok(Err(refusal)) => layer_mutation_error(refusal),
-        Err(error) => into_v1_response(error),
+        Err(error) => legacy::scene_family_error_response(error),
     }
 }
 
@@ -328,7 +328,7 @@ pub async fn delete_layer(
     {
         Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Ok),
         Ok(Err(refusal)) => layer_mutation_error(refusal),
-        Err(error) => into_v1_response(error),
+        Err(error) => legacy::scene_family_error_response(error),
     }
 }
 
@@ -361,7 +361,7 @@ pub async fn reorder_layers(
     {
         Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Ok),
         Ok(Err(refusal)) => layer_mutation_error(refusal),
-        Err(error) => into_v1_response(error),
+        Err(error) => legacy::scene_family_error_response(error),
     }
 }
 
@@ -434,7 +434,7 @@ pub async fn patch_layer_controls(
     {
         Ok(Ok(written)) => layer_stack_response(written.zone(), StatusKind::Ok),
         Ok(Err(refusal)) => layer_mutation_error(refusal),
-        Err(error) => into_v1_response(error),
+        Err(error) => legacy::scene_family_error_response(error),
     }
 }
 
