@@ -128,9 +128,25 @@ pub struct ConfigSetArgs {
     /// New value to set.
     pub value: String,
 
-    /// Apply change to running daemon immediately (hot-reload).
-    #[arg(long)]
+    /// Apply the change to the running daemon immediately. This is the
+    /// daemon's default for every key it can re-apply live.
+    #[arg(long, conflicts_with = "no_live")]
     pub live: bool,
+
+    /// Persist the change without touching the running daemon.
+    #[arg(long)]
+    pub no_live: bool,
+}
+
+impl ConfigSetArgs {
+    /// The live-apply request, or `None` to take the daemon's default.
+    const fn live_request(&self) -> Option<bool> {
+        match (self.live, self.no_live) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        }
+    }
 }
 
 /// Arguments for `config reset`.
@@ -181,8 +197,7 @@ async fn execute_get(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let path = format!("/config/get?key={}", urlencoded(&args.key));
-    let response = client.get(&path).await?;
+    let response = client.get(&config_key_path(&args.key)).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -199,23 +214,47 @@ async fn execute_get(
     Ok(())
 }
 
+/// Address one config key as a resource.
+fn config_key_path(key: &str) -> String {
+    format!("/config/keys/{}", urlencoded(key))
+}
+
+/// Address one config key, carrying an explicit live-apply request.
+fn config_key_path_with_live(key: &str, live: Option<bool>) -> String {
+    let path = config_key_path(key);
+    match live {
+        Some(live) => format!("{path}?live={live}"),
+        None => path,
+    }
+}
+
+/// Read a command-line value as JSON, falling back to a JSON string.
+///
+/// The daemon used to do this coercion on a stringified body; the
+/// resource route takes the value as JSON, so the parse lives where the
+/// human-typed text does: `9420` is a number, `microphone` is a string,
+/// and `["10.0.0.1"]` is an array.
+fn parse_cli_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()))
+}
+
 async fn execute_set(
     args: &ConfigSetArgs,
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let body = serde_json::json!({
-        "key": args.key,
-        "value": args.value,
-        "live": args.live,
-    });
-    let response = client.post("/config/set", &body).await?;
+    let path = config_key_path_with_live(&args.key, args.live_request());
+    let response = client.put(&path, &parse_cli_value(&args.value)).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let applied = if args.live {
+            // The daemon reports what it actually did, so the note
+            // follows the response rather than the requested flag.
+            let applied = if response["live"] == serde_json::Value::Bool(true) {
                 "  (applied to running daemon)"
+            } else if response["requires_restart"] == serde_json::Value::Bool(true) {
+                "  (restart the daemon to activate)"
             } else {
                 ""
             };
@@ -236,10 +275,14 @@ async fn execute_reset(
         return Ok(());
     }
 
-    let body = serde_json::json!({
-        "key": args.key,
-    });
-    let response = client.post("/config/reset", &body).await?;
+    let response = match &args.key {
+        Some(key) => client.delete(&config_key_path(key)).await?,
+        None => {
+            client
+                .post("/config/reset", &serde_json::Value::Null)
+                .await?
+        }
+    };
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -477,7 +520,60 @@ fn profile_default(args: &ProfileDefaultArgs, ctx: &OutputContext) -> Result<()>
 mod tests {
     use std::path::Path;
 
-    use super::{DAEMON_CONFIG_FILE_NAME, config_file_path, resolve_daemon_config_path};
+    use super::{
+        ConfigSetArgs, DAEMON_CONFIG_FILE_NAME, config_file_path, config_key_path,
+        config_key_path_with_live, parse_cli_value, resolve_daemon_config_path,
+    };
+
+    #[test]
+    fn config_keys_address_one_path_segment() {
+        assert_eq!(
+            config_key_path("daemon.target_fps"),
+            "/config/keys/daemon.target_fps"
+        );
+        assert_eq!(
+            config_key_path("drivers.wled/../hue"),
+            "/config/keys/drivers.wled%2F..%2Fhue"
+        );
+    }
+
+    #[test]
+    fn live_flags_map_onto_the_query_the_daemon_reads() {
+        let set = |live: bool, no_live: bool| ConfigSetArgs {
+            key: "audio.device".to_owned(),
+            value: "microphone".to_owned(),
+            live,
+            no_live,
+        };
+
+        assert_eq!(set(false, false).live_request(), None);
+        assert_eq!(set(true, false).live_request(), Some(true));
+        assert_eq!(set(false, true).live_request(), Some(false));
+
+        assert_eq!(
+            config_key_path_with_live("audio.device", None),
+            "/config/keys/audio.device"
+        );
+        assert_eq!(
+            config_key_path_with_live("audio.device", Some(false)),
+            "/config/keys/audio.device?live=false"
+        );
+    }
+
+    #[test]
+    fn command_line_values_reach_the_wire_as_json() {
+        assert_eq!(parse_cli_value("9420"), serde_json::json!(9420));
+        assert_eq!(parse_cli_value("true"), serde_json::json!(true));
+        assert_eq!(parse_cli_value("2.5"), serde_json::json!(2.5));
+        assert_eq!(
+            parse_cli_value(r#"["10.0.0.1"]"#),
+            serde_json::json!(["10.0.0.1"])
+        );
+        assert_eq!(
+            parse_cli_value("microphone"),
+            serde_json::json!("microphone")
+        );
+    }
 
     #[test]
     fn unresolvable_config_dir_yields_no_path() {
