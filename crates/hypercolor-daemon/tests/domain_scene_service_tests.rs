@@ -487,6 +487,109 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
     }
 }
 
+/// The temporary 2.3b bridge. Until every scene writer routes through
+/// `commit_scene`, the revision cannot see a direct `scene_manager`
+/// write, and the whole-manager install would discard it silently.
+/// Divergence against the pristine base turns that into a retryable
+/// conflict, and the direct write survives.
+#[tokio::test]
+async fn a_direct_scene_write_inside_the_window_conflicts_and_survives() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = test_effect_metadata("aurora");
+    insert_effect(&state, &metadata).await;
+    let layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+
+    let mut mutation = state.begin_scene_mutation().await;
+    mutation
+        .upsert_primary_zone(&metadata, HashMap::new(), None, layout)
+        .expect("candidate mutation should apply");
+
+    // A writer that never touches the revision lands mid-window.
+    let interloper = named_scene("interloper");
+    let interloper_id = interloper.id;
+    {
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .create(interloper)
+            .expect("the direct write should land");
+    }
+
+    let error = commit_scene(&state, mutation)
+        .await
+        .expect_err("a candidate that would discard a concurrent write must be refused");
+    match error {
+        DomainError::Conflict { message } => assert!(
+            message.contains("concurrent writer"),
+            "the conflict should name why: {message}"
+        ),
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    let manager = state.scene_manager.read().await;
+    assert!(
+        manager.get(&interloper_id).is_some(),
+        "the direct write must survive the refused commit"
+    );
+    assert!(
+        manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .and_then(|zone| zone.effect_id)
+            .is_none(),
+        "the refused candidate must not have installed its effect"
+    );
+}
+
+/// A transition ticks the manager under a write lock on every frame, so
+/// the bridge must not read render-local progress as divergence.
+#[tokio::test]
+async fn ticking_a_transition_is_not_divergence() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = test_effect_metadata("aurora");
+    insert_effect(&state, &metadata).await;
+
+    let scene = named_scene("evening");
+    let scene_id = scene.id;
+    {
+        let mut manager = state.scene_manager.write().await;
+        manager.create(scene).expect("scene should be created");
+    }
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("first activation should succeed");
+
+    let layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+    let mut mutation = state.begin_scene_mutation().await;
+    mutation
+        .upsert_primary_zone(&metadata, HashMap::new(), None, layout)
+        .expect("candidate mutation should apply");
+
+    // Exactly what the render thread does each frame while a transition
+    // is running.
+    {
+        let mut manager = state.scene_manager.write().await;
+        manager.tick_transition(0.016);
+    }
+
+    let commit = commit_scene(&state, mutation)
+        .await
+        .expect("frame-local transition progress is not a competing write");
+    assert_eq!(commit.durability(), CommitDurability::Written);
+}
+
 #[tokio::test]
 async fn a_rejected_candidate_leaves_the_live_state_untouched() {
     let (state, _tempdir) = isolated_state();

@@ -44,8 +44,13 @@ use crate::persistence::AtomicWriteOutcome;
 /// Nothing here is shared. The candidate is a full [`SceneManager`]
 /// clone, so intent methods are ordinary `&mut self` calls with no
 /// locking, and abandoning the mutation costs a drop.
+///
+/// The pristine `base` is kept beside the candidate as the comparand
+/// for the divergence check in [`commit_scene`]. It costs a second
+/// clone per mutation, paid at commit rate rather than frame rate.
 #[derive(Debug)]
 pub struct SceneMutation {
+    base: SceneManager,
     candidate: SceneManager,
     base_revision: SceneRevision,
     events: Vec<HypercolorEvent>,
@@ -181,6 +186,7 @@ impl AppState {
         let manager = self.scene_manager.read().await;
         let base_revision = self.scene_commits.revision();
         SceneMutation {
+            base: manager.clone(),
             candidate: manager.clone(),
             base_revision,
             events: Vec::new(),
@@ -221,6 +227,7 @@ pub async fn commit_scene(
     mutation: SceneMutation,
 ) -> Result<SceneCommit, DomainError> {
     let SceneMutation {
+        base,
         candidate,
         base_revision,
         events,
@@ -245,6 +252,26 @@ pub async fn commit_scene(
                 expected: base_revision,
                 current: current_revision,
             });
+        }
+
+        // TEMPORARY BRIDGE — remove in wave 2.3b.
+        //
+        // The revision above only moves on commit, so it cannot see the
+        // scene writers that still take `scene_manager.write()`
+        // directly. Since the install below replaces the whole manager,
+        // one of those landing inside this candidate's window would be
+        // discarded with no error to anyone. Comparing the live state
+        // against the pristine base turns that silent lost update into
+        // a retryable conflict.
+        //
+        // Wave 2.3b routes the last direct writer through here, at
+        // which point the revision is the only mutation path and this
+        // check reduces to always-true. Delete it then.
+        if !scene_state_matches(&manager, &base) {
+            return Err(DomainError::conflict(
+                "Scene state changed underneath this request; a concurrent writer \
+                 modified it. Retry against current state.",
+            ));
         }
 
         let previous = std::mem::replace(&mut *manager, candidate);
@@ -323,6 +350,47 @@ pub async fn commit_scene(
             ))
         }
     }
+}
+
+/// Whether two scene managers hold the same scene state, for the
+/// divergence bridge above.
+///
+/// Deliberately narrower than whole-manager equality, and not merely
+/// for cost. The render thread takes `scene_manager.write()` on every
+/// frame of a running transition to call `tick_transition`
+/// (`render_thread/scene_snapshot.rs`), so any comparand including
+/// transition progress would report divergence on nearly every commit
+/// made during a transition — which is exactly when `activate_scene`
+/// runs. Progress is render-local and no commit means to own it.
+///
+/// What is compared is the durable, semantic state a candidate
+/// replaces: the scene set, which scene is current, how the current one
+/// was reached, and the resolved zones (which fold in the runtime
+/// default display groups). The render-group revision counter is a
+/// cache generation, so its contents are compared instead of its
+/// number.
+fn scene_state_matches(live: &SceneManager, base: &SceneManager) -> bool {
+    if live.active_scene_id() != base.active_scene_id()
+        || live.activation_history() != base.activation_history()
+        || live.active_render_groups().as_ref() != base.active_render_groups().as_ref()
+    {
+        return false;
+    }
+
+    // `list` walks a HashMap, so the order is not stable between calls
+    // and the scenes are compared as a set keyed by id.
+    let live_scenes = live.list();
+    let base_scenes = base.list();
+    if live_scenes.len() != base_scenes.len() {
+        return false;
+    }
+    let base_by_id: HashMap<SceneId, &Scene> = base_scenes
+        .into_iter()
+        .map(|scene| (scene.id, scene))
+        .collect();
+    live_scenes
+        .into_iter()
+        .all(|scene| base_by_id.get(&scene.id) == Some(&scene))
 }
 
 // ── Scene media admission ────────────────────────────────────────────────
