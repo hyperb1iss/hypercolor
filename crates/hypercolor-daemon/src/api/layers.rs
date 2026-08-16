@@ -23,11 +23,12 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use crate::api::control_values::json_to_control_value;
 use crate::api::effects::normalize_control_payload;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
 use crate::api::{
     AppState, admit_scene_store_snapshot, persist_runtime_session, publish_render_group_changed,
     save_admitted_scene_store_snapshot, scene_store_coordinator, scenes,
 };
+use crate::domain::DomainError;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateLayerRequest {
@@ -214,7 +215,7 @@ pub async fn create_layer(
         };
         (scene_id, result, pending)
     };
-    if let Err(response) = finalize_layer_mutation(
+    if let Err(error) = finalize_layer_mutation(
         &state,
         pending,
         scene_id,
@@ -223,7 +224,7 @@ pub async fn create_layer(
     )
     .await
     {
-        return response;
+        return into_v1_response(error);
     }
     layer_stack_response(&group, StatusKind::Created)
 }
@@ -274,7 +275,7 @@ pub async fn broadcast_media_layer(
         };
         (scene_id, groups, pending)
     };
-    if let Err(response) = finalize_layer_mutations(
+    if let Err(error) = finalize_layer_mutations(
         &state,
         pending,
         scene_id,
@@ -283,7 +284,7 @@ pub async fn broadcast_media_layer(
     )
     .await
     {
-        return response;
+        return into_v1_response(error);
     }
     broadcast_media_layer_response(&groups)
 }
@@ -340,7 +341,7 @@ pub async fn update_layer(
         };
         (scene_id, group, pending)
     };
-    if let Err(response) = finalize_layer_mutation(
+    if let Err(error) = finalize_layer_mutation(
         &state,
         pending,
         scene_id,
@@ -349,7 +350,7 @@ pub async fn update_layer(
     )
     .await
     {
-        return response;
+        return into_v1_response(error);
     }
     layer_stack_response(&group, StatusKind::Ok)
 }
@@ -393,7 +394,7 @@ pub async fn delete_layer(
         };
         (scene_id, group, pending)
     };
-    if let Err(response) = finalize_layer_mutation(
+    if let Err(error) = finalize_layer_mutation(
         &state,
         pending,
         scene_id,
@@ -402,7 +403,7 @@ pub async fn delete_layer(
     )
     .await
     {
-        return response;
+        return into_v1_response(error);
     }
     layer_stack_response(&group, StatusKind::Ok)
 }
@@ -444,7 +445,7 @@ pub async fn reorder_layers(
         };
         (scene_id, group, pending)
     };
-    if let Err(response) = finalize_layer_mutation(
+    if let Err(error) = finalize_layer_mutation(
         &state,
         pending,
         scene_id,
@@ -453,7 +454,7 @@ pub async fn reorder_layers(
     )
     .await
     {
-        return response;
+        return into_v1_response(error);
     }
     layer_stack_response(&group, StatusKind::Ok)
 }
@@ -536,7 +537,7 @@ pub async fn patch_layer_controls(
         };
         (group, pending)
     };
-    if let Err(response) = finalize_layer_mutation(
+    if let Err(error) = finalize_layer_mutation(
         &state,
         pending,
         scene_id,
@@ -545,7 +546,7 @@ pub async fn patch_layer_controls(
     )
     .await
     {
-        return response;
+        return into_v1_response(error);
     }
     layer_stack_response(&group, StatusKind::Ok)
 }
@@ -654,9 +655,9 @@ async fn finalize_layer_mutation(
     scene_id: SceneId,
     group: &Zone,
     kind: LayerStackChangeKind,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return Err(ApiError::internal(format!(
+        return Err(DomainError::Internal(anyhow::anyhow!(
             "Failed to persist layer stack: {error}"
         )));
     }
@@ -682,9 +683,9 @@ async fn finalize_layer_mutations(
     scene_id: SceneId,
     groups: &[Zone],
     kind: LayerStackChangeKind,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return Err(ApiError::internal(format!(
+        return Err(DomainError::Internal(anyhow::anyhow!(
             "Failed to persist layer stack: {error}"
         )));
     }

@@ -20,13 +20,14 @@ use tracing::warn;
 use crate::api::AppState;
 use crate::api::devices;
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::ApiError;
 use crate::api::envelope::ApiResponse;
+use crate::api::envelope::{ApiError, into_v1_response};
 use crate::api::{
     active_scene_id_for_runtime_mutation, admit_scene_store_snapshot, publish_render_group_changed,
     save_admitted_scene_store_snapshot, scene_store_coordinator,
 };
 use crate::display_frames::DisplayFrameSnapshot;
+use crate::domain::{DomainError, ResourceKind};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DisplaySummary {
@@ -244,9 +245,9 @@ pub async fn get_display_preview(
     Path(device): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+    let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(frame) = state.display_frames.read().await.frame(device_id) else {
@@ -283,9 +284,9 @@ pub async fn get_display_face(
     State(state): State<Arc<AppState>>,
     Path(device): Path<String>,
 ) -> Response {
-    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+    let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let (scene_assigned, default_assigned) = display_face_layer_state(&state, device_id).await;
@@ -311,9 +312,9 @@ pub async fn set_display_face(
     Path(device): Path<String>,
     Json(body): Json<SetDisplayFaceRequest>,
 ) -> Response {
-    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+    let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {device}"));
@@ -492,9 +493,9 @@ pub async fn patch_display_face_composition(
     Path(device): Path<String>,
     Json(body): Json<UpdateDisplayFaceCompositionRequest>,
 ) -> Response {
-    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+    let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     if body.blend_mode.is_none() && body.opacity.is_none() {
@@ -629,9 +630,9 @@ pub async fn delete_display_face(
     Path(device): Path<String>,
     axum::extract::Query(query): axum::extract::Query<DisplayFaceScopeQuery>,
 ) -> Response {
-    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+    let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     if query.scope == DisplayFaceScope::Default {
@@ -754,9 +755,9 @@ pub async fn patch_display_face_controls(
     Path(device): Path<String>,
     Json(body): Json<UpdateDisplayFaceControlsRequest>,
 ) -> Response {
-    let device_id = match resolve_display_device_id_or_response(&state, &device).await {
+    let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let controls_object = body
@@ -980,18 +981,16 @@ fn parse_http_date(value: &str) -> Option<SystemTime> {
     httpdate::parse_http_date(value).ok()
 }
 
-async fn resolve_display_device_id_or_response(
+async fn resolve_display_device_id_or_error(
     state: &Arc<AppState>,
     id_or_name: &str,
-) -> Result<DeviceId, Response> {
-    let device_id = devices::resolve_device_id_or_response(state, id_or_name).await?;
+) -> Result<DeviceId, DomainError> {
+    let device_id = devices::resolve_device_id_or_error(state, id_or_name).await?;
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return Err(ApiError::not_found(format!(
-            "Device not found: {id_or_name}"
-        )));
+        return Err(DomainError::not_found(ResourceKind::Device, id_or_name));
     };
     if display_surface_info(&tracked.info).is_none() {
-        return Err(ApiError::validation(format!(
+        return Err(DomainError::validation(format!(
             "Device does not support display faces: {}",
             tracked.info.name
         )));

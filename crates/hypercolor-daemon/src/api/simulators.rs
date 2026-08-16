@@ -17,7 +17,8 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::DisconnectReason;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
+use crate::domain::DomainError;
 use crate::logical_devices;
 use crate::scene_transactions::{PreparedLayoutUpdate, apply_prepared_layout_update_under_guard};
 use crate::simulators::{
@@ -62,7 +63,7 @@ pub async fn get_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let store = state.simulated_displays.read().await;
@@ -115,7 +116,7 @@ pub async fn patch_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let updated = {
@@ -161,7 +162,7 @@ pub async fn delete_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     match tokio::spawn(delete_simulated_display_workflow(state, device_id)).await {
@@ -233,7 +234,7 @@ pub async fn get_simulated_display_frame(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     if state
@@ -275,13 +276,9 @@ fn jpeg_response(body: Bytes) -> Response {
         .into_response()
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "Axum handlers already return Response values directly, so this helper keeps the hot path linear"
-)]
-fn parse_simulator_id(raw: &str) -> Result<DeviceId, Response> {
+fn parse_simulator_id(raw: &str) -> Result<DeviceId, DomainError> {
     raw.parse::<DeviceId>()
-        .map_err(|_| ApiError::validation(format!("Invalid simulator id: {raw}")))
+        .map_err(|_| DomainError::validation(format!("Invalid simulator id: {raw}")))
 }
 
 fn validate_simulator_config(config: &SimulatedDisplayConfig) -> Result<(), String> {

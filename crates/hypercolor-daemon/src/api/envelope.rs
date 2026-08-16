@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::domain::DomainError;
+
 // ── Meta ─────────────────────────────────────────────────────────────────
 
 /// Response metadata included in every envelope.
@@ -248,6 +250,55 @@ impl ApiError {
     }
 }
 
+// ── v1 projection for domain errors ──────────────────────────────────────
+
+/// Render a [`DomainError`] through the frozen v1 error projection.
+///
+/// Internal helpers carry typed domain errors (Spec 76 §2.1); v1 route
+/// handlers render them here so the wire keeps emitting exactly what it
+/// emitted before. The v1 and canonical envelopes disagree on three
+/// points, and each one is a wire byte:
+///
+/// - v1 always serializes `details`, as `null` when there is none;
+///   the canonical envelope skips the key entirely.
+/// - v1 spells the internal error message out on the wire; the
+///   canonical envelope redacts it to `internal error`.
+/// - v1 not-found messages are sentence-cased prose. `NotFound` is the
+///   one variant whose message is derived rather than carried, so it is
+///   the one variant this projection re-cases; every other variant's
+///   message goes out verbatim.
+///
+/// `PreconditionFailed` and `DeviceUnavailable` have no v1 helper
+/// producing them: v1 412 bodies come from the frozen
+/// [`legacy`](crate::domain::legacy) shim, which needs a resource label
+/// the variant does not carry, and no v1 path emits 503. Both render
+/// canonically here.
+pub(crate) fn into_v1_response(error: DomainError) -> Response {
+    match error {
+        error @ DomainError::NotFound { .. } => {
+            ApiError::not_found(sentence_case(&error.to_string()))
+        }
+        error @ DomainError::Validation { .. } => ApiError::validation(error.to_string()),
+        error @ DomainError::Conflict { .. } => ApiError::conflict(error.to_string()),
+        DomainError::Internal(chain) => {
+            tracing::error!(chain = format!("{chain:#}"), "domain internal error (v1)");
+            ApiError::internal(chain.to_string())
+        }
+        error
+        @ (DomainError::PreconditionFailed { .. } | DomainError::DeviceUnavailable { .. }) => {
+            error.into_response()
+        }
+    }
+}
+
+/// Uppercase the first character, leaving the rest untouched.
+fn sentence_case(message: &str) -> String {
+    let mut chars = message.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 /// Format the current wall-clock time as ISO 8601 UTC with millisecond precision.
@@ -292,4 +343,88 @@ fn epoch_to_utc(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let y = if m <= 2 { y + 1 } else { y };
 
     (y as u32, m as u32, d as u32, hour, minute, second)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::ResourceKind;
+
+    /// Status plus the serialized `error` object, cut off before the
+    /// per-request `meta` block. Key order and the presence of a null
+    /// `details` both survive the cut, so equality here is wire-byte
+    /// equality for everything a client can depend on.
+    async fn error_bytes(response: Response) -> (StatusCode, String) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let text = String::from_utf8(bytes.to_vec()).expect("body should be UTF-8");
+        let (error, _) = text
+            .split_once(",\"meta\":")
+            .expect("the error envelope carries meta after error");
+        (status, error.to_owned())
+    }
+
+    #[tokio::test]
+    async fn not_found_projects_onto_the_v1_factory() {
+        let projected = into_v1_response(DomainError::not_found(ResourceKind::Device, "dev_7"));
+        let legacy = ApiError::not_found("Device not found: dev_7");
+        assert_eq!(error_bytes(projected).await, error_bytes(legacy).await);
+    }
+
+    #[tokio::test]
+    async fn validation_projects_onto_the_v1_factory() {
+        let projected = into_v1_response(DomainError::validation("invalid origin filter: nope"));
+        let legacy = ApiError::validation("invalid origin filter: nope");
+        assert_eq!(error_bytes(projected).await, error_bytes(legacy).await);
+    }
+
+    #[tokio::test]
+    async fn validation_field_does_not_leak_details_onto_v1() {
+        let projected = into_v1_response(DomainError::validation_field(
+            "origin",
+            "invalid origin filter",
+        ));
+        let legacy = ApiError::validation("invalid origin filter");
+        assert_eq!(error_bytes(projected).await, error_bytes(legacy).await);
+    }
+
+    #[tokio::test]
+    async fn conflict_projects_onto_the_v1_factory() {
+        let projected = into_v1_response(DomainError::conflict("Device name is ambiguous: strip"));
+        let legacy = ApiError::conflict("Device name is ambiguous: strip");
+        assert_eq!(error_bytes(projected).await, error_bytes(legacy).await);
+    }
+
+    #[tokio::test]
+    async fn internal_keeps_the_v1_message_instead_of_redacting_it() {
+        let projected = into_v1_response(DomainError::Internal(anyhow::anyhow!(
+            "Failed to persist layer stack: disk full"
+        )));
+        let legacy = ApiError::internal("Failed to persist layer stack: disk full");
+        assert_eq!(error_bytes(projected).await, error_bytes(legacy).await);
+    }
+
+    #[tokio::test]
+    async fn the_canonical_envelope_is_the_reason_this_projection_exists() {
+        let canonical = DomainError::validation("nope").into_response();
+        let bytes = axum::body::to_bytes(canonical.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let text = String::from_utf8(bytes.to_vec()).expect("body should be UTF-8");
+        assert!(
+            !text.contains("\"details\""),
+            "canonical rendering omits absent details; v1 emits them as null: {text}"
+        );
+    }
+
+    #[test]
+    fn sentence_case_only_touches_the_first_character() {
+        assert_eq!(
+            sentence_case("device not found: a-B"),
+            "Device not found: a-B"
+        );
+        assert_eq!(sentence_case(""), "");
+    }
 }
