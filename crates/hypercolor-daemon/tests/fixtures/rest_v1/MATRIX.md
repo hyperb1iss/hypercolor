@@ -1,19 +1,18 @@
-# REST v1 compatibility matrix
+# REST wire matrix
 
-This is the frozen description of what the Hypercolor daemon's `/api/v1` surface
-emits **today**. Spec 76 §0 makes these shapes immutable for the duration of the
-internal API unification program: canonical routes introduced by later phases
-carry the corrected contracts, while every v1 path keeps serving the legacy
-projection until an explicit deprecation.
+This describes what the Hypercolor daemon's `/api/v1` surface emits. Under Spec
+76 §0's lockstep doctrine these are intentionality fences, not freezes: a
+deliberate shape change updates this document, the enforcing suite, and every
+in-repo client in the same PR, while an unintended byte shift still fails CI.
 
 The enforcing suite is `crates/hypercolor-daemon/tests/rest_v1_compat_tests.rs`.
 This document and that file are edited together. A row here without a test there
-is a claim, not a freeze.
+is a claim, not a fence.
 
 **Reading this document:** it records reality, not intent. Several rows describe
 behavior that is wrong on purpose (fabricated pagination, three parallel ETag
-implementations, an error shape that bypasses the error envelope). Those are
-marked, and each names the wave that corrects it on canonical routes.
+implementations). Those are marked, and each names the wave that corrects it.
+The error surface is not among them: one rendering serves every route.
 
 ---
 
@@ -47,31 +46,57 @@ The `meta` key set is exactly those three fields. Status codes in use: `200` via
 
 ### 1.2 Error envelope
 
+Every error on the surface is a `DomainError` rendering itself. There is one
+error factory, one body shape, and one place a status is decided.
+
 ```json
 {
-  "error": { "code": "not_found", "message": "Scene not found: …", "details": null },
+  "error": { "code": "not_found", "message": "scene not found: …" },
   "meta": { "api_version": "1.0", "request_id": "req_…", "timestamp": "…" }
 }
 ```
 
-`details` has no `skip_serializing_if`, so it is **always present** and
-serializes as an explicit `null` when the error carries no context. Removing the
-null is a wire break.
+`details` carries `skip_serializing_if = "Option::is_none"`, so the key is
+**absent** when the error has no structured context, and present as an object
+when it does:
 
-`error.code` is a closed snake_case set, each pinned to one status:
+```json
+{
+  "error": {
+    "code": "precondition_failed",
+    "message": "version mismatch: expected 0, current 1",
+    "details": { "expected": 0, "current": 1 }
+  },
+  "meta": { }
+}
+```
 
-| `error.code` | Status |
-| --- | --- |
-| `bad_request` | 400 |
-| `unauthorized` | 401 |
-| `forbidden` | 403 |
-| `not_found` | 404 |
-| `conflict` | 409 |
-| `payload_too_large` | 413 |
-| `unsupported_media_type` | 415 |
-| `validation_error` | **422**, not 400 |
-| `rate_limited` | 429 |
-| `internal_error` | 500 |
+`error.code` is a closed snake_case set, each pinned to one status and one
+`DomainError` variant:
+
+| `error.code` | Status | Variant | `details` |
+| --- | --- | --- | --- |
+| `malformed_request` | 400 | `Malformed` | none |
+| `unauthorized` | 401 | `Unauthorized` | none |
+| `forbidden` | 403 | `Forbidden` | optional, caller-supplied |
+| `not_found` | 404 | `NotFound` | none |
+| `conflict` | 409 | `Conflict` | optional, caller-supplied |
+| `precondition_failed` | 412 | `PreconditionFailed` | `{expected, current}` |
+| `payload_too_large` | 413 | `PayloadTooLarge` | `{limit_bytes}` |
+| `unsupported_media_type` | 415 | `UnsupportedMediaType` | none |
+| `validation_error` | **422**, not 400 | `Validation` | optional; `field` folds in |
+| `rate_limited` | 429 | `RateLimited` | `{limit, window_seconds, retry_after}` |
+| `device_unavailable` | 503 | `DeviceUnavailable` | none |
+| `internal_error` | 500 | `Internal` | none |
+
+Two message rules are contract:
+
+- **Not-found prose is derived, never hand-written.** The message is
+  `"{kind} not found: {id}"` with a lowercase resource kind, so `Scene not
+  found: default` is now `scene not found: default`. A route cannot invent its
+  own phrasing for a miss.
+- **Internal messages never reach the wire.** `internal_error` always reads
+  `internal error`; the full error chain goes to `tracing` at ERROR level.
 
 ### 1.3 Non-enveloped responses
 
@@ -80,10 +105,12 @@ Not everything on the wire is enveloped, and the exceptions are contract:
 | Surface | Shape |
 | --- | --- |
 | `GET /health` | Bare probe object (§4) |
-| 412 precondition failures | Bare `{error, current}` (§5.2) |
-| 403 from a rejected WebSocket origin | Empty body (§5.3) |
 | Binary routes (`/effects/{id}/cover`, `/assets/{id}/blob`, `/displays/{id}/preview.jpg`) | Raw bytes |
 | Axum's own rejections (malformed JSON, 405, body-limit 413) | Plain text, no envelope |
+
+Axum's own rejections are the only errors that bypass the envelope, because
+they are answered by the framework before a handler runs. Everything the daemon
+itself refuses goes out enveloped.
 
 ---
 
@@ -207,7 +234,7 @@ check still yields `healthy`; only a `degraded` check downgrades the whole probe
 
 ---
 
-## 5. Versioning, preconditions, and divergent error shapes
+## 5. Versioning and preconditions
 
 ### 5.1 ETag and `If-Match`
 
@@ -230,58 +257,69 @@ Frozen `If-Match` parsing quirks, identical across all three parsers:
 | `"5"` | Precondition on version 5 |
 | `5` (unquoted) | Accepted, same as above, because the parser trims quotes rather than requiring them |
 | `*` | **No precondition**, not "any existing resource" |
-| `W/"5"` | **400** `bad_request`, because the `W/` survives the quote trim and fails the integer parse |
-| non-ASCII | `400` `bad_request`, message `"If-Match header must be ASCII"` |
-| anything else | `400` `bad_request`, message naming the specific counter |
+| `W/"5"` | **400** `malformed_request`, because the `W/` survives the quote trim and fails the integer parse |
+| non-ASCII | `400` `malformed_request`, message `"If-Match header must be ASCII"` |
+| anything else | `400` `malformed_request`, message naming the specific counter |
 
-Note the asymmetry that is itself frozen: `PATCH /api/v1/effects/current/controls`
+An unreadable header value is a syntax failure, which is why it is a 400 rather
+than the 422 a semantically-rejected request earns.
+
+Note the asymmetry, which is itself pinned: `PATCH /api/v1/effects/current/controls`
 takes no `HeaderMap` and therefore ignores `If-Match` entirely.
 
-### 5.2 The 412 body: bare, envelope-free, with a top-level `current`
+### 5.2 The 412 body
 
-Every precondition failure returns this shape. It carries **no `meta` block and
-no `error.code`**, and `current` sits at the top level as a sibling of `error`.
-The 412 also carries an `ETag` header with the current version so a client can
-rebase without a second GET.
+A precondition failure is the canonical envelope with `precondition_failed`, and
+`details` naming both versions. The response also carries an `ETag` with the
+current version, so a client can rebase without a second GET — `ETag` and
+`details.current` always agree.
 
 ```json
-{ "error": "groups_revision mismatch", "current": 1 }
+{
+  "error": {
+    "code": "precondition_failed",
+    "message": "version mismatch: expected 0, current 1",
+    "details": { "expected": 0, "current": 1 }
+  },
+  "meta": { }
+}
 ```
 
-| Route family | `error` string | `current` |
-| --- | --- | --- |
-| `PATCH /api/v1/effects/{id}/controls` | `controls_version mismatch` | current `controls_version` (u64) |
-| Zone mutators under `/api/v1/scenes/{id}/zones…` and `/api/v1/scenes/{id}/unassigned-behavior` | `groups_revision mismatch` | current `groups_revision` (u64) |
-| Layer mutators under `/api/v1/scenes/{id}/groups/{group_id}/layers…` | `layers_version mismatch` | current `layers_version` (u64) |
+One rendering serves all three counters. Which counter a 412 is about is a
+property of the route, not of the body.
 
-Spec 76 §0 names this shape explicitly: v1 keeps the top-level `current`.
+| Route family | Counter the route guards |
+| --- | --- |
+| `PATCH /api/v1/effects/{id}/controls` | `controls_version` |
+| Zone mutators under `/api/v1/scenes/{id}/zones…` and `/api/v1/scenes/{id}/unassigned-behavior` | `groups_revision` |
+| Layer mutators under `/api/v1/scenes/{id}/groups/{group_id}/layers…` | `layers_version` |
 
-### 5.3 The empty-bodied 403
+### 5.3 The WebSocket origin rejection
 
 | Method | Path | Trigger | Response |
 | --- | --- | --- | --- |
-| GET | `/api/v1/ws` | `Origin` header present and neither loopback nor in `web.cors_origins` | `403`, **zero-length body**, no `Content-Type`, no envelope |
+| GET | `/api/v1/ws` | `Origin` header present and neither loopback nor in `web.cors_origins` | `403`, canonical envelope, `error.code: "forbidden"` |
 
-Every other 403 in the daemon (auth tier, CSRF, network allow-list) uses the
-standard error envelope with `error.code: "forbidden"`.
+Every 403 in the daemon — auth tier, CSRF, network allow-list, and this one —
+uses the same envelope.
 
 Reaching this 403 requires a real connection. The `WebSocketUpgrade` extractor
 runs ahead of the origin check and answers first when the request is not a
 genuine upgrade: `400` for a plain GET with no upgrade headers, `426 Upgrade
 Required` for upgrade headers arriving over a connection hyper cannot upgrade.
-The compat test therefore serves the router on a loopback socket rather than
-driving it through `tower::oneshot`.
+The test therefore serves the router on a loopback socket rather than driving it
+through `tower::oneshot`.
 
 ---
 
-## 6. What this matrix does not freeze
+## 6. What this matrix does not pin
 
 Named so the gaps are explicit rather than assumed covered:
 
-- Per-route payload field lists. This matrix freezes envelopes, pagination,
+- Per-route payload field lists. This matrix pins envelopes, pagination,
   error shapes, headers, status codes, and legacy routing. Individual `data`
-  payloads are pinned only where a legacy projection depends on them.
+  payloads are pinned only where a projection depends on them.
 - Binary and streaming routes beyond noting that they bypass the envelope.
-- The WebSocket protocol. Binary tags and byte layouts are frozen separately by
+- The WebSocket protocol. Binary tags and byte layouts are pinned separately by
   Spec 76 wave 0.8.
 - MCP tool and resource shapes.
