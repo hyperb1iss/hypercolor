@@ -19,10 +19,11 @@ use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
+use crate::domain::DomainError;
 use crate::logical_devices;
 
-use super::{ensure_default_logical_entry, resolve_device_id_or_response};
+use super::{ensure_default_logical_entry, resolve_device_id_or_error};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateAttachmentsRequest {
@@ -96,9 +97,9 @@ pub async fn get_attachments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -125,9 +126,9 @@ pub async fn update_attachments(
     Path(id): Path<String>,
     Json(body): Json<UpdateAttachmentsRequest>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -138,7 +139,7 @@ pub async fn update_attachments(
         let registry = state.attachment_registry.read().await;
         match validate_attachment_bindings(&tracked.info, &slots, &body.bindings, &registry) {
             Ok(bindings) => bindings,
-            Err(response) => return response,
+            Err(error) => return into_v1_response(error),
         }
     };
 
@@ -179,9 +180,9 @@ pub async fn preview_attachments(
     Path(id): Path<String>,
     Json(body): Json<UpdateAttachmentsRequest>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -192,7 +193,7 @@ pub async fn preview_attachments(
         let registry = state.attachment_registry.read().await;
         match validate_attachment_bindings(&tracked.info, &slots, &body.bindings, &registry) {
             Ok(bindings) => bindings,
-            Err(response) => return response,
+            Err(error) => return into_v1_response(error),
         }
     };
 
@@ -208,9 +209,9 @@ pub async fn delete_attachments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -460,16 +461,12 @@ fn resolve_profile_bindings(
     validate_attachment_bindings(device, &profile.slots, &profile.bindings, registry).ok()
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on validation failure"
-)]
 fn validate_attachment_bindings(
     device: &DeviceInfo,
     slots: &[ComponentSlot],
     bindings: &[ComponentBinding],
     registry: &hypercolor_core::attachment::ComponentRegistry,
-) -> Result<Vec<ResolvedComponentBinding>, Response> {
+) -> Result<Vec<ResolvedComponentBinding>, DomainError> {
     let slot_index = slots
         .iter()
         .map(|slot| (slot.id.as_str(), slot))
@@ -479,42 +476,42 @@ fn validate_attachment_bindings(
     for (index, binding) in bindings.iter().enumerate() {
         let slot_id = binding.slot_id.trim();
         if slot_id.is_empty() {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} has an empty slot_id"
             )));
         }
 
         let template_id = binding.template_id.trim();
         if template_id.is_empty() {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} has an empty template_id"
             )));
         }
 
         if binding.instances == 0 {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} must set instances to at least 1"
             )));
         }
 
         let Some(slot) = slot_index.get(slot_id).copied() else {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} targets unknown slot '{slot_id}'"
             )));
         };
         let Some(template) = registry.get(template_id) else {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} references unknown template '{template_id}'"
             )));
         };
 
         if !slot.supports_template(template) {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "template '{template_id}' is not allowed for slot '{slot_id}'"
             )));
         }
         if !template_supports_device_slot(template, device, slot_id) {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "template '{template_id}' is not compatible with {} slot '{slot_id}'",
                 device.name
             )));
@@ -522,12 +519,12 @@ fn validate_attachment_bindings(
 
         let effective_led_count = binding.effective_led_count(template);
         let Some(binding_end) = binding.led_offset.checked_add(effective_led_count) else {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} exceeds slot '{slot_id}' LED range"
             )));
         };
         if binding_end > slot.led_count {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} exceeds slot '{slot_id}' capacity: {binding_end} > {}",
                 slot.led_count
             )));
@@ -580,11 +577,7 @@ fn push_unique_id(ids: &mut Vec<String>, id: String) {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on validation failure"
-)]
-fn validate_attachment_overlaps(bindings: &[ResolvedComponentBinding]) -> Result<(), Response> {
+fn validate_attachment_overlaps(bindings: &[ResolvedComponentBinding]) -> Result<(), DomainError> {
     let mut enabled = bindings
         .iter()
         .filter(|binding| binding.binding.enabled)
@@ -610,7 +603,7 @@ fn validate_attachment_overlaps(bindings: &[ResolvedComponentBinding]) -> Result
             .led_offset
             .saturating_add(current.effective_led_count);
         if next.binding.led_offset < current_end {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "bindings {} and {} overlap within slot '{}'",
                 current.index, next.index, current.binding.slot_id
             )));

@@ -12,12 +12,12 @@ use hypercolor_core::device::{BackendManager, SegmentRange};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceOrigin};
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
 use crate::discovery;
 use crate::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
 
 use super::{
-    Pagination, ensure_default_logical_entry, resolve_device_id_or_response, resolved_backend_id,
+    Pagination, ensure_default_logical_entry, resolve_device_id_or_error, resolved_backend_id,
 };
 
 #[derive(Debug, Deserialize, Default)]
@@ -89,9 +89,9 @@ pub async fn list_logical_devices(
     }
 
     let physical_filter = match query.physical_device {
-        Some(raw) => match resolve_device_id_or_response(&state, raw.trim()).await {
+        Some(raw) => match resolve_device_id_or_error(&state, raw.trim()).await {
             Ok(id) => Some(id),
-            Err(response) => return response,
+            Err(error) => return into_v1_response(error),
         },
         None => None,
     };
@@ -142,9 +142,9 @@ pub async fn list_device_logical_devices(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let physical_id = match resolve_device_id_or_response(&state, &id).await {
+    let physical_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&physical_id).await else {
@@ -188,9 +188,9 @@ pub async fn create_logical_device(
     Path(id): Path<String>,
     Json(body): Json<CreateLogicalDeviceRequest>,
 ) -> Response {
-    let physical_id = match resolve_device_id_or_response(&state, &id).await {
+    let physical_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&physical_id).await else {

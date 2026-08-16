@@ -30,9 +30,10 @@ use hypercolor_types::device::{
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::discovery as core_discovery;
+use crate::domain::{DomainError, ResourceKind};
 
 pub use attachments::{
     ComponentBindingSummary, ComponentPreviewResponse, ComponentPreviewZone,
@@ -251,9 +252,9 @@ pub async fn debug_device_routing(State(state): State<Arc<AppState>>) -> Respons
     tag = "devices"
 )]
 pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -285,9 +286,9 @@ pub async fn update_device(
     Path(id): Path<String>,
     Json(body): Json<UpdateDeviceRequest>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     if body.name.is_none() && body.enabled.is_none() && body.brightness.is_none() {
@@ -389,9 +390,9 @@ pub async fn update_device(
 
 /// `DELETE /api/v1/devices/:id` — Remove a device from tracking.
 pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -444,9 +445,9 @@ pub async fn identify_device(
     Path(id): Path<String>,
     body: Option<Json<IdentifyRequest>>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -488,7 +489,7 @@ pub async fn identify_device(
             .await
         {
             Ok(prepared) => prepared,
-            Err(response) => return response,
+            Err(error) => return into_v1_response(error),
         };
     debug!(
         backend_id = %backend_id,
@@ -502,7 +503,7 @@ pub async fn identify_device(
         "identify enabling direct control and issuing initial on-frame"
     );
 
-    if let Err(response) = start_identify_output(
+    if let Err(error) = start_identify_output(
         &state,
         &direct_backend,
         device_id,
@@ -515,7 +516,7 @@ pub async fn identify_device(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return response;
+        return into_v1_response(error);
     }
 
     tracing::info!(
@@ -559,9 +560,9 @@ pub async fn identify_zone(
     Path((id, zone_id)): Path<(String, String)>,
     body: Option<Json<IdentifyRequest>>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -608,10 +609,10 @@ pub async fn identify_zone(
             .await
         {
             Ok(prepared) => prepared,
-            Err(response) => return response,
+            Err(error) => return into_v1_response(error),
         };
 
-    if let Err(response) = start_identify_output(
+    if let Err(error) = start_identify_output(
         &state,
         &direct_backend,
         device_id,
@@ -624,7 +625,7 @@ pub async fn identify_zone(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return response;
+        return into_v1_response(error);
     }
 
     let zone_name = tracked.info.zones[zone_index].name.clone();
@@ -670,9 +671,9 @@ pub async fn identify_attachment(
     Path((id, slot_id)): Path<(String, String)>,
     body: Option<Json<IdentifyAttachmentRequest>>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return into_v1_response(error),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -738,10 +739,10 @@ pub async fn identify_attachment(
             .await
         {
             Ok(prepared) => prepared,
-            Err(response) => return response,
+            Err(error) => return into_v1_response(error),
         };
 
-    if let Err(response) = start_identify_output(
+    if let Err(error) = start_identify_output(
         &state,
         &direct_backend,
         device_id,
@@ -754,7 +755,7 @@ pub async fn identify_attachment(
         if disconnect_after_identify {
             let _ = direct_backend.disconnect(device_id).await;
         }
-        return response;
+        return into_v1_response(error);
     }
 
     tracing::info!(
@@ -878,14 +879,12 @@ pub(super) async fn summarize_device_for_response(
 pub(super) async fn refreshed_device_summary(
     state: &AppState,
     device_id: DeviceId,
-) -> Result<Option<DeviceSummary>, Response> {
-    let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return Ok(None);
-    };
+) -> Option<DeviceSummary> {
+    let tracked = state.device_registry.get(&device_id).await?;
     let layout_device_id = ensure_default_logical_entry(state, &tracked.info).await;
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
 
-    Ok(Some(
+    Some(
         summarize_device_for_response(
             state,
             &tracked.info,
@@ -895,7 +894,7 @@ pub(super) async fn refreshed_device_summary(
             metadata.as_ref(),
         )
         .await,
-    ))
+    )
 }
 
 fn device_connection_summary(
@@ -1121,16 +1120,14 @@ async fn resolve_device_id(
     Ok(matches.first().copied())
 }
 
-pub(super) async fn resolve_device_id_or_response(
+pub(super) async fn resolve_device_id_or_error(
     state: &AppState,
     id_or_name: &str,
-) -> Result<DeviceId, Response> {
+) -> Result<DeviceId, DomainError> {
     match resolve_device_id(state, id_or_name).await {
         Ok(Some(id)) => Ok(id),
-        Ok(None) => Err(ApiError::not_found(format!(
-            "Device not found: {id_or_name}"
-        ))),
-        Err(ResolveDeviceError::AmbiguousName(name)) => Err(ApiError::conflict(format!(
+        Ok(None) => Err(DomainError::not_found(ResourceKind::Device, id_or_name)),
+        Err(ResolveDeviceError::AmbiguousName(name)) => Err(DomainError::conflict(format!(
             "Device name is ambiguous: {name}"
         ))),
     }
@@ -1302,10 +1299,10 @@ async fn start_identify_output(
     device_id: DeviceId,
     colors: &[[u8; 3]],
     device_name: &str,
-) -> Result<(), Response> {
+) -> Result<(), DomainError> {
     match write_identify_output_if_running(state, direct_backend, device_id, colors).await {
         Ok(true) => Ok(()),
-        Ok(false) => Err(ApiError::conflict(format!(
+        Ok(false) => Err(DomainError::conflict(format!(
             "Cannot identify {device_name} while global output is paused"
         ))),
         Err(error) => {
@@ -1314,7 +1311,7 @@ async fn start_identify_output(
                 error = %error,
                 "identify initial write failed"
             );
-            Err(ApiError::internal(format!(
+            Err(DomainError::Internal(anyhow::anyhow!(
                 "Failed to start identify flash for {device_name}: {error}"
             )))
         }
@@ -1341,18 +1338,18 @@ async fn prepare_identify_backend(
     info: &DeviceInfo,
     device_state: DeviceState,
     backend_id: &str,
-) -> Result<(BackendIo, bool, DirectControlGuard), Response> {
+) -> Result<(BackendIo, bool, DirectControlGuard), DomainError> {
     let manager = Arc::clone(&state.backend_manager);
     let direct_backend = {
         let manager = manager.lock().await;
         let Some(direct_backend) = manager.backend_io(backend_id) else {
             if !device_state.is_renderable() {
-                return Err(ApiError::conflict(format!(
+                return Err(DomainError::conflict(format!(
                     "Device is not connected: {} (state={device_state})",
                     info.name
                 )));
             }
-            return Err(ApiError::internal(format!(
+            return Err(DomainError::Internal(anyhow::anyhow!(
                 "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
                 info.name
             )));
@@ -1371,7 +1368,7 @@ async fn prepare_identify_backend(
             led_count = info.total_led_count(),
             "identify requested for non-renderable device but backend cannot temporarily connect it"
         );
-        return Err(ApiError::conflict(format!(
+        return Err(DomainError::conflict(format!(
             "Device is not connected: {} (state={device_state})",
             info.name
         )));
@@ -1395,7 +1392,7 @@ async fn prepare_identify_backend(
                 error = %error,
                 "temporary identify connect failed"
             );
-            return Err(ApiError::conflict(format!(
+            return Err(DomainError::conflict(format!(
                 "Device is not connected and temporary identify failed for {}: {error}",
                 info.name
             )));
@@ -1414,7 +1411,7 @@ async fn prepare_identify_backend(
         );
         true
     } else {
-        return Err(ApiError::conflict(format!(
+        return Err(DomainError::conflict(format!(
             "Device is not connected: {} (state={device_state})",
             info.name
         )));
