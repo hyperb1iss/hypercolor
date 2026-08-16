@@ -893,18 +893,26 @@ fn library_events(
 /// - `render_thread/scene_snapshot.rs` ticks transition progress every
 ///   frame. Committing it would mint a scene revision per frame and
 ///   invalidate every in-flight candidate, and progress is render-local
-///   state no commit means to own.
+///   state no commit means to own. The reverse direction has a bounded
+///   window — a candidate cloned before a tick and swapped in after it
+///   rewinds progress by the clone-to-commit delta — which the next tick
+///   re-advances, and which §6.1 closes by moving progress out of the
+///   manager entirely.
 /// - `scene_transactions.rs` publishes a prepared layout at the frame
 ///   boundary, holding the scene lock and the spatial lock together so
 ///   the renderer never sees a layout and a zone set that disagree.
 ///   `commit_scene` takes neither the spatial lock nor an `AppState` the
 ///   render thread can reach; Spec 76 §6.1 re-points commit at this
 ///   transaction rather than the reverse.
-/// - `startup/lifecycle.rs` restores the persisted session and, at
-///   shutdown, deactivates the current scene. Neither phase can build an
-///   `AppState`: `from_daemon_state` requires a live input publication
-///   pump, which does not exist before the render thread starts or after
-///   it stops. Neither has a competing writer to order against.
+/// - `startup/lifecycle.rs` holds three, of different kinds. Two are
+///   pre-init: both halves of the persisted-session restore run inside
+///   `DaemonState::initialize`, before the render thread starts and
+///   before the API binds. The third is post-teardown: shutdown's
+///   deactivate runs after the render thread has been awaited out, so
+///   the one cadence reader of scene state is already gone. None can
+///   build an `AppState` — `from_daemon_state` requires a live input
+///   publication pump, which exists in neither phase — and none has a
+///   competing writer to order against.
 ///
 /// A fourth entry means some new site can silently discard a commit —
 /// or be discarded by one. Route it through `commit_scene` instead of

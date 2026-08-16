@@ -253,7 +253,16 @@ async fn current_scene_runtime_snapshot(
         // advances every frame and belongs to the render thread, not to
         // any commit — routing it through the commit path would mint a
         // scene revision per frame and invalidate every in-flight
-        // candidate. It moves no state a commit means to own.
+        // candidate.
+        //
+        // It moves no state a commit means to own, but the reverse
+        // direction has a window: a candidate cloned before a tick and
+        // swapped in after it rewinds transition progress by the
+        // clone-to-commit delta, and can transiently resurrect a
+        // transition that completed inside that delta. The next tick
+        // re-advances it, so the effect is bounded by one frame and
+        // self-correcting. §6.1 closes it outright by moving progress
+        // into `FrameState` and out of the manager the commit installs.
         let mut manager = state.scene_manager.write().await;
         manager.tick_transition(delta_secs);
         return snapshot_scene_runtime(state, scene_snapshot_cache, &manager).await;

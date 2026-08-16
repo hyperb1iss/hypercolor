@@ -391,12 +391,17 @@ impl DaemonState {
 
         // 6. Scene manager — deactivate current scene.
         //
-        // TEARDOWN WRITER (Spec 76 §2.3). The commit path needs an
-        // `AppState`, which cannot be built here: `from_daemon_state`
-        // requires a live input publication pump and the render thread
-        // is already stopped. Nothing observes this either — every
-        // durable store flushed above, and the manager is dropped a few
-        // lines later — so it settles in-memory state directly. It
+        // POST-TEARDOWN WRITER (Spec 76 §2.3), and the only one of this
+        // file's three that is not pre-init. Step 2 above already
+        // awaited the render thread's exit, so by here the one thread
+        // that reads scene state on a cadence is gone and every durable
+        // store has flushed — there is nothing left to race and nothing
+        // left to observe the result, which is dropped with the manager
+        // a few lines later.
+        //
+        // It could not commit regardless: the commit path needs an
+        // `AppState`, and `from_daemon_state` requires a live input
+        // publication pump that stopped with the render thread. It
         // routes through the commit path once §6.4 gives scene services
         // a context narrower than `AppState`.
         {
@@ -501,7 +506,9 @@ impl DaemonState {
                 match SpatialEngine::try_new(layout.clone()) {
                     Ok(prepared) => {
                         *self.spatial_engine.write().await = prepared;
-                        // PRE-INIT WRITER — see `apply_runtime_session_snapshot`.
+                        // PRE-INIT WRITER (1 of 2) — see
+                        // `apply_runtime_session_snapshot` for the reasoning
+                        // both restore writers share.
                         self.scene_manager
                             .write()
                             .await
@@ -536,13 +543,17 @@ impl DaemonState {
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
 
-        // PRE-INIT WRITER (Spec 76 §2.3). This runs inside
-        // `DaemonState::initialize`, before the render thread starts and
-        // before the API server binds, so nothing else can be committing
-        // and there is no competing writer for the commit sequencer to
-        // order against. It cannot use the commit path regardless:
+        // PRE-INIT WRITER (2 of 2, Spec 76 §2.3). Both restore writers
+        // run inside `DaemonState::initialize`, before the render thread
+        // starts and before the API server binds, so nothing else can be
+        // committing and there is no competing writer for the commit
+        // sequencer to order against. The third scene writer in this
+        // file is the shutdown deactivate, which is post-teardown rather
+        // than pre-init.
+        //
+        // Neither can use the commit path regardless:
         // `AppState::from_daemon_state` requires a live input
-        // publication pump, which does not exist yet. It routes through
+        // publication pump, which does not exist yet. They route through
         // the commit path once §6.4 gives scene services a context
         // narrower than `AppState`.
         {
