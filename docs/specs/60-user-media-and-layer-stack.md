@@ -1167,7 +1167,8 @@ pub struct RenderGroup {
 
 Reads of any layer-stack resource set `ETag: "<layers_version>"`.
 Mutations require `If-Match: "<layers_version>"`. Mismatch returns
-HTTP 412 with a body containing the current `layers_version` so the
+HTTP 412 with `code: "precondition_failed"`, `details` carrying
+`expected` and `current`, and the `ETag` repeating `current`, so the
 caller can refresh and retry. The version bumps once per request, not
 per layer touched, so callers can batch.
 

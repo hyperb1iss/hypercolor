@@ -267,7 +267,7 @@ pub enum MutationOutcome<T> {
 ```
 
 A `2xx` becomes `Applied(payload)`; a `412` becomes `Stale { current }`, reading
-`current` from the response body. The zone client aliases this as
+`error.details.current` from the response body. The zone client aliases this as
 `ZoneOutcome<T>`. A `Stale` is explicitly **not** a failure to log and forget:
 the caller refetches the active scene (or the layer stack), rebases its edit on
 the authoritative `current`, and retries, so a concurrent edit from another
@@ -283,9 +283,10 @@ match api::zones::update_zone(&scene_id, &zone_id, &request, Some(revision)).awa
 ```
 
 The daemon's matching error type for the layer stack is
-`LayerMutationError::Stale { current }`, which the handler renders as the same
-`412` body. On the zone side, `check_groups_revision` performs the comparison and
-returns the `412` response before any mutation runs.
+`LayerMutationError::Stale { expected, current }`, which projects onto
+`DomainError::PreconditionFailed` and so renders the same `412`. On the zone
+side, `check_groups_revision` performs the comparison and raises that same error
+before any mutation runs.
 
 ### What gets versioned
 
@@ -317,7 +318,11 @@ output is rejected here with `422` and a `LayoutOutputMismatch` validation error
 
 ```json
 {
-  "error": "Zone layout must carry exactly the zone's current outputs; add or remove outputs through the device endpoints"
+  "error": {
+    "code": "validation_error",
+    "message": "Zone layout must carry exactly the zone's current outputs; add or remove outputs through the device endpoints"
+  },
+  "meta": { "api_version": "1.0", "request_id": "req_…", "timestamp": "…" }
 }
 ```
 
@@ -444,7 +449,7 @@ sequenceDiagram
         API->>Bus: publish render-group changed
         Bus-->>Other: converge to revision 8
     else revision moved to 9
-        API-->>UI: 412 { current: 9 }
+        API-->>UI: 412 precondition_failed + ETag "9"
         UI->>UI: ZoneOutcome::Stale -> refetch, rebase, retry
     end
 {% end %}

@@ -740,12 +740,13 @@ Structural endpoints (`POST`, `DELETE`, the device endpoints,
 `PATCH /unassigned-behavior`) follow the **same precondition contract the
 layer endpoints use**: the response carries the scene's `groups_revision` as
 an `ETag`, and a structural request may carry an `If-Match` header. A
-mismatch returns `412 Precondition Failed` with the current revision in the
-body. This matches the `api/layers.rs` endpoints. The legacy
-`PATCH /effects/current/controls` endpoint predates that contract and does
-not use it; new code follows the `412` plus `ETag` pattern. `412` is distinct
-from the `409 Conflict` this spec uses for snapshot-locked scenes.
-Metadata-only `PATCH` calls do not require `If-Match`.
+mismatch returns `412 Precondition Failed` carrying the canonical error
+envelope: `code` is `precondition_failed`, `details` holds `expected` and
+`current`, and the `ETag` repeats `current`. This matches the `api/layers.rs`
+endpoints and `PATCH /effects/current/controls`, which run the same contract
+against `controls_version`. `412` is distinct from the `409 Conflict` this spec
+uses for snapshot-locked scenes. Metadata-only `PATCH` calls do not require
+`If-Match`.
 
 ### 9.4 Error Cases
 
@@ -757,7 +758,7 @@ Metadata-only `PATCH` calls do not require `If-Match`.
 | Structural mutation on a `Snapshot` scene     | 409    | `blocks_runtime_mutation` is true           |
 | Delete a `Primary` or `Display` zone          | 409    | Use the dedicated lifecycle endpoints       |
 | Fallback behavior names a missing zone        | 404    | `Fallback(RenderGroupId)` must resolve      |
-| `If-Match` revision mismatch                  | 412    | Body carries current `groups_revision`      |
+| `If-Match` revision mismatch                  | 412    | `details` carries `expected` and `current`  |
 | Assignment that empties a zone                | 200    | An empty zone is valid                      |
 
 ### 9.5 Capability Advertisement

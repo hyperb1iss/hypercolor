@@ -55,39 +55,88 @@ Constructors: `ApiResponse::ok(data)` (200), `ApiResponse::created(data)` (201),
 
 ## Error Handling
 
-`ApiError` is a unit struct with static builder methods that return `Response` directly:
+`DomainError` in `src/domain/mod.rs` is the daemon's one error type, and its `IntoResponse` impl is the daemon's one error rendering. Services and helpers return `Result<T, DomainError>`; handlers return `Response`, so they `?` inside a helper or match and call `.into_response()`:
 
 ```rust
-pub struct ApiError;
+fn parse_simulator_id(raw: &str) -> Result<DeviceId, DomainError> {
+    raw.parse::<DeviceId>()
+        .map_err(|_| DomainError::validation(format!("Invalid simulator id: {raw}")))
+}
 
-impl ApiError {
-    pub fn not_found(message: impl Into<String>) -> Response { /* ... */ }
-    pub fn bad_request(message: impl Into<String>) -> Response { /* ... */ }
-    pub fn internal(message: impl Into<String>) -> Response { /* ... */ }
-    pub fn conflict(message: impl Into<String>) -> Response { /* ... */ }
-    pub fn validation(message: impl Into<String>) -> Response { /* ... */ }
-    pub fn unauthorized(message: impl Into<String>) -> Response { /* ... */ }
-    pub fn forbidden(message: impl Into<String>) -> Response { /* ... */ }
-    pub fn rate_limited(message: impl Into<String>) -> Response { /* ... */ }
-    // Also: forbidden_with_details(), rate_limited_with_details()
+pub async fn delete_simulated_display(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let device_id = match parse_simulator_id(&id) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    // ... service call, then ApiResponse::ok(outcome)
 }
 ```
 
-Error responses use a separate envelope:
+Never hand a `Response` back through a `Result` and never hand-build an error body. Both grow a second error surface, and `tests/api_error_surface_tests.rs` scans every file under `src/api` for them.
+
+### Variants
 
 ```rust
-pub struct ApiErrorResponse {
-    pub error: ErrorBody,    // { code: ErrorCode, message: String, details: Option<Value> }
-    pub meta: Meta,
-}
-
-pub enum ErrorCode {
-    BadRequest, Unauthorized, Forbidden, NotFound, Conflict,
-    ValidationError, RateLimited, InternalError,
+pub enum DomainError {
+    NotFound { kind: ResourceKind, id: String },
+    Validation { message: String, field: Option<String>, details: Option<Value> },
+    Malformed { message: String },
+    Conflict { message: String, details: Option<Value> },
+    Unauthorized { message: String },
+    Forbidden { message: String, details: Option<Value> },
+    PayloadTooLarge { limit_bytes: u64 },
+    UnsupportedMediaType { message: String },
+    RateLimited { message: String, limit: u32, window_seconds: u64, retry_after_secs: u64 },
+    PreconditionFailed { resource: ResourceKind, expected: u64, current: u64 },
+    DeviceUnavailable { device_id: DeviceId, reason: String },
+    Internal(anyhow::Error),
 }
 ```
 
-Each `ErrorCode` variant maps to the corresponding HTTP status code.
+Constructors cover the common shapes: `not_found(kind, id)`, `validation(msg)`, `validation_field(field, msg)`, `validation_details(msg, json)`, `malformed(msg)`, `conflict(msg)`, `conflict_details(msg, json)`, `unauthorized(msg)`, `forbidden(msg)`, `forbidden_details(msg, json)`, `unsupported_media_type(msg)`. The remaining variants carry structured fields and are built directly.
+
+`ResourceKind` names what an error is about: `Scene`, `Zone`, `Layer`, `Effect`, `Device`, `LogicalDevice`, `Display`, `DisplayPreview`, `SimulatedDisplay`, `Driver`, `Profile`, `Layout`, `Preset`, `Playlist`, `Favorite`, `Asset`, `AttachmentTemplate`, `AttachmentSlot`, `Control`, `ControlSurface`, `Sensor`, `Diagnostic`, `Config`, `ConfigKey`, `Session`. It renders lowercase, so not-found messages derive as `"scene not found: default"` instead of being written out by hand at each call site.
+
+### Codes and statuses
+
+| Variant                | Code                     | Status |
+| ---------------------- | ------------------------ | ------ |
+| `Malformed`            | `malformed_request`      | 400    |
+| `Unauthorized`         | `unauthorized`           | 401    |
+| `Forbidden`            | `forbidden`              | 403    |
+| `NotFound`             | `not_found`              | 404    |
+| `Conflict`             | `conflict`               | 409    |
+| `PreconditionFailed`   | `precondition_failed`    | 412    |
+| `PayloadTooLarge`      | `payload_too_large`      | 413    |
+| `UnsupportedMediaType` | `unsupported_media_type` | 415    |
+| `Validation`           | `validation_error`       | 422    |
+| `RateLimited`          | `rate_limited`           | 429    |
+| `Internal`             | `internal_error`         | 500    |
+| `DeviceUnavailable`    | `device_unavailable`     | 503    |
+
+### Wire shape
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "message": "zone name must not be empty",
+    "details": { "field": "name" }
+  },
+  "meta": {
+    "api_version": "1.0",
+    "request_id": "req_0192f3c1-...",
+    "timestamp": "2026-03-29T12:00:00.000Z"
+  }
+}
+```
+
+The body types are `ApiErrorBody` and `ApiErrorDetail` in `hypercolor_types::api::envelope`. `details` carries `skip_serializing_if = "Option::is_none"`, so the key is absent rather than `null` when a variant has no structured context to hand back.
+
+`Internal` always renders `"internal error"` on the wire; the full chain goes to `tracing::error!`. `PreconditionFailed` renders `details: { "expected": N, "current": M }` and also attaches an `ETag` header carrying `current`, so a client rebases off `error.details.current` without a second read.
 
 ## Route Registration
 
