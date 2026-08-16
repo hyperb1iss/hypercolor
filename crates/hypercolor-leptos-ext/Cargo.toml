@@ -86,6 +86,7 @@ gloo-events = { version = "0.3", optional = true }
 js-sys = { version = "0.3", optional = true }
 leptos = { version = "0.8", features = ["csr"], optional = true }
 leptos-use = { version = "0.18", optional = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 wasm-bindgen = { version = "0.2", optional = true }

@@ -2,6 +2,7 @@ mod backoff;
 mod input_event;
 mod preview;
 mod spectrum;
+pub mod topic;
 pub mod transport;
 
 pub const HYPERCOLOR_WS_PROTOCOL: &str = "hypercolor-v1";
