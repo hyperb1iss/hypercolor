@@ -2533,6 +2533,206 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
     assert_eq!(config.daemon.target_fps, 45);
 }
 
+/// A config carrying driver settings, a secret, and a foreign section.
+///
+/// `acme_cloud` is deliberately not a registered driver module, so its
+/// settings stand in for anything a driver may persist without the host
+/// modelling the shape.
+const RESET_FIXTURE_CONFIG: &str = r#"
+schema_version = 4
+
+[daemon]
+target_fps = 45
+
+[audio]
+device = "microphone"
+
+[drivers.wled]
+enabled = true
+known_ips = ["192.168.1.50"]
+
+[drivers.acme_cloud]
+enabled = false
+api_key = "sk-live-do-not-lose-me"
+account = "bliss@example.com"
+
+[cloud]
+enabled = true
+refresh_token = "rt-do-not-lose-me"
+"#;
+
+/// Build a router over a config manager seeded from an on-disk fixture.
+///
+/// The capacity plan matters on Windows, where capture defaults to enabled
+/// and a keyless reset therefore rebuilds the screen graph.
+fn reset_fixture_app(config_path: &Path) -> (axum::Router, Arc<ConfigManager>) {
+    fs::write(config_path, RESET_FIXTURE_CONFIG).expect("fixture config should be written");
+    let config_manager = Arc::new(
+        ConfigManager::new(config_path.to_path_buf()).expect("config manager should build"),
+    );
+    let mut state = isolated_state();
+    state.config_manager = Some(Arc::clone(&config_manager));
+    {
+        let mut input_manager = state
+            .input_manager
+            .try_lock()
+            .expect("isolated input manager should be uncontended");
+        let capacity = input_manager.screen_resource_capacity();
+        input_manager
+            .set_screen_capacity_plan(capacity, capacity, capacity)
+            .expect("isolated input manager should accept its default capacity");
+    }
+    (test_app_with_state(Arc::new(state)), config_manager)
+}
+
+async fn post_config_reset(app: axum::Router, body: &'static str) -> axum::response::Response {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/reset")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .expect("failed to build request"),
+    )
+    .await
+    .expect("failed to execute request")
+}
+
+#[tokio::test]
+async fn config_full_reset_preserves_driver_settings_and_seeds_builtin_entries() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, config_manager) = reset_fixture_app(&config_path);
+
+    let response = post_config_reset(app, "{}").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let saved: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+
+    let acme = saved
+        .drivers
+        .get("acme_cloud")
+        .expect("a full reset must not destroy driver entries");
+    assert_eq!(
+        acme.settings["api_key"],
+        serde_json::json!("sk-live-do-not-lose-me"),
+        "a full reset must not destroy driver credentials"
+    );
+    assert_eq!(
+        acme.settings["account"],
+        serde_json::json!("bliss@example.com")
+    );
+    assert!(
+        !acme.enabled,
+        "a driver's enable flag is part of its preserved entry"
+    );
+    assert_eq!(
+        saved.drivers["wled"].settings["known_ips"],
+        serde_json::json!(["192.168.1.50"])
+    );
+
+    for driver_id in hypercolor_daemon::startup::default_config().drivers.keys() {
+        assert!(
+            saved.drivers.contains_key(driver_id),
+            "reset must seed builtin driver entry {driver_id} like the load path does"
+        );
+    }
+
+    assert_eq!(
+        saved.daemon.target_fps,
+        HypercolorConfig::default().daemon.target_fps,
+        "sections the daemon owns return to defaults"
+    );
+    assert_eq!(saved.audio.device, HypercolorConfig::default().audio.device);
+
+    let live = config_manager.get();
+    assert_eq!(
+        live.drivers["acme_cloud"].settings["api_key"],
+        serde_json::json!("sk-live-do-not-lose-me")
+    );
+    assert_eq!(
+        live.daemon.target_fps,
+        HypercolorConfig::default().daemon.target_fps
+    );
+}
+
+#[tokio::test]
+async fn config_full_reset_preserves_unknown_extension_sections() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, config_manager) = reset_fixture_app(&config_path);
+
+    let response = post_config_reset(app, "{}").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let saved: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+
+    let cloud = saved
+        .extensions
+        .get("cloud")
+        .expect("an extension section must survive a full reset");
+    assert_eq!(
+        cloud.get("refresh_token"),
+        Some(&serde_json::json!("rt-do-not-lose-me"))
+    );
+    assert_eq!(cloud.get("enabled"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        config_manager.get().extensions.get("cloud"),
+        saved.extensions.get("cloud")
+    );
+}
+
+#[tokio::test]
+async fn config_keyed_reset_restores_one_key_and_leaves_the_rest_intact() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _config_manager) = reset_fixture_app(&config_path);
+
+    let response = post_config_reset(app, r#"{"key":"daemon.target_fps"}"#).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "daemon.target_fps");
+    assert_eq!(json["data"]["reset"], true);
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let saved: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+
+    assert_eq!(
+        saved.daemon.target_fps,
+        HypercolorConfig::default().daemon.target_fps
+    );
+    assert_eq!(
+        saved.audio.device, "microphone",
+        "a keyed reset leaves untargeted sections alone"
+    );
+    assert_eq!(
+        saved.drivers["acme_cloud"].settings["api_key"],
+        serde_json::json!("sk-live-do-not-lose-me")
+    );
+    assert_eq!(
+        saved
+            .extensions
+            .get("cloud")
+            .and_then(|section| section.get("refresh_token")),
+        Some(&serde_json::json!("rt-do-not-lose-me"))
+    );
+}
+
+#[tokio::test]
+async fn config_reset_rejects_an_unknown_key() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _config_manager) = reset_fixture_app(&config_path);
+
+    let response = post_config_reset(app, r#"{"key":"daemon.not_a_real_key"}"#).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn preview_page_returns_html() {
     let app = test_app();

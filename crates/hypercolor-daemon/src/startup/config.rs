@@ -91,7 +91,7 @@ pub fn parse_config_toml(toml_str: &str) -> Result<HypercolorConfig> {
     Ok(config)
 }
 
-pub(super) fn normalize_daemon_driver_configs(config: &mut HypercolorConfig) {
+pub(crate) fn normalize_daemon_driver_configs(config: &mut HypercolorConfig) {
     network::normalize_builtin_driver_config_entries(config);
 }
 
