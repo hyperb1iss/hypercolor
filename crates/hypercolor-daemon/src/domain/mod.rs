@@ -19,7 +19,16 @@
 //!
 //! Domain signatures never mention Axum, `serde_json::Value`, or
 //! `Response`. Transport provenance rides in [`MutationContext`],
-//! never inside command payloads. Canonical routes render the
+//! never inside command payloads. WS/session/startup provenance
+//! variants arrive with the WS-command wave — `ChangeTrigger` rides
+//! serialized events, so new variants ship under the §0 dual-accept
+//! process, not as a side effect here.
+//!
+//! MCP fuzzy-lookup misses are an ADAPTER concern: today they return
+//! structured success payloads ("did you mean …"), and migrating
+//! workers must keep that behavior rather than projecting them
+//! through [`DomainError::NotFound`] (which would surface as a
+//! JSON-RPC error the client never saw before). Canonical routes render the
 //! canonical error envelope; legacy v1 paths keep their frozen error
 //! projections via the [`legacy`] shims.
 
@@ -124,13 +133,48 @@ pub enum DomainError {
 }
 
 impl DomainError {
+    /// A missing resource.
+    #[must_use]
+    pub fn not_found(kind: ResourceKind, id: impl std::fmt::Display) -> Self {
+        Self::NotFound {
+            kind,
+            id: id.to_string(),
+        }
+    }
+
+    /// A semantic validation failure with no single offending field.
+    #[must_use]
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self::Validation {
+            message: message.into(),
+            field: None,
+        }
+    }
+
+    /// A semantic validation failure naming its field.
+    #[must_use]
+    pub fn validation_field(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Validation {
+            message: message.into(),
+            field: Some(field.into()),
+        }
+    }
+
+    /// A state conflict.
+    #[must_use]
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::Conflict {
+            message: message.into(),
+        }
+    }
+
     /// Stable machine-readable code (snake_case) for the canonical
     /// error envelope.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NotFound { .. } => "not_found",
-            Self::Validation { .. } => "validation_failed",
+            Self::Validation { .. } => "validation_error",
             Self::Conflict { .. } => "conflict",
             Self::PreconditionFailed { .. } => "precondition_failed",
             Self::DeviceUnavailable { .. } => "device_unavailable",
@@ -221,7 +265,10 @@ impl From<DomainError> for ToolError {
             DomainError::DeviceUnavailable { device_id, reason } => {
                 ToolError::Conflict(format!("device {device_id} unavailable: {reason}"))
             }
-            DomainError::Internal(error) => ToolError::Internal(format!("{error:#}")),
+            DomainError::Internal(error) => {
+                tracing::error!(chain = format!("{error:#}"), "domain internal error (mcp)");
+                ToolError::Internal("internal error".to_owned())
+            }
         }
     }
 }
@@ -288,15 +335,27 @@ pub fn respond<T: serde::Serialize>(status: StatusCode, data: T) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// Wrap a versioned outcome and attach its ETag in one step, so call
+/// sites cannot forget the header or fight ownership.
+pub fn respond_versioned<T: serde::Serialize + Versioned>(status: StatusCode, data: T) -> Response {
+    let version = data.version();
+    let response = respond(status, data);
+    attach_version_etag(response, version)
+}
+
+fn attach_version_etag(mut response: Response, version: u64) -> Response {
+    if let Ok(etag) = HeaderValue::from_str(&format!("\"{version}\"")) {
+        response.headers_mut().insert(header::ETAG, etag);
+    }
+    response
+}
+
 /// Attach a [`Versioned`] resource's ETag to a response — the one
 /// ETag layer, replacing the three hand-rolled implementations as
 /// waves 2.2/2.3 migrate call sites.
 #[must_use]
-pub fn with_etag<R: Versioned>(mut response: Response, resource: &R) -> Response {
-    if let Ok(etag) = HeaderValue::from_str(&format!("\"{}\"", resource.version())) {
-        response.headers_mut().insert(header::ETAG, etag);
-    }
-    response
+pub fn with_etag<R: Versioned>(response: Response, resource: &R) -> Response {
+    attach_version_etag(response, resource.version())
 }
 
 /// Frozen legacy error projections for v1 paths (Spec 76 §0).
@@ -385,7 +444,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_shim_matches_the_frozen_v1_shape() {
+    async fn legacy_shim_matches_the_frozen_v1_shape_byte_for_byte() {
         let response = legacy::revision_mismatch_response("groups_revision", 9);
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
         assert_eq!(
@@ -395,16 +454,37 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("\"9\"")
         );
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        assert_eq!(
+            std::str::from_utf8(&bytes).expect("utf8"),
+            r#"{"error":"groups_revision mismatch","current":9}"#,
+            "the frozen v1 412 body, byte for byte"
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_versioned_wraps_and_tags_in_one_step() {
+        #[derive(serde::Serialize)]
+        struct Doc {
+            version: u64,
+        }
+        impl Versioned for Doc {
+            fn version(&self) -> u64 {
+                self.version
+            }
+        }
+        let response = respond_versioned(StatusCode::OK, Doc { version: 5 });
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ETAG)
+                .and_then(|value| value.to_str().ok()),
+            Some("\"5\"")
+        );
         let json = body_json(response).await;
-        let keys: Vec<&str> = json
-            .as_object()
-            .expect("object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(keys, ["error", "current"], "exactly the frozen key set");
-        assert_eq!(json["error"], "groups_revision mismatch");
-        assert_eq!(json["current"], 9);
+        assert_eq!(json["data"]["version"], 5);
     }
 
     #[test]
