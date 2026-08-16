@@ -172,6 +172,17 @@ fn app_sidecar_parent_is_valid(
     }
 
     let Some(parent_requirement) = app_parent_requirement(current_designated_requirement) else {
+        // Unsigned local builds are ad-hoc signed and carry a bare cdhash
+        // requirement with no identifier chain to verify, so the signed
+        // parent/daemon requirement handshake is impossible. Structural
+        // evidence still holds: the launcher must be live code executing
+        // the exact app binary adjacent to this daemon inside a bundle
+        // layout. A daemon whose own requirement carries the identifier
+        // chain never takes this path; for signed builds the full
+        // handshake stays mandatory.
+        if is_adhoc_requirement(current_designated_requirement) {
+            return live_process_path_matches(parent_pid, parent_executable);
+        }
         return Ok(false);
     };
 
@@ -180,6 +191,26 @@ fn app_sidecar_parent_is_valid(
     let daemon_valid =
         current_process_satisfies_requirement(current_executable, current_designated_requirement)?;
     Ok(parent_valid && daemon_valid)
+}
+
+fn is_adhoc_requirement(requirement: &str) -> bool {
+    requirement.starts_with("cdhash ")
+}
+
+fn live_process_path_matches(pid: u32, expected: &Path) -> Result<bool> {
+    let pid = i32::try_from(pid).context("launcher pid exceeds the macOS pid range")?;
+    let mut attributes = GuestAttributes::new();
+    attributes.set_pid(pid);
+    let code = SecCode::copy_guest_with_attribues(None, &attributes, CodeSigningFlags::NONE)
+        .context("failed to inspect the live launcher code identity")?;
+    let Some(observed) = code
+        .path(CodeSigningFlags::NONE)
+        .context("failed to resolve the live launcher code path")?
+        .to_path()
+    else {
+        return Ok(false);
+    };
+    Ok(code_path_matches(&observed, expected, true))
 }
 
 fn app_sidecar_layout_is_valid(current_executable: &Path) -> bool {
@@ -376,8 +407,8 @@ mod tests {
     use super::{
         APP_REQUIREMENT_PREFIX, MacosLauncherAuthorityEvidence, SIDECAR_REQUIREMENT_PREFIX,
         app_parent_requirement, app_sidecar_layout_is_valid, app_sidecar_parent_is_valid,
-        code_path_matches, parse_launchctl_service_pid, parse_macos_owner_claim, paths_are_equal,
-        resolve_macos_launcher_owner,
+        code_path_matches, is_adhoc_requirement, parse_launchctl_service_pid,
+        parse_macos_owner_claim, paths_are_equal, resolve_macos_launcher_owner,
     };
     use hypercolor_macos_owner::MacosDaemonOwner;
 
@@ -499,6 +530,17 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn adhoc_requirement_detection_matches_only_bare_cdhash_shapes() {
+        assert!(is_adhoc_requirement("cdhash H\"0123456789abcdef\""));
+        assert!(!is_adhoc_requirement(
+            "identifier \"tech.hyperbliss.hypercolor.sidecar\" and anchor apple generic"
+        ));
+        assert!(!is_adhoc_requirement(
+            "identifier \"x\" and cdhash H\"0123456789abcdef\""
+        ));
     }
 
     #[test]
