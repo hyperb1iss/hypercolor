@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::types::canvas::{Oklab, RgbaF32};
+use crate::types::canvas::{LinearRgba, Oklab};
 use crate::types::scene::{ColorInterpolation, SceneId, TransitionSpec, ZoneAssignment};
 
 // ── TransitionState ────────────────────────────────────────────────────
@@ -209,7 +209,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 ///
 /// `t = 0.0` returns `a`, `t = 1.0` returns `b`.
 #[must_use]
-pub fn interpolate_oklab(a: &RgbaF32, b: &RgbaF32, t: f32) -> RgbaF32 {
+pub fn interpolate_oklab(a: &LinearRgba, b: &LinearRgba, t: f32) -> LinearRgba {
     let a_lab = a.to_oklab();
     let b_lab = b.to_oklab();
     let mixed = Oklab::new(
@@ -218,20 +218,25 @@ pub fn interpolate_oklab(a: &RgbaF32, b: &RgbaF32, t: f32) -> RgbaF32 {
         lerp(a_lab.b, b_lab.b, t),
         lerp(a_lab.alpha, b_lab.alpha, t),
     );
-    RgbaF32::from_oklab(mixed)
+    mixed.to_linear()
 }
 
 /// Interpolate two colors in linear sRGB space.
 ///
 /// `t = 0.0` returns `a`, `t = 1.0` returns `b`.
 #[must_use]
-pub fn interpolate_srgb(a: &RgbaF32, b: &RgbaF32, t: f32) -> RgbaF32 {
-    RgbaF32::lerp(a, b, t)
+pub fn interpolate_srgb(a: &LinearRgba, b: &LinearRgba, t: f32) -> LinearRgba {
+    a.lerp(*b, t)
 }
 
 /// Interpolate two colors using the specified color space.
 #[must_use]
-pub fn interpolate_color(a: &RgbaF32, b: &RgbaF32, t: f32, space: &ColorInterpolation) -> RgbaF32 {
+pub fn interpolate_color(
+    a: &LinearRgba,
+    b: &LinearRgba,
+    t: f32,
+    space: &ColorInterpolation,
+) -> LinearRgba {
     match space {
         ColorInterpolation::Oklab => interpolate_oklab(a, b, t),
         ColorInterpolation::Srgb => interpolate_srgb(a, b, t),

@@ -26,6 +26,7 @@ js-sys = "0.3"
 bytes = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+hypercolor-color = { path = "../hypercolor-color" }
 hypercolor-types = { path = "../hypercolor-types" }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["events", "canvas", "raf", "prelude", "ws-client-wasm", "leptos"] }
 uuid = { version = "1.11", features = ["js"] }  # enable WASM RNG for transitive uuid

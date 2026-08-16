@@ -1,15 +1,18 @@
-use hypercolor_core::blend_math::{RgbaBlendMode, blend_rgba_pixel, blend_rgba_pixels_in_place};
-use hypercolor_types::canvas::{BlendMode, Rgba, RgbaF32};
+use hypercolor_core::blend_math::{
+    RgbaBlendMode, blend_rgba_pixel, blend_rgba_pixels_in_place, decode_srgb_channel,
+    encode_srgb_channel,
+};
+use hypercolor_types::canvas::{BlendMode, LinearRgba, Rgba};
 
 fn expected_blend(dst: Rgba, src: Rgba, mode: BlendMode, opacity: f32) -> [u8; 4] {
-    let dst = dst.to_linear_f32();
-    let src = src.to_linear_f32();
+    let dst = dst.to_linear();
+    let src = src.to_linear();
     let blended = mode.blend(
         [dst.r, dst.g, dst.b, dst.a],
         [src.r, src.g, src.b, src.a],
         opacity,
     );
-    let pixel = RgbaF32::new(blended[0], blended[1], blended[2], blended[3]).to_srgba();
+    let pixel = LinearRgba::new(blended[0], blended[1], blended[2], blended[3]).to_encoded();
     [pixel.r, pixel.g, pixel.b, pixel.a]
 }
 
@@ -127,4 +130,57 @@ fn opaque_normal_slice_blend_copies_source_at_full_opacity() {
     blend_rgba_pixels_in_place(&mut dst, &src, RgbaBlendMode::Normal, 1.0);
 
     assert_eq!(dst, src);
+}
+
+/// The compositor's decode is the kernel's table, not a copy of it. A
+/// re-introduced local table would drift silently, so every byte is
+/// compared.
+#[test]
+fn decode_channel_is_the_kernel_table_for_every_byte() {
+    for byte in 0_u8..=255 {
+        assert_eq!(
+            decode_srgb_channel(byte),
+            hypercolor_color::lut::srgb_u8_to_linear(byte),
+            "decode disagrees at {byte}"
+        );
+    }
+}
+
+/// The compositor's encode quantizes to 16 bits before reading the
+/// kernel's table. On every one of its own bins the answer is exactly
+/// what the kernel returns, which is what makes the table a projection
+/// of the kernel rather than a second implementation.
+#[test]
+fn encode_channel_reads_kernel_entries_at_its_own_quantization() {
+    for index in 0_u32..=65_535 {
+        #[allow(clippy::cast_precision_loss)]
+        let linear = index as f32 / 65_535.0;
+        assert_eq!(
+            encode_srgb_channel(linear),
+            hypercolor_color::lut::linear_to_srgb_u8(linear),
+            "encode disagrees at bin {index}"
+        );
+    }
+}
+
+/// The finer quantization is not redundant. Between its own bins the
+/// compositor's encode disagrees with a direct kernel call in the dark
+/// region, where the sRGB curve is steep enough that a 12-bit bin spans
+/// more than one output byte. Collapsing `encode_srgb_channel` into a
+/// direct kernel call would brighten near-black composites by one LSB,
+/// so this pins the difference rather than leaving it to be discovered.
+#[test]
+fn sixteen_bit_quantization_is_load_bearing_in_the_dark_region() {
+    let near_black = 0.000_122_25_f32;
+    assert_eq!(encode_srgb_channel(near_black), 0);
+    assert_eq!(hypercolor_color::lut::linear_to_srgb_u8(near_black), 1);
+}
+
+/// Encode and decode remain inverses across the byte domain, which is
+/// what keeps an opaque normal blend a pure copy.
+#[test]
+fn encode_decode_roundtrips_every_byte() {
+    for byte in 0_u8..=255 {
+        assert_eq!(encode_srgb_channel(decode_srgb_channel(byte)), byte);
+    }
 }

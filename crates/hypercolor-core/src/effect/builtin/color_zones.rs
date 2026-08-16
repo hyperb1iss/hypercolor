@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{Canvas, Oklab, RgbaF32};
+use hypercolor_types::canvas::{Canvas, LinearRgba, Oklab};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -116,7 +116,7 @@ impl ColorZonesRenderer {
         clippy::cast_sign_loss,
         clippy::as_conversions
     )]
-    fn sample_blended(&self, nx: f32, ny: f32, rows: u8, cols: u8) -> RgbaF32 {
+    fn sample_blended(&self, nx: f32, ny: f32, rows: u8, cols: u8) -> LinearRgba {
         let gx = nx * f32::from(cols);
         let gy = ny * f32::from(rows);
 
@@ -150,7 +150,7 @@ impl ColorZonesRenderer {
         let bot = Oklab::lerp(c01, c11, sx);
         let result = Oklab::lerp(top, bot, sy);
 
-        RgbaF32::from_oklab(result)
+        result.to_linear()
     }
 }
 
@@ -187,18 +187,18 @@ impl EffectRenderer for ColorZonesRenderer {
                     let col = ((nx * f32::from(cols)).floor() as u8).min(cols - 1);
                     let row = ((ny * f32::from(rows)).floor() as u8).min(rows - 1);
                     let color = self.zone_color(usize::from(row), usize::from(col), cols);
-                    RgbaF32::new(color[0], color[1], color[2], color[3])
+                    LinearRgba::new(color[0], color[1], color[2], color[3])
                 } else {
                     self.sample_blended(nx, ny, rows, cols)
                 };
 
-                let output = RgbaF32::new(
+                let output = LinearRgba::new(
                     rgba.r * self.brightness,
                     rgba.g * self.brightness,
                     rgba.b * self.brightness,
                     rgba.a,
                 );
-                canvas.set_pixel(x, y, output.to_srgba());
+                canvas.set_pixel(x, y, output.to_encoded());
             }
         }
 
@@ -253,7 +253,7 @@ impl EffectRenderer for ColorZonesRenderer {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn rgba_to_oklab(color: [f32; 4]) -> Oklab {
-    RgbaF32::new(color[0], color[1], color[2], color[3]).to_oklab()
+    LinearRgba::new(color[0], color[1], color[2], color[3]).to_oklab()
 }
 
 /// Blend-controlled smoothstep transition.

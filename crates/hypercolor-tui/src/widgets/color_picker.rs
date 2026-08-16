@@ -1,5 +1,6 @@
 //! HSL color picker popup widget with rainbow hue bar.
 
+use hypercolor_color::{Hsl, Rgb};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -180,73 +181,26 @@ fn f32_to_u8(v: f32) -> u8 {
 }
 
 /// Convert HSL to RGB. H: 0–360, S: 0–1, L: 0–1. Returns (R, G, B) each 0–1.
+///
+/// The kernel converts to encoded bytes, so the unit floats this widget
+/// speaks are recovered by dividing back out. Values therefore land on
+/// the 1/255 grid, which is exactly the resolution a terminal swatch can
+/// show anyway.
 #[must_use]
 #[allow(clippy::many_single_char_names)]
 pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
-    if s.abs() < f32::EPSILON {
-        return (l, l, l);
-    }
-
-    let h = (h.rem_euclid(360.0)) / 360.0;
-    let q = if l < 0.5 {
-        l * (1.0 + s)
-    } else {
-        l + s - l * s
-    };
-    let p = 2.0 * l - q;
-
+    let rgb = Hsl::new(h, s, l).to_rgb();
     (
-        hue_channel(p, q, h + 1.0 / 3.0),
-        hue_channel(p, q, h),
-        hue_channel(p, q, h - 1.0 / 3.0),
+        f32::from(rgb.r) / 255.0,
+        f32::from(rgb.g) / 255.0,
+        f32::from(rgb.b) / 255.0,
     )
-}
-
-fn hue_channel(p: f32, q: f32, mut t: f32) -> f32 {
-    if t < 0.0 {
-        t += 1.0;
-    }
-    if t > 1.0 {
-        t -= 1.0;
-    }
-    if t < 1.0 / 6.0 {
-        return p + (q - p) * 6.0 * t;
-    }
-    if t < 0.5 {
-        return q;
-    }
-    if t < 2.0 / 3.0 {
-        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
-    }
-    p
 }
 
 /// Convert RGB to HSL. R, G, B each 0–1. Returns (H: 0–360, S: 0–1, L: 0–1).
 #[must_use]
 #[allow(clippy::many_single_char_names)]
 pub fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let l = f32::midpoint(max, min);
-
-    if (max - min).abs() < f32::EPSILON {
-        return (0.0, 0.0, l);
-    }
-
-    let d = max - min;
-    let s = if l > 0.5 {
-        d / (2.0 - max - min)
-    } else {
-        d / (max + min)
-    };
-
-    let h = if (max - r).abs() < f32::EPSILON {
-        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) / 6.0
-    } else if (max - g).abs() < f32::EPSILON {
-        ((b - r) / d + 2.0) / 6.0
-    } else {
-        ((r - g) / d + 4.0) / 6.0
-    };
-
-    (h * 360.0, s, l)
+    let hsl = Hsl::from_rgb(Rgb::new(f32_to_u8(r), f32_to_u8(g), f32_to_u8(b)));
+    (hsl.h, hsl.s, hsl.l)
 }

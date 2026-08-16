@@ -368,7 +368,30 @@ fn hex_to_rgba_json_preserves_alpha_and_linearizes_rgb() {
 #[test]
 fn hex_to_rgba_rejects_malformed_input() {
     assert!(hex_to_rgba("").is_none());
-    assert!(hex_to_rgba("#abc").is_none());
+    assert!(hex_to_rgba("#12345").is_none());
     assert!(hex_to_rgba("#nothexx").is_none());
     assert!(hex_to_rgba("abcdefghij").is_none());
+}
+
+/// The color kernel's grammar takes the CSS shorthand forms, so `#abc`
+/// expands to `#aabbcc` where this parser used to reject it. The
+/// widening admits input that previously failed and changes nothing
+/// about input that previously succeeded.
+#[test]
+fn hex_to_rgba_expands_css_shorthand() {
+    let Some(short) = hex_to_rgba("#abc") else {
+        panic!("shorthand hex should parse");
+    };
+    let Some(long) = hex_to_rgba("#aabbcc") else {
+        panic!("full hex should parse");
+    };
+    assert_eq!(short, long);
+
+    let Some(short_alpha) = hex_to_rgba("#abcd") else {
+        panic!("shorthand hex with alpha should parse");
+    };
+    let Some(long_alpha) = hex_to_rgba("#aabbccdd") else {
+        panic!("full hex with alpha should parse");
+    };
+    assert_eq!(short_alpha, long_alpha);
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Oklch, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
 };
@@ -223,7 +223,7 @@ fn apply_output_adjustments(
     let apply_hue = hue_shift.abs() > 1e-3;
     let hue_degrees = hue_shift.to_degrees();
     for pixel in canvas.as_rgba_bytes_mut().chunks_exact_mut(BYTES_PER_PIXEL) {
-        let mut color = RgbaF32::from_srgb_u8(pixel[0], pixel[1], pixel[2], pixel[3]);
+        let mut color = LinearRgba::from_srgb_u8(pixel[0], pixel[1], pixel[2], pixel[3]);
         if apply_hue {
             color = rotate_hue(color, hue_degrees);
         }
@@ -241,7 +241,7 @@ fn apply_output_adjustments(
                 .b
                 .mul_add(1.0 - tint_strength, tint[2] * tint_strength);
         }
-        let rgba = color.to_srgba();
+        let rgba = color.to_encoded();
         pixel[0] = rgba.r;
         pixel[1] = rgba.g;
         pixel[2] = rgba.b;
@@ -252,17 +252,12 @@ fn apply_output_adjustments(
 /// Rotate a linear-light color's hue in Oklch, preserving lightness and
 /// chroma. Near-achromatic pixels pass through unchanged — hue is
 /// meaningless at zero chroma and rotating it only adds noise.
-fn rotate_hue(color: RgbaF32, degrees: f32) -> RgbaF32 {
+fn rotate_hue(color: LinearRgba, degrees: f32) -> LinearRgba {
     let lch = color.to_oklch();
     if lch.c <= 1e-4 {
         return color;
     }
-    RgbaF32::from_oklch(Oklch::new(
-        lch.l,
-        lch.c,
-        (lch.h + degrees).rem_euclid(360.0),
-        lch.alpha,
-    ))
+    Oklch::new(lch.l, lch.c, (lch.h + degrees).rem_euclid(360.0), lch.alpha).to_linear()
 }
 
 #[expect(

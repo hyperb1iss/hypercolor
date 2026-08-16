@@ -13,7 +13,7 @@ use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{Rgba, RgbaF32};
+use hypercolor_types::canvas::{LinearRgba, Rgba};
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::layer::MediaPlayback;

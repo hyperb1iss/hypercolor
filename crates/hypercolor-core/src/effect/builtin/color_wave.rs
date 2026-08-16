@@ -6,7 +6,7 @@
 use std::array;
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Oklch, Rgba, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -221,8 +221,8 @@ impl ColorWaveRenderer {
         });
     }
 
-    fn scaled_color(&self, rgba: [f32; 4]) -> RgbaF32 {
-        RgbaF32::new(
+    fn scaled_color(&self, rgba: [f32; 4]) -> LinearRgba {
+        LinearRgba::new(
             rgba[0] * self.brightness,
             rgba[1] * self.brightness,
             rgba[2] * self.brightness,
@@ -231,7 +231,7 @@ impl ColorWaveRenderer {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-    fn current_wave_color(&self, wave: &WaveInstance, time_secs: f64) -> RgbaF32 {
+    fn current_wave_color(&self, wave: &WaveInstance, time_secs: f64) -> LinearRgba {
         let shifted = match self.color_mode {
             WaveColorMode::Custom => self.wave_color,
             WaveColorMode::Random => hue_shift(self.wave_color, wave.hue_offset),
@@ -244,7 +244,7 @@ impl ColorWaveRenderer {
     }
 
     fn background_fill(&self) -> Rgba {
-        self.scaled_color(self.background_color).to_srgba()
+        self.scaled_color(self.background_color).to_encoded()
     }
 
     fn fade_canvas(&self, canvas: &mut Canvas) {
@@ -274,7 +274,7 @@ impl ColorWaveRenderer {
         let wave_width = self.wave_width_px().round() as i32;
 
         for wave in &self.waves {
-            let color = self.current_wave_color(wave, time_secs).to_srgba();
+            let color = self.current_wave_color(wave, time_secs).to_encoded();
             match self.direction {
                 WaveDirection::Right | WaveDirection::Left | WaveDirection::HorizontalPass => {
                     #[allow(
@@ -481,13 +481,13 @@ fn normalize_choice(value: &str) -> String {
 }
 
 fn hue_shift(color: [f32; 4], degrees: f32) -> [f32; 4] {
-    let rgba = RgbaF32::new(color[0], color[1], color[2], color[3]);
+    let rgba = LinearRgba::new(color[0], color[1], color[2], color[3]);
     let mut lch = rgba.to_oklch();
     if lch.c <= 0.0001 {
         return color;
     }
     lch = Oklch::new(lch.l, lch.c, (lch.h + degrees).rem_euclid(360.0), lch.alpha);
-    let shifted = RgbaF32::from_oklch(lch);
+    let shifted = lch.to_linear();
     [shifted.r, shifted.g, shifted.b, shifted.a]
 }
 

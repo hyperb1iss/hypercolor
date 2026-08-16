@@ -6,6 +6,8 @@
 //! canvas frame and normalize it into a readable, cohesive band suitable
 //! for UI accents and text coloring on dark surfaces.
 
+use hypercolor_color::{Hsl, Rgb};
+
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 /// Three-color palette extracted from a canvas frame.
@@ -82,63 +84,30 @@ pub fn accent_text_tint(accent_rgb_str: &str, target_l: f64, saturation_scale: f
 }
 
 /// Convert RGB (0-255) to HSL (h: 0-360, s/l: 0-1).
+///
+/// Palette colors arrive as channel averages, so they carry fractional
+/// parts the kernel's byte API cannot: the input rounds to bytes here.
+/// Every consumer formats its result with `{:.0}` in the end, and across
+/// all 16.7 million byte colors the rounded output moves by at most one.
 pub fn rgb_to_hsl(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
-    let rf = r / 255.0;
-    let gf = g / 255.0;
-    let bf = b / 255.0;
-    let max = rf.max(gf).max(bf);
-    let min = rf.min(gf).min(bf);
-    let l = (max + min) / 2.0;
-
-    let d = max - min;
-    if d < f64::EPSILON {
-        return (0.0, 0.0, l);
-    }
-
-    let s = if l > 0.5 {
-        d / (2.0 - max - min)
-    } else {
-        d / (max + min)
-    };
-
-    let h = if (max - rf).abs() < f64::EPSILON {
-        60.0 * ((gf - bf) / d).rem_euclid(6.0)
-    } else if (max - gf).abs() < f64::EPSILON {
-        60.0 * (((bf - rf) / d) + 2.0)
-    } else {
-        60.0 * (((rf - gf) / d) + 4.0)
-    };
-
-    (h, s, l)
+    let hsl = Hsl::from_rgb(Rgb::new(to_byte(r), to_byte(g), to_byte(b)));
+    (f64::from(hsl.h), f64::from(hsl.s), f64::from(hsl.l))
 }
 
 /// Convert HSL (h: 0-360, s/l: 0-1) to RGB (0-255).
+#[allow(clippy::cast_possible_truncation)]
 pub fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
-    if s < f64::EPSILON {
-        let v = l * 255.0;
-        return (v, v, v);
-    }
+    let rgb = Hsl::new(h as f32, s as f32, l as f32).to_rgb();
+    (f64::from(rgb.r), f64::from(rgb.g), f64::from(rgb.b))
+}
 
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let h_prime = (h / 60.0).rem_euclid(6.0);
-    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
-    let m = l - c / 2.0;
-
-    let (r1, g1, b1) = if h_prime < 1.0 {
-        (c, x, 0.0)
-    } else if h_prime < 2.0 {
-        (x, c, 0.0)
-    } else if h_prime < 3.0 {
-        (0.0, c, x)
-    } else if h_prime < 4.0 {
-        (0.0, x, c)
-    } else if h_prime < 5.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-
-    ((r1 + m) * 255.0, (g1 + m) * 255.0, (b1 + m) * 255.0)
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn to_byte(channel: f64) -> u8 {
+    channel.round().clamp(0.0, 255.0) as u8
 }
 
 /// Normalize a palette color into a readable, cohesive band.

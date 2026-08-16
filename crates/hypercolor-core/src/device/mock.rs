@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
+use hypercolor_color::Hsv;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -449,10 +450,10 @@ fn render_rainbow(canvas: &mut Canvas, input: &FrameInput) {
     let (first_row, remaining_rows) = pixels.split_at_mut(row_len);
     for (x, pixel) in first_row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
         let hue = ((x as f32 / w.max(1) as f32) * 360.0 + time_offset).rem_euclid(360.0);
-        let (r, g, b) = hsv_to_rgb(hue, 1.0, 1.0);
-        pixel[0] = r;
-        pixel[1] = g;
-        pixel[2] = b;
+        let rgb = Hsv::new(hue, 1.0, 1.0).to_rgb();
+        pixel[0] = rgb.r;
+        pixel[1] = rgb.g;
+        pixel[2] = rgb.b;
         pixel[3] = 255;
     }
 
@@ -474,41 +475,6 @@ fn render_audio_reactive(canvas: &mut Canvas, input: &FrameInput, base: [u8; 4])
     let g = (f32::from(base[1]) * level).round() as u8;
     let b = (f32::from(base[2]) * level).round() as u8;
     canvas.fill(Rgba::new(r, g, b, base[3]));
-}
-
-/// Simple HSV to RGB conversion. H in [0, 360), S and V in [0, 1].
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::many_single_char_names
-)]
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-    let c = v * s;
-    let h_prime = h / 60.0;
-    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
-    let m = v - c;
-
-    #[allow(clippy::cast_precision_loss)]
-    let (r1, g1, b1) = if h_prime < 1.0 {
-        (c, x, 0.0)
-    } else if h_prime < 2.0 {
-        (x, c, 0.0)
-    } else if h_prime < 3.0 {
-        (0.0, c, x)
-    } else if h_prime < 4.0 {
-        (0.0, x, c)
-    } else if h_prime < 5.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-
-    (
-        ((r1 + m) * 255.0).round() as u8,
-        ((g1 + m) * 255.0).round() as u8,
-        ((b1 + m) * 255.0).round() as u8,
-    )
 }
 
 // ── Shared Helpers ──────────────────────────────────────────────────────────

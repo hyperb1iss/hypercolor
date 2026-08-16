@@ -3,6 +3,7 @@
 
 use leptos::prelude::*;
 
+use hypercolor_color::Hsl;
 use hypercolor_leptos_ext::prelude::random_unit;
 
 /// Category -> (badge Tailwind classes, accent RGB triplet for inline styles).
@@ -69,27 +70,14 @@ pub fn device_accent_colors(device_id: &str) -> (String, String) {
 }
 
 /// Convert HSL (h: 0–360, s: 0–100, l: 0–100) to an "r, g, b" string.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+///
+/// Percentages are this call site's units, so they are divided out here
+/// and the conversion itself is the kernel's. The kernel wraps hue,
+/// which fixes a latent bug: the old sector chain sent every hue at or
+/// above 360 into the magenta arm.
 fn hsl_to_rgb_string(h: f32, s: f32, l: f32) -> String {
-    let s = s / 100.0;
-    let l = l / 100.0;
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = l - c / 2.0;
-
-    let (r1, g1, b1) = match h as u32 {
-        0..60 => (c, x, 0.0),
-        60..120 => (x, c, 0.0),
-        120..180 => (0.0, c, x),
-        180..240 => (0.0, x, c),
-        240..300 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-
-    let r = ((r1 + m) * 255.0).round() as u8;
-    let g = ((g1 + m) * 255.0).round() as u8;
-    let b = ((b1 + m) * 255.0).round() as u8;
-    format!("{r}, {g}, {b}")
+    let rgb = Hsl::new(h, s / 100.0, l / 100.0).to_rgb();
+    format!("{}, {}, {}", rgb.r, rgb.g, rgb.b)
 }
 
 // ── Shared UI primitives ────────────────────────────────────────────────────

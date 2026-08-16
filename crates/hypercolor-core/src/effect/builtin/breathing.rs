@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::canvas::{Canvas, LinearRgba};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -62,13 +62,13 @@ impl EffectRenderer for BreathingRenderer {
         let brightness =
             self.min_brightness + (self.max_brightness - self.min_brightness) * sine_01;
 
-        let pixel = RgbaF32::new(
+        let pixel = LinearRgba::new(
             self.color[0] * brightness,
             self.color[1] * brightness,
             self.color[2] * brightness,
             self.color[3],
         )
-        .to_srgba();
+        .to_encoded();
 
         canvas.fill(pixel);
         Ok(())

@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Oklab, Oklch, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklab, Oklch};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -103,7 +103,7 @@ impl EasingMode {
 
 #[derive(Debug, Clone, Copy)]
 enum PreparedGradientColor {
-    Direct(RgbaF32),
+    Direct(LinearRgba),
     Smooth(Oklab),
     Vivid(Oklch),
 }
@@ -117,19 +117,19 @@ impl PreparedGradientColor {
         }
     }
 
-    fn into_rgba(self) -> RgbaF32 {
+    fn into_rgba(self) -> LinearRgba {
         match self {
             Self::Direct(rgba) => rgba,
-            Self::Smooth(lab) => RgbaF32::from_oklab(lab),
-            Self::Vivid(lch) => RgbaF32::from_oklch(lch),
+            Self::Smooth(lab) => lab.to_linear(),
+            Self::Vivid(lch) => lch.to_linear(),
         }
     }
 
-    fn interpolate(self, other: Self, t: f32) -> RgbaF32 {
+    fn interpolate(self, other: Self, t: f32) -> LinearRgba {
         match (self, other) {
-            (Self::Direct(a), Self::Direct(b)) => RgbaF32::lerp(&a, &b, t),
-            (Self::Smooth(a), Self::Smooth(b)) => RgbaF32::from_oklab(Oklab::lerp(a, b, t)),
-            (Self::Vivid(a), Self::Vivid(b)) => RgbaF32::from_oklch(a.lerp(b, t)),
+            (Self::Direct(a), Self::Direct(b)) => a.lerp(b, t),
+            (Self::Smooth(a), Self::Smooth(b)) => a.lerp(b, t).to_linear(),
+            (Self::Vivid(a), Self::Vivid(b)) => a.lerp(b, t).to_linear(),
             _ => unreachable!("prepared stops always share the same interpolation mode"),
         }
     }
@@ -178,7 +178,7 @@ impl PreparedGradientStops {
         }
     }
 
-    fn sample(self, easing: EasingMode, raw_t: f32) -> RgbaF32 {
+    fn sample(self, easing: EasingMode, raw_t: f32) -> LinearRgba {
         let t = easing.apply(raw_t);
         let first = self.stops[0];
 
@@ -345,11 +345,11 @@ impl GradientRenderer {
     }
 
     /// Post-process: boost or reduce chroma in Oklch space.
-    fn apply_saturation(&self, mut rgba: RgbaF32) -> RgbaF32 {
+    fn apply_saturation(&self, mut rgba: LinearRgba) -> LinearRgba {
         if (self.saturation - 1.0).abs() > f32::EPSILON {
             let mut lch = rgba.to_oklch();
             lch.c *= self.saturation;
-            rgba = RgbaF32::from_oklch(lch);
+            rgba = lch.to_linear();
         }
         rgba
     }
@@ -566,22 +566,22 @@ fn interpolate_stop_pair(
     left: PreparedGradientStop,
     right: PreparedGradientStop,
     t: f32,
-) -> RgbaF32 {
+) -> LinearRgba {
     let span = (right.position - left.position).max(f32::EPSILON);
     let local_t = ((t - left.position) / span).clamp(0.0, 1.0);
     left.color.interpolate(right.color, local_t)
 }
 
-fn color_to_rgba(color: [f32; 4]) -> RgbaF32 {
-    RgbaF32::new(color[0], color[1], color[2], color[3])
+fn color_to_rgba(color: [f32; 4]) -> LinearRgba {
+    LinearRgba::new(color[0], color[1], color[2], color[3])
 }
 
 fn rgba_to_oklab(color: [f32; 4]) -> Oklab {
-    RgbaF32::new(color[0], color[1], color[2], color[3]).to_oklab()
+    LinearRgba::new(color[0], color[1], color[2], color[3]).to_oklab()
 }
 
 fn rgba_to_oklch(color: [f32; 4]) -> Oklch {
-    RgbaF32::new(color[0], color[1], color[2], color[3]).to_oklch()
+    LinearRgba::new(color[0], color[1], color[2], color[3]).to_oklch()
 }
 
 // ── Geometry Helpers ─────────────────────────────────────────────────────────

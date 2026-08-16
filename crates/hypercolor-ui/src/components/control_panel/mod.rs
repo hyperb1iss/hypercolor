@@ -13,7 +13,7 @@ use hypercolor_leptos_ext::events::{document as browser_document, target_closest
 use hypercolor_leptos_ext::prelude::{
     viewport_height as browser_viewport_height, viewport_width as browser_viewport_width,
 };
-use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
+use hypercolor_types::canvas::{LinearRgba, Rgb, linear_to_srgb};
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, PreviewSource,
 };
@@ -625,7 +625,7 @@ pub fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> Stri
 pub(super) fn control_value_to_hex(value: &ControlValue) -> String {
     match value {
         ControlValue::Color([r, g, b, _]) => {
-            format!("#{:02x}{:02x}{:02x}", to_byte(*r), to_byte(*g), to_byte(*b))
+            Rgb::new(to_byte(*r), to_byte(*g), to_byte(*b)).to_hex()
         }
         ControlValue::Text(hex) if hex.starts_with('#') && hex.len() >= 7 => hex[..7].to_string(),
         _ => "#ffffff".to_string(),
@@ -653,18 +653,10 @@ pub(super) fn normalize_hex(raw_hex: &str) -> Option<String> {
 }
 
 pub(super) fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
-    let normalized = normalize_hex(hex)?;
-    let compact = normalized.strip_prefix('#').unwrap_or(normalized.as_str());
-    let red = u8::from_str_radix(&compact[0..2], 16).ok()?;
-    let green = u8::from_str_radix(&compact[2..4], 16).ok()?;
-    let blue = u8::from_str_radix(&compact[4..6], 16).ok()?;
-
-    Some([
-        srgb_to_linear(f32::from(red) / 255.0),
-        srgb_to_linear(f32::from(green) / 255.0),
-        srgb_to_linear(f32::from(blue) / 255.0),
-        1.0,
-    ])
+    // normalize_hex still gates the grammar to 3 and 6 digits, so the
+    // alpha-bearing forms the kernel would otherwise accept stay out.
+    let color = LinearRgba::from_hex_srgb(&normalize_hex(hex)?).ok()?;
+    Some([color.r, color.g, color.b, 1.0])
 }
 
 #[expect(
