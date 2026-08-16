@@ -480,7 +480,11 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 {
                     set_api_key_required.set(true);
                 }
-                Err(_) => {}
+                Err(error) => {
+                    leptos::logging::warn!(
+                        "Config fetch failed (retries on the next socket open): {error}"
+                    );
+                }
             }
         });
     });
@@ -497,7 +501,16 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         refresh: refresh_config,
         audio_enabled,
     });
-    refresh_config.run(());
+    // A one-shot fetch at wasm init loses the race when the daemon is
+    // still binding (app boot) or mid-restart, and nothing would retry.
+    // Keying the fetch to the socket generation refires it on every
+    // WebSocket open, so config heals on the same reconnect that
+    // refreshes the hint-driven resources.
+    let config_connection_generation = ws.connection_generation;
+    Effect::new(move |_| {
+        let _generation = config_connection_generation.get();
+        refresh_config.run(());
+    });
 
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
