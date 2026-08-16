@@ -33,6 +33,7 @@
 //! projections via the [`legacy`] shims.
 
 pub mod commit;
+pub mod display;
 pub mod effect;
 pub mod scene;
 pub mod zone;

@@ -80,7 +80,6 @@ use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 use uuid::Uuid;
 
-use crate::api::envelope::ApiError;
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
@@ -822,14 +821,6 @@ impl ActiveSceneMutationError {
             Self::Persistence { message } => message.clone(),
         }
     }
-
-    pub(crate) fn api_response(&self, action: &str) -> axum::response::Response {
-        match self {
-            Self::NoActiveScene => ApiError::internal(self.message(action)),
-            Self::SnapshotLocked { .. } => ApiError::conflict(self.message(action)),
-            Self::Persistence { .. } => ApiError::internal(self.message(action)),
-        }
-    }
 }
 
 pub(crate) fn active_scene_id_for_runtime_mutation(
@@ -959,31 +950,16 @@ pub(crate) async fn prune_scene_display_groups_for_device(
     state: &Arc<AppState>,
     device_id: DeviceId,
 ) {
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (removed_groups, pending, removed_default, active_scene_id) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let rollback = scene_manager.clone();
-        let removed = scene_manager.remove_display_groups_for_device(device_id);
-        let (removed, pending) = if removed.is_empty() {
-            (Vec::new(), None)
-        } else {
-            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-                Ok(pending) => (removed, Some(pending)),
-                Err(error) => {
-                    // The manager rolled back, so the scene groups are
-                    // still live and must not be reported as removed.
-                    warn!(%error, %device_id, "Failed to prepare display-group pruning persistence");
-                    (Vec::new(), None)
-                }
+    let pruned =
+        match crate::domain::display::prune_display_zones_for_device(state.as_ref(), device_id)
+            .await
+        {
+            Ok(pruned) => pruned,
+            Err(error) => {
+                warn!(%error, %device_id, "Failed to prune display zones for deleted device");
+                return;
             }
         };
-        let removed_default = scene_manager.default_display_group_for(device_id).cloned();
-        if removed_default.is_some() {
-            scene_manager.remove_default_display_group(device_id);
-        }
-        let active_scene_id = scene_manager.active_scene().map(|scene| scene.id);
-        (removed, pending, removed_default, active_scene_id)
-    };
 
     let removed_preference = {
         let mut store = state.display_preferences.write().await;
@@ -996,26 +972,8 @@ pub(crate) async fn prune_scene_display_groups_for_device(
         }
     };
 
-    if removed_groups.is_empty() && removed_default.is_none() && !removed_preference {
+    if pruned.removed_zones.is_empty() && pruned.removed_default.is_none() && !removed_preference {
         return;
-    }
-
-    if let Some(pending) = pending
-        && let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await
-    {
-        warn!(%error, %device_id, "Failed to persist display-group pruning; retry remains active");
-    }
-
-    for (scene_id, group) in &removed_groups {
-        publish_render_group_changed(state.as_ref(), *scene_id, group, ZoneChangeKind::Removed);
-    }
-    if let Some(group) = &removed_default {
-        publish_render_group_changed(
-            state.as_ref(),
-            active_scene_id.unwrap_or(SceneId::DEFAULT),
-            group,
-            ZoneChangeKind::Removed,
-        );
     }
     persist_runtime_session(state).await;
 }

@@ -5,13 +5,16 @@ use serde_json::{Value, json};
 use super::{ToolDefinition, ToolError, default_output_schema};
 use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
 use crate::api::effects::resolve_effect_metadata;
-use crate::api::{
-    AppState, admit_scene_store_snapshot, publish_render_group_changed,
-    save_admitted_scene_store_snapshot, save_runtime_session_snapshot, scene_store_coordinator,
+use crate::api::{AppState, publish_render_group_changed};
+use crate::domain::MutationContext;
+use crate::domain::display::{
+    ClearDisplayFace, SetDisplayFace, clear_display_face, remove_default_display_overlay,
+    set_display_face,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 use hypercolor_types::event::ZoneChangeKind;
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
 
 pub(super) fn build_set_display_face() -> ToolDefinition {
     ToolDefinition {
@@ -84,45 +87,21 @@ pub(super) async fn handle_set_display_face_with_state(
     }
 
     if clear {
-        let coordinator = scene_store_coordinator(state).await;
-        let (active_scene_id, previous_group, cleared_group, pending) = {
-            let mut scene_manager = state.scene_manager.write().await;
-            let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-                .map_err(|error| ToolError::Conflict(error.message("removing a display face")))?;
-            let previous_group = scene_manager
-                .active_scene()
-                .and_then(|scene| scene.display_group_for(device_id))
-                .cloned();
-            let rollback = scene_manager.clone();
-            let cleared_group = scene_manager
-                .clear_display_group_assignment(
-                    device_id,
-                    info.name.as_str(),
-                    display_face_layout(device_id, info.name.as_str(), surface),
-                )
-                .map_err(|error| ToolError::Internal(error.to_string()))?
-                .clone();
-            let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-                .map_err(|error| {
-                    ToolError::Internal(format!("failed to persist scenes: {error}"))
-                })?;
-            (active_scene_id, previous_group, cleared_group, pending)
-        };
-        save_admitted_scene_store_snapshot(state, pending)
-            .await
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-        let change_kind = if previous_group.is_some() {
-            ZoneChangeKind::Updated
-        } else {
-            ZoneChangeKind::Created
-        };
-        publish_render_group_changed(state, active_scene_id, &cleared_group, change_kind);
-        save_runtime_session_snapshot(state).await;
+        let cleared = clear_display_face(
+            state,
+            ClearDisplayFace {
+                device_id,
+                device_name: info.name.clone(),
+                layout: display_face_layout(device_id, info.name.as_str(), surface),
+            },
+            MutationContext::mcp(),
+        )
+        .await?;
         let live_scope = live_scope_payload(state, device_id).await;
         return Ok(json!({
             "device": display_device_payload(&info, surface),
-            "scene_id": active_scene_id.to_string(),
-            "group": cleared_group,
+            "scene_id": cleared.scene_id.to_string(),
+            "group": cleared.zone,
             "scope": "scene",
             "live_scope": live_scope,
             "cleared": true,
@@ -159,57 +138,31 @@ pub(super) async fn handle_set_display_face_with_state(
         effect
     };
 
-    let coordinator = scene_store_coordinator(state).await;
-    let (active_scene_id, group, change_kind, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("assigning a display face")))?;
-        let change_kind = if scene_manager
-            .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
-            .is_some()
-        {
-            ZoneChangeKind::Updated
-        } else {
-            ZoneChangeKind::Created
-        };
-        let rollback = scene_manager.clone();
-        let group = scene_manager
-            .upsert_display_group(
+    // The face blends over the live effect by default; Replace is opt-in
+    // through the REST composition endpoint for face-only looks.
+    let written = set_display_face(
+        state,
+        SetDisplayFace {
+            device_id,
+            device_name: info.name.clone(),
+            effect: effect.clone(),
+            controls,
+            layout: display_face_layout(device_id, info.name.as_str(), surface),
+            target: DisplayFaceTarget {
+                blend_mode: DisplayFaceBlendMode::Alpha,
                 device_id,
-                info.name.as_str(),
-                &effect,
-                controls,
-                display_face_layout(device_id, info.name.as_str(), surface),
-            )
-            .map_err(|error| ToolError::Internal(error.to_string()))?
-            .clone();
-        // upsert seeds the target as Replace; blend over the live effect by
-        // default so the face layers on top instead of blacking it out,
-        // mirroring the REST scene-scope contract.
-        let group = scene_manager
-            .patch_display_group_target(
-                group.id,
-                Some(hypercolor_types::scene::DisplayFaceBlendMode::Alpha),
-                Some(1.0),
-            )
-            .ok_or_else(|| ToolError::Internal("failed to set display face composition".into()))?
-            .clone();
-        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-        (active_scene_id, group, change_kind, pending)
-    };
-    save_admitted_scene_store_snapshot(state, pending)
-        .await
-        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-    publish_render_group_changed(state, active_scene_id, &group, change_kind);
-    save_runtime_session_snapshot(state).await;
+                opacity: 1.0,
+            },
+        },
+        MutationContext::mcp(),
+    )
+    .await?;
 
     Ok(json!({
         "device": display_device_payload(&info, surface),
-        "scene_id": active_scene_id.to_string(),
+        "scene_id": written.scene_id.to_string(),
         "effect": effect,
-        "group": group,
+        "group": written.zone,
         "scope": "scene",
         "live_scope": "scene",
         "cleared": false,
@@ -256,26 +209,26 @@ async fn handle_default_scope(
                 .map_err(|error| ToolError::Internal(error.to_string()))?
                 .is_some()
         };
-        let (was_live, scene_id, cleared_zone) = {
-            let mut scene_manager = state.scene_manager.write().await;
-            let scene_assigned = scene_manager
+        let scene_assigned = {
+            let scene_manager = state.scene_manager.read().await;
+            scene_manager
                 .active_scene()
                 .and_then(|scene| scene.display_group_for(device_id))
-                .is_some_and(|zone| zone.effect_id.is_some());
-            let cleared = scene_manager.default_display_group_for(device_id).cloned();
-            scene_manager.remove_default_display_group(device_id);
-            let scene_id = scene_manager
-                .active_scene()
-                .map(|scene| scene.id)
-                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-            (!scene_assigned, scene_id, cleared)
+                .is_some_and(|zone| zone.effect_id.is_some())
         };
+        let cleared_zone = remove_default_display_overlay(state, device_id).await?;
         if removed
-            && was_live
+            && !scene_assigned
             && let Some(mut zone) = cleared_zone
         {
             zone.effect_id = None;
             zone.layers.clear();
+            let scene_id = {
+                let scene_manager = state.scene_manager.read().await;
+                scene_manager
+                    .active_scene()
+                    .map_or(hypercolor_types::scene::SceneId::DEFAULT, |scene| scene.id)
+            };
             publish_render_group_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
         }
         let live_scope = live_scope_payload(state, device_id).await;
