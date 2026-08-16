@@ -446,8 +446,17 @@ pub fn resolve_color(input: &str) -> Option<ColorMatch> {
     match_color_name(trimmed)
 }
 
-/// Parse a hex color code like `#ff6ac1` or `ff6ac1`.
+/// Parse a hex color code like `#ff6ac1`, `ff6ac1`, or `#f6c`.
+///
+/// Shorthand is honored only behind a `#`. Without one, a three-letter
+/// word of hex digits is a name query — `bed` asks the name matcher for a
+/// color called "bed", not for `#bbeedd`.
 fn parse_hex(input: &str) -> Option<ColorMatch> {
+    let explicit = input.starts_with('#');
+    if !explicit && input.len() != 6 {
+        return None;
+    }
+
     let Rgb {
         r: red,
         g: green,
