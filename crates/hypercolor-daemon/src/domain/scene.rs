@@ -33,8 +33,8 @@ use hypercolor_types::spatial::SpatialLayout;
 use crate::api::AppState;
 use crate::api::scenes::MediaAdmissionViolationDetails;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
-use crate::persistence::AtomicWriteOutcome;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
+use crate::persistence::AtomicWriteOutcome;
 
 // ── Owned candidate ──────────────────────────────────────────────────────
 

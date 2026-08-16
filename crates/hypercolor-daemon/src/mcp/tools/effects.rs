@@ -6,17 +6,14 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metadata};
+use crate::api::AppState;
 use crate::api::effects::{
-    StopActiveEffectError, active_primary_effect, apply_associated_layout, effect_ref,
-    normalize_control_payload, resolve_full_scope_layout, stop_active_effect_and_quiesce_output,
-    wake_output_for_effect_start,
+    StopActiveEffectError, normalize_control_payload, stop_active_effect_and_quiesce_output,
 };
-use crate::api::{
-    AppState, admit_scene_store_snapshot, publish_render_group_changed,
-    save_admitted_scene_store_snapshot, save_runtime_session_snapshot, scene_store_coordinator,
-};
+use crate::domain::MutationContext;
+use crate::domain::commit::SceneCommit;
+use crate::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
-use hypercolor_types::event::{ChangeTrigger, HypercolorEvent, ZoneChangeKind};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -39,10 +36,10 @@ pub(super) fn build_set_effect() -> ToolDefinition {
                 },
                 "transition_ms": {
                     "type": "integer",
-                    "description": "Crossfade transition duration in milliseconds (0 = instant)",
-                    "default": 500,
+                    "description": "Crossfade duration in milliseconds. Effect transitions are not implemented yet, so only 0 (immediate cut) is accepted.",
+                    "default": 0,
                     "minimum": 0,
-                    "maximum": 10000
+                    "maximum": 0
                 },
                 "devices": {
                     "type": "array",
@@ -143,10 +140,10 @@ pub(super) fn build_set_color() -> ToolDefinition {
                 },
                 "transition_ms": {
                     "type": "integer",
-                    "description": "Crossfade transition duration in milliseconds",
-                    "default": 500,
+                    "description": "Crossfade duration in milliseconds. Effect transitions are not implemented yet, so only 0 (immediate cut) is accepted.",
+                    "default": 0,
                     "minimum": 0,
-                    "maximum": 10000
+                    "maximum": 0
                 },
                 "devices": {
                     "type": "array",
@@ -173,10 +170,13 @@ pub(super) async fn handle_set_effect_with_state(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("query".into()))?;
 
+    // Absent means the caller asked for no transition, which the daemon
+    // renders as an immediate cut. It used to default to 500 and echo
+    // that back without ever applying it.
     let transition_ms = params
         .get("transition_ms")
         .and_then(Value::as_u64)
-        .unwrap_or(500);
+        .unwrap_or(0);
 
     let effect_catalog = {
         let registry = state.effect_registry.read().await;
@@ -205,7 +205,6 @@ pub(super) async fn handle_set_effect_with_state(
             ),
         });
     }
-    wake_output_for_effect_start(state).await;
 
     let controls = params
         .get("controls")
@@ -214,56 +213,20 @@ pub(super) async fn handle_set_effect_with_state(
         .unwrap_or_default();
     let (normalized_controls, rejected_controls) =
         normalize_control_payload(&best_match.effect, &controls);
-    let previous_effect = active_primary_effect(state)
-        .await
-        .map(|(_, effect)| effect_ref(&effect));
-    let full_scope_layout = resolve_full_scope_layout(state).await;
-    let coordinator = scene_store_coordinator(state).await;
-    let (scene_id, group, change_kind, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
-        let change_kind = if scene_manager
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .is_some()
-        {
-            ZoneChangeKind::Updated
-        } else {
-            ZoneChangeKind::Created
-        };
-        let rollback = scene_manager.clone();
-        let group = scene_manager
-            .upsert_primary_group(
-                &best_match.effect,
-                normalized_controls.clone(),
-                None,
-                full_scope_layout,
-            )
-            .map_err(|error| {
-                ToolError::Internal(format!(
-                    "failed to update active scene primary group: {error}"
-                ))
-            })?
-            .clone();
-        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-        (scene_id, group, change_kind, pending)
-    };
-    save_admitted_scene_store_snapshot(state, pending)
-        .await
-        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-    state.event_bus.publish(HypercolorEvent::EffectStarted {
-        effect: effect_ref(&best_match.effect),
-        trigger: ChangeTrigger::Mcp,
-        previous: previous_effect,
-        transition: None,
-        group_id: Some(group.id),
-        group_name: Some(group.name.clone()),
-    });
-    publish_render_group_changed(state, scene_id, &group, change_kind);
-    let applied_layout = apply_associated_layout(state, &best_match.effect.id.to_string()).await;
-    save_runtime_session_snapshot(state).await;
+
+    let applied = apply_effect(
+        state,
+        ApplyEffect {
+            effect_id: best_match.effect.id,
+            controls: normalized_controls.clone(),
+            preset_id: None,
+            target_zone: None,
+            transition: RequestedTransition::of_duration(transition_ms),
+        },
+        MutationContext::mcp(),
+    )
+    .await?;
+    persistence_failure(&applied.commit)?;
 
     Ok(json!({
         "matched_effect": {
@@ -281,10 +244,21 @@ pub(super) async fn handle_set_effect_with_state(
         "applied": true,
         "applied_controls": normalized_controls,
         "rejected_controls": rejected_controls,
-        "transition_ms": transition_ms,
+        "transition_ms": applied.transition.duration_ms,
         "warnings": [],
-        "layout": applied_layout
+        "layout": applied.applied_layout
     }))
+}
+
+/// Project a non-durable commit onto the failure the MCP tools have
+/// always reported for one.
+fn persistence_failure(commit: &SceneCommit) -> Result<(), ToolError> {
+    match commit.retry_error() {
+        Some(error) => Err(ToolError::Internal(format!(
+            "failed to persist scenes: {error}"
+        ))),
+        None => Ok(()),
+    }
 }
 
 pub(super) async fn handle_list_effects_with_state(
@@ -440,6 +414,14 @@ pub(super) async fn handle_set_color_with_state(
         .get("color")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("color".into()))?;
+    // The schema has always advertised transition_ms here. It now runs
+    // the same rule set_effect does instead of being dropped on the
+    // floor, so a caller asking for a crossfade learns it cannot have
+    // one.
+    let transition_ms = params
+        .get("transition_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
 
     let resolved =
         crate::mcp::fuzzy::resolve_color(color_str).ok_or_else(|| ToolError::InvalidParam {
@@ -450,7 +432,6 @@ pub(super) async fn handle_set_color_with_state(
     let solid_effect = find_effect_metadata(state, "solid_color", "Solid Color")
         .await
         .ok_or_else(|| ToolError::Internal("solid color effect is not registered".into()))?;
-    wake_output_for_effect_start(state).await;
 
     let brightness = if let Some(brightness_u64) = params.get("brightness").and_then(Value::as_u64)
     {
@@ -465,9 +446,6 @@ pub(super) async fn handle_set_color_with_state(
     } else {
         None
     };
-    let previous_effect = active_primary_effect(state)
-        .await
-        .map(|(_, effect)| effect_ref(&effect));
     let mut controls = HashMap::from([(
         "color".to_owned(),
         ControlValue::Color([
@@ -480,48 +458,20 @@ pub(super) async fn handle_set_color_with_state(
     if let Some(brightness) = brightness {
         controls.insert("brightness".to_owned(), ControlValue::Float(brightness));
     }
-    let full_scope_layout = resolve_full_scope_layout(state).await;
-    let coordinator = scene_store_coordinator(state).await;
-    let (scene_id, group, change_kind, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
-        let change_kind = if scene_manager
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .is_some()
-        {
-            ZoneChangeKind::Updated
-        } else {
-            ZoneChangeKind::Created
-        };
-        let rollback = scene_manager.clone();
-        let group = scene_manager
-            .upsert_primary_group(&solid_effect, controls.clone(), None, full_scope_layout)
-            .map_err(|error| {
-                ToolError::Internal(format!(
-                    "failed to update active scene primary group: {error}"
-                ))
-            })?
-            .clone();
-        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-        (scene_id, group, change_kind, pending)
-    };
-    save_admitted_scene_store_snapshot(state, pending)
-        .await
-        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-    state.event_bus.publish(HypercolorEvent::EffectStarted {
-        effect: effect_ref(&solid_effect),
-        trigger: ChangeTrigger::Mcp,
-        previous: previous_effect,
-        transition: None,
-        group_id: Some(group.id),
-        group_name: Some(group.name.clone()),
-    });
-    publish_render_group_changed(state, scene_id, &group, change_kind);
-    let applied_layout = apply_associated_layout(state, &solid_effect.id.to_string()).await;
-    save_runtime_session_snapshot(state).await;
+
+    let applied = apply_effect(
+        state,
+        ApplyEffect {
+            effect_id: solid_effect.id,
+            controls: controls.clone(),
+            preset_id: None,
+            target_zone: None,
+            transition: RequestedTransition::of_duration(transition_ms),
+        },
+        MutationContext::mcp(),
+    )
+    .await?;
+    persistence_failure(&applied.commit)?;
 
     let device_count = state.device_registry.len().await;
     Ok(json!({
@@ -538,6 +488,6 @@ pub(super) async fn handle_set_color_with_state(
         "applied_controls": controls,
         "device_count": device_count,
         "warnings": [],
-        "layout": applied_layout
+        "layout": applied.applied_layout
     }))
 }
