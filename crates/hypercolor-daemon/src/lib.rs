@@ -24,6 +24,7 @@ pub mod logical_devices;
 pub mod mcp;
 pub mod mdns;
 pub mod network;
+pub mod path_migration;
 pub mod performance;
 pub mod persistence;
 pub mod playlist_runtime;
