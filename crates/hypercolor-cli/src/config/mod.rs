@@ -92,7 +92,18 @@ pub fn config_path() -> PathBuf {
     if let Ok(path) = std::env::var("HYPERCOLOR_CLI_CONFIG") {
         return PathBuf::from(path);
     }
-    hypercolor_core::config::paths::config_dir().join(CONFIG_FILE_NAME)
+    resolve_config_path(Some(hypercolor_core::config::paths::config_dir()))
+        .expect("a resolved config directory always yields a config file path")
+}
+
+/// Place the CLI config file inside a resolved config directory.
+///
+/// Split out from [`config_path`] so the unresolvable case is reachable from a
+/// test: without a directory this must yield nothing rather than fabricate a
+/// relative path. The environment half cannot be driven directly because
+/// edition 2024 makes `std::env::set_var` unsafe and this crate forbids it.
+fn resolve_config_path(config_dir: Option<PathBuf>) -> Option<PathBuf> {
+    Some(config_dir?.join(CONFIG_FILE_NAME))
 }
 
 /// Load the CLI config from disk. Returns default config if file doesn't exist.
@@ -203,13 +214,18 @@ pub fn resolve_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::{CONFIG_FILE_NAME, config_path};
+    use super::{CONFIG_FILE_NAME, config_path, resolve_config_path};
 
     /// The env override is caller-owned and cannot be cleared from a test:
     /// edition 2024 makes `std::env::set_var` unsafe and `unsafe_code` is
     /// forbidden here, so tests of the resolved default skip when it is set.
     fn env_override_active() -> bool {
         std::env::var_os("HYPERCOLOR_CLI_CONFIG").is_some()
+    }
+
+    #[test]
+    fn unresolvable_config_dir_yields_no_path() {
+        assert_eq!(resolve_config_path(None), None);
     }
 
     #[test]

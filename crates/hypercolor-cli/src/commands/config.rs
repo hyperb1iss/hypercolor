@@ -1,5 +1,7 @@
 //! `hyper config` -- configuration management (daemon config + CLI profiles).
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
@@ -275,10 +277,21 @@ fn config_file_path() -> String {
         return path;
     }
 
-    hypercolor_core::config::paths::config_dir()
-        .join(DAEMON_CONFIG_FILE_NAME)
+    resolve_daemon_config_path(Some(hypercolor_core::config::paths::config_dir()))
+        .expect("a resolved config directory always yields a config file path")
         .to_string_lossy()
         .into_owned()
+}
+
+/// Place the daemon config file inside a resolved config directory.
+///
+/// Split out from [`config_file_path`] so the unresolvable case is reachable
+/// from a test: without a directory this must yield nothing rather than
+/// fabricate a relative path. The environment half cannot be driven directly
+/// because edition 2024 makes `std::env::set_var` unsafe and this crate
+/// forbids it.
+fn resolve_daemon_config_path(config_dir: Option<PathBuf>) -> Option<PathBuf> {
+    Some(config_dir?.join(DAEMON_CONFIG_FILE_NAME))
 }
 
 // ── Profile management ──────────────────────────────────────────────────
@@ -464,7 +477,12 @@ fn profile_default(args: &ProfileDefaultArgs, ctx: &OutputContext) -> Result<()>
 mod tests {
     use std::path::Path;
 
-    use super::{DAEMON_CONFIG_FILE_NAME, config_file_path};
+    use super::{DAEMON_CONFIG_FILE_NAME, config_file_path, resolve_daemon_config_path};
+
+    #[test]
+    fn unresolvable_config_dir_yields_no_path() {
+        assert_eq!(resolve_daemon_config_path(None), None);
+    }
 
     #[test]
     fn daemon_config_path_is_absolute_and_tilde_free() {
