@@ -703,6 +703,11 @@ Before every send, `rate_gate.ready()` enforces the configured frame floor. If n
 
 ### `health_check`
 
+> **Removed (Spec 76, Phase 0):** `DeviceBackend::health_check` and `HealthStatus`
+> are deleted; the probe had zero callers. `DeviceStateMachine::on_comm_error` is
+> the future home if a real probe is ever needed. See
+> `docs/specs/76-internal-api-unification.md` §7.4.
+
 Returns `HealthStatus::Healthy` if LAN `devStatus` replied within the last 10 seconds, `Degraded` if 10-30 seconds stale, `Unreachable` beyond 30. For cloud-only devices, checks the cloud rate-limit budget and last successful call timestamp.
 
 ### `set_brightness`
