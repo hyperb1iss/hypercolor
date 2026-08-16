@@ -27,7 +27,7 @@
 
 **Position:** new workspace crate at the bottom of the graph. `hypercolor-types` depends on it and re-exports the pixel data carriers, so existing `hypercolor_types::canvas::{Rgb, Rgba}` imports keep compiling during migration.
 
-**Features:** `std` (default) · `serde` · `schema`. No `palettes` feature at introduction: `types/palette.rs` has zero consumers (verified both import paths) and is deleted in Phase 0. The crate grows a palette runtime only when a native consumer exists; `sdk/shared/palettes.json` remains the TS-side source of truth meanwhile.
+**Features:** `serde` · `schema`. The crate is std-only; a `std` feature gets minted only when a real no_std consumer exists. No `palettes` feature at introduction: `types/palette.rs` has zero consumers (verified both import paths) and is deleted in Phase 0. The crate grows a palette runtime only when a native consumer exists; `sdk/shared/palettes.json` remains the TS-side source of truth meanwhile.
 
 **Third-party stance:** no runtime dep on `palette`/`csscolorparser`. `palette` is a **dev-dependency oracle**: property tests assert every kernel matches reference math within tolerance.
 
@@ -68,7 +68,12 @@ impl LinearRgba {
     pub fn to_oklab(self) -> Oklab;
 }
 impl Oklab { pub fn to_linear(self) -> LinearRgba; pub fn lerp(self, other: Self, t: f32) -> Self; }
-impl Oklch { pub fn to_oklab(self) -> Oklab; pub fn from_oklab(lab: Oklab) -> Oklch; }
+impl Oklch {
+    pub fn to_oklab(self) -> Oklab; pub fn from_oklab(lab: Oklab) -> Oklch;
+    pub fn to_linear(self) -> LinearRgba;
+    pub fn lerp(self, other: Self, t: f32) -> Self;   // shortest-path hue arc
+}
+impl LinearRgba { pub fn to_oklch(self) -> Oklch; }
 
 pub fn srgb_to_linear(c: f32) -> f32;
 pub fn linear_to_srgb(c: f32) -> f32;
@@ -86,13 +91,13 @@ impl Rgba { pub fn from_hex(s: &str) -> Result<Rgba, ColorParseError>; }
 impl LinearRgba { pub fn from_hex_srgb(s: &str) -> Result<LinearRgba, ColorParseError>; } // parse THEN linearize
 ```
 
-Grammar: optional single `#`, then exactly 3/4/6/8 hex digits (CSS shorthand expansion). Anything else errors — no silent white/black/green fallbacks anywhere. Callers pick fallbacks explicitly.
+Grammar: optional single `#`, then exactly 3/4/6/8 hex digits (CSS shorthand expansion). Anything else errors — no silent white/black/green fallbacks anywhere. Callers pick fallbacks explicitly. Accepted digit counts are per target type: `Rgba` and `LinearRgba` take all four forms; `Rgb::from_hex` takes 3/6 only and rejects alpha-bearing forms rather than silently dropping alpha.
 
 ### 1.5 Pixel blending and device encoding
 
 ```rust
-// Pixel-kernel blend modes only — the alpha-composable subset.
-pub enum PixelBlendMode { Normal, Add, Multiply, Screen, Overlay, SoftLight, Lighten, Darken }
+// Pixel-kernel blend modes only — exactly the alpha-composable set the in-tree kernel implements.
+pub enum PixelBlendMode { Normal, Add, Screen, Multiply, Overlay, SoftLight, ColorDodge, Difference }
 impl LinearRgba {
     /// `self` is the SOURCE, blended over `dst` at `opacity`.
     pub fn blend_over(self, dst: LinearRgba, mode: PixelBlendMode, opacity: f32) -> LinearRgba;
@@ -350,7 +355,7 @@ define_ws_topics! {
     frames            { key: (),        config: FramesConfig,        codec: FramesCodec },      // owns tag 0x01
     spectrum          { key: (),        config: SpectrumConfig,      codec: SpectrumCodec },    // owns 0x02
     metrics           { key: (),        config: MetricsConfig,       codec: JsonOnly },
-    display_preview   { key: DeviceId,  config: DisplayPreviewConfig, codec: PreviewCodec },    // PreviewCodec owns its full tag SET (0x03–0x11: legacy/wide/chunk/cancel/extended)
+    display_preview   { key: DeviceId,  config: DisplayPreviewConfig, codec: PreviewCodec },    // PreviewCodec owns its full tag SET (0x03, 0x05–0x11: canvas/screen/viewport/display/zone/wide/chunk/cancel/extended; 0x04 unassigned)
     interactive_preview { key: PreviewId, config: InteractiveConfig,  codec: PreviewCodec },
     /* … */
 }
@@ -494,7 +499,7 @@ pub trait DeviceBackendFactory: Send + Sync {
 0.5 Delete `DevicePlugin` and `health_check`; delete `types/palette.rs` (zero consumers).
 0.6 Fix literal-`~` config fallback (CLI/TUI adopt `core::config::paths`).
 0.7 **REST v1 compat matrix** artifact + tests freezing current v1 shapes (pagination block, 412 bodies, legacy paths).
-0.8 **WS golden fixtures** freezing every binary tag (0x01, 0x02, 0x03–0x11) and byte layout.
+0.8 **WS golden fixtures** freezing every binary tag (0x01, 0x02, 0x03, 0x05–0x11, and the leptos-ext RPC tags 0x80/0x81; 0x04 is deliberately unassigned) and byte layout.
 0.9 **Path-migration harness** (old→new path, precedence, backup, idempotence) modeled on `driver_inventory.rs:98`.
 
 **Phase 1 — color** (after 0.3; independent otherwise)
@@ -557,3 +562,4 @@ Dependency graph: 0 → everything; **1.1 → 2.0** (the canonical ControlValue'
 - **Round 3 (2026-08-15):** certification pass over rev 3. Ledger: 11/12 round-2 items ADDRESSED; two residues, both adopted in rev 4: §4.5's canonical enum rebuilt as the typed union of both real algebras (verified against `controls.rs` — `SecretRef` reference semantics, `ColorRgb`/`ColorRgba`/`ColorLinear` identity preservation, `Ip`/`Mac`/`Duration`/unit-`Unknown`), and the missing `1.1 → 2.0` dependency edge added.
 - **Round 4 (2026-08-15):** narrow check on the two rev-4 fixes. Dependency edge PASS; §4.5 two residues fixed in rev 5: `Ip`/`Mac` become validated-string wrappers preserving original text for byte-equal round-trips, and finite-only floats documented as a wire invariant with sanitization at sensor resolution.
 - **Round 5 (2026-08-15):** final micro-check. `IpText`/`MacText` PASS; one factual correction adopted verbatim from the reviewer (serde_json emits `null` for non-finite floats rather than erroring — the invariant holds, with the corrected mechanism). **Converged: rev 5 locked.** Convergence trajectory: 29 findings → 12 → 2 → 2 sub-points → 1 factual citation.
+- **Round 6 (2026-08-16, implementation reconciliation):** corrections forced by the tree during wave 0.8 and wave 1.1, folded back so spec and code agree. §1: `std` feature dropped (std-only until a no_std consumer exists). §1.3: `Oklch::{to_linear, lerp}` and `LinearRgba::to_oklch` added — shortest-path Oklch interpolation exists in-tree and is load-bearing. §1.4: per-type accepted hex digit counts made explicit. §1.5: `PixelBlendMode` is the kernel's real alpha-composable set (`ColorDodge`/`Difference`, not the sketch's `Lighten`/`Darken`). §5/§8.2: WS tag inventory corrected to the code's enumeration (0x04 unassigned; RPC tags 0x80/0x81 exist in leptos-ext and are frozen).
