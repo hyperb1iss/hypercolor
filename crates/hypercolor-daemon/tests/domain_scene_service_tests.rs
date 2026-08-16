@@ -13,27 +13,27 @@ use std::time::SystemTime;
 use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
     EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
-use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind, ZoneChangeKind};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
     SceneLayerId,
 };
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
-    ZoneRole,
+    ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
+    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, ZoneRole,
 };
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
 use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::domain::commit::CommitDurability;
 use hypercolor_daemon::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
-use hypercolor_daemon::domain::scene::{ActivateScene, activate_scene, commit_scene};
+use hypercolor_daemon::domain::scene::{
+    ActivateScene, CreateScene, UpdateScene, activate_scene, commit_scene, create_scene,
+    deactivate_scene, delete_scene, update_scene,
+};
 use hypercolor_daemon::domain::{DomainError, MutationContext};
 
 // ── Harness ──────────────────────────────────────────────────────────────
@@ -129,28 +129,6 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
         bindings: Vec::new(),
         enabled: true,
     }
-}
-
-/// A display-face zone bound to `device`, for exercising the runtime
-/// default display groups.
-fn face_zone(device: DeviceId) -> Zone {
-    let layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 640,
-        canvas_height: 480,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-    let mut zone = hypercolor_core::scene::default_primary_group(layout);
-    zone.id = ZoneId::new();
-    zone.role = ZoneRole::Display;
-    zone.display_target = Some(DisplayFaceTarget::new(device));
-    zone
 }
 
 fn apply_command(effect: &EffectMetadata) -> ApplyEffect {
@@ -502,214 +480,6 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
 /// Divergence against the pristine base turns that into a retryable
 /// conflict, and the direct write survives.
 #[tokio::test]
-async fn a_direct_scene_write_inside_the_window_conflicts_and_survives() {
-    let (state, _tempdir) = isolated_state();
-    let metadata = test_effect_metadata("aurora");
-    insert_effect(&state, &metadata).await;
-    let layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
-    };
-
-    let mut mutation = state.begin_scene_mutation().await;
-    mutation
-        .upsert_primary_zone(&metadata, HashMap::new(), None, layout)
-        .expect("candidate mutation should apply");
-
-    // A writer that never touches the revision lands mid-window.
-    let interloper = named_scene("interloper");
-    let interloper_id = interloper.id;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create(interloper)
-            .expect("the direct write should land");
-    }
-
-    let error = commit_scene(&state, mutation)
-        .await
-        .expect_err("a candidate that would discard a concurrent write must be refused");
-    match error {
-        DomainError::Conflict { message } => assert!(
-            message.contains("concurrent writer"),
-            "the conflict should name why: {message}"
-        ),
-        other => panic!("expected Conflict, got {other:?}"),
-    }
-
-    let manager = state.scene_manager.read().await;
-    assert!(
-        manager.get(&interloper_id).is_some(),
-        "the direct write must survive the refused commit"
-    );
-    assert!(
-        manager
-            .active_scene()
-            .and_then(Scene::primary_group)
-            .and_then(|zone| zone.effect_id)
-            .is_none(),
-        "the refused candidate must not have installed its effect"
-    );
-}
-
-/// Each comparand member exists because some direct writer can move it
-/// *alone*, so each case moves only its member and must still conflict.
-/// Removing that member from the comparand makes its case commit, with
-/// the concurrent work erased — verified by reverting each one.
-///
-/// Isolation is the whole point and it takes setup. A shadowed stack
-/// entry needs a higher-priority winner already in place, since the
-/// default scene sits at `AMBIENT` and an equal-priority push would tie
-/// rather than shadow. A hidden default display group needs the active
-/// scene to already own a display zone for that device with an effect
-/// loaded, because otherwise `set_default_display_group` refreshes the
-/// resolved zones and the revision and the zone contents both move too.
-#[tokio::test]
-async fn every_comparand_member_catches_a_writer_that_moves_only_it() {
-    struct Case {
-        name: &'static str,
-        device: Option<DeviceId>,
-        mutate: fn(&mut hypercolor_core::scene::SceneManager, Option<DeviceId>),
-    }
-
-    let cases = [
-        Case {
-            name: "shadowed priority stack entry",
-            device: None,
-            mutate: |manager, _| {
-                // Below the active USER scene, so the winner and the
-                // active scene id are both unchanged.
-                manager
-                    .priority_stack_mut()
-                    .push(SceneId::new(), ScenePriority::AMBIENT);
-            },
-        },
-        Case {
-            name: "render group invalidation",
-            device: None,
-            // Bumps the counter without changing the resolved zones, so
-            // only the number can catch it.
-            mutate: |manager, _| manager.invalidate_active_render_groups(),
-        },
-        Case {
-            name: "hidden runtime default display group",
-            device: Some(DeviceId::new()),
-            mutate: |manager, device| {
-                let device = device.expect("this case supplies a device");
-                let mut zone = face_zone(device);
-                zone.name = "hidden default".to_owned();
-                manager.set_default_display_group(zone);
-            },
-        },
-    ];
-
-    for case in cases {
-        let (state, _tempdir) = isolated_state();
-        let metadata = test_effect_metadata("aurora");
-        insert_effect(&state, &metadata).await;
-        let layout = {
-            let spatial = state.spatial_engine.read().await;
-            spatial.layout().as_ref().clone()
-        };
-
-        // A USER-priority scene becomes the winner, and it owns a
-        // display zone with an effect for the case that needs one
-        // covered.
-        let mut scene = named_scene("evening");
-        if let Some(device) = case.device {
-            let mut covering = face_zone(device);
-            covering.effect_id = Some(metadata.id);
-            scene.groups.push(covering);
-        }
-        let scene_id = scene.id;
-        {
-            let mut manager = state.scene_manager.write().await;
-            manager.create(scene).expect("scene should be created");
-        }
-        activate_scene(
-            &state,
-            ActivateScene {
-                scene_id,
-                transition: None,
-            },
-            MutationContext::api(),
-        )
-        .await
-        .expect("setup activation should succeed");
-
-        let mut mutation = state.begin_scene_mutation().await;
-        mutation
-            .upsert_primary_zone(&metadata, HashMap::new(), None, layout)
-            .expect("candidate mutation should apply");
-
-        {
-            let mut manager = state.scene_manager.write().await;
-            (case.mutate)(&mut manager, case.device);
-        }
-
-        let error = match commit_scene(&state, mutation).await {
-            Ok(commit) => panic!(
-                "{} must be seen as divergence, but the commit landed: {commit:?}",
-                case.name
-            ),
-            Err(error) => error,
-        };
-        assert!(
-            matches!(error, DomainError::Conflict { .. }),
-            "{} should conflict, got {error:?}",
-            case.name
-        );
-    }
-}
-
-/// A transition ticks the manager under a write lock on every frame, so
-/// the bridge must not read render-local progress as divergence.
-#[tokio::test]
-async fn ticking_a_transition_is_not_divergence() {
-    let (state, _tempdir) = isolated_state();
-    let metadata = test_effect_metadata("aurora");
-    insert_effect(&state, &metadata).await;
-
-    let scene = named_scene("evening");
-    let scene_id = scene.id;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(scene).expect("scene should be created");
-    }
-    activate_scene(
-        &state,
-        ActivateScene {
-            scene_id,
-            transition: None,
-        },
-        MutationContext::api(),
-    )
-    .await
-    .expect("first activation should succeed");
-
-    let layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
-    };
-    let mut mutation = state.begin_scene_mutation().await;
-    mutation
-        .upsert_primary_zone(&metadata, HashMap::new(), None, layout)
-        .expect("candidate mutation should apply");
-
-    // Exactly what the render thread does each frame while a transition
-    // is running.
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.tick_transition(0.016);
-    }
-
-    let commit = commit_scene(&state, mutation)
-        .await
-        .expect("frame-local transition progress is not a competing write");
-    assert_eq!(commit.durability(), CommitDurability::Written);
-}
-
-#[tokio::test]
 async fn a_rejected_candidate_leaves_the_live_state_untouched() {
     let (state, _tempdir) = isolated_state();
     let metadata = test_effect_metadata("aurora");
@@ -836,4 +606,493 @@ async fn commit_generations_advance_the_scene_revision_in_order() {
         generations.windows(2).all(|pair| pair[0] < pair[1]),
         "generations must be strictly increasing: {generations:?}"
     );
+}
+
+// ── Scene library CRUD ───────────────────────────────────────────────────
+
+fn create_command(name: &str) -> CreateScene {
+    CreateScene {
+        name: name.to_owned(),
+        description: Some(format!("{name} scene")),
+        enabled: None,
+        mutation_mode: None,
+        metadata: HashMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn create_scene_seeds_a_default_zone_and_announces_the_scene() {
+    let (state, _tempdir) = isolated_state();
+    let mut events = state.event_bus.subscribe_all();
+
+    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+        .await
+        .expect("scene should be created");
+
+    assert_eq!(created.scene.name, "evening");
+    assert!(created.scene.enabled);
+    assert_eq!(created.scene.mutation_mode, SceneMutationMode::Live);
+    assert_eq!(
+        created.scene.groups.len(),
+        1,
+        "every scene is born with a Default zone to select"
+    );
+    assert_eq!(created.scene.groups[0].role, ZoneRole::Primary);
+    assert_eq!(created.commit.durability(), CommitDurability::Written);
+
+    let manager = state.scene_manager.read().await;
+    assert!(manager.get(&created.scene.id).is_some());
+    drop(manager);
+
+    assert_eq!(
+        library_events(&mut events),
+        vec![(created.scene.id, SceneLibraryChangeKind::Created)]
+    );
+}
+
+/// MCP used to mint scenes with no zones and announce nothing, so a
+/// scene created through the tool was unselectable in Studio and
+/// invisible to every event-driven client until a refetch. One service
+/// means one behavior.
+#[tokio::test]
+async fn create_scene_behaves_identically_for_both_transports() {
+    let (state, _tempdir) = isolated_state();
+
+    let via_api = create_scene(&state, create_command("api-made"), MutationContext::api())
+        .await
+        .expect("api create should succeed");
+    let via_mcp = create_scene(&state, create_command("mcp-made"), MutationContext::mcp())
+        .await
+        .expect("mcp create should succeed");
+
+    assert_eq!(via_api.scene.groups.len(), via_mcp.scene.groups.len());
+    assert_eq!(via_api.scene.kind, via_mcp.scene.kind);
+    assert_eq!(via_api.scene.priority, via_mcp.scene.priority);
+    assert_eq!(
+        via_api.scene.transition.duration_ms,
+        via_mcp.scene.transition.duration_ms
+    );
+}
+
+#[tokio::test]
+async fn create_scene_carries_adapter_metadata_onto_the_scene() {
+    let (state, _tempdir) = isolated_state();
+    let mut command = create_command("triggered");
+    command.metadata = HashMap::from([("trigger_type".to_owned(), "sunset".to_owned())]);
+    command.mutation_mode = Some(SceneMutationMode::Snapshot);
+    command.enabled = Some(false);
+
+    let created = create_scene(&state, command, MutationContext::mcp())
+        .await
+        .expect("scene should be created");
+
+    assert_eq!(
+        created
+            .scene
+            .metadata
+            .get("trigger_type")
+            .map(String::as_str),
+        Some("sunset")
+    );
+    assert_eq!(created.scene.mutation_mode, SceneMutationMode::Snapshot);
+    assert!(!created.scene.enabled);
+}
+
+#[tokio::test]
+async fn update_scene_rewrites_the_named_fields_and_keeps_the_rest() {
+    let (state, _tempdir) = isolated_state();
+    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+        .await
+        .expect("scene should be created");
+    let mut events = state.event_bus.subscribe_all();
+
+    let updated = update_scene(
+        &state,
+        UpdateScene {
+            scene_id: created.scene.id,
+            name: "midnight".to_owned(),
+            description: None,
+            enabled: Some(false),
+            mutation_mode: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("scene should update");
+
+    assert_eq!(updated.scene.name, "midnight");
+    assert!(!updated.scene.enabled);
+    assert_eq!(updated.scene.mutation_mode, created.scene.mutation_mode);
+    assert_eq!(
+        updated.scene.groups.len(),
+        created.scene.groups.len(),
+        "an update must not drop the scene's zones"
+    );
+    assert_eq!(
+        library_events(&mut events),
+        vec![(created.scene.id, SceneLibraryChangeKind::Updated)]
+    );
+}
+
+#[tokio::test]
+async fn update_scene_refuses_an_unknown_scene() {
+    let (state, _tempdir) = isolated_state();
+    let error = update_scene(
+        &state,
+        UpdateScene {
+            scene_id: SceneId::new(),
+            name: "ghost".to_owned(),
+            description: None,
+            enabled: None,
+            mutation_mode: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect_err("an unknown scene has nothing to update");
+    assert!(
+        matches!(error, DomainError::NotFound { .. }),
+        "expected NotFound, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_scene_deactivates_it_and_announces_both_changes() {
+    let (state, _tempdir) = isolated_state();
+    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+        .await
+        .expect("scene should be created");
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id: created.scene.id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("scene should activate");
+    let mut events = state.event_bus.subscribe_all();
+
+    let deleted = delete_scene(&state, created.scene.id, MutationContext::api())
+        .await
+        .expect("scene should be deleted");
+
+    assert_eq!(deleted.scene.id, created.scene.id);
+    assert_eq!(deleted.previous_scene_id, Some(created.scene.id));
+    assert_eq!(
+        deleted.current_scene.as_ref().map(|scene| scene.id),
+        Some(SceneId::DEFAULT),
+        "deleting the active scene must fall back to Default"
+    );
+
+    let manager = state.scene_manager.read().await;
+    assert!(manager.get(&created.scene.id).is_none());
+    drop(manager);
+
+    let seen = drain_events(&mut events);
+    assert!(
+        seen.iter()
+            .any(|event| matches!(event, HypercolorEvent::ActiveSceneChanged { .. })),
+        "the fallback to Default must be announced: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            HypercolorEvent::SceneLibraryChanged {
+                kind: SceneLibraryChangeKind::Deleted,
+                ..
+            }
+        )),
+        "the removal must be announced: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_scene_refuses_the_default_scene() {
+    let (state, _tempdir) = isolated_state();
+    let error = delete_scene(&state, SceneId::DEFAULT, MutationContext::api())
+        .await
+        .expect_err("the default scene is not deletable");
+    assert!(
+        matches!(error, DomainError::Conflict { .. }),
+        "expected Conflict, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn deactivate_scene_returns_to_default_and_reports_both_ends() {
+    let (state, _tempdir) = isolated_state();
+    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+        .await
+        .expect("scene should be created");
+    activate_scene(
+        &state,
+        ActivateScene {
+            scene_id: created.scene.id,
+            transition: None,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect("scene should activate");
+
+    let deactivated = deactivate_scene(&state, MutationContext::api())
+        .await
+        .expect("deactivation should succeed");
+
+    assert_eq!(
+        deactivated.previous_scene.map(|scene| scene.id),
+        Some(created.scene.id)
+    );
+    assert_eq!(
+        deactivated.current_scene.map(|scene| scene.id),
+        Some(SceneId::DEFAULT)
+    );
+    let manager = state.scene_manager.read().await;
+    assert_eq!(manager.active_scene_id().copied(), Some(SceneId::DEFAULT));
+}
+
+fn drain_events(
+    receiver: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<HypercolorEvent> {
+    let mut seen = Vec::new();
+    while let Ok(timestamped) = receiver.try_recv() {
+        seen.push(timestamped.event);
+    }
+    seen
+}
+
+fn library_events(
+    receiver: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<(SceneId, SceneLibraryChangeKind)> {
+    drain_events(receiver)
+        .into_iter()
+        .filter_map(|event| match event {
+            HypercolorEvent::SceneLibraryChanged { scene_id, kind, .. } => Some((scene_id, kind)),
+            _ => None,
+        })
+        .collect()
+}
+
+// ── The commit path is the only scene writer ─────────────────────────────
+
+/// The revision compare-and-swap in `commit_scene` only sees commits: it
+/// advances in `SceneCommitSequencer::admit`, which nothing but
+/// `commit_scene` calls. A site that takes `scene_manager.write()`
+/// directly therefore moves live scene state without moving the
+/// revision, and because the commit installs a whole manager, such a
+/// write landing inside a candidate's window is discarded with no error
+/// to either caller. That is the lost-update class this wave closed, and
+/// the fence is structural: reproducing it behaviorally would mean
+/// racing a commit against a hand-rolled writer that no longer exists,
+/// so the property is pinned against the sources instead.
+///
+/// Three writers are accounted for, each with a reason it cannot commit:
+///
+/// - `render_thread/scene_snapshot.rs` ticks transition progress every
+///   frame. Committing it would mint a scene revision per frame and
+///   invalidate every in-flight candidate, and progress is render-local
+///   state no commit means to own. The reverse direction has a bounded
+///   window — a candidate cloned before a tick and swapped in after it
+///   rewinds progress by the clone-to-commit delta — which the next tick
+///   re-advances, and which §6.1 closes by moving progress out of the
+///   manager entirely.
+/// - `scene_transactions.rs` publishes a prepared layout at the frame
+///   boundary, holding the scene lock and the spatial lock together so
+///   the renderer never sees a layout and a zone set that disagree.
+///   `commit_scene` takes neither the spatial lock nor an `AppState` the
+///   render thread can reach; Spec 76 §6.1 re-points commit at this
+///   transaction rather than the reverse.
+/// - `startup/lifecycle.rs` holds three, of different kinds. Two are
+///   pre-init: both halves of the persisted-session restore run inside
+///   `DaemonState::initialize`, before the render thread starts and
+///   before the API binds. The third is post-teardown: shutdown's
+///   deactivate runs after the render thread has been awaited out, so
+///   the one cadence reader of scene state is already gone. None can
+///   build an `AppState` — `from_daemon_state` requires a live input
+///   publication pump, which exists in neither phase — and none has a
+///   competing writer to order against.
+///
+/// A fourth entry means some new site can silently discard a commit —
+/// or be discarded by one. Route it through `commit_scene` instead of
+/// widening this list, unless it genuinely belongs to one of the three
+/// reasons above.
+///
+/// This scan matches the receiver by name, so it fences the idiom the
+/// tree actually uses rather than the type system. A future writer that
+/// binds the handle to a differently named local slips past it, which is
+/// why `the_scene_manager_handle_stays_where_it_is` pins the set of
+/// modules that can reach the handle at all: gaining one is the review
+/// event. The durable fence is Spec 76 §6.3's manager idiom, which moves
+/// the lock inside a `SceneService` and makes the write lock
+/// unreachable from outside the domain.
+#[test]
+fn no_scene_writer_lives_outside_the_commit_path() {
+    /// Every file allowed to take the scene write lock, and how many
+    /// times, in production code.
+    const EXPECTED: [(&str, usize); 4] = [
+        ("domain/scene.rs", 1),                 // commit_scene's install
+        ("render_thread/scene_snapshot.rs", 1), // per-frame transition tick
+        ("scene_transactions.rs", 1),           // frame-boundary layout publish
+        ("startup/lifecycle.rs", 3),            // restore x2, shutdown deactivate
+    ];
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found: Vec<(String, usize)> = Vec::new();
+    let mut pending = vec![src.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("source directory reads") {
+            let path = entry.expect("source entry reads").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(&src)
+                .expect("paths are under src")
+                .to_string_lossy()
+                .replace('\\', "/");
+            // `#[cfg(test)] mod tests` is the tail of every file that has
+            // one, and a test that drives the manager directly is not a
+            // production writer. `scene_transactions/tests.rs` is such a
+            // module in its own file.
+            if relative.ends_with("/tests.rs") || relative == "tests.rs" {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("source file reads");
+            let count = scene_write_lock_sites(&source);
+            if count > 0 {
+                found.push((relative, count));
+            }
+        }
+    }
+    found.sort();
+
+    let mut expected = EXPECTED
+        .iter()
+        .map(|(file, count)| ((*file).to_owned(), *count))
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every scene write lock outside commit_scene can silently discard a \
+         concurrent commit; route the new site through commit_scene"
+    );
+}
+
+/// Which modules can reach the scene handle at all.
+///
+/// A write lock has to come from somewhere, and every path to one starts
+/// with an `Arc<RwLock<SceneManager>>` in scope. Nine modules name the
+/// type; five of them only ever read or forward it, and pinning the set
+/// means a tenth cannot appear without a reviewer seeing it — including
+/// the case the sibling scan is blind to, where a new module binds the
+/// handle to a local named anything at all.
+///
+/// Widening this list is a decision about who may touch scene state, not
+/// a formality. Prefer handing the new module a domain service.
+#[test]
+fn the_scene_manager_handle_stays_where_it_is() {
+    const EXPECTED: [&str; 9] = [
+        "api/mod.rs",                  // AppState's field
+        "discovery/mod.rs",            // reads the active scene's targets
+        "interactive_preview.rs",      // reads zones for preview routing
+        "network/host.rs",             // forwards the handle to drivers
+        "render_thread.rs",            // render-thread state
+        "scene_transactions.rs",       // frame-boundary layout publish
+        "scene_transactions/tests.rs", // that transaction's own tests
+        "startup/discovery_worker.rs", // forwards the handle
+        "startup/mod.rs",              // DaemonState's field
+    ];
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut pending = vec![src.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("source directory reads") {
+            let path = entry.expect("source entry reads").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            if std::fs::read_to_string(&path)
+                .expect("source file reads")
+                .contains("RwLock<SceneManager>")
+            {
+                found.push(
+                    path.strip_prefix(&src)
+                        .expect("paths are under src")
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    found.sort();
+
+    let mut expected = EXPECTED.map(ToOwned::to_owned).to_vec();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "a module that holds the scene handle can take the write lock under any local name,          which the write-site scan cannot see; hand it a domain service instead"
+    );
+}
+
+/// Count `scene_manager.write()` acquisitions in one file's production
+/// source, ignoring comments and tolerating the rustfmt line breaks that
+/// split the receiver from the call.
+///
+/// `#[cfg(test)] mod` blocks are dropped first: a test that drives the
+/// manager directly races nothing. They are dropped as blocks rather
+/// than by truncating at the first one, because several files carry a
+/// test module in the middle and a truncating scan would go blind to
+/// every writer below it — which is exactly where `api/mod.rs` keeps
+/// two. The block's end is the closing brace at the attribute's own
+/// indentation, which rustfmt guarantees and `just fmt-check` enforces.
+fn scene_write_lock_sites(source: &str) -> usize {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut production: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let is_test_module = line.trim() == "#[cfg(test)]"
+            && lines
+                .get(index + 1)
+                .is_some_and(|next| next.trim_start().starts_with("mod "));
+        if !is_test_module {
+            production.push(line);
+            index += 1;
+            continue;
+        }
+
+        let declaration = lines[index + 1];
+        if declaration.trim_end().ends_with(';') {
+            // `mod tests;` — the block lives in its own file.
+            index += 2;
+            continue;
+        }
+        let indent = &line[..line.len() - line.trim_start().len()];
+        let closing = format!("{indent}}}");
+        index += 2;
+        while index < lines.len() && lines[index] != closing {
+            index += 1;
+        }
+        index += 1;
+    }
+
+    let code = production
+        .iter()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let collapsed = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.matches("scene_manager.write()").count()
+        + collapsed.matches("scene_manager .write()").count()
 }

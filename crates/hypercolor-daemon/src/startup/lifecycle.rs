@@ -390,6 +390,20 @@ impl DaemonState {
         }
 
         // 6. Scene manager — deactivate current scene.
+        //
+        // POST-TEARDOWN WRITER (Spec 76 §2.3), and the only one of this
+        // file's three that is not pre-init. Step 2 above already
+        // awaited the render thread's exit, so by here the one thread
+        // that reads scene state on a cadence is gone and every durable
+        // store has flushed — there is nothing left to race and nothing
+        // left to observe the result, which is dropped with the manager
+        // a few lines later.
+        //
+        // It could not commit regardless: the commit path needs an
+        // `AppState`, and `from_daemon_state` requires a live input
+        // publication pump that stopped with the render thread. It
+        // routes through the commit path once §6.4 gives scene services
+        // a context narrower than `AppState`.
         {
             let mut scene_guard = self.scene_manager.write().await;
             scene_guard.deactivate_current();
@@ -492,6 +506,9 @@ impl DaemonState {
                 match SpatialEngine::try_new(layout.clone()) {
                     Ok(prepared) => {
                         *self.spatial_engine.write().await = prepared;
+                        // PRE-INIT WRITER (1 of 2) — see
+                        // `apply_runtime_session_snapshot` for the reasoning
+                        // both restore writers share.
                         self.scene_manager
                             .write()
                             .await
@@ -526,6 +543,19 @@ impl DaemonState {
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
 
+        // PRE-INIT WRITER (2 of 2, Spec 76 §2.3). Both restore writers
+        // run inside `DaemonState::initialize`, before the render thread
+        // starts and before the API server binds, so nothing else can be
+        // committing and there is no competing writer for the commit
+        // sequencer to order against. The third scene writer in this
+        // file is the shutdown deactivate, which is post-teardown rather
+        // than pre-init.
+        //
+        // Neither can use the commit path regardless:
+        // `AppState::from_daemon_state` requires a live input
+        // publication pump, which does not exist yet. They route through
+        // the commit path once §6.4 gives scene services a context
+        // narrower than `AppState`.
         {
             let mut scene_manager = self.scene_manager.write().await;
             if !snapshot.default_scene_groups.is_empty() {
@@ -563,16 +593,12 @@ impl DaemonState {
         }
         if let Some(current_active_scene) = self.scene_manager.read().await.active_scene().cloned()
         {
-            let current_snapshot_locked = current_active_scene.blocks_runtime_mutation();
-            self.event_bus.publish(HypercolorEvent::ActiveSceneChanged {
-                previous: None,
-                current: current_active_scene.id,
-                current_name: current_active_scene.name,
-                current_kind: current_active_scene.kind,
-                current_mutation_mode: current_active_scene.mutation_mode,
-                current_snapshot_locked,
-                reason: SceneChangeReason::DaemonStart,
-            });
+            self.event_bus
+                .publish(crate::domain::scene::active_scene_changed_event(
+                    None,
+                    &current_active_scene,
+                    SceneChangeReason::DaemonStart,
+                ));
         }
 
         if !snapshot.default_scene_groups.is_empty() || requested_active_scene_id.is_some() {
@@ -589,7 +615,10 @@ impl DaemonState {
     async fn spawn_effect_watcher(&mut self) {
         let registry = Arc::clone(&self.effect_registry);
         let event_bus = Arc::clone(&self.event_bus);
-        let scene_manager = Arc::clone(&self.scene_manager);
+        // The reload invalidates the active scene's resolved zones, which
+        // is a scene commit and therefore needs the shared sequencer, not
+        // a bare handle on the manager.
+        let watcher_state = AppState::from_daemon_state(self);
 
         let search_paths = {
             let reg = self.effect_registry.read().await;
@@ -624,8 +653,10 @@ impl DaemonState {
                 };
 
                 if report.added > 0 || report.removed > 0 || report.updated > 0 {
-                    let mut scene_manager = scene_manager.write().await;
-                    scene_manager.invalidate_active_render_groups();
+                    crate::api::effects::invalidate_active_render_groups_after_effect_registry_update(
+                        &watcher_state,
+                    )
+                    .await;
                 }
 
                 event_bus.publish(
@@ -759,7 +790,7 @@ impl DaemonState {
                         warn!(
                             effect_id,
                             fallback_policy = ?policy,
-                            reason = %fallback_error.message("applying an effect error fallback"),
+                            reason = %fallback_error,
                             "Failed to apply effect-error fallback"
                         );
                     }

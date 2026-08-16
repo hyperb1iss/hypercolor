@@ -22,10 +22,7 @@ use crate::api::devices;
 use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope::ApiResponse;
 use crate::api::envelope::{ApiError, into_v1_response};
-use crate::api::{
-    active_scene_id_for_runtime_mutation, admit_scene_store_snapshot, publish_render_group_changed,
-    save_admitted_scene_store_snapshot, scene_store_coordinator,
-};
+use crate::api::publish_render_group_changed;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -190,48 +187,13 @@ pub(crate) async fn sync_active_display_surfaces(state: &Arc<AppState>) -> bool 
         return false;
     }
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let mut scene_manager = state.scene_manager.write().await;
-    let Some(active_scene) = scene_manager.active_scene() else {
-        return false;
-    };
-    if active_scene.blocks_runtime_mutation() {
-        return false;
-    }
-
-    let rollback = scene_manager.clone();
-    let mut changed = false;
-    for (device_id, device_name, layout) in displays {
-        let before_revision = scene_manager
-            .active_scene()
-            .map_or(0, |scene| scene.groups_revision);
-        if let Err(error) =
-            scene_manager.ensure_display_group_surface(device_id, device_name.as_str(), layout)
-        {
-            warn!(%error, %device_id, "Failed to sync display screen surface");
-            continue;
-        }
-        let after_revision = scene_manager
-            .active_scene()
-            .map_or(before_revision, |scene| scene.groups_revision);
-        changed |= after_revision != before_revision;
-    }
-
-    if !changed {
-        return false;
-    }
-    let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-        Ok(pending) => pending,
+    match crate::domain::display::sync_display_surfaces(state.as_ref(), displays).await {
+        Ok(changed) => changed,
         Err(error) => {
-            warn!(%error, "Failed to prepare display surface persistence");
-            return false;
+            warn!(%error, "Failed to sync display surfaces");
+            false
         }
-    };
-    drop(scene_manager);
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        warn!(%error, "Failed to persist display surfaces; retry remains active");
     }
-    true
 }
 
 /// `GET /api/v1/displays/{id}/preview.jpg` — latest composited frame for a display.
@@ -414,76 +376,38 @@ pub async fn set_display_face(
         let store = state.display_preferences.read().await;
         store.get(device_id).is_some()
     };
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, response, change_kind, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let active_scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("assigning a display face"),
-        };
-        let change_kind = if scene_manager
-            .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
-            .is_some()
-        {
-            ZoneChangeKind::Updated
-        } else {
-            ZoneChangeKind::Created
-        };
-        let rollback = scene_manager.clone();
-        let group = match scene_manager.upsert_display_group(
+
+    let written = match crate::domain::display::set_display_face(
+        state.as_ref(),
+        crate::domain::display::SetDisplayFace {
             device_id,
-            tracked.info.name.as_str(),
-            &effect,
-            body.controls,
-            display_face_layout(device_id, tracked.info.name.as_str(), surface),
-        ) {
-            Ok(group) => group.clone(),
-            Err(error) => {
-                return ApiError::internal(format!("Failed to update active scene: {error}"));
-            }
-        };
-        let Some(group) = scene_manager.patch_display_group_target(
-            group.id,
-            Some(display_target.blend_mode),
-            Some(display_target.opacity),
-        ) else {
-            return ApiError::internal("Failed to update display face composition");
-        };
-
-        let response_group = if composition_explicit {
-            group.clone()
-        } else {
-            compact_display_face_assignment_group(group.clone())
-        };
-
-        let result = (
-            active_scene_id,
-            DisplayFaceResponse {
-                default_assigned,
-                device_id: device_id.to_string(),
-                effect,
-                group: response_group,
-                live_scope: DisplayFaceScope::Scene,
-                scene_assigned: true,
-                scene_id: active_scene_id.to_string(),
-            },
-            change_kind,
-        );
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (result.0, result.1, result.2, pending)
+            device_name: tracked.info.name.clone(),
+            effect: effect.clone(),
+            controls: body.controls,
+            layout: display_face_layout(device_id, tracked.info.name.as_str(), surface),
+            target: display_target,
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        Ok(written) => written,
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
-    }
 
-    publish_render_group_changed(state.as_ref(), scene_id, &response.group, change_kind);
-    crate::api::persist_runtime_session(&state).await;
-
-    ApiResponse::ok(response)
+    ApiResponse::ok(DisplayFaceResponse {
+        default_assigned,
+        device_id: device_id.to_string(),
+        effect,
+        group: if composition_explicit {
+            written.zone
+        } else {
+            compact_display_face_assignment_group(written.zone)
+        },
+        live_scope: DisplayFaceScope::Scene,
+        scene_assigned: true,
+        scene_id: written.scene_id.to_string(),
+    })
 }
 
 /// `PATCH /api/v1/displays/{id}/face/composition` — update how the assigned
@@ -548,75 +472,43 @@ pub async fn patch_display_face_composition(
         };
     }
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, response) = {
-        let (active_scene_id, group, effect) =
-            match current_display_face_assignment(state.as_ref(), device_id).await {
-                Ok(response) => {
-                    let scene_id = response.scene_id.clone();
-                    (scene_id, response.group, response.effect)
-                }
-                Err(response) => return response,
-            };
-        let pending = {
-            let mut scene_manager = state.scene_manager.write().await;
-            if let Err(error) = active_scene_id_for_runtime_mutation(&scene_manager) {
-                return error.api_response("updating display face composition");
-            }
-            let rollback = scene_manager.clone();
-            if scene_manager
-                .patch_display_group_target(group.id, body.blend_mode, body.opacity)
-                .is_none()
-            {
-                return ApiError::not_found(format!(
-                    "No display face is assigned to device {device_id}"
-                ));
-            }
-            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-                Ok(pending) => pending,
-                Err(error) => {
-                    return ApiError::internal(format!("Failed to persist scene: {error}"));
-                }
-            }
-        };
-        if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-            return ApiError::internal(format!("Failed to persist scene: {error}"));
-        }
-        let refreshed_group = match current_display_face_assignment(state.as_ref(), device_id).await
-        {
-            Ok(response) => response.group,
-            Err(response) => return response,
-        };
-
-        (
-            active_scene_id
-                .parse::<uuid::Uuid>()
-                .map(hypercolor_types::scene::SceneId)
-                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT),
-            DisplayFaceResponse {
-                default_assigned: {
-                    let store = state.display_preferences.read().await;
-                    store.get(device_id).is_some()
-                },
-                device_id: device_id.to_string(),
-                effect,
-                group: refreshed_group,
-                live_scope: DisplayFaceScope::Scene,
-                scene_assigned: true,
-                scene_id: active_scene_id,
-            },
-        )
+    let (group, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
+        Ok(response) => (response.group, response.effect),
+        Err(response) => return response,
     };
 
-    publish_render_group_changed(
+    let written = match crate::domain::display::patch_display_composition(
         state.as_ref(),
-        scene_id,
-        &response.group,
-        ZoneChangeKind::Updated,
-    );
-    crate::api::persist_runtime_session(&state).await;
+        crate::domain::display::PatchDisplayComposition {
+            zone_id: group.id,
+            blend_mode: body.blend_mode,
+            opacity: body.opacity,
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        Ok(Some(written)) => written,
+        Ok(None) => {
+            return ApiError::not_found(format!(
+                "No display face is assigned to device {device_id}"
+            ));
+        }
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
+    };
 
-    ApiResponse::ok(response)
+    ApiResponse::ok(DisplayFaceResponse {
+        default_assigned: {
+            let store = state.display_preferences.read().await;
+            store.get(device_id).is_some()
+        },
+        device_id: device_id.to_string(),
+        effect,
+        group: written.zone,
+        live_scope: DisplayFaceScope::Scene,
+        scene_assigned: true,
+        scene_id: written.scene_id.to_string(),
+    })
 }
 
 /// `DELETE /api/v1/displays/{id}/face` — remove a face assignment.
@@ -647,24 +539,38 @@ pub async fn delete_display_face(
                 }
             }
         };
-        let (was_live, scene_id, cleared_zone) = {
-            let mut scene_manager = state.scene_manager.write().await;
-            let scene_assigned = scene_manager
+        let scene_assigned = {
+            let scene_manager = state.scene_manager.read().await;
+            scene_manager
                 .active_scene()
                 .and_then(|scene| scene.display_group_for(device_id))
-                .is_some_and(display_group_has_face_assignment);
-            let cleared = scene_manager.default_display_group_for(device_id).cloned();
-            scene_manager.remove_default_display_group(device_id);
-            let scene_id = scene_manager
-                .active_scene()
-                .map(|scene| scene.id)
-                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-            (!scene_assigned, scene_id, cleared)
+                .is_some_and(display_group_has_face_assignment)
         };
-        if was_live && let Some(mut zone) = cleared_zone {
-            zone.effect_id = None;
-            zone.layers.clear();
-            publish_render_group_changed(state.as_ref(), scene_id, &zone, ZoneChangeKind::Updated);
+        match crate::domain::display::remove_default_display_overlay(state.as_ref(), device_id)
+            .await
+        {
+            Ok(cleared) => {
+                if removed
+                    && !scene_assigned
+                    && let Some(mut zone) = cleared
+                {
+                    zone.effect_id = None;
+                    zone.layers.clear();
+                    let scene_id = {
+                        let scene_manager = state.scene_manager.read().await;
+                        scene_manager
+                            .active_scene()
+                            .map_or(hypercolor_types::scene::SceneId::DEFAULT, |scene| scene.id)
+                    };
+                    publish_render_group_changed(
+                        state.as_ref(),
+                        scene_id,
+                        &zone,
+                        ZoneChangeKind::Updated,
+                    );
+                }
+            }
+            Err(error) => return crate::domain::legacy::scene_family_error_response(error),
         }
 
         return ApiResponse::ok(serde_json::json!({
@@ -683,59 +589,24 @@ pub async fn delete_display_face(
         ));
     };
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, previous_group, cleared_group, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let active_scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("removing a display face"),
-        };
-        let rollback = scene_manager.clone();
-        let previous_group = scene_manager
-            .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
-            .cloned();
-        let layout = display_face_layout(device_id, tracked.info.name.as_str(), surface);
-        let cleared_group = match scene_manager.clear_display_group_assignment(
+    let cleared = match crate::domain::display::clear_display_face(
+        state.as_ref(),
+        crate::domain::display::ClearDisplayFace {
             device_id,
-            tracked.info.name.as_str(),
-            layout,
-        ) {
-            Ok(group) => group.clone(),
-            Err(error) => {
-                return ApiError::internal(format!("Failed to update active scene: {error}"));
-            }
-        };
-        let pending = match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-            Ok(pending) => pending,
-            Err(error) => return ApiError::internal(format!("Failed to persist scene: {error}")),
-        };
-        (active_scene_id, previous_group, cleared_group, pending)
+            device_name: tracked.info.name.clone(),
+            layout: display_face_layout(device_id, tracked.info.name.as_str(), surface),
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        Ok(cleared) => cleared,
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
     };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        return ApiError::internal(format!("Failed to persist scene: {error}"));
-    }
-
-    if previous_group.is_some() {
-        publish_render_group_changed(
-            state.as_ref(),
-            scene_id,
-            &cleared_group,
-            ZoneChangeKind::Updated,
-        );
-    } else {
-        publish_render_group_changed(
-            state.as_ref(),
-            scene_id,
-            &cleared_group,
-            ZoneChangeKind::Created,
-        );
-    }
-    crate::api::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "device_id": device_id.to_string(),
-        "scene_id": scene_id.to_string(),
+        "scene_id": cleared.scene_id.to_string(),
         "scope": DisplayFaceScope::Scene,
         "deleted": true,
     }))
@@ -820,89 +691,52 @@ pub async fn patch_display_face_controls(
         };
     }
 
-    let mut rejected: Vec<String> = Vec::new();
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, response, effect_name) = {
-        let (active_scene_id, group, effect) =
-            match current_display_face_assignment(state.as_ref(), device_id).await {
-                Ok(response) => {
-                    let scene_id = response.scene_id.clone();
-                    (scene_id, response.group, response.effect)
-                }
-                Err(response) => return response,
-            };
-        let (normalized_controls, invalid) =
-            crate::api::effects::normalize_control_payload(&effect, &controls_object);
-        rejected.extend(invalid);
-        let pending = {
-            let mut scene_manager = state.scene_manager.write().await;
-            if let Err(error) = active_scene_id_for_runtime_mutation(&scene_manager) {
-                return error.api_response("updating display face controls");
-            }
-            let rollback = scene_manager.clone();
-            if scene_manager
-                .patch_group_controls(group.id, normalized_controls)
-                .is_none()
-            {
-                return ApiError::not_found(format!(
-                    "No display face is assigned to device {device_id}"
-                ));
-            }
-            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-                Ok(pending) => pending,
-                Err(error) => {
-                    return ApiError::internal(format!("Failed to persist scene: {error}"));
-                }
-            }
-        };
-        if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-            return ApiError::internal(format!("Failed to persist scene: {error}"));
-        }
-        let effect_name = effect.name.clone();
-        let refreshed_group = match current_display_face_assignment(state.as_ref(), device_id).await
-        {
-            Ok(response) => response.group,
-            Err(response) => return response,
-        };
+    let (group, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
+        Ok(response) => (response.group, response.effect),
+        Err(response) => return response,
+    };
+    let (normalized_controls, rejected) =
+        crate::api::effects::normalize_control_payload(&effect, &controls_object);
 
-        (
-            active_scene_id
-                .parse::<uuid::Uuid>()
-                .map(hypercolor_types::scene::SceneId)
-                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT),
-            DisplayFaceResponse {
-                default_assigned: {
-                    let store = state.display_preferences.read().await;
-                    store.get(device_id).is_some()
-                },
-                device_id: device_id.to_string(),
-                effect,
-                group: refreshed_group,
-                live_scope: DisplayFaceScope::Scene,
-                scene_assigned: true,
-                scene_id: active_scene_id,
-            },
-            effect_name,
-        )
+    let written = match crate::domain::display::patch_display_face_controls(
+        state.as_ref(),
+        crate::domain::display::PatchDisplayFaceControls {
+            zone_id: group.id,
+            controls: normalized_controls,
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    {
+        Ok(Some(written)) => written,
+        Ok(None) => {
+            return ApiError::not_found(format!(
+                "No display face is assigned to device {device_id}"
+            ));
+        }
+        Err(error) => return crate::domain::legacy::scene_family_error_response(error),
     };
 
     if !rejected.is_empty() {
-        tracing::warn!(
-            face = %effect_name,
+        warn!(
+            face = %effect.name,
             rejected_controls = ?rejected,
             "Rejected one or more display face control updates"
         );
     }
 
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &response.group,
-        ZoneChangeKind::ControlsPatched,
-    );
-    crate::api::persist_runtime_session(&state).await;
-
-    ApiResponse::ok(response)
+    ApiResponse::ok(DisplayFaceResponse {
+        default_assigned: {
+            let store = state.display_preferences.read().await;
+            store.get(device_id).is_some()
+        },
+        device_id: device_id.to_string(),
+        effect,
+        group: written.zone,
+        live_scope: DisplayFaceScope::Scene,
+        scene_assigned: true,
+        scene_id: written.scene_id.to_string(),
+    })
 }
 
 fn display_preview_response(
@@ -1096,9 +930,7 @@ pub(crate) async fn apply_display_preference_overlay(
         store.get(device_id).cloned()
     };
     let Some(preference) = preference else {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager.remove_default_display_group(device_id);
-        return None;
+        return retract_default_display_overlay(state, device_id).await;
     };
 
     let tracked = state.device_registry.get(&device_id).await?;
@@ -1113,9 +945,7 @@ pub(crate) async fn apply_display_preference_overlay(
             effect_id = %preference.effect_id,
             "Default display face effect is not installed; skipping overlay"
         );
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager.remove_default_display_group(device_id);
-        return None;
+        return retract_default_display_overlay(state, device_id).await;
     }
 
     let zone = build_default_display_zone(
@@ -1125,9 +955,24 @@ pub(crate) async fn apply_display_preference_overlay(
         &preference,
         display_face_layout(device_id, tracked.info.name.as_str(), surface),
     );
-    let mut scene_manager = state.scene_manager.write().await;
-    scene_manager.set_default_display_group(zone);
-    scene_manager.default_display_group_for(device_id).cloned()
+    match crate::domain::display::set_default_display_overlay(state, device_id, zone).await {
+        Ok(installed) => installed,
+        Err(error) => {
+            warn!(%error, %device_id, "Failed to install the default face overlay");
+            None
+        }
+    }
+}
+
+/// Drop a display's runtime default overlay, reporting `None` either way
+/// so the caller reads it as "no overlay is installed".
+async fn retract_default_display_overlay(state: &AppState, device_id: DeviceId) -> Option<Zone> {
+    if let Err(error) =
+        crate::domain::display::remove_default_display_overlay(state, device_id).await
+    {
+        warn!(%error, %device_id, "Failed to retract the default face overlay");
+    }
+    None
 }
 
 /// Reconcile every connected display's default-face overlay with the

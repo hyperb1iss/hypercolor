@@ -33,8 +33,11 @@
 //! projections via the [`legacy`] shims.
 
 pub mod commit;
+pub mod display;
 pub mod effect;
+pub mod layer;
 pub mod scene;
+pub mod zone;
 
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};

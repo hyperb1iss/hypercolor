@@ -74,15 +74,12 @@ use hypercolor_types::config::{
 };
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::event::{
-    EffectRef, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
-};
-use hypercolor_types::scene::{Scene, SceneId, Zone};
+use hypercolor_types::event::{EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 use uuid::Uuid;
 
-use crate::api::envelope::ApiError;
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
@@ -749,6 +746,18 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
     }
 }
 
+/// Write the live scene set to the scene store.
+///
+/// SNAPSHOT WRITER (Spec 76 §2.3). This reads the manager rather than
+/// mutating it, so the scene state it captures is whatever a commit last
+/// installed — but the store write itself happens outside
+/// [`commit_scene`](crate::domain::scene::commit_scene) and outside the
+/// sequencer's ordering, so a snapshot racing a commit can write the
+/// older payload. The persistence layer converges regardless: both go
+/// through the same reserve-and-save admission, where the newer
+/// generation wins the destination and the loser reports `Superseded`.
+/// It predates the domain layer and moves inside the commit when §6.4
+/// gives the session snapshot a scene context to read from.
 pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Result<()> {
     let pending = {
         let manager = state.scene_manager.read().await;
@@ -758,36 +767,6 @@ pub(crate) async fn save_scene_store_snapshot(state: &AppState) -> anyhow::Resul
 
     let mut store = state.scene_store.write().await;
     store.save_reserved(pending).map(|_| ())
-}
-
-pub(crate) async fn scene_store_coordinator(state: &AppState) -> SceneStore {
-    state.scene_store.read().await.clone()
-}
-
-pub(crate) fn admit_scene_store_snapshot(
-    coordinator: &SceneStore,
-    manager: &mut SceneManager,
-    rollback: SceneManager,
-) -> anyhow::Result<crate::scene_store::SceneStoreSave> {
-    match coordinator.reserve_save(manager.list().into_iter().cloned()) {
-        Ok(pending) => Ok(pending),
-        Err(error) => {
-            *manager = rollback;
-            Err(error.into())
-        }
-    }
-}
-
-pub(crate) async fn save_admitted_scene_store_snapshot(
-    state: &AppState,
-    pending: crate::scene_store::SceneStoreSave,
-) -> anyhow::Result<()> {
-    state
-        .scene_store
-        .write()
-        .await
-        .save_reserved(pending)
-        .map(|_| ())
 }
 
 pub(crate) fn publish_render_group_changed(
@@ -807,58 +786,21 @@ pub(crate) fn publish_render_group_changed(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum ActiveSceneMutationError {
-    NoActiveScene,
-    SnapshotLocked { scene_name: String },
-    Persistence { message: String },
-}
-
-impl ActiveSceneMutationError {
-    #[must_use]
-    pub(crate) fn message(&self, action: &str) -> String {
-        match self {
-            Self::NoActiveScene => "No active scene available".to_owned(),
-            Self::SnapshotLocked { scene_name } => format!(
-                "Active scene '{scene_name}' is in snapshot mode; return to Default or deactivate it before {action}"
-            ),
-            Self::Persistence { message } => message.clone(),
-        }
-    }
-
-    pub(crate) fn api_response(&self, action: &str) -> axum::response::Response {
-        match self {
-            Self::NoActiveScene => ApiError::internal(self.message(action)),
-            Self::SnapshotLocked { .. } => ApiError::conflict(self.message(action)),
-            Self::Persistence { .. } => ApiError::internal(self.message(action)),
-        }
-    }
-}
-
-pub(crate) fn active_scene_id_for_runtime_mutation(
-    scene_manager: &SceneManager,
-) -> Result<SceneId, ActiveSceneMutationError> {
-    let active_scene = scene_manager
-        .active_scene()
-        .ok_or(ActiveSceneMutationError::NoActiveScene)?;
-    if active_scene.blocks_runtime_mutation() {
-        return Err(ActiveSceneMutationError::SnapshotLocked {
-            scene_name: active_scene.name.clone(),
-        });
-    }
-    Ok(active_scene.id)
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct EffectErrorFallbackApplied {
     pub effect: EffectRef,
     pub cleared_group_count: usize,
 }
 
+/// Unload an effect from every zone of the active scene that runs it,
+/// as the configured error-fallback policy demands.
+///
+/// `Ok(None)` means the policy did nothing: either it is `None`, or no
+/// zone was running the failed effect.
 pub(crate) async fn apply_effect_error_fallback(
     state: &Arc<AppState>,
     effect_id: &str,
     policy: EffectErrorFallbackPolicy,
-) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
+) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
     match policy {
         EffectErrorFallbackPolicy::None => Ok(None),
         EffectErrorFallbackPolicy::ClearGroups => {
@@ -870,68 +812,62 @@ pub(crate) async fn apply_effect_error_fallback(
 async fn clear_active_scene_effect_groups(
     state: &Arc<AppState>,
     effect_id: &str,
-) -> Result<Option<EffectErrorFallbackApplied>, ActiveSceneMutationError> {
+) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
     let effect = resolve_effect_ref_for_fallback(state, effect_id).await;
 
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (scene_id, cleared_groups, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
-        let group_ids = scene_manager
-            .active_scene()
-            .map(|scene| {
-                scene
-                    .groups
-                    .iter()
-                    .filter(|group| {
-                        group
-                            .effect_id
-                            .as_ref()
-                            .is_some_and(|candidate| candidate.to_string() == effect_id)
-                    })
-                    .map(|group| group.id)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if group_ids.is_empty() {
-            return Ok(None);
-        }
-
-        let rollback = scene_manager.clone();
-        let mut cleared_groups = Vec::with_capacity(group_ids.len());
-        for group_id in group_ids {
-            if let Some(group) = scene_manager.clear_group_effect(group_id).cloned() {
-                cleared_groups.push(group);
-            }
-        }
-        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ActiveSceneMutationError::Persistence {
-                message: error.to_string(),
-            })?;
-        (scene_id, cleared_groups, pending)
-    };
-    if let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await {
-        warn!(%error, "Failed to persist effect fallback; retry remains active");
-    }
-
-    if cleared_groups.is_empty() {
+    let mut mutation = state.begin_scene_mutation().await;
+    let scene_id =
+        mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
+    let zone_ids = mutation
+        .scenes()
+        .active_scene()
+        .map(|scene| {
+            scene
+                .groups
+                .iter()
+                .filter(|zone| {
+                    zone.effect_id
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.to_string() == effect_id)
+                })
+                .map(|zone| zone.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if zone_ids.is_empty() {
         return Ok(None);
     }
 
-    for group in &cleared_groups {
-        state.event_bus.publish(HypercolorEvent::EffectStopped {
+    let cleared_zones = zone_ids
+        .into_iter()
+        .filter_map(|zone_id| mutation.clear_zone_effect(zone_id))
+        .collect::<Vec<_>>();
+    if cleared_zones.is_empty() {
+        return Ok(None);
+    }
+
+    for zone in &cleared_zones {
+        mutation.record(HypercolorEvent::EffectStopped {
             effect: effect.clone(),
             reason: EffectStopReason::Error,
-            group_id: Some(group.id),
-            group_name: Some(group.name.clone()),
+            group_id: Some(zone.id),
+            group_name: Some(zone.name.clone()),
         });
-        publish_render_group_changed(state.as_ref(), scene_id, group, ZoneChangeKind::Updated);
+        mutation.record(crate::domain::scene::zone_changed_event(
+            scene_id,
+            zone,
+            ZoneChangeKind::Updated,
+        ));
     }
+
+    crate::domain::scene::commit_scene(state.as_ref(), mutation)
+        .await?
+        .log_if_retrying("Failed to persist effect fallback");
     persist_runtime_session(state).await;
 
     Ok(Some(EffectErrorFallbackApplied {
         effect,
-        cleared_group_count: cleared_groups.len(),
+        cleared_group_count: cleared_zones.len(),
     }))
 }
 
@@ -961,32 +897,10 @@ pub(crate) async fn prune_scene_display_groups_for_device(
     state: &Arc<AppState>,
     device_id: DeviceId,
 ) {
-    let coordinator = scene_store_coordinator(state.as_ref()).await;
-    let (removed_groups, pending, removed_default, active_scene_id) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let rollback = scene_manager.clone();
-        let removed = scene_manager.remove_display_groups_for_device(device_id);
-        let (removed, pending) = if removed.is_empty() {
-            (Vec::new(), None)
-        } else {
-            match admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback) {
-                Ok(pending) => (removed, Some(pending)),
-                Err(error) => {
-                    // The manager rolled back, so the scene groups are
-                    // still live and must not be reported as removed.
-                    warn!(%error, %device_id, "Failed to prepare display-group pruning persistence");
-                    (Vec::new(), None)
-                }
-            }
-        };
-        let removed_default = scene_manager.default_display_group_for(device_id).cloned();
-        if removed_default.is_some() {
-            scene_manager.remove_default_display_group(device_id);
-        }
-        let active_scene_id = scene_manager.active_scene().map(|scene| scene.id);
-        (removed, pending, removed_default, active_scene_id)
-    };
-
+    // The preference goes first and unconditionally. A deleted device
+    // must never keep a stored default face, and it can no longer be
+    // addressed through the displays API to clear one, so this must not
+    // ride on whether the scene commit lands.
     let removed_preference = {
         let mut store = state.display_preferences.write().await;
         match store.remove(device_id) {
@@ -998,51 +912,25 @@ pub(crate) async fn prune_scene_display_groups_for_device(
         }
     };
 
-    if removed_groups.is_empty() && removed_default.is_none() && !removed_preference {
+    let pruned =
+        match crate::domain::display::prune_display_zones_for_device(state.as_ref(), device_id)
+            .await
+        {
+            Ok(pruned) => pruned,
+            Err(error) => {
+                warn!(%error, %device_id, "Failed to prune display zones for deleted device");
+                crate::domain::display::PrunedDisplayZones::empty()
+            }
+        };
+
+    if pruned.removed_zones.is_empty() && pruned.removed_default.is_none() && !removed_preference {
         return;
-    }
-
-    if let Some(pending) = pending
-        && let Err(error) = save_admitted_scene_store_snapshot(state.as_ref(), pending).await
-    {
-        warn!(%error, %device_id, "Failed to persist display-group pruning; retry remains active");
-    }
-
-    for (scene_id, group) in &removed_groups {
-        publish_render_group_changed(state.as_ref(), *scene_id, group, ZoneChangeKind::Removed);
-    }
-    if let Some(group) = &removed_default {
-        publish_render_group_changed(
-            state.as_ref(),
-            active_scene_id.unwrap_or(SceneId::DEFAULT),
-            group,
-            ZoneChangeKind::Removed,
-        );
     }
     persist_runtime_session(state).await;
 }
 
-pub(crate) fn publish_active_scene_changed(
-    state: &AppState,
-    previous: Option<SceneId>,
-    current_scene: &Scene,
-    reason: SceneChangeReason,
-) {
-    state
-        .event_bus
-        .publish(HypercolorEvent::ActiveSceneChanged {
-            previous,
-            current: current_scene.id,
-            current_name: current_scene.name.clone(),
-            current_kind: current_scene.kind,
-            current_mutation_mode: current_scene.mutation_mode,
-            current_snapshot_locked: current_scene.blocks_runtime_mutation(),
-            reason,
-        });
-}
-
 /// Persist discovery auto-sync exclusions to disk.
-pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
+pub(crate) async fn persist_layout_auto_exclusions(state: &AppState) {
     let exclusions = state.layout_auto_exclusions.read().await;
     if let Err(error) =
         crate::layout_auto_exclusions::save(&state.layout_auto_exclusions_path, &exclusions)

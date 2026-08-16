@@ -7,11 +7,9 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metadata};
 use crate::api::AppState;
-use crate::api::effects::{
-    StopActiveEffectError, normalize_control_payload, stop_active_effect_and_quiesce_output,
-};
+use crate::api::effects::normalize_control_payload;
 use crate::domain::MutationContext;
-use crate::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
+use crate::domain::effect::{ApplyEffect, RequestedTransition, apply_effect, stop_effect};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -220,8 +218,11 @@ pub(super) async fn handle_set_effect_with_state(
     // frozen shape.
     {
         let scene_manager = state.scene_manager.read().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
+        crate::domain::scene::active_scene_for_runtime_mutation(
+            &scene_manager,
+            "applying an effect",
+        )
+        .map_err(|error| ToolError::Conflict(error.to_string()))?;
     }
 
     let applied = apply_effect(
@@ -369,37 +370,21 @@ pub(super) async fn handle_stop_effect_with_state(
         .and_then(Value::as_u64)
         .unwrap_or(300);
 
-    let stop_result = match stop_active_effect_and_quiesce_output(state).await {
-        Ok(result) => result,
-        Err(StopActiveEffectError::NoActiveEffect) => {
-            return Ok(json!({
-                "stopped": false,
-                "transition_ms": transition_ms,
-                "effect": null
-            }));
-        }
-        Err(StopActiveEffectError::ActiveGroupMissing) => {
-            return Err(ToolError::Internal(
-                "active primary group disappeared".into(),
-            ));
-        }
-        Err(StopActiveEffectError::ActiveScene(error)) => {
-            return Err(ToolError::Conflict(
-                error.message("stopping the active effect"),
-            ));
-        }
-        Err(StopActiveEffectError::Persistence(error)) => {
-            return Err(ToolError::Internal(error));
-        }
+    let Some(stopped) = stop_effect(state, MutationContext::mcp()).await? else {
+        return Ok(json!({
+            "stopped": false,
+            "transition_ms": transition_ms,
+            "effect": null
+        }));
     };
 
     Ok(json!({
         "stopped": true,
         "transition_ms": transition_ms,
-        "released_network_devices": stop_result.released_network_devices,
+        "released_network_devices": stopped.released_network_devices,
         "effect": {
-            "id": stop_result.effect.id,
-            "name": stop_result.effect.name
+            "id": stopped.effect.id,
+            "name": stopped.effect.name
         }
     }))
 }
@@ -464,8 +449,11 @@ pub(super) async fn handle_set_color_with_state(
     // frozen shape.
     {
         let scene_manager = state.scene_manager.read().await;
-        crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("applying an effect")))?;
+        crate::domain::scene::active_scene_for_runtime_mutation(
+            &scene_manager,
+            "applying an effect",
+        )
+        .map_err(|error| ToolError::Conflict(error.to_string()))?;
     }
 
     let applied = apply_effect(

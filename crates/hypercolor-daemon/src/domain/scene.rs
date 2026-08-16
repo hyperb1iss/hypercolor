@@ -21,14 +21,24 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_core::scene::SceneManager;
+use hypercolor_core::scene::{
+    ControlsVersionMismatch, LayerMutationError, OutputPlacement, SceneGroupLayerInsert,
+    SceneManager, ZoneMetaPatch, ZoneMutationError, default_primary_group,
+};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
-use hypercolor_types::event::{HypercolorEvent, SceneChangeReason, ZoneChangeKind};
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId, EffectMetadata};
+use hypercolor_types::event::{
+    HypercolorEvent, SceneChangeReason, SceneLibraryChangeKind, ZoneChangeKind,
+};
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{Scene, SceneId, TransitionSpec, Zone, ZoneId};
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::scene::{
+    ColorInterpolation, DisplayFaceBlendMode, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
+};
+use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use crate::api::AppState;
 use crate::api::scenes::MediaAdmissionViolationDetails;
@@ -44,13 +54,8 @@ use crate::persistence::AtomicWriteOutcome;
 /// Nothing here is shared. The candidate is a full [`SceneManager`]
 /// clone, so intent methods are ordinary `&mut self` calls with no
 /// locking, and abandoning the mutation costs a drop.
-///
-/// The pristine `base` is kept beside the candidate as the comparand
-/// for the divergence check in [`commit_scene`]. It costs a second
-/// clone per mutation, paid at commit rate rather than frame rate.
 #[derive(Debug)]
 pub struct SceneMutation {
-    base: SceneManager,
     candidate: SceneManager,
     base_revision: SceneRevision,
     events: Vec<HypercolorEvent>,
@@ -85,17 +90,7 @@ impl SceneMutation {
     /// Snapshot scenes are a deliberate user choice: runtime effect and
     /// face actions must not silently edit them.
     pub fn active_scene_for_runtime_mutation(&self, action: &str) -> Result<SceneId, DomainError> {
-        let active = self
-            .candidate
-            .active_scene()
-            .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("No active scene available")))?;
-        if active.blocks_runtime_mutation() {
-            return Err(DomainError::conflict(format!(
-                "Active scene '{}' is in snapshot mode; return to Default or deactivate it before {action}",
-                active.name
-            )));
-        }
-        Ok(active.id)
+        active_scene_for_runtime_mutation(&self.candidate, action)
     }
 
     /// The active scene's primary zone id, when it has one.
@@ -175,6 +170,482 @@ impl SceneMutation {
                 DomainError::Internal(anyhow::anyhow!("Failed to activate scene: {error}"))
             })
     }
+
+    /// Return to the synthesized default scene.
+    ///
+    /// Like [`Self::activate`], this moves only the priority stack.
+    pub fn deactivate_current(&mut self) {
+        self.candidate.deactivate_current();
+    }
+
+    // ── Scene library ────────────────────────────────────────────────
+
+    /// Add a scene to the library.
+    pub fn create_scene(&mut self, scene: Scene) -> Result<(), DomainError> {
+        self.candidate
+            .create(scene)
+            .map_err(|error| DomainError::conflict(format!("Failed to create scene: {error}")))?;
+        self.persists_scene_content = true;
+        Ok(())
+    }
+
+    /// Replace a scene's stored definition.
+    pub fn update_scene(&mut self, scene: Scene) -> Result<(), DomainError> {
+        self.candidate.update(scene).map_err(|error| {
+            DomainError::Internal(anyhow::anyhow!("Failed to update scene: {error}"))
+        })?;
+        self.persists_scene_content = true;
+        Ok(())
+    }
+
+    /// Remove a scene from the library.
+    pub fn delete_scene(&mut self, scene_id: &SceneId) -> Result<Scene, DomainError> {
+        let scene = self
+            .candidate
+            .delete(scene_id)
+            .map_err(|error| DomainError::not_found(ResourceKind::Scene, error))?;
+        self.persists_scene_content = true;
+        Ok(scene)
+    }
+
+    // ── Zones ────────────────────────────────────────────────────────
+
+    /// Add a custom zone to a scene.
+    pub fn create_zone(
+        &mut self,
+        scene_id: SceneId,
+        name: String,
+        color: Option<String>,
+        fallback_canvas: (u32, u32),
+    ) -> Result<ZoneId, ZoneMutationError> {
+        let zone_id =
+            self.candidate
+                .create_render_group(&scene_id, name, color, fallback_canvas)?;
+        self.persists_scene_content = true;
+        Ok(zone_id)
+    }
+
+    /// Patch a zone's presentation metadata.
+    pub fn update_zone_meta(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        patch: ZoneMetaPatch,
+    ) -> Result<Zone, ZoneMutationError> {
+        let zone = self
+            .candidate
+            .update_render_group_meta(&scene_id, zone_id, patch)?;
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    /// Remove a custom zone from a scene.
+    pub fn delete_zone(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+    ) -> Result<(), ZoneMutationError> {
+        self.candidate.delete_render_group(&scene_id, zone_id)?;
+        self.persists_scene_content = true;
+        Ok(())
+    }
+
+    /// Move one output into a zone.
+    pub fn assign_output(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        output: Output,
+        placement: OutputPlacement,
+    ) -> Result<(), ZoneMutationError> {
+        self.candidate
+            .assign_device_zone(&scene_id, zone_id, output, placement)?;
+        self.persists_scene_content = true;
+        Ok(())
+    }
+
+    /// Drop one output out of whatever zone holds it.
+    pub fn unassign_output(
+        &mut self,
+        scene_id: SceneId,
+        output_id: &str,
+    ) -> Result<(), ZoneMutationError> {
+        self.candidate.unassign_device_zone(&scene_id, output_id)?;
+        self.persists_scene_content = true;
+        Ok(())
+    }
+
+    /// Reposition a zone's outputs without changing which it owns.
+    pub fn set_zone_layout(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layout: SpatialLayout,
+    ) -> Result<Zone, ZoneMutationError> {
+        let zone = self
+            .candidate
+            .update_zone_layout(&scene_id, zone_id, layout)?;
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    /// Choose what a scene does with outputs no zone claims.
+    pub fn set_unassigned_behavior(
+        &mut self,
+        scene_id: SceneId,
+        behavior: UnassignedBehavior,
+    ) -> Result<UnassignedBehavior, ZoneMutationError> {
+        let behavior = self
+            .candidate
+            .set_unassigned_behavior(&scene_id, behavior)?;
+        self.persists_scene_content = true;
+        Ok(behavior)
+    }
+
+    // ── Effect slots and controls ────────────────────────────────────
+
+    /// Unload whatever effect a zone runs.
+    pub fn clear_zone_effect(&mut self, zone_id: ZoneId) -> Option<Zone> {
+        let zone = self.candidate.clear_group_effect(zone_id).cloned()?;
+        self.persists_scene_content = true;
+        Some(zone)
+    }
+
+    /// Merge control overrides into a zone, refusing a stale version and
+    /// a zone that stopped running the expected effect.
+    pub fn patch_effect_controls(
+        &mut self,
+        zone_id: ZoneId,
+        expected_effect_id: Option<EffectId>,
+        updates: HashMap<String, ControlValue>,
+        expected_version: Option<u64>,
+    ) -> Result<(Zone, u64), ControlsVersionMismatch> {
+        let (zone, version) = self.candidate.patch_effect_controls_with_precondition(
+            zone_id,
+            expected_effect_id,
+            updates,
+            expected_version,
+        )?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        Ok((zone, version))
+    }
+
+    /// Merge control overrides into a zone with no effect precondition.
+    pub fn patch_zone_controls(
+        &mut self,
+        zone_id: ZoneId,
+        updates: HashMap<String, ControlValue>,
+    ) -> Option<Zone> {
+        let zone = self
+            .candidate
+            .patch_group_controls(zone_id, updates)?
+            .clone();
+        self.persists_scene_content = true;
+        Some(zone)
+    }
+
+    /// Replace a zone's control values with the effect's defaults.
+    pub fn reset_zone_controls(
+        &mut self,
+        zone_id: ZoneId,
+        defaults: HashMap<String, ControlValue>,
+    ) -> Option<Zone> {
+        let zone = self
+            .candidate
+            .reset_group_controls(zone_id, defaults)?
+            .clone();
+        self.persists_scene_content = true;
+        Some(zone)
+    }
+
+    /// Attach a live sensor binding to one of a zone's controls.
+    pub fn set_zone_control_binding(
+        &mut self,
+        zone_id: ZoneId,
+        control_id: String,
+        binding: ControlBinding,
+    ) -> Option<Zone> {
+        let zone = self
+            .candidate
+            .set_group_control_binding(zone_id, control_id, binding)?
+            .clone();
+        self.persists_scene_content = true;
+        Some(zone)
+    }
+
+    /// Record which preset a zone's control values came from.
+    pub fn set_zone_preset_id(&mut self, zone_id: ZoneId, preset_id: Option<PresetId>) -> bool {
+        let changed = self
+            .candidate
+            .set_group_preset_id(zone_id, preset_id)
+            .is_some();
+        if changed {
+            self.persists_scene_content = true;
+        }
+        changed
+    }
+
+    /// Force the active scene's resolved zones to be recomputed.
+    ///
+    /// The resolved zones are derived state, so this bumps the
+    /// render-group revision without touching persisted scene content.
+    pub fn invalidate_active_zones(&mut self) {
+        self.candidate.invalidate_active_render_groups();
+    }
+
+    // ── Layer stacks ─────────────────────────────────────────────────
+
+    /// Insert a layer into a zone's stack.
+    pub fn insert_layer(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layer: SceneLayer,
+        index: Option<usize>,
+        expected_version: Option<u64>,
+    ) -> Result<Zone, LayerMutationError> {
+        let (zone, _version) = self.candidate.insert_scene_group_layer(
+            scene_id,
+            zone_id,
+            layer,
+            index,
+            expected_version,
+        )?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    /// Insert one layer into each of several zones, all or nothing.
+    pub fn insert_layers(
+        &mut self,
+        scene_id: SceneId,
+        inserts: Vec<SceneGroupLayerInsert>,
+    ) -> Result<Vec<Zone>, LayerMutationError> {
+        let zones = self
+            .candidate
+            .insert_scene_group_layers_batch(scene_id, inserts)?;
+        self.persists_scene_content = true;
+        Ok(zones)
+    }
+
+    /// Replace one layer's definition in place.
+    pub fn update_layer(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layer_id: SceneLayerId,
+        layer: SceneLayer,
+        expected_version: Option<u64>,
+    ) -> Result<Zone, LayerMutationError> {
+        let (zone, _version) = self.candidate.update_scene_group_layer(
+            scene_id,
+            zone_id,
+            layer_id,
+            layer,
+            expected_version,
+        )?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    /// Drop one layer out of a zone's stack.
+    pub fn remove_layer(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layer_id: SceneLayerId,
+        expected_version: Option<u64>,
+    ) -> Result<Zone, LayerMutationError> {
+        let (zone, _version) = self.candidate.remove_scene_group_layer(
+            scene_id,
+            zone_id,
+            layer_id,
+            expected_version,
+        )?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    /// Rewrite a zone's layer order.
+    pub fn reorder_layers(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layer_ids: Vec<SceneLayerId>,
+        expected_version: Option<u64>,
+    ) -> Result<Zone, LayerMutationError> {
+        let (zone, _version) = self.candidate.reorder_scene_group_layers(
+            scene_id,
+            zone_id,
+            layer_ids,
+            expected_version,
+        )?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    /// Merge control overrides into one effect layer.
+    pub fn patch_layer_controls(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layer_id: SceneLayerId,
+        updates: HashMap<String, ControlValue>,
+        expected_version: Option<u64>,
+    ) -> Result<Zone, LayerMutationError> {
+        let (zone, _version) = self.candidate.patch_scene_layer_effect_controls(
+            scene_id,
+            zone_id,
+            layer_id,
+            updates,
+            expected_version,
+        )?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    // ── Display zones ────────────────────────────────────────────────
+
+    /// Assign a face to a display in the active scene, creating the
+    /// display zone when the scene has none for that device.
+    pub fn upsert_display_zone(
+        &mut self,
+        device_id: DeviceId,
+        device_name: &str,
+        effect: &EffectMetadata,
+        controls: HashMap<String, ControlValue>,
+        layout: SpatialLayout,
+    ) -> Result<Zone, DomainError> {
+        let zone = self
+            .candidate
+            .upsert_display_group(device_id, device_name, effect, controls, layout)
+            .map_err(|error| {
+                DomainError::Internal(anyhow::anyhow!("Failed to update active scene: {error}"))
+            })?
+            .clone();
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    /// Keep a display zone's surface aligned with the device's geometry.
+    ///
+    /// Returns whether the zone actually moved, so callers can skip a
+    /// commit that would change nothing.
+    pub fn ensure_display_surface(
+        &mut self,
+        device_id: DeviceId,
+        device_name: &str,
+        layout: SpatialLayout,
+    ) -> Result<bool, DomainError> {
+        let before = self.active_zones_revision();
+        self.candidate
+            .ensure_display_group_surface(device_id, device_name, layout)
+            .map_err(|error| {
+                DomainError::Internal(anyhow::anyhow!(
+                    "Failed to sync display screen surface: {error}"
+                ))
+            })?;
+        let changed = self.active_zones_revision() != before;
+        if changed {
+            self.persists_scene_content = true;
+        }
+        Ok(changed)
+    }
+
+    /// Update how a display zone's face composes over the effect layer.
+    pub fn patch_display_target(
+        &mut self,
+        zone_id: ZoneId,
+        blend_mode: Option<DisplayFaceBlendMode>,
+        opacity: Option<f32>,
+    ) -> Option<Zone> {
+        let zone = self
+            .candidate
+            .patch_display_group_target(zone_id, blend_mode, opacity)?
+            .clone();
+        self.persists_scene_content = true;
+        Some(zone)
+    }
+
+    /// Strip the face assignment off a display zone, keeping the zone.
+    pub fn clear_display_assignment(
+        &mut self,
+        device_id: DeviceId,
+        device_name: &str,
+        layout: SpatialLayout,
+    ) -> Result<Zone, DomainError> {
+        let zone = self
+            .candidate
+            .clear_display_group_assignment(device_id, device_name, layout)
+            .map_err(|error| {
+                DomainError::Internal(anyhow::anyhow!("Failed to update active scene: {error}"))
+            })?
+            .clone();
+        self.persists_scene_content = true;
+        Ok(zone)
+    }
+
+    /// Drop every scene's display zone for one device.
+    pub fn remove_display_zones_for_device(&mut self, device_id: DeviceId) -> Vec<(SceneId, Zone)> {
+        let removed = self.candidate.remove_display_groups_for_device(device_id);
+        if !removed.is_empty() {
+            self.persists_scene_content = true;
+        }
+        removed
+    }
+
+    /// Install the runtime overlay zone a display preference resolves to,
+    /// reporting whether it moved anything.
+    ///
+    /// Default display zones are materialized from the preference store
+    /// on every run, so they are runtime state rather than persisted
+    /// scene content — and re-materializing the same preference is the
+    /// common case, reached from device connects and from several read
+    /// paths. Reporting `false` there lets the caller skip a commit that
+    /// would mint a scene revision and invalidate every in-flight
+    /// candidate for no change at all.
+    ///
+    /// The comparison normalizes the zone id because
+    /// `set_default_display_group` reuses the installed zone's id, so a
+    /// freshly built overlay differs from an identical installed one in
+    /// that field alone.
+    pub fn set_default_display_zone(&mut self, zone: Zone) -> bool {
+        let Some(device_id) = zone.display_target.as_ref().map(|target| target.device_id) else {
+            return false;
+        };
+        let unchanged = self
+            .candidate
+            .default_display_group_for(device_id)
+            .is_some_and(|installed| {
+                let mut candidate = zone.clone();
+                candidate.id = installed.id;
+                *installed == candidate
+            });
+        if unchanged {
+            return false;
+        }
+        self.candidate.set_default_display_group(zone);
+        true
+    }
+
+    /// Remove a display's runtime default overlay zone.
+    pub fn remove_default_display_zone(&mut self, device_id: DeviceId) -> Option<Zone> {
+        let existing = self.candidate.default_display_group_for(device_id).cloned();
+        self.candidate.remove_default_display_group(device_id);
+        existing
+    }
+
+    fn active_zones_revision(&self) -> u64 {
+        self.candidate
+            .active_scene()
+            .map_or(0, |scene| scene.groups_revision)
+    }
 }
 
 impl AppState {
@@ -186,7 +657,6 @@ impl AppState {
         let manager = self.scene_manager.read().await;
         let base_revision = self.scene_commits.revision();
         SceneMutation {
-            base: manager.clone(),
             candidate: manager.clone(),
             base_revision,
             events: Vec::new(),
@@ -201,19 +671,15 @@ impl AppState {
 ///
 /// The compare-and-swap on the base revision refuses a candidate built
 /// from a revision that no longer exists, rather than letting it
-/// silently overwrite whatever landed in between.
-///
-/// **The swap only sees commits.** The revision advances in
-/// [`SceneCommitSequencer::admit`], which nothing but this function
-/// calls, so a candidate is protected against another `commit_scene`
-/// and against nothing else. Roughly fifty other sites still take
-/// `scene_manager.write()` directly and mutate live scene state without
-/// touching the revision — the zone, layer, display, preset, profile,
-/// and layout-transaction paths that wave 2.3b migrates. Because the
-/// install below replaces the whole manager, a direct write that lands
-/// inside a candidate's window is discarded with no error to either
-/// caller. Every such site must route through here before the swap is
-/// a general guarantee rather than a guarantee between commits.
+/// silently overwrite whatever landed in between. That swap is the
+/// whole concurrency story: the revision advances in
+/// [`SceneCommitSequencer::admit`](crate::domain::commit::SceneCommitSequencer),
+/// which nothing but this function calls, and every scene mutation the
+/// daemon serves comes through here. The three writers that do not are
+/// named and fenced by `no_scene_writer_lives_outside_the_commit_path`
+/// in the service tests: the render thread's per-frame transition tick,
+/// its frame-boundary layout activation, and the startup and shutdown
+/// paths where no `AppState` exists to commit through.
 ///
 /// # Errors
 ///
@@ -227,7 +693,6 @@ pub async fn commit_scene(
     mutation: SceneMutation,
 ) -> Result<SceneCommit, DomainError> {
     let SceneMutation {
-        base,
         candidate,
         base_revision,
         events,
@@ -252,26 +717,6 @@ pub async fn commit_scene(
                 expected: base_revision,
                 current: current_revision,
             });
-        }
-
-        // TEMPORARY BRIDGE — remove in wave 2.3b.
-        //
-        // The revision above only moves on commit, so it cannot see the
-        // scene writers that still take `scene_manager.write()`
-        // directly. Since the install below replaces the whole manager,
-        // one of those landing inside this candidate's window would be
-        // discarded with no error to anyone. Comparing the live state
-        // against the pristine base turns that silent lost update into
-        // a retryable conflict.
-        //
-        // Wave 2.3b routes the last direct writer through here, at
-        // which point the revision is the only mutation path and this
-        // check reduces to always-true. Delete it then.
-        if !scene_state_matches(&manager, &base) {
-            return Err(DomainError::conflict(
-                "Scene state changed underneath this request; a concurrent writer \
-                 modified it. Retry against current state.",
-            ));
         }
 
         let previous = std::mem::replace(&mut *manager, candidate);
@@ -355,74 +800,50 @@ pub async fn commit_scene(
     }
 }
 
-/// Whether two scene managers hold the same scene state, for the
-/// divergence bridge above.
-///
-/// Deliberately narrower than whole-manager equality, and not merely
-/// for cost. The render thread takes `scene_manager.write()` on every
-/// frame of a running transition to call `tick_transition`
-/// (`render_thread/scene_snapshot.rs`), so any comparand including
-/// transition progress would report divergence on nearly every commit
-/// made during a transition — which is exactly when `activate_scene`
-/// runs. Progress is render-local and no commit means to own it.
-///
-/// Everything else a candidate replaces is compared, and each member
-/// exists because some direct writer can move it alone:
-///
-/// - the scene set, as a map, for scene content;
-/// - the **whole** priority stack as an ordered `(scene, priority)`
-///   sequence, not just its winner, because a mutation to a shadowed
-///   entry leaves the active scene identical while still being work
-///   this install would erase;
-/// - the render-group revision as a **number**, because a direct
-///   `invalidate_active_render_groups` bumps the counter without
-///   necessarily changing the resolved zones, and comparing only the
-///   zones would miss it;
-/// - the resolved zones themselves, for content;
-/// - the runtime default display groups as a full set, because a
-///   default hidden behind an assigned display zone never appears in
-///   the resolved zones at all.
-///
-/// `entered_at` is excluded from the stack comparison: it is an
-/// `Instant` stamped at push time, so it carries no state a commit
-/// could lose.
-fn scene_state_matches(live: &SceneManager, base: &SceneManager) -> bool {
-    if live.active_scene_id() != base.active_scene_id()
-        || live.activation_history() != base.activation_history()
-        || live.active_render_groups_revision() != base.active_render_groups_revision()
-        || live.active_render_groups().as_ref() != base.active_render_groups().as_ref()
-        || live.default_display_groups() != base.default_display_groups()
-        || !priority_stacks_match(live, base)
-    {
-        return false;
-    }
+/// How many times an idempotent reconciliation rebuilds its candidate
+/// before giving up on the compare-and-swap.
+pub const COMMIT_ATTEMPTS: usize = 4;
 
-    // `list` walks a HashMap, so the order is not stable between calls
-    // and the scenes are compared as a set keyed by id.
-    let live_scenes = live.list();
-    let base_scenes = base.list();
-    if live_scenes.len() != base_scenes.len() {
-        return false;
+/// Build and commit an idempotent reconciliation, rebuilding the
+/// candidate whenever a concurrent commit wins the swap.
+///
+/// Only reconciliations belong here. A request the user made should
+/// surface the conflict so the caller can rebase against current state,
+/// but a sweep that recomputes its whole intent from live state has
+/// nothing to rebase and nobody to tell. `build` runs against a fresh
+/// candidate on every attempt, so it must not carry state forward from a
+/// previous one.
+///
+/// A `build` that returns `None` found nothing to do, and the
+/// reconciliation ends there without a commit — which matters, because
+/// a commit mints a scene revision and invalidates every in-flight
+/// candidate whether or not it changed anything.
+///
+/// # Errors
+///
+/// Whatever `build` returns, or the last
+/// [`DomainError::PreconditionFailed`] when every attempt loses.
+pub async fn commit_retrying<T>(
+    state: &AppState,
+    mut build: impl FnMut(&mut SceneMutation) -> Result<Option<T>, DomainError>,
+) -> Result<Option<(T, SceneCommit)>, DomainError> {
+    let mut last_conflict = None;
+    for _ in 0..COMMIT_ATTEMPTS {
+        let mut mutation = state.begin_scene_mutation().await;
+        let Some(value) = build(&mut mutation)? else {
+            return Ok(None);
+        };
+        match commit_scene(state, mutation).await {
+            Ok(commit) => return Ok(Some((value, commit))),
+            Err(conflict @ DomainError::PreconditionFailed { .. }) => {
+                last_conflict = Some(conflict);
+            }
+            Err(error) => return Err(error),
+        }
     }
-    let base_by_id: HashMap<SceneId, &Scene> = base_scenes
-        .into_iter()
-        .map(|scene| (scene.id, scene))
-        .collect();
-    live_scenes
-        .into_iter()
-        .all(|scene| base_by_id.get(&scene.id) == Some(&scene))
-}
-
-/// The priority stack as the ordered identity sequence a commit can
-/// lose, ignoring the push timestamps.
-fn priority_stacks_match(live: &SceneManager, base: &SceneManager) -> bool {
-    let live_entries = live.priority_stack().entries();
-    let base_entries = base.priority_stack().entries();
-    live_entries.len() == base_entries.len()
-        && live_entries
-            .iter()
-            .zip(base_entries)
-            .all(|(live, base)| live.scene_id == base.scene_id && live.priority == base.priority)
+    Err(last_conflict.unwrap_or_else(|| {
+        DomainError::conflict("scene commit did not converge after repeated concurrent writes")
+    }))
 }
 
 // ── Scene media admission ────────────────────────────────────────────────
@@ -533,15 +954,11 @@ pub async fn activate_scene(
     if previous_scene_id != current_scene.as_ref().map(|scene| scene.id)
         && let Some(current) = current_scene.as_ref()
     {
-        mutation.record(HypercolorEvent::ActiveSceneChanged {
-            previous: previous_scene_id,
-            current: current.id,
-            current_name: current.name.clone(),
-            current_kind: current.kind,
-            current_mutation_mode: current.mutation_mode,
-            current_snapshot_locked: current.blocks_runtime_mutation(),
-            reason: SceneChangeReason::UserActivate,
-        });
+        mutation.record(active_scene_changed_event(
+            previous_scene_id,
+            current,
+            SceneChangeReason::UserActivate,
+        ));
     }
 
     let commit = commit_scene(state, mutation).await?;
@@ -567,7 +984,303 @@ pub async fn activate_scene(
     })
 }
 
+// ── Scene library CRUD ───────────────────────────────────────────────────
+
+/// Add a scene to the library.
+#[derive(Debug, Clone)]
+pub struct CreateScene {
+    /// Human-readable name.
+    pub name: String,
+    /// What the scene does.
+    pub description: Option<String>,
+    /// Whether the scene is selectable. Defaults to enabled.
+    pub enabled: Option<bool>,
+    /// Whether runtime effect and face actions may rewrite the scene.
+    pub mutation_mode: Option<SceneMutationMode>,
+    /// Free-form provenance the adapter wants recorded on the scene.
+    pub metadata: HashMap<String, String>,
+}
+
+/// Replace a scene's stored definition.
+#[derive(Debug, Clone)]
+pub struct UpdateScene {
+    /// Which scene to rewrite.
+    pub scene_id: SceneId,
+    /// Its new name.
+    pub name: String,
+    /// Its new description.
+    pub description: Option<String>,
+    /// Whether it stays selectable. `None` keeps the current value.
+    pub enabled: Option<bool>,
+    /// Whether runtime actions may rewrite it. `None` keeps the
+    /// current value.
+    pub mutation_mode: Option<SceneMutationMode>,
+}
+
+/// The outcome of a scene library mutation.
+#[derive(Debug)]
+pub struct SceneWritten {
+    /// The scene as it now stands.
+    pub scene: Scene,
+    /// The commit receipt.
+    pub commit: SceneCommit,
+}
+
+/// The outcome of deleting a scene.
+#[derive(Debug)]
+pub struct SceneDeleted {
+    /// The scene that was removed.
+    pub scene: Scene,
+    /// Which scene is current now, when the deletion changed it.
+    pub current_scene: Option<Scene>,
+    /// Which scene was current before.
+    pub previous_scene_id: Option<SceneId>,
+    /// The commit receipt.
+    pub commit: SceneCommit,
+}
+
+/// The outcome of returning to the synthesized default scene.
+#[derive(Debug)]
+pub struct SceneDeactivated {
+    /// The scene that was current, when one was.
+    pub previous_scene: Option<Scene>,
+    /// The scene that is current now.
+    pub current_scene: Option<Scene>,
+    /// The commit receipt.
+    pub commit: SceneCommit,
+}
+
+/// Create a scene, seeded with a Default zone holding the current
+/// device output roster.
+///
+/// Every scene is born with that zone so the Studio scene selector
+/// always has one to select (Spec 65 §5.2); the user renames it freely.
+///
+/// # Errors
+///
+/// [`DomainError::Conflict`] when the scene cannot be added, and
+/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// lands first.
+pub async fn create_scene(
+    state: &AppState,
+    command: CreateScene,
+    meta: MutationContext,
+) -> Result<SceneWritten, DomainError> {
+    let _ = meta;
+
+    let default_layout = crate::api::effects::resolve_full_scope_layout(state).await;
+    let scene = Scene {
+        id: SceneId::new(),
+        name: command.name,
+        description: command.description,
+        scope: SceneScope::Full,
+        zone_assignments: Vec::new(),
+        groups: vec![default_primary_group(default_layout)],
+        groups_revision: 0,
+        transition: TransitionSpec {
+            duration_ms: 1000,
+            easing: EasingFunction::Linear,
+            color_interpolation: ColorInterpolation::Oklab,
+        },
+        priority: ScenePriority::USER,
+        enabled: command.enabled.unwrap_or(true),
+        metadata: command.metadata,
+        unassigned_behavior: UnassignedBehavior::Off,
+        kind: SceneKind::Named,
+        mutation_mode: command.mutation_mode.unwrap_or(SceneMutationMode::Live),
+    };
+
+    let mut mutation = state.begin_scene_mutation().await;
+    mutation.create_scene(scene.clone())?;
+    mutation.record(HypercolorEvent::SceneLibraryChanged {
+        scene_id: scene.id,
+        kind: SceneLibraryChangeKind::Created,
+        name: Some(scene.name.clone()),
+    });
+    let commit = commit_scene(state, mutation).await?;
+
+    Ok(SceneWritten { scene, commit })
+}
+
+/// Rewrite a scene's name, description, and mode flags.
+///
+/// # Errors
+///
+/// [`DomainError::NotFound`] for an unknown scene, and
+/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// lands first.
+pub async fn update_scene(
+    state: &AppState,
+    command: UpdateScene,
+    meta: MutationContext,
+) -> Result<SceneWritten, DomainError> {
+    let _ = meta;
+
+    let mut mutation = state.begin_scene_mutation().await;
+    let existing = mutation
+        .scenes()
+        .get(&command.scene_id)
+        .cloned()
+        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, command.scene_id))?;
+
+    let updated = Scene {
+        name: command.name,
+        description: command.description,
+        enabled: command.enabled.unwrap_or(existing.enabled),
+        mutation_mode: command.mutation_mode.unwrap_or(existing.mutation_mode),
+        ..existing
+    };
+
+    mutation.update_scene(updated.clone())?;
+    mutation.record(HypercolorEvent::SceneLibraryChanged {
+        scene_id: updated.id,
+        kind: SceneLibraryChangeKind::Updated,
+        name: Some(updated.name.clone()),
+    });
+    let commit = commit_scene(state, mutation).await?;
+
+    Ok(SceneWritten {
+        scene: updated,
+        commit,
+    })
+}
+
+/// Remove a scene from the library, deactivating it first when it is
+/// the current one.
+///
+/// # Errors
+///
+/// [`DomainError::NotFound`] for an unknown scene,
+/// [`DomainError::Conflict`] for the Default scene, and
+/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// lands first.
+pub async fn delete_scene(
+    state: &AppState,
+    scene_id: SceneId,
+    meta: MutationContext,
+) -> Result<SceneDeleted, DomainError> {
+    let _ = meta;
+
+    if scene_id.is_default() {
+        return Err(DomainError::conflict("Default scene cannot be deleted"));
+    }
+
+    let mut mutation = state.begin_scene_mutation().await;
+    let previous_scene_id = mutation.scenes().active_scene_id().copied();
+    let scene = mutation.delete_scene(&scene_id)?;
+    let current_scene = mutation.scenes().active_scene().cloned();
+
+    if previous_scene_id != current_scene.as_ref().map(|scene| scene.id)
+        && let Some(current) = current_scene.as_ref()
+    {
+        mutation.record(active_scene_changed_event(
+            previous_scene_id,
+            current,
+            SceneChangeReason::UserDeactivate,
+        ));
+    }
+    mutation.record(HypercolorEvent::SceneLibraryChanged {
+        scene_id,
+        kind: SceneLibraryChangeKind::Deleted,
+        name: None,
+    });
+    let commit = commit_scene(state, mutation).await?;
+    crate::api::save_runtime_session_snapshot(state).await;
+
+    Ok(SceneDeleted {
+        scene,
+        current_scene,
+        previous_scene_id,
+        commit,
+    })
+}
+
+/// Return to the synthesized default scene.
+///
+/// # Errors
+///
+/// [`DomainError::PreconditionFailed`] when a concurrent scene mutation
+/// lands first.
+pub async fn deactivate_scene(
+    state: &AppState,
+    meta: MutationContext,
+) -> Result<SceneDeactivated, DomainError> {
+    let _ = meta;
+
+    let mut mutation = state.begin_scene_mutation().await;
+    let previous_scene = mutation.scenes().active_scene().cloned();
+    mutation.deactivate_current();
+    let current_scene = mutation.scenes().active_scene().cloned();
+
+    if previous_scene.as_ref().map(|scene| scene.id) != current_scene.as_ref().map(|scene| scene.id)
+        && let Some(current) = current_scene.as_ref()
+    {
+        mutation.record(active_scene_changed_event(
+            previous_scene.as_ref().map(|scene| scene.id),
+            current,
+            SceneChangeReason::UserDeactivate,
+        ));
+    }
+    let commit = commit_scene(state, mutation).await?;
+    crate::api::save_runtime_session_snapshot(state).await;
+
+    // Which scene is active decides which devices are worth connecting.
+    crate::api::sync_connectivity(state).await;
+
+    Ok(SceneDeactivated {
+        previous_scene,
+        current_scene,
+        commit,
+    })
+}
+
+/// The active scene's id, refusing scenes that forbid runtime rewriting.
+///
+/// Snapshot scenes are a deliberate user choice: runtime effect and face
+/// actions must not silently edit them. Adapters that need the refusal
+/// *before* opening a candidate — because their transport renders it in
+/// a shape the canonical projection would not produce — call this
+/// against a read guard; the mutation checks it again regardless.
+///
+/// # Errors
+///
+/// [`DomainError::Conflict`] for a snapshot-locked scene and
+/// [`DomainError::Internal`] when no scene is active at all.
+pub fn active_scene_for_runtime_mutation(
+    manager: &SceneManager,
+    action: &str,
+) -> Result<SceneId, DomainError> {
+    let active = manager
+        .active_scene()
+        .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("No active scene available")))?;
+    if active.blocks_runtime_mutation() {
+        return Err(DomainError::conflict(format!(
+            "Active scene '{}' is in snapshot mode; return to Default or deactivate it before {action}",
+            active.name
+        )));
+    }
+    Ok(active.id)
+}
+
 // ── Shared event helpers ─────────────────────────────────────────────────
+
+/// The active-scene-changed event every activation path records.
+#[must_use]
+pub fn active_scene_changed_event(
+    previous: Option<SceneId>,
+    current: &Scene,
+    reason: SceneChangeReason,
+) -> HypercolorEvent {
+    HypercolorEvent::ActiveSceneChanged {
+        previous,
+        current: current.id,
+        current_name: current.name.clone(),
+        current_kind: current.kind,
+        current_mutation_mode: current.mutation_mode,
+        current_snapshot_locked: current.blocks_runtime_mutation(),
+        reason,
+    }
+}
 
 /// The zone-changed event both effect-apply paths record.
 #[must_use]
