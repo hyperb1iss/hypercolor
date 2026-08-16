@@ -857,7 +857,7 @@ uniform plus the adjust uniform block.
 All `LayerAdjust` operations are performed on linear-sRGB values. This
 matters most for hue shift, saturation, and contrast, which look badly
 wrong in non-linear space at the brightness levels common in RGB
-hardware. The CPU path uses the existing `RgbaF32` linearization helpers
+hardware. The CPU path uses the existing `LinearRgba` linearization helpers
 in `hypercolor-types/src/canvas.rs`. The GPU path uses
 `textureLoad` + manual gamma conversion (Servo already imports textures
 as non-premultiplied sRGB; we encode that as the texture format).

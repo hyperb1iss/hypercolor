@@ -34,9 +34,9 @@ fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
     }
 
     let base = LinearRgba::new(self.base_color[0], self.base_color[1],
-                             self.base_color[2], self.base_color[3]);
+                                self.base_color[2], self.base_color[3]);
     let peak = LinearRgba::new(self.peak_color[0], self.peak_color[1],
-                             self.peak_color[2], self.peak_color[3]);
+                                self.peak_color[2], self.peak_color[3]);
     let white = LinearRgba::new(1.0, 1.0, 1.0, 1.0);
 
     // Compose: RMS for color blend, beat for white accent

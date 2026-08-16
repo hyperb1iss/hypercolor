@@ -312,11 +312,11 @@ When adapting Shadertoy/GLSL shaders to LED Canvas 2D effects:
 ### Color Types
 
 ```rust
-Rgba    // u8 sRGB — input/output format
-Rgb     // u8 sRGB — no alpha
+Rgba       // u8 sRGB — input/output format
+Rgb        // u8 sRGB — no alpha
 LinearRgba // linear f32 — internal math
-Oklab   // perceptually uniform — gradients, blending
-Oklch   // polar perceptual — palette generation, chroma boost
+Oklab      // perceptually uniform — gradients, blending
+Oklch      // polar perceptual — palette generation, chroma boost
 ```
 
 ### Sampling Pipeline

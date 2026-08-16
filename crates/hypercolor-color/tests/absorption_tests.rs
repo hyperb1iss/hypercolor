@@ -3,7 +3,7 @@
 //! asserts the kernel matches it across the full domain, so the
 //! absorption is provable rather than asserted.
 
-use hypercolor_color::{LinearRgba, Oklab, Oklch, Rgba, linear_to_output_u8, linear_to_srgb};
+use hypercolor_color::{LinearRgba, Oklab, Oklch, Rgb, Rgba, linear_to_output_u8, linear_to_srgb};
 
 /// Every byte quadruple round-trips through the direct scale exactly as
 /// canvas's `Rgba::to_f32` did: divide by 255, no transfer decode.
@@ -53,6 +53,18 @@ fn to_bytes_direct_is_truncating_direct_scale() {
 fn to_bytes_direct_clamps_out_of_range_channels() {
     let out_of_range = LinearRgba::new(-0.5, 1.5, 0.0, 2.0);
     assert_eq!(out_of_range.to_bytes_direct(), Rgba::new(0, 255, 0, 255));
+}
+
+/// Decoding three opaque bytes lands where decoding the same bytes with
+/// an explicit alpha of 255 does. Canvas's `from_srgb_u8(r, g, b, 255)`
+/// collapsed into `Rgb::to_linear`'s hardcoded `1.0` on that identity,
+/// so a drift between the two would silently change opaque decodes.
+#[test]
+fn rgb_decodes_the_same_as_opaque_rgba() {
+    for byte in 0_u8..=255 {
+        let rgb = Rgb::new(byte, 255 - byte, byte / 3);
+        assert_eq!(rgb.to_linear(), rgb.to_rgba().to_linear(), "at {byte}");
+    }
 }
 
 #[test]
