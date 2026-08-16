@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
 
+use hypercolor_color::Rgb;
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
 };
@@ -507,11 +508,8 @@ pub fn apply_low_power_saver(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let total = u16::from(r) + u16::from(g) + u16::from(b);
     if total > LOW_POWER_THRESHOLD {
         let scale = f32::from(LOW_POWER_THRESHOLD) / f32::from(total);
-        (
-            scale_channel(r, scale),
-            scale_channel(g, scale),
-            scale_channel(b, scale),
-        )
+        let scaled = Rgb::new(r, g, b).scale(scale);
+        (scaled.r, scaled.g, scaled.b)
     } else {
         (r, g, b)
     }
@@ -561,9 +559,11 @@ fn flatten_colors(colors: &[[u8; 3]], scale: f32, format: DeviceColorFormat) -> 
 }
 
 fn encode_color(color: [u8; 3], scale: f32, format: DeviceColorFormat) -> [u8; 3] {
-    let rs = scale_channel(color[0], scale);
-    let gs = scale_channel(color[1], scale);
-    let bs = scale_channel(color[2], scale);
+    let Rgb {
+        r: rs,
+        g: gs,
+        b: bs,
+    } = Rgb::new(color[0], color[1], color[2]).scale(scale);
 
     match format {
         DeviceColorFormat::Grb => [gs, rs, bs],
@@ -584,13 +584,4 @@ fn command_from_packet(
         post_delay,
         transfer_type: TransferType::Primary,
     }
-}
-
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn scale_channel(value: u8, scale: f32) -> u8 {
-    (f32::from(value) * scale).round().clamp(0.0, 255.0) as u8
 }

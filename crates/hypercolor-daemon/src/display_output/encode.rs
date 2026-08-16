@@ -9,6 +9,7 @@ use turbojpeg::{
     compressed_buf_len as turbojpeg_compressed_buf_len,
 };
 
+use hypercolor_color::Rgb;
 use hypercolor_core::bus::{CanvasFrame, DisplayYuv420Frame};
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::scene::DisplayFaceBlendMode;
@@ -654,20 +655,14 @@ fn prepare_black_rgba_frame(geometry: &DisplayGeometry, rgba_buffer: &mut Vec<u8
     }
 }
 
-fn scale_channel(channel: u8, factor: u16) -> u8 {
-    let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
-    u8::try_from(scaled).expect("display brightness scaling should remain within byte range")
-}
-
 fn refresh_display_brightness_lut(encode_state: &mut DisplayEncodeState, brightness_factor: u16) {
     if encode_state.brightness_factor != brightness_factor {
         encode_state.brightness_factor = brightness_factor;
+        let scale = f32::from(brightness_factor) / f32::from(u8::MAX);
         encode_state.brightness_lut = std::array::from_fn(|channel| {
-            scale_channel(
-                u8::try_from(channel)
-                    .expect("brightness lookup indices should remain within byte range"),
-                brightness_factor,
-            )
+            let channel = u8::try_from(channel)
+                .expect("brightness lookup indices should remain within byte range");
+            Rgb::new(channel, channel, channel).scale(scale).r
         });
     }
 }
@@ -839,11 +834,13 @@ mod tests {
 
     #[test]
     fn display_brightness_scales_srgb_bytes_not_linear_light() {
-        let half_brightness = display_brightness_factor(0.5);
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        refresh_display_brightness_lut(&mut state, display_brightness_factor(0.5));
 
-        assert_eq!(scale_channel(0, half_brightness), 0);
-        assert_eq!(scale_channel(128, half_brightness), 64);
-        assert_eq!(scale_channel(255, half_brightness), 128);
+        // Halving in linear light would leave full white near 188, not 128.
+        assert_eq!(state.brightness_lut[0], 0);
+        assert_eq!(state.brightness_lut[128], 64);
+        assert_eq!(state.brightness_lut[255], 128);
     }
 
     #[test]

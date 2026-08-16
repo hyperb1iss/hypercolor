@@ -963,30 +963,8 @@ fn brightness_percent(brightness: f32) -> u8 {
 }
 
 fn scale_rgb(color: [u8; 3], brightness: f32) -> [u8; 3] {
-    let factor = brightness_factor(brightness);
-    [
-        scale_channel(color[0], factor),
-        scale_channel(color[1], factor),
-        scale_channel(color[2], factor),
-    ]
-}
-
-fn brightness_factor(brightness: f32) -> u16 {
-    let target = f64::from(brightness.clamp(0.0, 1.0)) * f64::from(u8::MAX);
-    (0_u16..=u16::from(u8::MAX))
-        .min_by(|left, right| {
-            let left_delta = (f64::from(*left) - target).abs();
-            let right_delta = (f64::from(*right) - target).abs();
-            left_delta
-                .partial_cmp(&right_delta)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .expect("brightness factor search range should be non-empty")
-}
-
-fn scale_channel(value: u8, factor: u16) -> u8 {
-    let scaled = (u16::from(value) * factor) / u16::from(u8::MAX);
-    u8::try_from(scaled).unwrap_or(u8::MAX)
+    let scaled = Rgb::new(color[0], color[1], color[2]).scale(brightness);
+    [scaled.r, scaled.g, scaled.b]
 }
 
 async fn resolved_layout_device_id(state: &AppState, device_info: &DeviceInfo) -> String {

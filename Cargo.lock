@@ -5205,6 +5205,7 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "hypercolor-color",
  "hypercolor-driver-api",
  "hypercolor-types",
  "reqwest 0.12.28",
@@ -5224,6 +5225,7 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "hypercolor-color",
  "hypercolor-driver-api",
  "hypercolor-types",
  "reqwest 0.12.28",
@@ -5277,6 +5279,7 @@ dependencies = [
  "criterion",
  "futures-util",
  "hidapi",
+ "hypercolor-color",
  "hypercolor-types",
  "hypercolor-windows-pawnio",
  "i2cdev",

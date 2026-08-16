@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use hypercolor_color::Rgb;
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
 };
@@ -681,9 +682,11 @@ fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
 
 #[must_use]
 pub(super) fn encode_color(color: [u8; 3], scale: f32, format: DeviceColorFormat) -> [u8; 3] {
-    let rs = scale_channel(color[0], scale);
-    let gs = scale_channel(color[1], scale);
-    let bs = scale_channel(color[2], scale);
+    let Rgb {
+        r: rs,
+        g: gs,
+        b: bs,
+    } = Rgb::new(color[0], color[1], color[2]).scale(scale);
 
     match format {
         DeviceColorFormat::Grb => [gs, rs, bs],
@@ -706,13 +709,4 @@ pub(super) fn command_from_packet(
         post_delay,
         transfer_type: crate::protocol::TransferType::Primary,
     }
-}
-
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn scale_channel(value: u8, scale: f32) -> u8 {
-    (f32::from(value) * scale).round().clamp(0.0, 255.0) as u8
 }
