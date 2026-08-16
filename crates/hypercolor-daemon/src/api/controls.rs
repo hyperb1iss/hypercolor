@@ -24,15 +24,15 @@ use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::devices;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, into_v1_response};
 use crate::discovery as core_discovery;
+use crate::domain::{DomainError, ResourceKind};
 use crate::network;
 
 const DEVICE_FIELD_NAME: &str = "name";
 const DEVICE_FIELD_ENABLED: &str = "enabled";
 const DEVICE_FIELD_BRIGHTNESS: &str = "brightness";
 const DEVICE_ACTION_IDENTIFY: &str = "identify";
-type ControlApiResult<T> = Result<T, Box<Response>>;
 
 #[derive(Debug, Deserialize)]
 pub struct ControlSurfaceListQuery {
@@ -80,7 +80,7 @@ pub async fn list_control_surfaces(
         match driver_device_control_surface(&state, &tracked.info, tracked.state).await {
             Ok(Some(surface)) => surfaces.push(surface),
             Ok(None) => {}
-            Err(response) => return response,
+            Err(error) => return into_v1_response(error),
         }
         if query.include_driver.unwrap_or(false) {
             let driver_id = tracked.info.driver_id();
@@ -135,7 +135,7 @@ pub async fn get_control_surface(
         return match driver_device_control_surface(&state, &tracked.info, tracked.state).await {
             Ok(Some(surface)) => ApiResponse::ok(surface),
             Ok(None) => ApiError::not_found(format!("Control surface not found: {surface_id}")),
-            Err(response) => response,
+            Err(error) => into_v1_response(error),
         };
     }
 
@@ -204,7 +204,7 @@ async fn driver_device_control_surface(
     state: &AppState,
     info: &DeviceInfo,
     current_state: DeviceState,
-) -> Result<Option<ControlSurfaceDocument>, Response> {
+) -> Result<Option<ControlSurfaceDocument>, DomainError> {
     let driver_id = info.driver_id();
     let Some(driver) = state.driver_registry.get(driver_id) else {
         return Ok(None);
@@ -224,7 +224,7 @@ async fn driver_device_control_surface(
         .device_surface(state.driver_host.as_ref(), &device)
         .await
         .map_err(|error| {
-            ApiError::internal(format!(
+            DomainError::Internal(anyhow::anyhow!(
                 "Failed to build device control surface for {}: {error}",
                 info.id
             ))
@@ -300,9 +300,9 @@ pub async fn apply_control_surface_values(
     };
 
     if !body.dry_run
-        && let Err(response) = apply_device_control_changes(&state, device_id, &normalized).await
+        && let Err(error) = apply_device_control_changes(&state, device_id, &normalized).await
     {
-        return *response;
+        return into_v1_response(error);
     }
 
     let tracked = if body.dry_run {
@@ -382,7 +382,7 @@ async fn invoke_host_device_control_action(
     };
     let request = match host_identify_request(body.input) {
         Ok(request) => request,
-        Err(response) => return *response,
+        Err(error) => return into_v1_response(error),
     };
     let identify_response = devices::identify_device(
         State(Arc::clone(&state)),
@@ -653,7 +653,7 @@ fn driver_device_control_validation_failed(
     )
 }
 
-fn host_identify_request(input: ControlValueMap) -> ControlApiResult<devices::IdentifyRequest> {
+fn host_identify_request(input: ControlValueMap) -> Result<devices::IdentifyRequest, DomainError> {
     let mut duration_ms = None;
     let mut color = None;
 
@@ -666,19 +666,19 @@ fn host_identify_request(input: ControlValueMap) -> ControlApiResult<devices::Id
                 color = Some(format!("{red:02x}{green:02x}{blue:02x}"));
             }
             ("duration_ms", _) => {
-                return Err(Box::new(ApiError::validation(
+                return Err(DomainError::validation(
                     "identify duration_ms must be a duration_ms value",
-                )));
+                ));
             }
             ("color", _) => {
-                return Err(Box::new(ApiError::validation(
+                return Err(DomainError::validation(
                     "identify color must be a color_rgb value",
-                )));
+                ));
             }
             _ => {
-                return Err(Box::new(ApiError::validation(format!(
+                return Err(DomainError::validation(format!(
                     "Unknown identify action input: {field_id}"
-                ))));
+                )));
             }
         }
     }
@@ -1256,7 +1256,7 @@ struct NormalizedDeviceControlChanges {
 
 fn normalize_device_control_changes(
     changes: &[ControlChange],
-) -> ControlApiResult<NormalizedDeviceControlChanges> {
+) -> Result<NormalizedDeviceControlChanges, Box<Response>> {
     let mut seen = BTreeSet::new();
     let mut accepted = Vec::with_capacity(changes.len());
     let mut impacts = Vec::new();
@@ -1380,16 +1380,16 @@ async fn apply_device_control_changes(
     state: &AppState,
     device_id: DeviceId,
     changes: &NormalizedDeviceControlChanges,
-) -> ControlApiResult<()> {
+) -> Result<(), DomainError> {
     let enabled_handled_by_lifecycle = if let Some(enabled) = changes.enabled {
         let runtime = super::discovery_runtime(state);
         match core_discovery::apply_user_enabled_state(&runtime, device_id, enabled).await {
             Ok(core_discovery::UserEnabledStateResult::Applied) => true,
             Ok(core_discovery::UserEnabledStateResult::MissingLifecycle) => false,
             Err(error) => {
-                return Err(Box::new(ApiError::internal(format!(
+                return Err(DomainError::Internal(anyhow::anyhow!(
                     "Failed to update device enabled state for {device_id}: {error}"
-                ))));
+                )));
             }
         }
     } else {
@@ -1406,9 +1406,7 @@ async fn apply_device_control_changes(
         )
         .await
     else {
-        return Err(Box::new(ApiError::not_found(format!(
-            "Device not found: {device_id}"
-        ))));
+        return Err(DomainError::not_found(ResourceKind::Device, device_id));
     };
 
     if !enabled_handled_by_lifecycle && let Some(enabled) = changes.enabled {
@@ -1429,9 +1427,9 @@ async fn apply_device_control_changes(
     if let Err(error) =
         devices::persist_device_settings_for(state, device_id, &updated.user_settings).await
     {
-        return Err(Box::new(ApiError::internal(format!(
+        return Err(DomainError::Internal(anyhow::anyhow!(
             "Failed to persist device settings: {error}"
-        ))));
+        )));
     }
     devices::sync_device_output_brightness(state, device_id, &updated.user_settings).await;
     devices::publish_device_settings_changed(state, device_id, &updated.user_settings);
