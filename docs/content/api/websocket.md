@@ -587,9 +587,9 @@ screen-capture grid as produced.
 ## Binary frame formats
 
 Every binary frame opens with a tag byte at offset 0. Direct preview, spectrum,
-frames, and zone messages continue with their type-specific header. Preview
-chunks (`0x0F`) and optional CinderRPC frames (`0x80`/`0x81`) add a schema byte
-at offset 1. All integers are little-endian.
+frames, and zone messages continue with their type-specific header. The preview
+transport control frames (`0x0F` and `0x10`) add a schema byte at offset 1. All
+integers are little-endian.
 
 | Tag | Channel | Header length |
 | --- | --- | --- |
@@ -609,8 +609,6 @@ at offset 1. All integers are little-endian.
 | `0x0F` | chunked preview envelope | 55 bytes + stream identity |
 | `0x10` | preview publication cancellation | 14 bytes + stream identity |
 | `0x11` | extended screen zones | 41 bytes |
-| `0x80` | RPC request | 2-byte prefix |
-| `0x81` | RPC response | 2-byte prefix |
 
 {% callout(type="info") %}
 `0x04` is intentionally unused in the current channel set. The preview-family
@@ -780,16 +778,6 @@ Clients release any partial publication at or below that id while retaining the
 stream high-water mark. A cancellation never removes a newer publication for
 the same stream. Recent high-water tombstones reject delayed stale chunks;
 older tombstones are reclaimed within the advertised bound.
-
-### RPC frames (0x80 / 0x81)
-
-The CinderRPC request/response frames are the one binary type that uses the
-two-byte `BinaryFrameSchema` prefix (byte 0 is the tag, byte 1 is the schema
-version, currently `1`) before the body. They are part of the shared
-`hypercolor-leptos-ext::ws` wire vocabulary and are not part of the standard
-subscription channel set; most clients never need them. Request bodies carry a
-`u64` id, a length-prefixed method string, and an opaque payload; responses
-carry the matching `u64` id, a `u16` status code, and a payload.
 
 ## Worked example
 

@@ -64,10 +64,10 @@ more without the variable to assert the freshly written files.
 Two completeness gates run on every build, from two different authorities.
 
 `golden_fixtures_cover_the_whole_known_tag_space` derives the expected tag set
-from `protocol/websocket-v1.json` plus the two RPC tags and asserts it matches
-the fixture table exactly, in both directions. A fixture cannot claim a tag the
-manifest never declared, and a manifest tag cannot ship without one. Tag `0x04`
-stays deliberately unassigned.
+from `protocol/websocket-v1.json` and asserts it matches the fixture table
+exactly, in both directions. A fixture cannot claim a tag the manifest never
+declared, and a manifest tag cannot ship without one. Tag `0x04` stays
+deliberately unassigned.
 
 `golden_fixtures_cover_every_tag_leptos_ext_declares` walks every `.rs` file
 under `hypercolor-leptos-ext/src/ws/`, including subdirectories and files that

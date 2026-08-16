@@ -4,7 +4,6 @@ mod input_event;
 mod preview;
 mod reconnect;
 mod replay;
-mod rpc;
 mod schema;
 mod spectrum;
 pub mod transport;
@@ -58,10 +57,6 @@ pub use reconnect::{
 pub use replay::{
     ChannelDescriptor, Direction, ReplayEntry, SessionPlayer, SessionRecord, SessionRecorder,
     SessionTape,
-};
-pub use rpc::{
-    RPC_REQUEST_TAG, RPC_RESPONSE_TAG, RpcClient, RpcClientError, RpcRequest, RpcResponse,
-    RpcServer, RpcServerError, RpcStatus,
 };
 pub use schema::{SchemaRange, negotiate_highest_common_schema};
 pub use spectrum::{
